@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router'
 
 import { setEnvVar } from '@/api/config'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
+import { Button } from '@/components/ui/button'
 import { Codicon, codiconIcon } from '@/components/ui/codicon'
 import { $pluginRecords } from '@/contrib/plugins-store'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
@@ -33,7 +34,7 @@ import type { OverlayNavLink } from '../overlays/overlay-split-layout'
 import { CAPABILITIES_ROUTE } from '../routes'
 
 import { PluginSettingsForm } from './plugin-settings-form'
-import { EmptyState, ListRowSkeleton, SettingsContent } from './primitives'
+import { EmptyState, ListRowSkeleton, SectionHeading, SettingsContent } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 
 /** Opens Settings ▸ Plugins at an entry (by key) and optional sub-page;
@@ -177,19 +178,9 @@ export function pluginSettingsNavChildren(
   })
 }
 
-function ManagePluginsLink() {
-  const { t } = useI18n()
-
-  return (
-    <a
-      className="inline-flex items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary) underline-offset-2 hover:text-foreground hover:underline"
-      href={MANAGE_PLUGINS_HREF}
-    >
-      {t.settings.pluginPages.manage}
-      <Codicon name="arrow-right" size="0.75rem" />
-    </a>
-  )
-}
+// Lead copy under a page heading, the same caption rhythm native pages use.
+const BLURB_CLASS =
+  'mb-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)'
 
 function PluginSettingsOverview({
   entries,
@@ -205,51 +196,58 @@ function PluginSettingsOverview({
 
   return (
     <SettingsContent>
-      <div className="grid max-w-3xl gap-4">
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {copy.blurb}
-          </p>
-          <ManagePluginsLink />
-        </div>
-        {missing && (
-          <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)" role="status">
-            {copy.missing}
-          </p>
-        )}
-        {entries.length === 0 ? (
-          <EmptyState title={copy.empty} />
-        ) : (
-          <div className="grid overflow-hidden rounded-lg border border-(--ui-stroke-tertiary)">
-            {entries.map(entry => {
-              const Icon = entryIcon(entry)
-              // The landing page counts as one; sub-pages add to it.
-              const pages = entry.children.length + 1
+      <SectionHeading
+        aside={
+          // Page-level action on the heading row, like Passwords & Logins' Add.
+          <Button asChild className="gap-1.5" size="sm" variant="outline">
+            <a href={MANAGE_PLUGINS_HREF}>
+              {copy.manage}
+              <Codicon name="arrow-right" size="0.75rem" />
+            </a>
+          </Button>
+        }
+        icon={PLUGINS_NAV_ICON}
+        page
+        title={t.settings.nav.plugins}
+      />
+      <p className={BLURB_CLASS}>{copy.blurb}</p>
+      {missing && (
+        <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)" role="status">
+          {copy.missing}
+        </p>
+      )}
+      {entries.length === 0 ? (
+        <EmptyState title={copy.empty} />
+      ) : (
+        <div className="mt-2 grid overflow-hidden rounded-lg border border-(--ui-stroke-tertiary)">
+          {entries.map(entry => {
+            const Icon = entryIcon(entry)
+            // The landing page counts as one; sub-pages add to it.
+            const pages = entry.children.length + 1
 
-              return (
-                <button
-                  className="flex min-h-11 items-center gap-3 border-b border-(--ui-stroke-tertiary) px-3 text-left transition-colors last:border-b-0 hover:bg-(--chrome-action-hover)"
-                  data-testid={`plugin-settings-row-${entry.key}`}
-                  key={entry.key}
-                  onClick={() => onOpen(entry.key)}
-                  type="button"
-                >
-                  <Icon className="size-4 shrink-0 text-(--ui-text-tertiary)" />
-                  <span className="min-w-0 flex-1 truncate text-[length:var(--conversation-text-font-size)]">
-                    {entry.title}
+            return (
+              <button
+                className="flex min-h-11 items-center gap-3 border-b border-(--ui-stroke-tertiary) px-3 text-left transition-colors last:border-b-0 hover:bg-(--chrome-action-hover)"
+                data-testid={`plugin-settings-row-${entry.key}`}
+                key={entry.key}
+                onClick={() => onOpen(entry.key)}
+                type="button"
+              >
+                <Icon className="size-4 shrink-0 text-(--ui-text-tertiary)" />
+                <span className="min-w-0 flex-1 truncate text-[length:var(--conversation-text-font-size)]">
+                  {entry.title}
+                </span>
+                {pages > 1 && (
+                  <span className="shrink-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                    {copy.pageCount(pages)}
                   </span>
-                  {pages > 1 && (
-                    <span className="shrink-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                      {copy.pageCount(pages)}
-                    </span>
-                  )}
-                  <Codicon className="text-(--ui-text-tertiary)" name="chevron-right" size="0.8rem" />
-                </button>
-              )
-            })}
-          </div>
-        )}
-      </div>
+                )}
+                <Codicon className="text-(--ui-text-tertiary)" name="chevron-right" size="0.8rem" />
+              </button>
+            )
+          })}
+        </div>
+      )}
     </SettingsContent>
   )
 }
@@ -267,39 +265,38 @@ function PluginSchemaSettingsPage({ agentKey }: { agentKey: string }) {
 
   return (
     <SettingsContent>
-      <div className="grid max-w-3xl gap-4">
-        <SettingsProfileScope />
-        {row?.description && (
-          <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {row.description}
-          </p>
-        )}
-        {row?.settings_schema?.length ? (
-          <PluginSettingsForm
-            disabled={busy}
-            fields={row.settings_schema}
-            idPrefix={`plugin-settings-${agentKey}`}
-            onSave={async changes => {
-              const ok = await saveAgentPluginSettings(requestGateway, {
-                failMessage: p.settingsForm.saveFailed(row.name),
-                key: agentKey,
-                profile: scope ?? null,
-                secrets: changes.secrets,
-                values: changes.values,
-                writeSecret: (env, value) => setEnvVar(env, value, scope)
-              })
+      <SettingsProfileScope className="mb-5" />
+      {row?.settings_schema?.length ? (
+        <PluginSettingsForm
+          disabled={busy}
+          fields={row.settings_schema}
+          idPrefix={`plugin-settings-${agentKey}`}
+          intro={row.description ? <p className={BLURB_CLASS}>{row.description}</p> : undefined}
+          onSave={async changes => {
+            const ok = await saveAgentPluginSettings(requestGateway, {
+              failMessage: p.settingsForm.saveFailed(row.name),
+              key: agentKey,
+              profile: scope ?? null,
+              secrets: changes.secrets,
+              values: changes.values,
+              writeSecret: (env, value) => setEnvVar(env, value, scope)
+            })
 
-              if (ok) {
-                notify({ kind: 'success', message: p.settingsForm.saved(row.name) })
-              }
+            if (ok) {
+              notify({ kind: 'success', message: p.settingsForm.saved(row.name) })
+            }
 
-              return ok
-            }}
-          />
-        ) : (
+            return ok
+          }}
+          title={row.name}
+        />
+      ) : (
+        <div className="grid gap-1">
           <ListRowSkeleton />
-        )}
-      </div>
+          <ListRowSkeleton />
+          <ListRowSkeleton />
+        </div>
+      )}
     </SettingsContent>
   )
 }

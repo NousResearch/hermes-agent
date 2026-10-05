@@ -2924,7 +2924,7 @@ export const frOverrides = {
         save: 'Enregistrer les paramètres',
         saved: (name: string) => `Paramètres de ${name} enregistrés.`,
         saveFailed: (name: string) => `Impossible d’enregistrer les paramètres de ${name}`,
-        optional: '(facultatif)',
+        required: 'Obligatoire',
         secretSet: '•••••••• (défini)',
         secretStoredAs: (env: string) =>
           `Stocké dans le .env du profil sous ${env}, jamais dans config.yaml ; laissez vide pour conserver la valeur actuelle.`

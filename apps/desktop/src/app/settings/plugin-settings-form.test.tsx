@@ -3,7 +3,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { PluginSettingField } from '@/store/agent-plugins'
 
-import { collectChanges, initialDraft, PluginSettingsForm } from './plugin-settings-form'
+import {
+  collectChanges,
+  fieldLabel,
+  humanizeSettingKey,
+  initialDraft,
+  joinSentences,
+  PluginSettingsForm
+} from './plugin-settings-form'
 
 const FIELDS: PluginSettingField[] = [
   {
@@ -41,7 +48,7 @@ describe('PluginSettingsForm (#46600, #87934)', () => {
   afterEach(cleanup)
 
   it('renders one control per schema type from the table, secrets masked with no value echoed', () => {
-    render(<PluginSettingsForm disabled={false} fields={FIELDS} idPrefix="p" onSave={vi.fn(async () => true)} />)
+    render(<PluginSettingsForm disabled={false} fields={FIELDS} idPrefix="p" onSave={vi.fn(async () => true)} title="Demo" />)
 
     expect((screen.getByLabelText('API URL') as HTMLInputElement).value).toBe('https://a')
     expect((screen.getByLabelText(/^Retries/) as HTMLInputElement).type).toBe('number')
@@ -58,7 +65,7 @@ describe('PluginSettingsForm (#46600, #87934)', () => {
 
   it('submits only what changed, coerced to wire types, secrets routed by env name; clears secrets after save', async () => {
     const onSave = vi.fn(async () => true)
-    render(<PluginSettingsForm disabled={false} fields={FIELDS} idPrefix="p" onSave={onSave} />)
+    render(<PluginSettingsForm disabled={false} fields={FIELDS} idPrefix="p" onSave={onSave} title="Demo" />)
 
     fireEvent.change(screen.getByLabelText(/^Retries/), { target: { value: '9' } })
     fireEvent.click(screen.getByRole('switch', { name: 'Verbose' }))
@@ -73,5 +80,61 @@ describe('PluginSettingsForm (#46600, #87934)', () => {
     // A value the plugin cannot accept never reaches the backend.
     expect(() => collectChanges(FIELDS, { ...initialDraft(FIELDS), mode: 'reckless' })).toThrow(/Mode/)
     expect(() => collectChanges(FIELDS, { ...initialDraft(FIELDS), retries: 'five' })).toThrow(/number/)
+  })
+
+  it('labels raw keys like native rows and joins helper sentences with punctuation', () => {
+    const fields: PluginSettingField[] = [
+      { description: 'Per-day budget', key: 'daily_budget', label: 'daily_budget', required: false, type: 'number', value: 1 },
+      {
+        description: 'Optional maps key for travel-time estimates',
+        env: 'TRIP_NOTES_MAPS_API_KEY',
+        has_value: false,
+        key: 'maps_api_key',
+        label: 'maps_api_key',
+        required: true,
+        type: 'secret'
+      }
+    ]
+
+    render(<PluginSettingsForm disabled={false} fields={fields} idPrefix="t" onSave={vi.fn(async () => true)} title="Trip" />)
+
+    expect(screen.getByLabelText('Daily budget')).toBeTruthy()
+    expect(screen.getByLabelText('Maps API key')).toBeTruthy()
+    expect(screen.queryByText('daily_budget')).toBeNull()
+    expect(
+      screen.getByText(
+        "Optional maps key for travel-time estimates. Stored in the profile's .env as TRIP_NOTES_MAPS_API_KEY, never in config.yaml; leave blank to keep the current value."
+      )
+    ).toBeTruthy()
+    // Only required fields are marked; optional is the unmarked default, as in native Settings.
+    expect(screen.getAllByText('Required')).toHaveLength(1)
+    expect(screen.queryByText('(optional)')).toBeNull()
+  })
+})
+
+describe('plugin settings labels and helper copy', () => {
+  it('humanizes keys in sentence case, keeping acronyms upper-case', () => {
+    expect(humanizeSettingKey('daily_budget')).toBe('Daily budget')
+    expect(humanizeSettingKey('remind_me')).toBe('Remind me')
+    expect(humanizeSettingKey('maps_api_key')).toBe('Maps API key')
+    expect(humanizeSettingKey('webhook_url')).toBe('Webhook URL')
+    expect(humanizeSettingKey('mcp_server_id')).toBe('MCP server ID')
+    expect(humanizeSettingKey('apiBaseURL')).toBe('API base URL')
+    expect(humanizeSettingKey('allowed-channel-ids')).toBe('Allowed channel IDs')
+    expect(humanizeSettingKey('units')).toBe('Units')
+  })
+
+  it("prefers the manifest's label/title over the humanized key", () => {
+    expect(fieldLabel({ key: 'units', label: 'Unit system' })).toBe('Unit system')
+    // The backend falls back to the bare key when the manifest gave no label.
+    expect(fieldLabel({ key: 'maps_api_key', label: 'maps_api_key' })).toBe('Maps API key')
+  })
+
+  it('ends each sentence before the next begins and drops blanks', () => {
+    expect(joinSentences('Optional maps key', 'Stored in .env.')).toBe('Optional maps key. Stored in .env.')
+    expect(joinSentences('Already ends.', 'Next')).toBe('Already ends. Next')
+    expect(joinSentences('Ask first?', 'Then save.')).toBe('Ask first? Then save.')
+    expect(joinSentences('', '  Only this  ', undefined)).toBe('Only this')
+    expect(joinSentences('Lone description')).toBe('Lone description')
   })
 })

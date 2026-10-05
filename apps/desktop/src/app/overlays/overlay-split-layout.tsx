@@ -121,7 +121,11 @@ export const OverlayNavItem = memo(function OverlayNavItem({
         'flex h-7 w-full items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
         nested
           ? active
-            ? 'border-transparent bg-(--chrome-action-hover) font-medium text-foreground'
+            ? current
+              ? 'border-transparent bg-(--chrome-action-hover) font-medium text-foreground'
+              : // Ancestor of the current page (a plugin whose sub-page is open):
+                // named, not filled, so exactly one nested row reads as selected.
+                'border-transparent bg-transparent font-medium text-foreground hover:bg-(--chrome-action-hover)'
             : 'border-transparent bg-transparent text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
           : active
             ? 'border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary) text-foreground'

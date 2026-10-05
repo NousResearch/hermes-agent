@@ -14,6 +14,8 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 
 const DEFAULTS = { label: 'word', showChip: true }
 
+const GATEWAY_STATUS = { closed: 'Disconnected', connecting: 'Connecting…', error: 'Error', idle: 'Idle', open: 'Connected' }
+
 function RuntimeChip({ prefs }) {
   const gateway = useValue(host.state.gateway)
   const { label, showChip } = useValue(prefs)
@@ -84,8 +86,8 @@ export default {
                 ],
                 value: label
               }),
-              description: 'How much room the chip takes in the status bar.',
-              title: 'Label'
+              description: 'Show the word next to the ⚡, or the icon alone to save room.',
+              title: 'Chip style'
             })
           }
         },
@@ -101,7 +103,14 @@ export default {
                   description: 'Plain ESM loaded through the runtime pipeline (blob import + SDK injection).',
                   title: 'Loaded at runtime'
                 }),
-                jsx(ListRow, { description: String(gateway), title: 'Gateway' })
+                jsx(ListRow, {
+                  action: jsx('span', {
+                    className: 'text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)',
+                    children: GATEWAY_STATUS[gateway] ?? String(gateway)
+                  }),
+                  description: 'The chip reads this live through host.state.gateway.',
+                  title: 'Gateway connection'
+                })
               ]
             })
           }

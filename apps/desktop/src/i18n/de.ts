@@ -2912,7 +2912,7 @@ export const deOverrides = {
         save: 'Einstellungen speichern',
         saved: (name: string) => `Einstellungen von ${name} gespeichert.`,
         saveFailed: (name: string) => `Einstellungen von ${name} konnten nicht gespeichert werden`,
-        optional: '(optional)',
+        required: 'Erforderlich',
         secretSet: '•••••••• (gesetzt)',
         secretStoredAs: (env: string) =>
           `Wird in der .env des Profils als ${env} gespeichert, nie in config.yaml; leer lassen, um den aktuellen Wert zu behalten.`

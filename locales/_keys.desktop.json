@@ -4403,7 +4403,7 @@
     "skills.plugins.serverStates.unknown",
     "skills.plugins.serverStates.unsupported_gpu",
     "skills.plugins.serverStates.version_too_old",
-    "skills.plugins.settingsForm.optional",
+    "skills.plugins.settingsForm.required",
     "skills.plugins.settingsForm.save",
     "skills.plugins.settingsForm.saveFailed",
     "skills.plugins.settingsForm.saved",

@@ -119,10 +119,15 @@ describe('Settings ▸ Plugins', () => {
     fireEvent.click(railItem('plugins:agent:notes')!)
 
     const region = screen.getByLabelText(/Region/) as HTMLInputElement
+    const saveButton = screen.getByRole('button', { name: 'Save settings' }) as HTMLButtonElement
 
     expect(region.value).toBe('us')
+    // The page action sits on the heading row above the fields, disabled until an edit.
+    expect(saveButton.compareDocumentPosition(region) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(saveButton.disabled).toBe(true)
     fireEvent.change(region, { target: { value: 'eu' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+    expect(saveButton.disabled).toBe(false)
+    fireEvent.click(saveButton)
 
     await waitFor(() =>
       expect(requestGateway).toHaveBeenCalledWith('plugins.manage', {

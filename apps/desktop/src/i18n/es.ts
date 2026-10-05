@@ -2906,7 +2906,7 @@ export const esOverrides = {
         save: 'Guardar configuración',
         saved: (name: string) => `Configuración de ${name} guardada.`,
         saveFailed: (name: string) => `No se pudo guardar la configuración de ${name}`,
-        optional: '(opcional)',
+        required: 'Obligatorio',
         secretSet: '•••••••• (configurado)',
         secretStoredAs: (env: string) =>
           `Se guarda en el .env del perfil como ${env}, nunca en config.yaml; déjalo en blanco para conservar el valor actual.`

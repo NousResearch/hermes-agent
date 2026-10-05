@@ -1835,6 +1835,56 @@ def review_injected_skills() -> tuple[str, ...]:
     return tuple(str(name).strip() for name in configured if str(name).strip())
 
 
+def _match_lane_skills(mapping: dict, assignee: Optional[str]) -> tuple[str, ...]:
+    """Union the ``injected_skills`` buckets that apply to *assignee*, most specific first.
+
+    Keys are lane ids, prefix globs (``platform-*``) or the ``"*"`` default floor. Buckets are
+    UNIONED, so a lane bucket ADDS to the floor rather than replacing it. Prefix globs resolve
+    longest-first, so a narrower pattern wins the ordering.
+    """
+    lane = (assignee or "").strip()
+    order: list[str] = []
+    if lane and lane in mapping:
+        order.append(lane)
+    if lane:
+        order.extend(sorted(
+            (k for k in mapping
+             if isinstance(k, str) and k.endswith("*") and lane.startswith(k[:-1])),
+            key=len, reverse=True,
+        ))
+    if "*" in mapping:
+        order.append("*")
+    names: list[str] = []
+    for key in order:
+        value = mapping.get(key)
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            continue
+        for name in value:
+            name = str(name).strip()
+            if name and name not in names:
+                names.append(name)
+    return tuple(names)
+
+
+def injected_skills_for(assignee: Optional[str]) -> tuple[str, ...]:
+    """Skills injected into EVERY run of *assignee*'s lane (``kanban.injected_skills``).
+
+    Shape: a lane-pattern -> skill-names mapping with ``"*"`` as the default floor; a flat list
+    is the floor. An absent or empty value returns ``()``, so a host that configures nothing sees
+    no behaviour change. Resolution happens at CLAIM time under the assignee's profile scope.
+    """
+    configured = _kanban_config().get("injected_skills")
+    if isinstance(configured, str):
+        return (configured.strip(),) if configured.strip() else ()
+    if isinstance(configured, (list, tuple)):
+        return tuple(n for n in (str(x).strip() for x in configured) if n)
+    if isinstance(configured, dict):
+        return _match_lane_skills(configured, assignee)
+    return ()
+
+
 def _profile_skill_resolvable(profile_home: Optional[str], name: str) -> bool:
     """Whether *name* would preload for the profile rooted at *profile_home*."""
     if not profile_home or not name:
@@ -1901,16 +1951,16 @@ def _record_skill_note(
         _kb._log.debug("kanban dispatcher: could not comment %s on %s: %s", event_kind, task_id, exc)
 
 
-def record_skipped_review_skills(
+def record_skipped_injected_skills(
     conn: sqlite3.Connection, task_id: str, skipped: list[str], assignee: Optional[str],
 ) -> None:
-    """Record, ON THE CARD, that a harness-injected review skill was not injected into this run."""
+    """Record, ON THE CARD, that a harness-injected lane skill was not injected into this run."""
     names = ", ".join(skipped)
     _record_skill_note(
-        conn, task_id, "review_skill_skipped",
-        f"review skill injection skipped: {names} does not resolve for profile "
-        f"{assignee or '?'} — this review run starts WITHOUT it. Install the skill in that "
-        f"profile's skills dir (or set kanban.review_skills) to restore it.",
+        conn, task_id, "injected_skill_skipped",
+        f"injected skill(s) — {names} — do not resolve for profile {assignee or '?'}: this run "
+        f"starts WITHOUT them. Install them in that profile's skills dir, or drop them from "
+        f"kanban.injected_skills.",
         {"skills": skipped, "assignee": assignee},
     )
 
@@ -2309,20 +2359,24 @@ def _dispatch_lane_task(
             record_unresolved_card_skills(conn, claimed.id, unresolved_card_skills, claimed.assignee)
             advisory_skills.extend(unresolved_card_skills)
 
+    # Skills the HARNESS injects for this lane's run: the lane's own `kanban.injected_skills`
+    # bucket for EVERY lane, plus the review list on a review run. The kanban lifecycle itself is
+    # already in every worker's system prompt via KANBAN_GUIDANCE. Only names that resolve for the
+    # assignee are injected — an unresolvable one is recorded on the card and SKIPPED, never handed
+    # to the worker's preload loader, which raises ``Unknown skill(s)`` when nothing loaded and
+    # kills the run at INIT (see DEFAULT_REVIEW_SKILLS).
+    injected = list(injected_skills_for(claimed.assignee))
     if lane == "review":
-        # Inject the review skills the lane actually OWNS; the kanban lifecycle is already in every
-        # worker's system prompt via KANBAN_GUIDANCE. Only names that resolve for the assignee are
-        # injected — an unresolvable one is recorded on the card and SKIPPED, never handed to the
-        # worker's preload loader, which raises ``Unknown skill(s)`` when nothing loaded and kills
-        # the run at INIT (see DEFAULT_REVIEW_SKILLS).
-        injectable, skipped_skills = resolve_review_injected_skills(claimed.assignee)
+        injected.extend(name for name in review_injected_skills() if name not in injected)
+    if injected:
+        injectable, skipped_skills = resolve_lane_skills(claimed.assignee, injected)
         if injectable:
             claimed.skills = list(dict.fromkeys([*(claimed.skills or []), *injectable]))
         if skipped_skills:
-            record_skipped_review_skills(conn, claimed.id, skipped_skills, claimed.assignee)
+            record_skipped_injected_skills(conn, claimed.id, skipped_skills, claimed.assignee)
         # Every name the HARNESS chose for this run (injected or skipped) is advisory too, so an
-        # injected name can never be the reason a review run dies at INIT.
-        advisory_skills.extend(review_injected_skills())
+        # injected name can never be the reason a run dies at INIT.
+        advisory_skills.extend(injected)
 
     if advisory_skills:
         try:

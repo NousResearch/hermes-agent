@@ -137,7 +137,10 @@ The stage-by-stage contract: `website/docs/developer-guide/cli-internals.md` § 
 - Restarts are fleet-wide and drain-first, bounded by the home each unit runs on
   (`update_fleet_scope.py`); another install's runtime is never restarted.
 - After the commit point nothing fails `hermes update`: a stale gateway or failed post-commit
-  step is a receipt `followup` with its obligation kept armed. Receipts live under the ROOT home's
+  step is a receipt `followup` with its obligation kept armed, and a completion process that
+  could not start or died without a result is an owed `completion` follow-up (tail re-armed),
+  exit 0. One exception: the user's autostash left parked is `partial`, exit 1 (#122557);
+  Ctrl-C after the commit point is `interrupted`, exit 130. Receipts live under the ROOT home's
   `logs/update_receipts/`.
 - Nothing runs pulled code in the pre-pull interpreter. `update_handoff.py` and
   `update_serve_obligations.py` are a FROZEN compat surface (`tests/compat/old_updater_surface.json`):

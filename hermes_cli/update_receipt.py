@@ -8,7 +8,8 @@ break an update (every public entry point is exception-swallowing):
 
 1. **Update receipt** — a machine-readable JSON record of what one
    ``hermes update`` run discovered, did, skipped (and why), written to
-   ``<HERMES_HOME>/logs/update_receipts/``. Silent-failure classes this
+   the ROOT home's ``logs/update_receipts/`` (``get_default_hermes_root()``,
+   never a sticky profile's ``HERMES_HOME``). Silent-failure classes this
    makes visible: #88848 (helper died after "success" printed), #74973
    (restart silently skipped), #85753 (restart phase never ran), #81193
    (desktop shows failure for a successful update).
@@ -44,7 +45,7 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-_RECEIPT_KEEP = 20  # keep the last N receipts per profile home
+_RECEIPT_KEEP = 20  # keep the last N receipts in the root home's receipt directory
 #: Terminal records finalized by THIS process, by update id (see ``finalized_receipt``).
 _FINALIZED: dict[str, dict[str, Any]] = {}
 COMMAND_BOUNDARY_STOP_REASON = "completed at command boundary"

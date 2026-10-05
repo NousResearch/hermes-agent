@@ -58,8 +58,13 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   and keep their own obligation armed (`source-completion-pending` for the tail, the fleet-restart
   obligation for gateways) so the next launch or `hermes update` — including "Already up to date" —
   retries them. The owed-fleet-restart CLI startup warning is what keeps a mixed-version fleet from
-  ever looking healthy. Exit 2 (refused/concurrent) and exit 1 (nothing committed / rolled back)
-  keep their meaning.
+  ever looking healthy. A completion process that could not be started (temporary directory,
+  request file, spawn) or died without a correlated result (OOM, SIGKILL) is the same kind of
+  debt: an owed `completion` follow-up with the source-update tail re-armed, exit 0. Exit 2
+  (refused/concurrent) and exit 1 (nothing committed / rolled back) keep their meaning; the one
+  committed run that exits 1 is an autostash whose restore conflicted and stays parked: the
+  receipt is `partial` with a `user_action`, since nothing retries what only the user can re-apply
+  (#122557).
 - **Report**: every run writes a machine-readable receipt to the ROOT home's
   `logs/update_receipts/` (never a sticky profile's; `update.log` likewise) — `latest.json` pointer;
   steps, skips WITH reasons, restart outcome, plan, fleet snapshot, `followups`. The receipt is on

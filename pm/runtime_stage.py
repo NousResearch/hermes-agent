@@ -25,6 +25,9 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
     project = project or Path(__file__).resolve().parent
     destination = destination.absolute()
     env = runtime_environment()
+    if sys.platform == "win32":
+        # uv prepares truststore before a Python worker can use it.
+        env.setdefault("UV_NATIVE_TLS", "true")
     environment = PythonEnvironment(
         uv=uv, python=python, destination=destination,
         cache=uv_cache_dir() if cache is None else cache.absolute(), env=env,

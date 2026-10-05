@@ -292,6 +292,11 @@ readers and writers use ruamel; third-party packages can still require PyYAML in
 the application environment. Failure receipts remain stdlib-only.
 
 PM's CLI and worker activate `truststore` before importing their HTTPS clients.
+Before that runtime exists on Windows, pinned tool downloads use a hidden
+PowerShell process with Windows certificate verification. PM still verifies
+the pinned hashes and publishes atomically. The bootstrap transfers stream
+serially and restart after interruption; the ready worker retains ranged resume.
+The uv step that builds PM's runtime also defaults to Windows certificate trust.
 This uses the platform certificate store even when bootstrap Python's compiled-in
 OpenSSL paths do not locate it. No application dependencies or certificate-path
 override are required. After the first install, PM rebuilds its small environment

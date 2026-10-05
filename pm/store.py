@@ -394,7 +394,12 @@ class Store:
                 progress(done, total, {urls[key]: rows for key, rows in ranges.items()})
 
         try:
-            Download(sources, pause_event=pause_event).run(progress=tick)
+            from pm.runtime import is_runtime
+
+            # A cold Windows caller has no truststore yet. Its first pinned
+            # tools must use the OS verifier before the PM worker can exist.
+            Download(sources, pause_event=pause_event,
+                     native_tls=sys.platform == "win32" and not is_runtime()).run(progress=tick)
         finally:
             # Only finalized, hash-verified files can exist at these paths.
             for source in sources:

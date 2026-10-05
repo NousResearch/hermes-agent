@@ -247,10 +247,12 @@ class Download:
         connections: int = CONNECTIONS,
         partials_dir: Optional[Path] = None,
         pause_event: Optional[threading.Event] = None,
+        native_tls: bool = False,
     ):
         self.sources = [Source(s.url, Path(s.dest), s.sha256, tuple(s.fallbacks)) for s in sources]
         self.resume = resume
         self.connections = max(1, int(connections))
+        self.native_tls = native_tls
         if partials_dir:
             self.partials_dir = Path(partials_dir)
         else:
@@ -390,6 +392,10 @@ class Download:
             raise DownloadPaused("download paused during retry backoff")
 
     def _probe(self, url: str) -> _Remote:
+        if self.native_tls:
+            # Bootstrap's native stream does not resume ranges or need a
+            # separate urllib probe (which would fail before trust is ready).
+            return _Remote(0, False)
         def request():
             self._check_pause()
             req = urllib.request.Request(url, headers={**_UA, "Range": "bytes=0-0"})
@@ -582,6 +588,17 @@ class Download:
         covered: _Ranges = []
         request = urllib.request.Request(source.url, headers=_UA)
         try:
+            if self.native_tls:
+                from pm.bootstrap_download import fetch_windows
+
+                def report(position: int) -> None:
+                    self._check_pause()
+                    tick([(0, position)] if position else [])
+
+                position = fetch_windows(source.url, part, report)
+                covered = [(0, position)]
+                self._write_sidecar(side, part, covered, remote, source.sha256)
+                return position
             with _OPENER.open(request, timeout=120) as response, part.open("wb") as stream:
                 if response.status != 200:
                     raise DownloadError(f"unexpected download status: {response.status}")

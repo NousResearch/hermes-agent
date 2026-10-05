@@ -148,3 +148,44 @@ def test_orphan_receipt_is_the_newest_one_written_after_the_baseline(tmp_path):
     assert crash._new_receipt_outcome(machine, before) is None  # an earlier run's success is not this run's
     (receipts / "update_20261004_000100_2_b.json").write_text('{"outcome": "failed"}', encoding="utf-8")
     assert crash._new_receipt_outcome(machine, before) == "failed"
+
+
+# Review CI1: a run-time xfail outlives its fix unless something checks the tree. PR CI never runs
+# the orphan cell (Windows, opt-in) nor strict acceptance, so this file is the expiry.
+def test_orphan_marker_wrapper_expires_once_its_fix_is_in_the_tree():
+    missing = crash.orphan_marker_fix_missing()
+    assert missing, ("the orphan-marker fix (#132354 + #132365) is in the tree: delete ORPHAN_MARKER_GAP, "
+                     "ORPHAN_MARKER_FIX, _orphan_gap_excuse and these guards, and assert the marker plainly")
+    # The halves already on this branch must still carry their footprint: a renamed judge would
+    # otherwise read as "not landed" forever and keep the excuse alive.
+    landed = {rel for rel, _ in crash.ORPHAN_MARKER_FIX} - {m.split(":")[0] for m in missing}
+    assert "hermes_cli/update_lock.py" in landed, f"the Python delegate judge lost its footprint: {missing}"
+
+
+def test_orphan_marker_fix_footprint_is_read_from_the_tree(tmp_path):
+    for rel, footprint in crash.ORPHAN_MARKER_FIX:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(f"x\n{footprint}\n", encoding="utf-8")
+    assert crash.orphan_marker_fix_missing(tmp_path) == []
+    (tmp_path / "scripts/desktop-update/windows.ps1").unlink()
+    assert crash.orphan_marker_fix_missing(tmp_path) == [
+        "scripts/desktop-update/windows.ps1: " + crash.ORPHAN_MARKER_FIX[2][1]]
+
+
+_GAP_FAILURE = "orphaned_update: .hermes-update-in-progress read DEAD 3s after the script died"
+
+
+@pytest.mark.parametrize("fix_in_tree", [False, True])
+def test_orphan_gap_is_excused_only_while_its_fix_is_absent(monkeypatch, fix_in_tree):
+    monkeypatch.delenv("HERMES_E2E_STRICT_ACCEPTANCE", raising=False)
+    monkeypatch.setattr(crash, "orphan_marker_fix_missing", lambda: [] if fix_in_tree else ["a half"])
+    expected = AssertionError if fix_in_tree else pytest.xfail.Exception
+    with pytest.raises(expected, match="read DEAD"):
+        with crash._orphan_gap_excuse():
+            raise AssertionError(_GAP_FAILURE)
+
+
+def test_orphan_marker_guard_fires_once_the_fix_lands(monkeypatch):
+    monkeypatch.setattr(crash, "orphan_marker_fix_missing", lambda: [])
+    with pytest.raises(AssertionError, match="delete ORPHAN_MARKER_GAP"):
+        test_orphan_marker_wrapper_expires_once_its_fix_is_in_the_tree()

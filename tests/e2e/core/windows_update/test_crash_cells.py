@@ -756,6 +756,33 @@ def test_desktop_handoff_killed_mid_run_leaves_a_runnable_install(journey: Journ
 # (HERMES_E2E_STRICT_ACCEPTANCE=upd-txn) fails on it instead.
 ORPHAN_MARKER_GAP = (r"orphaned_update: \.hermes-update-in-progress (read DEAD|survived)",
                      "upd-txn: the line-4 delegate lands in #132354 + #132365")
+# The expiry PR CI can check (it never runs this cell, nor strict): the fix's footprint in the
+# tree. Once every half is here the excuse is off, so the cell is strict on any runner, and
+# tests/ci/test_windows_update_crash_oracles.py (every PR) fails until the wrapper is deleted.
+ORPHAN_MARKER_FIX = (
+    ("hermes_cli/update_lock.py", "def delegate_live("),  # #132365: the judge honours a live delegate
+    ("scripts/desktop-update/marker.ps1", "function Add-MarkerDelegate("),  # #132354: the script names one
+    ("scripts/desktop-update/windows.ps1", "Add-MarkerDelegate @($proc.Id)"),  # ... its update child
+)
+_REPO = Path(__file__).resolve().parents[4]
+
+
+def orphan_marker_fix_missing(root: Path = _REPO) -> list[str]:
+    """The halves of the orphan-marker fix absent from ``root`` (``[]``: the gap is closed there)."""
+    missing = []
+    for rel, footprint in ORPHAN_MARKER_FIX:
+        try:
+            text = (root / rel).read_text(encoding="utf-8-sig", errors="replace")
+        except FileNotFoundError:
+            text = ""
+        if footprint not in text:
+            missing.append(f"{rel}: {footprint}")
+    return missing
+
+
+def _orphan_gap_excuse() -> contextlib.AbstractContextManager[None]:
+    """``known_failure`` for the orphan-marker gap while its fix is absent; nothing once it is here."""
+    return known_failure(*ORPHAN_MARKER_GAP) if orphan_marker_fix_missing() else contextlib.nullcontext()
 
 
 def test_desktop_handoff_script_killed_alone_keeps_the_marker_live_until_its_update_ends(
@@ -786,5 +813,5 @@ def test_desktop_handoff_script_killed_alone_keeps_the_marker_live_until_its_upd
                     f"hermes update still ran: {r['dead_while_running'][1]} (at kill: {r['marker_at_kill']!r})")
     if r["marker_after_orphan"] is not None:
         gaps.append(f"{MARKER} survived the orphaned update's exit: {r['marker_after_orphan_text']}")
-    with known_failure(*ORPHAN_MARKER_GAP):
+    with _orphan_gap_excuse():
         assert not gaps, fail_with(m, "orphaned_update: " + "; ".join(gaps))

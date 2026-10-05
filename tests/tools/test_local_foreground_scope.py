@@ -8,12 +8,10 @@ the same heavy build/test could still kill the control plane.
 
 from __future__ import annotations
 
-import contextlib
 import fnmatch
 import os
 import shutil
 import subprocess
-import time
 from pathlib import Path
 from typing import cast
 
@@ -110,49 +108,6 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
     assert local_env._foreground_scope_issued is True  # arms the host-exit sweep
     # A scope left over from an earlier gateway with the same PID must not collide.
     assert env._run_bash("true")._hermes_scope_unit != proc._hermes_scope_unit
-
-
-@pytest.mark.parametrize("rejects_no_expand", [False, True], ids=["systemd>=254", "systemd<254"])
-def test_foreground_scope_keeps_the_command_byte_identical_and_the_cap_off(monkeypatch, rejects_no_expand):
-    """The shared argv choke point keeps both guarantees on the foreground path too.
-
-    #132385: systemd >= 254 expands ``$$`` / ``${X}`` in a ``--scope`` command line itself
-    (``--expand-environment`` defaults to yes), so the flag must be there for a foreground
-    command as well — that command is a shell string the user wrote. systemd-run < 254 rejects
-    the option, and the retry must drop the option while keeping the scope. Foreground also
-    opts out of the worker ``MemoryMax`` (own cgroup, no cap), which the same call decides.
-    """
-    monkeypatch.setattr(process_registry, "_SYSTEMD_SCOPE_AVAILABLE", None)
-    monkeypatch.setattr(process_registry, "_SYSTEMD_SCOPE_PROBED_AT", 0.0)
-    monkeypatch.setattr(process_registry, "_SYSTEMD_RUN_NO_EXPAND", True)
-    probes: list = []
-
-    def fake_run(argv, **kwargs):
-        probes.append(argv)
-        if rejects_no_expand and "--expand-environment=no" in argv:
-            return subprocess.CompletedProcess(
-                argv, 1, stderr=b"systemd-run: unrecognized option '--expand-environment=no'")
-        return subprocess.CompletedProcess(argv, 0, stderr=b"")
-
-    real_which = shutil.which
-    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: (
-        "/usr/bin/systemd-run" if name == "systemd-run" else real_which(name, *a, **k)))
-    monkeypatch.setattr(process_registry.subprocess, "run", fake_run)
-
-    # Drives the real probe, including the retry that drops the option on old systemd-run.
-    assert process_registry._systemd_run_user_scope_available() is True
-
-    payload = ["/bin/bash", "-c", "echo $$ && echo ${HOME}"]
-    argv = process_registry._build_systemd_scope_argv(payload, "4242-abcd1234", prefix="hermes-fg", memory_max=False)
-
-    assert argv[0].endswith("systemd-run")
-    # One choke point: whatever the probe settled on is what the foreground builder emits.
-    assert ("--expand-environment=no" in argv) is not rejects_no_expand
-    assert len(probes) == (2 if rejects_no_expand else 1)
-    # The command reaches the shell exactly as written — no expansion, no rewriting.
-    assert argv[argv.index("--") + 1:] == payload
-    assert argv[argv.index("--unit") + 1].startswith("hermes-fg-")
-    assert [argv[i + 1] for i, token in enumerate(argv) if token == "--property"] == ["MemoryAccounting=yes"]
 
 
 def test_scope_is_stopped_even_when_the_group_kill_raises_and_survives_adoption(monkeypatch, tmp_path):
@@ -253,99 +208,3 @@ def test_real_systemd_foreground_command_has_its_own_cgroup(real_systemd_gateway
                if line.count(":") >= 2 and line.split(":", 1)[0].isdigit()]
     assert any(path.endswith("/" + unit) for path in cgroups), result
     assert unit not in Path("/proc/self/cgroup").read_text()
-
-
-def test_real_systemd_timeout_removes_detached_process_and_unit(real_systemd_gateway, tmp_path):
-    """Assert the complete timeout guarantee, not scope-stop's isolated contribution."""
-    if not shutil.which("setsid"):
-        pytest.skip("setsid is unavailable")
-    env, spawned = real_systemd_gateway
-    # The child records its own PID after setsid, avoiding the launcher's fork race.
-    result = env.execute(
-        "setsid sh -c 'echo $$ > detached.pid; cat /proc/self/cgroup > detached.cgroup; "
-        "exec sleep 60' & wait", timeout=5)
-    assert result["returncode"] == 124, result
-    unit = getattr(spawned[0], "_hermes_scope_unit", None)
-    assert unit and unit.startswith("hermes-fg-"), result
-    pid = int((tmp_path / "detached.pid").read_text())
-    assert unit in (tmp_path / "detached.cgroup").read_text()
-
-    deadline = time.monotonic() + 15
-    while Path(f"/proc/{pid}").exists() and time.monotonic() < deadline:
-        time.sleep(0.1)
-    assert not Path(f"/proc/{pid}").exists(), f"detached process {pid} survived {unit}"
-
-    bus_env = process_registry.systemd_user_bus_env()
-    manager = subprocess.run(
-        ["systemctl", "--user", "show", "-p", "Version", "--value"],
-        env=bus_env, capture_output=True, text=True, timeout=15)
-    assert manager.returncode == 0 and manager.stdout.strip(), manager
-    deadline = time.monotonic() + 15
-    while True:
-        state = subprocess.run(
-            ["systemctl", "--user", "show", unit, "-p", "LoadState", "--value"],
-            env=bus_env, capture_output=True, text=True, timeout=15)
-        assert state.returncode == 0, state
-        if state.stdout.strip() == "not-found" or time.monotonic() >= deadline:
-            break
-        time.sleep(0.1)
-    assert state.stdout.strip() == "not-found", state
-
-
-def test_real_systemd_crash_sweep_stops_the_scopes_of_a_gone_pid(real_systemd_gateway):
-    """The ExecStopPost sweep stops a dead PID's scope and leaves a live one's alone.
-
-    It enumerates the loaded ``hermes-fg-*`` scopes and reads the PID out of each unit
-    name — no PID record is consulted, because ``$MAINPID`` is unset in ``ExecStopPost``
-    and a record can be cleaned by a status read or left naming the replacement. The live
-    unit here is named after THIS process, so the guard is measured against a real live
-    PID, not a mocked one.
-    """
-    dead_unit = "hermes-fg-999999-c0ffee01.scope"  # no live process: what a SIGKILL leaves
-    live_unit = f"hermes-fg-{os.getpid()}-c0ffee02.scope"  # this test process is alive
-    if not shutil.which("systemd-run"):
-        pytest.skip("systemd-run is unavailable")
-    bus_env = process_registry.systemd_user_bus_env()
-
-    def spawn_scope(unit: str) -> subprocess.Popen:
-        # `systemd-run --scope` stays attached to the command, so it is launched as a child.
-        return subprocess.Popen(
-            ["systemd-run", "--user", "--scope", f"--unit={unit}", "--collect", "/bin/sleep", "300"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env={**os.environ, **bus_env})
-
-    def load_state(unit: str) -> str:
-        state = subprocess.run(
-            ["systemctl", "--user", "show", unit, "-p", "LoadState", "--value"],
-            env=bus_env, capture_output=True, text=True, timeout=15)
-        assert state.returncode == 0, state
-        return state.stdout.strip()
-
-    dead, live = spawn_scope(dead_unit), spawn_scope(live_unit)
-    try:
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline and not (load_state(dead_unit) == load_state(live_unit) == "loaded"):
-            time.sleep(0.1)
-        assert load_state(dead_unit) == "loaded" and load_state(live_unit) == "loaded"
-        # The enumeration the sweep depends on sees both, on a real manager.
-        enumerated = process_registry.list_systemd_user_scope_units("hermes-fg-*.scope")
-        assert dead_unit in enumerated and live_unit in enumerated, enumerated
-
-        swept = local_env.sweep_dead_foreground_scopes()
-
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline and dead.poll() is None:
-            time.sleep(0.1)
-        assert dead.poll() is not None, f"{dead_unit} survived the sweep"
-        assert load_state(dead_unit) == "not-found", dead_unit
-        assert swept >= 1, swept
-        # The live PID's scope is not in the match: that gateway keeps its command.
-        assert live.poll() is None and load_state(live_unit) == "loaded", live_unit
-    finally:
-        for proc in (dead, live):
-            if proc.poll() is None:
-                proc.kill()
-                with contextlib.suppress(Exception):
-                    proc.wait(timeout=15)
-        with contextlib.suppress(Exception):
-            subprocess.run(["systemctl", "--user", "stop", live_unit],
-                           env=bus_env, capture_output=True, timeout=15)

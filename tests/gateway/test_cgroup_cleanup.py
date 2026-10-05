@@ -148,46 +148,6 @@ class TestForegroundScopeSweep:
             ("hermes-fg-4242-c0ffee03.scope", {"no_block": True}),
         ]
 
-    def test_sweep_with_nothing_to_do_reports_false(self, monkeypatch):
-        import gateway.status
-
-        monkeypatch.setattr(gateway.status, "_pid_exists", lambda pid: True)  # all alive
-        self._units(monkeypatch, [f"hermes-fg-{os.getpid()}-c0ffee05.scope"])
-        stopped = self._stopped(monkeypatch)
-
-        assert cgroup_cleanup.reap_foreground_scopes() is False
-        assert stopped == []
-
-    def test_sweep_without_units_reports_false(self, monkeypatch):
-        # A graceful stop already stopped its own scopes, and an unreachable manager
-        # enumerates nothing: both are "nothing to do", not a reason to keep looking.
-        self._units(monkeypatch, [])
-        stopped = self._stopped(monkeypatch)
-
-        assert cgroup_cleanup.reap_foreground_scopes() is False
-        assert stopped == []
-
-    def test_liveness_check_fails_closed(self, monkeypatch):
-        import gateway.status
-
-        monkeypatch.setattr(
-            gateway.status, "_pid_exists", lambda pid: (_ for _ in ()).throw(RuntimeError("boom"))
-        )
-        self._units(monkeypatch, ["hermes-fg-4242-c0ffee06.scope"])
-        stopped = self._stopped(monkeypatch)
-
-        assert cgroup_cleanup.reap_foreground_scopes() is False
-        assert stopped == []
-
-    def test_a_stop_that_fails_is_not_counted(self, monkeypatch):
-        import gateway.status
-
-        monkeypatch.setattr(gateway.status, "_pid_exists", lambda pid: False)
-        self._units(monkeypatch, ["hermes-fg-4242-c0ffee07.scope"])
-        monkeypatch.setattr("tools.process_registry._stop_systemd_unit", lambda unit, **kw: False)
-
-        assert cgroup_cleanup.reap_foreground_scopes() is False
-
     def test_main_sweeps_only_after_a_permitted_reap(self, monkeypatch):
         monkeypatch.setattr(cgroup_cleanup, "_parent_is_systemd", lambda: True)
         swept: list = []

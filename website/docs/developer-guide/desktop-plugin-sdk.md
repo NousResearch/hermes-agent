@@ -61,6 +61,125 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
 - **`ui.*`** — the design language: the app's real components, theme variables,
   icons, and formatters, so your UI matches the app pixel-for-pixel.
 
+## Bot Mode group chats
+
+`host.groupChats` reads and sends text to **existing Bot Mode group chats** in
+this Desktop window. It is not the gateway Hosted Rooms (`groups.*`) API.
+Bots must be enabled, but its page need not be open. The separate Group Bots
+plugin is one consumer; no consumer-specific UI or engine is part of the SDK.
+On older Desktop versions the property may be absent. Feature-detect it and
+check `version === 1` before use; installing a plugin cannot add a host API.
+
+Public types: `GroupChatsStatus`, `GroupChatsSnapshot`, `GroupChatRoomSnapshot`,
+`GroupChatMessageSnapshot`, `GroupChatSend`, and `GroupChatSendResult` are
+exported from `@hermes/plugin-sdk`. Provider registration is internal.
+
+```ts
+host.groupChats.version // 1
+host.groupChats.status() // 'unavailable' | 'loading' | 'ready'
+host.groupChats.getSnapshot() // GroupChatsSnapshot
+host.groupChats.subscribe(listener) // () => void; no initial callback
+host.groupChats.send({ roomId, text, threadId?, submissionKey? })
+```
+
+### Minimal consumer
+
+This plain-ESM plugin contributes an explicit palette command. It never sends
+on registration or notification. For a composer, retain the draft on refusal
+as below; keep the room's durable ID with the draft rather than retargeting by
+name when the room is renamed or replaced.
+
+```javascript
+import { host, PALETTE_AREA } from '@hermes/plugin-sdk'
+
+export default {
+  id: 'group-chat-example',
+  name: 'Group chat example',
+  register(ctx) {
+    const chats = host.groupChats
+    if (!chats || chats.version !== 1) return
+    let snapshot = chats.getSnapshot()
+    let draft = 'Hello from the group chat example'
+    const refresh = () => { snapshot = chats.getSnapshot() }
+    ctx.onDispose(chats.subscribe(refresh))
+    ctx.register({
+      id: 'send',
+      area: PALETTE_AREA,
+      data: {
+        id: 'group-chat-example.send',
+        label: 'Send example message to the only Bot Mode group',
+        run() {
+          // Ambiguous selections fail closed. A real composer lets the user select.
+          const rooms = snapshot.rooms.filter(room => room.roomId !== null)
+          if (chats.status() !== 'ready' || rooms.length !== 1 || !draft) return
+          const result = chats.send({ roomId: rooms[0].roomId, text: draft })
+          if (result.accepted) draft = ''
+          else host.notifyError(`Not sent: ${result.error}`)
+        }
+      }
+    })
+  }
+}
+```
+
+All methods are synchronous. `send` returns either `{ accepted: true, threadId: string }` or `{ accepted: false, error: string }`. Acceptance means the existing Bot Mode `sendToGroupChat` appended/queued the message locally. It does **not** mean remote persistence, successful routing, a completed model response, or successful execution. Subsequent failures and replies arrive through snapshots/subscriptions. Preserve the draft on rejection; only clear it on acceptance. Unexpected implementation exceptions are not converted into a safe-to-retry rejection.
+
+Status:
+- `unavailable`: provider absent/disabled/disposed, or local room/tombstone storage hydration failed.
+- `loading`: the enabled Bot Mode registration is hydrating local rooms/tombstones and attempting its initial server projection pull.
+- `ready`: hydration completed. This is **not** a gateway-health indicator; an offline backend may still cause an accepted turn to fail later. A failed initial remote pull does not disable usable local rooms.
+
+Rejection codes: `unavailable`, `loading`, `invalid-input`, `invalid-room`, `invalid-thread`, `rejected`, `submission-conflict`, `submission-in-flight`.
+
+- `invalid-input`: missing/empty room identity, non-string/blank text, malformed optional thread/key (key max 256 characters). Slash-command and empty-roster refusal remain owned by the existing engine (`rejected`).
+- `invalid-room`: missing, disbanded, duplicate/ambiguous identity, or a legacy room addressed by name. Rename follows durable `roomId`; same-name recreation cannot receive a stale send. Legacy rooms with no durable id are display-only through this bridge; no identity migration is performed.
+- `invalid-thread`: the provided nonempty thread id is absent from that room's current retained log. Omit `threadId` to start a new thread; do not invent one. This intentionally rejects a thread whose history has already been evicted.
+- `submission-conflict`: the same key was accepted with different room/text/thread arguments.
+- `submission-in-flight`: a subscriber reentered `send` during another synchronous submission.
+
+Optional idempotency is provider/window-local and keeps the latest 256 accepted keys (FIFO). An identical retry with a remembered key returns the original acceptance without another engine call, provided room/thread validation still succeeds. Rejected sends are not remembered. Keys are not durable across disable/re-enable/reload and are not global exactly-once delivery. Generate a fresh key per deliberate message, retaining it only when retrying that same submission.
+
+Consumers cannot supply members, routes, sessions, attachments, or an engine. Membership and current mention titles are read at send time by Bots; the adapter preserves the existing engine’s source-qualified routing.
+
+### Snapshot
+
+`getSnapshot()` returns a cached, deeply frozen, allowlisted copy; reference identity is stable until an observed update. Loading/unavailable snapshots have an empty `rooms` array. Never mutate or use display fields as routing targets.
+
+```ts
+interface GroupChatsSnapshot {
+  readonly rooms: readonly {
+    readonly roomId: string | null
+    readonly name: string
+    readonly running: boolean
+    readonly needsYou: boolean
+    readonly log: readonly {
+      at: number
+      from: { kind: 'member' | 'user'; name: string; source?: string; gateway?: string }
+      text: string
+      id?: string
+      thread?: string
+      truncated?: boolean
+    }[]
+    readonly members: readonly { name: string; title: string; connectionId?: string; connectionLabel?: string; installId?: string }[]
+    readonly activity: readonly {
+      at: number; kind: string; member?: string | null; thread?: string | null
+      reason?: string; preview?: string
+    }[]
+    readonly requests: readonly {
+      at: number; kind: 'approval' | 'clarify'; member: string; thread?: string
+      question: string; choices: readonly string[]; multiSelect: boolean; command?: string
+    }[]
+  }[]
+}
+```
+
+Member source fields are nonsecret display identity, not routing capabilities. `installId` corresponds to the log author's `gateway`; `connectionLabel` (falling back to `connectionId`) corresponds to the author's `source`. Consumers should prefer installation-qualified identity, retain label/connection aliases for older source-only history, and never resolve an ambiguous bare name to one of several same-name members. Connection ids and labels are Desktop-local; installation ids can match across Desktops. Missing identity cannot be reconstructed reliably from a display name. No route or session internals are added.
+
+The log is the renderer's **currently retained** room history, not an unbounded archive. Attachments/images are omitted; any prior truncation marker is retained. Activity is the existing current-epoch activity feed. Requests are display-only summaries, not an approval/clarification answer API; batch subquestions are not exposed in v1. Routes, tokens, sessions/session owners, request/session ids, watermarks, cursors, holds and mutable atoms are not exposed. Text is untrusted display content, not HTML-safe markup. Malformed display primitives are normalized without exposing/freezing source objects.
+
+Subscriptions observe room/history/running, needs-you, activity, requests, roster and bot metadata updates, plus provider lifecycle changes. Call the returned disposer on unmount. A failing consumer callback is logged and isolated so it cannot interrupt a room append. Provider replacement is generation-guarded: old unregistration/notifications cannot remove or notify for the new provider. Async hydration/pull results from disposed registrations do not apply.
+
+
 ## Two delivery modes
 
 | Mode | Where | Who | Build step |

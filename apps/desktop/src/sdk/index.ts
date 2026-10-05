@@ -109,11 +109,20 @@ import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
+import { groupChats } from './group-chats'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 
+export type {
+  GroupChatMessageSnapshot,
+  GroupChatRoomSnapshot,
+  GroupChatSend,
+  GroupChatSendResult,
+  GroupChatsSnapshot,
+  GroupChatsStatus
+} from './group-chats'
 export type { DesktopSettingKey, DesktopSettingValues } from './settings'
 
 // -- state: readonly views over the app's live atoms -------------------------
@@ -667,6 +676,8 @@ async function awaitProfileActivation(
 }
 
 export const host = {
+  /** Read and submit to existing Bot Mode group chats; availability follows Bots. */
+  groupChats,
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
     activeSessionId: readonlyAtom<null | string>($activeSessionId),

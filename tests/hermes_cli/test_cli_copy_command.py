@@ -90,3 +90,29 @@ def test_copy_native_first_when_local():
     mock_osc52.assert_not_called()
 
 
+
+
+def test_copy_numbers_only_responses_with_text():
+    """A turn that only called tools has no text to copy, so it must not take a number: `/copy 2`
+    is the second response the user saw, and the count in the range message matches."""
+    cli_obj = _make_cli()
+    cli_obj.conversation_history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
+                                                             "function": {"name": "terminal", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "c2", "type": "function",
+                                                               "function": {"name": "terminal", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c2", "content": "ok"},
+        {"role": "assistant", "content": "second answer"},
+    ]
+
+    printed = []
+    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy, \
+            patch("cli._cprint", side_effect=printed.append):
+        cli_obj.process_command("/copy 2")
+        cli_obj.process_command("/copy 3")
+
+    mock_copy.assert_called_once_with("second answer")
+    assert any("Use 1-2" in line for line in printed), printed

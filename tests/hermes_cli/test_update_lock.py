@@ -504,6 +504,37 @@ def test_checkout_lock_excludes_an_update_from_another_home(tmp_path):
 
 
 @pytest.mark.platforms("posix")
+def test_an_unjudgeable_marker_never_admits_a_contender_past_a_held_checkout_lock(tmp_path, monkeypatch):
+    """L5: read_live_update never raises, so a marker it cannot judge (any exception) reads as
+    "no live update". That fails open on the marker only: the checkout kernel lock stays the
+    guard, so update_in_progress still answers True and a contender's acquire is refused."""
+    from hermes_cli import update_lock
+
+    install = tmp_path / "checkout"
+    install.mkdir()
+    marker_path = tmp_path / "marker"
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _HOLD_CHECKOUT, str(REPO_ROOT), str(install), str(tmp_path / "homeA" / "m")],
+        stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        _claim_v2(marker_path, holder.pid)
+
+        def unjudgeable(_path):
+            raise RuntimeError("an error the parse was never expected to raise")
+
+        monkeypatch.setattr(update_lock, "_read_marker", unjudgeable)
+        assert read_live_update(path=marker_path, install_root=install) is None
+        assert update_in_progress(install), "an unjudgeable marker hid a held checkout lock"
+        lock = UpdateLock(path=marker_path, install_root=install)
+        assert lock.acquire() is False, "a contender got past a held checkout lock"
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+@pytest.mark.platforms("posix")
 def test_checkout_lock_outlives_its_owner_while_an_inheriting_child_runs(tmp_path):
     """Invariant: lock free => no process of the update tree alive (pass_fds children)."""
     install = tmp_path / "checkout"

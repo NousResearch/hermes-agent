@@ -857,7 +857,11 @@ def read_live_update(*, path: Path | None = None, install_root: Path | str | Non
     updater's tree (its completion, build or git) still runs, the marker is kept, and the
     answer is a ``held`` holder (R6; ``marker.sh``/``marker.ps1`` answer ``held`` too). Otherwise
     a dead marker is reclaimed — judged again and removed inside the marker mutex, so a claim
-    published after our first read is never the one deleted. Never raises.
+    published after our first read is never the one deleted. Never raises: a marker that cannot
+    be judged at all also reads as ``None``. That fails open on the MARKER only; the checkout
+    kernel lock is the guard, and every caller that acts on ``None`` still consults it
+    (``update_in_progress`` ORs :func:`checkout_lock_held`; ``UpdateLock.acquire`` /
+    ``acquire_checkout`` take it), so a live update is never joined or raced through this answer.
     """
     marker = path or update_marker_path()
     try:
@@ -870,7 +874,7 @@ def read_live_update(*, path: Path | None = None, install_root: Path | str | Non
         if _reclaim_dead(marker, install_root) == "held":
             return UpdateHolder(pid=0, age_seconds=max(parsed.age(), 0.0) if parsed.started_at is not None else 0.0,
                                 held=True)
-    except Exception as exc:  # health: allow BLE001 -- documented never-raises probe: unjudgeable = no live update
+    except Exception as exc:  # health: allow BLE001 -- never raises: fails open on the marker only; the kernel lock guards (doc)
         logger.debug("Could not judge update marker %s: %s", marker, exc)
     return None
 

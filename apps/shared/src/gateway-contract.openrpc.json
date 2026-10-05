@@ -18446,6 +18446,18 @@
             "default": null,
             "title": "Response Previewed"
           },
+          "response_reused": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Response Reused"
+          },
           "response_transformed": {
             "anyOf": [
               {

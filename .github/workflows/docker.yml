@@ -7,16 +7,16 @@ on:
   # Thus one slow advisory job blocked every rerun of the fast required jobs. A separate
   # run reruns and cancels independently.
   #
-  # Trusted main pushes resolve the environment-scoped Docker Hub secrets in
-  # this same workflow, never across a workflow boundary.
+  # Push and pull_request are not triggers here. The image jobs only run for
+  # NousResearch/hermes-agent, so a push on this fork only produced a run of
+  # skipped jobs. The Windows app a user installs is published by
+  # desktop-prebuilt-update.yml. A release caller can still invoke this
+  # workflow.
   #
   # The ``release: published`` trigger was REMOVED on purpose: a GitHub release
   # event must never rebuild or rewrite the stable Docker channel. This staged
   # path publishes only immutable version tags; the ordered stable publication
   # controller moves stable/latest from the receipt-bound registry digest.
-  pull_request:
-  push:
-    branches: [main]
   workflow_call:
     inputs:
       release-phase:

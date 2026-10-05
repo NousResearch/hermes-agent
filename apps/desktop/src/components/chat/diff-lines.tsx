@@ -34,6 +34,8 @@ interface ParsedHunk {
   lines: Array<{ kind: DiffKind; text: string }>
   newStart: number
   oldStart: number
+  /** File this hunk belongs to, when the payload names one (multi-file diffs). */
+  path: null | string
 }
 
 // Tint + 2px gutter accent per change kind. Text color is included for the
@@ -67,11 +69,11 @@ const DIFF_BOX_CLASS =
   '-mx-1.5 -mb-1.5 max-h-[12rem] max-w-none min-w-0 overflow-auto overscroll-x-contain overscroll-y-auto font-mono text-[0.7rem] leading-relaxed text-(--ui-text-secondary)'
 
 function diffKind(line: string): DiffKind {
-  if (line.startsWith('+') && !line.startsWith('+++')) {
+  if (line.startsWith('+')) {
     return 'add'
   }
 
-  if (line.startsWith('-') && !line.startsWith('---')) {
+  if (line.startsWith('-')) {
     return 'remove'
   }
 
@@ -132,11 +134,50 @@ export function stripDiffFileHeaders(diff: string): string {
   return lines.slice(start).join('\n')
 }
 
+// `+++ b/path` (or `--- a/path`, for a deletion) names the file a header block
+// belongs to. `/dev/null` is the empty side of an add/delete, never a name.
+function headerPath(line: string): null | string {
+  const match = /^(?:\+\+\+|---) (?:[ab]\/)?(.*)$/.exec(line)
+  const path = match ? match[1].trim() : ''
+
+  return path && path !== '/dev/null' ? path : null
+}
+
 function parseHunks(diff: string): ParsedHunk[] {
   const hunks: ParsedHunk[] = []
   let active: null | ParsedHunk = null
+  let pendingPath: null | string = null
 
-  for (const line of stripDiffFileHeaders(diff).split('\n')) {
+  // Scanned raw (no pre-strip): a header block is skipped by the `!active`
+  // branch, which also handles the header blocks BETWEEN files in a multi-file
+  // payload. Those used to be absorbed into the previous hunk as context lines.
+  const lines = diff.split('\n')
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+
+    // Opens the next file — close the current hunk so its lines stop here.
+    if (line.startsWith('diff --git')) {
+      active = null
+      pendingPath = null
+
+      continue
+    }
+
+    // Concatenated per-file payloads can omit the `diff --git` separator: a
+    // `--- x` / `+++ y` pair directly followed by a hunk header opens the next
+    // file. The `+++` line is read by the `!active` branch below, so the file
+    // keeps its name.
+    if (
+      line.startsWith('--- ')
+      && lines[index + 1]?.startsWith('+++ ')
+      && lines[index + 2]?.startsWith('@@')
+    ) {
+      active = null
+
+      continue
+    }
+
     if (line.startsWith('@@')) {
       const match = /@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
 
@@ -146,13 +187,21 @@ function parseHunks(diff: string): ParsedHunk[] {
         continue
       }
 
-      active = { oldStart: Number(match[1]), newStart: Number(match[2]), lines: [] }
+      active = { lines: [], newStart: Number(match[2]), oldStart: Number(match[1]), path: pendingPath }
+      pendingPath = null
       hunks.push(active)
 
       continue
     }
 
-    if (!active || line.startsWith('\\')) {
+    if (!active) {
+      // Inside a file-header block: remember which file it names.
+      pendingPath = headerPath(line) ?? pendingPath
+
+      continue
+    }
+
+    if (line.startsWith('\\')) {
       continue
     }
 
@@ -166,7 +215,8 @@ function parseHunks(diff: string): ParsedHunk[] {
 // separator kept between hunks), markers stripped, kind recorded. Old/new line
 // numbers are tracked from each `@@ -a,b +c,d @@` header so a caller that wants
 // a gutter (the preview) can render them; the blank separator carries none.
-function parseDiff(diff: string): DiffLine[] {
+/** Exported for tests. */
+export function parseDiff(diff: string): DiffLine[] {
   const hunks = parseHunks(diff)
 
   if (hunks.length === 0) {
@@ -176,10 +226,16 @@ function parseDiff(diff: string): DiffLine[] {
       .map(line => ({ kind: diffKind(line), text: stripDiffMarker(line) }))
   }
 
+  // Multi-file payload (an untracked directory expanded to its files): label
+  // each file so the adds don't read as one anonymous wall. Single-file diffs —
+  // every other caller — render exactly as before; the panel header names those.
+  const multiFile = new Set(hunks.map(hunk => hunk.path).filter(Boolean)).size > 1
+
   const out: DiffLine[] = []
   let emitted = false
   let oldNo = 1
   let newNo = 1
+  let headingPath: null | string = null
 
   for (const hunk of hunks) {
     oldNo = hunk.oldStart
@@ -187,6 +243,12 @@ function parseDiff(diff: string): DiffLine[] {
 
     if (emitted) {
       out.push({ kind: 'context', text: '' })
+    }
+
+    if (multiFile && hunk.path && hunk.path !== headingPath) {
+      headingPath = hunk.path
+      out.push({ kind: 'context', text: hunk.path })
+      emitted = true
     }
 
     for (const line of hunk.lines) {

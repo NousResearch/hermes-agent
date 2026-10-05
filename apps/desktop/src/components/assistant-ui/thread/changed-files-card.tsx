@@ -50,7 +50,7 @@ export const ChangedFilesCard: FC<{ parts: readonly unknown[] }> = ({ parts }) =
         <span className="min-w-0 flex-1 truncate text-(--ui-text-primary)">{copy.filesChanged(files.length)}</span>
         <button
           className="shrink-0 cursor-pointer text-(--ui-text-tertiary) transition-colors hover:text-(--ui-text-primary)"
-          onClick={() => revealReview(scopeCwd, composerScope.target)}
+          onClick={() => revealReview(scopeCwd, composerScope.target, files)}
           type="button"
         >
           {copy.reviewChanges}
@@ -61,7 +61,7 @@ export const ChangedFilesCard: FC<{ parts: readonly unknown[] }> = ({ parts }) =
           <Tip key={file.path} label={displayPath(file.path)}>
             <button
               className="row-hover flex shrink-0 items-center gap-2 rounded-md px-1.5 py-1 text-left"
-              onClick={() => void openReviewForPath(file.path, scopeCwd, composerScope.target)}
+              onClick={() => void openReviewForPath(file.path, scopeCwd, composerScope.target, files)}
               type="button"
             >
               <FileTypeIcon className="shrink-0 text-(--ui-text-tertiary)" path={file.path} size="0.875rem" />

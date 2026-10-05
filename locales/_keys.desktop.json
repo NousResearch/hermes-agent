@@ -4495,6 +4495,7 @@
     "statusStack.coding.noBranch",
     "statusStack.coding.noChanges",
     "statusStack.coding.noDiff",
+    "statusStack.coding.noDiffFolder",
     "statusStack.coding.notRepo",
     "statusStack.coding.openChanges",
     "statusStack.coding.openFile",

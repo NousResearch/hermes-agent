@@ -69,7 +69,7 @@ def _claim(marker, pid, started_at=None):
 
 def _claim_v2(marker, pid, started_at=None, ct_offset=0.0):
     started = int(time.time() if started_at is None else started_at)
-    marker.write_text(f"{pid}\n{started}\nct:{process_create_time(pid) + ct_offset:.3f}\n", encoding="utf-8")
+    marker.write_text(f"{pid}\n{started}\nct:{process_create_time(pid) + ct_offset:.3f}\n", encoding="utf-8", newline="")
 
 
 def test_marker_path_is_the_profile_tree_root(tmp_path, monkeypatch):
@@ -257,7 +257,7 @@ def test_delegate_keeps_the_claim_live_after_the_partner_dies(marker, monkeypatc
     assert marker.read_bytes().startswith(base) and lines[3].startswith(f"delegate:{os.getpid()} ct:")
 
     dead_partner = f"{DEAD_PID}\n{int(time.time())}\nct:1.000\n{lines[3]}\n"
-    marker.write_text(dead_partner, encoding="utf-8")
+    marker.write_text(dead_partner, encoding="utf-8", newline="")
     holder = read_live_update(path=marker)
     assert holder is not None and holder.pid == os.getpid(), "the running delegate keeps the update visible"
     marker.write_bytes(base + f"{lines[3]}\n".encode())

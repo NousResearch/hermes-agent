@@ -1,9 +1,12 @@
 """The Windows crash cells' oracles, judged on this OS: a verdict the cells can only reach on a
 Windows runner must still say pass exactly when the user's update was what the cell claims."""
 
+import os
 import subprocess
+import time
 from pathlib import Path
 
+import psutil
 import pytest
 
 import tests.e2e.core.windows_update.test_crash_cells as crash
@@ -57,3 +60,15 @@ def test_kill_point_counts_only_an_update_killed_while_running(
     else:
         with pytest.raises(AssertionError, match="cell: the update"):
             crash._kill_when(_Machine(tmp_path), proc, "cell", point, "t")
+
+
+@pytest.mark.parametrize("age,with_ct,live", [
+    (60, False, True),  # v1 marker inside update_lock's 20-minute ceiling
+    (1260, False, False),  # v1 past the ceiling: the product reads it DEAD (the pid may be reused)
+    (1260, True, True),  # a matching creation time is live at any age
+])
+def test_marker_oracle_reads_a_marker_live_exactly_when_update_lock_does(age, with_ct, live):
+    pid = os.getpid()
+    ct = f"ct:{psutil.Process(pid).create_time():.3f}\n" if with_ct else ""
+    text = f"{pid}\n{time.time() - age}\n{ct}"
+    assert crash._marker_live(text) == (f"owner {pid}" if live else None)

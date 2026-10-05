@@ -67,6 +67,7 @@ from pathlib import Path
 import psutil
 import pytest
 
+from hermes_cli.update_lock import UPDATE_MARKER_MAX_AGE_SECONDS
 from tests.e2e.core._pending_fixes import known_failure
 
 from tests.e2e.core.windows._helpers import _decode
@@ -404,14 +405,17 @@ def _parse_marker(text: str) -> dict:
             "delegate": delegate, "delegate_ct": delegate_ct}
 
 
-def _identity_live(pid: int | None, ct: float | None) -> bool:
+def _identity_live(pid: int | None, ct: float | None, age: float) -> bool:
+    """update_lock's C1 verdict for one identity of a marker ``age`` seconds old."""
     if not pid or pid <= 0:
         return False
     try:
         proc = psutil.Process(pid)
         if not proc.is_running():
             return False
-        return ct is None or abs(proc.create_time() - ct) <= CT_TOLERANCE
+        if ct is None:  # v1 / no creation time: the pid may be reused, so only the age ceiling bounds it
+            return age <= UPDATE_MARKER_MAX_AGE_SECONDS
+        return abs(proc.create_time() - ct) <= CT_TOLERANCE
     except psutil.Error:
         return False
 
@@ -419,9 +423,10 @@ def _identity_live(pid: int | None, ct: float | None) -> bool:
 def _marker_live(text: str) -> str | None:
     """Who keeps the marker LIVE (``"owner <pid>"`` / ``"delegate <pid>"``), or None."""
     m = _parse_marker(text)
-    if _identity_live(m["pid"], m["ct"]):
+    age = time.time() - (m["started_at"] or 0.0)
+    if _identity_live(m["pid"], m["ct"], age):
         return f"owner {m['pid']}"
-    if _identity_live(m["delegate"], m["delegate_ct"]):
+    if _identity_live(m["delegate"], m["delegate_ct"], age):
         return f"delegate {m['delegate']}"
     return None
 

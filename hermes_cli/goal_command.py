@@ -195,7 +195,7 @@ def dispatch_goal_command(
         return _set(mgr, rest if verb == "draft" else arg,
                     drafting=verb == "draft", last_user_message=last_user_message,
                     render=render, progress=progress, mode=mode)
-    except (RuntimeError, ValueError, IndexError) as exc:
+    except (RuntimeError, ValueError, IndexError, OSError) as exc:
         output = (render("gateway.goal.invalid", "Invalid goal: {error}", error=str(exc))
                   if prefix == "Invalid goal" else f"{prefix}: {exc}")
         return GoalCommandResult(output, error=True)

@@ -97,7 +97,7 @@ def test_supergoal_retains_existing_safety_caps(failure, monkeypatch):
     parse = failure == "parse"
     transport = failure == "transport"
     monkeypatch.setattr(goals, "judge_goal", lambda *a, **kw: ("continue", "more work", parse, None, transport))
-    limit = {"budget": goals.DEFAULT_MAX_TURNS, "parse": goals.DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES, "transport": goals.DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES, "gate": 2}[failure]
+    limit = {"budget": mgr.state.max_turns, "parse": goals.DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES, "transport": goals.DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES, "gate": 2}[failure]
     for _ in range(limit):
         result = mgr.evaluate_after_turn("working")
     assert result["status"] == "paused" and not result["should_continue"]
@@ -260,6 +260,31 @@ def test_mode_isolated_across_homes_and_readable_by_fresh_process(tmp_path, monk
     assert probe.stdout.strip() == "supergoal"
     monkeypatch.setenv("HERMES_HOME", str(homes[1]))
     assert goals.GoalManager("same-session-id").state.mode == "goal"
+
+
+@pytest.mark.parametrize("stored_limit", [None, 6, 20, 61])
+def test_persisted_supergoal_budget_defaults_only_when_missing(stored_limit):
+    raw = {"goal": "continue", "mode": "supergoal"}
+    if stored_limit is not None:
+        raw["max_turns"] = stored_limit
+    state = goals.GoalState.from_json(json.dumps(raw))
+    assert state.max_turns == (40 if stored_limit is None else stored_limit)
+    assert goals.GoalState.from_json('{"goal":"legacy"}').max_turns == 20
+
+
+@pytest.mark.parametrize("configured", [None, 7, 63])
+def test_mode_defaults_preserve_explicit_limits_and_resume_budget(configured):
+    kwargs = {} if configured is None else {"default_max_turns": configured}
+    mgr = goals.GoalManager("budget-modes", **kwargs)
+    normal_budget = 20 if configured is None else configured
+    assert mgr.set("ordinary").max_turns == normal_budget
+    assert mgr.set("autonomous", mode="supergoal").max_turns == 40
+    assert goals.GoalManager(mgr.session_id).state.max_turns == 40
+    for mode in ("supergoal", "goal"):
+        assert mgr.set("explicit", mode=mode, max_turns=9).max_turns == 9
+        mgr.pause()
+        assert mgr.resume().max_turns == 9
+    assert mgr.set("ordinary again").max_turns == normal_budget
 
 
 def test_repasted_kick_keeps_autonomy():

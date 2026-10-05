@@ -3237,6 +3237,10 @@ def _publish_rotated_compaction(
         _profile_for_child = None
     old_title = agent._session_db.get_session_title(agent.session_id)
     new_session_id = mint_session_id()
+    from hermes_cli.supergoal_policy import carry_clarification_restriction
+    # Policy must exist before the child becomes visible (including to a cold
+    # process) or the agent changes identity. A failed write aborts publication.
+    carry_clarification_restriction(old_session_id, new_session_id)
     from agent.context_compressor import _DB_PERSISTED_MARKER
     agent._session_db.publish_compression_child(
         parent_session_id=old_session_id, child_session_id=new_session_id,

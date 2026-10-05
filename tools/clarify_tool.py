@@ -206,14 +206,14 @@ def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_selec
     # Check durable per-session policy at invocation, including reused agents. Keep the
     # schema stable for prompt caching; the caller supplies identity, never model args.
     if session_id:
-        from hermes_cli.goals import load_goal
+        from hermes_cli.supergoal_policy import clarification_restricted
 
         try:
-            goal = load_goal(session_id, strict=True)
+            restricted = clarification_restricted(session_id)
         except Exception:
             return tool_error("Clarification withheld: the session's goal policy could not be read. "
                               "Continue with safe investigation; do not bypass required approvals.")
-        if goal is not None and goal.mode == "supergoal" and goal.status == "active":
+        if restricted:
             return tool_error("Clarify is disabled during an active supergoal. Work autonomously: "
                               "inspect the available context, make safe assumptions, and try "
                               "alternative approaches without asking the user. Required approvals "

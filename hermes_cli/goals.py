@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # ── Constants & defaults ──────────────────────────────────────────────
 
 DEFAULT_MAX_TURNS = 20
+DEFAULT_SUPERGOAL_MAX_TURNS = 40
 DEFAULT_JUDGE_TIMEOUT = 30.0
 # Judge output budget. Reasoning models burn hidden-reasoning tokens before the visible one-line
 # JSON verdict; 200 (the original) reliably truncated it and tripped the auto-pause. 4096 covers
@@ -444,7 +445,8 @@ class GoalState:
             goal=data.get("goal", ""),
             mode=data.get("mode", "goal"),
             status=data.get("status", "active"),
-            max_turns=int(data.get("max_turns") or DEFAULT_MAX_TURNS),
+            max_turns=int(data.get("max_turns") or (
+                DEFAULT_SUPERGOAL_MAX_TURNS if data.get("mode") == "supergoal" else DEFAULT_MAX_TURNS)),
             last_verdict=data.get("last_verdict"),
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
@@ -632,34 +634,73 @@ def load_goal(session_id: str, *, strict: bool = False) -> Optional[GoalState]:
     if raw is None or (not strict and not raw):
         return None
     try:
-        return GoalState.from_json(raw)
+        state = GoalState.from_json(raw)
     except Exception as exc:
         logger.warning("GoalManager: could not parse stored goal for %s: %s", session_id, exc)
         if strict:
             raise
         return None
+    # Bootstrap development-era rows before any goal loop is resumed. Never infer
+    # an allow from a DB error, nor scan SQLite from the clarification boundary.
+    if state.mode == "supergoal" and state.status == "active":
+        from hermes_cli.supergoal_policy import policy_write_lock, restrict_clarification
+        with policy_write_lock(session_id):
+            # The first read may predate a replacement which released its marker.
+            # Re-read under the same lock as every goal writer before bootstrapping.
+            try:
+                raw = db.get_meta(_meta_key(session_id))
+                if raw is None or (not strict and not raw):
+                    return None
+                state = GoalState.from_json(raw)
+            except Exception as exc:
+                logger.debug("GoalManager: bootstrap reread failed: %s", exc)
+                if strict:
+                    raise
+                return None
+            if state.mode == "supergoal" and state.status == "active":
+                restrict_clarification(session_id)
+    return state
 
 
 def save_goal(session_id: str, state: GoalState, *, strict: bool = False) -> None:
-    """Persist a goal to SessionDB. No-op if DB unavailable."""
+    """Persist policy before activation; release it only after a verified DB save.
+
+    Failures leave a conservative restriction, not an unguarded supergoal. Ordinary
+    goals retain best-effort persistence unless replacing a restricted session.
+    """
+    from hermes_cli.supergoal_policy import (
+        clarification_restricted, policy_write_lock, release_clarification, restrict_clarification,
+    )
     if not session_id:
-        if strict:
+        if strict or state.mode == "supergoal":
             raise RuntimeError("Goal session id is required")
         return
-    db = _get_session_db()
-    if db is None:
-        _warn_dropped_write("GoalManager", "goal", session_id)
-        if strict:
-            raise RuntimeError("Goal state database unavailable; supergoal not started")
-        return
-    try:
-        db.set_meta(_meta_key(session_id), state.to_json())
-        if strict and db.get_meta(_meta_key(session_id)) != state.to_json():
-            raise RuntimeError("Goal state persistence verification failed")
-    except Exception as exc:
-        logger.debug("GoalManager: set_meta failed: %s", exc)
-        if strict:
-            raise RuntimeError("Goal state could not be persisted") from exc
+    # Ordinary writes also participate: the first SG activation can otherwise
+    # race an absent-marker check and leave an ordinary row restricted.
+    with policy_write_lock(session_id):
+        restricted = clarification_restricted(session_id)
+        active_supergoal = state.mode == "supergoal" and state.status == "active"
+        strict = strict or restricted or state.mode == "supergoal"
+        if active_supergoal:
+            restrict_clarification(session_id)
+        db = _get_session_db()
+        if db is None:
+            _warn_dropped_write("GoalManager", "goal", session_id)
+            if strict:
+                raise RuntimeError("Goal state database unavailable; supergoal not started")
+            return
+        try:
+            payload = state.to_json()
+            db.set_meta(_meta_key(session_id), payload)
+            if strict and db.get_meta(_meta_key(session_id)) != payload:
+                raise RuntimeError("Goal state persistence verification failed")
+        except Exception as exc:
+            logger.debug("GoalManager: set_meta failed: %s", exc)
+            if strict:
+                raise RuntimeError("Goal state could not be persisted") from exc
+            return
+        if restricted and not active_supergoal:
+            release_clarification(session_id)
 
 
 def clear_goal(session_id: str) -> None:
@@ -672,8 +713,10 @@ def clear_goal(session_id: str) -> None:
 
 
 def migrate_goal_to_session(old_session_id: str, new_session_id: str, *, reason: str = "") -> bool:
-    """Carry a persistent /goal from a parent session to its continuation. Best-effort, never raises
-    (a failure here must not block compression). Returns True when a goal was migrated.
+    """Carry a persistent /goal to its continuation, verifying before archiving.
+
+    Goal-row failures return False and leave restrictions in place. Policy-copy
+    failures raise: callers must not publish an unprotected compression child.
 
     Context compression rotates ``session_id`` to a fresh child session, but ``load_goal`` does a flat
     ``goal:<session_id>`` lookup with no parent-lineage walk — so an active goal silently dies at the
@@ -683,16 +726,26 @@ def migrate_goal_to_session(old_session_id: str, new_session_id: str, *, reason:
     """
     if not old_session_id or not new_session_id or old_session_id == new_session_id:
         return False
+    from hermes_cli.supergoal_policy import carry_clarification_restriction
     try:
-        state = load_goal(old_session_id)
+        # Don't impose the parent's policy on an already-owned destination.
+        if load_goal(new_session_id, strict=True) is not None:
+            return False
+    except Exception as exc:
+        carry_clarification_restriction(old_session_id, new_session_id)
+        logger.debug("GoalManager: migration destination unreadable: %s", exc)
+        return False
+    # This part is not best-effort: a rotated session must never lose its guard,
+    # even when the goal row cannot be read or copied.
+    carry_clarification_restriction(old_session_id, new_session_id)
+    try:
+        state = load_goal(old_session_id, strict=True)
         if state is None or state.status == "cleared":
             return False
-        # Don't clobber a goal already set on the child (e.g. a resumed lineage).
-        if load_goal(new_session_id) is not None:
-            return False
-        save_goal(new_session_id, state)
-        # Archive the parent's row so it isn't double-counted as active.
-        clear_goal(old_session_id)
+        save_goal(new_session_id, state, strict=True)
+        # Verify the archive too; a best-effort clear can silently fail after
+        # copying the child. Never release the parent's marker on that failure.
+        save_goal(old_session_id, replace(state, status="cleared"), strict=True)
         logger.debug("GoalManager: migrated goal %s -> %s (%s)", old_session_id, new_session_id, reason or "rotation")
         return True
     except Exception as exc:  # pragma: no cover - defensive
@@ -1180,7 +1233,8 @@ class GoalManager:
             raise ValueError("unknown goal mode")
         state = GoalState(
             goal=goal, mode=mode, status="active", turns_used=0, created_at=time.time(), last_turn_at=0.0,
-            max_turns=int(max_turns) if max_turns else self.default_max_turns,
+            max_turns=int(max_turns) if max_turns else (
+                DEFAULT_SUPERGOAL_MAX_TURNS if mode == "supergoal" else self.default_max_turns),
             contract=contract if contract is not None else GoalContract(),
         )
         if mode == "supergoal":

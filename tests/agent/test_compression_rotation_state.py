@@ -134,6 +134,39 @@ class TestGoalMigratesOnRotation:
             goals._DB_CACHE.clear()
 
 
+@pytest.mark.parametrize("marker_failure", [False, True])
+def test_supergoal_policy_precedes_compression_publication(tmp_path, monkeypatch, marker_failure):
+    from hermes_cli import goals
+    from hermes_cli import supergoal_policy
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+    token = set_hermes_home_override(str(tmp_path))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        monkeypatch.setattr(goals, "_get_session_db", lambda: db)
+        parent = "protected-parent"
+        db.create_session(parent, source="cli")
+        goals.GoalManager(parent).set("finish", mode="supergoal")
+        agent = _build_agent_with_db(db, parent)
+        if marker_failure:
+            # The directory is writable, but the new child's policy cannot be committed.
+            monkeypatch.setattr(supergoal_policy, "atomic_write_text", lambda *a, **k: None)
+        else:
+            # Compression can publish; goal-row writes alone are broken.
+            monkeypatch.setattr(db, "set_meta", lambda *a: None)
+        agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+        if marker_failure:
+            assert agent.session_id == parent
+            assert db.find_live_compression_child(parent) is None
+        else:
+            assert agent.session_id != parent
+            assert supergoal_policy.clarification_restricted(agent.session_id)
+        assert supergoal_policy.clarification_restricted(parent)
+    finally:
+        db.close()
+        reset_hermes_home_override(token)
+
+
 class TestOrphanRollbackOnCreateFailure:
     def test_rolls_back_to_parent_when_child_create_fails(self, tmp_path: Path):
         db = SessionDB(db_path=tmp_path / "state.db")

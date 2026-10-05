@@ -226,22 +226,28 @@ def check_systemd_timing_alignment(
 
 
 def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
-    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (hermes' usual)."""
+    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (hermes' usual). A manager
+    without the unit still answers rc=0 with its default timeout (``LoadState=not-found``), so only a
+    manager that has the unit loaded counts — otherwise a system service reads the user default (#132565).
+    """
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                ["systemctl", *flag, "show", unit_name, "--property=LoadState,TimeoutStopUSec"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2.0,
             )
         except (subprocess.TimeoutExpired, OSError):
             continue
-        # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
-        for line in result.stdout.splitlines() if result.returncode == 0 else ():
-            if line.startswith("TimeoutStopUSec="):
-                value = line.split("=", 1)[1].strip()
-                timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
-                if timeout_us is not None:
-                    return timeout_us
+        if result.returncode != 0:
+            continue
+        # Output: "LoadState=loaded" and "TimeoutStopUSec=1min 30s" (or "TimeoutStopUSec=90000000")
+        props = dict(line.partition("=")[::2] for line in result.stdout.splitlines())
+        if props.get("LoadState") != "loaded":
+            continue
+        value = props.get("TimeoutStopUSec", "").strip()
+        timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
+        if timeout_us is not None:
+            return timeout_us
     return None
 
 

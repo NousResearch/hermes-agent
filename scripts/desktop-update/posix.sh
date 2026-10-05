@@ -183,7 +183,8 @@ run_bounded() { # seconds cmd... -> cmd's stdout; 124 when it had to be killed
   if command -v perl >/dev/null 2>&1; then
     perl -e 'setpgrp(0, 0); exec { $ARGV[0] } @ARGV or exit 127' "$@" > "$out" 2>/dev/null < /dev/null &
   else
-    "$@" > "$out" 2>/dev/null < /dev/null &
+    # No perl (minimal images): bash job control gives the job its own group.
+    set -m; "$@" > "$out" 2>/dev/null < /dev/null & set +m
   fi
   pid=$!
   for ((i = 0; i < secs * 10; i++)); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done

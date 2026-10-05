@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import time
@@ -381,15 +382,22 @@ def test_script_killed_before_the_delegate_line_appears_runs_no_update(tmp_path)
 # ── bounded probes and the old-reader line-2 refresh ────────────────────────
 
 
-def test_timed_out_probe_is_killed_with_its_whole_process_tree(tmp_path):
+@pytest.mark.parametrize("perl", ["present", "absent"])
+def test_timed_out_probe_is_killed_with_its_whole_process_tree(tmp_path, perl):
     body = POSIX.read_text(encoding="utf-8-sig")
     found = re.search(r"^run_bounded\(\) \{.*?^\}\n", body, re.S | re.M)
     assert found
     run_bounded = found.group(0)
     pidfile = tmp_path / "grandchild.pid"
+    env = {**os.environ, "TMPDIR": str(tmp_path)}
+    if perl == "absent":  # a minimal image: only the tools the probe itself needs
+        bin_dir = tmp_path / "bin"; bin_dir.mkdir()
+        for tool in ("bash", "sleep", "mktemp", "rm", "cat"):
+            (bin_dir / tool).symlink_to(shutil.which(tool))
+        env["PATH"] = str(bin_dir)
     code = (f"log() {{ :; }}\n{run_bounded}\n"
             f"run_bounded 1 bash -c 'sleep 60 & echo $! > {shlex.quote(str(pidfile))}; wait'; echo \"rc=$?\"")
-    out = subprocess.run(["bash", "-c", code], env={**os.environ, "TMPDIR": str(tmp_path)}, capture_output=True, text=True, encoding="utf-8", timeout=30)
+    out = subprocess.run([shutil.which("bash"), "-c", code], env=env, capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert "rc=124" in out.stdout, out
     grandchild = int(pidfile.read_text(encoding="utf-8-sig"))
     time.sleep(0.2)

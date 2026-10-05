@@ -71,7 +71,7 @@ def _fake_pool_store(monkeypatch):
     """
     store: Dict[str, list] = {}
 
-    def _write(provider, entries, *, removed_ids=None, status_cleared_ids=None):
+    def _write(provider, entries, *, removed_ids=None, status_cleared_ids=None, token_bases=None):
         store[provider] = list(entries)
 
     def _read(provider=None):

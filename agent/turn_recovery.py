@@ -452,9 +452,20 @@ def _is_codex_token_expired(agent: Any, api_error: Exception) -> bool:
     return isinstance(reason, str) and reason.strip().lower() == "token_expired"
 
 
-def _recover_stale_codex_reasoning(agent: Any, _retry: TurnRetryState, messages: List[Dict[str, Any]]) -> bool:
-    """Stale ``codex_reasoning_items`` blob rejected by the provider: disable replay for the
-    session, strip cached items (mutates persisted ``messages``), retry once."""
+def reset_codex_reasoning_replay(agent: Any) -> None:
+    """The replay verdict belongs to the route that earned it: a ``/model`` switch, fallback
+    activation or primary restore starts the new route with replay on (#61552)."""
+    agent._codex_reasoning_replay_enabled = True
+    agent._codex_reasoning_replay_rejected = False
+
+
+def _recover_stale_codex_reasoning(
+    agent: Any, _retry: TurnRetryState, messages: List[Dict[str, Any]], api_messages: Any,
+) -> bool:
+    """Stale ``codex_reasoning_items`` blob rejected by the provider: strip cached items (mutates
+    persisted ``messages``) and retry once. The first rejection keeps replay on, since blobs the
+    route mints from now on are sealed with its current key; a repeat rejection means the route
+    cannot round-trip its own blobs, so replay is disabled for the session."""
     if (
         _retry.invalid_encrypted_content_retry_attempted
         or agent.api_mode != "codex_responses"
@@ -469,16 +480,22 @@ def _recover_stale_codex_reasoning(agent: Any, _retry: TurnRetryState, messages:
     ):
         return False
     _retry.invalid_encrypted_content_retry_attempted = True
-    replay_stats = agent._disable_codex_reasoning_replay(messages)
+    keep_replay = not getattr(agent, "_codex_reasoning_replay_rejected", False)
+    agent._codex_reasoning_replay_rejected = True
+    replay_stats = agent._disable_codex_reasoning_replay(messages, keep_replay=keep_replay)
+    # The retry is rebuilt from the request copy; with replay kept on it would resend the stale blob.
+    for _m in api_messages if isinstance(api_messages, list) else []:
+        if isinstance(_m, dict):
+            _m.pop("codex_reasoning_items", None)
+    action = "stripped stale" if keep_replay else "disabled replay for this session and stripped"
     _vlines(
         agent,
         f"⚠️  Encrypted reasoning replay was rejected by the provider — "
-        f"disabled replay and stripped {replay_stats['items']} item(s) from "
-        f"{replay_stats['messages']} message(s), retrying...",
+        f"{action} {replay_stats['items']} item(s) from {replay_stats['messages']} message(s), retrying...",
     )
     logger.warning(
-        "%sInvalid encrypted reasoning recovery: disabled replay and stripped %d items from %d messages",
-        agent.log_prefix, replay_stats["items"], replay_stats["messages"],
+        "%sInvalid encrypted reasoning recovery: %s %d items from %d messages",
+        agent.log_prefix, action, replay_stats["items"], replay_stats["messages"],
     )
     return True
 
@@ -490,28 +507,36 @@ def _recover_format_errors(
     """One-shot format-recovery strips: thinking-signature → invalid-encrypted-content
     replay disable → native-compaction reject → llama.cpp grammar strip. Returns True when
     the request was repaired and should be retried."""
-    # Upstream mutation invalidates Anthropic's thinking-block signature (400). Strip
-    # ``reasoning_details`` from ``api_messages`` only, never ``messages`` (state.db).
+    # Upstream mutation can invalidate a thinking signature. Native Anthropic has multiple replay
+    # carriers and preserved historical blocks, so suppress the rejected opaque blocks across all
+    # carriers and persist that suppression. Other transports keep their established one-request
+    # repair: drop reasoning_details only.
     if classified.reason == FailoverReason.thinking_signature and not _retry.thinking_sig_retry_attempted:
         _retry.thinking_sig_retry_attempted = True
-        _api_stripped = 0
-        for _m in api_messages:
-            if isinstance(_m, dict) and "reasoning_details" in _m:
-                _m.pop("reasoning_details", None)
-                _api_stripped += 1
-        _vlines(agent, "⚠️  Thinking block signature invalid, stripped reasoning_details from api_messages for retry...")
+        from agent.anthropic_thinking_replay import remember_rejected_thinking, tracks_rejected_thinking
+
+        if tracks_rejected_thinking(agent):
+            removed = remember_rejected_thinking(agent, api_messages)
+            detail = "suppressed rejected Anthropic replay blocks"
+        else:
+            removed = 0
+            for message in api_messages:
+                if isinstance(message, dict) and "reasoning_details" in message:
+                    message.pop("reasoning_details", None)
+                    removed += 1
+            detail = "stripped reasoning_details"
+        _vlines(agent, f"⚠️  Thinking block signature invalid, {detail} and retrying...")
         logger.warning(
-            "%sThinking block signature recovery: stripped "
-            "reasoning_details from %d api_messages "
+            "%sThinking block signature recovery: %s from %d carrier/message(s) "
             "(canonical messages unchanged)",
-            agent.log_prefix, _api_stripped,
+            agent.log_prefix, detail, removed,
         )
         return True
 
     # 400 ``invalid_encrypted_content`` on a stale ``codex_reasoning_items`` blob (the 401
     # ``token_expired`` twin is taken ahead of the credential pool in the caller).
     if classified.reason == FailoverReason.invalid_encrypted_content and _recover_stale_codex_reasoning(
-        agent, _retry, messages
+        agent, _retry, messages, api_messages
     ):
         return True
 
@@ -634,7 +659,9 @@ def recover_after_classification(
     # stale replayed blob far more often than a dead bearer (#88510): strip BEFORE the pool
     # refreshes/benches every healthy entry over a session-state problem. A real expiry pays
     # one extra round-trip and then takes the credential path below as before.
-    if _is_codex_token_expired(agent, api_error) and _recover_stale_codex_reasoning(agent, _retry, messages):
+    if _is_codex_token_expired(agent, api_error) and _recover_stale_codex_reasoning(
+        agent, _retry, messages, api_messages
+    ):
         return True, False
 
     if (
@@ -771,6 +798,39 @@ def _failed_turn_result(final_response: str, messages: Any, api_call_count: int,
         "final_response": final_response, "messages": messages, "api_calls": api_call_count,
         "completed": False, "failed": True, "error": error,
     }
+
+
+def settle_delivered_partial(agent: Any, messages: Any, current_turn_user_idx: Any) -> str:
+    """Visible text already delivered this turn ("" when none), collapsing any continuation
+    trail first so the terminal persist never keeps a dangling synthetic nudge (#119001).
+
+    ``build_api_request`` resets ``_current_streamed_assistant_text`` per attempt, so after a
+    mid-stream death + continuation + pre-stream error the live accumulator is empty and the
+    fragment rows (now collapsed into one assistant row) are the only record.
+    """
+    from agent.turn_truncation import collapse_continuation_trail
+    collapsed = collapse_continuation_trail(
+        agent, messages, current_turn_user_idx, finish_reason="error",
+    )
+    live = getattr(agent, "_current_streamed_assistant_text", "")
+    if isinstance(live, str) and live.strip():
+        from agent.agent_runtime_helpers import strip_think_blocks
+        return strip_think_blocks(agent, live).strip() or collapsed
+    return collapsed
+
+
+def _with_delivered_partial(final_response: str, error_summary: str, delivered: str) -> tuple:
+    """Prepend delivered partial text to a terminal error body ("" unchanged).
+
+    Returns ``(final_response, keep_partial)``; callers set ``result["partial"]``
+    when ``keep_partial`` so the gateway emits ``payload.partial`` and surfaces
+    retain the bubble instead of clearing it. ``final_response`` must stay
+    distinct from ``error`` — that inequality is the retention contract.
+    """
+    _delivered = (delivered or "").strip()
+    if not _delivered or _delivered == (error_summary or "").strip():
+        return final_response, False
+    return f"{_delivered}\n\n{final_response}", True
 
 
 def limit_reset_epoch(agent: Any, api_error: Exception) -> Optional[float]:
@@ -940,6 +1000,7 @@ def nonretryable_client_error_result(
     agent: Any, api_error: Exception, classified: Any, *, status_code: Optional[int],
     api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]], conversation_history: Any,
     api_call_count: int, approx_tokens: int, provider: Any, base_url: Any, model: Any,
+    delivered: str = "",
 ) -> Dict[str, Any]:
     """Terminal path for a non-retryable 4xx once fallback is exhausted: debug dump, flush
     the retry trace, print auth / billing / content-policy / TLS guidance, persist (skipped
@@ -1004,10 +1065,10 @@ def nonretryable_client_error_result(
             agent,
             "   💡 Hermes couldn't verify the provider's security certificate. This fails the same",
             "      way on every retry — fix the environment, then try again:",
-            "      • Corporate TLS-inspecting proxy? Point Python at its CA bundle:",
-            "        export SSL_CERT_FILE=/path/to/corp-ca.pem  (also REQUESTS_CA_BUNDLE)",
-            "      • Missing/stale system CA store? Refresh it (in Hermes's venv: `uv pip install",
-            "        --upgrade certifi`; macOS: run 'Install Certificates.command').",
+            "      • Corporate TLS-inspecting proxy? Ask your administrator to install",
+            "        its root certificate in the operating system trust store.",
+            "      • Missing/stale system CA store? Refresh the OS certificate store.",
+            "        A provider-specific CA can also be configured with ssl_ca_cert.",
             "      • Self-signed local endpoint (llama.cpp, LM Studio, vLLM)? Use http://",
             "        for localhost, or add the server's cert to your trust store.",
         )
@@ -1043,14 +1104,19 @@ def nonretryable_client_error_result(
             classified, provider=provider, model=model, summary=_nonretryable_summary,
             prefix_suggestion=_prefix_suggestion,
         )
-    result = _failed_turn_result(_final_response, messages, api_call_count, _nonretryable_summary)
     # Same verdict fields as the max-retries path: without them the UI descriptor
     # (agent/error_surface.py) reads a rejected OAuth token as a retryable
     # "Provider error" and offers Retry instead of a re-login.
+    _final_response, _keep_partial = _with_delivered_partial(
+        _final_response, _nonretryable_summary, delivered,
+    )
+    result = _failed_turn_result(_final_response, messages, api_call_count, _nonretryable_summary)
     result.update({
         "failure_reason": classified.reason.value,
         "failure_retryable": bool(classified.retryable),
     })
+    if _keep_partial:
+        result["partial"] = True
     _stamp_limit_reset(result, agent, api_error)
     if _welcome_hint and (_kind := _welcome_surface_kind(classified)):
         # The card form: the desktop renders the sign-in as a button, so no "To sign in" tail.
@@ -1069,7 +1135,7 @@ def max_retries_exhausted_result(
     agent: Any, api_error: Exception, classified: Any, *, max_retries: int, is_rate_limited: bool,
     error_msg: str, api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]],
     conversation_history: Any, api_call_count: int, approx_tokens: int, provider: Any,
-    base_url: Any, model: Any,
+    base_url: Any, model: Any, delivered: str = "",
 ) -> Dict[str, Any]:
     """Terminal path once retries, transport recovery and fallback all failed: flush the
     trace, emit the billing / rate-limit / generic status, print stream-drop or thinking-timeout
@@ -1190,6 +1256,15 @@ def max_retries_exhausted_result(
         # Present only for billing walls: (provider, billing_url, is_nous, message).
         "billing_block": _billing_block,
     })
+    # Retry-exhaustion after partial delivery (#119001): the text was already
+    # shown, so keep it as the reply (marked failed) instead of an error-only
+    # turn — the gateway flags ``partial`` and surfaces retain the bubble.
+    _final_response, _keep_partial = _with_delivered_partial(
+        _final_response, _final_summary, delivered,
+    )
+    if _keep_partial:
+        result["final_response"] = _final_response
+        result["partial"] = True
     _stamp_limit_reset(result, agent, api_error)
     if _free_tier_kind:
         _stamp_free_tier(result, _free_tier_kind, (
@@ -1268,6 +1343,10 @@ def abort_turn_on_interrupt(
     """Announce ``abort_message``, close any open tool sequence with ``interrupt_text``,
     persist, clear the interrupt and return the ``interrupted`` result dict."""
     _vlines(agent, f"⚡ {abort_message}")
+    # Empty-response recovery can leave a synthetic assistant+nudge pair after an
+    # already-executed tool result. Strip only that request-local scaffold before
+    # closing, so this exit owner can persist its specific interrupt reason.
+    agent._drop_trailing_empty_response_scaffolding(messages)
     close_interrupted_tool_sequence(messages, interrupt_text)
     agent._persist_session(messages, conversation_history)
     # The turn was stopped, not rebuilt: a pending steer was aimed at this turn's next
@@ -1785,7 +1864,7 @@ def route_classified_error(
                 # from the engine's overflow guard (upstream PR #77169 review).
                 messages, system_message,
                 approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
-                task_id=effective_task_id,
+                task_id=effective_task_id, trigger="overflow",
             )
             conversation_history = conversation_history_after_compression(agent, messages, conversation_history)
             if len(messages) < original_len or old_ctx > _LONG_CONTEXT_TIER_CAP:

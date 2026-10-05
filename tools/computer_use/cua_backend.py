@@ -2,29 +2,28 @@
 background loop (``cua_backend_session``); the same tool surface works on all three platforms, and per-host gaps
 (no DISPLAY, missing AT-SPI, TCC) surface via `hermes computer-use doctor` instead of failing silently. Install
 with `hermes computer-use install`. The macOS path uses private SkyLight SPIs that can break on OS updates.
-Siblings: ``cua_backend_driver`` (binary/contract/update), ``cua_backend_capture`` + ``cua_backend_input``
+Siblings: ``cua_backend_driver`` (binary/contract), ``cua_backend_capture`` + ``cua_backend_input``
 (mixins), ``cua_backend_parse``, ``cua_backend_session`` (bridge + session + CLI fallback), ``cua_backend_daemon``
 (private daemon + macOS app identity). Siblings look this module's config/policy helpers up lazily."""
 
 from __future__ import annotations
 
 import contextlib
-import importlib
 import logging
 import os
 import subprocess
 import sys
-import threading
 import uuid
-from typing import Any, Dict, List, Optional
+from pathlib import PureWindowsPath
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_platform.host.runtime import is_wsl
 from tools.computer_use.backend import ActionResult, ComputerUseBackend
 from tools.computer_use.cua_backend_capture import _CaptureMixin
 from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
-from tools.computer_use.cua_backend_driver import (
-    _CUA_DRIVER_CMD_ENV, cua_driver_binary_available, cua_driver_runtime_contract_status, cua_driver_update_nudge,
+from tools.computer_use.cua_backend_driver import (  # noqa: F401 — resolve_cua_driver_cmd: frozen updater surface
+    _CUA_DRIVER_CMD_ENV, cua_driver_binary_available, cua_driver_runtime_contract_status,
     resolve_cua_driver_cmd)
 from tools.computer_use.cua_backend_input import _InputMixin
 from tools.computer_use.cua_backend_parse import _action_result_from
@@ -65,6 +64,7 @@ def _cua_no_overlay() -> bool:
         # owns the overlay surface lifecycle there.
         os.environ.get("XDG_SESSION_TYPE") != "wayland" and not os.environ.get("WAYLAND_DISPLAY"))
 
+
 def _cua_telemetry_disabled() -> bool:
     """True unless ``computer_use.cua_telemetry`` opts in (unreadable config fails SAFE toward disabling)."""
     return not bool(_computer_use_cfg().get("cua_telemetry", False))
@@ -104,8 +104,9 @@ def _manifest_is_mode_independent(path: str) -> bool:
     mode. Unreadable / unparseable -> False (forwarding one would turn a working session into a hard startup
     failure; bounded forwards unconditionally anyway)."""
     try:
-        import yaml
-        with open(path, "r", encoding="utf-8") as handle:
+        import hermes_yaml as yaml
+
+        with open(path, "r", encoding="utf-8-sig") as handle:
             parsed = yaml.safe_load(handle)
     except Exception:
         logger.debug("could not read capability manifest %s", path, exc_info=True)
@@ -148,6 +149,28 @@ def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
     if sys.platform == "linux" and env.get("WAYLAND_DISPLAY") and bool(_computer_use_cfg().get("native_wayland", False)):
         env[_CUA_NATIVE_WAYLAND_ENV_VAR] = "1"
     return env
+
+def sandbox_mcp_invocation() -> Optional[Tuple[Tuple[str, List[str]], Dict[str, str]]]:
+    """``((command, args), child_env)`` spawning ``cua-driver mcp`` INSIDE the terminal backend when the Bot
+    Desktop is placed there (the driver in the sandbox image drives the sandbox's own screen); None on a
+    gateway-hosted desktop, where the local driver is used. Placement is the authority: a ``terminal``
+    placement gets its screen started here and a ``refused`` one raises — the host driver is never the
+    fallback for a sandbox whose screen is down."""
+    from tools.bot_desktop import placement, runtime as _bd_runtime
+    if _bd_runtime.tool_placement() == placement.GATEWAY:
+        return None
+    published = _bd_runtime.published_env()
+    if not published.get("DISPLAY"):
+        raise RuntimeError("the screen inside the terminal backend's sandbox is gone; start it again")
+    from tools.bot_desktop import sandbox_host
+    env = _bd_runtime._sandbox_env(create=True)
+    if env is None:
+        raise RuntimeError("the terminal backend's sandbox is not running, so there is nowhere to run cua-driver")
+    command, args = sandbox_host.cua_mcp_invocation(env, _bd_runtime._profile_name(),
+                                                    {**published, _CUA_TELEMETRY_ENV_VAR: "0"})
+    _bd_runtime.touch_activity()
+    return (command, args), {"PATH": os.environ.get("PATH", "")}
+
 
 def sanitized_cua_driver_env() -> Dict[str, str]:
     """``cua_driver_child_env()`` with Hermes provider secrets stripped — cua-driver is a third-party binary and must
@@ -222,48 +245,6 @@ def _empty_discovery_reason() -> str:
                 "panel asleep) — wake the display or attach a monitor/HDMI dummy, then run `hermes computer-use doctor`")
     return "window discovery returned no windows; run `hermes computer-use doctor` (display reachability, AX capability)"
 
-_update_checked = False
-# One auto-repair attempt per process: when the runtime-contract gate fails for something a reinstall fixes
-# (old version, missing manifest verbs) run the standard install path once instead of telling the user to.
-# Guarded so a failing installer can't loop — the second start() goes straight to the error.
-_contract_repair_attempted = False
-
-def _maybe_repair_runtime_contract(contract: Dict[str, Any]) -> Dict[str, Any]:
-    """Try one automatic driver repair; return the post-repair contract (or the original when no repair was
-    attempted / it failed). Never raises. An explicit ``HERMES_CUA_DRIVER_CMD`` override is authoritative even
-    when broken, and a missing binary means installation was never requested."""
-    global _contract_repair_attempted
-    if contract.get("ready") or _contract_repair_attempted or os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() or not contract.get("binary"):
-        return contract
-    _contract_repair_attempted = True
-    logger.info("computer_use: installed cua-driver is not usable (%s); attempting automatic repair",
-                contract.get("reason") or "runtime contract is incomplete")
-    try:
-        from hermes_cli.tools_config import install_cua_driver
-        repaired = install_cua_driver(upgrade=False, show_installer_progress=False)
-    except Exception as exc:
-        logger.warning("computer_use: automatic cua-driver repair failed: %s", exc)
-        return contract
-    with contextlib.suppress(Exception):
-        return cua_driver_runtime_contract_status() if repaired else contract
-    return contract
-
-def _maybe_nudge_update() -> None:
-    """Emit an update nudge at most once per process, off-thread so the (cached, ~20h) GitHub poll never blocks
-    the first computer_use action."""
-    global _update_checked
-    if _update_checked:
-        return
-    _update_checked = True
-
-    def _run() -> None:
-        with contextlib.suppress(Exception):
-            msg = cua_driver_update_nudge()
-            msg and logger.info("computer_use: %s", msg)
-
-    threading.Thread(target=_run, name="cua-driver-update-check", daemon=True).start()
-
-
 class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
     """Default computer-use backend. Cross-platform via cua-driver MCP."""
 
@@ -276,8 +257,9 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             # Manifest: mandatory for bounded (the daemon validates it), optional for unrestricted where it still
             # caps what an approval-bypassed run may touch.
             raw = _computer_use_cfg().get("capability_manifest")
+            # Resolve at daemon launch, after start() reconciles the PM pin.
             self._embedded_daemon = _EmbeddedCuaDaemon(
-                resolve_cua_driver_cmd() or "", permission_mode,
+                "", permission_mode,
                 capability_manifest=raw.strip() if isinstance(raw, str) and raw.strip() else None)
         self._bridge = _AsyncBridge()
         self._session = _CuaDriverSession(self._bridge, self._embedded_daemon)
@@ -296,19 +278,36 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         self._clear_active_target()
 
     def start(self) -> None:
-        contract = cua_driver_runtime_contract_status()
-        if not contract.get("ready"):
-            contract = _maybe_repair_runtime_contract(contract)
+        # Driver inside the terminal backend: the sandbox image pins its own cua-driver; the host
+        # binary (if any) is not the one that will run, so neither its acquisition nor its contract
+        # matters. On the host, runtime acquisition is on-demand, never the explicit install command
+        # (which may elevate for host setup and bypass the lazy-install gate).
+        if sandbox_mcp_invocation() is not None:
+            contract = {"ready": True}
+        else:
+            if not os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip():
+                from pm import ensure
+                ensure("cua-driver")
+            contract = cua_driver_runtime_contract_status()
         if not contract.get("ready"):
             raise RuntimeError(f"cua-driver is not ready: {contract.get('reason') or 'runtime contract is incomplete'}. "
                                + ("Update the binary selected by HERMES_CUA_DRIVER_CMD or remove that override."
                                   if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() else "Run `hermes computer-use install` to repair it."))
-        _maybe_nudge_update()
-        # `mcp` is an optional extra: lazy-install on first use (gated by `security.allow_lazy_installs`); failure
-        # raises FeatureUnavailable with the exact `uv pip install` hint.
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("tool.computer_use", prompt=False)
-        importlib.invalidate_caches()  # a just-installed package may not be importable yet
+
+        # The MCP client SDK (`mcp`) is an optional dependency (the
+        # `computer-use` / `mcp` extras), not part of Hermes' minimal core.
+        # Lazy-install it on first use — the same pattern every other optional
+        # backend uses — so users never hit an opaque `No module named 'mcp'`
+        # at invoke time. Auto-install is gated by `security.allow_lazy_installs`
+        # (default on); when it's disabled or fails, ensure_import() raises
+        # InstallError explaining why PM could not enable the SDK,
+        # which surfaces via the backend-unavailable path in tool.py.
+        from pm import ensure_import
+        ensure_import("computer-use")
+        # A just-installed package may not be importable until the import
+        # machinery's caches are refreshed within this process.
+        import importlib
+        importlib.invalidate_caches()
         with contextlib.ExitStack() as rollback:  # a failed start stops the private daemon, then re-raises
             if self._embedded_daemon is not None:
                 rollback.callback(self._embedded_daemon.stop) and self._embedded_daemon.start()
@@ -429,40 +428,3 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         meta = {k: v for part in (data, structured) if isinstance(part, dict) for k, v in part.items()}
         return _action_result_from(name, not out["isError"], message, meta, structured,
                                    requested_delivery=args.get("delivery_mode"))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import PureWindowsPath  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
-import asyncio  # noqa: F401,E402
-import base64  # noqa: F401,E402
-import concurrent.futures  # noqa: F401,E402
-from collections import deque  # noqa: F401,E402
-import functools  # noqa: F401,E402
-import json  # noqa: F401,E402
-import re  # noqa: F401,E402
-import shutil  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-import time  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'CaptureResult': ('tools.computer_use.backend', 'CaptureResult'),
-    'UIElement': ('tools.computer_use.backend', 'UIElement'),
-    'cua_driver_install_hint': ('tools.computer_use.cua_backend_driver', 'cua_driver_install_hint'),
-    'cua_driver_update_check': ('tools.computer_use.cua_backend_driver', 'cua_driver_update_check'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 A2A_CLIENT_TOOLS = {
@@ -70,7 +70,7 @@ def _write_platform_plugin(
     if provides_tools:
         manifest_data["provides_tools"] = provides_tools
     (plugin_dir / "plugin.yaml").write_text(
-        yaml.dump(manifest_data),
+        yaml.safe_dump(manifest_data),
         encoding="utf-8",
     )
 
@@ -188,7 +188,7 @@ class TestA2AClientToolsInCliProcess:
     def test_a2a_appears_in_the_hermes_tools_checklist(self):
         """`a2a` is in _DEFAULT_OFF_TOOLSETS, so it must be tickable.
 
-        Every other member of that set (homeassistant, spotify, video_gen,
+        Every other member of that set (spotify, video_gen,
         x_search, ...) renders a checkbox; a2a rendered nothing, so the
         documented opt-in path had nothing to tick.
         """

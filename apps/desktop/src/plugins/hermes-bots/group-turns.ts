@@ -6,7 +6,7 @@
  * Room-level sequencing lives in group-rounds.ts, which drives these.
  */
 
-import { host } from '@hermes/plugin-sdk'
+import { APPROVAL_RESPOND_TIMEOUT_MS, host } from '@hermes/plugin-sdk'
 
 import { noteBotAttention } from './data'
 import { groupFailureReason, recordGroupActivity } from './group-activity'
@@ -155,9 +155,6 @@ function pickStrandedGroupTurnReply(messages: GroupTurnTranscriptMessage[], befo
 /** A clarify question blocking inside a member's session, as `session.resume`
  *  reports it. Older backends omit the field entirely. */
 interface GroupPendingClarify {
-  choices?: string[]
-  multi_select?: unknown
-  question?: unknown
   questions?: GroupPromptQuestion[]
   request_id?: string
 }
@@ -226,7 +223,9 @@ export function retainedGroupTurnError(state: GroupSessionSnapshot | null | unde
  *  carries no start time, so two identical consecutive failures differ only
  *  by `turn_started_at`. */
 function retainedGroupTurnKey(state: GroupSessionSnapshot | null | undefined): null | string {
-  return retainedGroupTurnError(state) === null ? null : JSON.stringify([state?.turn_started_at ?? null, state?.inflight])
+  return retainedGroupTurnError(state) === null
+    ? null
+    : JSON.stringify([state?.turn_started_at ?? null, state?.inflight])
 }
 
 /** Does a user row follow the stranded turn's own prompt? Then a later turn
@@ -698,12 +697,9 @@ export function syncGroupClarify(
       ? {
           ...base,
           kind: 'clarify',
-          question: typeof clarify.question === 'string' ? clarify.question : '',
-          choices: Array.isArray(clarify.choices) ? clarify.choices.filter(c => typeof c === 'string' && c) : [],
-          multiSelect: Boolean(clarify.multi_select),
           // Batch clarifies carry `questions`; the room card answers them
           // one wire call per question, mirroring the 1:1 batch contract.
-          questions: Array.isArray(clarify.questions) ? clarify.questions : null
+          questions: Array.isArray(clarify.questions) ? clarify.questions : []
         }
       : {
           ...base,
@@ -715,9 +711,7 @@ export function syncGroupClarify(
           choices:
             Array.isArray(approval.choices) && approval.choices.length
               ? approval.choices.filter(c => typeof c === 'string' && c)
-              : ['once', 'deny'],
-          multiSelect: false,
-          questions: null
+              : ['once', 'deny']
         }
   })
 
@@ -797,14 +791,13 @@ export function renameGroupClarify(oldName: string, newName: string) {
  *  to the member's OWN source (requestForBot), so cross-connection members work.
  *  - clarify: `clarify.lock` per question, sequentially — the LAST lock
  *    resolves the blocked server request (same contract as the 1:1 batch
- *    card). A single question answers the open request by id through
- *    `request.answer` (the cross-socket proxy for a response frame).
+ *    card).
  *  - approval: `approval.respond` with the choice (once/session/always/deny),
  *    keyed by session + request_id — the queue-level wire every surface shares. */
 export async function answerGroupClarify(
   entry: GroupPrompt,
   member: GroupMember,
-  answers: Record<string, string> | string | undefined
+  answers: Record<string, null | string> | string | undefined
 ) {
   let group = entry.group
 
@@ -814,27 +807,26 @@ export async function answerGroupClarify(
 
   try {
     if (entry.kind === 'approval') {
-      await requestForBot(member, 'approval.respond', {
-        session_id: entry.sessionId || undefined,
-        request_id: entry.requestId,
-        choice: typeof answers === 'string' && answers ? answers : 'deny'
-      })
-    } else if (entry.questions && entry.questions.length) {
+      // Ride the backend's approvals.timeout (300s default), not the generic
+      // request timeout — the user owns the full approval window (#60654).
+      await requestForBot(
+        member,
+        'approval.respond',
+        {
+          session_id: entry.sessionId || undefined,
+          request_id: entry.requestId,
+          choice: typeof answers === 'string' && answers ? answers : 'deny'
+        },
+        { timeoutMs: APPROVAL_RESPOND_TIMEOUT_MS }
+      )
+    } else {
       for (const question of entry.questions) {
-        // Question ids are opaque on the wire (`GroupPrompt.questions` types
-        // them `unknown`); the batch card keys its answer bag by exactly them.
-        const qid = (question?.qid ?? question?.id) as string
         await requestForBot(member, 'clarify.lock', {
           request_id: entry.requestId,
-          question_id: qid,
-          answer: (answers as Record<string, string>)?.[qid] ?? ''
+          question_id: question.qid,
+          answer: (answers as Record<string, null | string>)?.[question.qid] ?? null
         })
       }
-    } else {
-      await requestForBot(member, 'request.answer', {
-        id: entry.requestId,
-        result: { answer: typeof answers === 'string' ? answers : '' }
-      })
     }
 
     if (!binding.isLive()) {
@@ -1378,7 +1370,9 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     const retained = laterTurnAfterStranded(messages, strandedBefore) ? null : retainedGroupTurnError(state)
 
     const pick =
-      retained === null && messages.length > strandedBefore ? pickStrandedGroupTurnReply(messages, strandedBefore) : null
+      retained === null && messages.length > strandedBefore
+        ? pickStrandedGroupTurnReply(messages, strandedBefore)
+        : null
 
     const reply = typeof pick === 'string' ? pick : null
     const failedNotice = typeof pick === 'string' ? null : (pick?.failedNotice ?? null)

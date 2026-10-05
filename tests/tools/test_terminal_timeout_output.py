@@ -1,7 +1,6 @@
 """Verify that terminal command timeouts preserve partial output."""
 from tools.environments.local import LocalEnvironment
 
-
 class TestTimeoutPreservesPartialOutput:
     """When a command times out, any output captured before the deadline
     should be included in the result — not discarded."""
@@ -15,4 +14,3 @@ class TestTimeoutPreservesPartialOutput:
         assert result["returncode"] == 124
         assert "hello from test" in result["output"]
         assert "timed out" in result["output"].lower()
-

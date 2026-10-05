@@ -34,6 +34,7 @@ def _pid_alive(pid: int) -> bool:
 class TestFindShellPrefersUserShell:
     """_find_shell should prefer $SHELL over bash on POSIX."""
 
+    @pytest.mark.platforms("linux")
     def test_returns_shell_env_when_set_and_exists(self, tmp_path):
         """When $SHELL points to an existing allowlisted executable, _find_shell returns it."""
         fake_zsh = tmp_path / "zsh"
@@ -62,6 +63,7 @@ class TestFindShellPrefersUserShell:
             assert _find_shell() == _find_bash()
 
 
+    @pytest.mark.platforms("linux")
     def test_honours_allowlisted_bash_and_dash(self, tmp_path):
         """Every allowlisted POSIX-sh-family shell is honoured."""
         for name in ("bash", "dash", "sh", "ksh"):
@@ -81,7 +83,7 @@ class TestFindShellPrefersUserShell:
 class TestFindShellWindowsBehavior:
     """On Windows, _find_shell always delegates to _find_bash."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_ignores_shell_env(self):
         """On Windows, $SHELL is ignored — _find_shell delegates to _find_bash.
 
@@ -95,117 +97,33 @@ class TestFindShellWindowsBehavior:
             assert result == _find_bash()
 
 
+class TestFindBashCollapsedToPmShell:
+    """_find_bash is now a thin wrapper over pm.shell(); the Windows
+    candidate ladder (HERMES_GIT_BASH_PATH → %LOCALAPPDATA%\\hermes\\git →
+    Program Files) and the ASLR diagnostic were deleted — the store is the
+    authority on bundled bash."""
 
+    @pytest.mark.platforms("windows")
+    def test_delegates_to_pm_shell(self, monkeypatch):
+        """_find_bash returns whatever pm.shell() resolves (store bash or
+        provisioned PATH)."""
+        monkeypatch.setattr(
+            "pm.shell.bash", lambda: r"C:\store\tools\git-x\usr\bin\bash.exe"
+        )
+        assert _find_bash() == r"C:\store\tools\git-x\usr\bin\bash.exe"
 
-
-
-class TestFindBashSkipsBrokenCustomPath:
-    """Stale HERMES_GIT_BASH_PATH must not brick Windows terminal startup."""
-
-    @pytest.mark.windows_only
-    def test_falls_through_to_portable_when_custom_fails_probe(self, tmp_path, monkeypatch):
-        """Windows-only: the candidate ladder (HERMES_GIT_BASH_PATH →
-        %LOCALAPPDATA%\\hermes\\git → Program Files) only exists in
-        ``_find_bash``'s Windows branch."""
-        import tools.environments.local as local_mod
-        from tools.environments import local_gitbash_probe as gitbash_probe
-
-        gitbash_probe._bash_starts_cache.clear()
-
-        broken = tmp_path / "broken" / "bash.exe"
-        broken.parent.mkdir()
-        broken.write_text("", encoding="utf-8")
-        portable = tmp_path / "hermes" / "git" / "bin" / "bash.exe"
-        portable.parent.mkdir(parents=True)
-        portable.write_text("", encoding="utf-8")
-
-        monkeypatch.setenv("HERMES_GIT_BASH_PATH", str(broken))
-        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-
-        def fake_starts(path: str) -> bool:
-            return path == str(portable)
-
-        monkeypatch.setattr(local_mod, "_bash_starts", fake_starts)
-
-        assert _find_bash() == str(portable)
-
-
-class TestGitBashExternalProgramProbe:
-    """The Windows health check must exercise MSYS child-process creation."""
-
-
-    def test_probe_timeout_is_bounded_and_kills_the_grandchild(self, monkeypatch, tmp_path):
-        """A probe whose grandchild keeps the captured pipes open past the timeout
-        (the MSYS ``true``/``cat`` shape) returns within the bound, records a
-        timeout verdict, and leaves no orphaned pipe-holder behind."""
-        from tools.environments import local_gitbash_probe as gitbash_probe
-
-        bash = shutil.which("bash")
-        if bash is None:
-            pytest.skip("no bash on this host")
-        gitbash_probe._bash_starts_cache.clear()
-        gitbash_probe._bash_probe_details_cache.clear()
-        stamp = tmp_path / "grandchild.pid"
-        monkeypatch.setattr(gitbash_probe, "_BASH_PROBE_TIMEOUT", 1.0)
-        monkeypatch.setattr(gitbash_probe, "_BASH_EXTERNAL_PROGRAM_PROBE",
-                            # `$!` is an MSYS pid on Windows; /proc/<pid>/winpid is the Windows pid
-                            # psutil can see. Both lines land in the stamp; POSIX has no winpid.
-                            f"sleep 30 & echo $! > '{stamp}'; cat /proc/$!/winpid >> '{stamp}' 2>/dev/null; wait")
-
-        t0 = time.monotonic()
-        ok = gitbash_probe._bash_starts(bash)
-        elapsed = time.monotonic() - t0
-
-        assert ok is False
-        assert elapsed < 8.0, f"probe cleanup took {elapsed:.1f}s — pipe drain not bounded"
-        assert "timed out" in gitbash_probe._bash_probe_details_cache[bash]
-        grandchild = int(stamp.read_text(encoding="utf-8").split()[-1])
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline and _pid_alive(grandchild):
-            time.sleep(0.05)
-        assert not _pid_alive(grandchild), "grandchild survived the probe's tree-kill"
-
-    @pytest.mark.windows_only
-    def test_aslr_failure_surfaces_targeted_windows_command(
-        self, tmp_path, monkeypatch
-    ):
-        """Windows-only: the Mandatory-ASLR diagnostic is raised from
-        ``_find_bash``'s Windows candidate ladder and names PowerShell's
-        ``Set-ProcessMitigation`` — unreachable off Windows."""
-        import tools.environments.local as local_mod
-        from tools.environments import local_gitbash_probe as gitbash_probe
-
-        gitbash_probe._bash_starts_cache.clear()
-        gitbash_probe._bash_probe_details_cache.clear()
-        portable = tmp_path / "hermes" / "git" / "bin" / "bash.exe"
-        portable.parent.mkdir(parents=True)
-        portable.write_text("", encoding="utf-8")
-
-        monkeypatch.setenv("HERMES_GIT_BASH_PATH", "")
-        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        monkeypatch.setenv("ProgramFiles", str(tmp_path / "empty-program-files"))
-        monkeypatch.delenv("ProgramFiles(x86)", raising=False)
-        monkeypatch.setattr(local_mod.shutil, "which", lambda _name: None)
-        monkeypatch.setattr(local_mod, "_mandatory_aslr_enabled", lambda: True)
-
-        def failed_probe(path: str) -> bool:
-            gitbash_probe._bash_probe_details_cache[path] = (
-                "dofork: child -1 - forked process died unexpectedly"
-            )
-            return False
-
-        monkeypatch.setattr(local_mod, "_bash_starts", failed_probe)
-
+    def test_raises_when_pm_shell_finds_nothing(self, monkeypatch):
+        """A store with no bash (and no PATH bash) surfaces a clear error
+        pointing at `hermes pm install` instead of hunting locations."""
+        monkeypatch.setattr("pm.shell.bash", lambda: None)
         with pytest.raises(RuntimeError) as exc_info:
-            local_mod._find_bash()
-        message = str(exc_info.value)
-        assert "Mandatory ASLR" in message
-        assert "Reinstalling Git will not change" in message
-        assert "Set-ProcessMitigation" in message
-        assert str(tmp_path / "hermes" / "git") in message
+            _find_bash()
+        assert "No shell found" in str(exc_info.value)
+        assert "hermes pm install" in str(exc_info.value)
 
 
-@pytest.mark.macos_only
+
+@pytest.mark.platforms("macos")
 @pytest.mark.skipif(
     not os.path.isfile("/bin/bash"),
     reason="reproduces the macOS system-bash-3.2 login-shell swallow",

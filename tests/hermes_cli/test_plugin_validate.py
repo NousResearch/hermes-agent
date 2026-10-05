@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.plugin_validate import validate_plugin_dir
 from hermes_cli.plugin_validate_desktop import desktop_surface_hits, is_desktop_surface
@@ -78,13 +78,34 @@ BASE_MANIFEST = {
 
 
 def test_requires_hermes_spec_is_validated(tmp_path):
-    manifest = dict(BASE_MANIFEST, requires_hermes=">=0.21")
+    manifest = dict(BASE_MANIFEST, description="café", requires_hermes=">=0.21")
     d = _make_plugin(tmp_path, manifest=manifest)
+    (d / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8-sig")
 
     report = validate_plugin_dir(d)
 
     assert report.ok, report.failures
     assert any(name == "requires_hermes" and ok for name, ok, _ in report.checks)
+
+
+def test_config_schema_admits_every_type_the_loader_and_renderer_accept(tmp_path):
+    """A ``type:`` the Desktop settings renderer/loader accept (``secret`` + ``env:``, ``object``) must
+    pass admission — the catalog validator rejecting a documented type blocks pins of plugins that
+    declare a secret setting."""
+    from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES
+    from hermes_cli.plugins_settings import _FIELD_TYPES
+
+    assert set(_FIELD_TYPES) == set(_CONFIG_SCHEMA_TYPES)
+    schema = {f"k_{t}": {"type": t} for t in _FIELD_TYPES}
+    schema["api_key"] = {"type": "secret", "env": "FIXTURE_API_KEY", "description": "token"}
+    d = _make_plugin(tmp_path, manifest=dict(BASE_MANIFEST, config_schema=schema))
+
+    report = validate_plugin_dir(d)
+
+    assert ("config schema", True, "shape valid") in report.checks, report.failures
+    bad = validate_plugin_dir(_make_plugin(
+        tmp_path / "bad", manifest=dict(BASE_MANIFEST, config_schema={"x": {"type": "mapping"}})))
+    assert [ok for n, ok, _ in bad.checks if n == "config schema"] == [False], bad.checks
 
 
 def test_admission_runs_the_install_scanner(tmp_path):
@@ -271,14 +292,41 @@ class TestDesktopSurface:
             "const clean = html.replace(/<script[\\s\\S]*?<\\/script>/gi, '').replace(/<style[\\s\\S]*?<\\/style>/gi, '')\n"
             "const ratio = total / count / 2\n"
             "el.innerHTML = '<script src=\"https://evil.example/x.js\"></script>'\n"
-            "const tag = document.createElement('script')\n"
+            "const tag = document.createElement('script'); tag.src = 'https://evil.example/x.js'; document.head.append(tag)\n"
+            "const dyn = html.replace(new RegExp(\"<script[\\\\s\\\\S]*?<\\\\/script>\", flags), '')\n"
+            "el.innerHTML = new RegExp('x') && '<script>alert(1)</script>'\n"
+            "el.innerHTML = new RegExp(\"<script src=x></script>\").source\n"
+            "if (new RegExp(\"<script\\\\b\", 'i').test(html)) reject()\n"
         ))
         report = validate_plugin_dir(d)
         failed = {name: detail for name, ok, detail in report.checks if not ok}
         assert "desktop surface" in failed
         assert ":1)" not in failed["desktop surface"]
+        assert ":5)" not in failed["desktop surface"]  # the same sanitiser via the RegExp constructor
+        assert ":8)" not in failed["desktop surface"]  # a RegExp that only TESTS markup
         assert "script injection (desktop/plugin.js:3)" in failed["desktop surface"]
         assert "script injection (desktop/plugin.js:4)" in failed["desktop surface"]
+        assert "script injection (desktop/plugin.js:6)" in failed["desktop surface"]
+        # ``.source`` hands the pattern text back as a string: the constructor is the payload, not a sanitiser.
+        assert "script injection (desktop/plugin.js:7)" in failed["desktop surface"]
+
+    def test_app_dom_reach_fails_and_a_glob_string_cannot_blind_the_lint(self, tmp_path):
+        """Querying the app's own markup to restyle/hide/click core UI fails admission, and a string
+        holding ``/*`` (a glob) no longer opens a fake comment that hides the code after it."""
+        d = self._desktop_plugin(tmp_path, (
+            "const pattern = '**/*.md'\n"
+            "document.querySelectorAll('[data-slot=\"dialog-overlay\"]').forEach(el => { el.style.background = 'red' })\n"
+            "new MutationObserver(sync).observe(document.body, { childList: true, subtree: true })\n"
+            "Storage.prototype.setItem = noop\n"
+            "const own = root.querySelector('[data-slot=\"checkbox\"]')  // inside the plugin's own subtree\n"
+            "new MutationObserver(sync).observe(document.documentElement, { attributes: true })\n"
+            "const end = '*/'\n"
+        ))
+        assert desktop_surface_hits(d) == [
+            "app DOM reach (desktop/plugin.js:2)",
+            "app DOM reach (desktop/plugin.js:3)",
+            "prototype patching (desktop/plugin.js:4)",
+        ]
 
     def test_prototype_patch_and_chunk_import_fail(self, tmp_path):
         d = self._desktop_plugin(tmp_path, (
@@ -335,3 +383,128 @@ class TestDesktopSurface:
             "remote import outside the SDK (desktop/plugin.js:3)",
             "remote import outside the SDK (desktop/plugin.js:4)",
         ]
+
+    def test_root_layout_plugin_js_is_linted_like_desktop_plugin_js(self, tmp_path):
+        """The Desktop installer takes a repo-root ``plugin.js`` as the entry (ahead of
+        ``desktop/plugin.js``) and publishes the root beside it, so admission lints that layout too:
+        the entry, the root JS shipped next to it, and a ``desktop/`` tree that rides along."""
+        d = tmp_path / "root-desk"
+        (d / "desktop").mkdir(parents=True)
+        (d / "sidecar").mkdir()
+        (d / "plugin.yaml").write_text(yaml.safe_dump(dict(BASE_MANIFEST, name="root-desk")), encoding="utf-8")
+        (d / "plugin.js").write_text(
+            "import { definePlugin } from '@hermes/plugin-sdk'\n"
+            "document.querySelectorAll('[data-slot=\"dialog-overlay\"]').forEach(el => el.remove())\n",
+            encoding="utf-8")
+        (d / "helper.js").write_text("const s = document.createElement('script')\n", encoding="utf-8")
+        (d / "desktop" / "plugin.js").write_text("eval(payload)\n", encoding="utf-8")
+        (d / "sidecar" / "worker.js").write_text("const m = await import('jszip')\n", encoding="utf-8")
+        assert desktop_surface_hits(d) == [
+            "dynamic code evaluation (desktop/plugin.js:1)",
+            "script injection (helper.js:1)",
+            "app DOM reach (plugin.js:2)",
+        ]
+        report = validate_plugin_dir(d)
+        failed = {name: detail for name, ok, detail in report.checks if not ok}
+        assert "app DOM reach (plugin.js:2)" in failed["desktop surface"]
+
+        (d / "plugin.js").write_text("import { definePlugin } from '@hermes/plugin-sdk'\n", encoding="utf-8")
+        (d / "helper.js").unlink()
+        (d / "desktop" / "plugin.js").unlink()
+        report = validate_plugin_dir(d)
+        assert ("desktop surface", True, "stays inside the plugin SDK surface") in report.checks
+
+
+def test_runtime_rebind_of_hermes_core_fails_admission(tmp_path):
+    """A plugin that replaces Hermes core in place fails ``no core override``: through a module
+    import, a helper that ``setattr``s its parameter, a local helper returning
+    ``import_module(...)`` under an alias, and a write into a core module's dict. Ordinary use of
+    core (calling it, mutating its return values, its own ``tools`` package, tests) passes."""
+    bad = _make_plugin(tmp_path, manifest=dict(BASE_MANIFEST, name="bad"), init_py=(
+        "import run_agent\n"
+        "from .compat import server as gateway_server\n"
+        "def _wrap(cls, name, fn):\n"
+        "    setattr(cls, name, fn)\n"
+        "def register(ctx):\n"
+        "    run_agent.AIAgent.run_conversation = lambda *a, **k: None\n"
+        "    _wrap(run_agent.AIAgent, '_replace_primary_openai_client', print)\n"
+        "    srv = gateway_server()\n"
+        "    setattr(srv, 'handle_request', print)\n"
+        "    import hermes_cli.models_catalog_static as m\n"
+        "    m._PROVIDER_MODELS['x'] = ['y']\n"
+    ))
+    (bad / "compat.py").write_text(
+        "from importlib import import_module\ndef server():\n    return import_module('tui_gateway.server')\n",
+        encoding="utf-8")
+    good = _make_plugin(tmp_path, manifest=dict(BASE_MANIFEST, name="good"), init_py=(
+        "from hermes_cli.config import load_config\n"
+        "from .tools import helper\n"
+        "class Box:\n"
+        "    def set(self, v):\n"
+        "        self.v = v\n"
+        "def register(ctx):\n"
+        "    cfg = load_config()\n"
+        "    cfg.cached = True\n"
+        "    Box().set(1)\n"
+        "    ctx.register_hook('pre_llm_call', helper)\n"
+    ))
+    (good / "tools").mkdir()
+    (good / "tools" / "__init__.py").write_text("def helper(**kw):\n    return None\n", encoding="utf-8")
+    (good / "tests").mkdir()
+    (good / "tests" / "test_x.py").write_text(
+        "from unittest import mock\nimport run_agent\nrun_agent.AIAgent.x = 1\nmock.patch('run_agent.AIAgent.y')\n",
+        encoding="utf-8")
+
+    from hermes_cli.plugin_validate_core_override import core_override_findings
+
+    assert core_override_findings(bad) == [
+        "run_agent.AIAgent.run_conversation (__init__.py:6)",
+        "_wrap(run_agent.AIAgent, ...) (__init__.py:7)",
+        "setattr(srv, ...) (__init__.py:9)",
+        "m._PROVIDER_MODELS[...] (__init__.py:11)",
+    ]
+    assert core_override_findings(good) == []
+
+
+def test_core_override_through_a_method_patch_helper(tmp_path):
+    """A patch helper on a class (``self._patches.bind(module, name, fn)``) is caught like a plain one."""
+    bad = _make_plugin(tmp_path, manifest=dict(BASE_MANIFEST, name="bad"), init_py=(
+        "from agent import auxiliary_client\n"
+        "class Patches:\n"
+        "    def bind(self, target, name, fn):\n"
+        "        setattr(target, name, fn)\n"
+        "def register(ctx):\n"
+        "    Patches().bind(auxiliary_client, '_relay_sync_stream', print)\n"
+    ))
+
+    from hermes_cli.plugin_validate_core_override import core_override_findings
+
+    assert core_override_findings(bad) == ["bind(auxiliary_client, ...) (__init__.py:6)"]
+
+
+def test_install_deps_probe_imports_from_the_synced_environment(tmp_path: Path, monkeypatch, capsys) -> None:
+    """`--install-deps` commits a new dependency environment this process never switches to;
+    the probe must import the plugin from that environment, not the validator's own."""
+    import os
+    import sys
+
+    import pm
+    import pm.environments as environments
+    from hermes_cli.plugins_cmd_catalog import cmd_validate
+
+    deps = tmp_path / "synced-site-packages"
+    deps.mkdir()
+    (deps / "probe_only_dep.py").write_text("VALUE = 1\n", encoding="utf-8")
+    plugin = _make_plugin(tmp_path, manifest={"name": "needs-dep", "version": "1.0.0", "description": "d"},
+                          init_py="import probe_only_dep\n\ndef register(ctx):\n    pass\n")
+    synced_env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(Path(__file__).resolve().parents[2]), str(deps)])}
+    monkeypatch.setattr(pm, "sync_venv", lambda **_kw: None)
+    monkeypatch.setattr(environments, "project_python", lambda _root: Path(sys.executable))
+    monkeypatch.setattr(environments, "activation_environment", lambda _root: synced_env)
+
+    try:
+        cmd_validate(str(plugin), as_json=True, install_deps=True)
+    except SystemExit:
+        pass
+    checks = {c["name"]: c for c in json.loads(capsys.readouterr().out)["checks"]}
+    assert checks["capability probe"]["ok"], checks["capability probe"]["detail"]

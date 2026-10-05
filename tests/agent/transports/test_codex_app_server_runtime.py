@@ -101,7 +101,7 @@ class TestCodexAppServerClose:
     """Lifecycle tests for retiring the optional Codex app-server transport."""
 
     @pytest.mark.live_system_guard_bypass
-    @pytest.mark.skipif(sys.platform == "win32", reason="start_new_session/setsid is POSIX-only")
+    @pytest.mark.platforms("posix")  # start_new_session/setsid is POSIX-only
     def test_close_reaps_independent_descendant_process_group(self, tmp_path):
         """A Codex-owned MCP child that calls setsid must not survive close().
 

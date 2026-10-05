@@ -94,6 +94,10 @@ import {
   type PtyBannerAction,
 } from "@/lib/pty-close-copy";
 import { ptyAttachToken } from "@/lib/pty-attach-token";
+import {
+  refitWhenTerminalFontLoads,
+  TERMINAL_FONT_FAMILY,
+} from "@/lib/terminal-font-refit";
 import { loseWebglContexts } from "@/lib/xterm-webgl-release";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
@@ -579,8 +583,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const term = new Terminal({
       allowProposedApi: true,
       cursorBlink: true,
-      fontFamily:
-        "'JetBrains Mono', 'Cascadia Mono', 'Fira Code', 'MesloLGS NF', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace",
+      fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: terminalFontSizeForWidth(tierW0),
       lineHeight: terminalLineHeightForWidth(tierW0),
       letterSpacing: 0,
@@ -1112,6 +1115,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       });
     });
 
+    // The rAF fits above still measure the fallback font if JetBrains Mono
+    // hasn't swapped in yet (#92899).
+    const stopFontRefit = refitWhenTerminalFontLoads(term, syncTerminalMetrics);
+
     // WebSocket. In gated mode (``window.__HERMES_AUTH_REQUIRED__``) this
     // awaits a single-use ticket via /api/auth/ws-ticket before opening;
     // in loopback mode it resolves synchronously against the injected
@@ -1484,10 +1491,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         setPtyState("closed");
         return;
       }
-      if (!ev.wasClean || ev.code === 1001 || ev.code === 1006) {
-        // Transient transport drop (refresh, sleep/wake, signal loss).
-        // Reconnect with backoff; the same ?attach= token reattaches to
-        // the still-living PTY, so the conversation continues in place.
+      if (
+        !ev.wasClean ||
+        ev.code === 1001 ||
+        ev.code === 1006 ||
+        ev.code === 1012 ||
+        ev.code === 1013
+      ) {
+        // Transient transport drop (refresh, sleep/wake, signal loss), or a
+        // clean server-side restart signal: 1012 Service Restart / 1013 Try
+        // Again Later mean the server is coming back, so redial instead of
+        // stranding the pane on "[session ended]" (#95951).
         scheduleReconnect(ev.code);
         return;
       }
@@ -1607,6 +1621,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
       if (settleRaf2) cancelAnimationFrame(settleRaf2);
+      stopFontRefit();
       clearReconnectTimer();
       clearConnectingTimer();
       clearTicketTimer();

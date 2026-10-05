@@ -38,12 +38,12 @@ def test_manual_deferral_survives_receipt_rotation(monkeypatch, capsys, kind, co
         restart.incomplete = True
     if condition != "alive":
         with pytest.raises(SystemExit) as exc:
-            fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, node_failures=[], update_complete=True)
+            fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
         assert exc.value.code == 1
         assert fleet._fleet_restart_obligation_armed()
         assert update_receipt.read_latest_receipt()["outcome"] == "partial"
         return
-    fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, node_failures=[], update_complete=True)
+    fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
     receipt = update_receipt.read_latest_receipt()
     assert receipt["runtime_outcomes"][0]["outcome"] == "deferred"
     assert not fleet._fleet_restart_obligation_armed()
@@ -172,7 +172,14 @@ def test_historical_retention_failure_warns_and_survives_rotation(monkeypatch, c
         elif failure == "write":
             broken.setattr(obligations.json, "dump", fail)
         else:
-            broken.setattr(obligations.os, "replace", fail)
+            # Only the obligations file: the receipt itself is written atomically through the
+            # same os.replace and must keep succeeding.
+            original_replace = obligations.os.replace
+            def replace(src, dst, *args, **kwargs):
+                if Path(dst).parent == directory:
+                    fail()
+                return original_replace(src, dst, *args, **kwargs)
+            broken.setattr(obligations.os, "replace", replace)
         fleet._warn_pending_fleet_restart_on_startup()
         warning = capsys.readouterr().err
         assert "serve [work] pid 900" in warning

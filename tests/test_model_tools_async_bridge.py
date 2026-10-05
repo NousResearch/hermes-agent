@@ -45,10 +45,6 @@ async def _create_and_return_transport():
 # ---------------------------------------------------------------------------
 
 class TestRunAsyncLoopLifecycle:
-    """Verify _run_async() keeps the event loop alive after returning."""
-
-
-
     def test_cached_transport_survives_between_calls(self):
         """A transport/future created in call 1 must be valid in call 2."""
         from model_tools import _run_async
@@ -63,81 +59,25 @@ class TestRunAsyncLoopLifecycle:
         assert not loop.is_closed(), "Loop closed before second call"
 
 
-class TestRunAsyncWorkerThread:
-    """Verify worker threads get persistent per-thread loops (delegate_task fix)."""
+def test_concurrent_workers_reuse_distinct_loops():
+    from concurrent.futures import ThreadPoolExecutor
+    from model_tools import _run_async
 
+    main = _run_async(_get_current_loop())
+    barrier = threading.Barrier(3, timeout=10)
 
-    def test_worker_thread_reuses_loop_across_calls(self):
-        """Multiple _run_async calls on the same worker thread should
-        reuse the same persistent loop (not create-and-destroy each time)."""
-        from concurrent.futures import ThreadPoolExecutor
-        from model_tools import _run_async
+    def worker():
+        loop, future = _run_async(_create_and_return_transport())
+        barrier.wait()
+        assert _run_async(_get_current_loop()) is loop
+        assert not loop.is_closed() and future.result() == "ok"
+        return loop, threading.get_ident()
 
-        def _run_twice_on_worker():
-            loop1 = _run_async(_get_current_loop())
-            loop2 = _run_async(_get_current_loop())
-            return loop1, loop2
-
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            loop1, loop2 = pool.submit(_run_twice_on_worker).result()
-
-        assert loop1 is loop2, (
-            "Worker thread created different loops for consecutive calls — "
-            "cached clients from the first call would be orphaned"
-        )
-        assert not loop1.is_closed()
-
-    def test_parallel_workers_get_separate_loops(self):
-        """Different worker threads must get their own loops to avoid
-        contention (the original reason for the worker-thread branch)."""
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        from model_tools import _run_async
-
-        barrier = threading.Barrier(3, timeout=5)
-
-        def _get_loop_id():
-            # Use a barrier to force all 3 threads to be alive simultaneously,
-            # ensuring the ThreadPoolExecutor actually uses 3 distinct threads.
-            loop = _run_async(_get_current_loop())
-            barrier.wait()
-            return id(loop), not loop.is_closed(), threading.current_thread().ident
-
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            futures = [pool.submit(_get_loop_id) for _ in range(3)]
-            results = [f.result() for f in as_completed(futures)]
-
-        loop_ids = {r[0] for r in results}
-        thread_ids = {r[2] for r in results}
-        all_open = all(r[1] for r in results)
-
-        assert all_open, "At least one worker thread's loop was closed"
-        # The barrier guarantees 3 distinct threads were used
-        assert len(thread_ids) == 3, f"Expected 3 threads, got {len(thread_ids)}"
-        # Each thread should have its own loop
-        assert len(loop_ids) == 3, (
-            f"Expected 3 distinct loops for 3 parallel workers, "
-            f"got {len(loop_ids)} — workers may be contending on a shared loop"
-        )
-
-    def test_worker_loop_separate_from_main_loop(self):
-        """Worker thread loops must be different from the main thread's
-        persistent loop to avoid cross-thread contention."""
-        from concurrent.futures import ThreadPoolExecutor
-        from model_tools import _run_async, _get_tool_loop
-
-        main_loop = _get_tool_loop()
-
-        def _get_worker_loop_id():
-            loop = _run_async(_get_current_loop())
-            return id(loop)
-
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            worker_loop_id = pool.submit(_get_worker_loop_id).result()
-
-        assert worker_loop_id != id(main_loop), (
-            "Worker thread used the main thread's loop — this would cause "
-            "cross-thread contention on the event loop"
-        )
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = [pool.submit(worker) for _ in range(3)]
+        results = [future.result(timeout=15) for future in futures]
+    assert len({thread for _, thread in results}) == 3
+    assert len({main, *(loop for loop, _ in results)}) == 4
 
 
 class TestRunAsyncWithRunningLoop:
@@ -152,10 +92,9 @@ class TestRunAsyncWithRunningLoop:
         async def _simple():
             return 42
 
-        result = await asyncio.get_event_loop().run_in_executor(
-            None, _run_async, _simple()
-        )
-        assert result == 42
+        assert _run_async(_simple()) == 42
+        loop = _run_async(_get_current_loop())
+        assert loop is not asyncio.get_running_loop()
 
     @pytest.mark.asyncio
     async def test_timeout_uses_nonblocking_executor_shutdown(self, monkeypatch):
@@ -309,57 +248,23 @@ def _mock_vision_response():
 
 
 class TestVisionDispatchLoopSafety:
-    """Simulate the full registry.dispatch('vision_analyze') chain and
-    verify the event loop stays alive afterwards — the exact scenario
-    from issue #2104."""
-
-
-    def test_two_consecutive_vision_dispatches(self, tmp_path):
-        """Two back-to-back vision_analyze dispatches must both succeed
-        and share the same loop (simulates 'first call fails, second
-        works' from the issue report)."""
+    def test_consecutive_image_dispatches_keep_the_loop_alive(self):
+        import base64
+        import io
+        from PIL import Image
         from model_tools import _get_tool_loop
         from tools.registry import registry
 
-        fake_response = _mock_vision_response()
-
-        with (
-            patch(
-                "tools.vision_tools.async_call_llm",
-                new_callable=AsyncMock,
-                return_value=fake_response,
-            ),
-            patch(
-                "tools.vision_tools._download_image",
-                new_callable=AsyncMock,
-                side_effect=lambda url, dest, **kw: _write_fake_image(dest),
-            ),
-            patch(
-                "tools.vision_tools._validate_image_url_async",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
-            patch(
-                "tools.vision_tools._image_to_base64_data_url",
-                return_value="data:image/jpeg;base64,abc",
-            ),
-        ):
-            args = {"image_url": "https://example.com/cat.png", "question": "Describe"}
-
-            r1 = json.loads(registry.dispatch("vision_analyze", args))
-            loop_after_first = _get_tool_loop()
-
-            r2 = json.loads(registry.dispatch("vision_analyze", args))
-            loop_after_second = _get_tool_loop()
-
-        assert r1.get("success") is True
-        assert r2.get("success") is True
-        assert loop_after_first is loop_after_second, "Loop changed between dispatches"
-        assert not loop_after_second.is_closed()
-
-
-def _write_fake_image(dest):
-    """Write minimal bytes so vision_analyze_tool thinks download succeeded."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(b"\xff\xd8\xff" + b"\x00" * 16)
-    return dest
+        image = io.BytesIO()
+        Image.new("RGB", (8, 8), "blue").save(image, format="PNG")
+        args = {"image_url": "data:image/png;base64," + base64.b64encode(image.getvalue()).decode(),
+                "question": "Describe"}
+        with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock,
+                   return_value=_mock_vision_response()):
+            first = json.loads(registry.dispatch("vision_analyze", args))
+            loop = _get_tool_loop()
+            second = json.loads(registry.dispatch("vision_analyze", args))
+        assert first.get("success") is True, first
+        assert second.get("success") is True, second
+        assert "cat" in first["analysis"].lower()
+        assert _get_tool_loop() is loop and not loop.is_closed()

@@ -87,8 +87,7 @@ class TestScanSkillCommands:
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
             patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
-            patch.object(sc_mod, "_skill_commands", {}),
-            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             _make_skill(tmp_path, "shared")
             _make_skill(tmp_path, "telegram-only")
@@ -151,8 +150,7 @@ class TestScanSkillCommands:
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
             patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
-            patch.object(sc_mod, "_skill_commands", {}),
-            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             _make_skill(tmp_path, "shared")
             _make_skill(tmp_path, "telegram-only")
@@ -213,9 +211,7 @@ class TestScanSkillCommands:
 
         with (
             patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
-            patch.object(sc_mod, "_skill_commands", {}),
-            patch.object(sc_mod, "_skill_commands_platform", None),
-            patch.object(sc_mod, "_skill_commands_home", None),
+            patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             token = set_hermes_home_override(profile_a)
             try:
@@ -252,9 +248,7 @@ class TestScanSkillCommands:
         (profile_b / "config.yaml").write_text("{}\n", encoding="utf-8")
 
         with (
-            patch.object(sc_mod, "_skill_commands", {}),
-            patch.object(sc_mod, "_skill_commands_platform", None),
-            patch.object(sc_mod, "_skill_commands_home", None),
+            patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             token = set_hermes_home_override(profile_b)
             try:
@@ -291,8 +285,7 @@ class TestScanSkillCommands:
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
             patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
-            patch.object(sc_mod, "_skill_commands", {}),
-            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             _make_skill(tmp_path, "shared")
             _make_skill(tmp_path, "telegram-only")
@@ -306,7 +299,7 @@ class TestScanSkillCommands:
             bare_commands = dict(get_skill_commands())
 
             assert "/telegram-only" in bare_commands
-            assert sc_mod._skill_commands_platform is None
+            # Platform cache is multi-slot now — just verify rescans happened
 
 
     # -- core-command collision guard (#31204 / #53450) ---------------------
@@ -462,7 +455,14 @@ class TestScanSkillCommands:
         observed_sizes = []
 
         def observing_parse(content):
-            observed_sizes.append(len(skill_commands_module._skill_commands))
+            # Cache is now _skill_commands_by_key; count skill commands in the cached map (for this identity)
+            key = (
+                skill_commands_module._resolve_skill_commands_platform(),
+                skill_commands_module._resolve_skill_commands_home(),
+                skill_commands_module._resolve_skill_commands_project(),
+            )
+            cached_map = skill_commands_module._skill_commands_by_key.get(key, {})
+            observed_sizes.append(len(cached_map))
             return real_parse(content)
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path), patch(
@@ -546,6 +546,76 @@ class TestBuildPreloadedSkillsPrompt:
         assert missing == ["disabled-skill"]
         assert "SECRET DISABLED CONTENT." not in prompt
         assert "enabled-skill" in prompt
+
+
+class TestDuplicateNamesAgreeAcrossSurfaces:
+    def test_every_surface_resolves_duplicates_like_skill_view(self, tmp_path, monkeypatch, caplog):
+        """#64392: list, prompt index, slash commands, skill_view, -s preload and cron agree. A same-tier
+        duplicate is advertised only by its exact path and every loader names those paths; a cross-tier
+        duplicate (same relative path, local + external) loads the local copy everywhere."""
+        import json
+
+        from agent import prompt_builder as pb, skill_utils
+        from cron.scheduler_prompt import _load_cron_skill_parts
+        from tools.skills_tool import skill_view, skills_list
+        local, ext = tmp_path / "local", tmp_path / "ext"
+        _make_skill(local, "dup-demo", category="a", body="BODY A")
+        (local / "a" / "dup-demo").rename(local / "a" / "one")
+        _make_skill(local, "dup-demo", category="b", body="BODY B")
+        (local / "b" / "dup-demo").rename(local / "b" / "two")
+        _make_skill(local, "xdup", category="productivity", body="LOCAL XDUP")
+        _make_skill(ext, "xdup", category="productivity", body="EXTERNAL XDUP")
+        monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", local)
+        monkeypatch.setattr(skills_tool_module, "_SKILLS_CACHE", {})
+        monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda: [ext])
+        monkeypatch.setattr(pb, "get_skills_dir", lambda: local)
+        monkeypatch.setattr(pb, "get_disabled_skill_names", lambda *a, **k: set())
+        monkeypatch.setattr(pb, "_skills_prompt_snapshot_path", lambda: tmp_path / "snap.json")
+        pb.clear_skills_system_prompt_cache()
+
+        ambiguous = "Ambiguous skill name dup-demo: use one of a/one, b/two"
+        assert sorted(s["name"] for s in json.loads(skills_list())["skills"]) == ["a/one", "b/two", "xdup"]
+        index = [ln.strip() for ln in pb.build_skills_system_prompt().splitlines() if ln.startswith("    - ")]
+        assert index == ["- a/one: Description for dup-demo.", "- b/two: Description for dup-demo.",
+                         "- xdup: Description for xdup."]
+        assert sorted(scan_skill_commands()) == ["/xdup"]
+        assert json.loads(skill_view("dup-demo"))["load_names"] == ["a/one", "b/two"]
+        for ident in ("xdup", "productivity/xdup"):
+            assert "LOCAL XDUP" in json.loads(skill_view(ident))["content"]
+        _, loaded, missing = build_preloaded_skills_prompt(["dup-demo", "xdup", "a/one"])
+        assert (loaded, missing) == (["xdup", "dup-demo"], [ambiguous])
+        from hermes_cli.oneshot import _build_preloaded_skills_prompt
+        with caplog.at_level("WARNING"):  # partial preload: the skip warning keeps the Ambiguous wording
+            assert _build_preloaded_skills_prompt(["dup-demo", "xdup"])
+        assert f"Skipping {ambiguous}. Continuing with: xdup" in caplog.text and "Unknown" not in caplog.text
+        parts = _load_cron_skill_parts({"id": "j"}, ["dup-demo", "xdup"])
+        assert ambiguous in parts[0] and "LOCAL XDUP" in "\n".join(parts)
+
+        # Disabling a duplicate by the exact path its row shows (what `hermes skills` / the web toggle
+        # save) hides it from list and index and refuses the load — but not an unrelated, uniquely named
+        # skill in another tier that merely sits at the same relative path.
+        _make_skill(ext, "other", category="a", body="UNRELATED OTHER")
+        (ext / "a" / "other").rename(ext / "a" / "one")
+        disabled = {"a/one"}
+        monkeypatch.setattr(skill_utils, "get_disabled_skill_names", lambda *a, **k: disabled)
+        monkeypatch.setattr(pb, "get_disabled_skill_names", lambda *a, **k: disabled)
+        monkeypatch.setattr(skills_tool_module, "_is_skill_disabled", lambda *n, platform=None: not disabled.isdisjoint(n))
+        monkeypatch.setattr(skills_tool_module, "_SKILLS_CACHE", {})
+        pb.clear_skills_system_prompt_cache()
+        assert sorted(s["name"] for s in json.loads(skills_list())["skills"]) == ["b/two", "other", "xdup"]
+        index = [ln.strip() for ln in pb.build_skills_system_prompt().splitlines() if ln.startswith("    - ")]
+        assert index == ["- other: Description for other.", "- b/two: Description for dup-demo.",
+                         "- xdup: Description for xdup."]
+        for ident in ("a/one", "one"):  # refused by any alias, as list/index hide it
+            assert "disabled" in json.loads(skill_view(ident))["error"]
+        assert "UNRELATED OTHER" in json.loads(skill_view("other"))["content"]
+        assert build_preloaded_skills_prompt(["other"])[1:] == (["other"], [])
+        # Still refused when that copy is also hidden at offer time (requires_apps).
+        a_one = local / "a" / "one" / "SKILL.md"
+        a_one.write_text(a_one.read_text().replace("---\n", "---\nrequires_apps: [no-such-app]\n", 1))
+        monkeypatch.setattr(skills_tool_module, "_SKILLS_CACHE", {})
+        for ident in ("a/one", "one"):
+            assert "disabled" in json.loads(skill_view(ident))["error"]
 
 
 class TestBuildSkillInvocationMessage:
@@ -691,6 +761,7 @@ class TestInlineShellExpansion:
     content — but only when the user has opted in via config."""
 
 
+    @pytest.mark.platforms("linux")
     def test_inline_shell_runs_in_skill_directory(self, tmp_path):
         """Inline snippets get the skill dir as CWD so relative paths work."""
         with (

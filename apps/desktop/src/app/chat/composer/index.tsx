@@ -37,6 +37,7 @@ import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
 import { $botChatSessionIds, $sessionStates, $sessionTiles, isBotChatSession } from '@/store/session-states'
+import { useForcedTextDirection } from '@/store/text-direction'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
@@ -45,6 +46,7 @@ import { AttachmentList } from './attachments'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
+  composerInputWidthClass,
   implicitSlashAcceptIndex,
   liveComposerDraft,
   type QueueEditState,
@@ -116,8 +118,10 @@ export function ChatBar({
   cwd,
   disabled,
   focusKey,
+  freshDraftKey,
   gateway,
   maxRecordingSeconds = 120,
+  profile,
   queueSessionKey,
   sessionId,
   state,
@@ -195,16 +199,14 @@ export function ChatBar({
   )
 
   const autoSpeak = useStore($autoSpeakReplies)
+  const textDirection = useForcedTextDirection()
   // The turn is parked on the user (clarify / approval / sudo / secret). Esc must
   // not interrupt it — there's nothing actively running to stop, and stopping
   // would discard a question the user may want to come back to. The blocking
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore(scope.$awaitingInput)
-  // Parked on an approval/sudo/secret prompt: typing can't answer those, so the
-  // busy submit routes text to the queue instead of a steer (which would sit
-  // undelivered behind the blocked tool batch). Drives the button affordance.
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
-  const activeQueueSessionKey = queueSessionKey || sessionId || null
+  const activeQueueSessionKey = queueSessionKey || sessionId || freshDraftKey || null
   const { collapsed: statusDrawerCollapsed, toggle: toggleStatusDrawer } = useStatusDrawer(activeQueueSessionKey)
   const statusDrawerId = useId()
   const codingDrawerId = useId()
@@ -229,7 +231,7 @@ export function ChatBar({
 
   // Coarse edge: re-renders ChatBar only when the stack shows/hides, NOT on
   // every per-item status mutation or other sessions' churn (see the hook).
-  const statusPresent = useSessionStatusPresence(statusSessionId)
+  const statusPresent = useSessionStatusPresence(statusSessionId, busy)
 
   // Publishes contributed micro actions for this session; the status stack
   // renders them as the pill strip at the top of the overlay lane.
@@ -278,6 +280,7 @@ export function ChatBar({
   const slash = useSlashCompletions({
     activeSkin: themeName,
     gateway: gateway ?? null,
+    profile: profile ?? null,
     sessionId: sessionId ?? null,
     skinThemes: availableThemes
   })
@@ -295,6 +298,7 @@ export function ChatBar({
   const {
     activeQueueSessionKeyRef,
     clearDraft,
+    draftScopeRef,
     draftRef,
     editorRef,
     focusInput,
@@ -359,6 +363,7 @@ export function ChatBar({
   // and bounded auto-drain. Consumes the draft API and writes `queueEditRef`.
   const {
     beginQueuedEdit,
+    deliverQueuedNow,
     drainNextQueued,
     editingQueuedPrompt,
     exitQueuedEdit,
@@ -416,7 +421,8 @@ export function ChatBar({
   // into a tool result) and never for a slash command (those execute inline).
   // A blocking prompt (approval/sudo/secret) also rules it out: the tool batch
   // is parked on the user, so a steer can't reach the model — text queues.
-  const canSteer = busy && !compacting && !blockingPrompt && !!onSteer && attachments.length === 0 && isSteerableText
+  // Compaction does not: the gateway holds the correction until it finishes.
+  const canSteer = busy && !blockingPrompt && !!onSteer && attachments.length === 0 && isSteerableText
 
   // While busy: text redirects the live turn (Cursor-style stop-and-correct),
   // attachments queue for the next turn, an empty composer stops.
@@ -433,9 +439,9 @@ export function ChatBar({
     activeQueueSessionKeyRef,
     attachments,
     busy,
-    compacting,
     clearDraft,
     disabled,
+    draftScopeRef,
     draftRef,
     drainNextQueued,
     editorRef,
@@ -690,6 +696,19 @@ export function ChatBar({
     // this guard, pressing Enter to finalise a Korean/Japanese/Chinese IME
     // preedit fires submitDraft() and splits the message mid-word.
     if (composingRef.current || event.nativeEvent.isComposing) {
+      return
+    }
+
+    // PageUp/PageDown: the composer is a single-line contentEditable — these
+    // keys have no text-editing purpose, and letting their default bubble to
+    // the browser's scroll-the-nearest-scrollable-ancestor behavior breaks the
+    // chat layout in the desktop pane tree (large blank area, sidebar pushed
+    // off-screen — #49978). Swallow the default here; the global
+    // conversation.scrollPageUp/Down keybind turns the intent into an
+    // explicit, focused-transcript page instead.
+    if (event.key === 'PageUp' || event.key === 'PageDown') {
+      event.preventDefault()
+
       return
     }
 
@@ -1004,8 +1023,9 @@ export function ChatBar({
       }
 
       // Empty Enter while busy. With prompts queued this is the double-send:
-      // the first Enter put the words in the queue, a second sends them now
-      // (promote + interrupt + drain on settle), mirroring the idle empty-Enter
+      // the first Enter put the words in the queue, a second delivers them
+      // now — steered into the live turn when a steer can carry them, else
+      // promote + interrupt + drain on settle — mirroring the idle empty-Enter
       // drain above. With nothing queued it stays a no-op — interrupting is
       // explicit (Stop/Esc), never a stray Enter after sending. Gate on the live
       // DOM payload (not the render-lagged composer state) so a message typed
@@ -1015,7 +1035,7 @@ export function ChatBar({
         const head = queuedPrompts.find(entry => entry.id !== queueEdit?.entryId)
 
         if (head) {
-          sendQueuedNow(head.id)
+          void deliverQueuedNow(head.id)
         }
 
         return
@@ -1056,7 +1076,7 @@ export function ChatBar({
     handleDrop,
     handleInputDragOver,
     handleInputDrop
-  } = useComposerDrop({ cwd, insertInlineRefs, onAttachDroppedItems, recordUndoPoint, requestMainFocus })
+  } = useComposerDrop({ cwd, insertInlineRefs, onAttachDroppedItems, recordUndoPoint, requestMainFocus, sessionId })
 
   // A bot chat is a companion conversation, not a working session, so it has no
   // repo to speak of — see the blank repoPath handed to CodingStatusRow below.
@@ -1146,8 +1166,10 @@ export function ChatBar({
     />
   )
 
+  const inputWidthClass = composerInputWidthClass(stacked)
+
   const input = (
-    <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
+    <div className={cn('relative', inputWidthClass)}>
       <div
         aria-disabled={inputDisabled ? true : undefined}
         aria-label={t.composer.message}
@@ -1159,7 +1181,7 @@ export function ChatBar({
           'min-h-[1.625rem] min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) cursor-text overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           '**:data-ref-text:cursor-default',
           stacked && 'pl-3',
-          stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1',
+          inputWidthClass,
           // Inside the native Wayland HUD drag region: a drag region swallows
           // the page's mouse input whole, so the input must opt back out or it
           // becomes unclickable. Buttons use the global no-drag rule.
@@ -1168,6 +1190,7 @@ export function ChatBar({
         contentEditable={!inputDisabled}
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
+        dir={textDirection}
         onBeforeInput={handleEditorBeforeInput}
         onBlur={() => {
           // A composition never survives focus loss (Chromium commits the

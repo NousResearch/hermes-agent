@@ -223,7 +223,7 @@ class TestMemoryStoreReplace:
                 ("single", lambda s: s.replace("memory", op["old_text"], op["content"])),
                 ("batch", lambda s: s.apply_batch("memory", [op])),
                 ("replay", lambda s: apply_memory_pending({"action": "batch", "target": "memory",
-                                                           "operations": [op]}, s))):
+                                                           "operations": [{**op, "matched_entry": entry}]}, s))):
             store_dir = tmp_path / surface
             store_dir.mkdir()
             monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda d=store_dir: d)
@@ -435,6 +435,22 @@ class TestMemoryToolDispatcher:
         result = json.loads(memory_tool(action="add", content="test"))
         assert result["success"] is False
         assert "not available" in result["error"]
+
+    def test_missing_action_and_operations_returns_actionable_error(self, store):
+        # Neither the single-op 'action' nor the batch 'operations' was given:
+        # the call must say what is missing instead of the opaque
+        # "Unknown action 'None'" that invites blind retries (#64291).
+        result = json.loads(memory_tool(target="memory", store=store))
+        assert result["success"] is False
+        assert "Missing required parameter" in result["error"]
+        assert "action" in result["error"] and "operations" in result["error"]
+
+    def test_null_action_and_operations_is_also_rejected(self, store):
+        # Strict providers send JSON null for omitted optional fields.
+        result = json.loads(memory_tool(action=None, operations=None, store=store))
+        assert result["success"] is False
+        assert "Missing required parameter" in result["error"]
+
 
 
     def test_replace_missing_content_still_distinct_error(self, store):

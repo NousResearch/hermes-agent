@@ -6,6 +6,10 @@ description: "Authoritative reference for Hermes terminal commands and command f
 
 # CLI Commands Reference
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](./package-management.md#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 This page covers the **terminal commands** you run from your shell.
 
 For in-chat slash commands, see [Slash Commands Reference](./slash-commands.md).
@@ -583,7 +587,7 @@ Pull API keys from an external secret manager at process startup instead of stor
 | `status` | Show current config, binary path/version, and token validation status. |
 | `token` | Rotate the access token: validates the new token against Bitwarden before storing it in `.env` (a rejected token changes nothing). Accepts `--access-token` for non-interactive use and `--no-verify` to skip the probe. |
 | `sync` | Fetch secrets now and report what changed. Add `--apply` to actually export the secrets into the current shell's environment (default is dry-run). |
-| `install` | Download and verify the pinned `bws` binary. `--force` re-downloads even if a managed copy already exists. |
+| `install` | Install or repair the PM-pinned `bws` binary. `--force` requests the same integrity check and repair, not an unconditional download. |
 | `disable` | Turn off the Bitwarden integration. |
 
 
@@ -738,13 +742,17 @@ has no usage endpoint, or the fetch fails (stdout stays empty).
 ## `hermes status`
 
 ```bash
-hermes status [--all] [--deep]
+hermes status [--full] [--deep]
 ```
+
+By default prints a one-screen summary: model, active provider, every provider with
+credentials (the same list the `/model` picker offers), gateway state, the messaging
+platforms the gateway would start, and scheduled jobs. No key values are printed.
 
 | Option | Description |
 |--------|-------------|
-| `--all` | Show all details in a shareable redacted format. |
-| `--deep` | Run deeper checks that may take longer. |
+| `--full` | Print every section (API keys redacted, auth providers, terminal backend, sessions, ...). `--all` is an alias. |
+| `--deep` | Run deeper checks that may take longer. Implies `--full`. |
 
 ## `hermes cron`
 
@@ -850,7 +858,7 @@ Outbound credential-injection firewall for remote terminal sandboxes. Wraps the 
 
 ```bash
 hermes egress install                  # download the pinned iron-proxy binary
-hermes egress install --force          # re-download even if already installed
+hermes egress install --force          # check and repair the managed copy
 
 hermes egress setup                    # interactive wizard: CA, mappings, config
 hermes egress setup --tunnel-port N    # override the tunnel listener port (default 9090)
@@ -958,6 +966,7 @@ hermes webhook subscribe <name> [options]
 | `--deliver-chat-id` | Target chat/channel ID for cross-platform delivery. |
 | `--secret` | Custom HMAC secret. Auto-generated if omitted. |
 | `--deliver-only` | Skip the agent — deliver the rendered `--prompt` as the literal message. Zero LLM cost, sub-second delivery. Requires `--deliver` to be a real target (not `log`). |
+| `--mirror-to-session` | Also write each delivered message into the target chat's session, so replying to it in that chat has context. Off by default; only enable it for sources whose content you trust in your conversation. |
 | `--script` | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin; JSON stdout replaces the payload, and empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. See [Script Filters and Transforms](../user-guide/messaging/webhooks.md#script-filters-and-transforms). |
 | `--route-profile` | Bind the route to a multiplexed profile: it is then reachable only at `/p/<profile>/webhooks/<name>` and the agent runs as that profile. Validated against existing profiles; kept on update when omitted. Not the same as the global `-p/--profile`, which selects the gateway whose subscriptions file is written. See [Multi-profile gateways](../user-guide/multi-profile-gateways.md). |
 
@@ -1009,7 +1018,7 @@ Outputs a compact, plain-text summary of your entire Hermes setup. Designed to b
 | **Features** | Enabled toolsets, MCP server count, memory provider |
 | **Services** | Gateway status, configured messaging platforms |
 | **Workload** | Cron job counts, installed skill count |
-| **Config overrides** | Any config values that differ from defaults |
+| **Config overrides** | Any config values that differ from defaults. Credentials in them are redacted: a `fallback_providers` entry's `api_key`, and credentials in its `base_url` (userinfo, `key`/token query parameters, signed-URL signatures). |
 
 ### Example output
 
@@ -1076,7 +1085,7 @@ Upload a debug report (system info + recent logs) to a paste service and get a s
 | `--local` | Print the report locally instead of uploading. |
 | `--no-redact` | Disable upload-time secret redaction. By default, uploads are redacted. |
 
-The report includes system info (OS, Python version, Hermes version), recent agent, gateway, GUI/dashboard, and desktop logs (512 KB limit per file), and redacted API key status. By default, uploads are redacted so secrets are not included.
+The report includes system info (OS, Python version, Hermes version), recent agent, gateway, GUI/dashboard, and desktop logs (512 KB limit per file), plus the update and Desktop update hand-off logs when present, and redacted API key status. By default, uploads are redacted so secrets are not included; this covers the system dump (including config values such as `fallback_providers` entries and credentials in their URLs) as well as the logs, and the gateway `/debug` report too.
 
 Default uploads use public paste services tried in order: paste.rs, dpaste.com. `--nous` uploads the same debug bundle to private Nous diagnostics storage instead; the returned viewer link is for the Nous team and auto-deletes after 14 days.
 
@@ -1182,6 +1191,8 @@ Restore a previously created Hermes backup into your Hermes home directory. All 
 Stop the gateway before importing to avoid conflicts with running processes.
 :::
 
+**Exit status:** `1` when the archive is damaged — before anything is written, every member is decompressed once and its CRC checked; if any fail, the command prints `Error: backup archive is damaged (N member(s) …)` with the offending members and stops with the Hermes home untouched. Also `1` when any file from the archive could not be restored (listed under `Warnings (N files skipped)` and summarised as `Import incomplete: …`). The files that did land stay in place, but a script or the dashboard will not report a partial restore as success. Runtime files the import deliberately keeps from this machine (`gateway.pid`, `gateway_state.json`, …) and the older-backup session warning below do not change the exit status.
+
 ### SQLite databases
 
 `.db` members (`state.db`, `kanban.db`, `response_store.db`, …) are not published with a rename like ordinary files. Renaming would replace the file's inode while a gateway, dashboard, or WebUI process still holds the old one open: that process would keep reading pre-import pages and keep writing sessions nobody else can see, and those sessions would simply be absent from the database everyone opens next — with nothing logged. Instead the imported pages are written **into the existing database file**, the same way `/snapshot restore` does it, so every open connection converges on the imported data.
@@ -1220,18 +1231,23 @@ View, tail, and filter Hermes log files. All logs are stored in `~/.hermes/logs/
 | `gateway` | `gateway.log` | Messaging gateway activity — platform connections, message dispatch, webhook events |
 | `gui` | `gui.log` | Dashboard / TUI-gateway / PTY-bridge / websocket events |
 | `desktop` | `desktop.log` | Electron desktop app — boot, backend spawn output, and recent Python tracebacks |
+| `mcp` | `mcp-stderr.log` | stderr of every stdio MCP server, one `starting MCP server` banner per launch |
+| `update` | `update.log` | Full stdout/stderr mirror of `hermes update` runs (append-only) — the root cause of update/dependency failures |
+| `handoff` | `desktop-update-handoff.log` | Desktop-driven update hand-off stages, including the Desktop rebuild retry output |
 
 ### Options
 
 | Option | Description |
 |--------|-------------|
-| `log_name` | Which log to view: `agent` (default), `errors`, `gateway`, or `list` to show available files with sizes. |
+| `log_name` | Which log to view: `agent` (default), `errors`, `gateway`, `gui`, `desktop`, `update`, `handoff`, or `list` to show available files with sizes. |
 | `-n`, `--lines <N>` | Number of lines to show (default: 50). |
 | `-f`, `--follow` | Follow the log in real time, like `tail -f`. Press Ctrl+C to stop. |
 | `--level <LEVEL>` | Minimum log level to show: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
 | `--session <ID>` | Filter lines containing a session ID substring. |
 | `--since <TIME>` | Show lines from a relative time ago: `30m`, `1h`, `2d`, etc. Supports `s` (seconds), `m` (minutes), `h` (hours), `d` (days). |
 | `--component <NAME>` | Filter by component: `gateway`, `agent`, `tools`, `cli`, `cron`. |
+
+A line without its own timestamp, such as a traceback frame or the rest of a multi-line message, is shown or hidden together with the timestamped line above it.
 
 ### Examples
 
@@ -1554,7 +1570,7 @@ See [Hooks](../user-guide/features/hooks.md) for event signatures and payload sh
 hermes memory <subcommand>
 ```
 
-Set up and manage external memory provider plugins. Bundled providers: honcho, openviking, mem0, holographic, retaindb, byterover, supermemory; hindsight (plugin catalog) after `hermes plugins install hindsight`. Only one external provider can be active at a time. Built-in memory (MEMORY.md/USER.md) is always active.
+Set up and manage external memory provider plugins. Bundled providers: openviking, mem0, holographic, retaindb, byterover; honcho, hindsight and supermemory (plugin catalog) after `hermes plugins install <name>` (`hermes update` does this automatically for a provider already named in `memory.provider`). Only one external provider can be active at a time. Built-in memory (MEMORY.md/USER.md) is always active.
 
 Subcommands:
 
@@ -1586,7 +1602,7 @@ python -m acp_adapter
 Install support first:
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e '.[acp]'
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['acp'], explicit=True)"
 ```
 
 See [ACP Editor Integration](../user-guide/features/acp.md) and [ACP Internals](../developer-guide/acp-internals.md).
@@ -1628,9 +1644,9 @@ Unified plugin management — general plugins, memory providers, and context eng
 | Subcommand | Description |
 |------------|-------------|
 | *(none)* | Composite interactive UI — general plugin toggles + provider plugin configuration. |
-| `install <identifier> [--force] [--ref COMMIT_SHA] [--allow-removed]` | Install a plugin from the Hermes plugin catalog (bare entry name), a Git URL, or `owner/repo` shorthand. Catalog names resolve to the entry's repo at its pinned 40-hex commit SHA, show the declared capability summary, and record catalog provenance on the installer's `.install-metadata.json` record (a `.hermes-catalog.json` copy is written inside the plugin dir for convenience, but is never trusted). Raw URLs are flagged as custom (unreviewed) sources; `--ref` (full 40-character commit SHA) pins them, and on a catalog entry records the checked-out SHA rather than the reviewed pin. `--allow-removed` (DANGEROUS) bypasses the removed-plugin blocklist at install AND exempts that install from the update/enable/load-time kill-list checks. |
+| `install <identifier> [--force] [--ref COMMIT_SHA] [--allow-removed]` | Install a plugin from the Hermes plugin catalog (bare entry name), a Git URL, or `owner/repo` shorthand. Catalog names resolve to the reviewed 40-hex commit SHA and show declared capabilities. Source, checked-out revision, and a nested catalog-provenance block are recorded in the installer's `plugins/.install-metadata.json`; the `.hermes-catalog.json` copy inside the plugin directory is only for convenience and is never trusted. Raw URLs are flagged as custom (unreviewed) sources. `--ref` selects a full-SHA custom pin and records the SHA actually checked out. `--allow-removed` (DANGEROUS) bypasses the removed-plugin blocklist at install and exempts that install from update, enable, and load-time kill-list checks. |
 | `search [term] [--json]` | Search the Hermes plugin catalog (matches entry names, descriptions, and declared tools; omit `term` to list everything). The catalog is curated in-repo (`plugin-catalog/`), refreshed from the live repo with a 6-hour cache, and falls back to the in-tree copy offline. Cataloged ≠ audited — admission reviews the entry, not the code. |
-| `update <name>` | Pull latest changes for an unpinned installed plugin. Pinned plugins must be reinstalled with `--force --ref <new-commit>` to move. |
+| `update <name>` | Re-pin catalog installs to the reviewed catalog SHA, or update a custom Git install from its recorded source/feed. PM validates active-plugin dependencies before code publication. Explicit custom pins move only with `install --force --ref <new-commit>`. |
 | `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin. |
 | `enable <name>` | Enable a disabled plugin. |
 | `disable <name>` | Disable a plugin without removing it. |
@@ -1753,6 +1769,7 @@ Subcommands:
 | `optimize-storage` | Migrate the full-text search index to the compact v23 external-content layout; on large databases this reclaims a large fraction of `state.db`. |
 | `repair` | Repair a malformed `state.db` schema (e.g. `table messages_fts already exists`) so hidden sessions reappear; a backup is made first. |
 | `repair-routing` | Re-attach gateway conversations stranded in session rows that lost their routing identity (a chat "jumping back in time" after a restart). Dry-run by default; `--apply` performs the adoptions (stop the gateway first); `--max-gap-seconds N` tunes the contiguity window. Only unambiguous cases are repaired. See [Sessions → Repair Stranded Gateway Sessions](../user-guide/sessions.md#repair-stranded-gateway-sessions). |
+| `repair-prompts` | Report stored system prompts provably degraded by the pre-#122822 maintenance-compaction bug. Report-only by default; `--apply` clears verified rows so the next turn rebuilds them, `--json` is machine-readable (and non-interactive when combined with `--apply`), and an explicit `session_id` is a destructive override that can clear even a healthy prompt. Rows without a readable tools[] pin, or with a memory-only pin, are reported as unverifiable and left unchanged by the scan (a resumed memory-only session re-pins its full tool surface, after which a scan can clear it). Restart a running gateway after `--apply` so repaired rows take effect. See [Sessions → Repair Degraded Stored Prompts](../user-guide/sessions.md#repair-degraded-stored-prompts). |
 | `repair-profiles` | Settle session, routing, Telegram-topic and voice-mode state that landed under the wrong profile (rows in another profile's store, labels disagreeing with the session key, parent links crossing profiles, index rows for deleted profiles). Dry-run by default; `--apply` performs the repairs after snapshotting every store (stop the gateway first); `--legacy-main rekey\|move` decides what `agent:main` rows inside a named profile's store are; `--json` for automation. See [Sessions → Repair State Crossed Between Profiles](../user-guide/sessions.md#repair-state-crossed-between-profiles). |
 | `recover` | Offline, non-destructive recovery of a damaged `state.db` into a separate clean database. |
 | `retitle-skills` | Regenerate titles for sessions opened with a `/skill`, using what the user actually typed; lists changes unless `--apply` is passed. |
@@ -1854,7 +1871,7 @@ Start the Hermes **backend server** — the JSON-RPC/WebSocket gateway the [desk
 hermes dashboard [options]
 ```
 
-Launch the web dashboard — a browser-based UI for managing configuration, API keys, and monitoring sessions. (For a headless backend with no browser UI — e.g. what the desktop app spawns — use [`hermes serve`](#hermes-serve) above.) Requires `cd ~/.hermes/hermes-agent && uv pip install -e ".[web]"` (FastAPI + Uvicorn). The embedded browser Chat tab is always available and additionally needs the `pty` extra (`cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"`) plus a POSIX PTY environment such as Linux, macOS, or WSL2. See [Web Dashboard](../user-guide/features/web-dashboard.md) for full documentation.
+Launch the web dashboard to manage configuration, API keys, and sessions. For a headless backend, use [`hermes serve`](#hermes-serve). FastAPI, Uvicorn, and the platform PTY helper are core dependencies. The `web` extra adds exact HTTP-stack constraints and is selected by standard PM setup through `all`. If dependencies are damaged, run `hermes pm repair`. The embedded Chat tab requires a POSIX PTY environment, such as Linux, macOS, or WSL2. See [Web Dashboard](../user-guide/features/web-dashboard.md).
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -1948,18 +1965,48 @@ hermes completion zsh >> ~/.zshrc
 hermes completion fish > ~/.config/fish/completions/hermes.fish
 ```
 
+## `hermes pm`
+
+Manage pinned tools, Python dependency environments, and their diagnostics.
+This command does not update the Hermes application itself.
+
+```bash
+hermes pm --help
+hermes pm doctor
+hermes pm status
+hermes pm repair
+hermes pm install
+hermes pm install chromium
+```
+
+For source development, run the setup script once, then activate the installed
+environment with `source ./activate` or PowerShell `. .\activate.ps1`.
+Use `deactivate` to restore the previous shell environment. See the
+[developer workflow](./package-management.md#developer-workflow) for preparation,
+daily commands, dependency refresh, and test environments.
+
+See [Package management](./package-management.md) for every subcommand,
+source-versus-bundle behavior, lazy-install policy, and maintainer commands.
+
 ## `hermes update`
 
 ```bash
 hermes update [--gateway] [--check] [--plan] [--no-backup] [--backup] [--yes]
 ```
 
-Pulls the latest `hermes-agent` code and reinstalls dependencies in the managed venv, then re-runs the post-install hooks (MCP servers, skills sync, completion install). Safe to run on a live install. Use `--check` to see whether your checkout is behind `origin/main` without installing.
+Updates an admitted source checkout and prepares dependencies through PM.
+Use `--check` to compare with its configured source target without applying
+the update. Desktop bundles, Docker, Nix, and Termux packages retain their
+external update owner. See [Updating & Uninstalling](../getting-started/updating.md).
 
 `hermes update` pulls the configured update branch (default: `main`). If your checkout is on another branch, Hermes may check out the update branch before pulling. Commit branch work before updating when you want to keep it outside the update autostash flow.
 
 | Option | Description |
 |--------|-------------|
+| `--install-id` | Print this installation's identity and path, then exit. |
+| `--set-channel CHANNEL` | Persist the update channel for this source installation without applying an update. `main` is the only valid source channel. Bundled applications have a fixed build channel and refuse channel changes. |
+| `--channel CHANNEL` | Select a source channel for this invocation only (`main` is the only valid one). |
+| `--branch NAME` | Select a source branch for this invocation; takes precedence over source channel selection. |
 | `--gateway` | Internal mode used by the messaging `/update` command. Uses file-based IPC for prompts and progress streaming instead of reading from terminal stdin. Not a gateway restart flag. |
 | `--check` | Check whether an update is available without pulling, installing dependencies, or restarting anything. |
 | `--plan` | Print the update plan and exit without changing anything: install kind (git/Docker/Nix/apt), every running Hermes service across all profiles with its supervisor and running code version, and how each will be restarted. On image- or package-managed installs, reports the correct external update command instead. Read-only. |
@@ -1985,7 +2032,7 @@ Additional behavior:
 | `hermes --version` | Print version information. |
 | `hermes update` | Pull latest changes and reinstall dependencies. |
 
-| `hermes uninstall [--full] [--gui] [--dry-run] [--yes]` | Remove Hermes, optionally deleting all config/data. `--gui` removes only the desktop Chat GUI, leaving the agent intact; `--full` also deletes config/data; `--dry-run` prints what would be removed without changing anything; `--yes` skips prompts. |
+| `hermes uninstall [--full] [--gui] [--data] [--dry-run] [--yes]` | Remove owned source-install files. `--gui` selects source-built desktop removal; `--full` also removes data. `--data` removes user data without deleting package-owned code. Sealed installs use their package owner for application removal. `--dry-run` previews the scope; `--yes` skips confirmation. |
 
 ## See also
 

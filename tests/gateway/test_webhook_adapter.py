@@ -535,6 +535,37 @@ class TestIdempotency:
             data = await resp2.json()
             assert data["status"] == "duplicate"
 
+            # Header-less deliveries in the same millisecond must not collide on a fallback id.
+            with patch("gateway.platforms.webhook.time.time", return_value=1_700_000_000.0):
+                bare = [await cli.post("/webhooks/idem", json={"a": 2}) for _ in range(2)]
+            assert [r.status for r in bare] == [202, 202]
+
+    @pytest.mark.asyncio
+    async def test_delivery_id_is_scoped_to_authenticated_route(self):
+        """Provider IDs deduplicate retries for one route, not unrelated authenticated routes."""
+        routes = {
+            "alpha": {"secret": _INSECURE_NO_AUTH, "prompt": "alpha"},
+            "beta": {"secret": _INSECURE_NO_AUTH, "prompt": "beta"},
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        headers = {"X-GitHub-Delivery": "provider-delivery-1"}
+        async with TestClient(TestServer(app)) as cli:
+            alpha = await cli.post("/webhooks/alpha", json={"route": "alpha"}, headers=headers)
+            beta = await cli.post("/webhooks/beta", json={"route": "beta"}, headers=headers)
+            alpha_retry = await cli.post("/webhooks/alpha", json={"route": "alpha"}, headers=headers)
+
+            assert (alpha.status, (await alpha.json())["status"]) == (202, "accepted")
+            assert (beta.status, (await beta.json())["status"]) == (202, "accepted")
+            assert (alpha_retry.status, (await alpha_retry.json())["status"]) == (200, "duplicate")
+
+        await asyncio.sleep(0)
+        assert adapter.handle_message.await_count == 2
+        sources = {call.args[0].source.user_id for call in adapter.handle_message.await_args_list}
+        assert sources == {"webhook:alpha", "webhook:beta"}
+
 
 # ===================================================================
 # Rate limiting
@@ -657,6 +688,43 @@ class TestSessionIsolation:
         assert len(captured_events) == 2
         ids = {ev.source.chat_id for ev in captured_events}
         assert len(ids) == 2, "Each delivery must have a unique session chat_id"
+
+    @pytest.mark.asyncio
+    async def test_delivery_tuple_is_an_unambiguous_session_identity(self):
+        """Route, provider delivery ID, and profile form one collision-free identity."""
+        adapter = _make_adapter()
+        captured_events = []
+
+        async def _capture(event):
+            captured_events.append(event)
+
+        def _spawn(prompt, delivery_id, route, profile, deliver, chat_id, now):
+            return adapter._spawn_agent_run(
+                {},
+                prompt,
+                delivery_id,
+                now,
+                route_config={"deliver": deliver, "deliver_extra": {"chat_id": chat_id}},
+                route_name=route,
+                profile=profile,
+                event_type="push",
+            )
+
+        adapter.handle_message = _capture
+        await asyncio.gather(
+            _spawn("high prompt", "external:d1", "build", "shared-profile", "telegram", "high-chat", 100.0),
+            _spawn("low prompt", "d1", "build:external", "shared-profile", "discord", "low-chat", 101.0),
+            _spawn("other prompt", "external:d1", "build", "other-profile", "slack", "other-chat", 102.0),
+        )
+
+        events = {event.text: event for event in captured_events}
+        high, low, other = (events[prompt] for prompt in ("high prompt", "low prompt", "other prompt"))
+        assert len({high.source.chat_id, low.source.chat_id, other.source.chat_id}) == 3
+        assert (high.source.profile, high.source.user_id) == ("shared-profile", "webhook:build")
+        assert (low.source.profile, low.source.user_id) == ("shared-profile", "webhook:build:external")
+        assert (other.source.profile, other.source.user_id) == ("other-profile", "webhook:build")
+        assert [adapter._delivery_info[e.source.chat_id]["deliver_extra"]["chat_id"] for e in (high, low, other)] == [
+            "high-chat", "low-chat", "other-chat"]
 
 
 # ===================================================================
@@ -817,6 +885,89 @@ class TestDeliverCrossPlatformThreadId:
         mock_target.send.assert_awaited_once_with(
             "12345", "hello", metadata={"thread_id": "999"}
         )
+
+
+class TestCrossPlatformDeliveryMirror:
+    """An opted-in route's delivered response is appended to the TARGET chat's session (real state.db),
+    so a follow-up reply there has context; without the opt-in the target transcript is untouched."""
+
+    _CHAT = "5135545282"
+
+    @staticmethod
+    def _seed_dm(home, sid, chat):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=home / "state.db")
+        db.create_session(sid, source="telegram")
+        db._conn.execute("UPDATE sessions SET session_key=?, chat_id=?, user_id=? WHERE id=?",
+                         (f"agent:main:telegram:dm:{chat}", chat, chat, sid))
+        db._conn.commit()
+        db.close()
+
+    @staticmethod
+    def _transcript(home, sid):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=home / "state.db")
+        rows = db._conn.execute("SELECT role, content FROM messages WHERE session_id=? ORDER BY id", (sid,)).fetchall()
+        db.close()
+        return [(r[0], r[1]) for r in rows]
+
+    @pytest.fixture
+    def homes(self, tmp_path, monkeypatch):
+        from pathlib import Path
+        import hermes_state
+        from hermes_cli.profiles import get_profile_dir
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        # The hermetic conftest pins DEFAULT_DB_PATH when hermes_state is already imported; un-pin it so
+        # state.db resolves from the active (profile-scoped) home at call time, as in production.
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+        work_home = get_profile_dir("work")
+        work_home.mkdir(parents=True)
+        # A DM chat_id is the user's id on every bot, so both profiles hold a session for it.
+        self._seed_dm(default_home, "dm-default", self._CHAT)
+        self._seed_dm(work_home, "dm-work", self._CHAT)
+        return default_home, work_home
+
+    @staticmethod
+    def _attach_target(adapter):
+        target = AsyncMock()
+        target.send = AsyncMock(return_value=SendResult(success=True))
+        adapter.gateway_runner = MagicMock()
+        adapter.gateway_runner._authorization_adapter = lambda platform, profile=None: target
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_opted_in_delivery_mirrors_into_the_routed_profiles_chat_session(self, homes):
+        default_home, work_home = homes
+        adapter = self._attach_target(_make_adapter())
+        delivery = {"deliver": "telegram", "route": "ambush-nfl", "profile": "work", "mirror": True,
+                    "deliver_extra": {"chat_id": self._CHAT}}
+        result = await adapter._deliver_cross_platform("telegram", "Henderson OUT Wednesday", delivery)
+        assert result.success is True
+        assert self._transcript(work_home, "dm-work") == [
+            ("user", "[Webhook delivery: ambush-nfl]\nHenderson OUT Wednesday")]
+        assert self._transcript(default_home, "dm-default") == []
+
+    @pytest.mark.asyncio
+    async def test_route_without_opt_in_never_touches_the_target_transcript(self, homes):
+        default_home, _ = homes
+        routes = {"plain": {"secret": _INSECURE_NO_AUTH, "prompt": "p", "deliver": "telegram",
+                            "deliver_extra": {"chat_id": self._CHAT}},
+                  "yaml-str": {"secret": _INSECURE_NO_AUTH, "prompt": "p", "deliver": "telegram",
+                               "deliver_extra": {"chat_id": self._CHAT}, "mirror_to_session": "false"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            for route in routes:
+                resp = await cli.post(f"/webhooks/{route}", json={"a": 1}, headers={"X-Request-ID": route})
+                assert resp.status == 202
+        self._attach_target(adapter)
+        deliveries = {delivery["route"]: delivery for delivery in adapter._delivery_info.values()}
+        for route in routes:
+            assert (await adapter._deliver_cross_platform("telegram", "hi", deliveries[route])).success is True
+        assert self._transcript(default_home, "dm-default") == []
 
 
 class TestInsecureNoAuthSafetyRail:
@@ -1069,8 +1220,7 @@ class TestMultiplexProfileWebhookAuthentication:
             "X-Hub-Signature-256": _github_signature(body, route_secret),
         }
         with (
-            patch.object(sc_mod, "_skill_commands", {}),
-            patch.object(sc_mod, "_skill_commands_home", None),
+            patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             async with TestClient(TestServer(self._app(adapter))) as cli:
                 resp = await cli.post("/p/worker/webhooks/gh", data=body, headers=headers)

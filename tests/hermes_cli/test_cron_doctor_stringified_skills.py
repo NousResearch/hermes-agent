@@ -16,6 +16,15 @@ class TestDoctorFlagsStringifiedSkills:
         issues = _cron_doctor_issues_for_job(job, raw_job=job)
         assert any("stringified list" in i for i in issues)
 
+    def test_advice_routes_through_the_tool_not_the_cli(self):
+        """`cron edit --skill` replaces the field and its merge path builds on the stored
+        record, so advising it risks a worse write; the tool path canonicalizes on entry."""
+        job = {"id": "j1", "skills": ["['x']"], "skill": None}
+        issues = _cron_doctor_issues_for_job(job, raw_job=job)
+        advice = next(i for i in issues if "stringified list" in i)
+        assert "cronjob(action='update'" in advice
+        assert "--skill" not in advice
+
     def test_repr_in_legacy_skill_flagged(self):
         job = {"id": "j1", "skills": [], "skill": "['x', 'y']"}
         assert _skills_repr_strings(job) == ["['x', 'y']"]

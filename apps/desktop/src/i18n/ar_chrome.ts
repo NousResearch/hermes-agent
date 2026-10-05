@@ -371,6 +371,11 @@ export const arChrome = {
       modelLimitedTip: (time: string) => `بلغ هذا النموذج حده الخاص ويعود في ${time}. النماذج الأخرى هنا ما زالت تعمل.`,
       usageLeft: (percent: number, time: null | string) =>
         time ? `متبقٍ ${percent}% · يُعاد الضبط ${time}` : `متبقٍ ${percent}%`,
+      poolAccounts: (count: number) => `عدد الحسابات: ${count}`,
+      poolLimited: (limited: number, total: number) => `${limited}/${total} من الحسابات محدودة`,
+      poolAccount: (number: number) => `الحساب ${number}`,
+      poolUnknown: 'بيانات الاستخدام غير متاحة',
+      poolUnavailable: 'سجّل الدخول مجددًا',
       usageTip: (provider: string) => `${provider} يقترب من حد الاستخدام.`,
       usageWindow: (label: string, percent: number, time: null | string) =>
         time ? `${label}: متبقٍ ${percent}%، يُعاد الضبط ${time}` : `${label}: متبقٍ ${percent}%`

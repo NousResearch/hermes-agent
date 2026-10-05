@@ -1,4 +1,4 @@
-import type { ModelOptionProvider, ProviderLimit } from '@hermes/shared'
+import type { ModelOptionProvider, ProviderLimit, ProviderUsageAccount, ProviderUsageWindow } from '@hermes/shared'
 
 import { DAY, fmtClock, fmtDayTime, startOfLocalDay } from '@/lib/time'
 
@@ -56,7 +56,19 @@ export interface UsageWindowView {
 /** The provider's live usage windows (rolled-over ones dropped), tightest first, or null when it
  *  reports none. The first is the one you'll hit first, so it's the one the chip shows. */
 export function usageWindows(provider: ModelOptionProvider, nowMs = Date.now()): null | UsageWindowView[] {
-  const windows = (provider.usage?.windows ?? [])
+  // A provider-scoped observation describes one credential, never its siblings.
+  if (provider.usage?.accounts?.length) {
+    return null
+  }
+
+  const windows = liveUsageWindows(provider.usage?.windows ?? [], nowMs)
+
+  return windows.length > 0 ? windows : null
+}
+
+function liveUsageWindows(windows: ProviderUsageWindow[], nowMs: number): UsageWindowView[] {
+  return windows
+    .filter(w => Number.isFinite(w.used_percent))
     .map(w => ({
       label: w.label,
       remaining: Math.max(0, Math.min(100, Math.round(100 - w.used_percent))),
@@ -64,8 +76,44 @@ export function usageWindows(provider: ModelOptionProvider, nowMs = Date.now()):
     }))
     .filter(w => w.resetMs === null || w.resetMs > nowMs)
     .sort((a, b) => a.remaining - b.remaining)
+}
 
-  return windows.length > 0 ? windows : null
+export interface PoolAccountView {
+  id: string
+  label: string
+  state: ProviderUsageAccount['state']
+  resetMs: null | number
+  windows: UsageWindowView[]
+}
+
+/** Keep unknown accounts unknown; a passed reset is not evidence of fresh quota. */
+export function poolUsage(provider: ModelOptionProvider, nowMs = Date.now()) {
+  const entries = provider.usage?.accounts
+
+  if (!entries?.length) {
+    return null
+  }
+
+  const accounts: PoolAccountView[] = entries.map(entry => {
+    const resetMs = parseMs(entry.resets_at)
+    const windows = liveUsageWindows(entry.windows ?? [], nowMs)
+    const expired = resetMs !== null && resetMs <= nowMs
+    const stale = entry.state === 'ready' && windows.length === 0
+
+    return { id: entry.id, label: entry.label ?? '', windows, resetMs, state: expired || stale ? 'unknown' : entry.state }
+  })
+
+  const limited = accounts.filter(entry => entry.state === 'limited')
+
+  return {
+    accounts,
+    limited: limited.length,
+    // Each account's reset already includes ALL its exhausted windows.
+    resetMs:
+      limited.length === accounts.length
+        ? Math.min(...limited.map(entry => entry.resetMs ?? Number.POSITIVE_INFINITY))
+        : null
+  }
 }
 
 /** `4:30 PM` today, `Oct 6, 9:00 AM` on another day. Infinity = unknown. */

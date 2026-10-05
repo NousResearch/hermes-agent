@@ -112,7 +112,7 @@ def _tick_admitted(
             # at-most-once side. One-shots still go through their own fire claim.
             n = len(due_jobs)
             due_jobs = [j for j in due_jobs if j.get("schedule", {}).get("kind") not in {"cron", "interval"}]
-            warn_store_unwritable(exc, f"skipped {n - len(due_jobs)} recurring job(s)")
+            warn_store_unwritable(exc, f"skipped {n - len(due_jobs)} recurring job(s)", "advance")
             if not due_jobs:
                 _sched._sweep_mcp_orphans()
                 return 0

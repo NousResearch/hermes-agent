@@ -80,7 +80,7 @@ def test_due_jobs_are_returned_when_the_store_cannot_be_saved(cron_store, full_d
         assert [d["id"] for d in get_due_jobs()] == ["due-job"]
 
         with cronjobs.use_cron_store(cron_store / "other-profile"):  # a second profile's store
-            cronjobs.warn_store_unwritable(OSError(errno.ENOSPC, "No space left on device"), "x")
+            cronjobs.warn_store_unwritable(OSError(errno.ENOSPC, "No space left on device"), "x", "scan")
 
     # Rate-limited per store: one WARNING per outage per profile, not one per 60s scan, and a
     # sibling profile on the same errno is not silenced; each names its store.
@@ -108,11 +108,13 @@ def test_tick_on_unwritable_store_returns_cleanly_without_dispatch(cron_store, m
     monkeypatch.setattr(scheduler, "_sweep_mcp_orphans", lambda: sweeps.append(1))
     monkeypatch.setattr(cronjobs, "_last_store_warning", {})
     monkeypatch.setattr(cronjobs, "_stage_jobs_payload", _enospc)
-    with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+    with caplog.at_level(logging.WARNING):
         assert scheduler.tick(verbose=False, sync=True) == 0
 
     assert ran == [] and sweeps == [1]
     assert f"Cron store {cron_store / 'cron'} is unwritable" in caplog.text
+    assert "skipped 1 recurring job(s)" in caplog.text  # not silenced by the scan's earlier warning
+    assert executions.latest_execution("due-job") is None  # skipped before its fire claim
     assert load_jobs() == before
     row = executions.latest_execution("once")
     if with_once:

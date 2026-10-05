@@ -1247,16 +1247,17 @@ def _write_marker(name: str, text: str, tmp_prefix: str) -> None:
         pass
 
 
-# One WARNING per (store, errno) per window: an unwritable store fails every 60s tick until fixed.
+# One WARNING per (store, errno, site) per window: an unwritable store fails every 60s tick until fixed;
+# the site keeps the scan's warning from silencing the tick's "skipped jobs" one.
 _STORE_WARN_INTERVAL_SECONDS = 900.0
 _last_store_warning: dict = {}
 
 
-def warn_store_unwritable(exc: OSError, consequence: str) -> None:
+def warn_store_unwritable(exc: OSError, consequence: str, site: str) -> None:
     """Rate-limited WARNING for a failed cron store write (ENOSPC/EROFS/EACCES). Callers skip the
     dispatch that needed the write: no job runs without a durable advance/fire claim."""
     cron_dir = str(_current_cron_store().cron_dir)  # multi-profile gateway: one key per store
-    now, key = time.monotonic(), (cron_dir, exc.errno)
+    now, key = time.monotonic(), (cron_dir, exc.errno, site)
     last = _last_store_warning.get(key)
     if last is not None and now - last < _STORE_WARN_INTERVAL_SECONDS:
         return
@@ -3358,7 +3359,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
         try:
             save_jobs(raw_jobs, removed_ids=scan.removed or None)
         except OSError as exc:  # repairs live in memory; the next tick retries the persist
-            warn_store_unwritable(exc, "due-scan repairs not persisted")
+            warn_store_unwritable(exc, "due-scan repairs not persisted", "scan")
     return due
 
 

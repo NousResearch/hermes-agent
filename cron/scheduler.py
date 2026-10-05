@@ -4265,7 +4265,7 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     try:
         claimed = claim_job_for_fire(job["id"], return_job=True)
     except OSError as exc:
-        warn_store_unwritable(exc, f"skipped job '{job.get('name') or job['id']}'")
+        warn_store_unwritable(exc, f"skipped job '{job.get('name') or job['id']}'", "claim")
         finish_execution(
             job["execution_id"], success=False, error=f"Cron store unwritable; not started: {exc}")
         return False

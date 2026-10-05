@@ -23,6 +23,7 @@ import time
 import pytest
 
 from agent import credential_pool as CP
+from agent import credential_pool_root_writethrough as CP_ROOT
 from agent.credential_pool import (
     AUTH_TYPE_OAUTH,
     CredentialPool,
@@ -120,10 +121,10 @@ def test_global_write_through_preserves_concurrent_root_update(
     monkeypatch.setattr(A, "_load_auth_store", paused_helper_load)
     # The pre-fix implementation imported the loader directly; patch both
     # bindings so reverting the safe helper still exercises the stale ordering.
-    monkeypatch.setattr(CP, "_load_auth_store", paused_helper_load)
+    monkeypatch.setattr(CP_ROOT, "_load_auth_store", paused_helper_load)
 
     def profile_write_through():
-        CP._write_through_provider_state_to_global_root(
+        CP_ROOT._write_through_provider_state_to_global_root(
             "xai-oauth",
             {"tokens": {"access_token": "new-xai", "refresh_token": "new-r"}},
         )

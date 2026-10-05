@@ -370,6 +370,7 @@ import {
   assertManagedUpdatePreflightClear,
   executeManagedRemoteUpdate,
   fenceManagedSshBootstrapPublication,
+  joinManagedUpdatesForApply,
   ManagedConnectionUpdateGate,
   managedSshDrainBlocker,
   managedSshRecoveryScopes,
@@ -4764,10 +4765,15 @@ async function applyUpdates(): Promise<UpdaterApplyResultWire> {
       // wait so long for that PID — never start that deadline while quit would
       // still be gated on a managed SSH update or its recovery transaction
       // (before-quit joins the same operations; the updater must not race them).
-      await waitForManagedUpdateOperations(() => [
-        ...managedConnectionUpdates.values(),
-        ...managedConnectionRecoveries.values()
-      ])
+      // Bounded (review H3): a refusal leaves the remote operations running.
+      const managedBusy = await joinManagedUpdatesForApply(
+        () => [...managedConnectionUpdates.values(), ...managedConnectionRecoveries.values()],
+        rememberLog
+      )
+
+      if (managedBusy) {
+        return managedBusy
+      }
 
       const packaged: UpdaterStrategy | null = await resolvePackagedUpdateStrategy()
       const strategy: UpdaterStrategy = packaged ?? resolveCheckoutUpdateStrategy()
@@ -9666,7 +9672,7 @@ const managedConnectionUpdateGate = new ManagedConnectionUpdateGate(
 const managedConnectionUpdates = new Map<string, Promise<any>>()
 const managedConnectionRecoveries = new Map<string, Promise<void>>()
 const managedPrimaryRestoreOwners = new Map<string, { correlationId: string; profile: string; source: any }>()
-let managedUpdateQuitWait: Promise<void> | null = null
+let managedUpdateQuitWait: Promise<unknown> | null = null
 let managedUpdateQuitWaitDone = false
 
 function assertCanMutateManagedPrimaryRouting() {

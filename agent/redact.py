@@ -218,6 +218,12 @@ _PREFIX_PATTERNS = [
 # and a bare ``password=…`` in a form body must not be swallowed greedily by ``\S+``. See #77484.
 _SECRET_ENV_NAMES = r"(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|PW|CREDENTIAL|AUTH)"
 _ENV_ASSIGN_RE = re.compile(rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2")
+_QUOTED_SECRET_LIST_VALUE = r'''(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')'''
+_FIRECRAWL_KEYS_FIELD_RE = re.compile(
+    r'''((?<![\w])["']?FIRECRAWL_API_KEYS["']?\s*[:=]\s*)'''
+    + rf'''(?:{_QUOTED_SECRET_LIST_VALUE}|\[(?:{_QUOTED_SECRET_LIST_VALUE}|[^\]"'])*\]|[^\r\n]*)''',
+    re.IGNORECASE,
+)
 # Lowercase env names: only underscore-boundary forms (``openai_key=``) — NOT
 # bare ``password=``/``token=``, which appear in prose, URLs, and form bodies.
 # The lookbehind anchors each attempt to the start of an identifier run; without
@@ -807,6 +813,8 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     that read a secret-bearing file would hold a head/tail mask shaped like a real but
     truncated key and could write it back as a dead credential (#35519)."""
     mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
+    if "firecrawl_api_keys" in text.lower():
+        text = _FIRECRAWL_KEYS_FIELD_RE.sub(lambda m: m.group(1) + '"***"', text)
     if "=" in text:
         _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)

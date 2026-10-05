@@ -44,7 +44,7 @@ _FEATURES: Dict[str, _FeatureSpec] = {
     "web": _FeatureSpec(
         "Web tools", True, "firecrawl", "firecrawl", ("web", "backend"),
         "Web search & extract (Firecrawl)", "Firecrawl/Exa/Parallel/Tavily/Perplexity/Keenable key or SearXNG",
-        ("PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"),
+        ("PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_KEYS", "FIRECRAWL_API_URL"),
     ),
     "image_gen": _FeatureSpec(
         "Image generation", True, "fal", "fal-queue", ("image_gen", "provider"), "Image generation (FAL)", "FAL key",
@@ -467,7 +467,8 @@ def get_nous_subscription_features(config: Optional[Dict[str, object]] = None, *
         return _fal_feature(key, enabled[key], fal_configured and not use_gateway[key], managed[key], selected[key])
 
     features = {  # insertion order == _FEATURE_ORDER
-        "web": _web_feature(_section(config, "web"), enabled["web"], managed["web"], use_gateway["web"], direct_firecrawl),
+        "web": _web_feature(_section(config, "web"), enabled["web"], managed["web"], use_gateway["web"],
+                            direct_firecrawl or (_any_env("FIRECRAWL_API_KEYS") and not use_gateway["web"])),
         "image_gen": _fal("image_gen"),
         "video_gen": _fal("video_gen"),
         "tts": tts,
@@ -528,7 +529,7 @@ def _get_gateway_direct_credentials() -> Dict[str, bool]:
     fal_direct = fal_key_is_configured()
     audio_direct = bool(resolve_openai_audio_api_key())
     return {
-        "web": _any_env("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "EXA_API_KEY", "SEARXNG_URL"),
+        "web": _any_env("FIRECRAWL_API_KEY", "FIRECRAWL_API_KEYS", "FIRECRAWL_API_URL", "PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "EXA_API_KEY", "SEARXNG_URL"),
         # Env-configured keyless local backend: a reachable self-hosted SearXNG is a working web setup even
         # with no stored selection (the autodetect cascade in tools/web_tools.py picks it up), so it must
         # not be classified "unconfigured" and pre-checked (#92647).

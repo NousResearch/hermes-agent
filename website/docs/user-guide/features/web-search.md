@@ -18,7 +18,7 @@ Both are configured through a single backend selection. Providers are chosen via
 
 | Provider | Env Var | Search | Extract | Free tier |
 |----------|---------|--------|---------|-----------|
-| **Firecrawl** (default) | `FIRECRAWL_API_KEY` (optional — keyless when selected) | ✔ | ✔ | 500 credits/mo · keyless cloud when selected |
+| **Firecrawl** (default) | `FIRECRAWL_API_KEY` or `FIRECRAWL_API_KEYS` (optional — keyless when selected) | ✔ | ✔ | 500 credits/mo · keyless cloud when selected |
 | **SearXNG** | `SEARXNG_URL` | ✔ | — | ✔ Free (self-hosted) |
 | **Brave Search (free tier)** | `BRAVE_SEARCH_API_KEY` | ✔ | — | 2 000 queries/mo |
 | **DDGS (DuckDuckGo)** | — (no key) | ✔ | — | ✔ Free |
@@ -71,7 +71,7 @@ Repeat web calls within a short window are served from cache instead of the paid
 
 | Call | Cache | Scope |
 |------|-------|-------|
-| `web_search` — same query (case/whitespace-insensitive), same provider | In-memory memo | Per process |
+| `web_search` — same query (case/whitespace-insensitive), same provider | In-memory memo | Per profile and process |
 | `web_extract` — same URL, same format, same provider | Full text stored under `~/.hermes/cache/web/` | Shared across CLI, gateway, cron, and subagent processes |
 
 Concurrent identical searches (a parallel subagent fan-out firing the same query at once) are **coalesced into a single backend request** — the first caller pays; the rest share the response. Requested search limits are bucketed up to 10/20/50/100 so near-identical requests (`limit=5` vs `limit=8`) share one entry, with each caller receiving its requested count.
@@ -123,6 +123,27 @@ FIRECRAWL_API_KEY=fc-your-key-here
 ```
 
 Get a key at [firecrawl.dev](https://firecrawl.dev). The free tier includes 500 credits/month.
+
+#### API key failover
+
+Set `FIRECRAWL_API_KEYS` to a JSON array in the profile's `.env`, or use:
+
+```bash
+hermes config set FIRECRAWL_API_KEYS '["fc-primary", "fc-backup"]'
+```
+
+There is no key-count limit. A nonempty list replaces `FIRECRAWL_API_KEY` for
+`web_search` and `web_extract`. Empty or unset lists use the existing configuration.
+Keys must be nonempty strings; whitespace and duplicates are removed.
+
+HTTP 402 retries the request with the next key. Other errors do not switch keys.
+The working key is reused; exhausted keys are skipped until restart or a change to
+the list/order/endpoint. After topping up credits, restart Hermes. Each process
+tracks exhaustion separately for each profile; requests within a pool are serialized.
+
+All keys use `FIRECRAWL_API_URL` when set. Explicit Nous routing is unchanged;
+a failed pool does not fall back to anonymous access. Browser sessions and hosted
+OCR/Parse still use `FIRECRAWL_API_KEY` only.
 
 **Self-hosted Firecrawl:** Point at your own instance instead of the cloud API:
 

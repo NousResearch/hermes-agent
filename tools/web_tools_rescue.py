@@ -56,6 +56,11 @@ def _rescue_eligible(provider) -> bool:
     """
     if not _keyless_rescue_enabled() or provider is None:
         return False
+    if getattr(provider, "name", "") == "firecrawl":
+        from plugins.web.firecrawl.key_pool import key_pool_configured
+        from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
+        if read_selection("web") != NOUS_MANAGED_PROVIDER and key_pool_configured():
+            return False
     try:
         from plugins.web.keyless_mcp import _KEYLESS_RING
         name = getattr(provider, "name", "")

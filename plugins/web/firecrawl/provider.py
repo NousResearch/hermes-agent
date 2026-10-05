@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import Any, Dict, List, Optional
 
 import httpx
 
 from plugins.web._common import BaseWebSearchProvider, keyless_extract, keyless_search, lazy_ensure, search_fail, search_ok, setup_schema
+from plugins.web.firecrawl.key_pool import FirecrawlKeyPool, configured_key_pool, key_pool_configured
 from tools import managed_tool_gateway as _gateway
 from tools import tool_backend_helpers as _backend_helpers
 from tools.url_safety import is_safe_url
@@ -25,6 +27,8 @@ _FIRECRAWL_CLOUD_API_URL = "https://api.firecrawl.dev"
 
 # The SDK costs ~200ms of imports on a cold CLI; defer to first use (tests patch ``Firecrawl`` here).
 _FIRECRAWL_CLS_CACHE: Optional[type] = None
+_CLIENT_LOCK = threading.Lock()
+_KEY_POOLS: dict = {}
 
 
 def _load_firecrawl_cls() -> type:
@@ -66,12 +70,12 @@ def _env(name: str) -> str:
     return (get_env_value(name) or "").strip()
 
 
-def _get_direct_firecrawl_config() -> Optional[tuple]:
-    """Direct Firecrawl ``(mode, kwargs, cache_key)`` or None. ``mode`` is ``"sdk"`` (keyed / self-hosted) or
-    ``"keyless"`` (explicit selection + no credentials → anonymous public cloud; the explicit selection is
-    required so an unconfigured install never silently routes to it)."""
-    api_key = _env("FIRECRAWL_API_KEY")
+def _get_direct_firecrawl_config() -> Optional[tuple[str, Dict[str, Any], tuple]]:
     api_url = _env("FIRECRAWL_API_URL").rstrip("/")
+    keys = configured_key_pool()
+    if keys:
+        return "pool", {"keys": keys, "api_url": api_url}, ("direct-pool", api_url, keys)
+    api_key = _env("FIRECRAWL_API_KEY")
     if api_key or api_url:
         return "sdk", {k: v for k, v in (("api_key", api_key), ("api_url", api_url)) if v}, ("direct", api_url or None, api_key or None)
     if _is_explicit_firecrawl_selection():
@@ -87,7 +91,7 @@ def _is_explicit_firecrawl_selection() -> bool:
 def _use_keyless_ring() -> bool:
     """Route via the keyless ring only with no direct credentials, when the managed Nous
     gateway isn't the selected path, and the keyless tier isn't disabled or pinned paid."""
-    if _env("FIRECRAWL_API_KEY") or _env("FIRECRAWL_API_URL"):
+    if key_pool_configured() or _env("FIRECRAWL_API_KEY") or _env("FIRECRAWL_API_URL"):
         return False
     from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
     from plugins.web.keyless_mcp import use_keyless
@@ -148,9 +152,9 @@ def _get_firecrawl_client() -> Any:
     wt = _wt()
     from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_error
     selected = read_selection("web")
-    direct_config = _get_direct_firecrawl_config()
+    direct_config = None if selected == NOUS_MANAGED_PROVIDER else _get_direct_firecrawl_config()
 
-    def _managed():
+    def _managed() -> Optional[tuple[str, Dict[str, Any], tuple]]:
         gw = _gateway.resolve_managed_tool_gateway("firecrawl", token_reader=_gateway.read_nous_access_token)
         if gw is None:
             return None
@@ -181,12 +185,24 @@ def _get_firecrawl_client() -> Any:
         logger.error("Firecrawl client initialization failed: %s", log)
         raise ValueError(message())
     client_mode, kwargs, client_config = resolved
-    cached = getattr(wt, "_firecrawl_client", None)
-    if cached is not None and getattr(wt, "_firecrawl_client_config", None) == client_config:
-        return cached
-    wt._firecrawl_client = _KeylessFirecrawlClient(api_url=kwargs["api_url"]) if client_mode == "keyless" else Firecrawl(**kwargs)
-    wt._firecrawl_client_config = client_config
-    return wt._firecrawl_client
+    from hermes_constants import hermes_home_key
+    home = hermes_home_key()
+    with _CLIENT_LOCK:
+        if client_mode == "pool":
+            cached = _KEY_POOLS.get(home)
+            if cached is None or cached[0] != client_config:
+                cached = (client_config, FirecrawlKeyPool(**kwargs, factory=Firecrawl))
+                _KEY_POOLS[home] = cached
+            return cached[1]
+        _KEY_POOLS.pop(home, None)
+        client_config = (home, client_config)
+        cached = getattr(wt, "_firecrawl_client", None)
+        if cached is not None and getattr(wt, "_firecrawl_client_config", None) == client_config:
+            return cached
+        client = _KeylessFirecrawlClient(api_url=kwargs["api_url"]) if client_mode == "keyless" else Firecrawl(**kwargs)
+        wt._firecrawl_client = client
+        wt._firecrawl_client_config = client_config
+        return client
 
 
 # --- Response shape normalization (SDK / direct / gateway differ) --------------
@@ -322,7 +338,8 @@ class FirecrawlWebSearchProvider(BaseWebSearchProvider):
     def get_setup_schema(self) -> Dict[str, Any]:
         return setup_schema(
             "Firecrawl", "keyless/paid · optional gateway",
-            "Full search + extract; supports keyless cloud, direct API, and Nous tool-gateway routing.",
+            "Full search + extract; supports keyless cloud, direct API, and Nous tool-gateway routing. "
+            "For ordered credit failover, set FIRECRAWL_API_KEYS to a JSON array via hermes config set.",
             "FIRECRAWL_API_KEY", "Firecrawl API key (optional; blank = keyless cloud or self-hosted)", "https://docs.firecrawl.dev/introduction",
         )
 

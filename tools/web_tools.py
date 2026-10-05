@@ -45,7 +45,10 @@ def _env_value(name: str) -> str:
         val = get_env_value(name)
     except Exception:
         val = None
-    return ((os.getenv(name, "") if val is None else val) or "").strip()
+    if val is None:
+        from agent.secret_scope import get_secret
+        val = get_secret(name)
+    return (val or "").strip()
 
 
 def _has_env(name: str) -> bool:
@@ -118,7 +121,7 @@ def _get_backend() -> str:
         ("tavily", _has_env("TAVILY_API_KEY")), ("perplexity", _has_env("PERPLEXITY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
         ("parallel", _has_env("PARALLEL_API_KEY")), ("keenable", _has_env("KEENABLE_API_KEY")),
-        ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")),
+        ("firecrawl", _has_env("FIRECRAWL_API_KEYS") or _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")),
         ("firecrawl", _is_tool_gateway_ready()), ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")), ("ddgs", _ddgs_package_importable()),
     )
@@ -222,7 +225,7 @@ def _web_requires_env() -> list[str]:
     Contract: set var -> tool sees it; extras are harmless for the not-logged-in."""
     return [
         "EXA_API_KEY", "PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "KEENABLE_API_KEY", "FIRECRAWL_API_KEY",
-        "FIRECRAWL_API_URL", "FIRECRAWL_GATEWAY_URL", "TOOL_GATEWAY_DOMAIN", "TOOL_GATEWAY_SCHEME",
+        "FIRECRAWL_API_KEYS", "FIRECRAWL_API_URL", "FIRECRAWL_GATEWAY_URL", "TOOL_GATEWAY_DOMAIN", "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
     ]
 
@@ -318,7 +321,7 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
     safety/config check. The provider is asked for the BUCKETED count so near-identical limits share an entry;
     the caller's count is sliced out. Only successful, non-rescued responses are cached — caching a rescue
     would make the one-shot ring fallback sticky for a whole TTL."""
-    from tools.web_result_cache import bucket_limit, search_memo, slice_search_response
+    from tools.web_result_cache import _credential_namespace, bucket_limit, search_memo, slice_search_response
 
     def _paid_search() -> tuple[dict, bool]:
         fetch_limit = bucket_limit(limit)
@@ -338,9 +341,11 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
             # Re-check inside the lock: a concurrent identical call may have stored.
             response_data = search_memo.lookup(provider.name, query, limit)
             if response_data is None:
+                namespace = _credential_namespace(provider.name)
                 response_data, was_rescued = _paid_search()
                 if not was_rescued:
-                    search_memo.store(provider.name, query, limit, response_data)
+                    search_memo.store(provider.name, query, limit, response_data,
+                                      **({"namespace": namespace} if namespace else {}))
     return slice_search_response(response_data, limit)
 
 

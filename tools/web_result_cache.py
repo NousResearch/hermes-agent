@@ -77,6 +77,13 @@ def _deep_copy(response: dict) -> dict:
 
 # ─── Search memo (in-memory, single-flight) ───────────────────────────────────
 
+def _credential_namespace(provider: str) -> str:
+    if provider == "firecrawl":
+        from plugins.web.firecrawl.key_pool import credential_cache_key
+        return credential_cache_key()
+    return ""
+
+
 class SearchMemo:
     """TTL memo + single-flight coalescer for search responses. Thread-safe: the parallel tool-dispatch pool
     and subagents share this process, so identical queries genuinely race; per-key locks make the losers
@@ -88,8 +95,10 @@ class SearchMemo:
         self._key_locks: Dict[tuple, threading.Lock] = {}
 
     @staticmethod
-    def _key(provider: str, query: str, limit: int) -> tuple:
-        return (provider, normalize_query(query), bucket_limit(limit))
+    def _key(provider: str, query: str, limit: int, namespace: Optional[str] = None) -> tuple:
+        from hermes_constants import hermes_home_key
+        namespace = _credential_namespace(provider) if namespace is None else namespace
+        return (hermes_home_key(), provider, namespace, normalize_query(query), bucket_limit(limit))
 
     def lookup(self, provider: str, query: str, limit: int) -> Optional[dict]:
         if not cache_enabled():
@@ -103,11 +112,13 @@ class SearchMemo:
         logger.info("web_search cache hit: %r via %s", query, provider)
         return _deep_copy(hit[1])
 
-    def store(self, provider: str, query: str, limit: int, response: dict) -> None:
+    def store(self, provider: str, query: str, limit: int, response: dict, *, namespace: Optional[str] = None) -> None:
         """Cache a SUCCESSFUL response for the bucketed key."""
         if not cache_enabled() or not isinstance(response, dict) or not response.get("success"):
             return
-        key = self._key(provider, query, limit)
+        if namespace is not None and namespace != _credential_namespace(provider):
+            return
+        key = self._key(provider, query, limit, namespace)
         with self._store_lock:
             now = time.monotonic()  # opportunistic expiry sweep bounds memory
             for k in [k for k, (exp, _) in self._store.items() if now >= exp]:
@@ -190,13 +201,16 @@ def _save_index(index: dict) -> None:
         logger.debug("Failed to save web extract cache index: %s", exc)
 
 
-def _url_digest(url: str, format: Optional[str], provider: str = "") -> str:
+def _url_digest(url: str, format: Optional[str], provider: str = "", namespace: Optional[str] = None) -> str:
     # format AND provider are part of the key: html != markdown, and one backend's rendering is not another's.
     raw = f"{url}\n{format or 'markdown'}\n{provider or ''}"
+    namespace = _credential_namespace(provider) if namespace is None else namespace
+    if namespace:
+        raw += f"\n{namespace}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
-def _entry_file_path(url: str, format: Optional[str], provider: str) -> Optional[Path]:
+def _entry_file_path(url: str, format: Optional[str], provider: str, namespace: Optional[str] = None) -> Optional[Path]:
     """Dedicated cache file per (url, format, provider) — deliberately NOT the truncate-store file
     (keyed on URL alone), which html/markdown or two providers' copies of one URL would overwrite.
 
@@ -208,7 +222,7 @@ def _entry_file_path(url: str, format: Optional[str], provider: str) -> Optional
     slug = "page"
     with suppress(Exception):
         slug = _host_slug(url)
-    return d / f"{slug}-{_url_digest(url, format, provider)}.cache.md"
+    return d / f"{slug}-{_url_digest(url, format, provider, namespace)}.cache.md"
 
 
 def _host_matches_pattern(host: str, pattern: str) -> bool:
@@ -279,22 +293,26 @@ def extract_cache_get(url: str, format: Optional[str] = None, provider: str = ""
 
 
 def extract_cache_put(
-    url: str, content: str, title: str = "", format: Optional[str] = None, provider: str = ""
+    url: str, content: str, title: str = "", format: Optional[str] = None, provider: str = "",
+    *, namespace: Optional[str] = None,
 ) -> None:
     """Store one successful extraction's full clean text for TTL reuse; pages over the truncate-store
     ceiling are not cached (serving a capped copy back as if whole would silently lose the tail)."""
     if not content or not _cacheable(url):
         return
+    if namespace is not None and namespace != _credential_namespace(provider):
+        return
     try:
         from tools.web_tools_truncate import MAX_STORED_TEXT_CHARS
-        file_path = _entry_file_path(url, format, provider)
+        namespace = _credential_namespace(provider) if namespace is None else namespace
+        file_path = _entry_file_path(url, format, provider, namespace)
         if len(content) > MAX_STORED_TEXT_CHARS or file_path is None:
             return
         from tools.spill_safety import write_text_exclusive
         write_text_exclusive(file_path, content, private=False, overwrite=True)
         with _index_lock:
             index = _load_index()
-            index[_url_digest(url, format, provider)] = {
+            index[_url_digest(url, format, provider, namespace)] = {
                 "url": url, "file": str(file_path), "title": title or "", "fetched_at": time.time(),
             }
             _save_index(index)

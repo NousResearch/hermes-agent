@@ -14,6 +14,7 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.error_classifier import FailoverReason
+from agent.i18n import tl
 from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_failure_copy import invalid_response_failure_reason, provider_label_for, site_copy, stamp_failure
 from agent.turn_truncation import handle_content_policy_refusal, recover_from_truncation
@@ -278,13 +279,13 @@ def retry_invalid_response(
             error_context=_soft_ctx, billing_unverified=_soft.billing_unverified,
         )
         if _recovered:
-            agent._buffer_diagnostic_status(f"🔄 Codex soft failure ({_soft.reason.value}) — switched to the next pool credential, retrying...")
+            agent._buffer_diagnostic_status(tl("display.status.turn.codex_pool_rotated", reason=_soft.reason.value))
             return _verdict("continue")
     retry_count += 1
 
     # Eager fallback: empty/malformed responses often mean rate limiting.
     if agent._fallback_index < len(agent._fallback_chain):
-        agent._buffer_diagnostic_status("⚠️ Empty/malformed response — switching to fallback...")
+        agent._buffer_diagnostic_status(tl("display.status.turn.invalid_response_fallback"))
     if agent._try_activate_fallback():
         active_system_prompt = _arm_fallback_restart(
             agent, api_messages, active_system_prompt, _retry)
@@ -302,7 +303,7 @@ def retry_invalid_response(
 
     if retry_count >= max_retries:
         if agent._has_pending_fallback():
-            agent._buffer_diagnostic_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
+            agent._buffer_diagnostic_status(tl("display.status.turn.invalid_response_max_retries_fallback", max=max_retries))
         if agent._try_activate_fallback():
             active_system_prompt = _arm_fallback_restart(
                 agent, api_messages, active_system_prompt, _retry)
@@ -311,7 +312,7 @@ def retry_invalid_response(
             return _verdict("break")
         # Terminal — flush buffered retry trace so user sees what happened.
         agent._flush_status_buffer()
-        agent._emit_diagnostic_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
+        agent._emit_diagnostic_status(tl("display.status.turn.invalid_response_gave_up", max=max_retries))
         logger.error("%sInvalid API response after %d retries.", agent.log_prefix, max_retries)
         agent._persist_session(messages, conversation_history)
         # "model=<id>" is describe_invalid_response's OpenRouter fallback, not a provider name.

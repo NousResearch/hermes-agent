@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -101,19 +102,14 @@ class TestSeverityExtraction:
 class TestVenvDiscovery:
     """Regression: source/PM installs carry hermes-agent 0.0.0, which matches every advisory."""
 
-    @staticmethod
-    def _dist(name, version):
-        class _D:
-            metadata = {"Name": name}
-        _D.version = version
-        return _D()
-
     def _versions(self, monkeypatch, base_version):
         from hermes_cli import version_info
 
-        dists = [self._dist("hermes_agent", "0.0.0"), self._dist("requests", "0.0.0")]
+        dists = [SimpleNamespace(metadata={"Name": n}, version="0.0.0") for n in ("hermes_agent", "requests")]
         monkeypatch.setattr("importlib.metadata.distributions", lambda: dists)
-        info = version_info.VersionInfo(base_version, base_version, None, "abc", None, "build")
+        info = version_info.VersionInfo(
+            base_version=base_version, derived_version=base_version, distance=None, commit="abc", branch=None, source="build"
+        )
         monkeypatch.setattr(version_info, "get_version_info", lambda: info)
         return {c.name: c.version for c in sa._discover_venv()}
 
@@ -122,8 +118,8 @@ class TestVenvDiscovery:
         assert versions["hermes_agent"] == "0.21.5"
         assert versions["requests"] == "0.0.0"  # only the agent's own placeholder is rewritten
 
-    def test_unknown_release_keeps_metadata_version(self, monkeypatch):
-        assert self._versions(monkeypatch, "unknown")["hermes_agent"] == "0.0.0"
+    def test_unknown_release_skips_placeholder(self, monkeypatch):
+        assert self._versions(monkeypatch, "unknown") == {"requests": "0.0.0"}
 
 
 class TestRunAudit:

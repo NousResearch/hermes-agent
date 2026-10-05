@@ -280,7 +280,7 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main_desktop.py",
+    "path": "hermes_cli/main_desktop_tcc.py",
     "symbol": "_desktop_macos_setup_tcc_identity",
     "kind": "bare_which"
   },

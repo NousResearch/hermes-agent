@@ -22,6 +22,7 @@ Two artifacts, one authority each:
 from __future__ import annotations
 
 import calendar
+import errno
 import logging
 import os
 import re
@@ -1308,11 +1309,22 @@ def _publish_exclusive(path: Path, body: bytes) -> bool:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o644)
     except FileExistsError:
         return False
+    made = os.fstat(fd)
     try:
-        os.write(fd, body)
+        if os.write(fd, body) != len(body):
+            raise OSError(errno.ENOSPC, f"short write publishing {path}")
         os.fsync(fd)
-    finally:
+    except BaseException:
+        # A torn claim names our live pid, so it would block every updater for as long as we
+        # run without our ever having acquired: withdraw the inode WE created — compared under
+        # the marker mutex, so a claimant that reclaimed it and published its own keeps that.
         os.close(fd)
+        with suppress(OSError), marker_mutex(path):
+            now = os.stat(path)
+            if (now.st_dev, now.st_ino) == (made.st_dev, made.st_ino):
+                path.unlink()
+        raise
+    os.close(fd)
     return True
 
 

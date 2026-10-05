@@ -16,6 +16,7 @@ disk.
 
 from __future__ import annotations
 
+import errno
 import os
 import subprocess
 import sys
@@ -339,6 +340,51 @@ def test_tmp_litter_with_a_digit_lookalike_pid_never_breaks_admission(marker, ow
     assert lock.acquire() is True
     assert marker.read_text(encoding="utf-8").startswith(f"{os.getpid()}\n")
     lock.release()
+
+
+def _torn_write(after=None):
+    """An ``os.write`` that lands part of the claim, then fails like a full disk."""
+    real_write = os.write
+
+    def torn(fd, data):
+        real_write(fd, data[: len(data) // 2])
+        if after is not None:
+            after()
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    return torn
+
+
+def _no_hard_links(*_args, **_kwargs):
+    raise PermissionError(errno.EPERM, "Operation not permitted")
+
+
+def test_failed_exclusive_create_leaves_no_torn_claim(marker, monkeypatch):
+    """Contract A3 without hard links (FAT, some network mounts): a claim whose write fails
+    part-way is withdrawn — a process that never acquired must not block every updater while
+    it lives."""
+    monkeypatch.setattr(os, "link", _no_hard_links)
+    monkeypatch.setattr(os, "write", _torn_write())
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is False
+    monkeypatch.undo()
+    assert not marker.exists()
+    assert read_live_update(path=marker) is None
+
+
+@pytest.mark.platforms("posix")  # replacing a file someone holds open needs POSIX unlink
+def test_withdrawing_a_torn_claim_never_deletes_a_replacement(marker, monkeypatch, other_pid):
+    """The withdrawal deletes only the inode it created: a claimant that reclaimed the torn
+    marker and published its own in between keeps its claim."""
+    def replace():
+        marker.unlink()
+        _claim_v2(marker, other_pid)
+
+    monkeypatch.setattr(os, "link", _no_hard_links)
+    monkeypatch.setattr(os, "write", _torn_write(replace))
+    assert UpdateLock(path=marker).acquire() is False
+    monkeypatch.undo()
+    assert marker.read_text(encoding="utf-8").startswith(f"{other_pid}\n")
 
 
 def test_unreadable_creation_time_gets_the_v1_ceiling(marker, other_pid, monkeypatch):

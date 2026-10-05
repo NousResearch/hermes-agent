@@ -23,6 +23,7 @@ class ConfigContext:
     user_providers: dict
     custom_providers: list
     excluded_providers: list = None
+    picker_explicit_only: bool = False
 
     def with_overrides(
         self, *, current_provider: Optional[str] = None, current_model: Optional[str] = None,
@@ -52,12 +53,25 @@ def load_picker_context() -> ConfigContext:
     else:  # config.model can be a bare string in older configs
         current_model, current_provider, current_base_url = (str(model_cfg) if model_cfg else ""), "", ""
     excluded = cfg.get("model_catalog", {}).get("excluded_providers") or []
+    picker_explicit_only = (
+        _coerce_picker_bool(model_cfg.get("picker_explicit_only"))
+        if isinstance(model_cfg, dict) else False
+    )
     return ConfigContext(
         current_provider=current_provider, current_model=current_model, current_base_url=current_base_url,
         user_providers=stringify_provider_map(cfg.get("providers")),
         custom_providers=get_compatible_custom_providers(cfg),
         excluded_providers=excluded if isinstance(excluded, list) else [],
+        picker_explicit_only=picker_explicit_only,
     )
+
+
+def _coerce_picker_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
 
 
 def _slug(row: dict) -> str:
@@ -87,20 +101,9 @@ def build_models_payload(
     cannot stall the response (GUI picker opens)."""
     from hermes_cli.model_switch import list_authenticated_providers
 
-    # Config opt-in: ``model.picker_explicit_only: true`` restricts every
-    # model picker (CLI, TUI, dashboard) to providers the user explicitly
-    # configured, hiding the full canonical provider universe. Default
-    # behaviour is unchanged when the flag is absent or false.
-    try:
-        from hermes_cli.config import load_config
-        _picker_cfg = (load_config().get("model") or {}).get(
-            "picker_explicit_only", False
-        )
-        if _picker_cfg:
-            explicit_only = True
-            include_unconfigured = False
-    except Exception:
-        pass
+    if ctx.picker_explicit_only:
+        explicit_only = True
+        include_unconfigured = False
 
     rows = list_authenticated_providers(
         current_provider=ctx.current_provider, current_base_url=ctx.current_base_url,

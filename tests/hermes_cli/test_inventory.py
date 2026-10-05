@@ -241,6 +241,32 @@ def test_explicit_only_keeps_anthropic_row_with_oauth_credentials():
     list_authenticated_providers just accepted those same credentials when
     building the row. The desktop explicit-only filter must keep it.
     """
+    rows = [
+        {"slug": "anthropic", "name": "Anthropic", "models": ["claude-sonnet-5"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+        {"slug": "copilot", "name": "Copilot", "models": ["gpt-5.4"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+    ]
+    ctx = _empty_ctx(provider="opencode-go", model="glm-5.3")
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.config.read_raw_config", return_value={}),
+        patch(
+            "hermes_cli.auth.is_provider_explicitly_configured",
+            return_value=False,
+        ),
+        patch(
+            "hermes_cli.inventory._anthropic_oauth_credentials_present",
+            return_value=True,
+        ),
+    ):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    slugs = [row["slug"] for row in payload["providers"]]
+    assert "anthropic" in slugs, "Anthropic OAuth must survive the explicit-only filter"
+    assert "copilot" not in slugs, "ambient credentials must stay filtered"
 
 
 # ─── model.picker_explicit_only config override ────────────────────────
@@ -261,11 +287,19 @@ def test_picker_explicit_only_config_overrides_include_unconfigured():
          "total_models": 1, "is_current": False, "is_user_defined": True,
          "source": "user-config"},
     ]
-    ctx = _empty_ctx(provider="zai", model="glm-5.2")
-    cfg_with_flag = {"model": {"picker_explicit_only": True}}
+    with patch(
+        "hermes_cli.config.load_config",
+        return_value={
+            "model": {
+                "picker_explicit_only": True,
+                "provider": "zai",
+                "default": "glm-5.2",
+            },
+        },
+    ):
+        ctx = load_picker_context()
     with (
         _list_auth_returning(rows),
-        patch("hermes_cli.config.load_config", return_value=cfg_with_flag),
         patch("hermes_cli.config.read_raw_config", return_value={}),
         patch(
             "hermes_cli.auth.is_provider_explicitly_configured",
@@ -291,11 +325,10 @@ def test_picker_explicit_only_absent_does_not_change_behaviour():
          "total_models": 1, "is_current": True, "is_user_defined": False,
          "source": "hermes"},
     ]
-    ctx = _empty_ctx(provider="zai", model="glm-5.2")
-    cfg_without_flag = {"model": {}}
+    with patch("hermes_cli.config.load_config", return_value={"model": {}}):
+        ctx = load_picker_context()
     with (
         _list_auth_returning(rows),
-        patch("hermes_cli.config.load_config", return_value=cfg_without_flag),
         patch("hermes_cli.config.read_raw_config", return_value={}),
     ):
         payload = build_models_payload(ctx, include_unconfigured=True)
@@ -304,6 +337,43 @@ def test_picker_explicit_only_absent_does_not_change_behaviour():
     # include_unconfigured=True still works — unconfigured canonical
     # providers appear as skeleton rows.
     assert len(slugs) > 1
+
+
+def test_picker_explicit_only_parses_config_booleans_safely():
+    rows = [
+        {"slug": "copilot", "name": "Copilot", "models": ["gpt-5.4"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+    ]
+    for value in (False, "false", "off", "no", "0", "unknown"):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"model": {"picker_explicit_only": value}},
+        ):
+            ctx = load_picker_context()
+        assert ctx.picker_explicit_only is False
+        with (
+            _list_auth_returning(rows),
+            patch("hermes_cli.config.read_raw_config", return_value={}),
+        ):
+            payload = build_models_payload(ctx, include_unconfigured=True)
+        assert any(row.get("source") == "canonical" for row in payload["providers"])
+
+    for value in (True, "true", "on", "yes", "1"):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"model": {"picker_explicit_only": value}},
+        ):
+            ctx = load_picker_context()
+        assert ctx.picker_explicit_only is True
+        with (
+            _list_auth_returning(rows),
+            patch("hermes_cli.config.read_raw_config", return_value={}),
+            patch("hermes_cli.auth.is_provider_explicitly_configured", return_value=False),
+        ):
+            payload = build_models_payload(ctx, include_unconfigured=True)
+        assert not any(row.get("source") == "canonical" for row in payload["providers"])
+        assert "copilot" not in [row["slug"] for row in payload["providers"]]
 
 
 def test_include_unconfigured_keeps_current_provider_visible_without_credentials():
@@ -338,40 +408,6 @@ def test_include_unconfigured_does_not_duplicate_configured_current_row():
         )
 
     assert sum(row["slug"] == "deepseek" for row in payload["providers"]) == 1
-
-def test_explicit_only_keeps_moa_when_raw_config_has_enabled_preset():
-
-    rows = [
-        {"slug": "anthropic", "name": "Anthropic", "models": ["claude-sonnet-5"],
-         "total_models": 1, "is_current": False, "is_user_defined": False,
-         "source": "hermes"},
-        {"slug": "copilot", "name": "Copilot", "models": ["gpt-5.4"],
-         "total_models": 1, "is_current": False, "is_user_defined": False,
-         "source": "hermes"},
-    ]
-    ctx = _empty_ctx(provider="opencode-go", model="glm-5.3")
-    with (
-        _list_auth_returning(rows),
-        patch("hermes_cli.config.read_raw_config", return_value={}),
-        patch(
-            "hermes_cli.auth.is_provider_explicitly_configured",
-            return_value=False,
-        ),
-        patch(
-            "hermes_cli.inventory._anthropic_oauth_credentials_present",
-            return_value=True,
-        ),
-    ):
-        payload = build_models_payload(ctx, explicit_only=True)
-
-    slugs = [row["slug"] for row in payload["providers"]]
-    assert "anthropic" in slugs, (
-        "Anthropic OAuth login must survive the explicit-only filter"
-    )
-    assert "copilot" not in slugs, (
-        "ambient credential discovery must stay filtered"
-    )
-
 
 def test_explicit_only_drops_anthropic_row_without_oauth_credentials():
     """No OAuth token and no explicit config -> Anthropic stays hidden."""

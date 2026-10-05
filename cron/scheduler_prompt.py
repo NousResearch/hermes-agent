@@ -41,8 +41,14 @@ def _prepend_context_block(prompt: str, heading: str, intro: str, body: str) -> 
 
 
 def _job_skill_names(job: dict) -> list[str]:
-    """Normalized skill names from ``skills`` (list or str) or the legacy singular ``skill``."""
-    from cron.jobs import _normalize_skill_list
+    """Normalized skill names from ``skills`` (list or str) or the legacy singular ``skill``.
+
+    Heals stringified entries via the stdlib-only ``cron.skill_lists`` leaf, deliberately NOT
+    ``cron.jobs``: this module is imported standalone for prompt assembly (the desktop gateway),
+    and a lazy store import here made skill loading fail with an unhandled ImportError wherever
+    the store was unavailable — where it previously returned names best-effort.
+    """
+    from cron.skill_lists import _normalize_skill_list
 
     skills = job.get("skills")
     if skills is None:

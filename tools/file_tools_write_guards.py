@@ -325,7 +325,8 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
         # approvals timeout, then reported "timed out" for a prompt no human saw. Detect that context the same
         # way ``_run_approval_gate`` does (#86878) and fail closed immediately with the honest reason. Single-query
         # runs are NEVER auto-approved here, whatever ``approvals.single_query_mode`` says.
-        if _approval._is_single_query_approval_context():
+        from tools.approval_context import _no_user_can_answer
+        if _no_user_can_answer():
             return blocked.format(why=_NO_HUMAN)
         # Same observer payload as the gateway branch (#131876), fired like the
         # dangerous-command CLI prompt in tools/approval.py.

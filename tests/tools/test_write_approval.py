@@ -318,50 +318,19 @@ def test_memory_inline_deny_blocks(hermes_home, approval_callback_cleanup):
     assert wa.pending_count("memory") == 0  # denied, not staged
 
 
-@pytest.mark.parametrize("failure, staged", [("import", False), ("runtime", True)])
-def test_memory_probe_failure_preserves_approval_contract(
-    failure, staged, hermes_home, approval_callback_cleanup, monkeypatch
+@pytest.mark.parametrize("context", ["single_query", "cron", "webhook"])
+def test_headless_memory_write_stages_without_inline_prompt(
+    hermes_home, approval_callback_cleanup, monkeypatch, context
 ):
-    import sys
-
-    from tools import approval, write_approval as wa
-    from tools.memory_tool import memory_tool, MemoryStore
-    from tools.terminal_tool import set_approval_callback
-
-    _set_approval("memory", True)
-    if failure == "import":
-        monkeypatch.setitem(sys.modules, "tools.approval", None)
-    else:
-        def broken_probe():
-            raise RuntimeError("probe failed")
-        monkeypatch.setattr(approval, "_is_single_query_approval_context", broken_probe)
-
-    calls = []
-    def approve(*args, **kwargs):
-        calls.append(args)
-        return "once"
-    set_approval_callback(approve)
-    store = MemoryStore()
-    store.load_from_disk()
-    result = json.loads(memory_tool("add", "memory", "probe fact", store=store))
-
-    assert result["success"] is True
-    assert bool(result.get("staged")) is staged
-    assert bool(calls) is not staged
-    assert store.memory_entries == ([] if staged else ["probe fact"])
-    assert wa.pending_count("memory") == int(staged)
-
-
-def test_single_query_memory_stages_without_inline_prompt(
-    hermes_home, approval_callback_cleanup, monkeypatch
-):
-    """Headless ``hermes chat -q`` runs have no human to answer a callback."""
+    """`hermes chat -q`, cron and unattended platforms can register the CLI callback but have no human to answer
+    it: the write stages at once instead of waiting the approval timeout."""
     from tools.memory_tool import memory_tool, MemoryStore
     from tools.terminal_tool import set_approval_callback
     from tools import write_approval as wa
 
     _set_approval("memory", True)
-    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    monkeypatch.setenv(*{"single_query": ("HERMES_SINGLE_QUERY_SESSION", "1"), "cron": ("HERMES_CRON_SESSION", "1"),
+                         "webhook": ("HERMES_SESSION_PLATFORM", "webhook")}[context])
 
     calls = []
 

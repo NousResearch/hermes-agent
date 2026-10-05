@@ -83,9 +83,17 @@ def test_erases_only_packs_whose_every_object_has_another_copy(clone: Path, monk
     clone_pack.with_suffix(".keep").write_text("pinned by hand\n", encoding="utf-8")
     _age(clone)
     held = _objects(clone)
-    with monkeypatch.context() as patched:  # an index that cannot be read this time is retried next time
-        patched.setattr(tidy._Index, "__init__", lambda self, idx: (_ for _ in ()).throw(OSError("busy")))
-        assert tidy.tidy_partial_clone_packs(clone).erased == 0
+    biggest = max(before, key=lambda p: p.stat().st_size).with_suffix(".idx")  # where most copies live
+    real_init = tidy._Index.__init__
+
+    def busy_biggest(self: object, idx: Path) -> None:
+        if idx == biggest:
+            raise OSError("busy")
+        real_init(self, idx)
+
+    with monkeypatch.context() as patched:  # without the index holding the copies, nothing is proven unique
+        patched.setattr(tidy._Index, "__init__", busy_biggest)
+        tidy.tidy_partial_clone_packs(clone)
 
     result = tidy.tidy_partial_clone_packs(clone)
 

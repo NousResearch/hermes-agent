@@ -18,6 +18,7 @@ Each erase and each merge is atomic for git (a pack exists for git only while bo
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import mmap
@@ -48,6 +49,7 @@ _MERGE_BATCH_BYTES = 256 * 1024 * 1024
 # since removing packs never adds copies) and the merge batch size, halved after a merge that ran out
 # of time. Remembering both is what guarantees progress: no update repeats work an earlier one finished.
 _STATE_FILE = "hermes-pack-tidy.json"
+_STATE_VERSION = 2  # v1 could record a pack as unique after comparing it with only some packs
 # Two tidies at once could each erase a pack because the other still has its copies.
 _LOCK_FILE = "hermes-pack-tidy.lock"
 # Payload first: git loads a pack only when both .idx and .pack exist, so once .pack is gone the pack is
@@ -132,7 +134,13 @@ def _drop_midx(pack_dir: Path) -> None:
     (pack_dir / "multi-pack-index").unlink(missing_ok=True)
     layers = pack_dir / "multi-pack-index.d"
     (layers / "multi-pack-index-chain").unlink(missing_ok=True)
-    shutil.rmtree(layers, ignore_errors=True)
+    for layer in layers.glob("*"):
+        with contextlib.suppress(OSError):  # a layer a reader still maps goes on a later run
+            if os.name == "nt":
+                os.chmod(layer, 0o666)  # git writes layers read-only; Windows refuses to unlink those
+            layer.unlink()
+    with contextlib.suppress(OSError):
+        layers.rmdir()
 
 
 def _remove_pack(pack: Path) -> int:
@@ -170,6 +178,8 @@ def _sweep_remnants(pack_dir: Path) -> None:
 def _load_state(pack_dir: Path) -> dict:
     try:
         state = json.loads((pack_dir.parent.parent / _STATE_FILE).read_text(encoding="utf-8-sig"))
+        if state.get("v") != _STATE_VERSION:
+            raise ValueError("pack tidy state from another version")
         kept, seen = set(state.get("kept", [])), set(state.get("seen", []))
         merge_bytes = int(state.get("merge_bytes", _MERGE_BATCH_BYTES))
     except (OSError, ValueError, TypeError, AttributeError):
@@ -181,7 +191,8 @@ def _load_state(pack_dir: Path) -> dict:
 
 def _save_state(pack_dir: Path, state: dict) -> None:
     live = sorted(p.stem for p in pack_dir.glob("pack-*.pack"))
-    data = {"kept": sorted(state["kept"] & set(live)), "seen": live, "merge_bytes": state["merge_bytes"]}
+    data = {"v": _STATE_VERSION, "kept": sorted(state["kept"] & set(live)), "seen": live,
+            "merge_bytes": state["merge_bytes"]}
     try:
         (pack_dir.parent.parent / _STATE_FILE).write_text(json.dumps(data), encoding="utf-8")
     except OSError:
@@ -226,6 +237,7 @@ def _erase_redundant_packs(pack_dir: Path, deadline: float, result: TidyResult, 
                 indexes[pack.stem] = _Index(pack.with_suffix(".idx"))
             except (OSError, ValueError):  # unreadable now: neither a candidate nor a copy, retried next run
                 logger.debug("pack index %s unreadable", pack.name, exc_info=True)
+        every_index_read = len(indexes) == len(sizes)
         by_size = sorted(sizes, key=lambda p: sizes[p], reverse=True)  # big packs hold most copies
         for pack in sorted(candidates, key=lambda p: sizes[p]):  # small first: cheapest to prove, likeliest copies
             if pack.stem not in indexes:
@@ -236,7 +248,8 @@ def _erase_redundant_packs(pack_dir: Path, deadline: float, result: TidyResult, 
                 result.out_of_time = True
                 return
             if not verdict:
-                state["kept"].add(pack.stem)
+                if every_index_read:  # unique among ALL packs; with one unread it is only unknown
+                    state["kept"].add(pack.stem)
                 continue
             indexes.pop(pack.stem).close()
             try:

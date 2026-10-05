@@ -615,19 +615,30 @@ def convert_treeless_checkout(repo_root: Path, **run_kwargs) -> bool:
     A treeless checkout holds no trees, and git asks for a missing tree without telling the server
     which ones it already has, so every checkout and path-filtered history walk downloads complete
     directory snapshots again: hundreds of GB on some installs. One ``--refetch`` of the clone's
-    own refspec brings every commit and tree (about 120 MB for this repo); file contents stay on
-    demand. A
-    failed refetch leaves the checkout treeless, so the next update retries. Returns whether it
-    converted; fetch failures raise subprocess errors.
+    refspec and its tags brings every commit and tree (about 120 MB for this repo); file contents
+    stay on demand. The checked-out commit can sit outside both (a branch fetched by hand, a
+    release ref the refspec does not name), so its history is checked offline and refetched by
+    commit when trees are still missing. The new filter is recorded only once that history is
+    whole: a failed or partial conversion leaves the checkout treeless, so the next update
+    retries. Returns whether it converted; fetch failures raise subprocess errors.
     """
     run_kwargs["creationflags"] = run_kwargs.get("creationflags", 0) | windows_hide_flags()
     if _partial_clone_filter(repo_root, **run_kwargs) != "tree:0":
         return False
-    subprocess.run(
-        ["git", "fetch", "--quiet", "--refetch", "--filter=blob:none", "--no-tags", "origin"],
-        cwd=str(repo_root), check=True, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
-    )
+    # A fetch spawns a detached gc/maintenance that would repack the whole refetch outside the
+    # update's time limit; the per-command keys leave the user's own settings alone.
+    refetch = ["git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "fetch", "--quiet", "--refetch",
+               "--filter=blob:none", "origin"]
+    fetch_kwargs = dict(cwd=str(repo_root), check=True, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=900, **run_kwargs)
+    subprocess.run([*refetch, "--tags"], **fetch_kwargs)
+    if not _history_trees_complete(repo_root, **run_kwargs):
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo_root), check=True,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+                              **run_kwargs).stdout.strip()
+        subprocess.run([*refetch, head], **fetch_kwargs)
+        if not _history_trees_complete(repo_root, **run_kwargs):
+            raise subprocess.CalledProcessError(1, refetch, stderr="the checked-out history is still missing trees")
     # A refetch into an existing partial clone leaves its configured filter alone; record the
     # new one only now, so a failed or interrupted refetch is retried by the next update.
     subprocess.run(
@@ -635,6 +646,17 @@ def convert_treeless_checkout(repo_root: Path, **run_kwargs) -> bool:
         cwd=str(repo_root), check=True, capture_output=True, timeout=30, **run_kwargs,
     )
     return True
+
+
+def _history_trees_complete(repo_root: Path, **run_kwargs) -> bool:
+    """Whether every tree in HEAD's history is local, checked without fetching (~3 s for this repo)."""
+    env = dict(run_kwargs.pop("env", None) or noninteractive_git_env(), GIT_NO_LAZY_FETCH="1")
+    walk = subprocess.run(
+        ["git", "rev-list", "--objects", "--filter=blob:none", "--missing=print", "HEAD"],
+        cwd=str(repo_root), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=300, env=env, **run_kwargs,
+    )
+    return walk.returncode == 0 and not any(line.startswith("?") for line in walk.stdout.splitlines())
 
 
 def settle_partial_clone_maintenance(repo_root: Path) -> None:

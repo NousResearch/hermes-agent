@@ -66,10 +66,45 @@ def test_depth_prefetch_on_a_full_clone_restores_ancestry_and_keeps_it_full(tmp_
     assert _git(clone, "config", "--get", "remote.origin.promisor").returncode != 0
 
 
-def test_treeless_checkout_gets_every_tree_once_so_history_walks_stay_offline(tmp_path):
+def _side_history(origin: Path, ref: str) -> None:
+    """Three commits off main~1 that only ``ref`` reaches; main's branch is left where it was."""
+    _git(origin, "checkout", "-q", "-b", "side", "main~1")
+    for i in range(3):
+        (origin / "f.txt").write_text(f"side {i}\n", encoding="utf-8")
+        _git(origin, "commit", "-qam", f"s{i}")
+    if ref.startswith("refs/tags/"):
+        _git(origin, "tag", ref.removeprefix("refs/tags/"))
+    _git(origin, "checkout", "-q", "main")
+    if ref.startswith("refs/tags/"):
+        _git(origin, "branch", "-D", "side")
+
+
+def _check_out_main(clone: Path) -> None:
+    pass
+
+
+def _check_out_tag_only_release(clone: Path) -> None:
+    _git(clone, "fetch", "-q", "origin", "refs/tags/v9:refs/tags/v9")
+    _git(clone, "checkout", "-q", "--detach", "v9")
+
+
+def _check_out_branch_outside_the_refspec(clone: Path) -> None:
+    _git(clone, "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
+    _git(clone, "fetch", "-q", "origin", "side:side")
+    _git(clone, "checkout", "-q", "side")
+
+
+@pytest.mark.parametrize("ref, check_out, history", [
+    ("refs/heads/side", _check_out_main, 5),
+    ("refs/tags/v9", _check_out_tag_only_release, 7),
+    ("refs/heads/side", _check_out_branch_outside_the_refspec, 7),
+])
+def test_treeless_checkout_gets_its_whole_history_once_so_walks_stay_offline(tmp_path, ref, check_out, history):
     origin = _origin(tmp_path, 5)
+    _side_history(origin, ref)
     clone = tmp_path / "clone"
-    _git(tmp_path, "clone", "-q", "--filter=tree:0", f"file://{origin}", str(clone))
+    _git(tmp_path, "clone", "-q", "--filter=tree:0", "--no-tags", f"file://{origin}", str(clone))
+    check_out(clone)
     offline = dict(os.environ, GIT_NO_LAZY_FETCH="1")
     walk = ["git", "log", "--format=%H", "--", "f.txt"]
     assert subprocess.run(walk, cwd=clone, env=offline, capture_output=True).returncode != 0
@@ -77,8 +112,8 @@ def test_treeless_checkout_gets_every_tree_once_so_history_walks_stay_offline(tm
     assert convert_treeless_checkout(clone) is True
 
     assert _git(clone, "config", "remote.origin.partialclonefilter").stdout.strip() == "blob:none"
-    walked = subprocess.run(walk, cwd=clone, env=offline, capture_output=True, text=True)
-    assert walked.returncode == 0 and len(walked.stdout.split()) == 5
+    walked = subprocess.run(walk, cwd=clone, env=offline, capture_output=True, text=True, encoding="utf-8")
+    assert walked.returncode == 0 and len(walked.stdout.split()) == history
     assert convert_treeless_checkout(clone) is False
 
 

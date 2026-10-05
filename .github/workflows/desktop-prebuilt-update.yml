@@ -1,0 +1,42 @@
+name: Desktop prebuilt update
+
+# After main is green enough to build, publish the Windows desktop app for
+# that exact commit. The installed app downloads this zip instead of compiling
+# the desktop app on the user's machine. A failed build publishes nothing, so
+# Check now does not offer that commit.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  win-unpacked:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Node workspaces
+        run: npm ci
+
+      - name: Pack the desktop app
+        run: npm run pack --workspace apps/desktop
+
+      - name: Zip the unpacked app
+        shell: pwsh
+        run: tar -a -c -f desktop-win-unpacked.zip -C apps/desktop/release win-unpacked
+
+      - name: Publish the prebuilt update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: gh release create "desktop-${{ github.sha }}" desktop-win-unpacked.zip --repo "${{ github.repository }}" --target "${{ github.sha }}" --prerelease --title "Desktop update ${{ github.sha }}" --notes "Prebuilt Windows desktop app for this commit."

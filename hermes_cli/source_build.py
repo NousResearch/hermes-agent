@@ -110,8 +110,15 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     frontends = source_frontends(project_root)
     if not frontends:
         return
+    prebuilt = False
+    if desktop:
+        from hermes_cli.prebuilt_desktop import install_prebuilt_desktop
+
+        prebuilt = install_prebuilt_desktop(project_root)
+        if prebuilt:
+            print("  ✓ Using the desktop build that already passed CI")
     env = source_build_env(explicit=True)
-    workspaces = frontends + (("apps/desktop",) if desktop else ())
+    workspaces = frontends + (("apps/desktop",) if desktop and not prebuilt else ())
     publish_stage("Updating Node dependencies")
     prepare_source_dependencies(project_root, workspaces, env=env, explicit=True)
     if "ui-tui" in frontends:
@@ -120,7 +127,11 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     if "web" in frontends:
         publish_stage("Building the web UI")
         build_source_web(project_root, env=env)
-    if desktop:
+    if desktop and prebuilt:
+        from hermes_cli.main_desktop import _refresh_installed_desktop_apps
+
+        _refresh_installed_desktop_apps(project_root / "apps/desktop")
+    elif desktop:
         from hermes_cli.main_desktop import _refresh_installed_desktop_apps, build_prepared_desktop
 
         publish_stage("Building the desktop app")

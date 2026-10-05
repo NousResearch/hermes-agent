@@ -551,9 +551,14 @@ def capture_before(
 
 def _skills_roots_for_classification() -> List[Path]:
     """Every live skills tree a host-local write could land in: the active profile's
-    roots (local + create_dir + external_dirs), the default root's, and every sibling
-    profile's. Resolved and deduped so a symlinked profile dir matches its canonical
-    tree. Fail-quiet: an unresolvable root is skipped, never fatal."""
+    roots (local + create_dir + external_dirs + trusted project dirs), the default root's,
+    and every sibling profile's. Resolved and deduped so a symlinked profile dir matches
+    its canonical tree. Fail-quiet: an unresolvable root is skipped, never fatal.
+
+    This is the SINGLE source of truth for which skill roots the ledger may touch — both
+    file-tool classification (classify_file_tool_target) and rollback path-validation
+    (_validate_entry_paths) use it, so a skill the tool captures into a root is also
+    rollable back from it (no unrecoverable entries)."""
     roots: List[Path] = []
 
     def _add(candidate) -> None:
@@ -565,6 +570,10 @@ def _skills_roots_for_classification() -> List[Path]:
     with suppress(Exception):
         from agent.skill_utils import get_all_skills_dirs
         for d in get_all_skills_dirs():
+            _add(d)
+    with suppress(Exception):
+        from agent.skill_utils import get_project_skills_dirs
+        for d in get_project_skills_dirs():
             _add(d)
     with suppress(Exception):
         from hermes_constants import get_default_hermes_root
@@ -714,37 +723,12 @@ def get_entry(entry_id: str) -> Optional[dict[str, Any]]:
     return next((r for r in list_entries() if r.get("id") == entry_id), None) if entry_id else None
 
 
-def _configured_skill_roots() -> List[Path]:
-    """Roots a rollback may write into: HERMES_HOME plus every configured skill root
-    (``skills.external_dirs``, ``skills.create_dir``, and the trusted project skills dirs).
-
-    Read from CONFIG on every call, never from the entry: the anti-tamper property is that a
-    hand-edited ledger cannot widen the set, only the operator's own skills config can (the
-    project side is managed by ``hermes skills trust`` and read back through
-    ``get_project_skills_dirs``). Create-dir and external roots are in because the tool itself
-    CAPTURES mutations there; refusing them at rollback would mint entries that are permanently
-    unrecoverable.
-    """
-    roots = [get_hermes_home()]
-    try:
-        from agent.skill_utils import (
-            get_external_skills_dirs, get_project_skills_dirs, get_skill_create_dir)
-        roots.extend(get_external_skills_dirs())
-        roots.extend(get_project_skills_dirs())
-        create_dir = get_skill_create_dir()
-        if create_dir is not None:
-            roots.append(create_dir)
-    except Exception:  # pragma: no cover — a config read failure narrows, never widens
-        logger.debug("skill_ledger: configured skill-root lookup failed", exc_info=True)
-    return roots
-
-
 def _validate_entry_paths(entry: dict[str, Any]) -> Optional[str]:
     """Every entry path must be under HERMES_HOME or a classifiable skills root — the
     classifier ledgers exactly that universe (active profile, default root, sibling
     profiles, configured external/create_dir and trusted project dirs), so rollback must
     cover it, while a hand-edited ledger still cannot become a write-anywhere primitive
-    (#129222 review: under a named profile HERMES_HOME is ``<root>/profiles/<active>`` and
+    (#129325 review: under a named profile HERMES_HOME is ``<root>/profiles/<active>`` and
     sibling trees sit OUTSIDE it, which made sibling-tree entries — deletes included —
     unrecoverable; #110011 adds trusted project dirs to the allowed set)."""
     home = get_hermes_home()
@@ -764,7 +748,9 @@ def rollback_entry(entry_id: str) -> tuple[bool, str]:
     agent/curator_backup.rollback): every before-blob must exist BEFORE any change, and a
     pre-rollback safety entry of every touched path's CURRENT state is appended first.
 
-    1. 2. See #63366.
+    Rollback holds ``_skill_mutation_lock`` for the entry's skill so an ordinary mutation
+    cannot land in the safety-capture-to-restore window and be overwritten without a
+    recoverable ledger row.
     """
     entry = get_entry(entry_id)
     if entry is None:

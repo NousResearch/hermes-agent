@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 import hashlib
 import shutil
+import tempfile
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
@@ -144,8 +146,17 @@ def install_from_quarantine(
     quarantine_path: Path, skill_name: str, category: str, bundle: SkillBundle, scan_result: ScanResult,
     scan_provenance: Optional[dict[str, Any]] = None,
 ) -> Path:
-    """Move a scanned skill from quarantine into the skills directory."""
+    """Move a scanned skill from quarantine into the skills directory.
+
+    Prepared-replacement semantics (see issue #123325): the new bundle is staged and
+    validated UNDER the destination skills root (in a ``.hub``-owned location that skill
+    discovery skips) BEFORE the only old copy is removed. A failed transfer or post-move
+    content-hash read therefore leaves the previously installed skill fully available, and
+    failed filesystem publication never updates provenance. If the destructive swap itself
+    fails, the old tree is retained and the staged replacement is kept at a reported recovery
+    location rather than being discarded."""
     from tools.skills_hub import HubLockFile, _quarantine_dir, _skills_dir, append_audit_log
+
     safe_skill_name = _validate_skill_name(skill_name)
     safe_category = _validate_install_parent_path(category) if category else ""
     quarantine_resolved = quarantine_path.resolve()
@@ -157,8 +168,6 @@ def install_from_quarantine(
     # symlink-redirected target.
     install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
     _check_install_target(install_dir)
-    if install_dir.exists():
-        shutil.rmtree(install_dir)
 
     try:
         skill_size = (quarantine_path / "SKILL.md").stat().st_size
@@ -182,9 +191,72 @@ def install_from_quarantine(
                 rel = entry
             raise ValueError(f"Installed skill contains symlinks, which is not allowed: {rel}")
 
-    install_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(quarantine_path), str(install_dir))
-    installed_hash = content_hash(install_dir)
+    # --- Prepared replacement -------------------------------------------------
+    # Stage the validated bundle beside the target, inside the hub-owned directory so it
+    # is never picked up as a skill, then validate it (a content hash over the staged tree)
+    # BEFORE touching the live tree, so a partial copy or read failure cannot destroy the
+    # installed skill. A per-attempt unique staging dir keeps concurrent same-skill installs
+    # from clobbering each other's staging.
+    staging_root = _skills_dir().resolve() / ".hub" / ".replacement-staging"
+    staging_root.mkdir(parents=True, exist_ok=True)
+    staging_dir = Path(tempfile.mkdtemp(prefix=f"{safe_skill_name}-", dir=staging_root))
+    try:
+        shutil.copytree(str(quarantine_resolved), str(staging_dir))
+        staged_hash = content_hash(staging_dir)
+    except Exception as exc:
+        # Validation/transfer of the new bundle failed — the old skill is untouched and
+        # provenance is not updated. Clean the staging dir and surface the cause.
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise RuntimeError(
+            f"skill '{safe_skill_name}' replacement failed before install; keeping "
+            f"the existing installation intact. Staging error: {exc}"
+        ) from exc
+
+    # The new bundle is validated in place. Perform the destructive swap as a rename of the
+    # OLD tree aside first, then move the staged replacement in, then remove the old tree
+    # ONLY once the new one is in place — so a failure at any point leaves either the old
+    # install or the new bundle (at a recovery path), never a vanished skill.
+    recovery_dir = staging_root / f".recovery-{safe_skill_name}-{content_hash(quarantine_resolved)[:8]}"
+    legacy_recovery = staging_root / f".recovery-{safe_skill_name}"
+    try:
+        if install_dir.exists():
+            # Move the live tree aside (rename, not delete) so it survives a failed swap.
+            if recovery_dir.exists():
+                shutil.rmtree(recovery_dir, ignore_errors=True)
+            shutil.move(str(install_dir), str(recovery_dir))
+        install_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(staging_dir), str(install_dir))
+        installed_hash = content_hash(install_dir)
+        # The staged hash must equal the post-swap hash; a mismatch means the swap moved a
+        # different tree than we validated — bail to recovery rather than publish it.
+        if staged_hash != installed_hash:
+            raise RuntimeError(
+                f"skill '{safe_skill_name}' replacement hash changed during swap "
+                f"({staged_hash} != {installed_hash}); not publishing"
+            )
+    except Exception as exc:
+        # Swap failed: put the old tree back if we moved it aside, and keep the staged
+        # replacement at a recovery path so the operator can complete the swap manually
+        # instead of losing either version.
+        if not install_dir.exists() and recovery_dir.exists():
+            try:
+                shutil.move(str(recovery_dir), str(install_dir))
+            except Exception:
+                logger.debug("Unable to restore previous install for %s", safe_skill_name, exc_info=True)
+        else:
+            try:
+                if staging_dir.exists():
+                    shutil.move(str(staging_dir), str(legacy_recovery))
+            except Exception:
+                logger.debug("Unable to stage recovery copy for %s", safe_skill_name, exc_info=True)
+        raise RuntimeError(
+            f"skill '{safe_skill_name}' replacement failed during install; the previous "
+            f"installation is restored and the new bundle is staged at "
+            f"{legacy_recovery if staging_dir.exists() else recovery_dir}. Swap error: {exc}"
+        ) from exc
+
+    # Swap succeeded: drop the now-redundant aside copy and publish provenance + audit.
+    shutil.rmtree(recovery_dir, ignore_errors=True)
     HubLockFile().record_install(
         name=safe_skill_name, source=bundle.source, identifier=bundle.identifier, trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict, skill_hash=installed_hash,
@@ -192,8 +264,11 @@ def install_from_quarantine(
         files=list(bundle.files.keys()), metadata=bundle.metadata,
         scan_provenance=scan_provenance or getattr(scan_result, "scan_provenance", None),
     )
-    append_audit_log("INSTALL", safe_skill_name, bundle.source, bundle.trust_level, scan_result.verdict,
-                     installed_hash)
+    # Telemetry, not a gate: an audit-log I/O failure must not report install failure when
+    # the skill is already installed and provenance recorded.
+    with suppress(Exception):
+        append_audit_log("INSTALL", safe_skill_name, bundle.source, bundle.trust_level, scan_result.verdict,
+                         installed_hash)
     try:
         from tools.skill_usage import record_installed
         record_installed(safe_skill_name)

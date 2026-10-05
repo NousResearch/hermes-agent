@@ -505,6 +505,13 @@ def _ledgered(action: str):
     The after-state is read back from the skill's current location, so a delete records an
     empty after-state and a create records the package it just wrote. Telemetry, never a gate:
     a broken ledger cannot fail the mutation it was describing.
+
+    Note: ``skill_manage`` holds ``_skill_mutation_lock`` around the wrapped handler, so the
+    entry-point path is serialized with ``rollback_entry``; direct handlers (dashboard,
+    ``agent.learning_mutations.edit_node``) call the wrapped handler WITHOUT that lock and are
+    therefore best-effort audited, not lock-serialized against rollback. That is accepted:
+    the ledger entry is still written before the mutation is reported, and rollback remains
+    fail-closed on path validation.
     """
     def _decorate(handler):
         @functools.wraps(handler)

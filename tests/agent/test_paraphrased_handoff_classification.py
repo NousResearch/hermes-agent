@@ -37,8 +37,10 @@ def _acp_tags_summary(message):
         (is_compaction_summary_message, "user", PARAPHRASED_HANDOFF, False),
         # ...including on ACP history replay, which classifies content without the message helper.
         (_acp_tags_summary, "user", PARAPHRASED_HANDOFF, False),
+        # A tool result quoting the marker is real output: classifying it drops it and orphans its call.
+        (is_compaction_summary_message, "tool", PARAPHRASED_HANDOFF, False),
     ],
-    ids=["paraphrased", "merged", "quoted-no-vocab", "quoted-generic-vocab", "user-paste", "acp-user-paste"],
+    ids=["paraphrased", "merged", "quoted-no-vocab", "quoted-generic-vocab", "user-paste", "acp-user-paste", "tool-quote"],
 )
 def test_paraphrased_handoff_classification(is_summary, role, content, expected):
     assert is_summary({"role": role, "content": content}) is expected

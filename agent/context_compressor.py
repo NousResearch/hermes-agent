@@ -4505,7 +4505,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             return False
         # Paraphrased echoes are model output; a user pasting the marker stays a user turn.
         return cls._has_compressed_summary_metadata(message) or cls._is_context_summary_content(
-            message.get("content"), paraphrased=message.get("role") != "user"
+            message.get("content"), paraphrased=message.get("role") == "assistant"
         )
 
     @classmethod

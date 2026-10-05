@@ -288,6 +288,38 @@ def test_a_refused_job_join_never_runs_the_command(tmp_path):
 
 
 
+def test_a_command_that_would_start_outside_the_job_never_runs(tmp_path):
+    """F54: a launcher interpreter that joins while what it starts escapes the job (a Store
+    Python alias) must not run the command. Control: a job with SILENT_BREAKAWAY_OK, which the
+    launcher joins but whose children start outside it."""
+    import ctypes
+
+    from hermes_cli.update_custody import _CUSTODY_UNAVAILABLE, _JOIN_JOB, _REFUSED_EXIT
+
+    class _Basic(ctypes.Structure):  # JOBOBJECT_BASIC_LIMIT_INFORMATION
+        _fields_ = [("user_limits", ctypes.c_int64 * 2), ("LimitFlags", ctypes.c_uint32),
+                    ("working_set", ctypes.c_size_t * 2), ("ActiveProcessLimit", ctypes.c_uint32),
+                    ("Affinity", ctypes.c_size_t), ("classes", ctypes.c_uint32 * 2)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+    kernel32.SetInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong]
+    job = kernel32.CreateJobObjectW(None, None)
+    limits = _Basic(LimitFlags=0x1000)  # JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK
+    assert kernel32.SetInformationJobObject(job, 2, ctypes.byref(limits), ctypes.sizeof(limits))
+    os.set_handle_inheritable(job, True)
+    launcher = tmp_path / "join_job.py"
+    launcher.write_text(_JOIN_JOB, encoding="utf-8")
+    info = subprocess.STARTUPINFO()
+    info.lpAttributeList = {"handle_list": [job]}
+    out = subprocess.run([sys.executable, "-I", "-S", str(launcher), str(job), str(tmp_path / "report.txt"),
+                          sys.executable, "-c", "print('built')"], startupinfo=info, capture_output=True,
+                         text=True, encoding="utf-8", errors="replace", timeout=60)
+    assert out.returncode == _REFUSED_EXIT, out
+    assert "built" not in out.stdout and _CUSTODY_UNAVAILABLE in out.stderr, out
+
+
+
 # --- R8 m1: the completion child is bound before it runs; a refused bind reaches the receipt ---
 
 _COMPLETION_CHILD = (

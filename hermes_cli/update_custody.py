@@ -361,9 +361,9 @@ def _prefetch_for_move(git_cmd: list[str], args: list[str], kwargs: dict) -> Non
 
 
 # A stdlib launcher for children whose Popen the updater never sees (``run_contained``): it
-# joins the job named by an inherited handle, drops that handle (only the owner's handle may
-# keep the job open) and runs the real command with the same stdio. A refused join never runs
-# the command (D2): the launcher says so on stderr, writes the notice to the report file
+# joins the job named by an inherited handle, starts the real command suspended with the same
+# stdio, runs it only once it is in the job, and drops that handle (only the owner's handle may
+# keep the job open). A refused join, or a command outside the job, never runs (D2): the launcher says so on stderr, writes the notice to the report file
 # (argv[2]) — run_contained captures the child's stderr, so stderr alone is not seen (m1) — and
 # exits; the updater logs the notice, notes it in the receipt and raises CustodyRefused.
 _CUSTODY_UNAVAILABLE = "hermes: update custody unavailable"
@@ -375,9 +375,8 @@ _JOIN_JOB = (
     "k.GetCurrentProcess.restype = ctypes.c_void_p\n"
     "k.CloseHandle.argtypes = [ctypes.c_void_p]\n"
     "h = ctypes.c_void_p(int(sys.argv[1]))\n"
-    "if not k.AssignProcessToJobObject(h, k.GetCurrentProcess()):\n"
-    f"    note = ('{_CUSTODY_UNAVAILABLE} (could not join the update job: %d); '\n"
-    "            'the command was not run' % ctypes.get_last_error())\n"
+    "def refuse(why):\n"
+    f"    note = '{_CUSTODY_UNAVAILABLE} (%s); the command was not run' % why\n"
     "    sys.stderr.write(note + '\\n')\n"
     "    sys.stderr.flush()\n"
     "    try:\n"
@@ -386,8 +385,24 @@ _JOIN_JOB = (
     "    except OSError:\n"
     "        pass\n"
     f"    sys.exit({_REFUSED_EXIT})\n"
+    "if not k.AssignProcessToJobObject(h, k.GetCurrentProcess()):\n"
+    "    refuse('could not join the update job: %d' % ctypes.get_last_error())\n"
+    # Verify, never assume the topology: a redirecting interpreter (a Store Python alias) can
+    # join while what it starts lands outside the job. Start the command suspended and run it
+    # only once Windows says it is in the job (F54).
+    "k.IsProcessInJob.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]\n"
+    "p = subprocess.Popen(sys.argv[3:], stdin=subprocess.DEVNULL, creationflags=0x4)\n"
+    "inside = ctypes.c_int(0)\n"
+    "if not k.IsProcessInJob(ctypes.c_void_p(int(p._handle)), h, ctypes.byref(inside)) or not inside.value:\n"
+    "    p.kill()\n"
+    "    p.wait()\n"
+    "    refuse('the command would start outside the update job')\n"
     "k.CloseHandle(h)\n"
-    "sys.exit(subprocess.call(sys.argv[3:], stdin=subprocess.DEVNULL))\n"
+    "nt = ctypes.WinDLL('ntdll')\n"
+    "nt.NtResumeProcess.argtypes = [ctypes.c_void_p]\n"
+    "if nt.NtResumeProcess(ctypes.c_void_p(int(p._handle))) != 0:\n"
+    "    p.kill()\n"
+    "sys.exit(p.wait())\n"
 )
 
 

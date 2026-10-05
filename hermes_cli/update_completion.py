@@ -183,6 +183,21 @@ def _record_owed_user_action(request: dict) -> bool:
     return notice is None
 
 
+def _publish_gateway_success(request: dict) -> None:
+    """The gateway /update watcher's status: the code is committed (same as _complete_selected).
+
+    Guarded like ``update_cmd_fleet._write_gateway_update_exit_code`` (which this stdlib-only
+    process cannot import): an unwritable home must not turn the committed run into an error
+    before its result is written (review P1). The watcher then falls back to its own timeout.
+    """
+    if not request.get("gateway_mode"):
+        return
+    try:
+        (Path(request["home"]) / ".update_exit_code").write_text("0", encoding="utf-8")
+    except OSError as exc:
+        print(f"  ⚠ Could not publish the gateway's update status: {exc}")
+
+
 def _settle_after_commit(request: dict, result_path: Path, step: str, reason: str) -> int:
     """The tree already moved, so a failure here is owed work, never a failed update (C3, A6).
 
@@ -210,9 +225,8 @@ def _settle_after_commit(request: dict, result_path: Path, step: str, reason: st
         update_receipt.finalize_pending_update_receipt(0, f"{step} owed after the code was updated")
         receipt = _read_terminal_receipt(request)
     code = 0 if receipt is not None and receipt.get("outcome") == "success" else 1
-    if code == 0 and request["gateway_mode"]:
-        # The gateway's /update watcher reads this; the code is committed (same as _complete_selected).
-        (Path(request["home"]) / ".update_exit_code").write_text("0", encoding="utf-8")
+    if code == 0:
+        _publish_gateway_success(request)
     return _write_bootstrap_result(request, result_path, code, receipt)
 
 

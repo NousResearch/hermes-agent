@@ -280,6 +280,24 @@ def test_missing_child_result_fails_boundary_receipt_and_releases_lock(transitio
     lock.release()
 
 
+def test_unwritable_gateway_status_never_fails_a_settled_commit(tmp_path, monkeypatch):
+    """Review P1: the bootstrap's gateway status write is best effort, like
+    ``_write_gateway_update_exit_code``; the committed run still answers its result with exit 0."""
+    from hermes_cli import venv_sync
+
+    monkeypatch.setattr(venv_sync, "arm_completion", lambda root: None)
+    receipt = {"update_id": "u1", "outcome": "success", "finished_at": "now"}
+    monkeypatch.setattr(update_completion, "_read_terminal_receipt", lambda request: receipt)
+    home = tmp_path / "home-is-a-file"
+    home.write_text("x", encoding="utf-8")
+    result = tmp_path / "result.json"
+    request = {"source": str(tmp_path), "receipt": {"update_id": "u1"}, "gateway_mode": True,
+               "home": str(home), "pm_receipt": None}
+    assert update_completion._settle_after_commit(request, result, "dependencies", "pip failed") == 0
+    answer = json.loads(result.read_text(encoding="utf-8"))
+    assert answer["exit_code"] == 0 and answer["receipt"] == receipt
+
+
 @pytest.mark.parametrize("cleanup_failure", [None, "kill", "wait"])
 def test_interrupt_after_child_success_demotes_gateway_marker_at_boundary(transition, monkeypatch, cleanup_failure):
     import io

@@ -188,3 +188,24 @@ _GATHER = "import asyncio\n\n\nasync def run(awaitables, payloads):\n    results
 ])
 def test_gather_results_projection(ann, loop, flagged):
     assert bool(_hits("HX009", _GATHER.format(ann=ann, loop=loop))) is flagged
+
+
+# --- HX005: annotations are evaluated at def time unless postponed ---
+
+_FUTURE = "from __future__ import annotations\n\n"
+
+
+@pytest.mark.parametrize("src, flagged", [
+    ("import os\n\n\ndef f(x: os.getenv('A')):\n    return x\n", True),
+    ("import os\n\n\ndef f(x) -> os.getenv('A'):\n    return x\n", True),
+    ("import os\n\n\nclass C:\n    def f(self, *a: os.getenv('A')):\n        return a\n", True),
+    (_FUTURE + "import os\n\n\ndef f(x: os.getenv('A')):\n    return x\n", False),
+    (_FUTURE + "import os\n\n\ndef f(x) -> os.getenv('A'):\n    return x\n", False),
+    (_FUTURE + "import os\n\nx: os.getenv('PATH')\n", False),
+    (_FUTURE + "import os\n\n\nclass C:\n    x: os.getenv('PATH')\n", False),
+    (_FUTURE + "import os\n\nx: str = os.getenv('PATH')\n", True),  # the value still runs
+    ("import os\n\nx: os.getenv('PATH')\n", True),
+    ("import os\n\n\ndef f():\n    def g(x: os.getenv('A')):\n        return x\n    return g\n", False),
+])
+def test_annotation_evaluation_time(src, flagged):
+    assert bool(_hits("HX005", src)) is flagged, src

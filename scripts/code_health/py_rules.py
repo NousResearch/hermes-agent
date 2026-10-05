@@ -412,12 +412,33 @@ def _import_time_statements(body: list[ast.stmt]) -> Iterator[ast.stmt]:
                 yield from _import_time_statements(block)
 
 
-def _import_time_exprs(stmt: ast.stmt) -> Iterator[ast.AST]:
-    """What a statement evaluates at import, besides its nested blocks (walked separately)."""
+def _postponed_annotations(tree: ast.Module) -> bool:
+    return any(isinstance(stmt, ast.ImportFrom) and stmt.module == "__future__"
+               and any(alias.name == "annotations" for alias in stmt.names) for stmt in tree.body)
+
+
+def _annotations(func: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.expr]:
+    args = func.args
+    params = [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]
+    return [n for n in (*(p.annotation for p in params if p is not None), func.returns) if n is not None]
+
+
+def _import_time_exprs(stmt: ast.stmt, postponed: bool) -> Iterator[ast.AST]:
+    """What a statement evaluates at import, besides its nested blocks (walked separately).
+
+    Annotations of a def and of a module/class variable run at definition time on the
+    supported interpreters (3.11-3.13; 3.14 defers them, PEP 649) unless the module has
+    ``from __future__ import annotations``; an annotated assignment's value always runs."""
     if isinstance(stmt, ast.ClassDef):
         yield from (*stmt.decorator_list, *stmt.bases, *(kw.value for kw in stmt.keywords))
-    elif isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign, *_FUNCS)):
+    elif isinstance(stmt, ast.AnnAssign):
+        yield from (n for n in (stmt.target, stmt.value) if n is not None)
+        if not postponed:
+            yield stmt.annotation
+    elif isinstance(stmt, (ast.Assign, ast.AugAssign, *_FUNCS)):
         yield stmt  # _eager keeps only a def's decorators and defaults
+        if isinstance(stmt, _FUNCS) and not postponed:
+            yield from _annotations(stmt)
     elif isinstance(stmt, ast.Expr):
         # A bare call is an action, not a capture; a walrus inside it binds a module name.
         yield from (n for n in _eager(stmt.value) if isinstance(n, ast.NamedExpr))
@@ -433,8 +454,9 @@ def _import_time_exprs(stmt: ast.stmt) -> Iterator[ast.AST]:
 
 
 def import_time_capture(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
+    postponed = _postponed_annotations(tree)
     for stmt in _import_time_statements(tree.body):
-        for expr in _import_time_exprs(stmt):
+        for expr in _import_time_exprs(stmt, postponed):
             yield from _capture_lines(expr)
 
 

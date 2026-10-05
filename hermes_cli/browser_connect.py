@@ -55,6 +55,11 @@ class _Browser:
     # port and probes the HTTP endpoint instead of watching the file. Default True keeps
     # every other browser on the file-driven discovery path.
     writes_devtools_port: bool = True
+    # True for builds that append ``User Data`` to whatever ``--user-data-dir`` they are
+    # given (Dia: its real layout is ``Dia/`` -> ``User Data/``, the Chromium profile). The
+    # snapshot must then reproduce that nesting, or Dia appends onto an empty dir inside the
+    # copy and boots a brand-new signed-out profile. Default False = Chromium's flat layout.
+    nests_user_data_dir: bool = False
 
 
 # Launch-candidate order (chrome, dia, chromium, brave, brave-origin, edge) is the tuple
@@ -82,7 +87,7 @@ _BROWSERS = (
     _Browser(
         "dia", "/Applications/Dia.app/Contents/MacOS/Dia",
         ("Dia", "User Data"), (), (), (), (), (),
-        "", writes_devtools_port=False),
+        "", writes_devtools_port=False, nests_user_data_dir=True),
     _Browser(
         "chromium", "/Applications/Chromium.app/Contents/MacOS/Chromium",
         ("Chromium",), ("chromium.exe", "chromium"),
@@ -388,6 +393,25 @@ _AUTH_REFRESH_PROFILE_FILES = (
 def real_profile_copy_dir(browser: str) -> str:
     """Return the hermes-owned snapshot dir for ``browser``'s real profile."""
     return str(get_hermes_home() / "browser-profile" / browser)
+
+
+def browser_nests_user_data_dir(browser: str | None) -> bool:
+    """True when ``browser`` appends ``User Data`` to the ``--user-data-dir`` it is given.
+    The snapshot must mirror that nesting or the browser resolves a different, empty dir."""
+    b = _BROWSER_BY_KEY.get(browser or "")
+    return False if b is None else b.nests_user_data_dir
+
+
+def real_profile_snapshot_dir(browser: str) -> str:
+    """Where the snapshot's PROFILE lives, mirroring how ``browser`` resolves its own dir.
+
+    Chromium takes ``--user-data-dir`` as the profile dir, so the snapshot goes flat at the
+    copy root. Dia appends ``User Data`` to whatever it is handed, so its snapshot must sit at
+    ``<copy>/User Data`` — otherwise Dia appends onto an empty dir and opens a signed-out
+    profile beside a correct snapshot nobody reads.
+    """
+    root = real_profile_copy_dir(browser)
+    return os.path.join(root, "User Data") if browser_nests_user_data_dir(browser) else root
 
 
 def _last_used_profile(src: str) -> str:
@@ -713,7 +737,7 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     source_profile, resolve_err = _resolve_source_profile(src)
     if resolve_err or not source_profile:
         return None, resolve_err
-    dst = real_profile_copy_dir(browser)
+    dst = real_profile_snapshot_dir(browser)
     # Fast lock probe BEFORE any copy: a blocking file op on a Windows-locked cookie DB can
     # hang the launch for minutes. Never trips on POSIX; there a running browser surfaces later as
     # auth DB backups that miss their deadline (``_unavailable_auth_dbs_error``).

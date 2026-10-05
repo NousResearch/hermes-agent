@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+import os
 import posixpath
 import socket
 
@@ -238,3 +239,23 @@ class TestDiaBrowser:
         assert 1024 <= port <= 65535
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("127.0.0.1", port))
+
+    def test_dia_nests_user_data(self):
+        """Dia appends ``User Data`` to the dir it is handed, so its snapshot must nest or the
+        browser resolves an empty child and boots signed out beside a correct snapshot."""
+        assert bc.browser_nests_user_data_dir("dia") is True
+
+    @pytest.mark.parametrize("browser", ["chrome", "chromium", "brave", "brave-origin", "edge"])
+    def test_chromium_family_does_not_nest(self, browser):
+        """Chromium treats --user-data-dir as the profile dir itself."""
+        assert bc.browser_nests_user_data_dir(browser) is False
+
+    def test_unknown_browser_does_not_nest(self):
+        assert bc.browser_nests_user_data_dir(None) is False
+        assert bc.browser_nests_user_data_dir("nonexistent") is False
+
+    def test_snapshot_dir_nests_only_for_dia(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        root = str(tmp_path / "browser-profile")
+        assert bc.real_profile_snapshot_dir("dia") == os.path.join(root, "dia", "User Data")
+        assert bc.real_profile_snapshot_dir("chrome") == os.path.join(root, "chrome")

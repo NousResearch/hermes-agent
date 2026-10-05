@@ -15,7 +15,6 @@ import dataclasses
 import json
 import os
 import re
-import shutil
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -26,6 +25,7 @@ from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_busy import approval_input_words
 from gateway.run_common import _UNSET
+from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_inbound_unauthorized import (
     UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
     unauthorized_owner_hint,
@@ -43,45 +43,6 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
-
-
-def rehome_inbound_media(event: MessageEvent) -> None:
-    """Move adapter-cached attachments into the ACTIVE profile's ``cache/`` and repoint the event.
-
-    Adapters download and cache an attachment BEFORE the gateway routes the event to a profile, so
-    on a multiplexed gateway the file lands under the launch home while the routed turn's sandbox
-    mounts (``get_cache_directory_mounts``) and vision's ``_media_cache_roots`` resolve the routed
-    profile's ``cache/`` — the agent is handed a mounted, empty directory (#101134). Runs inside the
-    routed scope at the shared preprocessing choke point (every adapter, every media kind); a no-op
-    when the active home is the launch home, and idempotent (a moved entry is no longer under it).
-    """
-    if not event.media_urls:
-        return
-    from hermes_constants import get_hermes_home, get_routing_process_hermes_home, hermes_home_key
-    active, launch = Path(get_hermes_home()), Path(get_routing_process_hermes_home())
-    if hermes_home_key(active) == hermes_home_key(launch):
-        return
-    from tools.credential_files import to_agent_visible_cache_path
-    rewritten = list(event.media_urls)
-    for i, raw in enumerate(event.media_urls):
-        src = Path(raw)
-        try:
-            rel = src.relative_to(launch / "cache")
-        except ValueError:
-            continue
-        dest = active / "cache" / rel
-        try:
-            if not src.is_file():
-                continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(src), str(dest))
-        except OSError:
-            logger.warning("Could not move inbound attachment %s into the routed profile's cache", raw, exc_info=True)
-            continue
-        rewritten[i] = str(dest)
-        if event.text and raw in event.text:  # note an adapter already baked in (observed/replied media)
-            event.text = event.text.replace(raw, to_agent_visible_cache_path(str(dest)))
-    event.media_urls = rewritten
 
 
 def discord_triggering_note(message_id: Any) -> str:
@@ -1212,7 +1173,7 @@ class GatewayInboundMixin:
             _plat = source.platform.value if source.platform else None
             user_instruction = event.get_command_args().strip()
             # Stacked slash-skill invocations: `/skill-a /skill-b do XYZ` loads every leading skill
-            # (up to 5), not just the first. Mirrors CLI.
+            # (up to 5), not just the first. Mirrors CLI. Native split: plugin skills are interactive-only.
             try:
                 from agent.skill_commands import (
                     build_stacked_skill_invocation_message as _build_stacked,
@@ -1397,6 +1358,11 @@ class GatewayInboundMixin:
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
+            if not is_internal:  # fail-open plugin consume, inside the claimed slot (#129958)
+                from gateway.run_inbound_consumer import run_post_admission_hook
+                _consumed, _consumer_reply = await run_post_admission_hook(self, event, source, _quick_key)
+                if _consumed:
+                    return _consumer_reply
             try:
                 _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             except TurnLeaseTimeoutError as exc:

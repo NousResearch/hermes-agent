@@ -54,6 +54,13 @@ def _build_inspection_agent(platform: str) -> Any:
     from hermes_cli.config import load_config
     from hermes_cli.tools_config import _get_platform_tools
     from agent.skill_utils import parse_config_string_list
+    from agent.model_metadata import set_model_metadata_offline
+
+    # The inspection agent carries an openrouter.ai base_url (to pin the direct-construction
+    # path), which construction-time prewarm and context-length resolution would otherwise
+    # turn into a live /models download (#132998). Flip the process-wide offline switch
+    # before any of that can run — this command is documented as never touching the network.
+    set_model_metadata_offline(True)
 
     cfg = load_config()
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}

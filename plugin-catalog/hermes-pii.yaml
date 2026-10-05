@@ -1,11 +1,11 @@
 name: hermes-pii
 repo: https://github.com/lukefx/hermes-pii
-sha: dc751aaca22394bbd48ecbb79910fcaf9ee0edd1
-description: "Uses local Presidio and spaCy to detect and redact supported PII in outgoing text fields. If detection fails, original text passes through. Disclosure — rewrites every outgoing LLM request locally, replacing detected emails, phones, IBANs, cards, IPs and person/place/org names (including in the system prompt, tool outputs and past tool-call arguments) with placeholders; fail-open, so on any detector error the original text is sent; install pulls spaCy, Presidio and the en_core_web_sm wheel from GitHub."
+sha: 51d06c97c6b3d7df0516b2d1f4f30424adf5f850
+description: "Uses local Presidio and spaCy to redact supported PII in outgoing user text. Disclosure — filters Chat Completions user messages and Responses user input locally; system prompts, tool outputs and tool-call arguments are preserved. Fail-open: detector errors, including a missing model, send original text. Install spaCy en_core_web_sm 3.8.0 separately from its GitHub release wheel in the Hermes Python environment before enabling; Hermes installs only the named PyPI dependencies. No runtime model downloads or remote detection."
 maintainer: lukefx
 tier: community
-category: general
-version: "0.1.0.dev1"
+category: tools
+version: "0.1.0.dev2"
 capabilities:
   provides_tools: []
   provides_hooks:

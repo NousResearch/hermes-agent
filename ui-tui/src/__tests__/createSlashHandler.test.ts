@@ -812,6 +812,38 @@ describe('createSlashHandler', () => {
     expect(gatewayWork(ctx)).toEqual([])
   })
 
+  it('sends an exact canonical skill without redirecting to a longer alias', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const request = vi.fn((method: string) => {
+      if (method === 'slash.exec') {
+        return Promise.reject(
+          new JsonRpcGatewayError('skill command: use command.dispatch for /research', { code: 4018 })
+        )
+      }
+
+      if (method === 'command.dispatch') {
+        return Promise.resolve({ type: 'skill', name: 'research', message: 'skill body', display: '/research topic' })
+      }
+
+      return Promise.resolve({})
+    })
+
+    const ctx = buildCtx({
+      gateway: { ...buildGateway(), gw: { ...buildGateway().gw, request } },
+      local: { catalog: { canon: { '/research': '/research', '/research-skill': '/research-skill' } } }
+    })
+
+    expect(createSlashHandler(ctx)('/research topic')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.transcript.send).toHaveBeenCalledWith('skill body', true, '/research topic')
+    })
+    expect(gatewayWork(ctx)).toEqual([
+      ['slash.exec', { command: 'research topic', session_id: 'sid-abc' }],
+      ['command.dispatch', { name: 'research', arg: 'topic', session_id: 'sid-abc' }]
+    ])
+  })
+
   it('falls through to command.dispatch for skill commands, sending the body but showing the invocation', async () => {
     const skillMessage =
       '[IMPORTANT: The user has invoked the "hermes-agent-dev" skill, indicating they want you to follow its instructions.\n' +

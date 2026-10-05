@@ -208,6 +208,7 @@ updates:
   backup_keep: 5                 # Keep this many full pre-update backup zips
   non_interactive_local_changes: stash  # stash | discard
   auto_switch_parked_branch: true       # auto-switch a clean, fully merged parked branch back to main
+  macos_gateway_drain_timeout_seconds: null # optional positive cap for macOS updater sibling-gateway drains
 ```
 
 `pre_update_backup` is the single pre-update safety knob: `quick` (default) snapshots critical state files (pairing data, cron jobs, config, auth; files over 1 GiB are skipped) into `state-snapshots/`; `full` additionally zips all of `HERMES_HOME` into `backups/` and can add minutes on large homes; `off` disables both. Legacy booleans are honored (`true` → `full`, `false` → `off`).
@@ -217,6 +218,15 @@ Point-in-time copies of `config.yaml` itself (taken before `hermes setup` rewrit
 For git installs, Hermes auto-stashes dirty tracked files and untracked files before checking out the update branch or pulling. Interactive terminal updates prompt before restoring that stash. Non-interactive updates (desktop/chat app, gateway, or `--yes`) use `updates.non_interactive_local_changes`: `stash` restores local source edits after a successful pull, while `discard` drops the update-created stash after a successful pull. Use `discard` only on managed installs where local source edits are never meant to persist.
 
 Before that stash step, Hermes also restores tracked `package-lock.json` diffs left by npm install/build churn. Commit or manually stash intentional lockfile edits before updating.
+
+On macOS, `updates.macos_gateway_drain_timeout_seconds` can cap the graceful drain
+when the updater replaces a sibling launchd gateway (for example, Desktop updating
+the default multiplexed host from a named profile). Leaving it unset preserves the
+normal agent/cron drain budget. A positive finite number, such as `120`, limits the
+drain only; bounded child-stop and service startup can add additional time. **When
+the cap expires, unfinished agent or cron work may be interrupted.** It does not
+change ordinary agent job limits or non-update gateway restart behavior. Invalid,
+zero, negative, boolean, and nonfinite values are ignored.
 
 ## Terminal Backend Configuration
 

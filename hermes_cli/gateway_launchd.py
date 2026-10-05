@@ -837,6 +837,24 @@ def stop_launchd_gateway_runtime(pid: int) -> bool:
         return False
 
 
+def launchd_update_drain_budget(default: float) -> float:
+    """Opt-in updater-only cap; leave normal agent/cron drain floors unchanged."""
+    import math
+    from hermes_cli.config import load_config
+
+    updates = load_config().get("updates", {})
+    if not isinstance(updates, dict):
+        return default
+    value = updates.get("macos_gateway_drain_timeout_seconds")
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return default
+    try:
+        cap = float(value)
+    except (TypeError, ValueError):
+        return default
+    return min(default, cap) if math.isfinite(cap) and cap > 0 else default
+
+
 def drain_launchd_gateway_runtime(pid: int, label: str, drain_budget: float) -> bool:
     """A frozen event loop cannot honor SIGUSR1; use bounded child-stop instead."""
     from hermes_cli.update_cmd_fleet import _gateway_home_for_pid
@@ -845,6 +863,7 @@ def drain_launchd_gateway_runtime(pid: int, label: str, drain_budget: float) -> 
     if _gw().probe_gateway_loop_liveness(pid, home=_gateway_home_for_pid(pid)) == _gw().GATEWAY_LOOP_WEDGED:
         print(f"  ⚠ {label}: gateway event loop is unresponsive — skipping drain, forcing a bounded stop...")
         return False
+    drain_budget = launchd_update_drain_budget(drain_budget)
     print(f"  → {label}: draining (up to {drain_budget:.0f}s)...")
     return _gw()._graceful_restart_via_sigusr1(
         pid, drain_timeout=drain_budget,

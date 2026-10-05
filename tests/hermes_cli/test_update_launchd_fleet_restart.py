@@ -789,3 +789,33 @@ def test_wedged_gateway_skips_long_drain_before_bounded_stop(monkeypatch, tmp_pa
     assert rec.kickstarts == [f"gui/{UID}/{sibling}"]
     assert restarted == [current, sibling]
     assert failed == []
+
+
+@pytest.mark.parametrize("value,default,expected", [
+    (120, 1905, 120), (120, 45, 45), (None, 1905, 1905),
+    ("invalid", 1905, 1905), (True, 1905, 1905), (0, 1905, 1905),
+    (-1, 1905, 1905), (float("inf"), 1905, 1905), (float("nan"), 1905, 1905),
+])
+def test_update_only_drain_cap_validation(monkeypatch, value, default, expected):
+    from hermes_cli.gateway_launchd import launchd_update_drain_budget
+    monkeypatch.setattr("hermes_cli.config.load_config",
+                        lambda: {"updates": {"macos_gateway_drain_timeout_seconds": value}})
+    assert launchd_update_drain_budget(default) == expected
+
+
+def test_update_only_drain_cap_applies_to_sibling_restart(monkeypatch, tmp_path):
+    current = "ai.hermes.gateway-shadow"
+    sibling = "ai.hermes.gateway"
+    rec = _fleet(monkeypatch, tmp_path, current=current, labels=[current, sibling],
+                 located={current: (f"gui/{UID}", 100), sibling: (f"gui/{UID}", 200)})
+    monkeypatch.setattr("hermes_cli.config.load_config",
+                        lambda: {"updates": {"macos_gateway_drain_timeout_seconds": 120}})
+    drains = []
+    monkeypatch.setattr(gw, "_graceful_restart_via_sigusr1",
+                        lambda pid, drain_timeout, **kwargs: (drains.append((pid, drain_timeout)), False)[1])
+    restarted, failed = [], []
+    _restart_macos_launchd_gateways(restarted, failed, drain_budget=1905.0)
+    assert drains == [(200, 120)]
+    assert rec.kickstarts == [f"gui/{UID}/{sibling}"]
+    assert restarted == [current, sibling]
+    assert failed == []

@@ -427,7 +427,7 @@ word word
         assert (tmp_path / "my-skill" / "SKILL.md").read_text() == skill_md_before
 
 
-
+class TestSkillMutationLock:
     def test_concurrent_patches_keep_both_updates(self, tmp_path):
         """Two writers patching the same SKILL.md serialize on the per-skill lock (#111578):
         the second cannot read stale content while the first is between read and write."""

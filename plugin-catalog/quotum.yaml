@@ -1,7 +1,7 @@
 name: quotum
 repo: https://github.com/qvotvm/hermes-quotum
 sha: ac1642dc8c6a712e2fc306b7df8b17be7690d2b3
-description: A quotum seat's Venice key as a provider. Private and anonymized models, with the seat's daily cap, spend and the 20:00 UTC bell in /usage.
+description: "A quotum seat's Venice key as a provider. Private and anonymized models, with the seat's daily cap, spend and the 20:00 UTC bell in /usage. Disclosure — prompts and QUOTUM_SEAT_KEY go to api.venice.ai; /usage and Desktop usage send a 16-hex sha256 handle of the key to quotum.org; QUOTUM_X_SEARCH=1 swaps in its own client that drops Hermes web_search for Venice-side web and X search (billed per search); seats are funded by the QUOTUM crypto token"
 maintainer: quotum
 tier: community
 category: models

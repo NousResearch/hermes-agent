@@ -21,11 +21,14 @@ def add_responses_cache_kwargs(
         if is_xai:
             # xAI reads the routing key from the body. Keep a caller's explicit key,
             # including an empty opt-out; unscoped aux calls must not share one slot.
-            body = extra_body if isinstance(extra_body, dict) else {}
+            body = dict(extra_body) if isinstance(extra_body, dict) else {}
             key = body.get("prompt_cache_key", cache_key if scope else None)
             if key is not None:
-                kwargs["extra_body"] = {"prompt_cache_key": key}
-                _bound_prompt_cache_key_field(kwargs["extra_body"])
+                body["prompt_cache_key"] = key
+            _bound_prompt_cache_key_field(body)
+            # Keep wire fields even when an unscoped or opted-out request has no key.
+            if body:
+                kwargs["extra_body"] = body
         elif cache_key:
             kwargs["prompt_cache_key"] = cache_key
     if "prompt_cache_retention" not in kwargs:

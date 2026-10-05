@@ -56,7 +56,8 @@ def test_xai_auxiliary_cache_key_survives_rotation_and_isolates_prefixes(auxilia
             result = adapter.create(messages=[
                 {"role": "system", "content": "Summarize this conversation."},
                 {"role": "user", "content": f"Transcript revision {index}"},
-            ], extra_headers={"x-test-observer": "preserved"})
+            ], extra_headers={"x-test-observer": "preserved"},
+                extra_body={"metadata": {"task": "compression"}, "reasoning": {"effort": "low"}})
             assert result.choices[0].message.content == "OK"
         finally:
             reset_runtime_main(token)
@@ -70,19 +71,26 @@ def test_xai_auxiliary_cache_key_survives_rotation_and_isolates_prefixes(auxilia
     )
     assert keys[0] != main["extra_body"]["prompt_cache_key"]
     assert all(headers["x-test-observer"] == "preserved" for _, headers in requests)
+    assert all(body["metadata"] == {"task": "compression"} for body, _ in requests)
+    assert all(body["reasoning"] == {"effort": "low", "summary": "auto"} for body, _ in requests)
     assert all("prompt_cache_retention" not in body for body, _ in requests)
     token = set_runtime_main("xai-oauth", model)
     try:
-        adapter.create(messages=[{"role": "user", "content": "Unscoped call."}])
+        adapter.create(messages=[{"role": "user", "content": "Unscoped call."}],
+                       extra_body={"metadata": {"task": "compression"}})
     finally:
         reset_runtime_main(token)
     assert "prompt_cache_key" not in requests[-1][0]
+    assert requests[-1][0]["metadata"] == {"task": "compression"}
 
 
 @pytest.mark.parametrize("key", ["explicit-auxiliary-key", "long-key-" * 12, ""])
 def test_xai_auxiliary_preserves_explicit_cache_routing(auxiliary_wire, key):
     client, requests = auxiliary_wire
-    extra_body = {"prompt_cache_key": key, "reasoning": {"enabled": False}}
+    extra_body = {
+        "prompt_cache_key": key, "reasoning": {"enabled": False},
+        "metadata": {"task": "title"}, "service_tier": "priority",
+    }
     token = set_runtime_main("xai-oauth", "grok-4.6", session_id="session-test")
     try:
         _CodexCompletionsAdapter(client, "grok-4.6").create(
@@ -92,4 +100,10 @@ def test_xai_auxiliary_preserves_explicit_cache_routing(auxiliary_wire, key):
         reset_runtime_main(token)
     body, _ = requests[0]
     assert body.get("prompt_cache_key") == _bounded_prompt_cache_key(key)
-    assert extra_body == {"prompt_cache_key": key, "reasoning": {"enabled": False}}
+    assert body["metadata"] == {"task": "title"}
+    assert "reasoning" not in body
+    assert "service_tier" not in body
+    assert extra_body == {
+        "prompt_cache_key": key, "reasoning": {"enabled": False},
+        "metadata": {"task": "title"}, "service_tier": "priority",
+    }

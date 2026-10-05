@@ -43,11 +43,14 @@ def _redact_cdp_error_text(exc: object) -> str:
     """Redact CDP endpoint credentials from an exception's (or URL's) string form.
     ``websockets`` bakes the raw URL (``?token=`` / ``user:pass@``) into its exception
     messages, so every egress point turning one into log/re-raise text MUST route through
-    here; falls back to a fixed sentinel if redaction itself raises (err toward masking)."""
+    here; falls back to a fixed sentinel if redaction itself raises (err toward masking).
+    A message-less exception (``TimeoutError()``, ``CancelledError()`` — ``str()`` is ``""``)
+    redacts to its type name: an empty result would mask the crash cause entirely (#133216)."""
     try:
         from agent.redact import redact_cdp_url
 
-        return redact_cdp_url(str(exc))
+        text = redact_cdp_url(str(exc))
+        return text or redact_cdp_url(repr(exc))
     except Exception:
         return "<error redacted>"
 
@@ -323,7 +326,9 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             loop.run_until_complete(self._run())
         except BaseException as e:  # noqa: BLE001 — propagate via _start_error
             if not self._fail_start(e):
-                logger.warning("CDP supervisor %s crashed: %s", self.task_id, e)
+                # Route through the redactor like every other egress: the raw exception may
+                # embed the cdp_url, and a message-less one ("%s" → "") would hide the cause.
+                logger.warning("CDP supervisor %s crashed: %s", self.task_id, _redact_cdp_error_text(e))
         finally:
             # Cancel + flush remaining tasks before closing the loop to avoid
             # "Task was destroyed but it is pending" warnings.
@@ -453,6 +458,11 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         await self._ws.send(json.dumps(payload))
         try:
             return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError as e:
+            # ``wait_for`` raises a message-less TimeoutError (str() == ""), which downstream
+            # crash/start logs rendered as a bare "crashed: " — name the command that never
+            # answered so the attach-timeout site is visible without a debugger (#133216).
+            raise TimeoutError(f"CDP {method} timed out after {timeout:.1f}s with no response") from e
         finally:
             self._pending_calls.pop(call_id, None)
 

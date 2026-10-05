@@ -14,6 +14,7 @@ from typing import Any, Callable, List, Optional, Tuple
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.delegation_context import is_dispatcher_owned_worker_context
+from agent.i18n import DEFAULT_LANGUAGE, t, tl
 from agent.interrupt_control import interrupted_during_api_call_reason
 from agent.turn_failure_copy import exit_reason_failure, stamp_failure
 from agent.context_compressor import _DB_PERSISTED_MARKER
@@ -149,10 +150,9 @@ def _resolve_budget_fallback(
             preserved_verification_fallback = True
         else:
             # _handle_max_iterations makes one extra toolless request for a summary.
-            agent._emit_diagnostic_status(
-                f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
-                "— asking model to summarise"
-            )
+            agent._emit_diagnostic_status(tl(
+                "explainer.failure.status.budget_summarising", used=api_call_count, limit=agent.max_iterations,
+            ))
             if not agent.quiet_mode:
                 agent._safe_print(
                     f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
@@ -193,6 +193,41 @@ def _resolve_budget_fallback(
     if _kanban_task:
         _record_kanban_budget_exhausted(_kanban_task, api_call_count, agent.max_iterations, logger)
     return final_response, _turn_exit_reason, preserved_verification_fallback, interrupted
+
+
+def _pending_tool_tail_close(agent, final_response, interrupted, messages, logger) -> Optional[Tuple[str, str]]:
+    """``(English, display)`` close for a non-interrupted turn that fell out of the loop on a tool
+    result with no follow-up text (the Desktop/TUI "silent stop", #55316/#54756), else None. The
+    English text is the assistant row the tail close persists — the model reads it next turn —
+    and the stored ``error``; the display text is what the user is shown. A turn that already
+    streamed text is left alone: ``_recover_final_from_stream`` owns that recovery (#95514)."""
+    if (
+        final_response or interrupted or not messages
+        or not isinstance(messages[-1], dict) or messages[-1].get("role") != "tool"
+        or (getattr(agent, "_current_streamed_assistant_text", "") or "").strip()
+    ):
+        return None
+    english = display = ""
+    try:
+        if agent._turn_completion_explainer_enabled():
+            english = agent._format_turn_completion_explanation("pending_tool_result", None, lang=DEFAULT_LANGUAGE) or ""
+            display = agent._format_turn_completion_explanation("pending_tool_result", None) or english
+    except Exception:
+        logger.debug("pending-tool-result explainer failed", exc_info=True)
+        english = display = ""
+    if not english:
+        # The turn-completion explainer opt-out must not reintroduce the silent stop.
+        english = t("explainer.failure.pending_tool_result", lang=DEFAULT_LANGUAGE)
+        display = t("explainer.failure.pending_tool_result")
+    return english, display
+
+
+def _english_error_text(final_response, localized: Optional[Tuple[str, str]]):
+    """``final_response`` with a localized lead swapped back to its English rendering, for the
+    stored ``error`` the gateway matches (anything appended after the lead is kept)."""
+    if localized and isinstance(final_response, str) and final_response.startswith(localized[1]):
+        return localized[0] + final_response[len(localized[1]):]
+    return final_response
 
 
 def _rollback_interrupted_preflight_display(agent, interrupted) -> None:
@@ -406,10 +441,12 @@ def _append_file_mutation_footer(agent, final_response, logger):
 def _explain_abnormal_exit(agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger):
     """Turn-completion explainer: on abnormal exits, surface one explanation from
     ``_turn_exit_reason``. Only acts when no usable reply exists (empty, "(empty)",
-    or a short unpunctuated fragment); ``text_response(...)`` exits stay silent."""
+    or a short unpunctuated fragment); ``text_response(...)`` exits stay silent.
+    Returns ``(final_response, (English, display) or None)``: the pair names the explained text
+    in both renderings so the stored ``error`` stays English."""
     try:
         if not agent._turn_completion_explainer_enabled():
-            return final_response
+            return final_response, None
         _stripped = (final_response or "").strip()
         _is_empty_terminal = _stripped in ("", "(empty)")
         # A short fragment not from a text_response exit and lacking sentence-ending
@@ -422,17 +459,21 @@ def _explain_abnormal_exit(agent, final_response, _turn_exit_reason, preserved_v
             and _stripped[-1:] not in _SENTENCE_END
         )
         if _is_empty_terminal or _is_partial_fragment or str(_turn_exit_reason) == "partial_stream_recovery":
-            _explanation = agent._format_turn_completion_explanation(
-                _turn_exit_reason, getattr(agent, "_last_persistence_error_cause", None),
-                db_path=getattr(getattr(agent, "_session_db", None), "db_path", None),
-                model=str(getattr(agent, "model", "") or ""),
-            )
+            def _explain(lang=None):
+                return agent._format_turn_completion_explanation(
+                    _turn_exit_reason, getattr(agent, "_last_persistence_error_cause", None),
+                    db_path=getattr(getattr(agent, "_session_db", None), "db_path", None),
+                    model=str(getattr(agent, "model", "") or ""), lang=lang,
+                )
+
+            _explanation = _explain()
             if _explanation:
                 # Replace the bare sentinel; keep a partial fragment and append why.
-                final_response = _explanation if _is_empty_terminal else _stripped + "\n\n" + _explanation
+                _lead = "" if _is_empty_terminal else _stripped + "\n\n"
+                return _lead + _explanation, (_lead + _explain(DEFAULT_LANGUAGE), _lead + _explanation)
     except Exception as _exp_err:
         logger.debug("turn-completion explainer failed: %s", _exp_err)
-    return final_response
+    return final_response, None
 
 
 def _last_turn_reasoning(messages) -> Optional[Any]:
@@ -537,39 +578,16 @@ def finalize_turn(
         logger=logger,
     )
 
-    # A non-interrupted turn that fell out of the loop after a tool result, with no
-    # follow-up assistant text, is the Desktop/TUI "silent stop" (#55316, #54756): the
-    # composer returns to ready (or keeps spinning) while the durable transcript ends
-    # at a raw ``tool`` row — the user never learns the turn stopped, and the next user
-    # message lands as ``tool → user``. Interrupted tails keep
-    # ``close_interrupted_tool_sequence``; this is the non-interrupt sibling. Mint the
-    # exit reason, fail the turn, and synthesize the visible close so the tail close in
-    # ``_persist_step`` persists an assistant row. A turn that already streamed text is
-    # left alone: ``_recover_final_from_stream`` owns that recovery (#95514).
-    if (
-        not final_response
-        and not interrupted
-        and messages
-        and isinstance(messages[-1], dict)
-        and messages[-1].get("role") == "tool"
-        and not (getattr(agent, "_current_streamed_assistant_text", "") or "").strip()
-    ):
-        _turn_exit_reason = "pending_tool_result"
-        failed = True
-        final_response = ""
-        try:
-            if agent._turn_completion_explainer_enabled():
-                final_response = (
-                    agent._format_turn_completion_explanation("pending_tool_result", None) or ""
-                )
-        except Exception:
-            final_response = ""
-        if not final_response:
-            # The turn-completion explainer opt-out must not reintroduce the silent stop.
-            final_response = (
-                "No reply: the turn stopped while a tool result was still pending. "
-                "Send `continue` to let the model summarize."
-            )
+    # The "silent stop" (a tool-result tail, no follow-up text): the composer returns to ready
+    # while the durable transcript ends at a raw ``tool`` row and the next user message lands as
+    # ``tool → user``. Interrupted tails keep ``close_interrupted_tool_sequence``; this is the
+    # non-interrupt sibling. Mint the exit reason, fail the turn, and synthesize the close so the
+    # tail close in ``_persist_step`` persists an (English) assistant row; the user is shown the
+    # active-language rendering once the transcript is written.
+    _localized_final = _pending_tool_tail_close(agent, final_response, interrupted, messages, logger)
+    if _localized_final is not None:
+        _turn_exit_reason, failed = "pending_tool_result", True
+        final_response = _localized_final[0]
 
     # Loop exits that are failures in their own right (outer-loop error cap, shutdown, context
     # that could not be shrunk) carry the verdict the UI descriptor needs; a bare
@@ -632,6 +650,8 @@ def finalize_turn(
         agent._persist_session(messages, conversation_history)
 
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)
+    if _localized_final is not None and final_response == _localized_final[0]:
+        final_response = _localized_final[1]
 
     # Keep the gateway's separate in-memory history snapshot current even on
     # cleanup error, so a later prompt isn't sent with a pre-turn snapshot.
@@ -644,9 +664,10 @@ def finalize_turn(
     if final_response and not interrupted:
         final_response = _append_file_mutation_footer(agent, final_response, logger)
     if not interrupted:
-        final_response = _explain_abnormal_exit(
+        final_response, _explained = _explain_abnormal_exit(
             agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger,
         )
+        _localized_final = _explained or _localized_final
 
     _platform = getattr(agent, "platform", None) or ""
     _response_transformed = False
@@ -726,7 +747,7 @@ def finalize_turn(
 
         # Never rebind final_response here: the memory sync and the background-review gate
         # below must still see an empty response on a persistence-failed turn.
-        result["error"] = final_response or (
+        result["error"] = _english_error_text(final_response, _localized_final) or (
             "session storage could not be written — check the state database "
             f"health (`hermes {profile_cli_selector()}doctor`), then send your message again"
         )
@@ -734,7 +755,7 @@ def finalize_turn(
         result["failure_reason"] = "session_persistence_failed:" + (_cause or "unknown")
     elif _exit_failure is not None:
         if failed:
-            result["error"] = final_response or str(_turn_exit_reason)
+            result["error"] = _english_error_text(final_response, _localized_final) or str(_turn_exit_reason)
         stamp_failure(result, _exit_failure.reason, _exit_failure.retryable)
     # Cleanup failures are surfaced, but the response is returned either way (#8049).
     if _cleanup_errors:

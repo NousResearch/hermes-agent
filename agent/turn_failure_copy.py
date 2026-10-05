@@ -5,14 +5,21 @@ Every terminal result dict the turn loop returns must carry ``failure_reason`` (
 ``agent/error_surface.py`` yields a specific descriptor instead of ``unknown``. The copy
 tables here say WHAT happened and WHAT TO DO in plain words; raw provider detail rides a
 trailing "Provider said:" / "Details:" line.
+
+The copy lives in the catalog (``explainer.failure.*`` / ``explainer.cause.*``). Every builder
+returns English by default: that is the text a result's ``error`` stores, transcripts persist and
+the gateway matches. Pass ``lang=None`` for the active language when the text is only shown to a
+person (a ``final_response`` that is never written back as an assistant row).
 """
 
 from __future__ import annotations
 
 import time
+from string import Formatter
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 from agent.error_classifier import FailoverReason
+from agent.i18n import DEFAULT_LANGUAGE, t, tl
 from hermes_constants import display_hermes_home
 
 # Failure codes minted by loop sites that are not provider verdicts (see module docstring).
@@ -161,67 +168,31 @@ def is_max_iteration_handoff(result: Any) -> bool:
 
 
 # ---- chat copy tables -----------------------------------------------------------------------
+# Values are catalog keys; the English source of every sentence is ``locales/en.yaml``.
 
-_NEXT_STEPS_RETRY = "Wait a minute and send /retry, or switch models with /model."
-_NEXT_STEPS_LOOP = (
-    "Your message is saved. Send `continue` to try again, or start a new session with /new. "
-    "If it happens again, run `hermes doctor` and share the error details."
-)
-
-# Lead sentence per classifier reason once retries and fallback are exhausted.
+# Lead clause per classifier reason once retries and fallback are exhausted.
 _EXHAUSTED_LEADS: Dict[str, str] = {
-    FailoverReason.rate_limit.value: "{label} rate-limited every one of {attempts} attempts",
-    FailoverReason.upstream_rate_limit.value: "{label} rate-limited every one of {attempts} attempts",
-    FailoverReason.overloaded.value: "{label} reported it was overloaded on all {attempts} attempts",
-    FailoverReason.server_error.value: "{label} returned a server error on all {attempts} attempts",
-    FailoverReason.timeout.value: "{label} didn't respond in time on any of {attempts} attempts",
+    FailoverReason.rate_limit.value: "explainer.failure.exhausted_lead.rate_limit",
+    FailoverReason.upstream_rate_limit.value: "explainer.failure.exhausted_lead.rate_limit",
+    FailoverReason.overloaded.value: "explainer.failure.exhausted_lead.overloaded",
+    FailoverReason.server_error.value: "explainer.failure.exhausted_lead.server_error",
+    FailoverReason.timeout.value: "explainer.failure.exhausted_lead.timeout",
 }
-_EXHAUSTED_DEFAULT_LEAD = "{label} didn't answer after {attempts} attempts"
+_EXHAUSTED_DEFAULT_LEAD = "explainer.failure.exhausted_lead.default"
 
 # Terminal copy for a non-retryable provider rejection, keyed by classifier reason.
 _NONRETRYABLE_COPY: Dict[str, str] = {
-    FailoverReason.model_not_found.value: (
-        "Model '{model}' isn't available on {label}. Pick a different model with /model "
-        "(or `hermes model` in a terminal).{prefix_hint}"
-    ),
-    FailoverReason.format_error.value: (
-        "{label} rejected this request as malformed, so the model didn't answer. Start a clean "
-        "session with /new or switch models with /model; if it keeps happening, run `hermes doctor`."
-    ),
-    FailoverReason.role_alternation.value: (
-        "{label} requires user and assistant turns to strictly alternate and rejected this "
-        "conversation's shape. Start a clean session with /new or switch models with /model."
-    ),
-    FailoverReason.ssl_cert_verification.value: (
-        "Hermes couldn't verify {label}'s security certificate, so the connection was refused. "
-        "This is usually a corporate proxy or an outdated certificate store on this computer — "
-        "see the terminal or `{home}/logs/agent.log` for the exact fix, or try another provider "
-        "with /model."
-    ),
-    FailoverReason.provider_policy_blocked.value: (
-        "{label} refused this request because of a policy on your account (its data/privacy "
-        "settings, or a block the model's upstream provider placed on the account), so the model "
-        "didn't answer and retrying won't help. Check the account with the provider, or switch "
-        "models with /model."
-    ),
-    FailoverReason.upstream_blocked.value: (
-        "A firewall/CDN in front of {label} blocked the request before it reached the model, so "
-        "your key is probably fine. Set a custom User-Agent via the provider's extra_headers, check "
-        "the proxy/WAF rules, or switch providers with /model."
-    ),
+    reason.value: f"explainer.failure.nonretryable.{reason.value}"
+    for reason in (
+        FailoverReason.model_not_found, FailoverReason.format_error, FailoverReason.role_alternation,
+        FailoverReason.ssl_cert_verification, FailoverReason.provider_policy_blocked,
+        FailoverReason.upstream_blocked,
+    )
 }
-_NONRETRYABLE_DEFAULT_COPY = (
-    "{label} rejected the request and retrying won't help. Pick another model with /model, "
-    "or check the details in `{home}/logs/agent.log`."
-)
-_AUTH_COPY: Dict[str, str] = {
-    "oauth": "{label} rejected your sign-in, so the model can't be reached. Sign in again: `{relogin}`.",
-    "api_key": (
-        "{label} rejected your API key, so the model can't be reached. Update it in "
-        "Settings → Providers, or run `hermes setup` in a terminal."
-    ),
-}
+_NONRETRYABLE_DEFAULT_COPY = "explainer.failure.nonretryable.default"
+_AUTH_COPY: Dict[str, str] = {"oauth": "explainer.failure.auth_oauth", "api_key": "explainer.failure.auth_api_key"}
 
+# English for importers that print it on their own line (CLI); chat copy is ``content_policy_copy``.
 CONTENT_POLICY_NEXT_STEPS = (
     "Try rewording your message or removing sensitive attachments, or switch to another "
     "model with /model."
@@ -229,35 +200,44 @@ CONTENT_POLICY_NEXT_STEPS = (
 
 # ---- one reason → "what happened" gloss, shared by cron, subagent and chat notices ------------
 
-# FailoverReason / site code → one clause (no HTTP codes, no "provider" jargon). ``{subject}``
-# is who was asking ("the job", "it"), ``{possessive}`` its possessive ("the job's", "its").
+# FailoverReason / site code → catalog key of one clause (no HTTP codes, no "provider" jargon).
 # Reasons absent here are NOT provider-shaped; callers fall back to the raw error text.
 FAILURE_CAUSE_GLOSS: Dict[str, str] = {
-    FailoverReason.timeout.value: "the AI model service did not respond in time",
-    FailoverReason.rate_limit.value: "the AI model service was rate-limited (too many requests)",
-    FailoverReason.upstream_rate_limit.value: "the AI model service was rate-limited (too many requests)",
-    FailoverReason.overloaded.value: "the AI model service is overloaded right now",
-    FailoverReason.server_error.value: "the AI model service returned an internal error",
-    FailoverReason.billing.value: "the AI model service says the account's usage or credit limit is reached",
+    FailoverReason.timeout.value: "explainer.cause.timeout",
+    FailoverReason.rate_limit.value: "explainer.cause.rate_limit",
+    FailoverReason.upstream_rate_limit.value: "explainer.cause.rate_limit",
+    FailoverReason.overloaded.value: "explainer.cause.overloaded",
+    FailoverReason.server_error.value: "explainer.cause.server_error",
+    FailoverReason.billing.value: "explainer.cause.billing",
     # Wire-level billing code (not a FailoverReason) that error_surface routes to the billing layer.
-    "billing_unverified": "the AI model service says the account's usage or credit limit is reached",
-    FailoverReason.auth.value: "the AI model service rejected the sign-in",
-    FailoverReason.auth_permanent.value: "the AI model service rejected the sign-in",
-    FailoverReason.upstream_blocked.value: "a firewall/CDN in front of the AI model service blocked the request",
-    FailoverReason.model_not_found.value: "the model {subject} uses was not found at the AI model service",
-    FailoverReason.content_policy_blocked.value: "the AI model service's safety filter rejected the request",
-    FailoverReason.provider_policy_blocked.value: (
-        "the AI model service refused the request because of a policy on the account"
-    ),
-    "context_overflow": "{possessive} request grew too large for the model",
-    "payload_too_large": "{possessive} request grew too large for the model",
+    "billing_unverified": "explainer.cause.billing",
+    FailoverReason.auth.value: "explainer.cause.auth",
+    FailoverReason.auth_permanent.value: "explainer.cause.auth",
+    FailoverReason.upstream_blocked.value: "explainer.cause.upstream_blocked",
+    FailoverReason.model_not_found.value: "explainer.cause.model_not_found",
+    FailoverReason.content_policy_blocked.value: "explainer.cause.content_policy_blocked",
+    FailoverReason.provider_policy_blocked.value: "explainer.cause.provider_policy_blocked",
+    "context_overflow": "explainer.cause.context_overflow",
+    "payload_too_large": "explainer.cause.context_overflow",
 }
+# Clauses that name who was asking: a whole sentence per asker (``_job`` suffix for a cron job),
+# so a translation never embeds an English "this job" / "the job's".
+_ASKER_GLOSS_KEYS = frozenset({"explainer.cause.model_not_found", "explainer.cause.context_overflow"})
+_JOB_ASKER = ("this job", "the job's")
 
 
-def failure_cause_gloss(reason: Any, *, subject: str = "it", possessive: str = "its") -> Optional[str]:
-    """Plain clause for a classified ``failure_reason``; None when the reason has no gloss."""
-    template = FAILURE_CAUSE_GLOSS.get(str(reason or ""))
-    return template.format(subject=subject, possessive=possessive) if template else None
+def failure_cause_gloss(
+    reason: Any, *, subject: str = "it", possessive: str = "its", lang: Optional[str] = None,
+) -> Optional[str]:
+    """Plain clause for a classified ``failure_reason`` in the active language (``lang`` to pin
+    one); None when the reason has no gloss. ``subject``/``possessive`` name who was asking:
+    ``("this job", "the job's")`` selects the cron phrasing, anything else the subagent one."""
+    key = FAILURE_CAUSE_GLOSS.get(str(reason or ""))
+    if key is None:
+        return None
+    if key in _ASKER_GLOSS_KEYS and (subject, possessive) == _JOB_ASKER:
+        key += "_job"
+    return t(key, lang=lang)
 
 
 # ---- site-code copy -------------------------------------------------------------------------
@@ -265,118 +245,64 @@ def failure_cause_gloss(reason: Any, *, subject: str = "it", possessive: str = "
 # Chat copy for the codes in SITE_FAILURE_CODES that a loop site renders itself
 # (``empty_response`` is worded by agent/turn_explainers.py, ``session_busy`` by the lease).
 _FAILURE_CODE_COPY: Dict[str, str] = {
-    "context_overflow": (
-        "This conversation has grown too long for {model} to read, and Hermes couldn't shrink "
-        "it enough automatically. Start a new session with /new (your history is kept), or try "
-        "/compress once more. Switching to a model with a bigger context window also works."
-    ),
-    "truncated": (
-        "The model's reply was cut off before it finished (it hit its output length limit), so "
-        "Hermes didn't run the incomplete action. Nothing was changed. Send `continue`, ask for "
-        "the work in smaller steps, or raise max_tokens for this model."
-    ),
-    "invalid_response": (
-        "{label} sent back an empty or broken reply {attempts} times — it is probably overloaded "
-        "or rate-limiting you. " + _NEXT_STEPS_RETRY + "\n\nDetails: {detail}"
-    ),
-    "loop_error": (
-        "Hermes hit repeated errors and stopped this turn so it wouldn't keep retrying. "
-        + _NEXT_STEPS_LOOP + "\n\nDetails: {detail}"
-    ),
-    "interpreter_shutdown": (
-        "Hermes was shutting down and stopped this turn. Your conversation is saved — reopen "
-        "it{resume} and send your message again."
-    ),
+    code: f"explainer.failure.{code}"
+    for code in ("context_overflow", "truncated", "invalid_response", "loop_error", "interpreter_shutdown")
 }
 
 # One-off outcome strings: deterministic loop exits that are NOT failure codes (the result
 # they ride carries a code from the table above, or none at all).
+# ``server_context_rejection`` deliberately avoids the overflow phrases gateway/run_turn.py
+# matches on (``_CONTEXT_OVERFLOW_ERROR_PHRASES``): this failure is transient, so the user's
+# message must stay in the transcript and the session must not be auto-reset.
+# ``truncated_unreported`` rides failure_reason="truncated": args were cut mid-JSON but the model
+# never reported an output-length stop, so it doesn't claim one (#91717).
+# ``stream_closed_tool_call`` rides failure_reason="truncated": clean EOF (no transport error, no
+# finish_reason) mid tool-call, retries exhausted — not a network problem on the user's side (#102766).
+# ``local_processing_error`` rides failure_reason="loop_error" (advisory; the turn is incomplete).
 _ONE_OFF_COPY: Dict[str, str] = {
-    "payload_too_large": (
-        "This conversation (including attachments) has grown too large to send to {model}, and "
-        "Hermes couldn't shrink it enough automatically. Start a new session with /new (your "
-        "history is kept), or try /compress once more."
-    ),
-    "compression_disabled": (
-        "This conversation is too long for {model} and automatic shrinking is turned off in "
-        "your settings (compression.enabled). Run /compress to shrink it now, /new to start "
-        "fresh, or pick a model with a bigger context window."
-    ),
-    # Wording deliberately avoids the overflow phrases gateway/run_turn.py matches on
-    # (``_CONTEXT_OVERFLOW_ERROR_PHRASES``): this failure is transient, so the user's
-    # message must stay in the transcript and the session must not be auto-reset.
-    "server_context_rejection": (
-        "The model server rejected this request as too large, but this conversation is only "
-        "about {tokens:,} tokens — well under the {window:,}-token window Hermes knows for "
-        "{model} — so shrinking it would not help. Another request on the same server (for "
-        "example a background memory review from an earlier session) was probably holding its "
-        "capacity, or the server runs {model} with a smaller window than Hermes assumes. Wait a "
-        "moment and send /retry; if it keeps happening, check the server's context setting."
-    ),
-    # Rides failure_reason="truncated": args were cut mid-JSON but the model never reported
-    # an output-length stop, so don't claim it hit one (#91717).
-    "truncated_unreported": (
-        "The model's action arrived cut off partway through, so Hermes didn't run it. Nothing was changed. The model didn't report hitting its output "
-        "limit, so this was most likely a dropped connection or a provider/router cutting the "
-        "reply short. Send /retry; if it keeps happening, ask for the work in smaller steps."
-    ),
-    "stream_dropped_tool_call": (
-        "The connection to {label} kept dropping while the model was writing a large action, "
-        "so nothing was run. Check your network and send /retry; asking for the file in smaller "
-        "pieces also helps."
-    ),
-    # Rides failure_reason="truncated": clean EOF (no transport error, no finish_reason)
-    # mid tool-call, retries exhausted — not a network problem on the user's side (#102766).
-    "stream_closed_tool_call": (
-        "{label} kept closing the stream before the model finished writing its action, without "
-        "reporting an error, so nothing was run. This is usually the provider or a proxy in front "
-        "of it cutting long replies short. Send /retry; asking for the work in smaller steps also helps."
-    ),
-    # Rides failure_reason="loop_error" (advisory; the turn is incomplete, not failed).
-    "local_processing_error": (
-        "Hermes hit an internal error while handling the model's reply and stopped this turn. "
-        + _NEXT_STEPS_LOOP + "\n\nDetails: {detail}"
-    ),
-    "reasoning_only": (
-        "⚠️ {model} spent all of its output budget thinking and never wrote an answer. Lower "
-        "its reasoning effort with `/reasoning low`, or switch to a different model with /model. "
-        "Its last thoughts, which may contain the answer:\n\n{preview}"
-    ),
-    "max_iterations_no_summary": (
-        "I ran out of steps for this turn ({limit} tool calls) before finishing, and couldn't "
-        "produce a summary. Send `continue` to keep going, or raise `max_iterations` in your config."
-    ),
-    "nous_rate_limit": (
-        "Wait for the reset and send /retry, or switch models with /model. To avoid waits, add "
-        "a backup provider with `hermes fallback add`."
-    ),
+    code: f"explainer.failure.{code}"
+    for code in (
+        "payload_too_large", "compression_disabled", "server_context_rejection", "truncated_unreported",
+        "stream_dropped_tool_call", "stream_closed_tool_call", "local_processing_error", "reasoning_only",
+        "max_iterations_no_summary", "nous_rate_limit",
+    )
 }
 _SITE_COPY: Dict[str, str] = {**_FAILURE_CODE_COPY, **_ONE_OFF_COPY}
 
 
-def site_copy(code: str, **fields: Any) -> str:
-    """Chat copy for a failure code or one-off loop outcome; unknown fields default to empty strings."""
+def _blank_missing_fields(key: str, fields: Dict[str, Any]) -> None:
+    """Give every placeholder of the English template that ``fields`` lacks an empty string."""
+    for _, name, _, _ in Formatter().parse(t(key, lang=DEFAULT_LANGUAGE)):
+        if name:
+            fields.setdefault(name, "")
+
+
+def site_copy(code: str, *, lang: Optional[str] = DEFAULT_LANGUAGE, **fields: Any) -> str:
+    """Chat copy for a failure code or one-off loop outcome; unknown fields default to empty strings.
+    The English default carries its catalog key (``render_localized`` shows the active language)."""
+    key = _SITE_COPY[code]
     fields.setdefault("home", display_hermes_home())
-    return _SITE_COPY[code].format_map(_Defaults(fields))
+    _blank_missing_fields(key, fields)
+    return tl(key, **fields) if lang == DEFAULT_LANGUAGE else t(key, lang=lang, **fields)
 
 
-def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None) -> str:
+def exhausted_copy(
+    reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None,
+    lang: Optional[str] = DEFAULT_LANGUAGE,
+) -> str:
     """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``). A rate
     limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401)."""
-    lead = _EXHAUSTED_LEADS.get(reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
+    lead = t(_EXHAUSTED_LEADS.get(reason, _EXHAUSTED_DEFAULT_LEAD), lang=lang, label=label, attempts=attempts)
     if reset_seconds is not None and reset_seconds >= 120:
         from agent.retry_utils import format_reset_window
-        situation = (f"its usage limit resets in {format_reset_window(reset_seconds)}. "
-                     "Send /retry after that, or switch models with /model.")
+        situation = t("explainer.failure.exhausted_situation_reset", lang=lang,
+                      window=format_reset_window(reset_seconds))
     else:
-        situation = f"it looks temporarily unavailable. {_NEXT_STEPS_RETRY}"
-    return (
-        f"{lead} — {situation} To avoid this in future, "
-        f"add a backup provider with `hermes fallback add`.\n\nProvider said: {summary}"
-    )
+        situation = t("explainer.failure.exhausted_situation_unavailable", lang=lang)
+    return t("explainer.failure.exhausted", lang=lang, lead=lead, situation=situation, summary=summary)
 
 
-def limit_reset_copy(resets_at: float, now: Optional[float] = None) -> str:
+def limit_reset_copy(resets_at: float, now: Optional[float] = None, lang: Optional[str] = DEFAULT_LANGUAGE) -> str:
     """One chat/CLI line naming when the provider says the limit lifts (#98852): the Retry-After
     / ``resets_at`` the loop already honours for backoff, shown to the user instead of a bare
     "wait a minute". Local wall-clock time plus the remaining wait; empty once it has passed."""
@@ -385,8 +311,10 @@ def limit_reset_copy(resets_at: float, now: Optional[float] = None) -> str:
     if remaining <= 0:
         return ""
     hours, minutes = divmod((remaining + 59) // 60, 60)
-    wait = f"{hours}h {minutes:02d}m" if hours else f"{minutes}m"
-    return f"Limit resets at {time.strftime('%H:%M', time.localtime(resets_at))} (in {wait})."
+    wait = (t("explainer.failure.limit_wait_hours", lang=lang, hours=hours, minutes=f"{minutes:02d}") if hours
+            else t("explainer.failure.limit_wait_minutes", lang=lang, minutes=minutes))
+    return t("explainer.failure.limit_resets", lang=lang,
+             time=time.strftime('%H:%M', time.localtime(resets_at)), wait=wait)
 
 
 def oauth_relogin_command(provider: Any) -> str:
@@ -421,30 +349,27 @@ def relogin_command_hint(provider: Any) -> str:
 
 def nonretryable_copy(
     classified: Any, *, provider: Any, model: Any, summary: str, prefix_suggestion: Optional[str] = None,
+    lang: Optional[str] = DEFAULT_LANGUAGE,
 ) -> str:
     """Chat copy for a terminal non-retryable rejection (auth, model missing, TLS, generic 4xx)."""
     label = provider_label_for(provider)
     if getattr(classified, "is_auth", False):
         from agent.error_surface import auth_kind
 
-        template = _AUTH_COPY[auth_kind(str(provider or ""))]
+        key = _AUTH_COPY[auth_kind(str(provider or ""))]
     else:
-        template = _NONRETRYABLE_COPY.get(classified.reason.value, _NONRETRYABLE_DEFAULT_COPY)
+        key = _NONRETRYABLE_COPY.get(classified.reason.value, _NONRETRYABLE_DEFAULT_COPY)
     prefix_hint = (
-        f" If you typed the name yourself it may be missing its vendor prefix — did you mean "
-        f"'{prefix_suggestion}'?"
+        t("explainer.failure.model_prefix_hint", lang=lang, suggestion=prefix_suggestion)
         if prefix_suggestion else ""
     )
-    body = template.format(label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint,
-                           relogin=oauth_relogin_command(provider))
-    return f"{body}\n\nProvider said: {summary}"
+    body = t(key, lang=lang, label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint,
+             relogin=oauth_relogin_command(provider))
+    return t("explainer.failure.with_provider_detail", lang=lang, body=body, summary=summary)
 
 
-def content_policy_copy(*, label: str, summary: str) -> str:
-    return (
-        f"{label}'s safety filter refused this request, so the model didn't answer. "
-        f"{CONTENT_POLICY_NEXT_STEPS}\n\nProvider said: {summary}"
-    )
+def content_policy_copy(*, label: str, summary: str, lang: Optional[str] = DEFAULT_LANGUAGE) -> str:
+    return t("explainer.failure.content_policy", lang=lang, label=label, summary=summary)
 
 
 def short_detail(exc: Any, limit: int = 200) -> str:
@@ -452,8 +377,3 @@ def short_detail(exc: Any, limit: int = 200) -> str:
     text = (str(exc) or type(exc).__name__).strip().splitlines()
     first = text[0] if text else type(exc).__name__
     return first if len(first) <= limit else first[: limit - 1] + "…"
-
-
-class _Defaults(dict):
-    def __missing__(self, key: str) -> str:
-        return ""

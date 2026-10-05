@@ -555,14 +555,32 @@ def block_task(
     payload: Optional[BlockRequest] = None,
     board: Optional[str] = Query(default=None),
 ) -> dict[str, Any]:
+    kind = payload.kind if payload else None
+    # Checked here, not left to block_task: by then the worker below is already stopped.
+    if kind is not None and kind not in kanban_db.VALID_BLOCK_KINDS:
+        raise HTTPException(
+            status_code=400, detail=f"block kind must be one of {sorted(kanban_db.VALID_BLOCK_KINDS)}")
     with _connection(board) as conn:
         _require_task(conn, task_id)
+        # A worker blocking its own task exits afterwards; one blocked from outside keeps
+        # running with its claim gone, and an /unblock would start a second worker in the same
+        # workspace beside it. So the worker goes first, while its claim still holds the
+        # dispatcher off, and the block is pinned to that run (or to no run at all).
+        worker = conn.execute(
+            "SELECT current_run_id, worker_pid, claim_lock, worker_started_at FROM tasks "
+            "WHERE id = ? AND status = 'running'", (task_id,),
+        ).fetchone()
+        if worker and kanban_db._worker_survived_termination(kanban_db._terminate_reclaimed_worker(
+                worker["worker_pid"], worker["claim_lock"], started_at=worker["worker_started_at"])):
+            raise HTTPException(status_code=409, detail="the task's worker could not be stopped")
         try:
             ok = kanban_db.block_task(
                 conn,
                 task_id,
                 reason=payload.reason if payload else None,
-                kind=payload.kind if payload else None,
+                kind=kind,
+                expected_run_id=worker["current_run_id"] if worker else None,
+                unless_running=worker is None,
             )
         except ValueError as exc:
             raise _client_error(exc, fallback="task could not be blocked") from exc

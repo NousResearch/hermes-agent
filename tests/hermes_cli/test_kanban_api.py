@@ -874,3 +874,38 @@ def test_sanitizer_hides_cookies_and_unterminated_private_keys() -> None:
     # Dumped as a JSON string: the last line of the body ends at the closing quote.
     dumped = _sanitize_log('{"key": "-----BEGIN PRIVATE KEY-----\\n' + body + '\\n' + body[::-1] + '"}')
     assert body not in dumped and body[::-1] not in dumped
+
+
+def test_blocking_a_running_task_stops_its_worker(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task_id = _running_task_with_session(client, "block-running", "20260101_000000_abcdef")
+    with kbc.connect_closing() as conn, kbc.write_txn(conn):
+        conn.execute("UPDATE tasks SET worker_pid = 4242 WHERE id = ?", (task_id,))
+    stopped: list[int] = []
+    outcome = {"host_local": True, "signal_refused": True, "terminated": False}
+
+    def terminate(pid, *args, **kwargs):
+        stopped.append(pid)
+        return outcome
+
+    monkeypatch.setattr(kanban_db, "_terminate_reclaimed_worker", terminate)
+    url = f"/api/plugins/kanban/v1/tasks/{task_id}"
+
+    # A worker that would not die keeps its claim: releasing it lets an /unblock start a
+    # second worker beside the first.
+    assert client.post(f"{url}/block", json={"reason": "hold"}).status_code == 409
+    assert client.get(url).json()["task"]["status"] == "running"
+    # A request that is refused anyway must not have cost the worker its life.
+    stopped.clear()
+    assert client.post(f"{url}/block", json={"kind": "typo"}).status_code == 400
+    assert stopped == []
+
+    outcome["terminated"] = True
+    assert client.post(f"{url}/block", json={"reason": "hold"}).status_code == 200
+    assert stopped == [4242]
+    stopped.clear()
+
+    assert client.post(f"{url}/unblock").status_code == 200
+    assert client.post(f"{url}/block", json={"reason": "hold"}).status_code == 200
+    assert stopped == []  # a task nobody is running has no worker to stop

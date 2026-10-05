@@ -113,21 +113,17 @@ def test_queue_failures_do_not_leak_credentials(tmp_path, monkeypatch, capsys, f
         assert "not live" in out.err and "hermes --resume stored" in out.err
 
 
-@pytest.mark.parametrize("steer_reply", [
-    {"result": {"status": "rejected"}},
-    {"error": {"code": 4010, "message": "agent does not support steer"}},
-])
 @pytest.mark.parametrize("submit_reply", [
     {"result": {"status": "queued"}},
     {"error": {"code": 4010, "message": "submission rejected"}},
 ])
-def test_steer_explicit_rejection_submits_next_turn_once(monkeypatch, steer_reply, submit_reply):
+def test_steer_explicit_rejection_submits_next_turn_once(monkeypatch, submit_reply):
     import websockets.sync.client
 
     socket = Mock()
     connect = Mock(return_value=nullcontext(socket))
     monkeypatch.setattr(websockets.sync.client, "connect", connect)
-    replies = iter([steer_reply, submit_reply])
+    replies = iter([{"result": {"status": "rejected"}}, submit_reply])
 
     def recv(**kwargs):
         request = json.loads(socket.send.call_args.args[0])
@@ -144,7 +140,7 @@ def test_steer_explicit_rejection_submits_next_turn_once(monkeypatch, steer_repl
     connect.assert_called_once()
 
 
-@pytest.mark.parametrize("outcome", ["accepted", "unknown_error", "transport_error"])
+@pytest.mark.parametrize("outcome", ["accepted", "capability_error", "unknown_error", "transport_error"])
 def test_steer_does_not_fallback_without_explicit_rejection(monkeypatch, outcome):
     import websockets.sync.client
 
@@ -156,8 +152,9 @@ def test_steer_does_not_fallback_without_explicit_rejection(monkeypatch, outcome
         if outcome == "transport_error":
             raise TimeoutError("submission unconfirmed")
         request = json.loads(socket.send.call_args.args[0])
-        payload = ({"error": {"code": 4011, "message": "unknown"}}
-                   if outcome == "unknown_error" else {"result": {"status": "queued"}})
+        code = {"capability_error": 4010, "unknown_error": 4011}.get(outcome)
+        payload = ({"error": {"code": code, "message": "refused"}}
+                   if code else {"result": {"status": "queued"}})
         return json.dumps({"id": request["id"], **payload})
 
     socket.recv.side_effect = recv
@@ -166,8 +163,10 @@ def test_steer_does_not_fallback_without_explicit_rejection(monkeypatch, outcome
             session_ingress.submit_live_prompt("ws://owner", "live", "NEXT", "steer")
     else:
         reply = session_ingress.submit_live_prompt("ws://owner", "live", "NEXT", "steer")
-        assert (reply["error"]["code"] == 4011 if outcome == "unknown_error"
-                else reply["result"]["status"] == "queued")
+        if outcome in ("capability_error", "unknown_error"):
+            assert reply["error"]["code"] == (4010 if outcome == "capability_error" else 4011)
+        else:
+            assert reply["result"]["status"] == "queued"
     socket.send.assert_called_once()
     assert json.loads(socket.send.call_args.args[0])["method"] == "session.steer"
     connect.assert_called_once()

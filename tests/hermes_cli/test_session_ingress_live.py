@@ -242,3 +242,37 @@ def test_steer_uses_primitive_and_only_rejected_idle_input_becomes_next_turn(run
         assert r["requests"] == [{"session_id": r["sid"], "text": "SECOND", "queued": True}]
         assert r["second_done"].wait(10)
         assert r["turns"] == ["SECOND"]
+
+
+@pytest.mark.parametrize("state", ["running", "idle", "building"])
+def test_unsupported_steer_refuses_without_submitting_a_next_turn(runtime, state):
+    r = runtime
+    session = r["session"]
+    if state == "running":
+        response = server.handle_request({"id": "first", "method": "prompt.submit", "params": {
+            "session_id": r["sid"], "text": "FIRST"}})
+        assert response["result"]["status"] == "streaming"
+        assert r["first_started"].wait(10)
+    if state == "building":
+        session["agent"] = None
+        session["running"] = True
+    else:
+        del session["agent"].steer
+    # Confirm the actual RPC's capability refusal, independently of CLI policy.
+    response = server.handle_request({"id": "unsupported", "method": "session.steer", "params": {
+        "session_id": r["sid"], "text": "SECOND"}})
+    assert response["error"]["code"] == 4010
+    assert response["error"]["message"] == "agent does not support steer"
+    r["requests"].clear()
+    result = r["cli"](action="steer")
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "4010" in result.stderr and "No prompt was queued" in result.stderr
+    assert "hermes queue" in result.stderr
+    assert not result.stdout
+    assert r["requests"] == []
+    assert session.get("queued_prompt") is None
+    assert r["corrections"] == []
+    assert not any(row["content"] == "SECOND" for row in r["db"].get_messages(r["key"]))
+    if state == "building":
+        session["agent"] = r["agent"]
+        session["running"] = False

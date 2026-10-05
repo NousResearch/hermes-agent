@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { findSlashCommand } from '../app/slash/registry.js'
+import { coreCommands } from '../app/slash/commands/core.js'
+
+const steerCommand = coreCommands.find(command => command.name === 'steer')!
 
 const guarded =
   <T>(fn: (r: T) => void) =>
@@ -25,7 +27,7 @@ const runSteer = async (arg: string, steerResult: unknown, busy = true) => {
     ui: { busy }
   }
 
-  findSlashCommand('steer')!.run(arg, ctx as never, `/steer ${arg}`)
+  steerCommand.run(arg, ctx as never, `/steer ${arg}`)
   await rpc.mock.results[0]?.value
   await Promise.resolve()
 
@@ -48,5 +50,23 @@ describe('/steer', () => {
 
     expect(enqueue).toHaveBeenCalledWith('check the logs')
     expect(printed).toContain('queued for next turn')
+  })
+
+  it('reports a capability refusal without queueing a different action', async () => {
+    const error = Object.assign(new Error('agent does not support steer'), { code: 4010 })
+    const enqueue = vi.fn()
+    const guardedErr = vi.fn()
+    const ctx = {
+      composer: { enqueue },
+      gateway: { rpc: vi.fn().mockRejectedValue(error) },
+      guarded,
+      guardedErr,
+      sid: 'sid-1',
+      transcript: { sys: vi.fn() },
+      ui: { busy: true }
+    }
+    steerCommand.run('check the logs', ctx as never, '/steer check the logs')
+    await vi.waitFor(() => expect(guardedErr).toHaveBeenCalledWith(error))
+    expect(enqueue).not.toHaveBeenCalled()
   })
 })

@@ -1795,7 +1795,9 @@ semantics. Canonical user turns are projected to attached clients when dispatche
 
 `steer` calls `session.steer`, injecting into the active turn at the agent's next
 supported boundary. As in the TUI, an explicit rejection (including idle) becomes a
-normal next turn through `prompt.submit(queued=true)`. Compression may also queue
+normal next turn through `prompt.submit(queued=true)`. A capability refusal (RPC
+`4010`, including an agent still building) fails without submitting a next turn;
+use `hermes queue` explicitly when that is what you want. Compression may also queue
 input under the primitive's existing policy. Acceptance does not prove delivery.
 
 Both commands use the owner's existing RPC dispatcher and leave configuration

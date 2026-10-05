@@ -52,10 +52,9 @@ def submit_live_prompt(url: str, session_id: str, text: str, action: str) -> dic
         while True:
             reply = json.loads(socket.recv(timeout=max(0, deadline - time.monotonic())))
             if reply.get("id") == request_id:
-                # Match /steer's next-turn behavior for idle, building or unsupported agents.
+                # Match /steer's next-turn behavior for an explicitly rejected correction.
                 # Only explicit rejection permits fallback; transport errors never retry.
-                if action == "steer" and (reply.get("result", {}).get("status") == "rejected"
-                                          or reply.get("error", {}).get("code") == 4010):
+                if action == "steer" and reply.get("result", {}).get("status") == "rejected":
                     action = "queue"
                     request_id = "ingress-next-turn"
                     socket.send(json.dumps({"jsonrpc": "2.0", "id": request_id,
@@ -103,6 +102,10 @@ def send_live_message(target: str, text: str, action: str) -> int:
         print("Error: Submission was not confirmed. Check the owning session before retrying.", file=sys.stderr)
         return 1
     if "error" in reply:
+        if action == "steer" and reply["error"]["code"] == 4010:
+            print("Error: Steering is unavailable for this session (RPC 4010). No prompt was queued. "
+                  "Use hermes queue to submit a next turn.", file=sys.stderr)
+            return 1
         print(f"Error: Live session rejected the prompt (RPC code {reply['error']['code']}).", file=sys.stderr)
         return 1
     status = reply["result"].get("status")

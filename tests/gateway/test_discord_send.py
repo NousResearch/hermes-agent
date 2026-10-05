@@ -65,7 +65,7 @@ async def test_send_rejects_whitespace_and_records_failed_final_reply(
         result = await adapter.send(
             "555",
             "  \n\t ",
-            reply_to="123",
+            reply_to="123456",
             metadata={"notify": True},
         )
 
@@ -76,7 +76,7 @@ async def test_send_rejects_whitespace_and_records_failed_final_reply(
     row = adapter._with_discord_recovery_db(
         lambda conn: conn.execute(
             "SELECT status, replied, outage_response, response_message_id "
-            "FROM discord_messages WHERE message_id='123'"
+            "FROM discord_messages WHERE message_id='123456'"
         ).fetchone()
     )
     assert tuple(row) == ("failed", 0, 0, None)
@@ -135,7 +135,7 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
     )
 
     long_text = "A" * (adapter.MAX_MESSAGE_LENGTH + 50)
-    result = await adapter.send("555", long_text, reply_to="99")
+    result = await adapter.send("555", long_text, reply_to="999999")
 
     assert result.success is True
     assert result.message_id == "1001"
@@ -145,7 +145,7 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
     assert channel.send.await_count == 3
     # the reference is constructed from ids, not fetched + to_reference()
     _discord_mod.MessageReference.assert_any_call(
-        message_id=99, channel_id=None, guild_id=None,
+        message_id=999999, channel_id=None, guild_id=None,
         fail_if_not_exists=False)
     assert send_calls[0]["reference"] is _discord_mod.MessageReference.return_value
     assert send_calls[1]["reference"] is None

@@ -2926,15 +2926,24 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             guild_id=getattr(getattr(channel, "guild", None), "id", None), fail_if_not_exists=False,
         )
 
+    @staticmethod
+    def _validate_reply_to(reply_to) -> None:
+        """Reject malformed explicit Discord reply anchors before any send path."""
+        if reply_to is None:
+            return
+        if (
+            not isinstance(reply_to, str)
+            or not 6 <= len(reply_to) <= 32
+            or not reply_to.isdigit()
+        ):
+            raise ValueError("Discord reply_to must be a numeric snowflake")
+
     def _reply_reference_for_send(self, reply_to, channel):
-        """Reply anchor for send paths honoring reply_to_mode (``off`` suppresses); mirrors telegram."""
-        if not reply_to or self._reply_to_mode == "off":
+        """Reply anchor for send paths honoring reply_to_mode (``off`` suppresses)."""
+        self._validate_reply_to(reply_to)
+        if reply_to is None or self._reply_to_mode == "off":
             return None
-        try:
-            return self._message_reference_from_ids(reply_to, channel)
-        except (ValueError, TypeError) as e:
-            logger.debug("Could not build reply-to reference: %s", e)
-            return None
+        return self._message_reference_from_ids(reply_to, channel)
 
     def _cap_split_chunks(self, chunks: List[str]) -> List[str]:
         """Cap chunks at ``MAX_SPLIT_MESSAGES``: keep the first N-1 and replace the rest with a
@@ -2968,6 +2977,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     ) -> SendResult:
         """Send a message to a Discord channel or thread (metadata thread_id wins over
         chat_id; forum channels auto-create a thread post since they reject direct sends)."""
+        try:
+            self._validate_reply_to(reply_to)
+        except ValueError as e:
+            return SendResult(success=False, error=str(e))
         if not self._client:
             # Dead transport: classify as send_path_degraded so the delivery ledger's reconnect
             # sweep can replay this; a generic "Not connected" error would strand the output.
@@ -2994,8 +3007,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 channel = await self._resolve_channel(chat_id)
                 if not channel:
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
-            # Forum channels reject channel.send() — create a thread post instead.
+            # Forum starters have no discord.py reference parameter. Reject an explicit
+            # anchor rather than creating an unanchored message.
             if self._is_forum_parent(channel):
+                if reply_to is not None:
+                    result = SendResult(
+                        success=False,
+                        error="Discord forum parent cannot preserve reply_to",
+                    )
+                    return await self._record_response_async(
+                        reply_to, result, content, final_delivery, metadata
+                    )
                 result = await self._send_to_forum(channel, content)
                 return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
             formatted = self.format_message(content)

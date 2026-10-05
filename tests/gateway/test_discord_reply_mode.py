@@ -109,7 +109,7 @@ class TestSendWithReplyToMode:
         adapter, channel, ref_msg = _make_discord_adapter("off")
         adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2", "chunk3"]
 
-        await adapter.send("12345", "test content", reply_to="999")
+        await adapter.send("12345", "test content", reply_to="999999")
 
         # Should never try to fetch the reference message
         channel.fetch_message.assert_not_called()
@@ -123,7 +123,7 @@ class TestSendWithReplyToMode:
         adapter, channel, ref_msg = _make_discord_adapter("off")
         adapter.truncate_message = lambda content, max_len, **kw: ["single chunk"]
 
-        await adapter.send("12345", "test", reply_to="999")
+        await adapter.send("12345", "test", reply_to="999999")
 
         channel.fetch_message.assert_not_called()
         calls = channel.send.call_args_list
@@ -139,13 +139,42 @@ class TestSendWithReplyToMode:
         adapter, channel, _ = _make_discord_adapter("first")
         adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2"]
 
-        await adapter.send("12345", "test content", reply_to="999")
+        with patch("plugins.platforms.discord.adapter.discord.MessageReference") as reference_ctor:
+            await adapter.send("12345", "test content", reply_to="999999")
 
         channel.fetch_message.assert_not_called()
         calls = channel.send.call_args_list
         assert len(calls) == 2
-        assert calls[0].kwargs.get("reference") is not None  # first chunk
+        assert calls[0].kwargs.get("reference") is reference_ctor.return_value  # first chunk
+        reference_kwargs = reference_ctor.call_args.kwargs
+        assert reference_kwargs["message_id"] == 999999
+        assert reference_kwargs["channel_id"] == channel.id
+        assert reference_kwargs["fail_if_not_exists"] is False
         assert calls[1].kwargs.get("reference") is None      # later chunks
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("reply_to", ["", "  ", "12345", "a" * 6, "1" * 33])
+    async def test_invalid_reply_to_fails_closed_without_live_send(self, reply_to):
+        adapter, channel, _ = _make_discord_adapter("first")
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1"]
+
+        result = await adapter.send("123456", "test content", reply_to=reply_to)
+
+        assert result.success is False
+        assert "reply_to" in (result.error or "")
+        channel.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_forum_parent_reply_to_fails_closed_instead_of_dropping_anchor(self, monkeypatch):
+        adapter, channel, _ = _make_discord_adapter("first")
+        monkeypatch.setattr(adapter, "_is_forum_parent", lambda _channel: True)
+        channel.create_thread = AsyncMock()
+
+        result = await adapter.send("123456", "test content", reply_to="999999")
+
+        assert result.success is False
+        assert "forum" in (result.error or "").lower()
+        channel.create_thread.assert_not_awaited()
 
 
 class TestConfigSerialization:
@@ -312,6 +341,6 @@ class TestVoiceReplyReference:
             return MagicMock(success=True, message_id="77")
         monkeypatch.setattr(adapter, "_forum_post_file", fake_forum_post)
 
-        await adapter.send_voice("12345", str(audio), reply_to="999")
+        await adapter.send_voice("12345", str(audio), reply_to="999999")
 
         channel.fetch_message.assert_not_called()

@@ -6,6 +6,8 @@ import * as path from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import * as updaterProcess from '../updater-process'
+import * as handoffAck from '../windows-update-apply'
+import { releaseUpdateMarkerIfOwnedBy } from '../update-marker'
 
 import { type CheckoutStrategyDeps, createCheckoutStrategy } from './checkout'
 import type { SourceUpdate } from './checkout-source'
@@ -64,7 +66,11 @@ it.each([true, false])(
     const { root, deps } = handoffFixture(remote)
     const spawned: string[][] = []
     const spawnOptions: Parameters<typeof updaterProcess.spawnUpdaterProcess>[2][] = []
-    vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
+    vi.spyOn(handoffAck, 'waitForAcknowledgedUpdaterClaim').mockImplementation(async ({ hermesHome }) => {
+    releaseUpdateMarkerIfOwnedBy(hermesHome, process.pid)
+    return true
+  })
+  vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
       (
         _command: string,
         args: string[],
@@ -84,9 +90,12 @@ it.each([true, false])(
       // The Windows cmd wrapper must inherit its hidden console; the POSIX
       // script needs to outlive Electron as a detached child (#116161).
       expect(spawnOptions[0]?.detached).toBe(!IS_WINDOWS)
-      expect(args).toContain(IS_WINDOWS ? '-Branch' : '--branch')
+      if (IS_WINDOWS) { expect(spawnOptions[0]?.env?.HERMES_UPDATE_HANDOFF_BRANCH).toBe('main') }
+      else { expect(args).toContain('--branch') }
 
-      if (remote) {
+      if (IS_WINDOWS) {
+        expect(spawnOptions[0]?.env?.HERMES_UPDATE_HANDOFF_NO_GATEWAY).toBe(remote ? '1' : undefined)
+      } else if (remote) {
         expect(args).toContain(NO_GATEWAY_FLAG)
       } else {
         expect(args).not.toContain(NO_GATEWAY_FLAG)
@@ -108,6 +117,10 @@ it('the Windows hand-off wrapper is spawned non-detached so the script shares it
     (updateRoot: string): updaterProcess.UpdateScriptHandoff | null => resolveHandoff(updateRoot, { isWindows: true })
   )
   const spawned: { command: string; args: string[]; detached: unknown }[] = []
+  vi.spyOn(handoffAck, 'waitForAcknowledgedUpdaterClaim').mockImplementation(async ({ hermesHome }) => {
+    releaseUpdateMarkerIfOwnedBy(hermesHome, process.pid)
+    return true
+  })
   vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
     (command: string, args: string[], options: { detached?: boolean }): updaterProcess.UpdaterChild => {
       spawned.push({ command, args, detached: options.detached })
@@ -131,6 +144,10 @@ it('the Windows hand-off wrapper is spawned non-detached so the script shares it
 // the raw spawn outcome confined to a Details line.
 it('a failed hand-off spawn keeps the app alive and reports the failure in plain copy', async (): Promise<void> => {
   const { root, deps } = handoffFixture(false)
+  vi.spyOn(handoffAck, 'waitForAcknowledgedUpdaterClaim').mockImplementation(async ({ hermesHome }) => {
+    releaseUpdateMarkerIfOwnedBy(hermesHome, process.pid)
+    return true
+  })
   vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation((): updaterProcess.UpdaterChild => {
     const child: EventEmitter & updaterProcess.UpdaterChild = Object.assign(new EventEmitter(), {
       unref: (): void => {}
@@ -156,4 +173,19 @@ it('a failed hand-off spawn keeps the app alive and reports the failure in plain
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
+})
+
+it('an unacknowledged script keeps Desktop alive and reports before restoring its backend', async () => {
+  const { root, deps } = handoffFixture(false)
+  const events: string[] = []
+  vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockReturnValue({ unref() {} })
+  vi.spyOn(handoffAck, 'waitForAcknowledgedUpdaterClaim').mockResolvedValue(false)
+  deps.emitUpdateProgress = progress => { if (progress.stage === 'error') events.push('error') }
+  deps.startHermes = async () => { events.push('restore') }
+  try {
+    expect(await createCheckoutStrategy(deps).apply()).toMatchObject({ ok: false, error: 'update-handoff-unacknowledged' })
+    expect(events).toEqual(['error', 'restore'])
+    expect(deps.markQuittingForHandoff).not.toHaveBeenCalled()
+    expect(deps.quit).not.toHaveBeenCalled()
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })

@@ -1,3 +1,4 @@
+import { UPDATE_MARKER_MAX_AGE_MS } from './update-marker'
 /**
  * Tests for electron/update-gate.ts — the update mutual-exclusion gate that
  * parks local backend spawns while an in-app update is running.
@@ -13,7 +14,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { updateGateReason, waitForUpdateClearance } from './update-gate'
+import { updateGateReason, waitForLocalBackendClearance, waitForUpdateClearance } from './update-gate'
 
 function deps(marker: boolean, inFlight: boolean, handoffActive = false) {
   return {
@@ -176,8 +177,8 @@ test('returns timeout when the gate never opens', async () => {
 // failed-receipt signal (#122206)
 // ---------------------------------------------------------------------------
 
-test('a failed receipt outranks a live marker as the reported reason', () => {
-  assert.equal(updateGateReason({ ...deps(true, false), hasFailedReceipt: () => true }), 'failed-receipt')
+test('a failed receipt cannot outrank a live marker', () => {
+  assert.equal(updateGateReason({ ...deps(true, false), hasFailedReceipt: () => true }), 'marker')
 })
 
 test('a failed receipt without a live marker keeps the gate open', () => {
@@ -195,7 +196,7 @@ test('abandonOn returns abandoned instead of parking on a failed receipt', async
   let slept = 0
 
   const outcome = await waitForUpdateClearance(
-    { ...deps(true, false), hasFailedReceipt: () => true },
+    { ...deps(false, false), hasFailedReceipt: () => true },
     {
       abandonOn: reason => reason === 'failed-receipt',
       pollMs: 10,
@@ -206,19 +207,20 @@ test('abandonOn returns abandoned instead of parking on a failed receipt', async
     }
   )
 
-  assert.equal(outcome, 'abandoned')
+  assert.equal(outcome, 'clear')
   assert.equal(slept, 0)
 })
 
-test('a mid-wait receipt finalization abandons the park', async () => {
+test('a mid-wait receipt failure recovers only when its marker clears', async () => {
   // The gate closed on a live marker (update running); the update then fails
   // and finalizes its receipt while we are parked. The wait must abandon on
   // the next poll instead of counting down to the 20-minute deadline.
   let failedReceipt = false
+  let marker = true
   let polls = 0
 
   const outcome = await waitForUpdateClearance(
-    { ...deps(true, false), hasFailedReceipt: () => failedReceipt },
+    { ...deps(true, false), hasLiveMarker: () => marker, hasFailedReceipt: () => failedReceipt },
     {
       abandonOn: reason => reason === 'failed-receipt',
       onWaitTick: () => {
@@ -226,6 +228,7 @@ test('a mid-wait receipt finalization abandons the park', async () => {
 
         if (polls === 3) {
           failedReceipt = true
+          marker = false
         }
       },
       pollMs: 1,
@@ -234,7 +237,7 @@ test('a mid-wait receipt finalization abandons the park', async () => {
     }
   )
 
-  assert.equal(outcome, 'abandoned')
+  assert.equal(outcome, 'finished')
   assert.equal(polls, 3)
 })
 
@@ -266,4 +269,82 @@ test('abandonOn declining keeps the historical parking', async () => {
 
   assert.equal(outcome, 'finished')
   assert.equal(ticks, 2)
+})
+// waitForLocalBackendClearance — bounded park (2026-09-06 review, SUB P0-1)
+//
+// The loop was `while (true)`: an unreadable, malformed, future-dated or
+// cleanup-race marker that nothing could self-heal parked the backend forever.
+// ---------------------------------------------------------------------------
+
+test('local backend park gives up with timeout once the blocked budget is spent', async () => {
+  let clock = 0
+  const stillBlocked: string[] = []
+
+  const outcome = await waitForLocalBackendClearance(deps(true, false), {
+    blockedBudgetMs: 120,
+    now: () => clock,
+    onStillBlocked: reason => {
+      stillBlocked.push(reason)
+    },
+    pollMs: 10,
+    sleep: async ms => {
+      clock += ms
+    },
+    timeoutMs: 50
+  })
+
+  assert.equal(outcome, 'timeout')
+  // Three 50 ms windows (150 ms) cover the 120 ms budget; each window reports.
+  assert.deepEqual(stillBlocked, ['marker', 'marker', 'marker'])
+  assert.ok(clock >= 120 && clock < 200, `parked ${clock}ms`)
+})
+
+test('local backend park defaults its budget to the marker age ceiling', async () => {
+  let clock = 0
+  let windows = 0
+
+  const outcome = await waitForLocalBackendClearance(deps(true, false), {
+    now: () => clock,
+    onStillBlocked: () => {
+      windows += 1
+    },
+    pollMs: 1_000,
+    sleep: async ms => {
+      clock += ms
+    },
+    timeoutMs: UPDATE_MARKER_MAX_AGE_MS
+  })
+
+  assert.equal(outcome, 'timeout')
+  assert.equal(windows, 1, 'one full window equals the default budget')
+  assert.equal(clock, UPDATE_MARKER_MAX_AGE_MS)
+})
+
+test('local backend park still finishes when the gate opens inside the budget', async () => {
+  let clock = 0
+  let marker = true
+  let windows = 0
+
+  const outcome = await waitForLocalBackendClearance(
+    { hasLiveMarker: () => marker, isUpdateInFlight: () => false },
+    {
+      blockedBudgetMs: 10_000,
+      now: () => clock,
+      onStillBlocked: () => {
+        windows += 1
+
+        if (windows === 2) {
+          marker = false // the updater finished during the third window
+        }
+      },
+      pollMs: 10,
+      sleep: async ms => {
+        clock += ms
+      },
+      timeoutMs: 50
+    }
+  )
+
+  assert.equal(outcome, 'finished')
+  assert.equal(windows, 2)
 })

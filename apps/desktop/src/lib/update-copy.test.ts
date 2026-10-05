@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { resolveUpdateCopy } from './update-copy'
 
 const copy = {
+  rebuildTitle: 'Desktop app needs a rebuild',
+  rebuildBody: 'Rebuild the client.',
   availableTitle: 'New update available',
   availableBody: 'A new version of Hermes is ready to install.',
   availableTitleBackend: 'Backend update available',

@@ -81,7 +81,7 @@ export function UpdatesOverlay() {
   }, [check, checking, open, status])
 
   const behind = status?.behind ?? 0
-  const updateAvailable = status?.updateAvailable || behind > 0
+  const updateAvailable = status?.updateAvailable || behind > 0 || (!isBackend && status?.bundleOutOfSync === true)
 
   const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' =
     apply.stage === 'manual'
@@ -292,6 +292,7 @@ function IdleView({
     channel: status?.channel === 'stable' ? 'stable' : 'main',
     latestTag: status?.latestTag ?? null,
     mechanism: status?.mechanism,
+    bundleRebuildOnly: target === 'client' && status.bundleOutOfSync && status.behind === 0,
     copy: u
   })
 

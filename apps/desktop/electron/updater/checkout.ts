@@ -3,8 +3,9 @@
 import { existsSync, readFileSync } from 'node:fs'
 import * as path from 'node:path'
 
-import { updateHandoffConflict, writeUpdateMarker } from '../update-marker'
+import { acquireUpdateMarker, markerPath, releaseUpdateMarkerIfOwnedBy, updateHandoffConflict, writeUpdateMarker } from '../update-marker'
 import {
+  createUpdateHandoffNonce,
   collectRelaunchArgs,
   describeUpdaterHandoffFailure,
   observeUpdaterHandoff,
@@ -17,6 +18,10 @@ import {
   windowsUpdatePrerequisiteError,
   wrapHandoffForDetachedConsole
 } from '../updater-process'
+
+import { waitForAcknowledgedUpdaterClaim } from '../windows-update-apply'
+import { waitForUpdateClearance } from '../update-gate'
+import { isValidUpdateBranchRef } from '../update-branch-ref'
 
 import { type SourceUpdate, sourceUpdateEnvironment } from './checkout-source'
 
@@ -137,6 +142,9 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     }
 
     const branch: string = status.branch ?? deps.defaultUpdateBranch
+    if (!isValidUpdateBranchRef(branch)) {
+      return { ok: false, error: 'invalid-update-branch', message: 'Choose a valid update branch.' }
+    }
     const targetArgs: string[] = status.channel ? ['--channel', status.channel] : ['--branch', branch]
     const targetLabel: string = status.channel ?? branch
 
@@ -248,8 +256,6 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     // Release app-owned backends for output replacement. PM publishes a new
     // dependency generation; old Python readers are not update blockers.
     // The CLI owns gateway draining and restart, including failure recovery.
-    await deps.stopBackendsForUpdate()
-
     // Detached so app replacement can outlive this process.
     //
     // Prefer the repo-owned hand-off script over the staged Tauri binary.
@@ -274,52 +280,64 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       // immediately, so child.pid is NOT the script's
       // pid — the script claims the update marker itself with its own $PID
       // as its first action, and a relaunched Desktop parks on that.
-      const wrappedArgs: string[] = [
-        '-InstallRoot',
-        updateRoot,
-        ...(status.channel ? ['-Channel', status.channel] : ['-Branch', branch]),
-        '-DesktopPid',
-        String(process.pid),
-        '-RelaunchExe',
-        process.execPath
-      ]
-
-      // Same remote-ownership rule as the posix hand-off (#117529): a
-      // remote-served Desktop owns no local messaging gateway.
-      if (deps.remoteGatewayActive()) {
-        wrappedArgs.push('-NoGateway')
+      const nonce = createUpdateHandoffNonce()
+      const claim = acquireUpdateMarker(deps.hermesHome)
+      if (claim.acquired === false) {
+        deps.emitUpdateProgress({ stage: 'error', message: claim.message, percent: null })
+        return { ok: false, error: 'update-already-running', message: claim.message }
       }
+      try {
+        await deps.stopBackendsForUpdate()
+        const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, {
+          installRoot: updateRoot,
+          branch,
+          channel: status.channel,
+          desktopPid: process.pid,
+          relaunchExe: process.execPath,
+          nonce,
+          noGateway: deps.remoteGatewayActive()
+        })
 
-      const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, wrappedArgs)
+        child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
+          cwd: deps.hermesHome,
+          env: {
+            ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
+            ...wrapped.env,
+            HERMES_UPDATE_STARTED_AT: String(claim.owner.startedAt)
+          },
+          // Never `true` here: DETACHED_PROCESS leaves the wrapper console-less, so
+          // `start /b` hands PowerShell a new VISIBLE console whose QuickEdit
+          // selection can freeze the hand-off before relaunch (#103222).
+          detached: wrapped.detached,
+          stdio: 'ignore'
+        })
 
-      child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
-        cwd: deps.hermesHome,
-        env: {
-          ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
-          HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
-        },
-        // Never `true` here: DETACHED_PROCESS leaves the wrapper console-less, so
-        // `start /b` hands PowerShell a new VISIBLE console whose QuickEdit
-        // selection can freeze the hand-off before relaunch (#103222).
-        detached: wrapped.detached,
-        stdio: 'ignore'
-      })
-
-      // Bridge marker: child.pid is the short-lived cmd.exe WRAPPER, not the
-      // script (see wrapHandoffForDetachedConsole). Write it anyway to cover
-      // the first moments of the hand-off — the script's step 0 overwrites it
-      // with its own live $PID, and if the script never starts the wrapper's
-      // dead pid makes the marker read as stale and self-delete (no wedge).
-      // The `hermes update` child adopts the SCRIPT's claim via
-      // update_lock.py's process-ancestry rule; no mtime heuristics needed.
-      if (Number.isInteger(child.pid)) {
-        writeUpdateMarker(deps.hermesHome, child.pid, { startedAt: updateStartedAt })
+        const observation = observeUpdaterHandoff(child, deps.updateHandoffDwellMs)
+        const acknowledged = await waitForAcknowledgedUpdaterClaim({
+          hermesHome: deps.hermesHome,
+          nonce,
+          excludedPids: [process.pid, ...(child.pid ? [child.pid] : [])],
+          startedAfter: updateStartedAt
+        })
+        const observed = await observation
+        if (!acknowledged || !observed.ok) {
+          releaseUpdateMarkerIfOwnedBy(deps.hermesHome, process.pid, claim.owner.startedAt)
+          const message = !observed.ok ? describeUpdaterHandoffFailure(observed) :
+            `The updater did not acknowledge the protected handoff. Hermes keeps running. Marker: ${markerPath(deps.hermesHome)}`
+          await restoreAfterFailure(message)
+          return { ok: false, error: !observed.ok ? 'updater-spawn-failed' : 'update-handoff-unacknowledged', message }
+        }
+        deps.rememberLog(
+          `[updates] launched repo hand-off script: ${scriptHandoff.scriptPath} (${targetLabel}); exiting desktop for application replacement`
+        )
+      } catch (error) {
+        releaseUpdateMarkerIfOwnedBy(deps.hermesHome, process.pid, claim.owner.startedAt)
+        const message = `The updater could not start. Hermes keeps running. Details: ${String(error)}`
+        await restoreAfterFailure(message)
+        return { ok: false, error: 'updater-spawn-failed', message }
       }
-
-      deps.rememberLog(
-        `[updates] launched repo hand-off script: ${scriptHandoff.scriptPath} (${targetLabel}); exiting desktop for application replacement`
-      )
     } else {
+      await deps.stopBackendsForUpdate()
       child = spawnUpdaterProcess(updater, updaterArgs, {
         cwd: deps.hermesHome,
         env: {
@@ -375,9 +393,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     if (!handoffOutcome.ok) {
       const message: string = describeUpdaterHandoffFailure(handoffOutcome)
 
-      deps.rememberLog(`[updates] hand-off not viable, aborting quit: ${handoffOutcome.message}`)
-      deps.emitUpdateProgress({ stage: 'error', message, percent: null })
-      deps.startHermes().catch(() => {})
+      await restoreAfterFailure(message)
 
       return { ok: false, error: 'updater-spawn-failed', message }
     }
@@ -391,6 +407,17 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     )
 
     return { ok: true, handedOff: true, updater }
+  }
+
+  async function restoreAfterFailure(message: string): Promise<void> {
+    deps.emitUpdateProgress({ stage: 'error', message, percent: null })
+    const clearance = await waitForUpdateClearance({
+      hasLiveMarker: () => Boolean(updateHandoffConflict(deps.hermesHome)),
+      isUpdateInFlight: () => false
+    }, { timeoutMs: 35_000, pollMs: 100 })
+    if (clearance === 'clear' || clearance === 'finished') {
+      await deps.startHermes()
+    }
   }
 
   async function applyPosixHandoff(
@@ -438,6 +465,11 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       args.push('--no-gateway')
     }
 
+    const claim = acquireUpdateMarker(deps.hermesHome)
+    if (claim.acquired === false) {
+      return { ok: false, error: 'update-already-running', message: claim.message }
+    }
+    const nonce = createUpdateHandoffNonce()
     const updateStartedAt = Math.floor(Date.now() / 1000)
 
     // Relaunch target: the running .app bundle on mac (script swaps the
@@ -466,56 +498,60 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       }
     }
 
-    const child = spawnUpdaterProcess(handoff.command, args, {
-      cwd: deps.hermesHome,
-      env: {
-        ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
-        HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
-      },
-      detached: true,
-      stdio: 'ignore'
-    })
+    try {
+      const child = spawnUpdaterProcess(handoff.command, args, {
+        cwd: deps.hermesHome,
+        env: {
+          ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
+          HERMES_UPDATE_HANDOFF_NONCE: nonce,
+          HERMES_UPDATE_STARTED_AT: String(claim.owner.startedAt)
+        },
+        detached: true,
+        stdio: 'ignore'
+      })
 
-    // Bridge marker (same contract as the Windows hand-off): cover the gap
-    // until the script claims the marker with its own pid as step 0. If the
-    // script never starts, the dead pid reads as stale and self-deletes.
-    if (Number.isInteger(child.pid)) {
-      writeUpdateMarker(deps.hermesHome, child.pid, { startedAt: updateStartedAt })
-    }
+      deps.rememberLog(`[updates] launched posix hand-off: ${handoff.scriptPath} (${targetLabel}); quitting to hand off`)
+      deps.emitUpdateProgress({
+        stage: 'restart',
+        message:
+          'Updating Hermes — this window will close. Don’t reopen Hermes yourself; it restarts automatically when the update finishes.',
+        percent: 100
+      })
 
-    deps.rememberLog(`[updates] launched posix hand-off: ${handoff.scriptPath} (${targetLabel}); quitting to hand off`)
-    deps.emitUpdateProgress({
-      stage: 'restart',
-      message:
-        'Updating Hermes — this window will close. Don’t reopen Hermes yourself; it restarts automatically when the update finishes.',
-      percent: 100
-    })
+      // Settle window (#66753): the reported macOS failure mode is exactly this
+      // path — the app quits, bash/posix.sh dies early (or was never spawnable),
+      // and the user is left with no app, no updater, and no relaunch. Watch the
+      // child through the dwell; on spawn error or early death, stay alive and
+      // surface the failure instead of quitting into nothing.
+      const dwellStartedAt = Date.now()
+      const observation = observeUpdaterHandoff(child, deps.updateHandoffDwellMs)
+      const acknowledged = await waitForAcknowledgedUpdaterClaim({ hermesHome: deps.hermesHome, nonce, excludedPids: [process.pid], startedAfter: updateStartedAt })
+      const handoffOutcome = await observation
 
-    // Settle window (#66753): the reported macOS failure mode is exactly this
-    // path — the app quits, bash/posix.sh dies early (or was never spawnable),
-    // and the user is left with no app, no updater, and no relaunch. Watch the
-    // child through the dwell; on spawn error or early death, stay alive and
-    // surface the failure instead of quitting into nothing.
-    const dwellStartedAt = Date.now()
-    const handoffOutcome = await observeUpdaterHandoff(child, deps.updateHandoffDwellMs)
+      if (!acknowledged || !handoffOutcome.ok) {
+        releaseUpdateMarkerIfOwnedBy(deps.hermesHome, process.pid, claim.owner.startedAt)
+        const message: string = !handoffOutcome.ok ? describeUpdaterHandoffFailure(handoffOutcome) : `The updater did not acknowledge the protected handoff. Hermes keeps running. Marker: ${markerPath(deps.hermesHome)}`
 
-    if (!handoffOutcome.ok) {
-      const message: string = describeUpdaterHandoffFailure(handoffOutcome)
+        deps.rememberLog(`[updates] posix hand-off not viable, aborting quit: ${handoffOutcome.message}`)
+        await restoreAfterFailure(message)
 
-      deps.rememberLog(`[updates] posix hand-off not viable, aborting quit: ${handoffOutcome.message}`)
-      deps.emitUpdateProgress({ stage: 'error', message, percent: null })
+        return { ok: false, error: !handoffOutcome.ok ? 'updater-spawn-failed' : 'update-handoff-unacknowledged', message }
+      }
 
+      deps.markQuittingForHandoff()
+      setTimeout(
+        () => {
+          deps.quit()
+        },
+        Math.max(0, deps.updateHandoffDwellMs - (Date.now() - dwellStartedAt))
+      )
+
+      return { ok: true, handedOff: true, updater: handoff.scriptPath }
+    } catch (error) {
+      releaseUpdateMarkerIfOwnedBy(deps.hermesHome, process.pid, claim.owner.startedAt)
+      const message = `The updater could not start. Hermes keeps running. Details: ${String(error)}`
+      await restoreAfterFailure(message)
       return { ok: false, error: 'updater-spawn-failed', message }
     }
-
-    deps.markQuittingForHandoff()
-    setTimeout(
-      () => {
-        deps.quit()
-      },
-      Math.max(0, deps.updateHandoffDwellMs - (Date.now() - dwellStartedAt))
-    )
-
-    return { ok: true, handedOff: true, updater: handoff.scriptPath }
   }
 }

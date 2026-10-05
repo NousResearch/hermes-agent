@@ -35,13 +35,41 @@ const electronNative: TestProjectConfiguration = {
     // `e2e/**/*.unit.test.ts` is the e2e HELPERS, not the specs: plain node
     // modules that should be provable without booting Electron. Playwright
     // ignores the same pattern so they run in exactly one runner.
-    include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}', 'e2e/**/*.unit.test.ts']
+    include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}', 'e2e/**/*.unit.test.ts'],
+    // `*.windows-live.test.ts` runs in the dedicated `electron-live` project
+    // below (serial files, not here) so no file executes twice.
+    exclude: ['electron/**/*.windows-live.test.ts'],
+    // Several suites here shell out to real `git` many times per test. Process
+    // spawn on Windows costs far more than on POSIX, so the 5s default times
+    // out work that is progressing normally rather than hung.
+    testTimeout: process.platform === 'win32' ? 30_000 : 5_000
+  }
+}
+
+const electronLive: TestProjectConfiguration = {
+  test: {
+    name: 'electron-live',
+    environment: 'node',
+    // These spawn real PowerShell/WMI process trees against the live OS
+    // process table. Vitest's default file parallelism ran several of them
+    // concurrently and starved the process-table probes under load; running
+    // the files serially removes that contention. Tests within one file
+    // still run concurrently as usual.
+    include: ['electron/**/*.windows-live.test.ts'],
+    fileParallelism: false,
+    // Matches the floor the live suites already assert per-test (e.g.
+    // windows-update-force-release.windows-live.test.ts, 60_000 for its
+    // un-annotated-longest arms; several go to 120_000 explicitly and keep
+    // that override). This only raises the default for arms that don't
+    // already declare their own timeout — no existing per-test timeout is
+    // lowered.
+    testTimeout: 60_000
   }
 }
 
 export default defineConfig({
   test: {
     globalSetup: ['./vitest.run-tmp.ts'],
-    projects: [reactUi, electronNative]
+    projects: [reactUi, electronNative, electronLive]
   }
 })

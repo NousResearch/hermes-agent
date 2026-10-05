@@ -1,43 +1,12 @@
 'use strict'
 
+import { UPDATE_MARKER_MAX_AGE_MS } from './update-marker'
 import { runBackendStartStep } from './backend-start-cancellation'
 
-/**
- * update-gate.ts
- *
- * Pure, dependency-injected gate that parks local backend spawns while an
- * in-app update is running (#73822, #50238).
- *
- * Four independent signals mean "an update owns the local runtime right now":
- *
- *  - the on-disk marker (`HERMES_HOME/.hermes-update-in-progress`), written
- *    by the updater — and by the desktop itself just before hand-off — and
- *  - the in-process `updateInFlight` flag, true for the whole
- *    `applyUpdates()` critical section, and
- *  - the successful detached hand-off state, which remains true while this
- *    Desktop is waiting to quit after the wrapper has handed control away.
- *
- * The marker alone is NOT enough (#73822): `applyUpdates` stops its backend
- * early (`releaseBackendLock`) before committing the hand-off. The renderer
- * reconnects after the WebSocket closes; a marker-only gate can spawn a new
- * backend on the runtime being replaced. Consulting the flag closes that
- * window. On success the marker is written BEFORE the flag clears in `applyUpdates`'
- * `finally`, so there is no instant where both signals are false and a
- * waiter could slip through mid-update.
- *
- * The fourth signal is different in kind: `failedReceipt` names a FINISHED,
- * failed update. A failed `hermes update` releases the marker in its `finally`
- * only when the failure happened after the lock was claimed; preparation-stage
- * failures (uv sync network errors) can exit with the marker left pointing at
- * a dead or recycled pid while `readLiveUpdateMarker`'s liveness probe keeps
- * answering true on Windows, and even a cleanly released marker leaves the
- * boot nothing to wait for. Parking the full 20-minute budget on a receipt
- * that already says `failed` strands the window (#122206: 486 polls /
- * 20 minutes after a receipt-marked failure). The gate reports it separately
- * so the boot path can surface the terminal failure instead of silently
- * counting down.
+/** Backend starts wait for marker ownership, in-process work, and accepted handoff.
+ * A terminal receipt is diagnostic evidence only; it cannot override an owner.
+ * Authoritatively cleared markers permit immediate recovery after a failed update.
  */
-
 export type UpdateGateReason = 'marker' | 'update-in-flight' | 'handoff' | 'failed-receipt' | null
 
 export interface UpdateGateDeps {
@@ -46,12 +15,10 @@ export interface UpdateGateDeps {
   /** True while this process is inside applyUpdates()' critical section. */
   isUpdateInFlight: () => boolean
   /** True after a detached updater hand-off is viable and this Desktop will quit. */
-  isHandoffActive: () => boolean
+  isHandoffActive?: () => boolean
   /**
-   * True when the latest update receipt records a terminal failure (see
-   * main.ts readLatestSyncReceipt). Optional: older callers (and the pool
-   * spawn path, which is not user-visible) may omit it, in which case a
-   * live marker keeps the historical parking behavior.
+   * Retained for call-site compatibility and receipt diagnostics. A terminal
+   * failure does not change gate ownership or authorize a backend start.
    */
   hasFailedReceipt?: () => boolean
 }
@@ -59,12 +26,6 @@ export interface UpdateGateDeps {
 /** Why the gate is closed right now, or null when it is open. */
 export function updateGateReason(deps: UpdateGateDeps): UpdateGateReason {
   if (deps.hasLiveMarker()) {
-    // A failed receipt with a live marker is still the marker's wait — but the
-    // receipt is what the boot path needs to know about, so it wins here.
-    if (deps.hasFailedReceipt?.()) {
-      return 'failed-receipt'
-    }
-
     return 'marker'
   }
 
@@ -72,7 +33,7 @@ export function updateGateReason(deps: UpdateGateDeps): UpdateGateReason {
     return 'update-in-flight'
   }
 
-  if (deps.isHandoffActive()) {
+  if (deps.isHandoffActive?.()) {
     return 'handoff'
   }
 
@@ -90,9 +51,8 @@ export interface WaitForUpdateClearanceOptions {
   onWaitTick?: (reason: Exclude<UpdateGateReason, null>) => void | Promise<void>
   /**
    * Consulted whenever the gate is closed. Returning true makes the wait
-   * return 'abandoned' immediately instead of parking. The primary boot path
-   * uses this for the terminal failed-receipt signal (#122206): a receipt
-   * that already says "failed" must not consume the parking budget.
+   * return 'abandoned' immediately instead of parking. Callers must never
+   * use a failed receipt to bypass an authoritative marker owner.
    */
   abandonOn?: (reason: Exclude<UpdateGateReason, null>) => boolean
   now?: () => number
@@ -105,9 +65,8 @@ export interface WaitForUpdateClearanceOptions {
  * Returns 'clear' when the gate was already open (no wait happened),
  * 'finished' when it opened during the wait, 'abandoned' when `abandonOn`
  * accepted the closed-gate reason, and 'timeout' when the deadline
- * expired with the gate still closed (callers proceed anyway — matching the
- * long-standing marker-gate behavior, since a wedged updater must not brick
- * the app forever).
+ * expired with the gate still closed. Backend-start callers must refuse
+ * startup on timeout; authoritative marker recovery opens the gate safely.
  */
 export async function waitForUpdateClearance(
   deps: UpdateGateDeps,
@@ -179,4 +138,51 @@ export async function waitForUpdateClearance(
   }
 
   return reason ? 'timeout' : 'finished'
+}
+/**
+ * Keep local backend startup parked across bounded UI wait windows.
+ *
+ * The park is bounded: after `blockedBudgetMs` (default: the marker's own
+ * 20-minute age ceiling) of consecutive closed-gate windows the outcome is
+ * 'timeout' and the caller must report a failed startup attempt without spawning
+ * a backend. An unbounded loop parked the backend forever
+ * behind an unreadable, malformed, future-dated or cleanup-race marker that
+ * nothing could self-heal.
+ */
+export async function waitForLocalBackendClearance(
+  deps: UpdateGateDeps,
+  options: WaitForUpdateClearanceOptions & {
+    onStillBlocked?: (reason: Exclude<UpdateGateReason, null>) => void | Promise<void>
+    /** Total consecutive blocked time before giving up; defaults to UPDATE_MARKER_MAX_AGE_MS. */
+    blockedBudgetMs?: number
+  }
+): Promise<UpdateClearanceOutcome> {
+  const now = options.now || Date.now
+  const blockedBudgetMs = Math.max(0, options.blockedBudgetMs ?? UPDATE_MARKER_MAX_AGE_MS)
+  const blockedSince = now()
+  let waited = false
+
+  while (true) {
+    const outcome = await waitForUpdateClearance(deps, options)
+
+    if (outcome === 'clear') {
+      return waited ? 'finished' : 'clear'
+    }
+
+    if (outcome === 'finished') {
+      return 'finished'
+    }
+    if (outcome === 'cancelled' || outcome === 'abandoned') { return outcome }
+
+    waited = true
+    const reason = updateGateReason(deps)
+
+    if (reason) {
+      await options.onStillBlocked?.(reason)
+    }
+
+    if (now() - blockedSince >= blockedBudgetMs) {
+      return 'timeout'
+    }
+  }
 }

@@ -52,6 +52,14 @@ def _direct_fetch_text(url: str, timeout: int = 20) -> tuple[str, str]:
     with url_safety.create_ssrf_safe_client(timeout=timeout) as client:
         for _ in range(5):
             _check_website_policy(current_url)
+            # Proxy-mounted httpx transports deliberately delegate DNS to the proxy, so the
+            # transport's connect-time guard does not cover them. Keep an explicit preflight on
+            # every redirect hop as well as the caller's initial async check.
+            if not url_safety.is_safe_url(current_url):
+                raise SpecialRouteBlocked(
+                    current_url,
+                    "Blocked: URL targets a private or internal network address",
+                )
             try:
                 with client.stream(
                     "GET", current_url, headers=headers, follow_redirects=False

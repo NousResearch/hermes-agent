@@ -10,6 +10,12 @@ import pytest
 from tools import web_tools
 
 
+@pytest.fixture(autouse=True)
+def _allow_direct_route_urls(monkeypatch):
+    """Keep mocked direct-fetch tests independent from real DNS and proxy state."""
+    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda _url: True)
+
+
 class _StreamResponse:
     def __init__(
         self,
@@ -281,6 +287,7 @@ def test_web_extract_blocks_github_redirect_to_ssrf_target(monkeypatch):
         "tools.url_safety.create_ssrf_safe_client",
         lambda **_kwargs: RedirectingClient(),
     )
+    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda url: url != blocked_url)
     monkeypatch.setattr(web_tools, "async_is_safe_url", safe_url)
     monkeypatch.setattr(
         web_tools,
@@ -292,7 +299,7 @@ def test_web_extract_blocks_github_redirect_to_ssrf_target(monkeypatch):
 
     result = _dispatch_extract([requested])
 
-    assert seen == [("GET", requested), ("GET", blocked_url)]
+    assert seen == [("GET", requested)]
     assert result["results"] == [
         {
             "url": blocked_url,
@@ -496,6 +503,103 @@ def test_web_extract_preserves_input_order_between_direct_and_provider_routes(
     assert [entry["content"] for entry in result["results"]] == [
         "# Raw README\n",
         "provider content",
+    ]
+
+
+def test_web_extract_matches_out_of_order_provider_results_by_source_url(monkeypatch):
+    """Provider responses stay with their requested URL even when direct routes are mixed in."""
+    direct_url = "https://github.com/octo/repo/blob/main/README.md"
+    raw_url = "https://raw.githubusercontent.com/octo/repo/main/README.md"
+    first_url = "https://example.com/first"
+    second_url = "https://example.com/second"
+    extra_url = "https://example.com/extra"
+    seen = []
+    responses = [
+        _StreamResponse(
+            direct_url,
+            '<a id="raw-url" href="/octo/repo/raw/main/README.md">Raw</a>',
+        ),
+        _StreamResponse(raw_url, "# Raw README\n"),
+    ]
+
+    class Provider:
+        name = "fake"
+
+        async def extract(self, urls, **_kwargs):
+            assert urls == [first_url, second_url]
+            return [
+                {"url": second_url, "title": "Second", "content": "second content"},
+                {
+                    "url": "https://redirected.example/first",
+                    "title": "First",
+                    "content": "first content",
+                    "metadata": {"sourceURL": first_url},
+                },
+                {"url": extra_url, "title": "Extra", "content": "extra content"},
+            ]
+
+    def fake_safe_client(**_kwargs):
+        return _SafeClient(responses, seen)
+
+    async def safe_url(_url):
+        return True
+
+    monkeypatch.setattr("tools.url_safety.create_ssrf_safe_client", fake_safe_client)
+    monkeypatch.setattr(web_tools, "async_is_safe_url", safe_url)
+    monkeypatch.setattr(web_tools, "_get_extract_backend", lambda: "fake")
+    monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+    monkeypatch.setattr(
+        web_tools, "_resolve_extract_provider", lambda _backend: (Provider(), None)
+    )
+
+    result = _dispatch_extract([direct_url, first_url, second_url])
+
+    assert [entry["content"] for entry in result["results"]] == [
+        "# Raw README\n",
+        "first content",
+        "second content",
+    ]
+    assert [entry["url"] for entry in result["results"]] == [
+        raw_url,
+        "https://redirected.example/first",
+        second_url,
+    ]
+    assert extra_url not in [entry["url"] for entry in result["results"]]
+
+
+def test_web_extract_drops_extra_provider_results_without_direct_routes(monkeypatch):
+    """Generic-only calls also preserve requested order and discard provider extras."""
+    first_url = "https://example.com/first"
+    second_url = "https://example.com/second"
+    extra_url = "https://example.com/extra"
+
+    class Provider:
+        name = "fake"
+
+        async def extract(self, urls, **_kwargs):
+            assert urls == [first_url, second_url]
+            return [
+                {"url": second_url, "title": "Second", "content": "second content"},
+                {"url": first_url, "title": "First", "content": "first content"},
+                {"url": extra_url, "title": "Extra", "content": "extra content"},
+            ]
+
+    async def safe_url(_url):
+        return True
+
+    monkeypatch.setattr(web_tools, "async_is_safe_url", safe_url)
+    monkeypatch.setattr(web_tools, "_get_extract_backend", lambda: "fake")
+    monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+    monkeypatch.setattr(
+        web_tools, "_resolve_extract_provider", lambda _backend: (Provider(), None)
+    )
+
+    result = _dispatch_extract([first_url, second_url])
+
+    assert [entry["url"] for entry in result["results"]] == [first_url, second_url]
+    assert [entry["content"] for entry in result["results"]] == [
+        "first content",
+        "second content",
     ]
 
 

@@ -440,10 +440,10 @@ async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Opti
             if error_json is not None:
                 return error_json
             results = await _extract_safe_urls(provider, provider_urls, format)
-        # Reconstruct input order across invalid, blocked, routed, and provider entries.
-        if invalid_urls or ssrf_blocked or routed_results:
-            fixed = {**ssrf_blocked, **invalid_urls, **routed_results}
-            results = _merge_in_order(len(urls), fixed, provider_indices, provider_urls, results)
+        # Reconstruct input order across invalid, blocked, routed, and provider entries. The
+        # merge also drops provider extras and keys provider output to requested source URLs.
+        fixed = {**(ssrf_blocked or {}), **(invalid_urls or {}), **routed_results}
+        results = _merge_in_order(len(urls), fixed, provider_indices, provider_urls, results)
 
         logger.info("Extracted content from %d pages", len(results))
         debug_call_data["pages_extracted"] = len(results)

@@ -5,6 +5,10 @@ in config.yaml): user_id 16, thread_id 8, chat_id 4, guild_id 2, else the defaul
 For Discord threads/forum posts ``parent_chat_id`` carries the direct parent, so a
 channel route also matches any thread/post under it.
 
+A discriminator may be declared as an exact id, a channel/guild NAME, or a regex pattern
+anchored at the name start (implicit ``^``); names and patterns resolve AFTER the exact-id
+pass misses, from the receiving adapter's in-memory name snapshot (#109676).
+
 A route applies only to messages received by the bot of its ``bot_profile`` (default: the
 default profile's shared bot). Telegram DM ``chat_id == user_id`` for EVERY bot, so without
 this a ``chat_id`` route meant for the shared bot would re-home the same user's DM with a
@@ -14,8 +18,11 @@ dedicated secondary bot into another profile (#104933).
 from __future__ import annotations
 
 import logging
+from itertools import groupby
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+
+from gateway.channel_matching import NameResolver, lazy_names, name_matches, prepare_name_patterns
 
 logger = logging.getLogger(__name__)
 
@@ -74,31 +81,34 @@ class ProfileRoute:
     def matches(
         self, platform: str, guild_id: Optional[str] = None, chat_id: Optional[str] = None,
         thread_id: Optional[str] = None, parent_chat_id: Optional[str] = None,
-        adapter_profile: Optional[str] = None, user_id: Optional[str] = None,
+        adapter_profile: Optional[str] = None, user_id: Optional[str] = None, *,
+        name_resolver: NameResolver | None = None, match_level: int = 2,
     ) -> bool:
-        """True if every discriminator the route declares holds (AND).
-
-        ``chat_id`` matches the channel directly or as the parent of a thread/forum post; WhatsApp
-        ``chat_id`` also matches across number/JID/LID after the exact check (groups/broadcasts stay exact-only).
-        ``adapter_profile`` is the profile owning the receiving bot (``None`` = default); it must equal
-        the route's ``bot_profile``.
-        """
+        """AND all discriminators; names never expand sender or receiving-bot identity."""
         if not self.enabled or self.platform != platform:
             return False
         if _bot_profile_key(self.bot_profile) != _bot_profile_key(adapter_profile):
             return False
         if self.user_id is not None and (not self.user_id.strip() or self.user_id != user_id):
             return False
-        if self.thread_id and self.thread_id != thread_id:
+        names = lazy_names(name_resolver)
+
+        def named(value, *slots):
+            if match_level == 0 or name_resolver is None:
+                return False
+            resolved = names()
+            return name_matches(value, (name for slot in slots for name in getattr(resolved, slot)), match_level)
+
+        if self.thread_id and self.thread_id != thread_id and not named(self.thread_id, "thread"):
             return False
-        if (
-            self.chat_id
-            and self.chat_id not in (chat_id, parent_chat_id)
-            and not _whatsapp_user_chat_ids_match(platform, self.chat_id, chat_id)
-            and not _whatsapp_user_chat_ids_match(platform, self.chat_id, parent_chat_id)
-        ):
-            return False
-        return not (self.guild_id and self.guild_id != guild_id)
+        if self.chat_id and self.chat_id not in (chat_id, parent_chat_id):
+            if not (
+                _whatsapp_user_chat_ids_match(platform, self.chat_id, chat_id)
+                or _whatsapp_user_chat_ids_match(platform, self.chat_id, parent_chat_id)
+                or named(self.chat_id, "chat", "parent")
+            ):
+                return False
+        return not (self.guild_id and self.guild_id != guild_id and not named(self.guild_id, "guild"))
 
 
 def _bot_profile_key(name: Optional[str]) -> Optional[str]:
@@ -166,6 +176,7 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
             enabled=entry.get("enabled", True),
             bot_profile=_bot_profile_key(entry.get("bot_profile")),
         ))
+        prepare_name_patterns(v for v in (routes[-1].guild_id, routes[-1].chat_id, routes[-1].thread_id) if v)
     routes.sort(key=lambda r: r.specificity, reverse=True)
     logger.debug("Loaded %d profile routes (most-specific-first)", len(routes))
     return routes
@@ -174,12 +185,20 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
 def match_profile_route(
     routes: List[ProfileRoute], platform: str, guild_id: Optional[str] = None, chat_id: Optional[str] = None,
     thread_id: Optional[str] = None, parent_chat_id: Optional[str] = None,
-    adapter_profile: Optional[str] = None, user_id: Optional[str] = None,
+    adapter_profile: Optional[str] = None, user_id: Optional[str] = None, *,
+    name_resolver: NameResolver | None = None,
 ) -> Optional[ProfileRoute]:
-    """Return the first (most specific) matching route, or None."""
-    for route in routes:
-        if route.matches(platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id,
-                         parent_chat_id=parent_chat_id, adapter_profile=adapter_profile,
-                         user_id=user_id):
-            return route
+    """Scope specificity first, then ID / literal name / regex, then config order."""
+    resolve = lazy_names(name_resolver)
+    ordered = sorted(routes, key=lambda route: route.specificity, reverse=True)
+    for _specificity, group in groupby(ordered, key=lambda route: route.specificity):
+        candidates = list(group)
+        for level in range(3):
+            for route in candidates:
+                if route.matches(
+                    platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id,
+                    parent_chat_id=parent_chat_id, adapter_profile=adapter_profile, user_id=user_id,
+                    name_resolver=resolve, match_level=level,
+                ):
+                    return route
     return None

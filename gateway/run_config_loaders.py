@@ -98,17 +98,19 @@ class GatewayConfigLoadersMixin:
             return prompt
         return resolve_ephemeral_system_prompt_from_config(_load_gateway_config())
 
-    def _channel_override(self, platform: Platform, chat_id: str, thread_id, parent_id):
+    def _channel_override(self, platform: Platform, chat_id: str, thread_id, parent_id, source=None):
         """``channel_overrides`` entry for this channel/thread, or None (also when no config is bound)."""
-        from gateway.run import _get_channel_override
+        from gateway.channel_matching import get_channel_override
+        from gateway.channel_names import name_resolver_for_source
         config = getattr(self, "config", None)
         if not config:
             return None
-        return _get_channel_override(config, platform, chat_id, thread_id=thread_id, parent_id=parent_id)
+        return get_channel_override(config, platform, chat_id, thread_id=thread_id, parent_id=parent_id,
+                                    name_resolver=name_resolver_for_source(source, self) if source else None)
 
     def _resolve_model_for_channel(
         self, platform: Platform, chat_id: str, *, user_config: Optional[dict] = None,
-        thread_id: Optional[str] = None, parent_id: Optional[str] = None,
+        thread_id: Optional[str] = None, parent_id: Optional[str] = None, source=None,
     ) -> str:
         """Resolve model for this channel: channel_overrides else global default.
 
@@ -120,13 +122,13 @@ class GatewayConfigLoadersMixin:
         from hermes_cli.model_switch import resolve_effective_model
         return resolve_effective_model(
             None,  # session tier applied downstream (_apply_session_model_override)
-            self._channel_override(platform, chat_id, thread_id, parent_id),
+            self._channel_override(platform, chat_id, thread_id, parent_id, source),
             _resolve_gateway_model(user_config),
         )
 
     def _get_system_prompt_for_channel(
         self, platform: Platform, chat_id: str, *, thread_id: Optional[str] = None,
-        parent_id: Optional[str] = None,
+        parent_id: Optional[str] = None, source=None,
     ) -> str:
         """Ephemeral system prompt for this channel/thread.
 
@@ -140,7 +142,7 @@ class GatewayConfigLoadersMixin:
         boot-time snapshot of the launch profile's (#89161); ``/personality`` edits take effect on the next
         turn for the same reason.
         """
-        override = self._channel_override(platform, chat_id, thread_id, parent_id)
+        override = self._channel_override(platform, chat_id, thread_id, parent_id, source)
         if override and override.system_prompt:
             return (override.system_prompt or "").strip()
         return self._load_ephemeral_system_prompt()

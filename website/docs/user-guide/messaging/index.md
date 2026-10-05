@@ -336,14 +336,19 @@ platforms:
         model: anthropic/claude-sonnet-4.6
         provider: anthropic
         system_prompt: "You are the #dev channel code-review specialist."
-      "987654321098765432":
+      "daily":                     # channel name (resolved from the channel directory)
         model: openai/gpt-5-mini
+      "^work-.*_project-":         # regex pattern over channel names
+        model: anthropic/claude-sonnet-4.6
 ```
 
 Details:
 
 - All three keys are optional — set only `model`, only `system_prompt`, or any combination. Unset fields fall back to the global defaults.
-- Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
+- Keys may be a channel/thread **ID**, an exact **name**, or a **regex pattern**, on any platform that provides names or directory aliases. Lookup runs in three passes: all exact IDs, then exact names, then patterns. The ID and name passes each check `chat_id`, `thread_id`, then the parent channel/forum; the first matching pattern in configuration order wins. Thus a parent ID override wins over a thread name override.
+- Names are case-sensitive. After the literal passes, keys containing `^ $ + ? [ ] ( ) { } | \` are regex candidates, matched from the **start** of the name. A dot or star alone does not enable regex; write `^work-.*` for a prefix pattern. Signed numeric IDs remain IDs. Invalid patterns warn when prepared and do not participate in regex matching; the same text can still match a literal name.
+- Names come from platform metadata and the receiving bot's in-memory directory snapshot. The existing directory refresh rebuilds snapshots every five minutes under each bot's own profile; message matching does no disk or network I/O. Aliases in `<HERMES_HOME>/channel_aliases.json` also apply after refresh. Unavailable or expired names do not match; ID rules and the normal default remain available.
+- Same-named channels share a name override within that bot's configuration. Use IDs for exceptions. Threads use their real chat and thread IDs together, so identically numbered topics in different chats do not share a name. A platform without thread titles can use discovered directory aliases; message text is never used as a thread name.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
 

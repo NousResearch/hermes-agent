@@ -4755,6 +4755,10 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, BasePlatformAd
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
             thread_id=thread_id, chat_topic=chat_topic,
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=parent_id or None,
+            channel_name=getattr(interaction.channel, "name", None),
+            thread_name=getattr(interaction.channel, "name", None) if is_thread else None,
+            parent_chat_name=getattr(getattr(interaction.channel, "parent", None), "name", None),
+            guild_name=getattr(getattr(interaction, "guild", None), "name", None),
         )
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
@@ -4809,6 +4813,8 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, BasePlatformAd
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
             thread_id=thread_id, chat_topic=self._get_effective_topic(thread, is_thread=True),
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=_parent_id or None,
+            channel_name=thread_name, thread_name=thread_name, guild_name=guild_name or None,
+            parent_chat_name=getattr(_parent_channel, "name", None),
         )
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
@@ -6140,6 +6146,10 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, BasePlatformAd
         source = self.build_source(
             chat_id=str(effective_channel.id),
             chat_name=chat_name,
+            channel_name=getattr(effective_channel, "name", None),
+            thread_name=getattr(effective_channel, "name", None) if is_thread else None,
+            parent_chat_name=getattr(getattr(effective_channel, "parent", None), "name", None),
+            guild_name=getattr(guild, "name", None),
             chat_type=chat_type,
             user_id=str(message.author.id),
             user_name=message.author.display_name,

@@ -10,7 +10,8 @@ from gateway.config import (
     Platform,
     PlatformConfig,
 )
-from gateway.run import _get_channel_override, GatewayRunner
+from gateway.run import GatewayRunner
+from gateway.channel_matching import get_channel_override
 from gateway.session import SessionSource
 
 
@@ -28,7 +29,7 @@ class TestGetChannelOverride:
                 ),
             },
         )
-        assert _get_channel_override(config, Platform.DISCORD, "123") is None
+        assert get_channel_override(config, Platform.DISCORD, "123") is None
 
     def test_returns_override_when_channel_matches(self):
         ov = ChannelOverride(
@@ -44,7 +45,7 @@ class TestGetChannelOverride:
                 ),
             },
         )
-        result = _get_channel_override(config, Platform.DISCORD, "1234567890")
+        result = get_channel_override(config, Platform.DISCORD, "1234567890")
         assert result is not None
         assert result.model == "openrouter/healer-alpha"
         assert result.provider == "openrouter"
@@ -62,7 +63,7 @@ class TestGetChannelOverride:
                 ),
             },
         )
-        result = _get_channel_override(
+        result = get_channel_override(
             config, Platform.DISCORD, "parent_chan", thread_id="thread_99"
         )
         assert result is not None

@@ -4818,7 +4818,9 @@ class BasePlatformAdapter(ABC):
         scope_id: Optional[str] = None, guild_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None, message_id: Optional[str] = None,
         role_authorized: bool = False, auto_thread_created: bool = False,
-        auto_thread_initial_name: Optional[str] = None) -> SessionSource:
+        auto_thread_initial_name: Optional[str] = None, *, channel_name: Optional[str] = None,
+        thread_name: Optional[str] = None, parent_chat_name: Optional[str] = None,
+        guild_name: Optional[str] = None) -> SessionSource:
         """Build a SessionSource; with ``gateway.profile_routes`` configured the matching
         profile is stamped on ``source.profile`` for per-profile HERMES_HOME isolation."""
         def _opt(value) -> Optional[str]:
@@ -4830,7 +4832,13 @@ class BasePlatformAdapter(ABC):
             chat_topic=(chat_topic or "").strip() or None, user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt, is_bot=is_bot, scope_id=_opt(scope_id),
             guild_id=_opt(guild_id), parent_chat_id=_opt(parent_chat_id),
-            message_id=_opt(message_id))
+            message_id=_opt(message_id),
+            channel_name=channel_name or (chat_name if chat_type != "thread" and chat_name != str(chat_id) else None),
+            thread_name=thread_name, parent_chat_name=parent_chat_name, guild_name=guild_name)
+        source = SessionSource(**fields, role_authorized=role_authorized,
+                               auto_thread_created=auto_thread_created,
+                               auto_thread_initial_name=auto_thread_initial_name)
+        source._transport_adapter_ref = weakref.ref(self)
         # Profile from configured routes, else the owning profile of a dedicated secondary bot (so no
         # later ``source.profile``-less fallback can re-route the message through the default bot's routes).
         owner_profile = getattr(self, "_owner_profile", None)
@@ -4839,18 +4847,15 @@ class BasePlatformAdapter(ABC):
             from gateway.profile_routing import ProfileRouteRejected
             try:
                 profile = self.gateway_runner._profile_name_for_source(
-                    SessionSource(**fields), adapter_profile=owner_profile) or owner_profile
+                    source, adapter_profile=owner_profile) or owner_profile
             except ProfileRouteRejected:
                 profile_route_rejected = True
             except Exception:
                 logger.warning("Profile resolution failed for %s/%s, defaulting to active profile",
                                self.platform, chat_id, exc_info=True)
-        source = SessionSource(**fields, profile=profile, role_authorized=role_authorized,
-                               auto_thread_created=auto_thread_created,
-                               auto_thread_initial_name=auto_thread_initial_name)
+        source.profile = profile
         # Transport-only, kept out of to_dict(): the receiving adapter is authoritative this turn
         # even if profile_routes picks another runtime; the reject flag is consumed before auth.
-        source._transport_adapter_ref = weakref.ref(self)
         source.profile_route_rejected = profile_route_rejected
         return source
 

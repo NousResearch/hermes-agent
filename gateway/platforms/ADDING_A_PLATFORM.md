@@ -335,12 +335,25 @@ platform as a delivery option.
 
 ## 11. Channel Directory (`gateway/channel_directory.py`)
 
-If your platform can't enumerate chats (most can't), add it to the
-session-based discovery list:
+An optional async `list_channels()` hook may return entries with `id`, `name`,
+and `type`. Returning `None` falls back to the built-in directory discovery;
+connected plugin platforms without enumeration use session origins automatically.
 
-```python
-for plat_name in ("telegram", "whatsapp", "signal", "your_platform"):
-```
+For name-based routing, supply raw `chat_id`, `chat_name`, `thread_id`,
+`thread_name`, `parent_chat_id`, `parent_chat_name`, `scope_id` (or `guild_id`),
+and `guild` (workspace/server name) when available. A thread entry must carry
+its real `chat_id` and `thread_id` separately even if its display `id` combines
+them. Routing never splits composite IDs or parses formatted display names.
+Names are optional; unnamed targets remain addressable by ID.
+Supply the same scope on entries and inbound events; a legacy entry with no scope
+cannot supply a canonical name for a scoped event. Explicit directory aliases
+retain their existing flat ID namespace within each platform/profile.
+
+Inbound events should use `build_source(channel_name=..., thread_name=...,
+parent_chat_name=..., guild_name=...)` for known raw names. Plain non-thread
+`chat_name` is also accepted as the channel name. Do not derive routing names
+from message text. The gateway owns the receiving adapter's in-memory snapshot,
+refreshes it every five minutes in that bot's profile, and clears it on teardown.
 
 ---
 

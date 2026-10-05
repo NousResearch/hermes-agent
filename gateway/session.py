@@ -98,6 +98,11 @@ class SessionSource:
     # over the authenticated relay WebSocket. ``platform`` is the UNDERLYING platform, not
     # ``relay``, so authz must key upstream trust off THIS flag.
     delivered_via_upstream_relay: bool = False
+    # Raw routing labels stay separate from decorated display names.
+    channel_name: Optional[str] = None
+    thread_name: Optional[str] = None
+    parent_chat_name: Optional[str] = None
+    guild_name: Optional[str] = None
 
     def __post_init__(self) -> None:
         # Mirror scope_id/guild_id onto each other (scope_id wins) so readers of EITHER agree.
@@ -126,7 +131,8 @@ class SessionSource:
     _ALWAYS_FIELDS = ("chat_id", "chat_name", "chat_type", "user_id", "user_name", "thread_id", "chat_topic")
     _OPTIONAL_PRE_SCOPE = ("user_id_alt", "chat_id_alt")
     _OPTIONAL_POST_SCOPE = ("parent_chat_id", "message_id", "profile")
-    _OPTIONAL_TAIL = ("auto_thread_initial_name", "prospective_thread_id")
+    _OPTIONAL_TAIL = ("auto_thread_initial_name", "prospective_thread_id",
+                      "channel_name", "thread_name", "parent_chat_name", "guild_name")
 
     def to_dict(self) -> Dict[str, Any]:
         d = {"platform": self.platform.value}

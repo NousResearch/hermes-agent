@@ -111,6 +111,7 @@ import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { projectsHost } from './projects'
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 
@@ -1642,6 +1643,9 @@ export const host = {
 
   composer: composerHost,
 
+  /** Active-profile project picker verbs (list, openNewSession) — see `./projects`. */
+  projects: projectsHost,
+
   /** Language packs: `host.i18n.registerAppLocale(id, { endonym, rtl?,
    *  translations })` adds a whole UI language at runtime (see `sdk/i18n.ts`);
    *  `host.i18n.languageOptions()` lists what the switcher shows. */
@@ -1743,12 +1747,13 @@ export {
   type RouteContribution,
   ROUTES_AREA,
   SIDEBAR_NAV_AREA,
+  SIDEBAR_SESSIONS_HEADER_AREA,
   SIDEBAR_PROFILE_GROUP_HEADER_AREA,
   type SidebarNavContribution,
   WORKSPACE_PAGE_HEADER_AREA
 } from '@/app/routes'
 /** Appearance settings' plugin seam: register a render contribution at
- *  `APPEARANCE_AREAS.extra` to add controls at the end of the Appearance page.
+ *  `APPEARANCE_AREAS.extra` to add controls at the end of the root page, or chatDisplay for controls beside Conversation display preferences.
  *  `ColorSwatches` is the app's own swatch grid (profile rail / project dialog
  *  look) — use it for colour picking instead of driving app widgets through
  *  React internals; pair it with `host.sessions.setColor` for session colours. */

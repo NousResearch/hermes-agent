@@ -22,6 +22,7 @@ import {
   SidebarMenuItem
 } from '@/components/ui/sidebar'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
+import { Slot as ContribSlot } from '@/contrib/react/slot'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -145,6 +146,7 @@ import {
   CRON_ROUTE,
   MESSAGING_ROUTE,
   SIDEBAR_NAV_AREA,
+  SIDEBAR_SESSIONS_HEADER_AREA,
   type SidebarNavContribution
 } from '../../routes'
 import type { SidebarNavItem } from '../../types'
@@ -1861,6 +1863,7 @@ export function ChatSidebar({
                         </Button>
                       </Tip>
                     )}
+                    <ContribSlot area={SIDEBAR_SESSIONS_HEADER_AREA} />
                     {inProject && enteredProject ? (
                       <div className="group/workspace flex shrink-0 items-center gap-0.5">
                         {enteredProject.path && <StartWorkButton repoPath={enteredProject.path} />}

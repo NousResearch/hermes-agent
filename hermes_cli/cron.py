@@ -924,6 +924,24 @@ def cron_notepad(args) -> int:
         return 1
 
 
+def cron_cancel(args) -> int:
+    """Stop a job's live run. The schedule is untouched — the next fire still happens."""
+    result = _cron_api(action="cancel", job_id=args.job_id,
+                       reason=getattr(args, "reason", None))
+    if not result.get("success"):
+        print(color(f"Failed to cancel run: {result.get('error', 'unknown error')}", Colors.RED))
+        return 1
+    job = result.get("job") or {}
+    label = f"{job.get('name', args.job_id)} ({args.job_id})"
+    if not result.get("cancelled"):
+        print(color(f"Nothing to cancel for {label}", Colors.YELLOW))
+        return 0
+    print(color(f"Cancel requested for {label}", Colors.GREEN))
+    print(f"  Execution: {result['execution_id']} (pid {result.get('pid')})")
+    print(f"  {result.get('detail', '')}")
+    return 0
+
+
 # Late-bound lambdas keep module-level monkeypatching working; list/status/runs return None -> 0.
 _CRON_SUBCOMMANDS = {
     "list": lambda a: cron_list(getattr(a, "all", False)) or 0,
@@ -938,6 +956,7 @@ _CRON_SUBCOMMANDS = {
     "pause": lambda a: _job_action("pause", a.job_id, "Paused"),
     "resume": lambda a: cron_resume(a),
     "run": lambda a: _job_action("run", a.job_id, "Triggered"),
+    "cancel": lambda a: cron_cancel(a),
     "remove": lambda a: _job_action("remove", a.job_id, "Removed"),
 }
 _CRON_SUBCOMMANDS["history"] = _CRON_SUBCOMMANDS["runs"]
@@ -952,5 +971,5 @@ def cron_command(args):
     if handler is not None:
         return handler(args)
     print(f"Unknown cron command: {subcmd}\n"
-          "Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|doctor|tick]")
+          "Usage: hermes cron [list|create|edit|pause|resume|run|cancel|remove|status|runs|doctor|tick]")
     sys.exit(1)

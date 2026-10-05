@@ -545,6 +545,7 @@ from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
     recover_interrupted_executions, terminalize_dead_owner)
+from cron.cancellation import CancelRequest, clear_cancel
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
@@ -692,6 +693,20 @@ class _CombinedCancelEvent:
     def set(self) -> None:
         for event in self._events:
             event.set()
+
+    @property
+    def reason(self) -> Optional[str]:
+        """Why the run is being torn down, from whichever source fired — so a script or agent
+        stop never reports "fire claim lost" for an operator cancel (or the reverse)."""
+        for event in self._events:
+            if event.is_set():
+                return getattr(event, "reason", None)
+        return None
+
+
+def cancel_reason(cancel_event: Optional[_CancelEventLike]) -> str:
+    """Human-facing cause for a cancelled run; the legacy wording when no source carries one."""
+    return getattr(cancel_event, "reason", None) or "cron fire ownership was lost"
 
 
 def get_running_job_ids() -> "frozenset[str]":
@@ -2001,9 +2016,10 @@ def _run_agent_with_watchdog(
     def _abort_if_fire_claim_lost() -> None:
         if cancel_event is None or not cancel_event.is_set():
             return
+        reason = cancel_reason(cancel_event)
         if agent is not None and hasattr(agent, "interrupt"):
-            agent.interrupt("Cron fire claim ownership was lost")
-        raise RuntimeError(f"Cron job '{job_name}' lost its durable fire claim ownership")
+            agent.interrupt(f"Cron run stopped: {reason}")
+        raise RuntimeError(f"Cron job '{job_name}' was stopped: {reason}")
 
     def _heartbeat_run_claim_if_due():
         nonlocal _last_claim_heartbeat
@@ -3015,6 +3031,7 @@ class _FireOwnership:
     def __init__(
         self, job: dict, claim_lost: Optional[_CancelEventLike] = None,
         transport_cancel: Optional[_CancelEventLike] = None,
+        operator_cancel: Optional[_CancelEventLike] = None,
     ):
         self.job = job
         # Two handles: the heartbeat's raw ``lost_ownership`` event and the caller's transport
@@ -3022,10 +3039,13 @@ class _FireOwnership:
         # ``set()`` would propagate into the transport event this run does not own (#105861).
         self.claim_lost = claim_lost
         self.transport_cancel = transport_cancel
-        # What ``run_job`` receives as its ``cancel_event``: either source cancels the run.
+        # ``operator_cancel`` (``hermes cron cancel``) is a THIRD source, deliberately not folded
+        # into ``transport_cancel``: only a transport cancel counts as claim loss for bookkeeping,
+        # while an operator cancel is a real outcome this run records itself.
+        # What ``run_job`` receives as its ``cancel_event``: any source cancels the run.
         self.cancel_event: Optional[_CancelEventLike] = (
-            _CombinedCancelEvent(claim_lost, transport_cancel)
-            if claim_lost is not None or transport_cancel is not None
+            _CombinedCancelEvent(claim_lost, transport_cancel, operator_cancel)
+            if claim_lost is not None or transport_cancel is not None or operator_cancel is not None
             else None)
         claim = job.get("fire_claim")
         self.owner = str(claim.get("by") or "") if isinstance(claim, dict) else None
@@ -3332,15 +3352,17 @@ def _run_one_job_body(
     transport_cancel: Optional[_CancelEventLike] = None,
     execution_token: Optional[object] = None,
 ) -> bool:
-    fence = _FireOwnership(job, claim_lost, transport_cancel)
-    fire_owner = fence.owner
-    _side_effect_fence = fence.side_effect_fence
-    _fire_claim_ownership_lost = fence.lost
-
     execution_id = job.get("execution_id")
     if not execution_id:
         execution_id = create_execution(
             job["id"], source="direct", scheduled_instant=job.get("_scheduled_instant"))["id"]
+    # The execution id is resolved BEFORE the fence so ``hermes cron cancel`` can join the same
+    # cancel seam: the marker it writes is polled by whichever process owns this attempt.
+    fence = _FireOwnership(job, claim_lost, transport_cancel, CancelRequest(execution_id))
+    fire_owner = fence.owner
+    _side_effect_fence = fence.side_effect_fence
+    _fire_claim_ownership_lost = fence.lost
+
     delivery_attempted = False
     delivery_error = None
 
@@ -3548,6 +3570,9 @@ def _run_one_job_body(
     finally:
         # Function-level on purpose: must scope delivery, deferred teardown, claim-loss handling and
         # bookkeeping — not just run_job. Do not move into the run block's finally.
+        # The attempt is over either way, so its cancel marker goes with it — an unread marker
+        # would otherwise sit in the cancels dir until the TTL prune.
+        clear_cancel(execution_id)
         if _fire_scope_tokens is not None:
             _reset_fire_secret_scope(_fire_scope_tokens)
         if _terminal_scope_token is not None:

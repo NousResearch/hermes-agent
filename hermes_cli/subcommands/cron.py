@@ -165,6 +165,12 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_run.add_argument("job_id", help="Job ID to trigger")
     add_accept_hooks_flag(cron_run)
 
+    cron_cancel = cron_subparsers.add_parser(
+        "cancel", help="Stop a job's live run (its schedule is untouched)")
+    cron_cancel.add_argument("job_id", help="Job ID whose in-flight run to stop")
+    cron_cancel.add_argument(
+        "--reason", help="Optional note recorded with the cancelled run")
+
     cron_remove = cron_subparsers.add_parser(
         "remove", aliases=["rm", "delete"], help="Remove a scheduled job")
     cron_remove.add_argument("job_id", help="Job ID to remove")

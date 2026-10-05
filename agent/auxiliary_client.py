@@ -1152,11 +1152,20 @@ def _parse_codex_final_response(final: Any) -> Tuple[List[str], List[Any], Any]:
     usage = None
     resp_usage = getattr(final, "usage", None)
     if resp_usage:
-        def _u(key: str) -> int:
-            return getattr(resp_usage, key, 0) or (resp_usage.get(key, 0) if isinstance(resp_usage, dict) else 0)
+        input_tokens, output_tokens = _field(resp_usage, "input_tokens", 0), _field(resp_usage, "output_tokens", 0)
+        details = _field(resp_usage, "input_tokens_details")
+        # Readable as chat (prompt_tokens_details) AND Codex (input_tokens_details) usage: consumers pick the
+        # shape by provider/api_mode, and dropping the details bills cache hits at the full input rate. The
+        # chat alias carries the cache-write bucket under its own name (legacy cache_creation_tokens included).
+        chat_details = SimpleNamespace(
+            cached_tokens=_field(details, "cached_tokens", 0),
+            cache_write_tokens=_field(details, "cache_write_tokens", 0) or _field(details, "cache_creation_tokens", 0))
         usage = SimpleNamespace(
-            prompt_tokens=_u("input_tokens"), completion_tokens=_u("output_tokens"),
-            total_tokens=_u("total_tokens"))
+            prompt_tokens=input_tokens, completion_tokens=output_tokens,
+            total_tokens=_field(resp_usage, "total_tokens", 0) or input_tokens + output_tokens,
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            input_tokens_details=details, prompt_tokens_details=chat_details,
+            output_tokens_details=_field(resp_usage, "output_tokens_details"))
     return text_parts, tool_calls_raw, usage
 
 
@@ -1821,11 +1830,19 @@ class _AnthropicCompletionsAdapter:
         _nr = get_transport("anthropic_messages").normalize_response(response, strip_tool_prefix=self._is_oauth)
         usage = None
         if hasattr(response, "usage") and response.usage:
-            prompt_tokens = getattr(response.usage, "input_tokens", 0) or 0
+            input_tokens = getattr(response.usage, "input_tokens", 0) or 0
+            cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+            cache_write = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
             completion_tokens = getattr(response.usage, "output_tokens", 0) or 0
+            # Readable as Anthropic usage (uncached input_tokens + cache_*_input_tokens) AND as chat usage,
+            # whose prompt_tokens INCLUDES the cache buckets it subtracts back out: consumers pick the shape
+            # by provider/api_mode, and chat-only fields read as all-zero under the Anthropic shape.
+            prompt_tokens = input_tokens + cache_read + cache_write
             usage = SimpleNamespace(
                 prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
-                total_tokens=getattr(response.usage, "total_tokens", 0) or (prompt_tokens + completion_tokens),
+                total_tokens=prompt_tokens + completion_tokens,
+                input_tokens=input_tokens, output_tokens=completion_tokens,
+                cache_read_input_tokens=cache_read, cache_creation_input_tokens=cache_write,
             )
         # ToolCall already duck-types as OpenAI shape via properties.
         choice = SimpleNamespace(

@@ -1,7 +1,7 @@
 """Post-call response verification for the conversation turn's retry loop: stop the thinking
 spinner, validate the response shape (retry / eager fallback / terminal invalid-response
-result), derive ``finish_reason`` per api_mode, route content-policy refusals and
-``length`` truncation, fold usage into the compressor, and mark the logical relay call
+result), derive ``finish_reason`` per api_mode, fold usage into the compressor, route
+content-policy refusals and ``length`` truncation, and mark the logical relay call
 complete. Nothing here imports ``agent.conversation_loop`` at module level (cycle) —
 loop-internal helpers resolve lazily so ``patch("agent.conversation_loop.X")`` keeps intercepting.
 """
@@ -152,6 +152,20 @@ def check_api_response(
     from hermes_cli.observability.shared_metrics_harness import record_reply_finish
     record_reply_finish(agent, response, finish_reason)
 
+    # Fold provider usage into compressor / anchors / session counters / state.db
+    # (agent/turn_usage.py) BEFORE routing: truncated and refused responses were billed
+    # too, and both branches below leave early. A rearmed budget also clears the
+    # preflight-block latch.
+    _usage_outcome = record_response_usage(
+        agent, response, messages=messages, api_call_count=api_call_count,
+        api_duration=api_duration, compression_attempts=compression_attempts,
+        max_compression_attempts=max_compression_attempts,
+    )
+    compression_attempts = _usage_outcome.compression_attempts
+    if _usage_outcome.rearmed:
+        _preflight_compression_blocked = False
+        _last_preflight_pressure = None
+
     # HTTP-200 refusals are deterministic: one fallback try, else return the refusal.
     if finish_reason == "content_filter":
         _rv = handle_content_policy_refusal(
@@ -189,18 +203,6 @@ def check_api_response(
         compression_attempts = _tv.compression_attempts
         if _tv.action in ("return", "break", "continue"):
             return _verdict(_tv.action, _tv.result)
-
-    # Fold provider usage into compressor / anchors / session counters / state.db
-    # (agent/turn_usage.py). A rearmed budget also clears the preflight-block latch.
-    _usage_outcome = record_response_usage(
-        agent, response, messages=messages, api_call_count=api_call_count,
-        api_duration=api_duration, compression_attempts=compression_attempts,
-        max_compression_attempts=max_compression_attempts,
-    )
-    compression_attempts = _usage_outcome.compression_attempts
-    if _usage_outcome.rearmed:
-        _preflight_compression_blocked = False
-        _last_preflight_pressure = None
 
     _retry.has_retried_429 = False
     # Clearing Nous rate-limit state proves the limit reset so other sessions may resume.

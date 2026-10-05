@@ -31,6 +31,7 @@ from agent.error_classifier import (
     _extract_status_code)
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
+from agent.i18n import tl
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
@@ -593,8 +594,8 @@ def _report_stale_nonstream_kill(agent, api_kwargs: dict, elapsed: float, stale_
         "model=%s context=~%s tokens. Killing connection.", "Inline n" if inline else "N", elapsed,
         stale_timeout, model, f"{estimate_request_context_tokens(api_kwargs):,}")
     try:
-        agent._buffer_diagnostic_status(
-            f"⚠️ No response from provider for {int(elapsed)}s (non-streaming, model: {model}). {hint or 'Aborting call.'}")
+        agent._buffer_diagnostic_status(tl("display.status.stream.stale_nonstream", seconds=int(elapsed), model=model, hint=hint)
+            if hint else tl("display.status.stream.stale_nonstream_abort", seconds=int(elapsed), model=model))
     except Exception:
         logger.debug("stale status buffering failed", exc_info=True)
 
@@ -850,17 +851,16 @@ def _managed_local_load_notice(agent, api_kwargs: dict) -> "Optional[str]":
         model = str(api_kwargs.get("model", ""))
         progress = get_loading_progress().get(model)
         if progress is not None:
-            return (f"⏳ loading {model} into memory — {progress['percent']}% "
-                "(responses start once the model is loaded)")
+            return tl("display.wait.local_loading", model=model, percent=progress["percent"])
         prefill = get_prefill_progress(model)
         if prefill is None:
             return None
         processed = int(prefill["processed"])
         total = estimate_request_context_tokens(api_kwargs)
         if total and total >= processed:
-            return f"⚙ processing prompt — {max(0, min(100, round(processed / total * 100)))}%"
+            return tl("display.wait.local_prefill", percent=max(0, min(100, round(processed / total * 100))))
         # Counter past the estimate (estimator undercounted): no honest denominator, label-only.
-        return "⚙ processing prompt"
+        return tl("display.wait.local_prefill_unknown")
     except Exception:  # noqa: BLE001 — a status nicety must never break a call
         return None
 
@@ -2171,12 +2171,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
-            notice = (
-                f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
-                f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}.")
-            if cooldown_seconds is not None:
-                remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
-                notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."
+            # English value: Desktop's isFallbackSwitchStatus matches "model fallback".
+            switch = {"old_model": old_model, "old_provider": old_provider, "reason": _fallback_reason_text(reason),
+                      "model": fb_model, "provider": fb_provider}
+            notice = tl("display.status.fallback.model_switch", **switch) if cooldown_seconds is None else tl(
+                "display.status.fallback.model_switch_cooldown", **switch,
+                remaining=max(0, math.ceil(agent._rate_limited_until - time.monotonic())))
             _buffer_fallback_notice(agent, notice)
             # ``_fallback_activated`` is also reused by `/model --once` restoration; separate
             # provenance so the restore path only emits a recovery notice after a real fallback.
@@ -2740,7 +2740,7 @@ class _BedrockStream:
         logger.warning("Bedrock stream stale for %.0fs (threshold %.0fs) — no events "
             "received. region=%s model=%s. Aborting call.", stale_elapsed, self.stale_timeout, self.region,
             self._model())
-        agent._buffer_diagnostic_status(f"⚠️ No events from Bedrock for {int(stale_elapsed)}s (model: {self._model()}). Aborting...")
+        agent._buffer_diagnostic_status(tl("display.status.stream.bedrock_stale", seconds=int(stale_elapsed), model=self._model()))
         _bump_stale_streak(agent)
         # Evict the region's cached client so the NEXT call gets a fresh pool.
         # This does NOT abort the in-flight botocore EventStream (no external
@@ -3649,9 +3649,7 @@ class _StreamingCall(StreamingWaitMonitor):
             # Durable channel, not _buffer_status: this recovery is expected to SUCCEED, and
             # buffered retry chatter is dropped on successful recovery. Fires at most once per
             # session (streaming is off from here on).
-            self.agent._emit_warning(
-                "⚠️ Provider stream returned an empty keepalive frame — retrying this turn "
-                "without streaming (streaming stays off for this session).")
+            self.agent._emit_warning(tl("display.status.stream.empty_keepalive"))
             return
         from agent.anthropic_adapter import _is_stream_unavailable_error
         if not _is_stream_unavailable_error(e):
@@ -3757,10 +3755,9 @@ class _StreamingCall(StreamingWaitMonitor):
                 max_attempts=max_retries + 1, mid_tool_call=False, diag=self.clients.diag)
             # Empty stream: "connection failed" would send users chasing network issues.
             if _is_stream_parse_err or _is_empty_stream:
-                _what = ("Provider returned malformed streaming data after" if _is_stream_parse_err
-                         else "Provider returned an empty response stream after")
-                self.agent._buffer_diagnostic_status(
-                    f"❌ {_what} {max_retries + 1} attempts. The provider may be experiencing issues — try again in a moment.")
+                self.agent._buffer_diagnostic_status(tl(
+                    "display.status.stream.malformed_exhausted" if _is_stream_parse_err
+                    else "display.status.stream.empty_exhausted", attempts=max_retries + 1))
             else:
                 from agent.stream_diag import buffer_connect_exhausted_notice
                 buffer_connect_exhausted_notice(self.agent, e, attempts=max_retries + 1, base_url=self.agent.base_url)
@@ -3826,8 +3823,7 @@ class _StreamingCall(StreamingWaitMonitor):
         logger.info("Streaming 5xx re-issued non-streaming successfully for %s/%s "
                     "(not latched: the 5xx may be transient).",
                     self.agent.provider or "unknown", self.agent.model or "unknown")
-        self._quiet(self.agent._buffer_status,
-                    "⚠  Streaming failed with a provider server error; the non-streaming retry succeeded.")
+        self._quiet(self.agent._buffer_status, tl("display.status.stream.nonstream_retry_succeeded"))
         try:
             # The failed attempt already emitted its terminal on_stream_end(finished=False),
             # so the recovered delivery opens and closes its OWN stream pair — consumers must
@@ -3946,9 +3942,6 @@ class _StreamingCall(StreamingWaitMonitor):
             "Stream stale for %.0fs (threshold %.0fs) — no chunks received. model=%s context=~%s tokens. Killing connection.",
             elapsed, self._stream_stale_timeout, self.api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
         )
-        self.agent._buffer_diagnostic_status(
-            f"⚠️ No response from provider for {int(elapsed)}s (model: {self.api_kwargs.get('model', 'unknown')}, "
-            f"context: ~{_est_ctx:,} tokens). Reconnecting...")
         # Captured BEFORE the cancel/abort: the pool sweep can miss a checked-out
         # connection, so shut down the killed attempt's own socket too — still
         # shutdown-only, never close (see the helper).
@@ -3957,10 +3950,13 @@ class _StreamingCall(StreamingWaitMonitor):
             self._cancel_current_stream_attempt("stale_stream_kill")
             self.clients.close_once("stale_stream_kill")
         self._shutdown_stale_attempt_socket(_killed_response)
+        # After the kill: rendering the status may load the catalog, and late chunks must not outrun the cancel.
+        self.agent._buffer_diagnostic_status(tl("display.status.stream.stale_stream", seconds=int(elapsed),
+            model=self.api_kwargs.get("model", "unknown"), tokens=f"{_est_ctx:,}"))
         self._count_stale_attempt()
         # Reset the timer so we don't kill repeatedly while the worker unwinds.
         self.last_chunk_time["t"] = time.time()
-        self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
+        self.agent._emit_diagnostic_wait(tl("display.wait.stream_stale_reconnect", seconds=int(elapsed)))
         self.agent._touch_activity(f"stale stream detected after {int(elapsed)}s, reconnecting")
 
     def _abort_for_interrupt(self, stale_elapsed: float) -> None:

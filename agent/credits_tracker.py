@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Mapping, Optional
 
+from agent.i18n import tl
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -197,7 +198,8 @@ def evaluate_credits_notices(state: CreditsState, latch: dict, *, model_is_free:
             level = current_band[1]  # type: ignore[index]  (current_band set when target_band set)
             lim = state.subscription_limit_micros or 0
             used_usd = f"{max(0, min(lim, lim - state.subscription_micros)) / 1_000_000:.2f}" if lim else "?"
-            text = f"{'⚠' if level == 'warn' else '•'} You've used ${used_usd} of your ${state.subscription_limit_usd or '?'} cap"
+            # English stays as is: Desktop's agent-notices parser reads the used/cap figures out of it.
+            text = tl(f"display.credits.usage_{level}", used=used_usd, cap=state.subscription_limit_usd or "?")
             to_show.append(_sticky_notice(text, level, CREDITS_USAGE_KEY))
             active.add(CREDITS_USAGE_KEY)
         latch["usage_band"] = target_band
@@ -210,7 +212,7 @@ def evaluate_credits_notices(state: CreditsState, latch: dict, *, model_is_free:
         state.denominator_kind == "subscription_cap" and uf is not None and uf >= 1.0 and state.purchased_micros > 0
     )
     if grant_cond and "credits.grant_spent" not in active and latch.get("seen_grant_unspent", False):
-        to_show.append(_sticky_notice(f"• Grant spent · ${state.purchased_usd} top-up left", "info", "credits.grant_spent"))
+        to_show.append(_sticky_notice(tl("display.credits.grant_spent", topup=state.purchased_usd), "info", "credits.grant_spent"))
         active.add("credits.grant_spent")
         latch["seen_grant_unspent"] = False
     elif "credits.grant_spent" in active and not grant_cond:
@@ -221,14 +223,14 @@ def evaluate_credits_notices(state: CreditsState, latch: dict, *, model_is_free:
     depleted_cond = not state.paid_access
     show_depleted = depleted_cond and not model_is_free
     if show_depleted and "credits.depleted" not in active:
-        to_show.append(_sticky_notice("✕ Credit access paused · run /topup to top up", "error", "credits.depleted"))
+        to_show.append(_sticky_notice(tl("display.credits.depleted"), "error", "credits.depleted"))
         active.add("credits.depleted")
     elif "credits.depleted" in active and not show_depleted:
         to_clear.append("credits.depleted")
         active.discard("credits.depleted")
         if not depleted_cond:  # genuine recovery only — a free-model switch while depleted is NOT "restored"
             to_show.append(AgentNotice(
-                text="✓ Credit access restored", level="success", kind="ttl",
+                text=tl("display.credits.restored"), level="success", kind="ttl",
                 ttl_ms=CREDITS_RESTORED_TTL_MS, key="credits.restored", id="credits.restored",
             ))
     return (to_show, to_clear)

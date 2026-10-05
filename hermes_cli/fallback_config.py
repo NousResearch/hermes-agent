@@ -67,10 +67,12 @@ def pre_agent_fallback_notice(
 ) -> str:
     """User-visible one-shot line for a provider switch made during credential resolution, before
     any AIAgent exists (#74349). Shared by the messaging gateway, the TUI/Desktop gateway and cron
-    so the three pre-agent fallback paths cannot drift in wording."""
+    so the three pre-agent fallback paths cannot drift in wording. A ``tl()`` line: the status sinks show it
+    localized, while cron's f-string prefix (saved for ``context_from``) and Desktop's matcher keep the English."""
+    from agent.i18n import tl
     primary_desc = "/".join(str(p).strip() for p in (primary_provider, primary_model) if p) or "primary"
     fallback_desc = "/".join(str(p).strip() for p in (fallback_provider, fallback_model) if p) or "fallback"
-    return f"⚠️ Provider fallback: {primary_desc} unavailable; using {fallback_desc} for this response."
+    return tl("display.notice.provider_fallback", primary=primary_desc, fallback=fallback_desc)
 
 
 

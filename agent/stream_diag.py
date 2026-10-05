@@ -13,6 +13,8 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
+from agent.i18n import tl
+
 logger = logging.getLogger(__name__)
 
 # Lowercased upstream headers captured per attempt for post-hoc analysis.
@@ -153,19 +155,20 @@ def emit_stream_drop(
     log_stream_retry(
         agent, kind=kind, error=error, attempt=attempt, max_attempts=max_attempts, mid_tool_call=mid_tool_call, diag=diag
     )
-    provider = agent.provider or "provider"
-    _suffix = ""
+    elapsed = None
     try:
         started = diag.get("started_at") if isinstance(diag, dict) else None
         if started is not None:
-            _suffix = f" after {max(0.0, time.time() - float(started)):.1f}s"
+            elapsed = f"{max(0.0, time.time() - float(started)):.1f}"
     except Exception:
         pass
     try:
-        agent._buffer_diagnostic_status(
-            f"⚠️ {provider} stream {kind} ({type(error).__name__}){_suffix} "
-            f"— attempt {attempt}/{max_attempts} dropped, reconnecting"
-        )
+        # One whole line per (mid tool-call?, elapsed known?) variant.
+        key = "display.status.stream.drop" + ("_mid_tool" if mid_tool_call else "") + ("_after" if elapsed else "")
+        agent._buffer_diagnostic_status(tl(
+            key, provider=agent.provider or "provider", error_type=type(error).__name__, seconds=elapsed,
+            attempt=attempt, max_attempts=max_attempts,
+        ))
         agent._touch_activity(f"stream retry {attempt}/{max_attempts} after {type(error).__name__}")
     except Exception:
         pass
@@ -210,13 +213,10 @@ def connect_exhausted_notice(error: BaseException, *, attempts: int, base_url: A
     request = _failed_request(error)
     host = urlparse(str(getattr(request, "url", None) or base_url or "")).hostname or "the endpoint"
     size = _request_body_bytes(request)
-    line = f"❌ Could not open a stream to {host} after {attempts} attempt{'s' if attempts != 1 else ''}"
-    if size is None:
-        return line + "; the endpoint looks unreachable — try again in a moment."
-    line += f" (request {max(1, round(size / 1024))} KB)"
-    if size >= LARGE_REQUEST_HINT_BYTES:
-        return line + "; the endpoint or a proxy in front of it may reject requests this large."
-    return line + "; the endpoint looks unreachable — try again in a moment."
+    # Whole line per (request size known / large?, singular attempt?) variant.
+    variant = "" if size is None else "_large" if size >= LARGE_REQUEST_HINT_BYTES else "_size"
+    return tl(f"display.status.stream.connect_exhausted{variant}{'_one' if attempts == 1 else ''}", host=host,
+              attempts=attempts, size_kb=max(1, round(size / 1024)) if size is not None else 0)
 
 
 def buffer_connect_exhausted_notice(agent: Any, error: BaseException, *, attempts: int, base_url: Any) -> None:

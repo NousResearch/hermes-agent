@@ -7,7 +7,7 @@ Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO
 import logging
 import sys
 
-from agent.i18n import render_localized, t
+from agent.i18n import render_localized, tl
 from agent.session_activity import ActivityProvenance
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
@@ -111,7 +111,8 @@ class StatusOutputMixin:
         Desktop renders notices but no warn-kind ``status.update``, and the messaging gateway wires
         its callbacks per turn, after init, so a notice raised before then waits for
         :meth:`_replay_startup_warnings` on the first turn."""
-        message = message.strip()
+        if not getattr(message, "i18n_key", None):  # a tl() line is already bare; strip() would drop its key
+            message = message.strip()
         if (getattr(self, "platform", None) or "cli") == "cli":
             self._emit_warning(message)
             return
@@ -161,8 +162,8 @@ class StatusOutputMixin:
         _warn_key = ("uncompressed_ctx_overflow", context_length)
         if getattr(self, "_last_ctx_overflow_warn", None) != _warn_key:
             self._last_ctx_overflow_warn = _warn_key
-            self._emit_warning(t("display.notice.uncompressed_context_overflow",
-                                 tokens=f"{preflight_tokens:,}", context_length=f"{context_length:,}"))
+            self._emit_warning(tl("display.notice.uncompressed_context_overflow",
+                                  tokens=f"{preflight_tokens:,}", context_length=f"{context_length:,}"))
 
     def _clear_context_overflow_warn(self) -> None:
         """Reset the blocked-overflow warning dedup so it can re-fire on the next blocked turn."""
@@ -178,9 +179,14 @@ class StatusOutputMixin:
 
     def _emit_wait_notice(self, text: str) -> None:
         """Rewrite the live status line (CLI spinner, TUI ``thinking.delta``, gateway activity)
-        so long provider waits are not an anonymous spinner."""
+        so long provider waits are not an anonymous spinner. The activity record keeps the English; the
+        spinner/TUI line is a presentation sink, so a ``tl()`` notice shows in the active language."""
+        from gateway.warning_notifications import DiagnosticText
         self._touch_activity(text)
-        self._call_callback("thinking_callback", text, origin="_emit_wait_notice")
+        shown = render_localized(text)
+        if shown is not text and isinstance(text, DiagnosticText):
+            shown = DiagnosticText(shown)  # keep the diagnostic classification the sinks gate on
+        self._call_callback("thinking_callback", shown, origin="_emit_wait_notice")
 
     def _emit_diagnostic_wait(self, text: str) -> None:
         from gateway.warning_notifications import DiagnosticText
@@ -249,6 +255,6 @@ class StatusOutputMixin:
                     replay[kind](msg)
                 else:
                     if self._warning_presentation_enabled():
-                        self._vprint(f"{self.log_prefix}{msg}", force=True)
+                        self._vprint(f"{self.log_prefix}{render_localized(msg)}", force=True)
             except Exception:
                 pass

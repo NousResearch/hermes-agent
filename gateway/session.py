@@ -327,13 +327,14 @@ def _discord_platform_notes(context: SessionContext) -> List[str]:
             lines.append(f"  - Thread: `{src.thread_id}` (use as `channel_id` for fetch_messages etc.)")
         else:
             lines.append(f"  - Channel: `{src.chat_id}`")
-        if src.message_id:
-            # The volatile per-turn message id must stay OUT of this cached block (it would bust the
-            # agent-cache signature every message); run.py injects it into the user message instead.
-            lines.append(
-                "  - Triggering message: provided per-turn in the incoming user message (use it as "
-                "`message_id` for reply/react/pin)"
-            )
+        # Guidance describes a platform capability, not this turn's message-id presence.
+        # Both native and relay slash/modal turns have no message target. Keep that
+        # absence out of the pinned prompt, and never suggest inventing an ID.
+        lines.append(
+            "  - Triggering message: when provided per-turn in the incoming user message, "
+            "use it as `message_id` for reply/react/pin. If absent (e.g. slash commands), "
+            "there is no triggering message target; do not use an interaction ID."
+        )
     else:
         lines = ["", (
             "**Platform notes:** You are running inside Discord. You do NOT have access to "

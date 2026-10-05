@@ -1186,7 +1186,13 @@ class RelayAdapter(BasePlatformAdapter):
             user_id=str(user["id"]) if user.get("id") else None,
             user_name=str(user["username"]) if user.get("username") else None,
             scope_id=str(guild_id) if guild_id else None,
-            message_id=str(payload.get("id")) if payload.get("id") else None,
+            # Discord interaction IDs acknowledge the callback; they are not message
+            # IDs. Only a component with an attached message has a reply/react target.
+            message_id=(
+                str((payload.get("message") or {}).get("id"))
+                if isinstance(payload.get("message"), dict) and (payload.get("message") or {}).get("id")
+                else None
+            ),
             # Same upstream-trust marker the relay text lane stamps. Set locally, never
             # read off the wire (engages /sethome's via_relay guard).
             delivered_via_upstream_relay=True,
@@ -1197,7 +1203,13 @@ class RelayAdapter(BasePlatformAdapter):
             # connector resolved a specific profile for it.
             profile=getattr(forward, "profile", None),
         )
-        event = MessageEvent(text=text, message_type=message_type, source=source)
+        event = MessageEvent(
+            text=text,
+            message_type=message_type,
+            source=source,
+            message_id=source.message_id,
+            metadata={"interaction_id": str(payload["id"])} if payload.get("id") else {},
+        )
         if itype == 3:
             # A component press whose custom_id is a Hermes prompt token
             # (hp1:<prompt_id>:<option_id>) becomes a STRUCTURED prompt answer;

@@ -382,6 +382,39 @@ async def test_dispatch_thread_session_builds_thread_event(adapter):
 # ------------------------------------------------------------------
 
 
+def test_native_slash_message_id_does_not_change_prompt_pin(adapter, monkeypatch):
+    from dataclasses import replace
+    from unittest.mock import Mock
+
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionContext, build_session_context_prompt
+
+    monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: True)
+    interaction = SimpleNamespace(
+        channel=_FakeThreadChannel(channel_id=555, name="Planning"),
+        channel_id=555,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+    )
+    slash = adapter._build_slash_event(interaction, "/status")
+    assert slash.message_id is None
+    assert slash.source.message_id is None
+    sources = [replace(slash.source, message_id="m1"), slash.source,
+               replace(slash.source, message_id="m2")]
+    contexts = [SessionContext(source=src, connected_platforms=[src.platform], home_channels={})
+                for src in sources]
+    runner = object.__new__(GatewayRunner)
+    runner._session_ephemeral_pin = {}
+    rendered = [build_session_context_prompt(ctx) for ctx in contexts]
+    assert "Triggering message:" in rendered[0]
+    assert rendered[0] == rendered[1] == rendered[2]
+    assert len({runner._ephemeral_change_key(ctx, False) for ctx in contexts}) == 1
+    renderer = Mock(wraps=build_session_context_prompt)
+    monkeypatch.setattr("gateway.run_agent_cache.build_session_context_prompt", renderer)
+    prompts = [runner._pinned_session_context_prompt(ctx, False, "native-sk") for ctx in contexts]
+    assert prompts[0] is prompts[1] is prompts[2]
+    assert renderer.call_count == 1
+
+
 def test_build_slash_event_preserves_thread_context(adapter):
     interaction = SimpleNamespace(
         channel=_FakeThreadChannel(channel_id=555, name="Planning"),

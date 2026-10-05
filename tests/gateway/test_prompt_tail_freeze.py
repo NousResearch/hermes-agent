@@ -117,6 +117,28 @@ def _render(context, redact_pii=False):
 # ---------------------------------------------------------------------------
 
 class TestEphemeralChangeKeyParity:
+    @pytest.mark.parametrize("tools_loaded", [False, True])
+    def test_message_target_presence_does_not_change_guidance_or_key(self, monkeypatch, tools_loaded):
+        monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: tools_loaded)
+        runner = _make_runner()
+        contexts = [_make_context(message_id=message_id) for message_id in ("m1", None, "m2")]
+        rendered = [_render(ctx) for ctx in contexts]
+        assert rendered[0] == rendered[1] == rendered[2]
+        assert len({_key(runner, ctx) for ctx in contexts}) == 1
+        assert ("Triggering message:" in rendered[0]) == tools_loaded
+        if tools_loaded:
+            assert "If absent" in rendered[0]
+            assert "do not use an interaction ID" in rendered[0]
+
+    def test_discord_tool_capability_changes_guidance_and_key(self, monkeypatch):
+        runner = _make_runner()
+        context = _make_context(message_id=None)
+        monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: False)
+        without_tools, without_tools_key = _render(context), _key(runner, context)
+        monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: True)
+        assert _render(context) != without_tools
+        assert _key(runner, context) != without_tools_key
+
     # Single-field mutations spanning every rendered input.  For each:
     # if the rendered bytes change, the key MUST change (staleness guard).
     _MUTATIONS = [

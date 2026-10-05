@@ -730,11 +730,10 @@ class GatewayAgentCacheMixin:
         if src.platform == Platform.DISCORD:
             from gateway.session import _discord_tools_loaded
             discord_tools = "1" if _discord_tools_loaded() else "0"
-            # message_id: only PRESENCE is rendered (the id itself arrives per-turn in the user
-            # message) — keying on the value would re-render every message for zero byte change.
+            # Triggering-message guidance is a lane-independent tool capability;
+            # neither the ID nor its per-turn presence changes the rendered bytes.
             discord_ids = (
                 _s(src.guild_id), _s(src.parent_chat_id), _s(src.thread_id), _s(src.chat_id),
-                "1" if src.message_id else "0",
             )
         # Slack's capability-aware platform note is gated on _slack_tools_loaded() — the gate state must
         # be in the key (same parity contract as the Discord gate above) so a config / MCP-registration

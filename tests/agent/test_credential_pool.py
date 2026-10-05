@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -22,6 +23,48 @@ def _jwt_with_claims(claims: dict) -> str:
         return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
     return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
+
+
+def test_targeted_refresh_does_not_reconcile_unrelated_pool_rows(tmp_path, monkeypatch):
+    """A usage 401 should refresh only its issuing credential, without load_pool seeding/pruning."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    original = {"version": 1, "credential_pool": {"openai-codex": [
+        {"id": "requested", "source": "manual:device_code", "auth_type": "oauth",
+         "access_token": "old", "refresh_token": "refresh-old"},
+        {"id": "other", "source": "device_code", "auth_type": "oauth",
+         "access_token": "other-token", "refresh_token": "other-refresh", "label": "untouched"},
+    ]}}
+    _write_auth_store(tmp_path, original)
+    from agent import credential_pool
+
+    # If the helper called load_pool, the missing singleton could prune the other row.
+    monkeypatch.setattr(credential_pool, "load_pool", lambda provider: pytest.fail("must not reconcile pool"))
+    monkeypatch.setattr(credential_pool.CredentialPool, "_post_tokens_refresh",
+                        lambda self, entry: replace(entry, access_token="new", refresh_token="refresh-new"))
+
+    refreshed = credential_pool.refresh_matching_persisted_credential(
+        "openai-codex", api_key_hint="old")
+    assert refreshed is not None and refreshed.id == "requested" and refreshed.runtime_api_key == "new"
+    rows = credential_pool.read_credential_pool("openai-codex")
+    assert [row["id"] for row in rows] == ["requested", "other"]
+    assert rows[1] == original["credential_pool"]["openai-codex"][1]
+    assert rows[0]["access_token"] == "new"
+
+
+def test_targeted_refresh_never_selects_another_account_on_stale_hint(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    original = {"version": 1, "credential_pool": {"openai-codex": [
+        {"id": "only", "auth_type": "oauth", "source": "manual:device_code",
+         "access_token": "current", "refresh_token": "refresh-current"},
+    ]}}
+    _write_auth_store(tmp_path, original)
+    from agent import credential_pool
+
+    monkeypatch.setattr(credential_pool.CredentialPool, "_post_tokens_refresh",
+                        lambda self, entry: pytest.fail("must not refresh an unrelated token"))
+    assert credential_pool.refresh_matching_persisted_credential(
+        "openai-codex", api_key_hint="stale") is None
+    assert json.loads((tmp_path / "hermes" / "auth.json").read_text()) == original
 
 
 

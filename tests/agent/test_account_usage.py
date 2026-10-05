@@ -389,7 +389,8 @@ def test_codex_usage_401_retry_refreshes_the_explicit_credential_not_another_acc
     monkeypatch.setattr(account_usage, "resolve_codex_runtime_credentials",
                         lambda **kwargs: pytest.fail("must not re-resolve another account's credential"))
     monkeypatch.setattr(account_usage, "_read_codex_tokens", lambda: {"tokens": {"access_token": "singleton-A"}})
-    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: Pool())
+    monkeypatch.setattr("agent.credential_pool.refresh_matching_persisted_credential",
+                        lambda provider, *, api_key_hint: Pool().try_refresh_matching(api_key_hint=api_key_hint))
     monkeypatch.setattr(account_usage.httpx, "Client", lambda timeout: Client())
 
     snapshot = account_usage.fetch_account_usage(

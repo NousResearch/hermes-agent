@@ -520,7 +520,7 @@ const HEADING_SIZES: Record<'h1' | 'h2' | 'h3' | 'h4', string> = {
 }
 
 const MARKDOWN_CONTAINER_CLASS_NAME = cn(
-  'aui-md prose w-full max-w-none overflow-hidden text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground',
+  'aui-md prose w-full min-w-0 max-w-none overflow-hidden text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground',
   'prose-p:leading-(--dt-line-height) prose-li:leading-(--dt-line-height)',
   'prose-headings:text-foreground prose-strong:text-foreground',
   // Typography styles `pre` as a dark slab: light text (`--tw-prose-pre-code`,
@@ -550,7 +550,7 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
       <ExpandableBlock className="p-2">
         {chunks.map((chunk, index) => (
           <div
-            className="[content-visibility:auto]"
+            className="whitespace-pre-wrap wrap-anywhere [content-visibility:auto]"
             key={index}
             style={{ containIntrinsicSize: `auto ${chunk.lines * 16}px` }}
           >

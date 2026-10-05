@@ -7,14 +7,24 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import (
+    NO_LAZY_FETCH_ENV,
+    bounded_probe_run,
+    noninteractive_git_env,
+    windows_hide_flags,
+)
 
 logger = logging.getLogger(__name__)
+
+# Folding ~100 small packs takes seconds, but the checkouts this exists for (thousands of packs,
+# tens of GiB) need a full repack. A killed fold restarts from scratch on every update and never
+# converges, so the bound is generous and a timeout is reported, not swallowed.
 
 # Files younger than this are presumed live (a fetch may be in flight) and are never removed. Lock
 # files live for seconds and a healthy fetch completes in minutes; 10 minutes is abandoned.
@@ -124,6 +134,77 @@ def mark_unmarked_packs_promisor(repo_root: Path) -> int:
     if marked:
         logger.info("Marked %d pack(s) in %s as partial-clone packs", marked, repo_root)
     return marked
+
+
+# In a partial clone whose commit-graph already carries changed-path (Bloom) data, any commit-graph
+# write over commits it has not seen yet needs their trees: one lazy fetch (and one pack) per commit,
+# and each lazy fetch spawns ``git maintenance`` again, which is the unbounded loop of #127711. gc,
+# ``maintenance run --task=commit-graph`` and ``fetch.writeCommitGraph`` all write one (git
+# 2.50.1, 2.53.0 and 2.55.0 alike). So a promisor checkout never writes the graph. Automatic
+# maintenance itself stays on: on git <= 2.53 its post-fetch ``gc --auto`` is what keeps the
+# lazy-fetch packs folded between updates. ``gc.auto`` stays at its default for the same reason
+# (``gc.auto=0`` turns that fold into a no-op).
+_TREE0_MAINTENANCE_OFF = (
+    ("maintenance.commit-graph.enabled", "false"),
+    ("gc.writeCommitGraph", "false"),
+    ("fetch.writeCommitGraph", "false"),
+)
+
+
+def disable_tree0_auto_maintenance(repo_root: Path) -> None:
+    """Keep git from writing a commit-graph in a partial clone, from gc, fetch or maintenance.
+
+    Idempotent (a value already in place is not rewritten, so concurrent git never meets a config
+    lock from this) and never raises: a read-only config must not turn fetch recovery into a
+    traceback, matching mark_unmarked_packs_promisor above.
+    """
+    _migrate_earlier_maintenance_keys(repo_root)
+    for key, value in _TREE0_MAINTENANCE_OFF:
+        try:
+            current = subprocess.run(
+                ["git", "config", "--local", "--get", key],
+                cwd=str(repo_root), capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30,
+                creationflags=windows_hide_flags(),
+            ).stdout.strip()
+            if current == value:
+                continue
+            subprocess.run(
+                ["git", "config", "--local", key, value],
+                cwd=str(repo_root), check=True,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30,
+                creationflags=windows_hide_flags(),
+            )
+        except Exception:
+            logger.warning("Could not set %s=%s in %s", key, value, repo_root)
+
+
+def _migrate_earlier_maintenance_keys(repo_root: Path) -> None:
+    """Undo what earlier cuts of _TREE0_MAINTENANCE_OFF persisted, once.
+
+    ``maintenance.auto=false`` switched off git's own post-fetch fold (git <= 2.53) and the first
+    cut's ``gc.auto=0`` turns ``gc --auto``, the update's own fold, into a no-op. Nothing records
+    who wrote them, so they are removed only under the earlier cuts' fingerprint: both wrote
+    ``maintenance.auto=false`` together with ``fetch.writeCommitGraph=false``, and neither wrote
+    ``maintenance.commit-graph.enabled``. The first pass of disable_tree0_auto_maintenance writes
+    that key, so this runs once; an operator's own lone setting never matches.
+    """
+    try:
+        local = dict(line.split(None, 1) for line in _git_stdout_lines(repo_root, [
+            "config", "--local", "--get-regexp",
+            r"^(maintenance\.auto|maintenance\.commit-graph\.enabled|fetch\.writecommitgraph|gc\.auto)$"]))
+        if (local.get("maintenance.auto") != "false" or local.get("fetch.writecommitgraph") != "false"
+                or "maintenance.commit-graph.enabled" in local):
+            return
+        for key in ("maintenance.auto", "gc.auto") if local.get("gc.auto") == "0" else ("maintenance.auto",):
+            subprocess.run(
+                ["git", "config", "--local", "--unset", key],
+                cwd=str(repo_root), check=True, capture_output=True, timeout=30,
+                creationflags=windows_hide_flags(),
+            )
+    except Exception:
+        logger.warning("Could not migrate earlier maintenance keys in %s", repo_root)
 
 
 def clear_stale_tmp_packs(repo_root: Path, *, min_age_seconds: Optional[int] = None) -> List[str]:
@@ -453,10 +534,11 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
     replacing existing tags. The fetch never changes the clone's mode: ``--filter`` makes git
     write ``remote.origin.promisor``/``partialclonefilter``, so a full clone fetches unfiltered
     (#122353) and a partial clone repeats its own filter. The one conversion is deliberate: a
-    depth-limited full clone whose history is really missing unshallows as ``tree:0``, because an
-    unfiltered ``--unshallow`` downloads the whole project history; a full clone grafted by a
+    depth-limited full clone whose history is really missing unshallows as a partial clone, because
+    an unfiltered ``--unshallow`` downloads every file version ever committed; a full clone grafted by a
     ``--depth`` fetch already has its history and stays full. The converted clone's existing packs
     are marked as partial-clone packs, or every later fetch crashes on git 2.53+ (#124272).
+    It converts to ``blob:none``, the layout installers make (see ``convert_treeless_checkout``).
     Returns whether the checkout was unshallowed; fetch failures raise subprocess errors.
     """
     shallow_path = _shallow_file_path(repo_root)
@@ -469,7 +551,7 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
     converts = fetch_filter is None and shallow and bool(_batch_missing_parents(
         repo_root, shallow_path.read_text(encoding="utf-8-sig").split()))
     if converts:
-        fetch_filter = "tree:0"
+        fetch_filter = "blob:none"
     try:
         subprocess.run(
             ["git", "fetch", "--quiet", *(["--unshallow"] if shallow else []),
@@ -482,6 +564,7 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
         # git writes the partial-clone config before it fetches, so a failed fetch converts too.
         if converts:
             mark_unmarked_packs_promisor(repo_root)
+            disable_tree0_auto_maintenance(repo_root)
     return shallow
 
 
@@ -525,3 +608,75 @@ def fetch_with_partial_clone_recovery(runner: Callable[..., subprocess.Completed
     mark_unmarked_packs_promisor(repo_root)
     logger.info("pack-objects crash on a partial clone; retrying the fetch")
     return runner(git_cmd, fetch_args)
+
+
+def convert_treeless_checkout(repo_root: Path, **run_kwargs) -> bool:
+    """Turn a treeless (``tree:0``) checkout into the blobless layout installers now make (#129712).
+
+    A treeless checkout holds no trees, and git asks for a missing tree without telling the server
+    which ones it already has, so every checkout and path-filtered history walk downloads complete
+    directory snapshots again: hundreds of GB on some installs. One ``--refetch`` of the clone's
+    refspec and its tags brings every commit and tree (about 120 MB for this repo); file contents
+    stay on demand. The checked-out commit can sit outside both (a branch fetched by hand, a
+    release ref the refspec does not name), so its history is checked offline and refetched by
+    commit when trees are still missing. The new filter is recorded only once that history is
+    whole: a failed or partial conversion leaves the checkout treeless, so the next update
+    retries. That check, not the fetch's exit status, is the verdict: a refused tag update (a
+    local tag that would be clobbered) fails the fetch after its objects have landed. Git before
+    2.36 has no ``--refetch`` and is left as it is. Returns whether it converted; fetch failures
+    raise subprocess errors.
+    """
+    run_kwargs["creationflags"] = run_kwargs.get("creationflags", 0) | windows_hide_flags()
+    if _partial_clone_filter(repo_root, **run_kwargs) != "tree:0" or _git_version(**run_kwargs) < (2, 36):
+        return False
+    # A fetch spawns a detached gc/maintenance that would repack the whole refetch outside the
+    # update's time limit; the per-command keys leave the user's own settings alone.
+    refetch = ["git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "fetch", "--quiet", "--refetch",
+               "--filter=blob:none", "origin"]
+    fetch_kwargs = dict(cwd=str(repo_root), capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=900, **run_kwargs)
+    subprocess.run([*refetch, "--tags"], check=False, **fetch_kwargs)
+    if not _history_trees_complete(repo_root, **run_kwargs):
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo_root), check=True,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+                              **run_kwargs).stdout.strip()
+        subprocess.run([*refetch, head], check=True, **fetch_kwargs)
+        if not _history_trees_complete(repo_root, **run_kwargs):
+            raise subprocess.CalledProcessError(1, refetch, stderr="the checked-out history is still missing trees")
+    # A refetch into an existing partial clone leaves its configured filter alone; record the
+    # new one only now, so a failed or interrupted refetch is retried by the next update.
+    subprocess.run(
+        ["git", "config", "remote.origin.partialclonefilter", "blob:none"],
+        cwd=str(repo_root), check=True, capture_output=True, timeout=30, **run_kwargs,
+    )
+    return True
+
+
+def _git_version(**run_kwargs) -> tuple:
+    out = subprocess.run(["git", "--version"], capture_output=True, text=True, encoding="utf-8",
+                         errors="replace", timeout=30, **run_kwargs).stdout
+    match = re.search(r"(\d+)\.(\d+)", out)
+    return (int(match[1]), int(match[2])) if match else (0, 0)
+
+
+def _history_trees_complete(repo_root: Path, **run_kwargs) -> bool:
+    """Whether every tree in HEAD's history is local, checked without fetching (~3 s for this repo)."""
+    env = dict(run_kwargs.pop("env", None) or noninteractive_git_env(), GIT_NO_LAZY_FETCH="1")
+    walk = subprocess.run(
+        ["git", "rev-list", "--objects", "--filter=blob:none", "--missing=print", "HEAD"],
+        cwd=str(repo_root), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=300, env=env, **run_kwargs,
+    )
+    return walk.returncode == 0 and not any(line.startswith("?") for line in walk.stdout.splitlines())
+
+
+def settle_partial_clone_maintenance(repo_root: Path) -> None:
+    """Persist the commit-graph-off keys on a partial clone; a full clone keeps stock maintenance.
+
+    Runs on every update so checkouts that predate the installer change converge. Never raises.
+    """
+    try:
+        if _partial_clone_filter(repo_root, creationflags=windows_hide_flags()) is not None:
+            disable_tree0_auto_maintenance(repo_root)
+    except Exception:
+        logger.debug("partial-clone maintenance settings failed for %s", repo_root, exc_info=True)

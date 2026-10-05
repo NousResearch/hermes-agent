@@ -105,6 +105,9 @@ _SYSTEMD_SCOPE_PROBED_AT = 0.0
 # Both verdicts expire: the user bus can vanish after a True (session logout without linger,
 # #110803) and reappear after a False (linger enabled later, #104893).
 _SYSTEMD_SCOPE_PROBE_TTL_SECONDS = 60.0
+# systemd >= 254 expands ``$$``/``${X}`` in a ``--scope`` command line itself unless told not to;
+# older systemd-run rejects the option (and never expanded there), so the probe drops it on rejection.
+_SYSTEMD_RUN_NO_EXPAND = True
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
 _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
@@ -167,9 +170,11 @@ def _worker_memory_max_bytes() -> int:
 def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
     """``systemd-run --user --scope`` argv shared by the probe and real spawns.
     ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl.
-    No ``OOMPolicy=``: transient scopes reject it on systemd <253 (#102486)."""
+    No ``OOMPolicy=``: transient scopes reject it on systemd <253 (#102486).
+    ``--expand-environment=no`` keeps the command byte-identical (#132385)."""
+    no_expand = ["--expand-environment=no"] if _SYSTEMD_RUN_NO_EXPAND else []
     return [
-        binary, "--user", "--scope", "--quiet", "--unit", unit_name, "--collect",
+        binary, "--user", "--scope", "--quiet", *no_expand, "--unit", unit_name, "--collect",
         "--property", "MemoryAccounting=yes",
         "--property", f"MemoryMax={_worker_memory_max_bytes()}",
         "--", *argv,
@@ -248,7 +253,7 @@ def _systemd_run_user_scope_available() -> bool:
 
     Use ``/bin/sh -c 'exit 0'``: NixOS provides ``/bin/sh`` but not ``/bin/true``
     (#105365), regardless of the gateway service's PATH."""
-    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
+    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT, _SYSTEMD_RUN_NO_EXPAND
     verdict = _systemd_scope_cached()
     if verdict is not None:
         return verdict
@@ -267,12 +272,18 @@ def _systemd_run_user_scope_available() -> bool:
                 if binary:
                     # Unique unit avoids collisions; the timeout bounds D-Bus.
                     probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-                    result = subprocess.run(
-                        _systemd_scope_argv(binary, probe_unit, "/bin/sh", "-c", "exit 0"),
-                        capture_output=True,
-                        timeout=3,
-                        env=systemd_user_bus_env(),
-                    )
+                    for _attempt in range(2):
+                        result = subprocess.run(
+                            _systemd_scope_argv(binary, probe_unit, "/bin/sh", "-c", "exit 0"),
+                            capture_output=True,
+                            timeout=3,
+                            env=systemd_user_bus_env(),
+                        )
+                        if not (result.returncode and _SYSTEMD_RUN_NO_EXPAND
+                                and b"expand-environment" in (result.stderr or b"")):
+                            break
+                        # systemd < 254 rejects the option: drop it and probe again.
+                        _SYSTEMD_RUN_NO_EXPAND = False
                     available = result.returncode == 0
                     if not available:
                         logger.debug(
@@ -542,6 +553,8 @@ class ProcessSession:
     detached: bool = False                      # Recovered from checkpoint (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
+    wsl_chain: bool = False                     # spawned via wsl[.exe]: the host PID is the short-lived
+                                                # launcher; Linux-side workers outlive it (#120546)
     handoff_note: str = ""                      # why a subagent handed this process to its parent (rides the notice)
     persist_on_release: bool = False           # opt out of agent-lifecycle cleanup (release()/turn-abandon kill
                                                 # sweeps), per terminal(background=true, persist_on_release=true) (#41225)
@@ -589,10 +602,23 @@ class ProcessSession:
     def append_output(self, text: str) -> None:
         """Append to the rolling output buffer under the session lock, keeping the tail."""
         with self._lock:
-            self.output_buffer += text
-            self.total_output_chars += len(text)
-            if len(self.output_buffer) > self.max_output_chars:
-                self.output_buffer = self.output_buffer[-self.max_output_chars:]
+            self._append_locked(text)
+
+    def append_output_if_running(self, text: str) -> bool:
+        """Append unless the session has exited. Decided under the lock a kill holds while it
+        snapshots the output and sets ``exited``, so a chunk is either in the kill's receipt or
+        dropped, never added after it."""
+        with self._lock:
+            if self.exited:
+                return False
+            self._append_locked(text)
+        return True
+
+    def _append_locked(self, text: str) -> None:
+        self.output_buffer += text
+        self.total_output_chars += len(text)
+        if len(self.output_buffer) > self.max_output_chars:
+            self.output_buffer = self.output_buffer[-self.max_output_chars:]
 
     def mark_exited(self, exit_code, reason: str = "exited", source: str = "") -> None:
         """Record an exit. A kill that raced the observer already recorded its own
@@ -610,7 +636,7 @@ _WATCHER_ROUTE_KEYS = ("platform", "chat_id", "user_id", "user_name", "thread_id
 # Session fields persisted verbatim in the crash-recovery checkpoint (plus
 # ``session_id``; ``command`` is redacted and ``owner_task_id`` defaulted on write).
 _CHECKPOINT_FIELDS = (
-    "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "cwd",
+    "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "wsl_chain", "cwd",
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
@@ -620,6 +646,41 @@ _CHECKPOINT_DEFAULTS = {
     for f in ProcessSession.__dataclass_fields__.values()
     if f.name in _CHECKPOINT_FIELDS
 }
+
+
+_WSL_LAUNCHER_NAMES = frozenset({"wsl", "wsl.exe"})
+
+_WSL_CHAIN_NOTE = (
+    "Spawned via a wsl[.exe] launcher: the recorded host PID is the short-lived "
+    "launcher, not the Linux-side workers. Inspect them with `wsl -e ps` / "
+    "`wsl --list --running` from the host."
+)
+
+
+def _is_wsl_launcher_command(command: str) -> bool:
+    """True when *command* routes through a ``wsl[.exe]`` launcher chain (#120546).
+
+    The host PID recorded for such a spawn belongs to the short-lived launcher;
+    grandchildren inside the VM outlive it, so the entry must say so instead of
+    letting host-side hunting fail silently.
+    """
+    if not isinstance(command, str) or not command.strip():
+        return False
+    candidates = []
+    try:
+        candidates.append((shlex.split(command, posix=True) or [""])[0])
+    except ValueError:
+        pass
+    # POSIX shlex eats Windows backslashes (``C:\...\wsl.exe``), so also try
+    # the naive first token where path separators survive.
+    words = command.strip().split()
+    if words:
+        candidates.append(words[0])
+    for first in candidates:
+        base = os.path.basename(first.replace("\\", "/")).strip("'\"").lower()
+        if base in _WSL_LAUNCHER_NAMES:
+            return True
+    return False
 
 
 class ProcessRegistry(ProcessCheckpointMixin):
@@ -676,7 +737,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
         seconds = max(int(seconds), HEARTBEAT_MIN_SECONDS)
         session.heartbeat_seconds = seconds
         session._heartbeat_last = time.time()
-        session._heartbeat_total_at_last = session.total_output_chars
+        # The output baseline stays at spawn (field default 0), never here: the spawn call
+        # arms the heartbeat only after its bookkeeping, and a fast-starting process has
+        # already written its first lines by then. Those lines belong to the first heartbeat.
         self._ensure_heartbeat_thread()
         return seconds
 
@@ -1202,6 +1265,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             id=f"proc_{uuid.uuid4().hex[:12]}", command=command, task_id=task_id,
             owner_task_id=owner_task_id, session_key=session_key, cwd=cwd,
             parent_session_id=get_session_env("HERMES_SESSION_ID", ""),
+            wsl_chain=_is_wsl_launcher_command(command),
             started_at=time.time(), **extra)
 
     @staticmethod
@@ -1641,6 +1705,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if not _IS_WINDOWS:
             from tools.pty_query_responder import PtyQueryResponder
             responder = PtyQueryResponder(rows=30, cols=120)
+
+        def ingest(text: str) -> None:
+            # A kill can leave this reader running while a detached descendant holds the
+            # slave open (_release_finished_handles defers the close to it). Keep draining,
+            # but leave the killed session's output as the kill reported it.
+            self._ingest_output(session, text, unless_exited=True)
+
         try:
             while pty.isalive():
                 try:
@@ -1659,7 +1730,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                                     )
                         text = chunk if isinstance(chunk, str) else decoder.decode(chunk)
                         if text:
-                            self._ingest_output(session, text)
+                            ingest(text)
                 except Exception:  # EOFError included
                     break
         except Exception as e:
@@ -1668,14 +1739,18 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # A query prefix split across the final reads is plain output after all.
             tail = decoder.decode(responder.flush())
             if tail:
-                self._ingest_output(session, tail)
+                ingest(tail)
         self._finish_reader(
-            session, decoder, lambda t: self._ingest_output(session, t), "PTY",
+            session, decoder, ingest, "PTY",
             pty.wait, lambda: pty.exitstatus if hasattr(pty, 'exitstatus') else -1)
 
-    def _ingest_output(self, session: ProcessSession, text: str) -> None:
-        """Buffer a freshly-read chunk, then scan watch patterns and stream it live."""
-        session.append_output(text)
+    def _ingest_output(self, session: ProcessSession, text: str, *, unless_exited: bool = False) -> None:
+        """Buffer a freshly-read chunk, then scan watch patterns and stream it live.
+        ``unless_exited`` drops the chunk once the session has exited (atomically with a kill)."""
+        if not unless_exited:
+            session.append_output(text)
+        elif not session.append_output_if_running(text):
+            return
         self._check_watch_patterns(session, text)
         self._emit_output(session, text)
 
@@ -1754,6 +1829,17 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     with suppress(OSError, ValueError):  # a stdin flush can hit EPIPE
                         stream.close()
         if session._pty is not None:
+            # A live ptyprocess reader sits in a blocking read holding the PTY file
+            # object's buffer lock, and that read only ends once every holder of
+            # the slave side is gone. A descendant that setsid()s past the kill
+            # keeps it open, so close() here would block forever (under _lock on
+            # the prune path). The reader closes the PTY itself via
+            # _finish_reader once its read ends. pywinpty reads don't block, so
+            # Windows closes here as before.
+            reader = session._reader_thread
+            if (not _IS_WINDOWS and reader is not None and reader.is_alive()
+                    and reader is not threading.current_thread()):
+                return
             # ptyprocess/pywinpty close() is idempotent (``closed`` flag) and
             # closes the master fd exactly once; it raises only if the child
             # ignores SIGKILL, which we don't want to surface on the finish path.
@@ -2474,6 +2560,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # these are the long-lived background processes a user may have forgotten about (#29177).
             if task_id and session_key and s.owner_task_id != task_id and s.session_key == session_key:
                 entry["session_scoped"] = True
+            if s.wsl_chain:
+                entry["wsl_chain"] = True
+                entry["wsl_note"] = _WSL_CHAIN_NOTE
             # Trigger metadata for goal-loop judges (a watcher may never exit).
             if s.watch_patterns and not s._watch_disabled:
                 entry.update(watch_patterns=list(s.watch_patterns), watch_hit=s._watch_hits > 0)
@@ -2503,8 +2592,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
             return any(not s.exited and predicate(s) for s in self._running.values())
 
     def has_active_processes(self, task_id: str) -> bool:
-        """Whether any process for ``task_id`` is still running."""
-        return self._any_running(lambda s: s.task_id == task_id)
+        """Whether any process for ``task_id`` is still running. Ownership is
+        ``owner_task_id`` (the raw spawning id) like the other task-scoped queries:
+        ``task_id`` on a session is the collapsed container key, shared across
+        turns and delegate children, so a container-key match alone would miss a
+        delegate child's own background work (#120546)."""
+        return self._any_running(lambda s: s.owner_task_id == task_id)
 
     def running_owned_by(self, owner_task_id: str) -> List[ProcessSession]:
         """Running processes whose RAW spawning owner is ``owner_task_id``."""

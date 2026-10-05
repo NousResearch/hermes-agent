@@ -1417,10 +1417,10 @@ class _LoopState:
     failed: bool = False
     codex_ack_continuations: int = 0
     length_continue_retries: int = 0
-    # Per-turn backstop for the refunding restarts (redirect / rebuilt-for-fallback).
-    # Unlike ``retry_count`` (rebound to 0 each iteration) this accumulates for the whole
-    # turn so a runaway interrupt/redirect that keeps re-arming a restart flag cannot
-    # refund the iteration budget forever and hold the turn lease indefinitely.
+    # Backstop for the refunding restarts (redirect / rebuilt-for-fallback). Unlike
+    # ``retry_count`` (rebound to 0 each iteration) this survives across iterations until a
+    # response arrives, so a runaway interrupt/redirect that keeps re-arming a restart flag
+    # cannot refund the iteration budget forever and hold the turn lease indefinitely.
     restart_count: int = 0
     # Separate accumulator for the rebuilt-for-fallback restart only: its ceiling is sized
     # off the fallback-chain depth, independent of `restart_count`'s `max_retries` ceiling
@@ -1746,6 +1746,50 @@ def run_conversation(
     return result
 
 
+_FAILED_TURN_ERROR_MAX_CHARS = 2000
+
+
+def _failed_turn_display_metadata(agent, result: dict) -> dict:
+    """The error text and ``error_surface`` a client needs to redraw the failed turn's error
+    card from the transcript, after the live ``message.complete`` frame is gone. Every
+    string is redacted with ``force=True``: the error came from a provider/tool, so a
+    secret echoed in it must not reach the durable store (the redaction e2e boundary)."""
+    from agent.error_surface import build_error_surface_from_result
+
+    try:
+        surface = build_error_surface_from_result(
+            result, provider=agent.provider or "", model=agent.model or ""
+        )
+    except Exception:
+        logger.debug("failed-turn error surface unavailable", exc_info=True)
+        surface = None
+    error = str(result.get("error") or "").strip()[:_FAILED_TURN_ERROR_MAX_CHARS]
+    metadata = {k: v for k, v in (("error", error), ("error_surface", surface)) if v}
+    return _redact_display_metadata(metadata)
+
+
+def _redact_display_metadata(metadata: dict) -> dict:
+    """Force-redact every string in a display_metadata payload (dicts and lists included).
+
+    display_metadata is persisted via ``SessionDB.append_message`` and re-delivered to
+    clients, so it sits downstream of the turn's own content redaction: an error string
+    that escaped a provider or tool would otherwise reach the 'store' and 'export' sinks
+    verbatim. ``force=True`` keeps the boundary closed even when ``security.redact_secrets``
+    is off, matching the compressor's persistence boundary."""
+    from agent.redact import redact_sensitive_text
+
+    def _redact(value):
+        if isinstance(value, str):
+            return redact_sensitive_text(value, force=True)
+        if isinstance(value, dict):
+            return {k: _redact(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_redact(v) for v in value]
+        return value
+
+    return {k: _redact(v) for k, v in metadata.items()}
+
+
 def _close_durable_failed_turn(agent, result: Any) -> None:
     """Append a Hermes-authored assistant boundary when a failed turn left ``user`` as the
     durable conversation tail (in place, on ``result["messages"]`` and in SessionDB).
@@ -1781,9 +1825,12 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
         # hedge over the whole list rather than under-report a possible side effect.
         start = result.get("current_turn_user_idx")
         turn_messages = messages[start:] if isinstance(start, int) and 0 <= start < len(messages) else messages
-        append_message(messages, {
+        boundary = {
             "role": "assistant", "content": failed_turn_notice(turn_messages), "display_kind": FAILED_TURN_DISPLAY_KIND,
-        })
+        }
+        if failure := _failed_turn_display_metadata(agent, result):
+            boundary["display_metadata"] = failure
+        append_message(messages, boundary)
         agent._flush_messages_to_session_db(messages)
     except Exception:
         logger.debug("failed-turn boundary not written", exc_info=True)

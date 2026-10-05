@@ -49,6 +49,8 @@ export type ChatMessage = {
    *  action footer so only the turn's final reply carries copy/refresh, and
    *  the live view matches rehydration (which merges the turn into one bubble). */
   interim?: boolean
+  /** The user stopped this reply before it finished; its text is partial. */
+  interrupted?: boolean
   /** Locally recovered output not yet represented by a durable completed reply. */
   recovered?: boolean
   /** Whether hydration reached a final assistant source row, rather than a tool round. */
@@ -219,6 +221,8 @@ export type GatewayEventPayload = {
   // message.complete — a transform_llm_output hook rewrote the final text after streaming;
   // it authoritatively replaces the current turn's streamed text even without a prefix match.
   response_transformed?: MessageCompletePayload['response_transformed']
+  // message.complete — `text` is a response this turn already delivered: it adds no text.
+  response_reused?: MessageCompletePayload['response_reused']
   persisted_turn?: PersistedTurn | null
   // message.complete — history-commit note the gateway surfaced instead of dropping.
   warning?: string

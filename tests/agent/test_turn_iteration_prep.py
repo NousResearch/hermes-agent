@@ -20,9 +20,10 @@ MAX_RETRIES = 3
 
 def _apply(agent, flag: str, restart_count: int, rebuilt_restart_count: int = 0):
     _retry = TurnRetryState()
-    setattr(_retry, flag, True)
+    if flag:
+        setattr(_retry, flag, True)
     return apply_retry_restarts(
-        agent, _retry=_retry, response=None, interrupted=False, messages=[],
+        agent, _retry=_retry, response=response, interrupted=False, messages=[],
         conversation_history=[], user_message="hi", api_kwargs={}, current_turn_user_idx=0,
         final_response=None, retry_count=0, max_retries=MAX_RETRIES, api_call_count=1,
         restart_count=restart_count, rebuilt_restart_count=rebuilt_restart_count or restart_count, length_continue_retries=0,
@@ -51,7 +52,7 @@ def test_single_restart_still_reissues_the_iteration(flag):
 
 
 @pytest.mark.parametrize("flag", RESTART_FLAGS)
-def test_restart_refunds_are_bounded_per_turn(flag):
+def test_back_to_back_restart_refunds_are_bounded(flag):
     """Re-arming the flag every iteration breaks after ``max_retries`` refunds instead of
     refunding forever (the turn ends, so the session turn lease is released)."""
     agent = _agent()
@@ -119,3 +120,23 @@ def test_interrupt_exit_reason_names_the_system_issuer(tool_interrupt_reason, ex
     """A watchdog abort must not be recorded as a user stop: the exit reason carries the issuer."""
     verdict = _interrupted_agent(tool_interrupt_reason)
     assert (verdict.action, verdict.interrupted, verdict._turn_exit_reason) == ("break", True, expected)
+
+
+@pytest.mark.parametrize("flag", RESTART_FLAGS)
+def test_response_between_restarts_resets_the_bound(flag):
+    """#128000: the user answering clarify cards / sending follow-ups while the model works
+    redirects once per request, with a response in between. The bound is for requests that
+    are cancelled over and over, so a response starts it over instead of the whole turn
+    sharing ``max_retries`` restarts."""
+    agent = _agent()
+    restart_count, actions = 0, []
+    for _ in range(3):  # three rounds of max_retries restarts, each followed by a response
+        for _ in range(MAX_RETRIES):
+            verdict = _apply(agent, flag, restart_count)
+            actions.append(verdict.action)
+            restart_count = verdict.restart_count
+        verdict = _apply(agent, None, restart_count, response=SimpleNamespace())
+        assert (verdict.action, verdict.restart_count) == ("fallthrough", 0)
+        restart_count = verdict.restart_count
+    assert actions == ["continue"] * (3 * MAX_RETRIES)
+    assert agent.steered == []

@@ -1,5 +1,10 @@
 import { JSON_RPC_INTERNAL_ERROR } from '@hermes/shared'
 
+import {
+  hasLivePreviewSurface,
+  requestPopoutPreviewAct,
+  requestPopoutPreviewRead
+} from '@/app/chat/right-rail/preview-popout-bridge'
 import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import {
   abortPreviewTyping,
@@ -15,6 +20,7 @@ import type { TourAction, TourStep } from '@/lib/tour'
 import { normalizeQuestions, setClarifyRequest } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import type { PreviewOwner } from '@/store/preview-ownership'
 import {
   receiveApprovalRequest,
   setSecretRequest,
@@ -25,7 +31,12 @@ import {
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
 import { $selectedStoredSessionId, $sessions, lineageAliases, sessionMatchesStoredId } from '@/store/session'
-import { $sessionStates, $sessionTiles } from '@/store/session-states'
+import {
+  $sessionStates,
+  $sessionTiles,
+  previewScopeForRuntime,
+  storedSessionIdForRuntimeId
+} from '@/store/session-states'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
 
@@ -47,6 +58,23 @@ const loadPreviewEngine = () => {
 }
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+
+/** Whose preview tabs a scoped agent request may see: the requesting
+ *  runtime's stored id plus the tabs that runtime opened before the id bound,
+ *  and the pins of the profile that runtime belongs to — never the viewed
+ *  profile's pins on another profile's behalf. An id that does not resolve
+ *  yet has no stored id — the runtime's own pending tabs — never the focused
+ *  session's tabs. Only an unscoped request (no id) falls through to the
+ *  focused session (undefined). */
+const previewOwnerFor = (sessionId: string): PreviewOwner | undefined =>
+  sessionId
+    ? {
+        profile: previewScopeForRuntime(sessionId),
+        runtimeId: sessionId,
+        sessionId: storedSessionIdForRuntimeId(sessionId)
+      }
+    : undefined
+
 const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
 
 /** Answer a string-valued request with a JSON-encoded result ('' = nothing / unavailable). */
@@ -477,11 +505,22 @@ const terminalRead: Handler = ({ request }) => {
   answerValue(request, readActiveTerminal({ count: num(request.params.count), start: num(request.params.start) }))
 }
 
-const previewRead: Handler = ({ request }) => {
+const previewRead: Handler = ({ request, sessionId }) => {
   // read_preview tool: the active preview tab's page text is async. Empty = nothing open.
-  void readActivePreview({ count: num(request.params.count), start: num(request.params.start) }).then(result =>
+  // The window that passes the session gate may be the chat window while the
+  // live webview lives in the popped-out Browser renderer — forward there
+  // first; a null (no pop-out answered) falls back to the legacy local read.
+  // A local read sees only the tabs the requesting session can see.
+  const opts = { count: num(request.params.count), start: num(request.params.start) }
+  const owner = previewOwnerFor(sessionId)
+
+  void (async () => {
+    const result = hasLivePreviewSurface(owner)
+      ? await readActivePreview(opts, owner)
+      : ((await requestPopoutPreviewRead(opts, owner)) ?? (await readActivePreview(opts, owner)))
+
     answerValue(request, result)
-  )
+  })()
 }
 
 const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
@@ -501,6 +540,10 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
     return
   }
 
+  // The agent drives ITS session's page: with a tile focused, the primary's
+  // agent must not reach into the tile's tabs (#73890).
+  const owner = previewOwnerFor(sessionId)
+
   // The keystroke loop has to be able to stop when this request is withdrawn
   // (tool timeout or turn interrupt). The local interrupted flag can flip
   // before request.cancel arrives; poll it so Stop cuts the loop off too.
@@ -514,35 +557,50 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
       }, 50)
     : undefined
 
-  void loadPreviewEngine()
-    .then(run =>
-      run(
-        {
-          allowShortcut: p.allow_shortcut === true,
-          amount: p.amount as never,
-          key: p.key as never,
-          kind: (str(p.action) || '') as never,
-          max: p.max as never,
-          ref: p.ref as never,
-          selector: p.selector as never,
-          submit: p.submit as never,
-          text: p.text as never,
-          to: p.to as PreviewActAction['to']
-        },
-        signal
-      )
-    )
-    .then(
-      result => answerValue(request, result),
-      error => answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
-    )
-    .finally(() => {
+  const action = {
+    allowShortcut: p.allow_shortcut === true,
+    amount: p.amount as never,
+    key: p.key as never,
+    kind: (str(p.action) || '') as never,
+    max: p.max as never,
+    ref: p.ref as never,
+    selector: p.selector as never,
+    submit: p.submit as never,
+    text: p.text as never,
+    to: p.to as PreviewActAction['to']
+  }
+
+  void (async () => {
+    try {
+      // After pop-out the live webview lives in the Browser window; this
+      // window still owns the session gate, so forward the action there and
+      // answer with the pop-out's result. No pop-out answering (null) falls
+      // through to the local engine, which keeps the legacy NOTHING_OPEN
+      // error for a genuinely closed pane.
+      if (!hasLivePreviewSurface(owner)) {
+        const remote = await requestPopoutPreviewAct(action, owner)
+
+        if (remote) {
+          answerValue(request, remote)
+
+          return
+        }
+      }
+
+      const run = await loadPreviewEngine()
+      const result = await run(action, signal, owner)
+
+      answerValue(request, result)
+    } catch (error) {
+      answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
+    } finally {
       if (watch !== undefined) {
         clearInterval(watch)
       }
 
       releasePreviewTyping(request.id, signal)
-    })
+    }
+  })()
 }
 
 const windowRead: Handler = ({ request }) => {
@@ -557,7 +615,7 @@ const windowRead: Handler = ({ request }) => {
   )
 }
 
-const tour: Handler = ({ isActiveSession, request }) => {
+const tour: Handler = ({ isActiveSession, request, sessionId }) => {
   // tour tool: one guided-tour action via driver.js, app DOM or preview guest
   // page. Active session only, same window-ownership rule as preview.act
   // (WINDOW_OWNED_REQUESTS).
@@ -589,7 +647,8 @@ const tour: Handler = ({ isActiveSession, request }) => {
           text: p.text as never,
           title: p.title as never
         },
-        p.surface === 'preview' ? 'preview' : 'app'
+        p.surface === 'preview' ? 'preview' : 'app',
+        previewOwnerFor(sessionId)
       )
     )
     .then(

@@ -110,65 +110,6 @@ export interface Translations {
     stock: Record<string, string[]>
     custom: (label: string) => string[]
   }
-  catalog: {
-    add: string
-    added: string
-    discover: string
-    featured: string
-    explorePlugins: string
-    exploreSkills: string
-    mostStarred: string
-    newest: string
-    recentlyUpdated: string
-    alphabetical: string
-    sortBy: string
-    seeAll: string
-    related: string
-    tags: string
-    screenshots: string
-    listView: string
-    cardView: string
-    installTitle: (name: string) => string
-    installDescription: string
-    installTo: string
-    thisComputer: string
-    installing: string
-    installComplete: (name: string) => string
-    destinationChanged: string
-    installed: string
-    searchSkills: string
-    searchPlugins: string
-    allSources: string
-    allCategories: string
-    about: string
-    author: string
-    source: string
-    category: string
-    version: string
-    platforms: string
-    requires: string
-    tools: string
-    hooks: string
-    middleware: string
-    commands: string
-    license: string
-    addedDate: string
-    updatedDate: string
-    repository: string
-    documentation: string
-    noResults: string
-    tryAnother: string
-    clearFilters: string
-    filters: string
-    loadFailed: string
-    retry: string
-    more: string
-    pinned: string
-    snapshotHint: string
-    installHint: string
-    results: (count: number) => string
-    back: string
-  }
   connectors: {
     title: string
     connect: string
@@ -1203,6 +1144,9 @@ export interface Translations {
       toolsetsWipeConfirm: string
       keepAwakeTitle: string
       keepAwakeDesc: string
+      keepAwakeOff: string
+      keepAwakeWhileWorking: string
+      keepAwakeAlways: string
       disableF12Title: string
       disableF12Desc: string
       alwaysExternalLinksTitle: string
@@ -1560,6 +1504,8 @@ export interface Translations {
       defaultsLabel: string
       reasoning: string
       reasoningOff: string
+      speed: string
+      speedStandard: string
       defaultsFailed: string
       loadFailed: string
       restartRequired: string
@@ -2082,6 +2028,17 @@ export interface Translations {
     }
   }
 
+  skillDeepLink: {
+    installTitle: (name: string) => string
+    installDescription: string
+    installTo: string
+    thisComputer: string
+    installing: string
+    installComplete: (name: string) => string
+    destinationChanged: string
+    installed: string
+    source: string
+  }
   skills: {
     tabSkills: string
     tabToolsets: string
@@ -2170,6 +2127,7 @@ export interface Translations {
         no_interactive_session: string
         version_too_old: string
         missing_app: string
+        unsupported_gpu: string
         unknown: string
       }
       catalogTitle: string
@@ -2542,6 +2500,9 @@ export interface Translations {
     replaceValue: string
     openDocs: string
     clearField: (key: string) => string
+    addListEntry: string
+    removeListEntry: string
+    listEntryPlaceholder: string
     enableAria: (name: string) => string
     disableAria: (name: string) => string
     platformEnabled: (name: string) => string
@@ -3097,6 +3058,7 @@ export interface Translations {
       reveal: string
       copyPath: string
       removeFromSidebar: string
+      createdInPreviousContext: string
       createFailed: string
       staleBackend: string
       deleteConfirm: string
@@ -3279,6 +3241,9 @@ export interface Translations {
     queueStuckBody: string
     queueDroppedTitle: string
     queueDroppedBody: string
+    terminalSelectionMissingTitle: string
+    terminalSelectionMissingBody: string
+    queuedTerminalSelectionExpiredBody: string
     previewUnavailable: string
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string
@@ -3478,6 +3443,7 @@ export interface Translations {
       scopeUncommitted: string
       scopeBranch: string
       scopeLastTurn: string
+      readOnlyScope: string
       commit: string
       commitAndPush: string
       commitPlaceholder: (shortcut: string) => string
@@ -3913,6 +3879,8 @@ export interface Translations {
       options: string
       thinking: string
       fast: string
+      ultrafast: string
+      useStandardSpeed: string
       effort: string
       minimal: string
       low: string
@@ -4105,10 +4073,14 @@ export interface Translations {
 
   preview: {
     tab: string
+    pin: string
+    unpin: string
     closePane: string
     loading: string
     unavailable: string
     missingTarget: string
+    missingTitle: string
+    missingBody: (label: string) => string
     opening: string
     hide: string
     openPreview: string
@@ -4134,6 +4106,7 @@ export interface Translations {
     editing: string
     unsavedChanges: string
     saveFailed: (message: string) => string
+    saveScopeChanged: string
     diskChangedTitle: string
     diskChangedBody: string
     overwrite: string
@@ -4313,6 +4286,7 @@ export interface Translations {
       branchNewChat: string
       react: string
       dismissError: string
+      responseStopped: string
       /** Layer titles for the structured error card (agent/error_surface.py).
        *  `generic` is the fallback when the backend sent no descriptor. */
       errorLayers: {
@@ -4433,6 +4407,8 @@ export interface Translations {
       skipped: string
       noAnswer: string
       confirmAndContinueLabel: string
+      singleSelectHint: string
+      multiSelectHint: string
       questionProgress: (answered: number, total: number) => string
       notDelivered: string
     }
@@ -4590,6 +4566,8 @@ export interface Translations {
     staleSessionBody: string
     providerCredentialRequired: string
     emptySlashCommand: string
+    slashCommandIgnoredTitle: string
+    slashCommandIgnoredBody: string
     desktopCommands: string
     skillCommandsAvailable: (count: number) => string
     warningLine: (message: string) => string
@@ -4650,6 +4628,9 @@ export interface Translations {
     openImage: string
     downloadImage: string
     savingImage: string
+    zoomIn: string
+    zoomOut: string
+    resetZoom: string
     imagePreviewFailed: string
     imageAttach: string
     imageWriteFailed: string

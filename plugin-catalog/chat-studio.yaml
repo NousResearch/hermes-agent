@@ -1,0 +1,19 @@
+name: chat-studio
+repo: https://github.com/gchablemeneses-web/hermes-chat-studio
+sha: 8b97b6c99a1f34abc6a8c5f461c894a8bb3f95d2
+description: "Offline conversation customization with one-click presets and plugin-owned settings. Disclosure — enabled by default; injects a stylesheet that restyles the Desktop chat transcript (width, fonts, spacing, optional colours) keyed on app data-slot selectors, so a Desktop update can break the styling; settings stay in plugin storage, no network."
+maintainer: gchablemeneses-web
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+version: "1.1.0"
+screenshots:
+  - https://raw.githubusercontent.com/gchablemeneses-web/hermes-chat-studio/8b97b6c99a1f34abc6a8c5f461c894a8bb3f95d2/docs/presets.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+

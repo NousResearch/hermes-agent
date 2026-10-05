@@ -39,7 +39,6 @@ Lanes:
 * ``rust``        — ``cargo test`` for the Tauri bootstrap installer. ``.rs``
   lives under ``apps/``, so without this lane a Rust change matched ``frontend``
   and only the TypeScript matrix ran.
-* ``mcp_catalog`` — bundled MCP catalog / installer review.
 
 ``docker``, ``nix`` and the E2E lanes take most of the larger-runner minutes.
 An ordinary product change does not start them on a pull request. Every push
@@ -114,28 +113,13 @@ _PY_RELEVANT_CONTRACT_FILES = {
     "apps/desktop/src/lib/desktop-slash-registry.json",
     # tests/tui_gateway/test_show_reasoning_display_gate.py (card-tool names vs the gateway lifecycle set)
     "apps/desktop/src/lib/tool-render-class.ts",
+    # tests/website/test_catalog_rules_mirror.py (docs page mirrors the canonical rules)
+    "plugin-catalog/README.md",
 }
-
-# CI-sensitive files: eslint config, workflow files, composite actions.
-# Changes here can influence what code the autofix job executes and pushes to
-# main, so they require explicit maintainer review (ci-reviewed label).
-#
-# package.json is deliberately NOT listed here: npm scripts only execute on the
-# unprivileged generate-patch runner (contents: read), never on the privileged
-# apply-patch job. The two-job split means a malicious package.json script
-# can't get push access — it runs on an ephemeral runner with zero write perms.
-_CI_REVIEW_FILES = {
-    ".prettierrc",
-}
-_CI_REVIEW_PATHS = (".github/workflows/", ".github/actions/")
 
 # Supply-chain scan: files that can execute code at install/import time.
 _SCAN_EXTS = (".py", ".pth")
 _SCAN_FILES = {"setup.cfg", "pyproject.toml"}
-
-# MCP catalog files that require explicit security review.
-_MCP_CATALOG_PATHS = ("optional-mcps/",)
-_MCP_CATALOG_FILES = {"hermes_cli/mcp_catalog.py"}
 
 # Bootstrap installer: the POSIX shell installer, the dev-checkout wrapper
 # that carries the same pin fragment, and the Tauri app's non-Rust sources
@@ -225,6 +209,9 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "apps/shared/src/",
         "apps/desktop/src/store/session",
         "apps/desktop/src/store/transcript",
+        # fleet-condensed-default.spec.ts: the profile rail's doors per gateway.
+        "apps/desktop/src/app/chat/sidebar/profile-switcher",
+        "apps/desktop/src/app/chat/sidebar/fleet-",
     ),
     "e2e_desktop_update": (
         *_DESKTOP_E2E_SHARED,
@@ -291,10 +278,6 @@ def _is_scan(p: str) -> bool:
     return p.endswith(_SCAN_EXTS) or p in _SCAN_FILES
 
 
-def _is_mcp_catalog(p: str) -> bool:
-    return p.startswith(_MCP_CATALOG_PATHS) or p in _MCP_CATALOG_FILES
-
-
 def _is_desktop_updater(p: str) -> bool:
     return (
         p.startswith(_DESKTOP_UPDATER_PATHS)
@@ -309,19 +292,6 @@ def _is_rust(p: str) -> bool:
         or p.startswith(_RUST_PATHS)
         or os.path.basename(p) in _RUST_FILENAMES
     )
-
-
-def _is_ci_review(p: str) -> bool:
-    if p in _CI_REVIEW_FILES or p.startswith(_CI_REVIEW_PATHS):
-        return True
-    # Any eslint config file at any path — eslint configs can define custom
-    # fix functions that execute arbitrary code, so they all require review.
-    return os.path.basename(p).startswith("eslint.config.")
-
-
-def ci_review_files(files: list[str]) -> list[str]:
-    """Return the CI-sensitive paths that need maintainer review."""
-    return sorted({f.strip() for f in files if f.strip() and _is_ci_review(f.strip())})
 
 
 def _slow_lanes(files: list[str]) -> dict[str, bool]:
@@ -372,8 +342,6 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
         ),
         "desktop_updater": any(_is_desktop_updater(f) for f in files),
         "rust": any(_is_rust(f) for f in files),
-        "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
-        "ci_review": any(_is_ci_review(f) for f in files),
         **{lane: run_e2e or on for lane, on in _slow_lanes(files).items()},
     }
     if not files or any(f.startswith(".github/") for f in files):
@@ -389,10 +357,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
         ret["bootstrap"] = True
         ret["desktop_updater"] = True
         ret["rust"] = True
-        ret["ci_review"] = True
         ret.update(dict.fromkeys(_slow_lanes([]), True))
-
-        # explicitly skip mcp catalog here. it's not needed unless those files are modified.
     return ret
 
 
@@ -437,9 +402,8 @@ def pull_request_changed_files() -> list[str]:
 
     ``detect-changes`` calls ``repos/.../compare/base...head`` with raw SHAs.
     A fork force-push can 404 for ~30s until GitHub attaches the new head SHA
-    to the base repo, so the action fails open with an empty file list. That
-    forces ``ci_review=true`` and blocks the PR on a ``ci-reviewed`` label
-    even when no CI-sensitive file changed.
+    to the base repo, so the action fails open with an empty file list and
+    runs every lane even when the change is narrow.
 
     The pull-request files endpoint already knows the PR's files (it is how
     this action used to classify), so use it as a fallback on pull_request
@@ -485,10 +449,7 @@ def main() -> int:
             )
             files = recovered
     lanes = classify(files, run_e2e=RUN_E2E_LABEL in pull_request_labels())
-    out = "\n".join([
-        *(f"{key}={str(value).lower()}" for key, value in lanes.items()),
-        f"ci_review_files={json.dumps(ci_review_files(files))}",
-    ])
+    out = "\n".join(f"{key}={str(value).lower()}" for key, value in lanes.items())
     if dest := os.environ.get("GITHUB_OUTPUT"):
         with open(dest, "a", encoding="utf-8") as fh:
             fh.write(out + "\n")

@@ -6,7 +6,7 @@ import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { recordPreviewArtifact, reofferPreviewArtifact } from '@/store/preview-status'
 import { $sessionStates, storedSessionIdForRuntimeId } from '@/store/session-states'
-import { pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
+import { isTerminalSubagentCompletion, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
 import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
@@ -118,8 +118,10 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
       updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
 
       // terminal/process tool calls are the only things that spawn or reap
-      // background processes — sync the composer status stack right after.
-      if (!sessionInterrupted(sessionId) && (payload?.name === 'terminal' || payload?.name === 'process')) {
+      // background processes — sync the composer status stack right after,
+      // even on an interrupted turn (idempotent re-sync; the 5s poll may be
+      // unarmed when no running row is on screen yet, #81114).
+      if (payload?.name === 'terminal' || payload?.name === 'process') {
         void refreshBackgroundProcesses(sessionId)
       }
     }
@@ -156,7 +158,16 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (SUBAGENT_EVENT_TYPES.has(event.type)) {
-    if (sessionId && payload && !sessionInterrupted(sessionId)) {
+    // A Stop interrupts the parent TURN, not the children: a delegation can
+    // still be finishing in the background, and its `subagent.complete` is the
+    // only thing that terminalizes the row. Dropping it leaves a permanently
+    // 'running' spinner (#75505). Terminal completions are accepted past the
+    // interrupt; only live progress keeps the guard, so a stopped turn's
+    // late mid-flight frames still can't repaint its stream. upsertSubagent's
+    // retired-id and terminal-status guards make a stale completion a no-op.
+    const acceptWhileInterrupted = isTerminalSubagentCompletion(event.type, payload)
+
+    if (sessionId && payload && (!sessionInterrupted(sessionId) || acceptWhileInterrupted)) {
       if (!nativeSubagentSessionsRef.current.has(sessionId)) {
         pruneDelegateFallbackSubagents(sessionId)
       }

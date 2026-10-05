@@ -1,6 +1,6 @@
 name: limbic
 repo: https://github.com/dyiapanis/limbic
-sha: 82d18f1707128416c2504248fef1b218adac4652
+sha: eeb432a9e420e1fb63f6926a2836bc0a5b083a71
 description: >-
   Self-organising memory provider (MemoryProvider ABC): local SQLite (WAL) with
   sqlite-vec KNN + FTS5 hybrid recall, adaptive trust scoring, activation

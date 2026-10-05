@@ -11,6 +11,7 @@ import threading
 
 import pytest
 
+from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
 from agent.prompt_builder import STEER_MARKER_OPEN, format_steer_marker
 from run_agent import AIAgent
 from tools.registry import registry
@@ -388,7 +389,7 @@ class TestEmptyHiddenAssistantRehealRegression:
         assert placeholder["role"] == "assistant"
         assert placeholder["content"] == ""
         assert placeholder["display_kind"] == "hidden"
-        assert placeholder["api_content"] == "[response interrupted]"
+        assert placeholder["api_content"] == _INTERRUPTED_PLACEHOLDER
         # The user correction keeps clean text in content and the interruption
         # context only in its own api_content sidecar.
         assert correction["role"] == "user"
@@ -418,7 +419,7 @@ class TestEmptyHiddenAssistantRehealRegression:
         ]
         healed = repair_empty_non_final_messages(rows)
         assistant = next(m for m in healed if m.get("role") == "assistant")
-        assert assistant["content"] == "[response interrupted]"
+        assert assistant["content"] == _INTERRUPTED_PLACEHOLDER
         # The durable list is not mutated (wire-copy-only design).
         assert rows[1]["content"] == ""
 
@@ -861,7 +862,7 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
         wire_assistants = [m for m in wire if m.get("role") == "assistant"]
         legacy = wire_assistants[0]
         # Substituted on the wire by the projection (not the sanitizer):
-        assert legacy["content"] == "[response interrupted]"
+        assert legacy["content"] == _INTERRUPTED_PLACEHOLDER
         assert "display_kind" not in legacy
         # #81841: never the interrupt scaffold.
         assert "[This response was interrupted" not in legacy["content"]

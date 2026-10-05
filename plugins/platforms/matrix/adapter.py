@@ -1355,8 +1355,7 @@ class MatrixAdapter(BasePlatformAdapter):
         client.add_event_handler(EventType.REACTION, self._on_reaction, wait_sync=True)
         client.add_event_handler(IntEvt.INVITE, self._on_invite, wait_sync=True)
         self._startup_ts = time.time()
-        self._flush_grace_backlog()  # never discard a previous connect's unreported drops
-        self._grace_skips = _NO_GRACE_SKIPS  # this connect's summary counts only its own drops
+        self._grace_skips = _NO_GRACE_SKIPS  # disconnect() above flushed any open window; count only this connect
         self._reset_clock_skew_detector()  # a reconnect after an NTP fix starts clean
         self._closing = False
         await self._connect_initial_sync(client)
@@ -2051,7 +2050,7 @@ class MatrixAdapter(BasePlatformAdapter):
             self._grace_skips = (skipped + 1, max(oldest, age), min(newest, age))
             self._note_late_grace_drop(event_ts)
             return
-        self._flush_grace_backlog()  # mautrix decrypts E2EE backlog in background tasks; now it has drained
+        self._flush_grace_backlog()  # first live message closes the E2EE backlog window (a slow decrypt may undercount)
         content = getattr(event, "content", None)
         if content is None:
             return

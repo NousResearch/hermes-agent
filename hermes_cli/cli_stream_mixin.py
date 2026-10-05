@@ -19,6 +19,7 @@ from rich.markup import escape as _escape
 
 from agent.i18n import t
 from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS
+from hermes_cli.thinking_colors import render_thinking_text, split_safe_stream
 
 # Model-generated reasoning tags: suppressed during streaming (they'd display as raw XML;
 # the agent strips them from final_response too) unless show_reasoning routes them to the box.
@@ -36,6 +37,10 @@ _SLOW_COMMAND_STATUS_EXACT = {
     "/reload-mcp": "cli.stream.busy_reload_mcp",
     "/reload-skills": "cli.stream.busy_reload_skills",
     "/reload_skills": "cli.stream.busy_reload_skills"}
+
+# Longest fragment the live reasoning box will hold back waiting for the rest of a
+# token to arrive (split_safe_stream); past this it flushes at a space instead.
+_MAX_HELD_TOKEN = 400
 
 
 def _thinking_prefix() -> str:
@@ -135,14 +140,15 @@ class CLIStreamMixin:
         if not preview_text:
             return
         if self.verbose:
-            _cprint(f"{_DIM}{_thinking_prefix()}{preview_text}{_RST}")
+            _cprint(f"{_DIM}{_thinking_prefix()}{_RST}{render_thinking_text(preview_text)}")
             return
         lines = preview_text.splitlines()
         if len(lines) > 5:
-            preview = "\n".join(lines[:5]) + f"\n  {t('cli.stream.thinking_more_lines', count=len(lines) - 5)}"
+            body = "\n".join(lines[:5])
+            more = f"\n  {t('cli.stream.thinking_more_lines', count=len(lines) - 5)}"
         else:
-            preview = preview_text
-        _cprint(f"{_DIM}{_thinking_prefix()}{preview}{_RST}")
+            body, more = preview_text, ""
+        _cprint(f"{_DIM}{_thinking_prefix()}{_RST}{render_thinking_text(body)}{_DIM}{more}{_RST}")
 
     def _flush_reasoning_preview(self, *, force: bool = False) -> None:
         """Flush buffered reasoning text at natural boundaries.
@@ -264,13 +270,24 @@ class CLIStreamMixin:
 
         self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
         # Emit complete lines; force-flush long partial lines so reasoning is visible in
-        # real-time even without newlines.
+        # real-time even without newlines. A force-flush cuts before the oldest
+        # still-arriving token, so a token that completes after the cut is painted
+        # exactly once instead of leaving its first half in the prose colour.
         while "\n" in self._reasoning_buf:
             line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
-            _cprint(f"{_DIM}{line}{_RST}")
+            _cprint(render_thinking_text(line))
         if len(self._reasoning_buf) > 80:
-            _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
-            self._reasoning_buf = ""
+            ready, self._reasoning_buf = split_safe_stream(self._reasoning_buf)
+            if not ready and len(self._reasoning_buf) > _MAX_HELD_TOKEN:
+                # Nothing token-shaped to cut on for this long (one unbroken word):
+                # stop holding back rather than leave the box silent.
+                cut = self._reasoning_buf.rfind(" ", _MAX_HELD_TOKEN // 2)
+                ready, self._reasoning_buf = (
+                    (self._reasoning_buf[:cut], self._reasoning_buf[cut:]) if cut != -1
+                    else (self._reasoning_buf, "")
+                )
+            if ready:
+                _cprint(render_thinking_text(ready))
 
     def _agent_status_print(self, *args, **kwargs) -> None:
         """``agent._print_fn`` for the interactive CLI: agent status lines (subagent completion ``✓ [set n · i/N]``,
@@ -298,7 +315,7 @@ class CLIStreamMixin:
             return
         buf = getattr(self, "_reasoning_buf", "")
         if buf:
-            _cprint(f"{_DIM}{buf}{_RST}")
+            _cprint(render_thinking_text(buf))
             self._reasoning_buf = ""
         w = self._scrollback_box_width()
         _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")

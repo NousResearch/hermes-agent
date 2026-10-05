@@ -117,3 +117,26 @@ test('an old manual result survives the freshness window but an old ordinary one
   assert.equal(result.manual, true)
   assert.equal(readAndConsumeHandoffResult(home), null, 'but only once')
 })
+
+test('retryable defaults to true for older scripts that omit the field', () => {
+  const home = tempHome()
+  write(home, { ok: false, exit_code: 1, message: 'x', branch: 'main', finished_at: Math.floor(Date.now() / 1000) })
+
+  const result = readAndConsumeHandoffResult(home)
+
+  assert.ok(result)
+  assert.equal(result.retryable, true)
+})
+
+test('propagates retryable=false for deterministic failures (#64577)', () => {
+  const home = tempHome()
+  write(home, {
+    ok: false, exit_code: 1, manual: false, retryable: false,
+    message: 'Could not stash local changes', branch: 'main', finished_at: Math.floor(Date.now() / 1000),
+  })
+
+  const result = readAndConsumeHandoffResult(home)
+
+  assert.ok(result)
+  assert.equal(result.retryable, false)
+})

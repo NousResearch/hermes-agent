@@ -3126,6 +3126,18 @@ async function waitForUpdateToFinish() {
       rememberLog(`[updates] detached update FAILED (exit ${result.exitCode}): ${result.message}`)
       const handoffLogPath = path.join(HERMES_HOME, 'logs', 'desktop-update-handoff.log')
 
+      // #64577 (Cause 4): a deterministic failure (stash/pull conflict,
+      // un-mergeable local commits, parked branch, bricked venv) fails
+      // identically on every retry, and each retry re-runs the full
+      // pre-update backup — minutes of work for a guaranteed failure. Say
+      // so, and drop the Retry button; the log button stays.
+      const retryable: boolean = result.retryable !== false
+      const detail: string = retryable
+        ? "You're still on the previous version and can keep using it. Try the update again, or open the update log to report the problem.\n\n" +
+          `Details: ${result.message}`
+        : "You're still on the previous version and can keep using it. This failure is deterministic — retrying will not help. Resolve the local state it names (see the update log), then update again.\n\n" +
+          `Details: ${result.message}`
+
       // Async so boot is not blocked behind the dialog; the response handlers
       // reuse the menu's open-updates path (queued until the renderer is ready)
       // and the same reveal primitive as 'hermes:logs:reveal'.
@@ -3134,18 +3146,16 @@ async function waitForUpdateToFinish() {
           type: 'error',
           title: 'Hermes update',
           message: "Hermes couldn't finish updating",
-          detail:
-            "You're still on the previous version and can keep using it. Try the update again, or open the update log to report the problem.\n\n" +
-            `Details: ${result.message}`,
-          buttons: ['Try again', 'Open log', 'Close'],
+          detail,
+          buttons: retryable ? ['Try again', 'Open log', 'Close'] : ['Open log', 'Close'],
           defaultId: 0,
-          cancelId: 2,
+          cancelId: retryable ? 2 : 1,
           noLink: true
         })
         .then(({ response }) => {
-          if (response === 0) {
+          if (retryable && response === 0) {
             sendOpenUpdatesRequested()
-          } else if (response === 1) {
+          } else if (response === (retryable ? 1 : 0)) {
             shell.showItemInFolder(handoffLogPath)
           }
         })

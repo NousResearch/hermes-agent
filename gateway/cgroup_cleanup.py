@@ -11,11 +11,14 @@ cgroup-wide kill while per-PID signal delivery still works.
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import re
 import signal
 import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def _own_cgroup_path() -> str | None:
@@ -136,6 +139,10 @@ def reap_foreground_scopes() -> bool:
     try:
         from tools.environments.local import sweep_dead_foreground_scopes
     except Exception:
+        logger.exception(
+            "Optional ExecStopPost foreground scope sweep import failed; "
+            "the completed cgroup reap remains unaffected"
+        )
         return False
     return sweep_dead_foreground_scopes(no_block=True) > 0
 

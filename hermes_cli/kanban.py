@@ -573,9 +573,30 @@ def _cmd_show(args: argparse.Namespace) -> int:
 def _cmd_assign(args: argparse.Namespace) -> int:
     profile = _none_profile(args.profile)
     with kbc.connect_closing() as conn:
-        ok = kb.assign_task(conn, args.task_id, profile)
+        # Routing guard: a card editing a profile's own instruction surface never
+        # routes to that profile. Apply before assign so the guard can rewrite
+        # the target profile if needed.
+        effective_profile = profile
+        decision = None
+        if effective_profile:
+            task = kb.get_task(conn, args.task_id)
+            if task:
+                from hermes_cli import kanban_routing_guard as rg
+                decision = rg.guard_assignee(
+                    effective_profile, task.title or "", task.body or "",
+                )
+                if decision.rewritten:
+                    effective_profile = decision.assignee
+                    print(f"Routing guard fired: {decision.original_assignee} -> {decision.assignee} ({decision.lane_source})")
+        ok = kb.assign_task(conn, args.task_id, effective_profile)
+        if ok and decision is not None and decision.rewritten:
+            try:
+                from hermes_cli import kanban_routing_guard as rg
+                rg.record_guard_decision(conn, args.task_id, decision, author="cli")
+            except Exception:
+                pass  # audit failure must never block the assign itself
     return _ok_or_err(ok, f"no such task: {args.task_id}",
-                      f"Assigned {args.task_id} to {profile or '(unassigned)'}")
+                      f"Assigned {args.task_id} to {effective_profile or '(unassigned)'}")
 
 
 def _cmd_set_model(args: argparse.Namespace) -> int:

@@ -346,6 +346,21 @@ export const arChrome = {
     windowControls: 'تحكم النافذة',
     paneControls: 'تحكم اللوحات',
     appControls: 'تحكم التطبيق',
+    routeTitles: {
+      chat: 'الدردشة',
+      'session-import': 'استيراد جلسة',
+      settings: 'الإعدادات',
+      'command-center': 'مركز الأوامر',
+      capabilities: 'القدرات',
+      messaging: 'الرسائل',
+      webhooks: 'خطافات الويب',
+      artifacts: 'القطع الأثرية',
+      cron: 'الوظائف المجدولة',
+      profiles: 'الملفات الشخصية',
+      agents: 'الوكلاء',
+      starmap: 'خريطة النجوم',
+      extension: 'إضافة'
+    },
     modelMenu: {
       search: 'البحث عن نموذج...',
       noModels: 'لا توجد نماذج',

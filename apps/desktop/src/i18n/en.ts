@@ -4611,6 +4611,22 @@ export const en: Translations = {
     windowControls: 'Window controls',
     paneControls: 'Pane controls',
     appControls: 'App controls',
+    routeTitles: {
+      chat: 'Chat',
+      'session-import': 'Import session',
+      settings: 'Settings',
+      'command-center': 'Command center',
+      capabilities: 'Capabilities',
+      messaging: 'Messaging',
+      webhooks: 'Webhooks',
+      artifacts: 'Artifacts',
+      cron: 'Scheduled jobs',
+      profiles: 'Profiles',
+      agents: 'Agents',
+      starmap: 'Starmap',
+      extension: 'Extension'
+    },
+
     modelMenu: {
       search: 'Search models',
       noModels: 'No models found',

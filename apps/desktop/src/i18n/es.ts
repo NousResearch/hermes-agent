@@ -5041,6 +5041,22 @@ export const esOverrides = {
     windowControls: 'Controles de ventana',
     paneControls: 'Controles de panel',
     appControls: 'Controles de app',
+    routeTitles: {
+      chat: 'Chat',
+      'session-import': 'Importar sesión',
+      settings: 'Configuración',
+      'command-center': 'Centro de comandos',
+      capabilities: 'Skills',
+      messaging: 'Mensajería',
+      webhooks: 'Webhooks',
+      artifacts: 'Artefactos',
+      cron: 'Tareas programadas',
+      profiles: 'Perfiles',
+      agents: 'Agentes',
+      starmap: 'Grafo de memoria',
+      extension: 'Extensión'
+    },
+
     modelMenu: {
       search: 'Buscar modelos',
       noModels: 'No se encontraron modelos',

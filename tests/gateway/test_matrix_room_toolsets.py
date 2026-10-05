@@ -55,8 +55,12 @@ class TestMatrixAdapterRoomToolsets:
         assert ma.toolsets_for_source(_Src(VOICE_ROOM)) == SLIM
 
     def test_thread_parent_inherits_override(self):
+        # Real Matrix sources carry (room, None) or (room, room): build_source sets
+        # parent_chat_id=room_id for threads, so both lookup keys hold the room id.
+        # The parent step mirrors resolve_channel_prompt and activates if the thread
+        # model ever keys (thread, room) apart, as Discord does today.
         ma = _make_adapter({"room_toolsets": {VOICE_ROOM: SLIM}})
-        assert ma.toolsets_for_source(_Src("$thread", parent_chat_id=VOICE_ROOM)) == SLIM
+        assert ma.toolsets_for_source(_Src(VOICE_ROOM, parent_chat_id=VOICE_ROOM)) == SLIM
 
     def test_unlisted_room_returns_none(self):
         ma = _make_adapter({"room_toolsets": {VOICE_ROOM: SLIM}})

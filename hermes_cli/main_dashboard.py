@@ -30,6 +30,7 @@ def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
     spared, never guessed. ``--stop`` passes its own home; the post-update cleanup passes every
     home the update owns (the install root and its profiles), so another install's backend on
     the same machine is never a target (#113978) while a sibling profile's is refreshed.
+    Only ``None`` means "no filter": an empty collection of homes matches nothing.
     """
     from hermes_cli.dashboard_procs import (
         _caller_ancestor_pids,
@@ -42,7 +43,7 @@ def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
     # killing it takes down the invoking terminal.
     ancestors = _caller_ancestor_pids()
     pids = [pid for pid in pids if not _is_caller_wrapper_shell(pid, ancestors)]
-    return _pids_owned_by_hermes_home(pids, scope_home) if scope_home else pids
+    return pids if scope_home is None else _pids_owned_by_hermes_home(pids, scope_home)
 
 
 def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:

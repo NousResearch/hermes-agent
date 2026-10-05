@@ -44,6 +44,7 @@ _BARE_MODULE_SCOPE: Dict[str, str] = {}  # bare module name -> owning scope_key
 _LOAD_TIMEOUT_SECS = 10.0
 _MAX_LOAD_TIMEOUT_SECS = 600.0
 _MAX_ABANDONED_LOADERS = 8
+_LOADER_THREAD_PREFIX = "plugin-load:"  # names each deadline-bounded load worker; the re-arm guard matches it
 _ABANDONED_LOADERS: List[threading.Thread] = []
 _ABANDONED_LOADERS_LOCK = threading.Lock()
 # PluginContexts of the outermost deadline-bounded load; set only inside its worker.
@@ -135,7 +136,7 @@ def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[
             _IN_PLUGIN_LOAD.reset(token)
 
     worker = threading.Thread(
-        target=contextvars.copy_context().run, args=(_worker,), name=f"plugin-load:{plugin_key}", daemon=True,
+        target=contextvars.copy_context().run, args=(_worker,), name=f"{_LOADER_THREAD_PREFIX}{plugin_key}", daemon=True,
     )
     worker.start()
     worker.join(timeout)
@@ -282,7 +283,7 @@ class PluginLoaderMixin:
                     failed, _get_disabled_plugins(), _get_enabled_plugins()).action not in ("defer", "load"):
                 return False
             with _ABANDONED_LOADERS_LOCK:  # its hung import is still running: another retry only leaks a thread
-                if any(t.is_alive() and t.name == f"plugin-load:{manifest_key(failed)}" for t in _ABANDONED_LOADERS):
+                if any(t.is_alive() and t.name == f"{_LOADER_THREAD_PREFIX}{manifest_key(failed)}" for t in _ABANDONED_LOADERS):
                     return False
             logger.info("Re-arming failed platform plugin load: %s", platform_name)
             self._register_deferred_platform(failed)

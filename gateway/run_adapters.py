@@ -827,9 +827,11 @@ class GatewayAdapterLifecycleMixin:
                     return
                 # Unregistered plugin: keep it queued and re-arm a failed load (capped) for the next tick.
                 from hermes_cli.plugins import get_plugin_manager
-                if info.get("load_rearms", 0) < _MAX_PLUGIN_LOAD_REARMS and get_plugin_manager().rearm_failed_platform(
-                        platform.value):
-                    info["load_rearms"] = info.get("load_rearms", 0) + 1
+                rearms = info.get("load_rearms", 0)
+                # Off the loop: the re-arm takes the manager's discovery lock, which a sweep or deferred load holds.
+                if rearms < _MAX_PLUGIN_LOAD_REARMS and await self._run_in_executor_with_context(
+                        get_plugin_manager().rearm_failed_platform, platform.value):
+                    info["load_rearms"] = rearms + 1
                 backoff = self._bump_reconnect_backoff(
                     platform, info, attempt, "adapter_unavailable", _adapter_unavailable_message(platform),
                 )

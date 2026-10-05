@@ -53,6 +53,7 @@ _ACTION_LOG_TAIL_INITIAL_CHUNK_BYTES = 8 * 1024
 _ACTION_LOG_TAIL_MAX_CHUNK_BYTES = 64 * 1024
 
 _UPDATE_ACTION_COMPLETED_RE = re.compile(r"^=== hermes-update completed ([0-9a-f]{32}) ===$")
+_UPDATE_ACTION_STARTED_RE = re.compile(r"^=== hermes-update started .* ([0-9a-f]{32}) ===$")
 
 _MANAGED_EXTERNALLY_MESSAGE = "Hermes updates are managed outside this dashboard in containerized environments."
 
@@ -135,6 +136,15 @@ def _durable_completed_update_action_id(lines: List[str]) -> Optional[str]:
             last_completed = index
             completed_action_id = match.group(1)
     return completed_action_id if completed_action_id and last_completed > last_start else None
+
+
+def _latest_spawned_update_action_id(lines: List[str]) -> Optional[str]:
+    """Action id named by the latest ``hermes-update started`` header of THIS dashboard's log."""
+    for line in reversed(lines):
+        if line.startswith("=== hermes-update started "):
+            match = _UPDATE_ACTION_STARTED_RE.fullmatch(line.strip())
+            return match.group(1) if match else None
+    return None
 
 
 @router.post("/api/gateway/restart")
@@ -363,6 +373,10 @@ async def get_action_status(name: str, lines: int = 200):
 
         durable_update_action_id = _durable_completed_update_action_id(
             _tail_lines(get_default_hermes_root() / "logs" / "update.log", 2000))
+        if durable_update_action_id != _latest_spawned_update_action_id(_tail_lines(log_dir / log_file_name, 2000)):
+            # The root log is shared by every profile: another profile's (or an older) run's
+            # completion never certifies the action this dashboard started.
+            durable_update_action_id = None
         if durable_update_action_id:
             marker = f"=== hermes-update completed {durable_update_action_id} ==="
             if marker not in tail:

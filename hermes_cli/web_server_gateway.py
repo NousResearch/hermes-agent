@@ -457,7 +457,11 @@ def _spawn_hermes_action(
     from hermes_cli.web_server import PROJECT_ROOT
     _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_file = open(_ACTION_LOG_DIR / _ACTION_LOG_FILES[name], "ab", buffering=0)
-    log_file.write(f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode())
+    # The header carries the action id durably: the update's completion marker lands in the ROOT
+    # update.log every profile shares, and only this id ties one to the action THIS log started.
+    action_id = (env_overrides or {}).get("HERMES_ACTION_ID")
+    stamp = time.strftime('%Y-%m-%d %H:%M:%S') + (f" {action_id}" if action_id else "")
+    log_file.write(f"\n=== {name} started {stamp} ===\n".encode())
 
     from hermes_cli._launchers import runtime_command
     cmd = runtime_command(PROJECT_ROOT, subcommand)
@@ -494,7 +498,6 @@ def _spawn_hermes_action(
     _ACTION_RESULTS.pop(name, None)
     _ACTION_COMMANDS[name] = tuple(subcommand)
     _ACTION_PROCS[name] = proc
-    action_id = (env_overrides or {}).get("HERMES_ACTION_ID")
     if action_id:
         _ACTION_IDS[name] = action_id
     else:

@@ -266,13 +266,17 @@ def apply_v4a_operations(operations: List[PatchOperation], file_ops: Any) -> Pat
             error="Patch validation failed (no files were modified):\n" + _bullets(errors))
     files: Dict[str, List[str]] = {"created": [], "deleted": [], "modified": []}
     all_diffs: List[str] = []
+    correction_notes: List[str] = []
     # V4A bypasses write_file's WriteResult plumbing: LSP diagnostics and lint propagate per file.
     lsp_blocks: List[str] = []
     lint_results: Dict[str, dict] = {}
     for op in operations:
         handler, verb, bucket = _APPLY_DISPATCH[op.operation]
         try:
-            ok, payload, lsp, lint = handler(op, file_ops)
+            if op.operation is OperationType.UPDATE:
+                ok, payload, lsp, lint = handler(op, file_ops, correction_notes=correction_notes)
+            else:
+                ok, payload, lsp, lint = handler(op, file_ops)
         except Exception as e:
             ok, payload = None, str(e)
         if not ok:
@@ -293,7 +297,8 @@ def apply_v4a_operations(operations: List[PatchOperation], file_ops: Any) -> Pat
                + _bullets(errors)) if errors else None,
         diff='\n'.join(all_diffs),
         files_modified=files["modified"], files_created=files["created"], files_deleted=files["deleted"],
-        lint=lint_results or None, lsp_diagnostics="\n\n".join(lsp_blocks) or None)
+        lint=lint_results or None, lsp_diagnostics="\n\n".join(lsp_blocks) or None,
+        note="\n".join(dict.fromkeys(correction_notes)) or None)
 
 
 def _write_file_accepts_pre_content(file_ops: Any) -> bool:
@@ -347,13 +352,15 @@ def _insert_addition_only(new_content: str, hunk: Hunk, insert_text: str) -> Tup
     return new_content.rstrip('\n') + '\n' + insert_text + '\n', None
 
 
-def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
+def _apply_update(op: PatchOperation, file_ops: Any, *,
+                  correction_notes: Optional[List[str]] = None) -> ApplyResult:
     """Apply each hunk via fuzzy replace, then write once."""
     from tools.fuzzy_match import fuzzy_find_and_replace, is_already_applied
     read_result = file_ops.read_file_raw(op.file_path)  # raw: no line numbers / truncation
     if read_result.error:
         return _fail(f"Cannot read file: {read_result.error}")
     current_content = new_content = read_result.content
+    hunk_notes: List[str] = []
     for hunk in op.hunks:
         search_lines, replace_lines = _split_hunk(hunk)
         if search_lines and search_lines == replace_lines:
@@ -365,7 +372,7 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
                 return _fail(err)
             continue
         new_content, count, _strategy, error = fuzzy_find_and_replace(
-            new_content, search_pattern, replacement, replace_all=False)
+            new_content, search_pattern, replacement, replace_all=False, correction_notes=hunk_notes)
         if not (error and count == 0):
             continue
         # Retry inside a window around the context hint, if any.
@@ -374,7 +381,8 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
             window_start = max(0, hint_pos - 500)
             window_end = min(len(new_content), hint_pos + 2000)
             window_new, count, _strategy, error = fuzzy_find_and_replace(
-                new_content[window_start:window_end], search_pattern, replacement, replace_all=False)
+                new_content[window_start:window_end], search_pattern, replacement, replace_all=False,
+                correction_notes=hunk_notes)
             if count > 0:
                 new_content = new_content[:window_start] + window_new + new_content[window_end:]
                 error = None
@@ -387,7 +395,10 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
     # Pass pre_content to skip a redundant re-read inside write_file when supported.
     extra = {"pre_content": current_content} if _write_file_accepts_pre_content(file_ops) else {}
     write_result = file_ops.write_file(op.file_path, new_content, **extra)
-    return _written(write_result, _unified_diff(op.file_path, current_content, new_content))
+    result = _written(write_result, _unified_diff(op.file_path, current_content, new_content))
+    if result[0] and correction_notes is not None:
+        correction_notes.extend(hunk_notes)
+    return result
 
 
 # operation -> (handler, verb for error text, files_* bucket)

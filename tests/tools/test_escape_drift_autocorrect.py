@@ -38,6 +38,70 @@ def test_mixed_quote_escaping_is_not_corrected():
     assert maybe_correct_escape_drift(old, new, content) == (old, new, None)
 
 
+_SHARED_CASES = [
+    ('pat = r"\\d+"\n', r'pat = r"\\d+"', 'pat = None', 'pat = None\n'),
+    ("x = 'it'\n", r"x = \'it\'", r"x = \'its\'", "x = 'its'\n"),
+    ('pat = r"\\d+"\n', r'pat = r"\\d+"', r'pat = r"\\w+"', None),
+]
+
+
+@pytest.mark.parametrize("engine", ["replace", "v4a", "skill"])
+@pytest.mark.parametrize("content,old,new,expected", _SHARED_CASES,
+                         ids=["backslash_free", "quote", "ambiguous"])
+def test_shared_correction_policy_across_tools(workdir, monkeypatch, engine, content, old, new, expected):
+    target = workdir / "example.txt"
+    target.write_text(content)
+    if engine == "skill":
+        from tools import skill_manager_tool
+        skill_dir = workdir / "skills" / "example"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: example\ndescription: Test skill.\n---\n")
+        target = skill_dir / "references" / "example.txt"
+        target.parent.mkdir()
+        target.write_text(content)
+        monkeypatch.setattr(skill_manager_tool, "SKILLS_DIR", skill_dir.parent)
+        monkeypatch.setattr("agent.skill_utils.get_all_skills_dirs", lambda: [skill_dir.parent])
+        result = json.loads(skill_manager_tool.skill_manage(
+            action="patch", name="example", file_path=str(target.relative_to(skill_dir)),
+            old_string=old, new_string=new, task_id="t-shared"))
+    elif engine == "v4a":
+        patch = (f"*** Begin Patch\n*** Update File: {target}\n@@\n"
+                 + "\n".join("-" + line for line in old.splitlines()) + "\n"
+                 + "\n".join("+" + line for line in new.splitlines()) + "\n*** End Patch")
+        result = _patch_tool(mode="patch", patch=patch, task_id="t-shared")
+    else:
+        result = _patch_tool(path=str(target), old_string=old, new_string=new, task_id="t-shared")
+    if expected is None:
+        assert result.get("success") is not True
+        assert "intentional backslashes" in result["error"]
+        assert target.read_text() == content
+    else:
+        assert result["success"] is True
+        assert target.read_text() == expected
+        assert "escape-drift auto-corrected" in result["note"]
+
+
+@pytest.mark.parametrize("content,old,new,expected", _SHARED_CASES,
+                         ids=["backslash_free", "quote", "ambiguous"])
+def test_approval_preview_agrees_with_patch(workdir, content, old, new, expected):
+    from acp_adapter.edit_approval import build_edit_proposal
+    target = workdir / "preview.txt"
+    target.write_text(content)
+    arguments = dict(path=str(target), old_string=old, new_string=new)
+    if expected is None:
+        with pytest.raises(ValueError, match="intentional backslashes"):
+            build_edit_proposal("patch", arguments)
+        result = _patch_tool(**arguments, task_id="t-preview")
+        assert result.get("success") is not True
+        assert target.read_text() == content
+    else:
+        proposal = build_edit_proposal("patch", arguments)
+        assert target.read_text() == content
+        result = _patch_tool(**arguments, task_id="t-preview")
+        assert result["success"] is True
+        assert proposal.new_text == target.read_text() == expected
+
+
 class TestPatchEndToEnd:
     @pytest.mark.parametrize("replacement", [
         r'sep = r"a\c"',

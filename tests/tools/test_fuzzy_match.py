@@ -665,7 +665,7 @@ class TestBackslashDoublingDrift:
         new = old + ' # touched'
         result, count, strategy, err = self.replace(content, old, new)
         assert count == 0
-        assert err is not None and "twice as long" in err
+        assert err is not None and "intentional backslashes" in err
         assert result == content  # untouched
 
     def test_matching_backslashes_apply(self):
@@ -686,16 +686,14 @@ class TestBackslashDoublingDrift:
         assert count == 1 and err is None
         assert strategy == "exact"
 
-    def test_model_corrected_new_string_allowed(self):
-        """Doubled old_string but corrected new_string writes the right bytes."""
+    def test_model_corrected_new_string_requires_clean_anchor(self):
+        """A corrected replacement is still unverifiable beside a doubled anchor."""
         b = "\\"
         content, old = self._make(n_file=2, n_args=4)
         new = old.replace(b * 4, b * 2).replace("next line", "corrected")
         result, count, strategy, err = self.replace(content, old, new)
-        assert count == 1 and err is None
-        assert "corrected" in result
-        # No doubling in the output
-        assert b * 4 not in result
+        assert count == 0 and "intentional backslashes" in err
+        assert result == content
 
     def test_single_prose_backslash_not_blocked(self):
         """A lone ``\`` vs ``\\`` in prose is too weak a signal to block."""
@@ -706,12 +704,12 @@ class TestBackslashDoublingDrift:
         result, count, strategy, err = self.replace(content, old, new)
         assert err is None or "twice" not in err
 
-    def test_quote_drift_guard_still_fires(self):
-        """The pre-existing apostrophe escape-drift guard must keep working."""
+    def test_verified_quote_drift_is_corrected(self):
+        """Shared matching corrects quote drift when its anchor is verified."""
         b = "\\"
         content = "print('hello world')\nrest = 1\n"
         old = "print(" + b + "'hello world" + b + "')\nrest = 1"
         new = "print(" + b + "'hello there" + b + "')\nrest = 1"
         result, count, strategy, err = self.replace(content, old, new)
-        assert count == 0
-        assert err is not None and "apostrophe" in err
+        assert count == 1 and err is None
+        assert result == "print('hello there')\nrest = 1\n"

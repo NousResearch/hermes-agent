@@ -462,8 +462,9 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
     # Same fuzzy engine as the file patch tool (whitespace/indent/escape normalization,
     # block anchors) so minor formatting mismatches don't fail.
     from tools.fuzzy_match import fuzzy_find_and_replace
+    correction_notes = []
     new_content, match_count, _strategy, match_error = fuzzy_find_and_replace(
-        content, old_string, new_string, replace_all)
+        content, old_string, new_string, replace_all, correction_notes=correction_notes)
     if match_error:
         with suppress(Exception):
             from tools.fuzzy_match import format_no_match_hint
@@ -479,6 +480,8 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
         "success": True,
         "message": f"Patched {target_label} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
         "_change": {"old": _clip(old_string, 200, "…"), "new": _clip(new_string, 200, "…")}}
+    if correction_notes:
+        result["note"] = "\n".join(correction_notes)
     return _attach_org_note(result, name, skill_dir)
 
 

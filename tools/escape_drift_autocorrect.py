@@ -1,4 +1,4 @@
-"""Conservative correction of escape drift before ``patch_replace`` matches text.
+"""Conservative correction of escape drift before shared fuzzy matching.
 
 Corrections require the corrected ``old_string`` to appear verbatim in the file.
 That evidence cannot establish the intended escaping of newly added code: deliberate

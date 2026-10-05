@@ -1324,15 +1324,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         raw_content = read_result.stdout
         content, _ = _strip_bom(raw_content)
 
-        from tools.escape_drift_autocorrect import AmbiguousEscapeDriftError, maybe_correct_escape_drift
-        try:
-            old_string, new_string, escape_drift_note = maybe_correct_escape_drift(old_string, new_string, content)
-        except AmbiguousEscapeDriftError as exc:
-            return PatchResult(error=str(exc))
-
         from tools.fuzzy_match import fuzzy_find_and_replace
+        correction_notes = []
         new_content, match_count, _strategy, error = fuzzy_find_and_replace(
-            content, old_string, new_string, replace_all)
+            content, old_string, new_string, replace_all, correction_notes=correction_notes)
         if error or match_count == 0:
             return self._no_match_result(path, content, old_string, new_string, match_count, error)
         # Models send bare-LF old/new strings; normalize the substituted region to
@@ -1350,7 +1345,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return PatchResult(
             success=True, diff=self._unified_diff(content, new_content, path), files_modified=[path],
             lint=lint_result.to_dict() if lint_result else None,
-            note=escape_drift_note,
+            note="\n".join(correction_notes) or None,
             # From the internal write_file call, whose baseline was the pre-patch content.
             lsp_diagnostics=write_result.lsp_diagnostics)
 

@@ -77,7 +77,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.platforms.helpers import ThreadParticipationTracker
+from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
@@ -852,6 +852,8 @@ class MatrixAdapter(BasePlatformAdapter):
         self._invite_join_tasks: Dict[str, asyncio.Task] = {}
         self._closing = False
         self._startup_ts: float = 0.0
+        self._resume_ts: float = 0.0  # reconnect: newest origin ts the replaced adapter saw (outage floor)
+        self._grace_skips: tuple = (0, 0.0, float("inf"))  # per connect: count, oldest/newest age (s)
         self._reset_clock_skew_detector()
         self._last_sync_ts: float = 0.0
         self._dm_rooms: Dict[str, bool] = {}
@@ -860,9 +862,8 @@ class MatrixAdapter(BasePlatformAdapter):
         self._room_identity_ttl_seconds = _env_number("MATRIX_ROOM_IDENTITY_TTL_SECONDS", 60.0, float)
         self._room_identity_cache_max = 256
         self._joined_rooms: Set[str] = set()
-        from collections import deque
-        self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
-        self._processed_events_set: set = set()
+        # Event dedup keyed to origin ts, newest 1000 kept; the runner carries it across reconnects.
+        self._dedup = MessageDeduplicator(max_size=1000, ttl_seconds=float("inf"))
         self._threads = ThreadParticipationTracker("matrix")  # require_mention bypass
         self._parked_voices = ParkedVoices()  # unmentioned voice awaiting a bare @mention
         self._require_mention: bool = self._parse_require_mention(config)
@@ -912,18 +913,6 @@ class MatrixAdapter(BasePlatformAdapter):
                 self._ignored_user_patterns.append(re.compile(pattern))
             except re.error as exc:
                 logger.warning("Matrix: ignoring invalid MATRIX_IGNORE_USER_PATTERNS entry %r: %s", pattern, exc)
-
-    def _is_duplicate_event(self, event_id) -> bool:
-        """Return True if this event was already processed. Tracks the ID otherwise."""
-        if not event_id:
-            return False
-        if event_id in self._processed_events_set:
-            return True
-        if len(self._processed_events) == self._processed_events.maxlen:
-            self._processed_events_set.discard(self._processed_events[0])
-        self._processed_events.append(event_id)
-        self._processed_events_set.add(event_id)
-        return False
 
     @staticmethod
     def _extra_truthy(config, key: str, env_name: str, default: str) -> bool:
@@ -1309,6 +1298,11 @@ class MatrixAdapter(BasePlatformAdapter):
             if isinstance(sync_data, dict):
                 self._joined_rooms.clear()
                 await self._absorb_sync(client, sync_data, initial=True)
+                skipped, oldest, newest = self._grace_skips
+                if skipped:
+                    logger.warning(
+                        "Matrix: initial sync skipped %d message(s) sent while the gateway was offline (oldest %ds, "
+                        "newest %ds before startup); they were not delivered", skipped, oldest, newest)
             else:
                 logger.warning("Matrix: initial sync returned unexpected type %s", type(sync_data).__name__)
         except Exception as exc:
@@ -1348,6 +1342,9 @@ class MatrixAdapter(BasePlatformAdapter):
         client.add_event_handler(EventType.REACTION, self._on_reaction, wait_sync=True)
         client.add_event_handler(IntEvt.INVITE, self._on_invite, wait_sync=True)
         self._startup_ts = time.time()
+        # Cold boot drops the offline backlog; a reconnect delivers the outage window (#46621).
+        self._resume_ts = self._dedup.newest_seen_ts() if is_reconnect else 0.0
+        self._grace_skips = (0, 0.0, float("inf"))
         self._reset_clock_skew_detector()  # a reconnect after an NTP fix starts clean
         self._closing = False
         await self._connect_initial_sync(client)
@@ -2016,11 +2013,18 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.info("Matrix: ignoring message from unauthorized room %s", room_id)
             return
         event_id = str(getattr(event, "event_id", ""))
-        if self._is_duplicate_event(event_id):
-            return
-        # Startup grace: ignore old messages replayed by the initial sync.
         event_ts = _matrix_event_timestamp_seconds(event)
-        if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
+        if self._dedup.is_duplicate(event_id, seen_at=event_ts):
+            return
+        # Startup grace: ignore old messages replayed by the initial sync. After a reconnect the floor is
+        # the newest event already seen, so the outage window is delivered (the dedup above stops repeats).
+        grace_floor = self._startup_ts - _STARTUP_GRACE_SECONDS
+        if self._resume_ts:
+            grace_floor = min(grace_floor, self._resume_ts)
+        if event_ts and event_ts < grace_floor:
+            skipped, oldest, newest = self._grace_skips
+            age = self._startup_ts - event_ts
+            self._grace_skips = (skipped + 1, max(oldest, age), min(newest, age))
             self._note_late_grace_drop(event_ts)
             return
         content = getattr(event, "content", None)
@@ -2471,7 +2475,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if self._is_self_sender(sender):
             return
         event_id = str(getattr(event, "event_id", ""))
-        if self._is_duplicate_event(event_id):
+        if self._dedup.is_duplicate(event_id, seen_at=_matrix_event_timestamp_seconds(event)):
             return
         room_id = str(getattr(event, "room_id", ""))
         content = getattr(event, "content", None)

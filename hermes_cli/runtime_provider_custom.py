@@ -49,7 +49,9 @@ def _key_env_secret(entry: Dict[str, Any], label: str) -> str:
     key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
     if not key_env:
         return ""
-    value = get_secret_str(key_env, "").strip()
+    # .env fallback for the stripped-env desktop SSH backend (#99604); the helper
+    # is looked up on the origin module so test patches keep working.
+    value = _rp()._getenv_with_dotenv(key_env, "").strip()
     if not value:
         logger.warning("%s: key_env %s is set but the variable is empty/unset — the request will carry the "
                        "placeholder no-key-required and the endpoint will reject it", label, key_env)

@@ -361,6 +361,31 @@ def _anthropic_token_or_raise(*, model: str | None = None) -> str:
     return token
 
 
+def _getenv_with_dotenv(name: str, default: str = "") -> str:
+    """``get_secret_str`` plus a ``~/.hermes/.env`` fallback for genuinely-absent keys.
+
+    Lookup order: process environment / profile scope → ``~/.hermes/.env`` → ``default``
+    (the policy ``hermes_cli.config.get_env_value`` already applies for the
+    gateway/CLI/auth paths). The desktop SSH backend is spawned with a stripped
+    environment (``setsid env HERMES_DESKTOP=1 … serve --isolated``), so a key that
+    lives only in ``.env`` is invisible to a raw environment read and every model
+    call fails with "API key not set" even though ``hermes chat`` on the same box
+    works (#99604). Under multiplexing a scoped miss stays authoritative — the
+    shared ``.env`` file may hold another profile's value, so no fallback happens
+    there. A variable that is set but empty counts as set: exporting ``KEY=""``
+    keeps disabling the provider instead of borrowing the ``.env`` value.
+    """
+    from agent.secret_scope import is_multiplex_active as _is_multiplex_active
+
+    val = get_secret_str(name, "\x00hermes-missing\x00")
+    if val != "\x00hermes-missing\x00":
+        return val
+    if _is_multiplex_active():
+        return default
+    raw = str(_config_mod.load_env().get(name) or "").strip()
+    return raw or default
+
+
 def _host_derived_api_key(base_url: str) -> str:
     """``<VENDOR>_API_KEY`` from the env, vendor = registrable hostname label (``api.deepseek.com``
     → ``deepseek``). Lookalike hosts pick the ATTACKER's label (api.deepseek.com.attacker.test →
@@ -375,7 +400,7 @@ def _host_derived_api_key(base_url: str) -> str:
     sanitized = "".join(ch if ch.isalnum() else "_" for ch in labels[-2]).upper() if len(labels) >= 2 else ""
     if not sanitized or not sanitized[0].isalpha() or sanitized in ("OPENAI", "OPENROUTER", "OLLAMA"):
         return ""
-    return (get_secret_str(f"{sanitized}_API_KEY", "") or "").strip()
+    return (_getenv_with_dotenv(f"{sanitized}_API_KEY", "") or "").strip()
 
 
 def _host_gated_env_key_candidates(base_url: str, *, ollama: bool) -> list:
@@ -388,9 +413,9 @@ def _host_gated_env_key_candidates(base_url: str, *, ollama: bool) -> list:
     # expands onto it); an exact match is the user's own pairing, not a leak to an unrelated host.
     env_openai_base = get_secret_str("OPENAI_BASE_URL", "").strip().rstrip("/")
     is_openai = is_openai or (bool(env_openai_base) and (base_url or "").strip().rstrip("/") == env_openai_base)
-    candidates = [get_secret_str("OLLAMA_API_KEY", "").strip() if base_url_host_matches(base_url, "ollama.com") else ""] if ollama else []
-    return candidates + [get_secret_str("OPENAI_API_KEY", "").strip() if is_openai else "",
-                         get_secret_str("OPENROUTER_API_KEY", "").strip() if base_url_host_matches(base_url, "openrouter.ai") else "",
+    candidates = [_getenv_with_dotenv("OLLAMA_API_KEY", "").strip() if base_url_host_matches(base_url, "ollama.com") else ""] if ollama else []
+    return candidates + [_getenv_with_dotenv("OPENAI_API_KEY", "").strip() if is_openai else "",
+                         _getenv_with_dotenv("OPENROUTER_API_KEY", "").strip() if base_url_host_matches(base_url, "openrouter.ai") else "",
                          _host_derived_api_key(base_url)]
 
 

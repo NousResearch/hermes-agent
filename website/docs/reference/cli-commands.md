@@ -975,7 +975,7 @@ Projects are human-named workspaces that can span multiple folders / repos. They
 ## `hermes webhook`
 
 ```bash
-hermes webhook <subscribe|list|remove|test>
+hermes webhook <subscribe|list|disable|enable|remove|test>
 ```
 
 Manage dynamic webhook subscriptions for event-driven agent activation. Requires the webhook platform to be enabled in config — if not configured, prints setup instructions.
@@ -984,6 +984,8 @@ Manage dynamic webhook subscriptions for event-driven agent activation. Requires
 |------------|-------------|
 | `subscribe` / `add` | Create a webhook route. Prints the URL and a masked HMAC secret; the full secret is stored in `webhook_subscriptions.json` under the Hermes home. |
 | `list` / `ls` | Show all agent-created subscriptions. |
+| `disable` | Pause a dynamic subscription without deleting it. |
+| `enable` | Resume a disabled dynamic subscription. |
 | `remove` / `rm` | Delete a dynamic subscription. Static routes from config.yaml are not affected. |
 | `test` | Send a test POST to verify a subscription is working. |
 

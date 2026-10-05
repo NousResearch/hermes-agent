@@ -165,7 +165,7 @@ def webhook_command(args):
     """Entry point for 'hermes webhook' subcommand."""
     sub = getattr(args, "webhook_action", None)
     if not sub:
-        print("Usage: hermes webhook {subscribe|list|remove|test}")
+        print("Usage: hermes webhook {subscribe|list|disable|enable|remove|test}")
         print("Run 'hermes webhook --help' for details.")
         return
     if not _is_webhook_enabled():
@@ -230,8 +230,12 @@ def _subscribe_input_error(name: str, deliver: str) -> str | None:
     return None
 
 
+def _normalize_subscription_name(name: str) -> str:
+    return str(name or "").strip().lower().replace(" ", "-")
+
+
 def _cmd_subscribe(args):
-    name = args.name.strip().lower().replace(" ", "-")
+    name = _normalize_subscription_name(args.name)
     if error := _subscribe_input_error(name, args.deliver or "log"):
         print(error)
         return 1
@@ -373,7 +377,7 @@ def _cmd_list(args):
         if route.get("cron_job"):
             deliver = f"cron job '{route['cron_job']}'"
         desc = route.get("description", "")
-        print(f"  ◆ {name}")
+        print(f"  ◆ {name} ({'enabled' if route.get('enabled', True) is not False else 'disabled'})")
         if desc:
             print(f"    {desc}")
         profile = route.get("profile", "default")
@@ -390,7 +394,7 @@ def _cmd_list(args):
 
 
 def _cmd_remove(args):
-    name = args.name.strip().lower()
+    name = _normalize_subscription_name(args.name)
 
     def remove(subscriptions: dict[str, dict]) -> None:
         if name not in subscriptions:
@@ -406,9 +410,21 @@ def _cmd_remove(args):
     print(f"  Removed webhook subscription: {name}")
 
 
+def _cmd_set_enabled(args, *, enabled: bool):
+    name = _normalize_subscription_name(args.name)
+    subs = _load_subscriptions()
+    if name not in subs:
+        print(f"  No subscription named '{name}'.")
+        print("  Note: Static routes from config.yaml must be edited in config.yaml.")
+        return
+    subs[name]["enabled"] = enabled
+    _save_subscriptions_unlocked(subs)
+    print(f"  {'Enabled' if enabled else 'Disabled'} webhook subscription: {name}")
+
+
 def _cmd_test(args):
     """Send a test POST to a webhook route."""
-    name = args.name.strip().lower()
+    name = _normalize_subscription_name(args.name)
     subs = _load_subscriptions()
     if name not in subs:
         print(f"  No subscription named '{name}'.")
@@ -446,5 +462,7 @@ def _test_signature_headers(scheme, secret: str, body: bytes) -> dict[str, str]:
 _ACTIONS = {
     "subscribe": _cmd_subscribe, "add": _cmd_subscribe,
     "list": _cmd_list, "ls": _cmd_list,
+    "disable": lambda args: _cmd_set_enabled(args, enabled=False),
+    "enable": lambda args: _cmd_set_enabled(args, enabled=True),
     "remove": _cmd_remove, "rm": _cmd_remove,
     "test": _cmd_test}

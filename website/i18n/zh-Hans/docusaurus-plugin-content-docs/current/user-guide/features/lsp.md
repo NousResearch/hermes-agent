@@ -46,6 +46,60 @@ agent 看到的输出如下：
 `lsp_diagnostics` 字段承载来自真实语言服务器的语义诊断。两个通道，独立信号——
 agent 对于语法正确但存在语义问题的文件，会看到 ``lint: ok`` 加上已填充的 ``lsp_diagnostics``。
 
+### 工作区信任
+
+许多语言服务器会运行项目自带的代码：pyright 会执行所配置的 Python
+解释器，typescript-language-server 会加载项目的
+`node_modules/typescript`，svelte-language-server 会加载
+`svelte.config.js`，rust-analyzer 每次保存都会运行 `cargo check`（构建脚本、
+过程宏），而 jdtls、kotlin-language-server、elixir-ls、zls、
+haskell-language-server 等服务器在启动时就会求值项目的构建文件（Gradle、
+`mix.exs`、`build.zig`、Cabal/Stack）。对你自己的项目这没有问题，但对 agent
+刚克隆下来的仓库则不应如此。
+
+因此，除以下情况外，Hermes 将所有工作区视为不受信任：
+
+- 你让 Hermes 指向的目录所在的 git 工作树：启动 Hermes 的目录（`cd my-app && hermes`）、
+  `hermes -w` 创建的工作树、桌面端或 TUI 会话打开的项目，或网关的 `terminal.cwd`，或
+- `lsp.trusted_workspaces` 中列出的目录（及其下任意子目录）。
+
+agent 在终端里执行 `cd` 不会改变会话的工作区。定时任务和 Kanban worker 不会自动获得
+信任，因为 agent 可以选择它们的工作目录或工作区；请在 `lsp.trusted_workspaces` 中列出
+它们应信任的目录。嵌套在受信任工作树内部的检出拥有自己的 `.git`，因此不受信任；位于
+主目录或其上级目录的 git 仓库也不受信任（否则主目录下的 dotfiles 仓库会让其下的所有目录
+都受信任）。信任覆盖你让 Hermes 指向的整个目录（包括之后克隆到其中的内容），并持续到
+Hermes 退出。
+
+在不受信任的工作区中，Hermes **默认拒绝**：只有下表中的服务器会启动，并且各自
+使用让它停留在 Hermes 一侧工具上的设置。其他所有服务器都会被跳过，包括
+rust-analyzer、gopls、jdtls、kotlin-language-server、elixir-ls、zls、
+clojure-lsp、haskell-language-server、lua-language-server、terraform-ls、
+prisma、astro、vue-language-server（它会加载项目 `tsconfig.json` 中
+`vueCompilerOptions.plugins` 指定的插件），以及你在 `lsp.servers` 下声明的任何服务器。诊断日志会记录
+`skipped: untrusted workspace …; add it to lsp.trusted_workspaces`，
+`hermes lsp status` 会把这些服务器标记为 `[trusted workspaces only]`。
+
+| 服务器 | 不受信任的工作区 |
+|---|---|
+| pyright | 使用 `VIRTUAL_ENV` 或 Hermes 管理的 Python，绝不使用项目的 `.venv`/`venv` |
+| typescript-language-server | `tsserver.path` 固定为服务器旁边的 TypeScript；若没有则跳过 |
+| svelte-language-server | `isTrusted: false`（不加载 `svelte.config.js`，不加载项目的 `svelte`/`prettier`） |
+| bash-language-server、yaml-language-server、dockerfile-ls、intelephense | 不变：它们不运行项目代码（yaml-language-server 可能会下载文件指定的 JSON schema） |
+| clangd | 不变：Hermes 从不传入 `--query-driver`，因此不会运行项目的编译器 |
+
+在本地后端上，当终端的当前目录不受信任时，会使用检出自带工具链的写入后 shell 检查器也会以同样方式跳过：
+`npx tsc`（它会运行仓库的 `node_modules/.bin/tsc`，或从仓库 `.npmrc` 指定的
+registry 安装）和 `rustfmt --check`（rustup 会遵循仓库的 `rust-toolchain.toml`）。
+沙箱后端（Docker、SSH、Modal 等）不受影响。
+
+依赖项目依赖项的诊断（例如无法解析的导入）在信任该工作区之前可能不够精确。
+
+```yaml
+lsp:
+  trusted_workspaces:
+    - ~/code/my-app
+```
+
 ## 支持的语言
 
 | 语言 | 服务器 | 自动安装 |
@@ -118,6 +172,12 @@ lsp:
   #   manual  — 仅使用已在 PATH 上的二进制文件
   install_strategy: auto
 
+  # 允许语言服务器加载项目自带代码的目录（见上文“工作区信任”）。
+  # 支持 ~ 展开，条目下的所有子目录均算在内。启动 Hermes 或打开会话时
+  # 所在目录的 git 工作树始终受信任。
+  trusted_workspaces: []
+  # trusted_workspaces: ["~/code/my-app"]
+
   # 各服务器覆盖配置（均为可选）。
   servers:
     pyright:
@@ -137,6 +197,8 @@ lsp:
 * `disabled: true` — 即使扩展名与文件匹配，也完全跳过该服务器。
 * `command: [bin, ...args]` — 指定自定义二进制路径，绕过自动安装。
 * `env: {KEY: value}` — 传递给启动进程的额外环境变量。
+  服务器以及 npm / `go install` 自动安装程序都从 Hermes 清理过的子进程环境启动
+  （不含网关令牌或模型提供商 API 密钥），因此需要这类变量的服务器只能通过此键获得。
 * `initialization_options: {...}` — 合并到 LSP `initialize` 握手时发送的
   `initializationOptions` 载荷中。具体内容因服务器而异，请参阅对应语言服务器的文档。
 

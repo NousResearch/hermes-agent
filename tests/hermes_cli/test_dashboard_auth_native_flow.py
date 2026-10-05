@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import hashlib
 import base64
+import html
+import re
 import time
 from urllib.parse import parse_qs, urlparse
 
@@ -224,23 +226,39 @@ def _native_authorize_params(challenge, **overrides):
     return params
 
 
-def test_native_authorize_empty_provider_auto_selects_oauth_with_password_also_registered(
-    gated_client,
-):
-    """Regression for #78906: a password provider is a session provider but
-    can never be the target of the native OAuth broker flow, so it must not
-    count toward the empty-provider auto-select. With one OAuth provider +
-    one password provider (the normal SSO-with-password-fallback setup) the
-    desktop's empty-provider request must auto-select the OAuth provider
-    (302), not fail with ``Unknown provider: ''`` (404)."""
+def test_native_authorize_mixed_providers_offers_both_choices(gated_client):
+    """SSO-with-password-fallback (one OAuth + the bundled password provider): the desktop
+    sends no ``provider``, so BOTH configured methods must stay reachable. #78906's symptom
+    (a misleading ``Unknown provider: ''`` 404) stays fixed; the password option is no longer
+    silently dropped by auto-selecting OAuth."""
     register_provider(_PasswordOnlyProvider())
     _verifier, challenge = _make_pkce()
     r = gated_client.get(
-        "/auth/native/authorize",
-        params=_native_authorize_params(challenge),
-    )
-    assert r.status_code == 302, r.text
-    assert "code=stub_code" in r.headers["location"]
+        "/auth/native/authorize", params=_native_authorize_params(challenge))
+    assert r.status_code == 200, r.text
+    hrefs = re.findall(r'<a class="provider-btn" href="([^"]+)"', r.text)
+    assert {parse_qs(urlparse(html.unescape(h)).query)["provider"][0] for h in hrefs} == {
+        "stub", "pwonly"}
+    # Each link carries the desktop's PKCE inputs unchanged, and the chooser itself
+    # allocates no broker state / sets no cookie.
+    q = parse_qs(urlparse(html.unescape(hrefs[0])).query)
+    assert q["code_challenge"] == [challenge] and q["code_challenge_method"] == ["S256"]
+    assert "set-cookie" not in r.headers
+
+
+def test_native_authorize_chooser_link_completes_the_native_flow(gated_client):
+    """The chooser is inside the flow, not beside it: following an OAuth link re-enters the
+    same validated route and starts the normal broker round trip."""
+    register_provider(_PasswordOnlyProvider())
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize", params=_native_authorize_params(challenge))
+    href = next(html.unescape(h) for h in
+                re.findall(r'<a class="provider-btn" href="([^"]+)"', r.text)
+                if "provider=stub" in h)
+    follow = gated_client.get(href)
+    assert follow.status_code == 302, follow.text
+    assert "code=stub_code" in follow.headers["location"]
 
 
 def test_native_authorize_empty_provider_auto_selects_single_oauth(gated_client):
@@ -256,17 +274,17 @@ def test_native_authorize_empty_provider_auto_selects_single_oauth(gated_client)
     assert "code=stub_code" in r.headers["location"]
 
 
-def test_native_authorize_empty_provider_ambiguous_multiple_oauth_404(gated_client):
-    """Two brokerable providers: the empty-provider convenience cannot pick
-    unambiguously, so the request still fails — the desktop must pass
-    ``?provider=`` explicitly."""
+def test_native_authorize_empty_provider_multiple_oauth_offers_a_choice(gated_client):
+    """Two brokerable providers: the empty-provider convenience cannot pick unambiguously, so
+    the user chooses in the browser instead of the desktop eating a 404."""
     register_provider(_SecondStubProvider())
     _verifier, challenge = _make_pkce()
     r = gated_client.get(
         "/auth/native/authorize",
         params=_native_authorize_params(challenge),
     )
-    assert r.status_code == 404
+    assert r.status_code == 200, r.text
+    assert r.text.count('class="provider-btn"') == 2
 
 
 def test_native_authorize_empty_provider_password_only_brokers_to_login(
@@ -286,7 +304,12 @@ def test_native_authorize_empty_provider_password_only_brokers_to_login(
     assert r.status_code == 302, r.text
     assert r.headers["location"].endswith("/login")
     set_cookie = r.headers.get("set-cookie", "")
-    assert "broker=" in set_cookie
+    # The PKCE cookie value is URL-encoded on the wire; decode through
+    # the real reader inverse before asserting the broker handle rides
+    # in it.
+    from hermes_cli.dashboard_auth.cookies import parse_pkce_payload
+    wire_value = set_cookie.split("=", 1)[1].split(";", 1)[0]
+    assert "broker" in parse_pkce_payload(wire_value)
 
 
 # ---------------------------------------------------------------------------
@@ -408,7 +431,10 @@ def test_native_authorize_password_provider_redirects_to_login(
     assert r.headers["location"].endswith("/login")
     set_cookie = r.headers.get("set-cookie", "")
     assert "pkce" in set_cookie
-    assert "broker=" in set_cookie
+    # Wire value is URL-encoded; decode through the reader inverse.
+    from hermes_cli.dashboard_auth.cookies import parse_pkce_payload
+    wire_value = set_cookie.split("=", 1)[1].split(";", 1)[0]
+    assert "broker" in parse_pkce_payload(wire_value)
 
 
 def _start_native_password_login(client, *, challenge, state="desk-state"):
@@ -424,6 +450,88 @@ def _start_native_password_login(client, *, challenge, state="desk-state"):
     )
     assert r.status_code == 302, r.text
     return r.cookies
+
+
+def test_native_redirect_uri_boundary_matches_browser_authority(gated_client):
+    """Only canonical loopback authorities survive the upstream OAuth callback."""
+    verifier, challenge = _make_pkce()
+    rejected = (
+        "http://attacker.example\\@127.0.0.1/callback",  # browser authority = attacker host
+        "http://user@127.0.0.1/callback",
+        "http://@127.0.0.1/callback",
+        "http://%31%32%37%2e%30%2e%30%2e%31/callback",
+        "http://127.0.0.1%2fattacker.example/callback",
+        "http://127.1/callback",
+        "http://2130706433/callback",
+        "http://0x7f000001/callback",
+        "http://127.0.0.1/callback#fragment",
+        "http://127.0.0.1/callback#",
+        "http://127.0.0.1:/callback",
+        "http://127.0.0.1:053999/callback",
+        "http://127.0.0.1:65536/callback",
+        "http://127.0.0.1:not-a-port/callback",
+        "http://[0:0:0:0:0:0:0:1]/callback",
+        "\thttp://127.0.0.1:53999/callback",
+        "http://127.0.0.1:53999/\tcallback",
+    )
+    for redirect_uri in rejected:
+        r = gated_client.get(
+            "/auth/native/authorize",
+            params={
+                "provider": "stub",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "redirect_uri": redirect_uri,
+                "state": "desk-state",
+            },
+        )
+        assert r.status_code == 400, (redirect_uri, r.status_code, r.text)
+        assert "set-cookie" not in r.headers
+
+    accepted = (
+        (
+            "HTTP://127.0.0.1:53999/callback/path?existing=one",
+            "http://127.0.0.1:53999/callback/path?existing=one",
+        ),
+        (
+            "http://[::1]:54000/callback/path?existing=two",
+            "http://[::1]:54000/callback/path?existing=two",
+        ),
+    )
+    for redirect_uri, canonical in accepted:
+        started = gated_client.get(
+            "/auth/native/authorize",
+            params={
+                "provider": "stub",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "redirect_uri": redirect_uri,
+                "state": "desk-state",
+            },
+        )
+        assert started.status_code == 302, (redirect_uri, started.status_code, started.text)
+        upstream = urlparse(started.headers["location"])
+        upstream_query = parse_qs(upstream.query)
+        completed = gated_client.get(
+            "/auth/callback",
+            params={
+                "code": upstream_query["code"][0],
+                "state": upstream_query["state"][0],
+            },
+            cookies=started.cookies,
+        )
+        assert completed.status_code == 302, completed.text
+        target = completed.headers["location"]
+        assert target.startswith(f"{canonical}&code="), target
+        query = parse_qs(urlparse(target).query)
+        expected_query = parse_qs(urlparse(canonical).query)
+        assert query["existing"] == expected_query["existing"]
+        assert query["state"] == ["desk-state"]
+        redeemed = gated_client.post(
+            "/auth/native/token",
+            json={"code": query["code"][0], "code_verifier": verifier},
+        )
+        assert redeemed.status_code == 200, redeemed.text
 
 
 def test_native_password_login_full_roundtrip(pw_gated_client):

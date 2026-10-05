@@ -1240,6 +1240,99 @@ def test_package_builder_rejects_tampered_client_resources(tmp_path):
     assert list(outbox_directory.glob("*.json")) == []
 
 
+def test_package_builder_buckets_values_that_drifted_out_of_the_catalog(tmp_path, monkeypatch):
+    """A catalog-backed value that left the catalog between the recording and packaging
+    processes re-buckets to ``custom`` instead of aborting the whole period's package, and
+    every other metric in the period still exports (#133017)."""
+    from hermes_cli.observability import shared_metrics_catalog as catalog_module
+    from hermes_cli.observability.shared_metrics_contract import EXTENSION_INSTALL_METRIC
+
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    # Recording process: the plugin was a catalog entry, so the row passes record-time
+    # validation and is persisted under its real name.
+    monkeypatch.setattr(catalog_module, "plugin_catalog_names", lambda: frozenset({"later-removed-plugin"}))
+    store.record_counter(
+        EXTENSION_INSTALL_METRIC,
+        {"kind": "plugin", "name": "later-removed-plugin", "outcome": "success", "source": "catalog"},
+        _resource(),
+    )
+    store.record_model_call(_dimensions(), _resource())
+    # Packaging process (a later run): the catalog moved on and no longer lists the plugin.
+    monkeypatch.setattr(catalog_module, "plugin_catalog_names", lambda: frozenset())
+
+    [package_path] = store.create_and_export_package()
+
+    payload = json.loads(package_path.read_text(encoding="utf-8"))
+    metrics = {metric["name"]: metric for metric in payload["metrics"]}
+    assert metrics[EXTENSION_INSTALL_METRIC]["dimensions"] == {
+        "kind": "plugin", "name": "custom", "outcome": "success", "source": "catalog",
+    }
+    assert metrics[MODEL_ROUTE_METRIC]["dimensions"] == _dimensions()
+    # The drifted row settles like any other instead of wedging the period forever.
+    assert store._create_package() is None
+
+
+def test_package_builder_fails_closed_on_enums_without_a_fallback_bucket(tmp_path, monkeypatch):
+    """Value drift on an enum with no ``custom``/``other`` bucket is tamper evidence, not catalog
+    drift — those enums are code constants — so the row keeps failing closed."""
+    from hermes_cli.observability import shared_metrics_catalog as catalog_module
+    from hermes_cli.observability.shared_metrics_contract import EXTENSION_INSTALL_METRIC
+
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    monkeypatch.setattr(catalog_module, "plugin_catalog_names", lambda: frozenset({"browserpaw"}))
+    store.record_counter(
+        EXTENSION_INSTALL_METRIC,
+        {"kind": "plugin", "name": "browserpaw", "outcome": "success", "source": "catalog"},
+        _resource(),
+    )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE counter_aggregates SET dimensions_json = ? WHERE metric_name = ?",
+            (
+                json.dumps({
+                    "kind": "plugin", "name": "browserpaw", "outcome": "must-not-be-exported",
+                    "source": "catalog",
+                }),
+                EXTENSION_INSTALL_METRIC,
+            ),
+        )
+    monkeypatch.setattr(catalog_module, "plugin_catalog_names", lambda: frozenset())
+
+    with pytest.raises(ValueError, match="Unsupported dimensions"):
+        store.create_and_export_package()
+
+    assert list(outbox_directory.glob("*.json")) == []
+
+
+def test_package_builder_fails_closed_on_identifier_drift(tmp_path):
+    """A known shape whose identifier field no longer round-trips through the identifier
+    normalizer cannot be re-bucketed and keeps failing closed (must-not-be-exported)."""
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    store.record_model_call(_dimensions(), _resource())
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE counter_aggregates SET dimensions_json = ? WHERE metric_name = ?",
+            (
+                json.dumps({
+                    "model": _dimensions()["model"],
+                    "provider": "p" * (PROVIDER_IDENTIFIER_MAX_LENGTH + 1),
+                }),
+                MODEL_ROUTE_METRIC,
+            ),
+        )
+
+    with pytest.raises(ValueError, match="Unsupported dimensions"):
+        store.create_and_export_package()
+
+    assert list(outbox_directory.glob("*.json")) == []
+
+
 def test_retention_prunes_only_expired_exported_history(tmp_path):
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"

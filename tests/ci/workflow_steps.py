@@ -13,6 +13,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from hermes_platform.resolver import LookupContext, locate_command
 from tests.ci import _gha_expr as gha
 
 
@@ -36,6 +37,24 @@ def required(step: dict, ctx: dict) -> None:
     assert not gha.truthy(gha.render(step.get("continue-on-error", False), ctx)), f"{label}: advisory"
 
 
+def _interpreter_dirs(root: Path) -> tuple[str, ...]:
+    """The replay interpreter's dir, plus shims for the names setup-python puts on PATH.
+
+    Steps call ``python3`` (Linux runners) or ``python`` (Windows runners); a
+    Windows venv only ships ``python.exe``, so a missing name would otherwise
+    hit an unrelated host interpreter on os.defpath, or none at all.
+    """
+    interpreter = Path(sys.executable).parent
+    shims = root / "bin"
+    shims.mkdir()
+    for name in ("python", "python3"):
+        if not locate_command(name, LookupContext(path=str(interpreter))).found:
+            shim = shims / name
+            shim.write_text('#!/bin/sh\nexec "$REPLAY_PYTHON" "$@"\n', encoding="utf-8")
+            shim.chmod(0o755)
+    return str(interpreter), str(shims)
+
+
 def _run(step: dict, ctx: dict, cwd: Path | None = None, *, receipt: bool = False) -> tuple[dict, list]:
     required(step, ctx)
     assert step.get("shell", "bash") == "bash", "only safe Bash selection steps are replayed"
@@ -44,8 +63,9 @@ def _run(step: dict, ctx: dict, cwd: Path | None = None, *, receipt: bool = Fals
         output, calls = root / "outputs", root / "calls"
         output.touch()
         calls.touch()
+        bash = locate_command("bash").command[0]
         env = {
-            "PATH": os.pathsep.join((str(Path(sys.executable).parent), os.defpath)),
+            "PATH": os.pathsep.join((*_interpreter_dirs(root), os.defpath, str(Path(bash).parent))),
             "HOME": directory, "RUNNER_TEMP": directory, "GITHUB_OUTPUT": str(output),
             "REPLAY_PYTHON": sys.executable, "REPLAY_CALLS": str(calls),
             **{k: gha.to_string(gha.render(v, ctx)) for k, v in step.get("env", {}).items()},
@@ -53,7 +73,7 @@ def _run(step: dict, ctx: dict, cwd: Path | None = None, *, receipt: bool = Fals
         script = root / "step.sh"
         script.write_text((_RECEIPTS if receipt else "") + gha.render(step["run"], ctx), encoding="utf-8")
         result = subprocess.run(
-            ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
+            [bash, "--noprofile", "--norc", "-eo", "pipefail", str(script)],
             cwd=cwd or root, env=env, stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=30,
         )

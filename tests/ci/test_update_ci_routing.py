@@ -509,6 +509,36 @@ def test_replay_uses_executed_gate_output(monkeypatch):
         test_update_owner_change_dispatches_its_suites_end_to_end(path, ("desktop_updater",))
 
 
+_PROBE_STEP = {"run": r'''python3 -c 'import sys; print("py3=" + sys.executable)' >> "$GITHUB_OUTPUT"
+python -c 'import sys; print("py=" + sys.prefix)' >> "$GITHUB_OUTPUT"
+echo "tools=$(printf 'b\na\n' | sort | tr -d '\r' | paste -sd , -)$(find . -maxdepth 0)" >> "$GITHUB_OUTPUT"
+'''}
+
+
+def test_replay_starts_the_python_and_tools_hosted_steps_call():
+    """Every host (native Windows included) runs python3/python and the coreutils selection steps use."""
+    out = workflow_steps.outputs(_PROBE_STEP, {})
+    assert (out["py"], out["tools"]) == (sys.prefix, "a,b.")
+    assert subprocess.run([out["py3"], "-c", "import sys; print(sys.prefix)"], capture_output=True,
+                          text=True, check=True, timeout=60).stdout.strip() == sys.prefix
+
+
+@pytest.mark.platforms("posix")
+def test_replay_python3_is_the_replay_interpreter_when_its_dir_has_only_python(tmp_path):
+    """A Windows venv dir holds only ``python``: python3 must not fall through to a host interpreter."""
+    interpreter = tmp_path / "Scripts" / "python"
+    interpreter.parent.mkdir()
+    interpreter.symlink_to(os.path.realpath(sys.executable))
+    probe = ("import json, sys; from tests.ci import workflow_steps; "
+             "print(json.dumps([sys.executable, workflow_steps.outputs(json.loads(sys.argv[1]), {})]))")
+    env = {**os.environ, "PYTHONPATH": str(_REPO)}
+    result = subprocess.run([str(interpreter), "-c", probe, json.dumps(_PROBE_STEP)], cwd=_REPO, env=env,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    replay_python, out = json.loads(result.stdout)
+    assert out["py3"] == replay_python
+
+
 @pytest.mark.parametrize("missing", ["fixture", "consumer", "readers", "listed"])
 def test_shared_fixture_guard_rejects_phantom_graph(monkeypatch, tmp_path, missing):
     fixture = "tests/fixtures/owned_corpus.json"

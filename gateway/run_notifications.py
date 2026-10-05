@@ -215,53 +215,37 @@ class GatewayNotificationsMixin:
         await adapter.send(source.chat_id, content, metadata=metadata)
 
     async def _resolve_compression_lineage_target(
-        self, session_db: Any, session_entry: SessionEntry, pinned_session_id: str,
-    ) -> Optional[str]:
-        """Return the live compression tip of ``pinned_session_id`` if the route owns that lineage, else None."""
+        self, session_db: Any, session_entry: Optional[SessionEntry], pinned_session_id: str,
+    ) -> tuple[str, Optional[str]]:
+        """Distinguish uncertain compression ownership from a proven foreign route."""
         try:
             target_session_id = await session_db.get_compression_tip(pinned_session_id)
-        except Exception:
-            logger.debug("Async-delegation compression-tip lookup failed for %s", pinned_session_id, exc_info=True)
-            target_session_id = None
-        if not target_session_id or target_session_id == pinned_session_id:
-            logger.warning(
-                "Async-delegation completion pinned to compressed session %s "
-                "without a continuation; dropping injection.", pinned_session_id,
-            )
-            return None
-        try:
+            if not target_session_id or target_session_id == pinned_session_id:
+                return "retry", None  # Rotation may not have published its continuation yet.
             tip_row = await session_db.get_session(target_session_id)
-        except Exception:
-            tip_row = None
-        if tip_row is None or tip_row.get("ended_at"):
-            logger.warning(
-                "Async-delegation compression continuation %s is %s; dropping injection.",
-                target_session_id, "unknown" if tip_row is None else "ended",
-            )
-            return None
-        route_owns_lineage = session_entry.session_id in {pinned_session_id, target_session_id}
-        if not route_owns_lineage:
+            if tip_row is None or tip_row.get("ended_at"):
+                return "retry", None
+            if session_entry is None or session_entry.session_id in {pinned_session_id, target_session_id}:
+                return "deliver", target_session_id
             # Across several rotations, accept a stale route only when its own tip is the same live target.
-            try:
-                route_row = await session_db.get_session(session_entry.session_id)
-                route_tip = (
-                    await session_db.get_compression_tip(session_entry.session_id)
-                    if route_row is not None
-                    and route_row.get("ended_at")
-                    and route_row.get("end_reason") == "compression"
-                    else None
-                )
-            except Exception:
-                route_tip = None
-            route_owns_lineage = route_tip == target_session_id
-        if not route_owns_lineage:
-            logger.warning(
-                "Async-delegation completion for compression lineage %s -> %s "
-                "does not own current route %s; dropping injection.",
-                pinned_session_id, target_session_id, session_entry.session_id,
-            )
-            return None
-        return target_session_id
+            route_row = await session_db.get_session(session_entry.session_id)
+            if route_row is None:
+                return "retry", None
+            if route_row.get("ended_at") and route_row.get("end_reason") == "compression":
+                route_tip = await session_db.get_compression_tip(session_entry.session_id)
+                if not route_tip or route_tip == session_entry.session_id:
+                    return "retry", None
+                if route_tip == target_session_id:
+                    return "deliver", target_session_id
+        except Exception:
+            logger.debug("Async-delegation compression ownership lookup failed for %s", pinned_session_id, exc_info=True)
+            return "retry", None
+        logger.warning(
+            "Async-delegation completion for compression lineage %s -> %s "
+            "does not own current route %s; dropping injection.",
+            pinned_session_id, target_session_id, session_entry.session_id,
+        )
+        return "terminal", None
 
     async def _lookup_completion_owner(self, session_id: str, current_session_id: str = ""):
         """Nonmutating delegation proof shared by preflight and route resolution.
@@ -364,10 +348,10 @@ class GatewayNotificationsMixin:
                 )
                 return session_entry
             follows_compression = True
-            target_session_id = await self._resolve_compression_lineage_target(
+            verdict, target_session_id = await self._resolve_compression_lineage_target(
                 session_db, session_entry, pinned_session_id,
             )
-            if target_session_id is None:
+            if verdict != "deliver" or target_session_id is None:
                 return None
         if target_session_id == session_entry.session_id:
             return session_entry
@@ -1492,22 +1476,10 @@ class GatewayNotificationsMixin:
             # Only a USER-closed session (/new, user_exit, session_switch) is unreachable; idle/timeout
             # ends stay routable and the resolver retargets. Boundary set shared with the resolver.
             return "terminal" if end_reason in _USER_BOUNDARY_END_REASONS else "deliver"
-        try:
-            tip_session_id = await session_db.get_compression_tip(parent_session_id)
-            if not tip_session_id or tip_session_id == parent_session_id:
-                # Rotation mid-flight: continuation not visible yet. Retry, don't drop.
-                return "retry"
-            tip = await session_db.get_session(tip_session_id)
-        except Exception:
-            logger.debug("Async-completion pre-flight tip lookup failed for %s", parent_session_id, exc_info=True)
-            return "retry"
-        if tip is None or tip.get("ended_at"):
-            return "retry"
-        if entry is not None and await self._resolve_compression_lineage_target(
+        verdict, _ = await self._resolve_compression_lineage_target(
             session_db, entry, parent_session_id,
-        ) is None:
-            return "terminal"
-        return "deliver"
+        )
+        return verdict
 
     @staticmethod
     def _settle_durable_claim(kind: str, delegation_id: str, claim_id: str) -> None:

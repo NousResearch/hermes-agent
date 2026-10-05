@@ -259,6 +259,122 @@ async def test_pending_pin_respects_concurrent_boundary(tmp_path, boundary):
         assert result is None
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["readiness", "claimed"])
+@pytest.mark.parametrize("fault", [
+    "parent_tip_error", "parent_tip_none", "parent_tip_self", "tip_row_error",
+    "tip_row_missing", "tip_row_ended", "route_row_error", "route_row_missing",
+    "route_tip_error", "route_tip_none",
+])
+async def test_compression_uncertainty_keeps_durable_completion_retryable(tmp_path, monkeypatch, phase, fault):
+    """Uncertain lineage never consumes the result or mutates its route; replay recovers."""
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.base import BasePlatformAdapter
+    from gateway.run import GatewayRunner, _profile_runtime_scope
+    from gateway.session import SessionSource
+
+    with _profile_runtime_scope(tmp_path):
+        runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+        store = runner.session_store
+        entry = store.get_or_create_session(SessionSource(
+            platform=Platform.TELEGRAM, chat_id="compression-owner", chat_type="dm",
+        ))
+        db = store._db
+        parent = entry.session_id
+        db.end_session(parent, end_reason="compression")
+        db.create_session("middle", source="telegram", parent_session_id=parent)
+        entry = store.switch_session(entry.session_key, "middle")
+        assert entry is not None
+        db.end_session("middle", end_reason="compression")
+        db.create_session("tip", source="telegram", parent_session_id="middle")
+        before = {sid: db.get_session(sid) for sid in (parent, "middle", "tip")}
+        async_db = runner._session_db
+        get_session = async_db.get_session
+        get_tip = async_db.get_compression_tip
+        parent_reads = 0
+        enabled = True
+        resolver_probe = True
+
+        def failing():
+            return enabled and (resolver_probe or phase == "readiness" or parent_reads >= 2)
+
+        async def lookup_session(sid):
+            nonlocal parent_reads
+            if sid == parent:
+                parent_reads += 1
+            if failing() and sid == {"tip_row_error": "tip", "tip_row_missing": "tip",
+                                    "tip_row_ended": "tip", "route_row_error": "middle",
+                                    "route_row_missing": "middle"}.get(fault):
+                if fault.endswith("error"):
+                    raise RuntimeError("temporary session lookup failure")
+                if fault.endswith("missing"):
+                    return None
+                row = await get_session(sid)
+                return dict(row, ended_at=1, end_reason="compression")
+            return await get_session(sid)
+
+        async def lookup_tip(sid):
+            if failing() and ((sid == parent and fault.startswith("parent_tip"))
+                              or (sid == "middle" and fault.startswith("route_tip"))):
+                if fault.endswith("error"):
+                    raise RuntimeError("temporary compression lookup failure")
+                return sid if fault.endswith("self") else None
+            return await get_tip(sid)
+
+        monkeypatch.setattr(async_db, "get_session", lookup_session)
+        monkeypatch.setattr(async_db, "get_compression_tip", lookup_tip)
+        assert await runner._resolve_async_delegation_session(entry, parent) is None
+        current = store.lookup_by_session_key(entry.session_key)
+        assert current is not None and current.session_id == "middle"
+        for sid, row in before.items():
+            assert db.get_session(sid) == row
+        resolver_probe = False
+        parent_reads = 0
+        resolved = []
+
+        async def accept(event):
+            current = store.lookup_by_session_key(entry.session_key)
+            assert current is not None
+            result = await runner._resolve_async_delegation_session(current, event.metadata["gateway_session_id"])
+            assert result is not None
+            resolved.append(result.session_id)
+            event._gateway_accepted = True
+
+        runner.adapters[Platform.TELEGRAM] = cast(BasePlatformAdapter, SimpleNamespace(handle_message=accept))
+        event: dict[str, Any] = {"type": "async_delegation", "delegation_id": "uncertain-compression",
+                                "session_key": entry.session_key, "parent_session_id": parent,
+                                "dispatched_at": 1.0, "summary": "completed result", "status": "completed"}
+        ad._persist_dispatch(event)
+        ad._persist_completion(event, {"status": "completed", "summary": event["summary"]})
+        assert await runner._deliver_completion_notification("completed result", event) is False
+        row = ad.get_durable_delegation(event["delegation_id"])
+        assert row is not None
+        assert (row["delivery_state"], row["delivery_attempts"]) == (
+            "pending", 0 if phase == "readiness" else 1,
+        )
+        import sqlite3
+        with sqlite3.connect(ad._db_path()) as conn:
+            assert conn.execute("SELECT delivery_claim FROM async_delegations WHERE delegation_id=?",
+                                (event["delegation_id"],)).fetchone() == (None,)
+        assert not resolved
+        current = store.lookup_by_session_key(entry.session_key)
+        assert current is not None and current.session_id == "middle"
+        for sid, original in before.items():
+            assert db.get_session(sid) == original
+        enabled = False
+        assert await runner._deliver_completion_notification("completed result", event) is True
+        assert resolved == ["tip"]
+        current = store.lookup_by_session_key(entry.session_key)
+        assert current is not None and current.session_id == "tip"
+        row = ad.get_durable_delegation(event["delegation_id"])
+        assert row is not None and row["delivery_state"] == "delivered"
+        assert await runner._deliver_completion_notification("completed result", event) is None
+        assert resolved == ["tip"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("delivery", ["single", "group"])
 @pytest.mark.parametrize("case", [
     "single", "nested", "relabeled", "limit", "over_limit", "missing", "cycle",

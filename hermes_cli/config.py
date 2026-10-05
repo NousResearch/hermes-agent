@@ -699,6 +699,9 @@ def _phantom_sibling(container: dict, part: str) -> Optional[str]:
 def _set_nested(config, dotted_key: str, value):
     """Set a value at a dotted key path, creating intermediate dicts on demand.
     Numeric segments index lists; the index must already exist (lists are never grown).
+    A non-numeric segment also matches the ``name`` field of a dict entry
+    (list-of-mappings name addressing, #132963); a miss raises a diagnosable
+    ``TypeError`` — a list is never grown to absorb a bad segment.
 
     Guards against #17876: before this fix the code unconditionally replaced any non-dict value (including
     lists) with ``{}``, silently destroying list-typed config like ``custom_providers`` whenever a caller
@@ -718,14 +721,25 @@ def _set_nested(config, dotted_key: str, value):
         if isinstance(current, list):
             part = remaining[0]
             if at_leaf:
-                current[int(part)] = value
+                try:
+                    idx = int(part)
+                except (TypeError, ValueError):
+                    idx = _named_list_index(current, part)
+                    if idx < 0:
+                        raise TypeError(
+                            f"Cannot set {dotted_key!r}: segment {part!r} is not a numeric "
+                            f"index and no list entry is named {part!r}") from None
+                current[idx] = value
                 return
             try:
                 current = current[int(part)]
             except (TypeError, ValueError):
-                raise TypeError(
-                    f"Cannot navigate into list at key {dotted_key!r}: "
-                    f"segment {part!r} is not a numeric index")
+                idx = _named_list_index(current, part)
+                if idx < 0:
+                    raise TypeError(
+                        f"Cannot navigate into list at key {dotted_key!r}: segment {part!r} "
+                        f"is not a numeric index and no list entry is named {part!r}") from None
+                current = current[idx]
             i += 1
         elif isinstance(current, dict):
             match = _greedy_literal_match(current, remaining)
@@ -786,11 +800,24 @@ def clear_model_endpoint_credentials(
 _MISSING = object()
 
 
+def _named_list_index(entries, name):
+    """Index of the first dict entry whose ``name`` field equals *name*, or ``-1``.
+
+    Lets dotted paths name-address entries of a list-of-mappings (the ``custom_providers``
+    family, #132963): ``custom_providers.glm-flash.base_url`` walks into the entry with
+    ``name: glm-flash`` the same way dict keys already do. First match wins; scalar
+    entries never match, so a list-of-scalars keeps its numeric-only navigation.
+    """
+    return next((n for n, e in enumerate(entries)
+                 if isinstance(e, dict) and e.get("name") == name), -1)
+
+
 def _locate_nested(config, parts: list):
     """Walk *parts* through nested dicts/lists (escape-aware, greedy-literal like ``_set_nested``).
     Returns ``(parents, container, key)`` where ``container[key]`` is the addressed leaf and
     ``parents`` lists the ``(container, key)`` hops above it, or ``None`` when any hop is missing,
-    a list index is non-numeric/out of range, or a scalar is hit before the path is consumed."""
+    a list segment is non-numeric (and names no dict entry, #132963) or out of range, or a
+    scalar is hit before the path is consumed."""
     parents = []
     current = config
     i = 0
@@ -800,7 +827,11 @@ def _locate_nested(config, parts: list):
             try:
                 key = int(remaining[0])
                 current[key]
-            except (TypeError, ValueError, IndexError):
+            except (TypeError, ValueError):
+                key = _named_list_index(current, remaining[0])
+                if key < 0:
+                    return None
+            except IndexError:
                 return None
             consumed = 1
         elif isinstance(current, dict):

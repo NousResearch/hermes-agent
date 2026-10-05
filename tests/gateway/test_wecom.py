@@ -1285,3 +1285,37 @@ class TestFinalFrameAckTimeoutSemantics:
                 {"msgtype": "stream", "stream": {"id": "stream_x", "content": "x", "finish": True}},
                 is_final=True,
             )
+
+
+
+@pytest.mark.asyncio
+async def test_oversized_cron_output_is_sent_as_successive_markdown_replies():
+    """The router hands the full cron payload over and every chunk goes out on the cached reply
+    req_id (groups cannot send proactively), each through the rate-limited per-chat queue,
+    instead of the tail being sliced off at 4000 chars."""
+    from gateway.config import GatewayConfig
+    from gateway.delivery import DeliveryRouter
+    from plugins.platforms.wecom.adapter import MAX_MESSAGE_LENGTH, WeComAdapter
+
+    adapter = WeComAdapter(PlatformConfig(enabled=True))
+    adapter._last_chat_req_ids["group-1"] = "req-1"
+    adapter._group_chat_ids.add("group-1")
+    sent = []
+
+    async def _reply(req_id, body, **_):
+        sent.append((req_id, body["markdown"]["content"]))
+        return {"headers": {"req_id": req_id}, "errcode": 0}
+
+    adapter._send_reply_request = _reply
+    adapter._send_request = AsyncMock()
+    content = "\n\n".join(f"line {i} " + "x" * 200 for i in range(60))
+    payload = DeliveryRouter(GatewayConfig())._cap_oversized_output(adapter, content, "job")
+    result = await adapter.send("group-1", payload)
+
+    assert result.success
+    assert len(sent) > 1 and {req for req, _ in sent} == {"req-1"}
+    assert max(len(text) for _, text in sent) <= MAX_MESSAGE_LENGTH
+    assert "line 59 " in sent[-1][1]
+    adapter._send_request.assert_not_awaited()
+    # Each chunk is its own queued send, so each draws a token from the 30 msgs/min bucket.
+    assert adapter._get_token_usage("group-1")["normal"] == len(sent)

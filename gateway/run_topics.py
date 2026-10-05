@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -18,6 +19,7 @@ from gateway.config import Platform
 from gateway.platforms.base import _prefix_within_utf16_limit, utf16_len
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
+from gateway.session_identity import replace_source
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -276,6 +278,45 @@ class GatewayTopicThreadsMixin:
             source.platform == Platform.DISCORD and source.chat_type == "thread"
             and bool(getattr(source, "auto_thread_created", False)) and bool(source.thread_id)
             and bool(getattr(source, "auto_thread_initial_name", None))
+        )
+
+    def _recover_discord_auto_thread_source(self, source: SessionSource, session_key: str) -> SessionSource:
+        """*source* with the auto-thread markers of the session's opening event, when that event
+        created this same native Discord thread.
+
+        Native Discord stamps the markers only on the opening event, so a later title retry on a
+        rebuilt agent arrives unmarked. The routing entry's ``origin`` is that opening source and
+        survives restarts. ``replace_source`` keeps the live transport owner and message id."""
+        if (
+            source.platform != Platform.DISCORD or source.chat_type != "thread" or not source.thread_id
+            or source.delivered_via_upstream_relay or self._is_discord_auto_thread_lane(source)
+        ):
+            return source
+        entry = self.session_store.lookup_by_session_key(session_key)
+        if entry is None:
+            return source
+
+        def opens_this_thread(origin: Optional[SessionSource]) -> bool:
+            return (
+                origin is not None and str(origin.thread_id) == str(source.thread_id)
+                and self._is_discord_auto_thread_lane(origin)
+            )
+
+        origin = entry.origin
+        if not opens_this_thread(origin):
+            # An entry rebuilt after a lost routing index holds an unmarked event, while the session
+            # row keeps the opening origin until that entry's first peer refresh overwrites it.
+            db = self.session_store._db_for_key(session_key)
+            row = db.get_session(entry.session_id) if db is not None else None
+            raw = (row or {}).get("origin_json")
+            origin = None
+            if raw:
+                with suppress(ValueError, KeyError, TypeError):  # malformed/legacy row: no recovery
+                    origin = SessionSource.from_dict(json.loads(raw))
+            if not opens_this_thread(origin):
+                return source
+        return replace_source(
+            source, auto_thread_created=True, auto_thread_initial_name=origin.auto_thread_initial_name,
         )
 
     def _is_relay_discord_channel_lane(self, source: SessionSource) -> bool:

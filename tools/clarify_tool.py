@@ -7,6 +7,9 @@ from typing import Callable, Dict, List, Optional
 
 MAX_CHOICES = 4  # the UI always appends an "Other (type your answer)" row
 MAX_QUESTIONS = 5  # independent questions per call
+# Per-choice cap. Surfaces wrap long choice text (newlines kept), so anything longer is rejected here, at the
+# source, instead of a surface silently dropping a choice that ``choices_offered`` still reports as shown.
+MAX_CHOICE_CHARS = 8000
 # Applied to the first choice here (not per-surface) so every adapter renders it identically.
 RECOMMENDED_LABEL = "(Recommended)"
 _UNAVAILABLE = "Clarify tool is not available in this execution context."
@@ -63,7 +66,16 @@ def _normalize_questions(questions) -> tuple:
         if choices is not None:
             if not isinstance(choices, list) or not all(isinstance(c, str) for c in choices):
                 return None, f"questions[{index}].choices must be a list of strings."
-            choices = [c.strip() for c in choices if c.strip()][:MAX_CHOICES] or None
+            for pos, choice in enumerate(choices):
+                if len(choice.strip()) > MAX_CHOICE_CHARS:
+                    return None, (f"questions[{index}].choices[{pos}] is {len(choice.strip())} characters; the limit is "
+                                  f"{MAX_CHOICE_CHARS}. Move detail into the question text and resend.")
+            cleaned = [c.strip() for c in choices if c.strip()][:MAX_CHOICES]
+            if choices and not cleaned:
+                # A card with no options strands the turn: say so instead of silently asking open-ended.
+                return None, (f"questions[{index}].choices has {len(choices)} entries but all are blank. "
+                              "Send real labels, or omit choices to ask open-ended.")
+            choices = cleaned or None
         normalized.append({
             "qid": f"q{index}", "question": text,
             "choices": mark_recommended(list(choices)) if choices else None,
@@ -157,7 +169,7 @@ CLARIFY_SCHEMA = {
                         "question": {"type": "string"},
                         "choices": {
                             "type": "array",
-                            "items": {"type": "string"},
+                            "items": {"type": "string"},  # no maxLength: llama.cpp's grammar converter rejects >=2000 (#131278); the limit is enforced above
                             "maxItems": MAX_CHOICES,
                         },
                         "multi_select": {"type": "boolean"},

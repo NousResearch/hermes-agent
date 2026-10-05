@@ -220,9 +220,43 @@ def _persisted_session_cwd(session: dict) -> str | None:
     """The cwd to stamp on the session's DB row, or None to leave it unset (launch-dir rule: ``_ensure_session_db_row``)."""
     if session.get("explicit_cwd"):
         return _session_cwd(session)
-    if _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE:
+    if _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE or _is_remote_launch_cwd(session):
         return None
     return str(session.get("cwd") or "") or None  # the session's OWN dir, never _session_cwd's gateway-wide fallback
+
+
+def _is_remote_launch_cwd(session: dict | None) -> bool:
+    """An ssh session's cwd that nobody picked: the gateway's launch directory, a path on THIS host. Host-side context
+    discovery reads it from memory, but it is never persisted: a resume adopts a stored ssh cwd as the remote
+    workspace."""
+    return bool(session) and not session.get("explicit_cwd") and _cwd_is_remote(session.get("profile_home"))
+
+
+def _is_hermes_owned_cwd(cwd: str, profile_home) -> bool:
+    """Whether ``cwd`` is inside Hermes's own host tree: the Hermes root (``/opt/data`` and its ``/opt/data/home``
+    subprocess home in the Docker image, which also holds every named profile) or the install tree
+    (``/opt/hermes``). A ``~`` path is the remote's home, never this host's."""
+    from agent.runtime_cwd import _is_install_tree
+    from hermes_constants import get_default_hermes_root
+
+    if not os.path.isabs(cwd):
+        return False
+    try:
+        path = Path(cwd).resolve()
+        home = Path(profile_home or get_hermes_home()).expanduser()
+        roots = {home.resolve(), get_default_hermes_root(home=home).resolve()}
+    except (OSError, RuntimeError):
+        return False
+    return any(path == root or root in path.parents for root in roots) or _is_install_tree(path)
+
+
+def _resumable_stored_cwd(cwd, profile_home) -> str:
+    """A session row's stored cwd as a resume may adopt it: empty when an ssh session's row holds a path in Hermes's
+    own host tree (a host launch directory, never a remote workspace)."""
+    cwd = str(cwd or "")
+    if cwd and _cwd_is_remote(profile_home) and _is_hermes_owned_cwd(cwd, profile_home):
+        return ""
+    return cwd
 
 
 def _heal_dead_cwd(cwd: str) -> str:
@@ -534,6 +568,44 @@ def _persist_branch_seed(session: dict) -> None:
             _workdir_reraise_disk_full(exc, "branch seed persist failed")
 
 
+def _submit_row_target_key(session: dict) -> str:
+    """The session row an off-turn submit write must use: the live ``agent.session_id`` when it has
+    rotated off ``session_key``, else ``session_key`` itself.
+
+    The turn's own transcript is flushed under ``agent.session_id`` (``_db_flush_write``), while an
+    off-turn write only has ``session_key`` to go on — and those diverge for the whole of a turn that
+    begins after the agent's session rotated: a compression publish, an adopted continuation tip, or a
+    lease-wait re-resolve all move ``agent.session_id`` while ``session_key`` is re-anchored only at
+    TURN END (``_absorb_turn_result`` -> ``_sync_session_key_after_compress``). Writing the submit row
+    to the stale key splits one turn's rows across two sessions: the user row in the parent, every tool
+    row and the final text in the child (#123545, evidence A + B).
+
+    The live id IS the authority — it is the value the turn will flush under, and the same
+    ``getattr(agent, "session_id", None) or session_key`` the sibling system-prompt persist already uses
+    against this handle (``_persist_live_session_system_prompt``). Do NOT re-resolve through the lineage
+    here: ``resolve_resume_session_id`` returns the deepest node that has MESSAGES, so the freshly-minted
+    child of a just-published rotation resolves back to the parent and the fix would no-op exactly when
+    it is needed. The choice is made ONCE here and recorded on the staged dict under
+    ``_SUBMIT_ROW_SESSION_KEY`` so every later addresser of that row — the @-expansion rewrite, the
+    queue merge, the drain deactivation — reads the same key instead of re-deriving one that a rotation
+    can invalidate mid-turn.
+    """
+    return str(getattr(session.get("agent"), "session_id", None) or "") or str(session.get("session_key") or "")
+
+
+# Wire-sanitizer-safe key carrying the session the submit row was actually written under. Mirrors
+# ``_DB_PERSISTED_MARKER``'s contract (leading underscore, stripped from provider payloads).
+_SUBMIT_ROW_SESSION_KEY = "_submit_row_session_id"
+
+
+def _submit_row_owner_key(staged: dict, session: dict) -> str:
+    """The session id a staged submit row lives under: recorded at write time, else the current best.
+    Every caller narrows to a dict (and checks ``_row_id``) immediately before, so the recorded value is
+    the answer whenever the row exists; the re-derivation only covers a dict that predates the stamp."""
+    recorded = str(staged.get(_SUBMIT_ROW_SESSION_KEY) or "")
+    return recorded or _submit_row_target_key(session)
+
+
 def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
                            accept_metadata: dict | None = None) -> dict | None:
     """Write the submitted user turn to the transcript and RETURN the durable dict (stamped
@@ -543,8 +615,10 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
     ``accept_metadata`` merges into ``display_metadata`` (the busy-queue accept's never-drained
     marker, retired by ``reopen_session`` — #125577).
     Returns None when nothing was written (no key / non-text / store unavailable / failed write)."""
-    key = session.get("session_key")
-    if not key or not isinstance(text, str) or not text.strip():
+    # ``session_key`` is only an "is this a real session" probe — the row is written to ``target`` below,
+    # which a rotation can already have moved off ``session_key`` (#123545). One guard, one value: the
+    # writer must not read a different key than the one it checks.
+    if not session.get("session_key") or not isinstance(text, str) or not text.strip():
         return None
     from agent.context_compressor import _DB_PERSISTED_MARKER
     from agent.message_metadata import stamp_message_timestamp, stamp_message_uid
@@ -556,15 +630,19 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
     with _session_db(session) as db:
         if db is None:
             return None
+        target = _submit_row_target_key(session)
         try:
             staged["_row_id"] = db.append_message(
-                key, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"],
+                target, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"],
                 message_uid=stamp_message_uid(staged),  # the live dict the turn adopts carries the row's uid
                 display_metadata=staged.get("display_metadata"))
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "submit-time user row persist failed")
             return None
     staged[_DB_PERSISTED_MARKER] = True
+    # Record the owning session so every later addresser of THIS row (the @-expansion rewrite, the
+    # queue merge, the drain deactivation) finds it by the same key even if a rotation lands mid-turn.
+    staged[_SUBMIT_ROW_SESSION_KEY] = target
     return staged
 
 
@@ -598,8 +676,12 @@ def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any, text
             if db is None:
                 return
             try:
+                # Address the row where it was actually WRITTEN (``_write_submit_user_row`` recorded it);
+                # a rotated-away ``session_key`` would miss that row's session_id and silently skip the
+                # rewrite, leaving the transcript replaying the raw keystrokes.
                 db.set_user_message_content(
-                    session["session_key"], staged["_row_id"], _durable_content(persist_user_message))
+                    _submit_row_owner_key(staged, session), staged["_row_id"],
+                    _durable_content(persist_user_message))
             except Exception:
                 logger.debug("submit-time user row update failed; the turn writes its own row", exc_info=True)
                 return

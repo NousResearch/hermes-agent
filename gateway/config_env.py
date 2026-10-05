@@ -44,7 +44,6 @@ _ENV_ENABLE_CREDENTIALS: dict = {
     Platform.SIGNAL: ("SIGNAL_HTTP_URL",),
     Platform.MATTERMOST: ("MATTERMOST_TOKEN",),
     Platform.MATRIX: ("MATRIX_ACCESS_TOKEN", "MATRIX_PASSWORD"),
-    Platform.HOMEASSISTANT: ("HASS_TOKEN",),
     Platform.EMAIL: ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
     Platform.SMS: ("TWILIO_ACCOUNT_SID",),
     Platform.DINGTALK: ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
@@ -555,7 +554,6 @@ _ENV_STEPS: tuple = (
         then=_matrix_e2ee,
     ),
     _Home(Platform.MATRIX, "MATRIX_HOME_ROOM"),
-    _Cred(Platform.HOMEASSISTANT, ("HASS_TOKEN",), token="HASS_TOKEN", optional=(("url", "HASS_URL"),)),
     _Cred(
         Platform.EMAIL, ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
         fixed=(("address", "EMAIL_ADDRESS"), ("imap_host", "EMAIL_IMAP_HOST"), ("smtp_host", "EMAIL_SMTP_HOST")),

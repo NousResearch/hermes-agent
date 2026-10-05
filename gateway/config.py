@@ -9,7 +9,7 @@ import os
 import re
 from pathlib import Path
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
-from typing import Dict, List, Optional, Any, Callable
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
@@ -581,6 +581,27 @@ _TOPLEVEL_BOOL_DEFAULTS = {
 }
 
 
+def _parse_silence_narration(value: Any) -> Tuple[Optional[List[str]], Optional[int]]:
+    """``(tokens, max_chars)`` from the ``gateway.silence_narration`` declaration.
+
+    The declaration is the home of a language-specific class: ``tokens`` is the vocabulary the
+    instance's own channel writes and ``max_chars`` the length guard applied beside it. Anything
+    absent or invalid returns ``(None, None)`` — the delivery filter then keeps its built-in
+    English/symbol class, i.e. exactly the behaviour from before the declaration existed.
+    """
+    if not isinstance(value, dict):
+        return None, None
+    raw_tokens = value.get("tokens")
+    tokens = None
+    if isinstance(raw_tokens, (list, tuple)):
+        clean = [token.strip() for token in raw_tokens if isinstance(token, str) and token.strip()]
+        if clean:
+            tokens = clean
+    raw_guard = value.get("max_chars")
+    max_chars = raw_guard if isinstance(raw_guard, int) and not isinstance(raw_guard, bool) and raw_guard > 0 else None
+    return tokens, max_chars
+
+
 @dataclass
 class GatewayConfig:
     """Main gateway configuration: platform connections, session policies, delivery settings."""
@@ -597,6 +618,12 @@ class GatewayConfig:
     # Drop outbound "silence narration" (*(silent)*, 🔇, a bare ".") that ping-pongs in bot-to-bot
     # channels; a substrate guard that survives prompt drift.
     filter_silence_narration: bool = True
+    # Declared home of that class (``gateway.silence_narration``): the vocabulary the instance's own
+    # language uses and the length guard applied beside it. ``None`` on either side keeps the
+    # built-in English/symbol class — a deployment that speaks another language declares its tokens
+    # instead of waiting for a second hand-written list in the delivery path.
+    silence_narration_tokens: Optional[List[str]] = None
+    silence_narration_max_chars: Optional[int] = None
     stt_enabled: bool = True  # Auto-transcribe inbound voice messages
     stt_echo_transcripts: bool = True  # Echo raw STT transcripts back to the user
     group_sessions_per_user: bool = True  # Isolate group sessions per participant when user IDs exist
@@ -711,6 +738,8 @@ class GatewayConfig:
             "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
             **{name: getattr(self, name) for name in self._SCALAR_DICT_FIELDS},
+            "silence_narration_tokens": self.silence_narration_tokens,
+            "silence_narration_max_chars": self.silence_narration_max_chars,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
             "profile_routes": [
@@ -783,6 +812,11 @@ class GatewayConfig:
         max_concurrent_sessions = _coerce_optional_positive_int(
             pick("max_concurrent_sessions"), key_label("max_concurrent_sessions")
         )
+        # The declared silence-narration class (``gateway.silence_narration``): absent or invalid
+        # leaves both ``None``, and the delivery filter keeps its built-in English/symbol class.
+        silence_narration_tokens, silence_narration_max_chars = _parse_silence_narration(
+            pick("silence_narration")
+        )
 
         try:
             session_store_max_age_days = max(int(data.get("session_store_max_age_days", 90)), 0)
@@ -813,6 +847,8 @@ class GatewayConfig:
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=parse_profile_routes(data.get("profile_routes") or []),
+            silence_narration_tokens=silence_narration_tokens,
+            silence_narration_max_chars=silence_narration_max_chars,
         )
 
     def _extra_choice(self, platform: Optional[Platform], key: str, choices: set, default: str) -> Optional[str]:

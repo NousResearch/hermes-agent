@@ -3,17 +3,20 @@
 Python port (~170 LOC) of Merit-Systems/OpenInstinct's
 ``lib/manager/server/kernel-login-autofill.ts`` (MIT). Classifies visible
 input controls on a page into login-autofill tokens. The vault fill path
-uses the classification to select the single best current-password control
-(the identifier is agent-visible metadata and is typed by the agent
-itself via normal input tools).
+uses the classification to select password-family controls only (the
+identifier is agent-visible metadata and is typed by the agent itself via
+normal input tools).
 
 Scoring:
 - exact autocomplete-token match ................ 100
-- type=password (not new/confirm/create/repeat) .. 90
+- current/old/existing password labels .......... 95
+- confirm/repeat/create/new password labels ...... 95
+- type=password .................................. 90
 - type=email / type=tel .......................... 85
 - label/name regex heuristics .................. 70-75
-Hard exclusions: autocomplete ``new-password`` / ``one-time-code``, and
-label/name text matching ``(new|confirm|create|repeat)\\s*password``.
+Hard exclusion: autocomplete ``one-time-code``. Signup/reset password
+fields are classified but are only filled together when no authoritative
+``current-password`` field is present.
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-LOGIN_AUTOFILL_TOKENS = ("username", "email", "tel", "current-password")
+LOGIN_AUTOFILL_TOKENS = ("username", "email", "tel", "current-password", "new-password")
 
 # Payment / address autocomplete tokens (WHATWG) the checkout fill targets. ``cc-exp`` (combined
 # MM/YY) is derived at fill time from exp_month + exp_year. Field-name/label heuristics below back
@@ -47,9 +50,11 @@ _CHECKOUT_HEURISTICS = (
     (re.compile(r"\b(?:country)\b"), "country-name"),
 )
 
-_EXCLUDED_AUTOCOMPLETE = {"new-password", "one-time-code"}
+_EXCLUDED_AUTOCOMPLETE = {"one-time-code"}
 
-_RE_EXCLUDED_PASSWORD = re.compile(r"\b(?:new|confirm|create|repeat)\s*password\b")
+_RE_CURRENT_PASSWORD = re.compile(r"\b(?:current|old|existing)\s*password\b")
+_RE_NEW_PASSWORD = re.compile(r"\b(?:new|create)\s*password\b")
+_RE_CONFIRM_PASSWORD = re.compile(r"\b(?:(?:confirm|repeat|re\s*enter)\s*password|password\s*confirmation)\b")
 _RE_EMAIL = re.compile(r"\b(?:e[\s-]?mail|email address)\b")
 _RE_TEL = re.compile(r"\b(?:phone|telephone|mobile)\b")
 _RE_USERNAME = re.compile(
@@ -111,8 +116,12 @@ def classify_login_control(control: LoginControl) -> Optional[ClassifiedLoginCon
     searchable = _normalize_text(
         " ".join(part for part in (control.name, control.label) if part)
     )
-    if _RE_EXCLUDED_PASSWORD.search(searchable):
-        return None
+    if _RE_CURRENT_PASSWORD.search(searchable):
+        return ClassifiedLoginControl(control, 95, "current-password")
+    if _RE_CONFIRM_PASSWORD.search(searchable):
+        return ClassifiedLoginControl(control, 95, "confirm-password")
+    if _RE_NEW_PASSWORD.search(searchable):
+        return ClassifiedLoginControl(control, 95, "new-password")
     if control.type == "password":
         return ClassifiedLoginControl(control, 90, "current-password")
     if control.type == "email":
@@ -156,26 +165,41 @@ def select_password_fill(
     classified: List[ClassifiedLoginControl],
     password: str,
 ) -> List[Dict[str, Any]]:
-    """Select the single best current-password control to fill.
+    """Select password-family controls to fill.
 
     The vault fill path is password-only: the identifier is agent-visible
-    metadata and is typed by the agent via normal input tools. This picks
-    the highest-scoring ``current-password`` control (ties broken by DOM
-    order) and returns ``[{"index": int, "token": "current-password",
-    "value": password}]`` or ``[]`` when no password field exists.
+    metadata and is typed by the agent via normal input tools. A normal
+    login/change-password form with an authoritative ``current-password``
+    field fills only that current password. A signup/reset form with no
+    authoritative current-password field but with a password confirmation
+    sibling fills the same secret into the password and confirmation fields
+    in that form. Returns fill dicts or ``[]`` when no password field exists.
     """
-    passwords = [c for c in classified if c.token == "current-password"]
+    password_tokens = {"current-password", "new-password", "confirm-password"}
+    passwords = [c for c in classified if c.token in password_tokens]
     if not passwords or not password:
         return []
-    best_password = sorted(
-        passwords, key=lambda c: (-c.score, c.control.index)
-    )[0]
+    authoritative_current = [c for c in passwords if c.token == "current-password" and c.score >= 95]
+    if authoritative_current:
+        passwords = sorted(authoritative_current, key=lambda c: (-c.score, c.control.index))[:1]
+    else:
+        by_form: Dict[Optional[int], List[ClassifiedLoginControl]] = {}
+        for item in passwords:
+            by_form.setdefault(item.control.form_index, []).append(item)
+        signup_groups = [
+            group for group in by_form.values()
+            if len(group) > 1 and any(c.token in {"new-password", "confirm-password"} for c in group)
+        ]
+        if signup_groups:
+            passwords = sorted(
+                max(signup_groups, key=lambda group: (len(group), -min(c.control.index for c in group))),
+                key=lambda c: c.control.index,
+            )
+        else:
+            passwords = sorted(passwords, key=lambda c: (-c.score, c.control.index))[:1]
     return [
-        {
-            "index": best_password.control.index,
-            "token": "current-password",
-            "value": password,
-        }
+        {"index": item.control.index, "token": item.token, "value": password}
+        for item in passwords
     ]
 
 
@@ -311,7 +335,8 @@ _FILL_JS_TEMPLATE = """(() => {
   const norm = (t) => String(t || "").trim().toLowerCase();
   for (const f of fills) {
     const el = document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
-    if (!el || (f.token === "current-password" && el.type !== "password")) continue;
+    const passwordToken = typeof f.token === "string" && f.token.endsWith("password");
+    if (!el || (passwordToken && el.type !== "password")) continue;
     try {
       if (el.tagName === "SELECT") {
         const want = norm(f.value);

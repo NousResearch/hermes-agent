@@ -56,7 +56,7 @@ def test_existing_treeless_checkout_is_refetched_before_update(tmp_path):
     source = tmp_path / "source"
     install = tmp_path / "install"
 
-    subprocess.run(["git", "init", "--bare", str(origin)], check=True, capture_output=True)
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
     def git(cwd, *args):
         return subprocess.run(["git", "-C", str(cwd), *args], check=True,
                               capture_output=True, text=True)
@@ -74,12 +74,14 @@ def test_existing_treeless_checkout_is_refetched_before_update(tmp_path):
     git(origin, "config", "uploadpack.allowFilter", "true")
     git(origin, "config", "uploadpack.allowAnySHA1InWant", "true")
 
-    subprocess.run(["git", "clone", "--filter=tree:0", origin.as_posix(), install.as_posix()],
+    # A file:// URL: git ignores --filter on a plain-path clone and would copy every tree.
+    subprocess.run(["git", "clone", "--filter=tree:0", origin.as_uri(), install.as_posix()],
                    check=True, capture_output=True, text=True)
     assert git(install, "config", "--get", "remote.origin.partialclonefilter").stdout.strip() == "tree:0"
+    head = git(install, "rev-parse", "HEAD").stdout.strip()
 
     env = dict(os.environ, HOME=tmp_path.as_posix(), HERMES_HOME=(tmp_path / "home").as_posix(),
-               HERMES_INSTALL_DIR=install.as_posix(), HERMES_REPO_URL=origin.as_posix())
+               HERMES_INSTALL_DIR=install.as_posix(), HERMES_REPO_URL=origin.as_uri())
     script = f'''source {shlex.quote((ROOT / 'scripts/install.sh').as_posix())} --manifest
 stage_repository
 GIT_NO_LAZY_FETCH=1 git -C {shlex.quote(install.as_posix())} rev-list HEAD -- history.txt
@@ -87,3 +89,4 @@ GIT_NO_LAZY_FETCH=1 git -C {shlex.quote(install.as_posix())} rev-list HEAD -- hi
     result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
     assert git(install, "config", "--get", "remote.origin.partialclonefilter").stdout.strip() == "blob:none"
+    assert git(install, "rev-parse", "HEAD").stdout.strip() == head, "the checkout was re-cloned, not converted"

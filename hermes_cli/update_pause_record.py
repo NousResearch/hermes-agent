@@ -604,6 +604,11 @@ def merge_into(token: dict | None, adopted: dict) -> dict:
     obligation id (and every id it absorbed) is recorded so a leftover copy is never resumed twice."""
     token = token if token is not None else {"resume_needed": True, "profiles": {}, "unmapped_pids": [], "unmapped": []}
     token["resume_needed"] = True
+    # The oldest tree evidence wins: stamping the current tree instead would certify whatever a
+    # killed update left half-written as "dirty before the pause".
+    for key in ("pre_sha", "dirty_at_pause"):
+        if key in adopted:
+            token.setdefault(key, adopted[key])
     absorbed = token.setdefault("absorbed", [])
     absorbed.extend(i for i in [adopted.get("pause_id"), *(adopted.get("absorbed") or [])] if i and i not in absorbed)
     profiles = token.setdefault("profiles", {})

@@ -114,6 +114,26 @@ def test_resume_waits_for_a_whole_tree(tmp_path):
     assert not whole and "dependencies" in why, why
 
 
+def test_an_update_adopting_an_orphan_never_certifies_the_tree_it_left_torn(tmp_path, monkeypatch):
+    root = tmp_path / "checkout"
+    root.mkdir()
+    _git(root, "init", "-q")
+    (root / "a.py").write_text("v1\n", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "v1")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(pause_record, "install_root", lambda: root)
+    pause_record.write(pause_record.stamp_tree({"resume_needed": True, "profiles": {"default": 4242}}),
+                       owner=pause_record.UNOWNED)
+    (root / "a.py").write_text("half-written\n", encoding="utf-8")  # the killed update's git died mid-checkout
+    assert not pause_record.tree_is_whole(pause_record.read()["token"], root)[0], "premise: the orphan's gate refuses"
+
+    adopted, claims = pause_record.adopt_orphans()
+    token = pause_record.record_pause({"resume_needed": True, "profiles": {"beta": 99}}, adopted, claims)
+    whole, why = pause_record.tree_is_whole(token, root)
+    assert not whole and "a.py" in why, "adoption certified the torn tree as the pre-update baseline"
+
+
 def _orphan(tmp_path: Path, profiles: dict) -> None:
     """A record whose owner — a real ``hermes update`` stand-in — was SIGKILLed after writing it."""
     owner = _child("""

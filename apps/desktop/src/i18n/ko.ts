@@ -2711,6 +2711,9 @@ export const ko = defineLocale({
     sharedGatewayRestarted: count => `공유 게이트웨이를 다시 시작했습니다 (봇 ${count}개)`
   },
   messaging: {
+    addListEntry: 'ID 추가',
+    removeListEntry: '항목 삭제',
+    listEntryPlaceholder: 'ID를 입력하세요',
     search: '메시징 검색...',
     loading: '메시징 플랫폼 불러오는 중...',
     loadFailed: '메시징 플랫폼 불러오기 실패',

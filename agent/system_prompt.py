@@ -741,18 +741,26 @@ def _persisted_git_history(block: str) -> Optional[List[str]]:
 
 def _persisted_generation_matches(block: str, owner: Path, expect_git: bool) -> bool:
     """Whether the snapshot's capture-time evidence still describes today's occupant of
-    the workspace. A git workspace is identified by its history tip (the same
-    ``git log -3`` render the producer emits); a marker-only workspace by its project
-    facts. A pathname whose previous occupant was replaced by an independent workspace
-    fails even when every spelling and ancestry check passes."""
+    the workspace. A git workspace is identified by its captured HEAD: the first
+    ``- Recent commits:`` entry names the commit the snapshot was taken at, and that
+    object exists only in the repository that made it — an independent repository
+    created at the same pathname cannot contain it. Membership, not tip equality: the
+    pin exists so ordinary work (commits since session start) does NOT rewrite the
+    prompt, so a captured HEAD that has since gained descendants is the same
+    generation. A marker-only workspace is identified by its project facts."""
     from agent.coding_context import _facts_lines, _git, detect_project_facts
     persisted_history = _persisted_git_history(block)
     if (persisted_history is not None) != expect_git:
         return False
     if persisted_history is not None:
-        today = [line for line in _git(owner, "log", "-3", "--pretty=%h %s").splitlines()
-                 if line.strip()]
-        return persisted_history == today
+        if not persisted_history:
+            # Captured before the first commit: no object to look up, and nothing a
+            # replacement could impersonate beyond an equally empty history.
+            return True
+        captured_head = persisted_history[0].split(" ", 1)[0]
+        # rev-parse prints the full hash when the object is present and unambiguous;
+        # "" (missing, ambiguous, or git failure) falls back to a fresh snapshot.
+        return bool(_git(owner, "rev-parse", "--verify", "--quiet", f"{captured_head}^{{commit}}"))
     persisted_facts = [line for line in block.splitlines()
                        if line.startswith(("- Project: ", "- Verify: ", "- Context files: "))]
     return persisted_facts == _facts_lines(detect_project_facts(owner))

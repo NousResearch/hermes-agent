@@ -354,6 +354,37 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_resumed_session_replays_the_snapshot_after_commits_landed_in_the_same_repo(self):
+        """The pin's reason to exist, on the adoption seam: a session resumed after the user
+        committed must replay the session-start snapshot, not re-probe (a fresh probe emits
+        a different ``- Recent commits:`` tip and rewrites the cached prompt prefix).
+        Generation evidence is membership of the captured HEAD in today's repository, not
+        equality with its tip."""
+        import tempfile, shutil, subprocess
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-resume-after-commit-"))
+        try:
+            repo = _init_repo(tmp / "proj", "init commit")
+
+            def env(cwd):
+                return patch("agent.prompt_builder.build_environment_hints",
+                             return_value=f"Host: x\nUser home directory: /h\nCurrent working directory: {cwd}")
+
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(repo), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+                stored = build_system_prompt(self._pin_agent())
+                self.assertIn("init commit", stored)
+                (repo / "feature.py").write_text("x = 1\n")
+                subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+                subprocess.run(["git", "commit", "-q", "-m", "second commit"], cwd=repo, check=True)
+                db = SimpleNamespace(get_session=lambda sid: {"system_prompt": stored})
+                resumed = self._pin_agent(_cached_system_prompt=None, _session_db=db)
+                self.assertEqual(build_system_prompt(resumed), stored)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_loop_cwd_spelling_in_persisted_bytes_cannot_drop_the_coding_block(self):
         """A symlink loop in persisted session bytes (the Current working directory hint or a
         ``- Root:`` line) makes Path.resolve raise RuntimeError on Python <= 3.12; the pin

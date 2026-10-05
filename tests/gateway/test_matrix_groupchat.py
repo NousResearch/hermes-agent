@@ -68,6 +68,21 @@ async def test_two_member_proof_requires_exact_joined_members(members, sender, e
 
 
 @pytest.mark.anyio
+async def test_two_member_proof_falls_back_to_direct_joined_members_query():
+    adapter = MatrixAdapter(PlatformConfig(extra={"user_id": "@agent:example.test"}))
+    joined = AsyncMock(return_value={
+        "@agent:example.test": object(),
+        "@human:example.test": object(),
+    })
+    adapter._client = SimpleNamespace(state_store=None, get_joined_members=joined)
+
+    assert await adapter._is_verified_two_member_room(
+        "!room:example.test", "@human:example.test"
+    ) is True
+    joined.assert_awaited_once_with("!room:example.test")
+
+
+@pytest.mark.anyio
 async def test_two_member_proof_is_normalized_into_message_metadata():
     adapter = MatrixAdapter(PlatformConfig(extra={"user_id": "@agent:example.test"}))
     source = SessionSource(

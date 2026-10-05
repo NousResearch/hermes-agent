@@ -18,7 +18,7 @@ def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None)
     """Deduped, stripped skill names; None when neither argument was given."""
     if skills is None and single_skill is None:
         return None
-    from cron.jobs import _skill_list_items
+    from cron.skill_lists import _skill_list_items
 
     items: list[str] = []
     source = list(skills) if skills is not None else [single_skill]
@@ -720,7 +720,7 @@ def _skills_repr_strings(job: dict[str, Any]) -> list[str]:
 def _skill_list_repr(value: Any) -> str:
     """The normalized form of one skills entry: bare name, or '' when it parsed as a whole
     list/dict literal of strings (i.e. the malformed shape)."""
-    from cron.jobs import _skill_list_items
+    from cron.skill_lists import _skill_list_items
 
     parts = _skill_list_items(value)
     if len(parts) == 1 and isinstance(parts[0], str):
@@ -736,8 +736,8 @@ def _cron_doctor_issues_for_job(
         issues.append(
             "skills were stored as a stringified list (e.g. \"['x']\" instead of ['x']) — "
             "runs treat it as one bogus skill name and the skills never load. "
-            "Fix: `hermes cron edit <id> --skill <name>` to rewrite the field, "
-            "or edit jobs.json directly.")
+            "Fix: call cronjob(action='update', job_id=<id>, skills=[<names>]) to rewrite the "
+            "field, or edit jobs.json directly.")
     last_status = str(job.get("last_status") or "").strip().lower()
     # "delivery_failed" = the agent run succeeded; the delivery issue below reports it.
     if last_status and last_status not in {"ok", "delivery_failed", "delivery_queued"}:

@@ -9,10 +9,41 @@ until GC, exhausting ``RLIMIT_NOFILE`` on long-running gateways) and at least on
 from __future__ import annotations
 
 import contextlib
+import math
 import sqlite3
 import time
 from pathlib import Path
 from typing import Callable, Iterator
+
+
+_BUSY_TIMEOUT_DEFAULT_MS = 10_000
+_SQLITE_BUSY_TIMEOUT_MAX_MS = 2_147_483_647  # SQLite stores busy_timeout as a signed 32-bit int.
+
+
+def resolve_busy_timeout_ms() -> int:
+    """The configured ``database.busy_timeout_seconds`` in whole milliseconds (10s default).
+
+    Read through the canonical config loader at call time so it follows the active profile.
+    Absent, non-numeric, non-finite or non-positive values fall back to the historical 10s
+    default: a busy timeout of 0 makes SQLite surface ``database is locked`` immediately
+    instead of waiting for the concurrent writer to finish.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        database = (load_config_readonly() or {}).get("database", {})
+    except Exception:
+        return _BUSY_TIMEOUT_DEFAULT_MS
+    raw = database.get("busy_timeout_seconds") if isinstance(database, dict) else None
+    # bool is an int subclass: ``busy_timeout_seconds: true`` must not silently mean 1s.
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return _BUSY_TIMEOUT_DEFAULT_MS
+    try:
+        seconds = float(raw)
+    except OverflowError:
+        return _BUSY_TIMEOUT_DEFAULT_MS
+    if not math.isfinite(seconds) or seconds <= 0 or seconds > _SQLITE_BUSY_TIMEOUT_MAX_MS / 1000:
+        return _BUSY_TIMEOUT_DEFAULT_MS
+    return max(1, round(seconds * 1000))
 
 
 def open_db(

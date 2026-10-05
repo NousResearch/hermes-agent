@@ -2,14 +2,7 @@ name: stream-speed
 repo: https://github.com/olric3015/hermes-plugins
 sha: 98875c4a313a5b52f9b03e05f56df35bf8a8f161
 subdir: stream-speed
-description: >-
-  How fast each model starts answering and how fast it writes: /speed shows
-  the median and p90 time to first text and the median characters per second
-  per model, from the streaming hooks. Disclosure — no network, no subprocess,
-  no credentials; writes one JSON line per streamed response (identifiers,
-  timings and a character count, never the streamed text or error text) to
-  plugin-data/stream-speed/streams.jsonl, capped at 5,000 rows; an atexit
-  handler waits at most one second for a stream still open at exit.
+description: "How fast each model starts answering and how fast it writes: /speed shows the median and p90 time to first text and the median characters per second per model, from the streaming hooks. Disclosure — writes per-response stream timings (ids, model, timings, character count, no text) to plugin-data/stream-speed/streams.jsonl, trimmed to 5,000 rows past 2 MB; atexit waits up to 1 s; no network"
 maintainer: olric3015
 tier: community
 category: tools

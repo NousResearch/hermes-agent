@@ -48,30 +48,9 @@ export function handoffResultPath(hermesHome: string): string {
   return path.join(hermesHome, '.hermes-update-result.json')
 }
 
-/**
- * Parse first, then consume (desktop V19): an unparseable file is renamed to
- * `.corrupt` and logged — never silently dropped — so a torn result stays
- * inspectable. Match the stable marker run ID, not line 2 (a heartbeat that
- * can change before this Desktop even opens). Only older producers without
- * run_id, or boots without an identified marker, use started_at correlation.
- */
-export function readAndConsumeHandoffResult(
-  hermesHome: string,
-  {
-    now = Date.now,
-    maxAgeMs = HANDOFF_RESULT_MAX_AGE_MS,
-    expectedStartedAt = null,
-    expectedRunId = null,
-    log = () => {}
-  }: {
-    now?: () => number
-    maxAgeMs?: number
-    expectedStartedAt?: number | null
-    expectedRunId?: string | null
-    log?: (line: string) => void
-  } = {}
-): HandoffResult | null {
-  const file = handoffResultPath(hermesHome)
+/** Read, parse, then consume the result file; null when absent or unparseable (a JSON `null` body is
+ * still a parsed result, hence the wrapper). */
+function consumeHandoffResultFile(file: string, log: (line: string) => void): { parsed: any } | null {
   let raw: string
 
   try {
@@ -104,9 +83,79 @@ export function readAndConsumeHandoffResult(
     // Best-effort; a locked file just gets consumed on the next boot.
   }
 
+  return { parsed }
+}
+
+/** Why a parsed result belongs to another run (or is malformed), or null when it is this run's. */
+function handoffRunMismatch(
+  parsed: any,
+  expectedRunId: string | null,
+  expectedStartedAt: number | null
+): string | null {
+  const runId = parsed?.run_id
+  const startedAt = Number(parsed?.started_at)
+
+  // Missing means legacy. A present but malformed ID must not downgrade to
+  // weaker timestamp matching (nor be normalized into another run).
+  if (runId !== undefined && (typeof runId !== 'string' || RUN_ID_RE.exec(runId)?.[0] !== runId)) {
+    return '[updates] hand-off result has an invalid run_id; discarded'
+  }
+
+  if (expectedRunId !== null && runId !== undefined) {
+    return runId !== expectedRunId ? `[updates] hand-off result is for run ${runId}, not ${expectedRunId}; discarded` : null
+  }
+
+  if (expectedStartedAt !== null && Number.isFinite(startedAt) && startedAt !== expectedStartedAt) {
+    return `[updates] hand-off result is for the run started at ${startedAt}, not ${expectedStartedAt}; discarded`
+  }
+
+  return null
+}
+
+function toHandoffResult(parsed: any, manual: boolean): HandoffResult {
+  return {
+    ok: Boolean(parsed?.ok),
+    exitCode: Number.isFinite(Number(parsed?.exit_code)) ? Number(parsed.exit_code) : 1,
+    manual,
+    message: typeof parsed?.message === 'string' ? parsed.message : '',
+    branch: typeof parsed?.branch === 'string' ? parsed.branch : '',
+    warnings: Array.isArray(parsed?.warnings) ? parsed.warnings.map(String).filter(Boolean) : []
+  }
+}
+
+/**
+ * Parse first, then consume (desktop V19): an unparseable file is renamed to
+ * `.corrupt` and logged — never silently dropped — so a torn result stays
+ * inspectable. Match the stable marker run ID, not line 2 (a heartbeat that
+ * can change before this Desktop even opens). Only older producers without
+ * run_id, or boots without an identified marker, use started_at correlation.
+ */
+export function readAndConsumeHandoffResult(
+  hermesHome: string,
+  {
+    now = Date.now,
+    maxAgeMs = HANDOFF_RESULT_MAX_AGE_MS,
+    expectedStartedAt = null,
+    expectedRunId = null,
+    log = () => {}
+  }: {
+    now?: () => number
+    maxAgeMs?: number
+    expectedStartedAt?: number | null
+    expectedRunId?: string | null
+    log?: (line: string) => void
+  } = {}
+): HandoffResult | null {
+  const consumed = consumeHandoffResultFile(handoffResultPath(hermesHome), log)
+
+  if (consumed === null) {
+    return null
+  }
+
+  const { parsed } = consumed
+
   const manual = Boolean(parsed?.manual)
   const finishedAt = Number(parsed?.finished_at)
-  const startedAt = Number(parsed?.started_at)
 
   if (!Number.isFinite(finishedAt)) {
     log('[updates] hand-off result has no finished_at; discarded')
@@ -114,24 +163,10 @@ export function readAndConsumeHandoffResult(
     return null
   }
 
-  const runId = parsed?.run_id
+  const mismatch = handoffRunMismatch(parsed, expectedRunId, expectedStartedAt)
 
-  // Missing means legacy. A present but malformed ID must not downgrade to
-  // weaker timestamp matching (nor be normalized into another run).
-  if (runId !== undefined && (typeof runId !== 'string' || RUN_ID_RE.exec(runId)?.[0] !== runId)) {
-    log('[updates] hand-off result has an invalid run_id; discarded')
-
-    return null
-  }
-
-  if (expectedRunId !== null && runId !== undefined) {
-    if (runId !== expectedRunId) {
-      log(`[updates] hand-off result is for run ${runId}, not ${expectedRunId}; discarded`)
-
-      return null
-    }
-  } else if (expectedStartedAt !== null && Number.isFinite(startedAt) && startedAt !== expectedStartedAt) {
-    log(`[updates] hand-off result is for the run started at ${startedAt}, not ${expectedStartedAt}; discarded`)
+  if (mismatch !== null) {
+    log(mismatch)
 
     return null
   }
@@ -143,12 +178,5 @@ export function readAndConsumeHandoffResult(
     return null
   }
 
-  return {
-    ok: Boolean(parsed?.ok),
-    exitCode: Number.isFinite(Number(parsed?.exit_code)) ? Number(parsed.exit_code) : 1,
-    manual,
-    message: typeof parsed?.message === 'string' ? parsed.message : '',
-    branch: typeof parsed?.branch === 'string' ? parsed.branch : '',
-    warnings: Array.isArray(parsed?.warnings) ? parsed.warnings.map(String).filter(Boolean) : []
-  }
+  return toHandoffResult(parsed, manual)
 }

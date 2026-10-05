@@ -11,7 +11,7 @@ def test_attention_wire_is_a_fixed_metadata_projection(tmp_path):
         holder = f"pid={os.getpid()}:turn=metadata"
         db.try_acquire_session_turn_lease("s", holder)
         turn = db.begin_session_observation("s", holder)
-        request = db.open_session_attention("s", turn, "validation")
+        assert db.open_session_attention("s", turn, "validation")
         attention = db.read_session_observations(["s"], profile="default")[0]["attention"]
         attention["prompt"] = "synthetic-private-sentinel"
         db._write_sql("UPDATE session_observations SET attention_json=?", (json.dumps([attention]),))

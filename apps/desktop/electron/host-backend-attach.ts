@@ -86,6 +86,21 @@ export async function fetchBackendCodeIdentity(baseUrl: string, timeoutMs = 3000
 /** A ready backend whose identity could not be read yet: neither attach nor spawn beside it. */
 const UNCONFIRMED = 'unconfirmed'
 
+/** The commit this Desktop would spawn its backend from: its checkout's HEAD, or null off git. */
+export async function checkoutHeadIdentity(
+  root: string,
+  isGitCheckout: (root: string) => boolean,
+  git: (args: string[], options: { cwd: string; timeoutMs: number }) => Promise<{ code: number | null; stdout: string }>
+): Promise<string | null> {
+  if (!isGitCheckout(root)) {
+    return null
+  }
+
+  const head = await git(['rev-parse', 'HEAD'], { cwd: root, timeoutMs: 5000 })
+
+  return head.code === 0 ? head.stdout.trim() || null : null
+}
+
 export function spawnLedgerPath(hermesHomeRoot: string, join: (...parts: string[]) => string): string {
   return join(hermesHomeRoot, SPAWN_LEDGER_FILENAME)
 }

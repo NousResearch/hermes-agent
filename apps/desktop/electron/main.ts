@@ -308,6 +308,7 @@ import {
 import {
   type AttachedBackend,
   attachOrReserveSpawn,
+  checkoutHeadIdentity,
   HOST_SPAWN_GATE_STALE_MS,
   spawnLedgerPath,
   type SpawnReservation
@@ -592,23 +593,15 @@ import {
 } from './translucency'
 import { waitForUpdateClearance } from './update-gate'
 import {
-  cachedCreateTimeProbe,
-  describeSkippedPrewrite,
-  markerPath,
-  updateHandoffConflict,
-  writeUpdateMarker
-} from './update-marker'
-import {
-  allowStartOverHold,
-  type HeldState,
-  heldWaitMessage,
-  HOLD_SCREEN_GRACE_MS,
-  liveMarkerProbe,
-  PRIMARY_HOLD_OWNER,
-  requestHoldRecheck,
-  startAnywayLogLine,
-  UpdateHoldBoard
-} from './update-marker-gate'
+  createUpdateHoldScreen,
+  holdGraceClock,
+  type MarkerGateCallbacks,
+  markerGateProbe,
+  registerUpdateHoldIpc,
+  type UpdateHoldWire
+} from './update-hold-wiring'
+import { describeSkippedPrewrite, markerPath, updateHandoffConflict, writeUpdateMarker } from './update-marker'
+import { type HeldState, heldWaitMessage } from './update-marker-gate'
 import { updateConnectionsBeforeLocal } from './update-order'
 import {
   resolveUpdaterMechanism,
@@ -636,7 +629,6 @@ import { readSourceUpdate, type SourceUpdate } from './updater/checkout-source'
 import { ExternalStrategy } from './updater/external'
 import { readUpdatesFeedBaseFromConfig, resolveFeedBaseUrl } from './updater/feed-config'
 import { createChannelMacStrategy, createMacStrategy } from './updater/mac-client'
-import { runMarkerHelper } from './updater/marker-helper'
 import { UpdateOperation } from './updater/operation'
 import {
   type ConsumedRelaunch,
@@ -3010,34 +3002,12 @@ const UPDATE_HANDOFF_DWELL_MS = 2500
 // The hand-off state closes the later Windows `cmd start` wrapper gap: the
 // wrapper exits 0 before the real PowerShell script claims the marker, and
 // `finally` clears updateInFlight immediately after the hand-off is accepted.
-function updateGateDeps(
-  onLiveMarker?: (marker: { startedAt: number | null }) => void,
-  onHeld?: (state: HeldState) => void,
-  onOverride?: (holdId: string) => void
-) {
-  // One creation-time probe per pid for this wait: on Windows each probe is a
-  // powershell spawn and the gate polls every second.
-  const createTime = cachedCreateTimeProbe()
-
+function updateGateDeps(callbacks: MarkerGateCallbacks = {}) {
   return {
-    // Owner liveness (pid + creation time) only: a failed receipt never
-    // outranks a live marker — `latest.json` is written at finalize, so a retry
-    // after a failed update still reads "failed" while the new one runs (V2).
-    // A dead marker is never deleted here (A7 rule 3); the checkout script's
-    // helper decides under its lock whether a completion still holds the
-    // checkout (R6) — see update-marker-gate.ts.
-    hasLiveMarker: liveMarkerProbe({
-      hermesHome: HERMES_HOME,
-      createTime,
-      onLiveMarker,
-      onHeld,
-      onOverride,
-      log: rememberLog,
-      // A missing or pre-protocol-2 script answers `unsupported`; one that
-      // exists but cannot be read answers `error` (R8 M5).
-      reclaim: () =>
-        runMarkerHelper('reclaim', { updateRoot: resolveUpdateRoot(), hermesHome: HERMES_HOME, isWindows: IS_WINDOWS })
-    }),
+    hasLiveMarker: markerGateProbe(
+      { hermesHome: HERMES_HOME, isWindows: IS_WINDOWS, log: rememberLog, updateRoot: resolveUpdateRoot },
+      callbacks
+    ),
     isUpdateInFlight: () => updateInFlight,
     isHandoffActive: () => isQuittingForHandoff
   }
@@ -3096,94 +3066,16 @@ function relaunchIntoSwappedBundle() {
   return true
 }
 
-// What the blocked boot screen shows (R8 D3). The renderer mirrors this as
-// `DesktopUpdateHold` in src/global.d.ts.
-interface UpdateHoldWire {
-  holdId: string
-  verdict: 'held' | 'busy' | 'error'
-  ownerPid: number | null
-  since: number
-  checkedAt: number
-  logPath: string
-}
+// The blocked boot screen (R8 D3) every update wait publishes its hold on.
+const updateHoldScreen = createUpdateHoldScreen({
+  hermesHome: HERMES_HOME,
+  log: rememberLog,
+  bootHold: () => bootProgressState.updateHold,
+  updateBootProgress
+})
 
-// The hold the boot screen currently shows; the IPC handlers below act on it
-// only (a Start anyway for a hold the user never saw is refused).
-let currentUpdateHold: HeldState | null = null
-// Every wait blocked past the grace: the primary boot and each pool/profile
-// backend (R8 M6). The screen shows the primary's, else the first pool one.
-const updateHoldBoard = new UpdateHoldBoard()
-
-function updateHoldWire(state: HeldState): UpdateHoldWire {
-  return {
-    holdId: state.holdId,
-    verdict: state.verdict === 'live' ? 'held' : state.verdict,
-    ownerPid: state.ownerPid,
-    since: state.since,
-    checkedAt: state.checkedAt,
-    logPath: path.join(HERMES_HOME, 'logs', 'update.log')
-  }
-}
-
-function clearUpdateHold(owner = PRIMARY_HOLD_OWNER) {
-  updateHoldBoard.clear(owner)
-  const shown = updateHoldBoard.shown()
-
-  if (shown) {
-    renderUpdateHold(shown, false)
-
-    return
-  }
-
-  if (!currentUpdateHold && !bootProgressState.updateHold) {
-    return
-  }
-
-  currentUpdateHold = null
-  updateBootProgress({ updateHold: null })
-}
-
-// A pool/profile wait publishes only the hold (its boot is not the window's).
-function showUpdateHold(state: HeldState, owner = PRIMARY_HOLD_OWNER) {
-  updateHoldBoard.set(owner, state)
-  renderUpdateHold(updateHoldBoard.shown()!, owner === PRIMARY_HOLD_OWNER)
-}
-
-function renderUpdateHold(state: HeldState, bootPhase: boolean) {
-  const previous = currentUpdateHold
-  const sameHold = previous?.holdId === state.holdId && previous.verdict === state.verdict
-
-  if (sameHold && previous.checkedAt === state.checkedAt && bootProgressState.updateHold) {
-    return
-  }
-
-  if (previous?.holdId !== state.holdId) {
-    rememberLog(
-      `[updates] boot blocked: the update marker is ${state.verdict}` +
-        `${state.ownerPid ? ` (update pid ${state.ownerPid}, exited)` : ''}, hold ${state.holdId}; ` +
-        'the backend stays stopped until the hold ends, the user quits, or the user confirms Start anyway'
-    )
-  }
-
-  currentUpdateHold = state
-
-  if (!bootPhase) {
-    updateBootProgress({ updateHold: updateHoldWire(state) })
-
-    return
-  }
-
-  updateBootProgress({
-    phase: 'backend.update-held',
-    // Logged by updateBootProgress: only when what holds the install changes,
-    // not on every re-check.
-    ...(sameHold ? {} : { message: heldWaitMessage(state) }),
-    progress: 12,
-    running: true,
-    error: null,
-    updateHold: updateHoldWire(state)
-  })
-}
+const clearUpdateHold = updateHoldScreen.clear
+const showUpdateHold = updateHoldScreen.show
 
 // Block until no live update is in progress (or we hit the wait timeout).
 // Emits a boot-progress phase so the renderer shows "Update in progress…"
@@ -3198,23 +3090,23 @@ async function waitForUpdateToFinish() {
   // ownership the helper could not establish: its state this poll, and since
   // when it has blocked this wait (the blocked screen's grace, R8 D3).
   let held: HeldState | null = null
-  let blockedSince: number | null = null
+  const blockedHold = holdGraceClock()
   // The wait ended because the user chose Start anyway, not because the
   // update finished (R8 m7): no bundle-swap relaunch mid-hold.
   let overridden = false
 
-  const gateDeps = updateGateDeps(
-    marker => {
+  const gateDeps = updateGateDeps({
+    onLiveMarker: marker => {
       parkedRunStartedAt = marker.startedAt
       overridden = false
     },
-    state => {
+    onHeld: state => {
       held = state
     },
-    () => {
+    onOverride: () => {
       overridden = true
     }
-  )
+  })
 
   const outcome = await waitForUpdateClearance(gateDeps, {
     signal: localBackendLifecycle.signal,
@@ -3227,26 +3119,24 @@ async function waitForUpdateToFinish() {
       const heldNow: HeldState | null = held
       held = null
 
-      if (reason === 'marker' && heldNow) {
-        blockedSince = heldNow.blocking ? (blockedSince ?? Date.now()) : null
+      const blocked = blockedHold(reason, heldNow)
 
-        // Never a timeout (R8 D3): past the grace the boot shows the blocked
-        // screen and stays parked until the hold ends, the user quits, or the
-        // user confirms Start anyway (IPC below).
-        if (blockedSince !== null && Date.now() - blockedSince >= HOLD_SCREEN_GRACE_MS) {
-          showUpdateHold(heldNow)
-
-          return
-        }
-
-        clearUpdateHold()
-        await advanceBootProgress('backend.update-wait', heldWaitMessage(heldNow), 12)
+      // Never a timeout (R8 D3): past the grace the boot shows the blocked
+      // screen and stays parked until the hold ends, the user quits, or the
+      // user confirms Start anyway (registerUpdateHoldIpc).
+      if (blocked) {
+        showUpdateHold(blocked)
 
         return
       }
 
-      blockedSince = null
       clearUpdateHold()
+
+      if (reason === 'marker' && heldNow) {
+        await advanceBootProgress('backend.update-wait', heldWaitMessage(heldNow), 12)
+
+        return
+      }
 
       // A live update owner is waited out, never aged out (C1 rule 3): booting
       // a backend into a half-replaced runtime is the failure this gate exists
@@ -12476,22 +12366,24 @@ async function runPoolBackendStart(
     let poolAnnounced = false
     let poolHoldLogged: string | null = null
     let poolHeld: HeldState | null = null
-    let poolBlockedSince: number | null = null
+    const poolBlockedHold = holdGraceClock()
     const holdOwner = `pool:${poolKey}`
 
     // A blocking hold never ages out here either (R8 D3). Past the grace it is
     // published on the window's blocked screen like the primary's (R8 M6): a
     // remote primary, or one that booted before the hold appeared, never
     // shows one of its own. Check again / Start anyway act on its hold id.
-    const poolGateDeps = updateGateDeps(undefined, state => {
-      poolHeld = state
+    const poolGateDeps = updateGateDeps({
+      onHeld: state => {
+        poolHeld = state
 
-      if (state.blocking && poolHoldLogged !== state.holdId) {
-        poolHoldLogged = state.holdId
-        rememberLog(
-          `[updates] pool backend start for profile "${profile}" blocked: update marker ${state.verdict}, ` +
-            `hold ${state.holdId}; waiting for the hold to end or a Start anyway on the blocked screen`
-        )
+        if (state.blocking && poolHoldLogged !== state.holdId) {
+          poolHoldLogged = state.holdId
+          rememberLog(
+            `[updates] pool backend start for profile "${profile}" blocked: update marker ${state.verdict}, ` +
+              `hold ${state.holdId}; waiting for the hold to end or a Start anyway on the blocked screen`
+          )
+        }
       }
     })
 
@@ -12507,12 +12399,11 @@ async function runPoolBackendStart(
             )
           }
 
-          const heldNow: HeldState | null = poolHeld
+          const blocked = poolBlockedHold(reason, poolHeld)
           poolHeld = null
-          poolBlockedSince = reason === 'marker' && heldNow?.blocking ? (poolBlockedSince ?? Date.now()) : null
 
-          if (heldNow && poolBlockedSince !== null && Date.now() - poolBlockedSince >= HOLD_SCREEN_GRACE_MS) {
-            showUpdateHold(heldNow, holdOwner)
+          if (blocked) {
+            showUpdateHold(blocked, holdOwner)
           } else {
             clearUpdateHold(holdOwner)
           }
@@ -13030,17 +12921,10 @@ function hostBackendAttachDeps() {
     // Attach only to a backend booted from this checkout's HEAD: a CLI/launchd
     // serve that outlived an update answers 503 "Restart required", and Restart
     // would re-adopt the same stale process forever.
-    expectedCodeIdentity: async () => {
-      const root = resolveUpdateRoot()
-
-      if (!isGitCheckout(root)) {
-        return null
-      }
-
-      const head = await execGit(resolveGitBinary(), ['rev-parse', 'HEAD'], { cwd: root, timeoutMs: 5000 })
-
-      return head.code === 0 ? head.stdout.trim() || null : null
-    },
+    expectedCodeIdentity: () =>
+      checkoutHeadIdentity(resolveUpdateRoot(), isGitCheckout, (args, options) =>
+        execGit(resolveGitBinary(), args, options)
+      ),
     log: rememberLog,
     readLedger: (target: string) => {
       try {
@@ -16298,54 +16182,13 @@ ipcMain.handle('hermes:bootstrap:repair', async (): Promise<{ ok: boolean; bundl
   return { ok: true }
 })
 
-// The blocked boot screen's three ways out (R8 D3). Only the primary window's
-// boot surface can drive them, and only for the hold it is showing.
-function isPrimaryBootSender(event: Electron.IpcMainInvokeEvent) {
-  return Boolean(mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents)
-}
-
-ipcMain.handle('hermes:update-hold:recheck', async event => {
-  if (!isPrimaryBootSender(event) || !currentUpdateHold) {
-    return { ok: false }
-  }
-
-  rememberLog(`[updates] boot blocked (hold ${currentUpdateHold.holdId}): user asked to check again`)
-  requestHoldRecheck()
-
-  return { ok: true }
-})
-
-ipcMain.handle('hermes:update-hold:quit', async event => {
-  if (!isPrimaryBootSender(event)) {
-    return { ok: false }
-  }
-
-  rememberLog(
-    `[updates] user quit Hermes from the update-hold screen${currentUpdateHold ? ` (hold ${currentUpdateHold.holdId})` : ''}`
-  )
-  app.quit()
-
-  return { ok: true }
-})
-
-ipcMain.handle('hermes:update-hold:start-anyway', async (event, request: { holdId?: unknown; confirmed?: unknown }) => {
-  const hold = currentUpdateHold
-
-  if (!isPrimaryBootSender(event) || !hold || request?.confirmed !== true || request.holdId !== hold.holdId) {
-    rememberLog(
-      `[updates] Start anyway refused: ${hold ? `hold ${hold.holdId}` : 'no hold'} is not the confirmed hold ` +
-        `(${typeof request?.holdId === 'string' ? request.holdId.slice(0, 32) : 'none'})`
-    )
-
-    return { ok: false }
-  }
-
-  rememberLog(startAnywayLogLine(hold))
-  // The override must survive whatever the backend start does next.
-  flushDesktopLogBufferSync()
-  allowStartOverHold(hold.holdId)
-
-  return { ok: true }
+registerUpdateHoldIpc(ipcMain, {
+  isPrimaryBootSender: event =>
+    Boolean(mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents),
+  currentHold: updateHoldScreen.current,
+  log: rememberLog,
+  flushLog: flushDesktopLogBufferSync,
+  quit: () => app.quit()
 })
 
 ipcMain.handle('hermes:bootstrap:continue-local', async () => {

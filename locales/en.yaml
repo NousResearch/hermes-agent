@@ -2880,8 +2880,8 @@ cli:
       profile: "Profile: {profile}"
       home: "Home:    {home}"
     handoff:
-      usage: "Usage: /handoff <platform>"
-      usage_detail_1: "Hands the current session off to that platform's home channel."
+      usage: "Usage: /handoff <platform>|desktop"
+      usage_detail_1: "Hands the current session off to that platform's home channel, or opens it in the Hermes Desktop app."
       usage_detail_2: "The CLI session ends here; resume it later with /resume."
       already_in_flight: "Session is already in flight for handoff. Wait for it to settle, then retry."
       queued: "Queued handoff of '{title}' → {platform} (home: {home})."

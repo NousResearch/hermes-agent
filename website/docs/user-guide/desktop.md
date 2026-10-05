@@ -279,6 +279,12 @@ The app also surfaces the broader Hermes management surface so you don't have to
 - **Messaging** — set up gateway channels. Telegram has a **Quick setup** card: click **Create with QR**, scan the code (or open the link) in Telegram, and Hermes creates the bot, detects your user ID for the allowlist, saves the credentials, and restarts the gateway for you. Any credential save, clear, or enable toggle keeps a **Restart now** banner on the page until the gateway has actually restarted; if a restart fails, the banner stays so you can retry or restart manually.
 - **Agents** and **Command Center** — orchestration surfaces for multi-agent work.
 
+`hermes://session/<id>?profile=<name>` opens a saved chat: Desktop makes the named
+profile's backend live (the hint is optional) and fronts the session as a tab. The CLI's
+[`/handoff desktop`](./sessions.md#handoff-to-the-desktop-app) emits this link; a
+dashboard row or a companion tool holding a session id can use it the same way. Only ids
+in the stored-session shape (`YYYYMMDD_HHMMSS_<hex>`) are accepted.
+
 ### Bot Mode (built in)
 
 **Bot Mode** ships with the app and is on by default: a "one chat per agent"

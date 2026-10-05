@@ -253,6 +253,17 @@ What happens:
 
 **Resume back to CLI:** when you want to come back to a desktop, just run `/resume <title>` (or `hermes -r "<title>"` from the shell) and pick up where the platform left off.
 
+### Handoff to the Desktop app
+
+`/handoff desktop` moves the current CLI session into the Hermes Desktop app instead of a messaging platform. No gateway is involved: the CLI opens the `hermes://session/<id>?profile=<name>` deep link the app registers on install, Desktop makes that profile's backend live and resumes the saved chat as a new tab (an already-open tab is fronted instead), and the CLI exits with the same `/resume` hint a platform handoff prints. The reverse direction is the **Open in terminal** entry on a Desktop session's row menu.
+
+```bash
+# Inside a CLI session
+/handoff desktop
+```
+
+If the OS has no handler for `hermes://` (Desktop not installed, or a Linux box without `xdg-open`), the CLI prints the link to open by hand and your session stays put. Refused mid-turn, like every handoff.
+
 **Failure modes:**
 - No home channel configured → CLI refuses with a `/sethome` hint.
 - Gateway not running (nothing ever claims the request) → CLI times out at 60s with a clear message and your CLI session stays intact.

@@ -10,6 +10,8 @@ import { $hubInstalledOverride } from '@/store/hub-actions'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import { ensureGatewayProfile } from '@/store/profile'
+import type * as ProfileStore from '@/store/profile'
 import { _resetLegacyDiscardForTests } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
@@ -44,6 +46,15 @@ vi.mock('@/store/plugin-install-request', () => ({
   openPluginInstallRequest: vi.fn()
 }))
 
+vi.mock('@/store/profile', async importOriginal => {
+  const actual = await importOriginal<typeof ProfileStore>()
+
+  return {
+    ...actual,
+    ensureGatewayProfile: vi.fn(async () => undefined)
+  }
+})
+
 vi.mock('@/store/windows', async importOriginal => {
   const actual = await importOriginal<typeof WindowsStore>()
 
@@ -75,6 +86,7 @@ describe('useDesktopIntegrations', () => {
     vi.mocked(requestMcpInstallFromDeepLink).mockClear()
     vi.mocked(requestPluginCatalogInstallFromDeepLink).mockClear()
     vi.mocked(openPluginInstallRequest).mockClear()
+    vi.mocked(ensureGatewayProfile).mockClear()
     navigate = vi.fn()
     // Every test starts as a main window; only the HUD describe flips this.
     hudWindowMock.mockReturnValue(false)
@@ -825,6 +837,43 @@ describe('useDesktopIntegrations', () => {
       expect(requestPluginCatalogInstallFromDeepLink).toHaveBeenCalledWith('weather')
       expect(openPluginInstallRequest).not.toHaveBeenCalled()
       expect(navigate).not.toHaveBeenCalled()
+    })
+
+    it('opens hermes://session/<id>?profile= through openSession after making that profile live', async () => {
+      let deepLink: ((payload: { kind: string; name: string; params: Record<string, string> }) => void) | undefined
+      desktopWindow.hermesDesktop = {
+        ...desktopWindow.hermesDesktop,
+        onDeepLink: (cb: (payload: { kind: string; name: string; params: Record<string, string> }) => void) => {
+          deepLink = cb
+
+          return () => undefined
+        },
+        signalDeepLinkReady: vi.fn()
+      } as unknown as Window['hermesDesktop']
+
+      render({ profileReady: true, sessions: [] })
+      deepLink?.({ kind: 'session', name: '20260804_184317_5b179b', params: { profile: 'work' } })
+      await waitFor(() => expect(navigate).toHaveBeenCalledWith(sessionRoute('20260804_184317_5b179b')))
+      expect(ensureGatewayProfile).toHaveBeenCalledWith('work')
+    })
+
+    it('ignores a hermes://session link whose id is malformed', async () => {
+      let deepLink: ((payload: { kind: string; name: string; params: Record<string, string> }) => void) | undefined
+      desktopWindow.hermesDesktop = {
+        ...desktopWindow.hermesDesktop,
+        onDeepLink: (cb: (payload: { kind: string; name: string; params: Record<string, string> }) => void) => {
+          deepLink = cb
+
+          return () => undefined
+        },
+        signalDeepLinkReady: vi.fn()
+      } as unknown as Window['hermesDesktop']
+
+      render({ profileReady: true, sessions: [] })
+      deepLink?.({ kind: 'session', name: 'settings', params: {} })
+      await Promise.resolve()
+      expect(navigate).not.toHaveBeenCalled()
+      expect(ensureGatewayProfile).not.toHaveBeenCalled()
     })
   })
 

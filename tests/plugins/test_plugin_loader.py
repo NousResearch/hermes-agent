@@ -73,9 +73,9 @@ def test_successful_sibling_remains_available_on_loaded_module(tmp_path):
                 sys.modules.pop(name, None)
 
 
-def test_concurrent_load_waits_bounded_for_the_first_load(tmp_path, monkeypatch):
-    """A second caller never receives the half-built shell published mid-load, and a hung import
-    in the first caller does not block it forever: it refuses after the bounded wait."""
+def test_concurrent_load_waits_for_the_first_load(tmp_path, monkeypatch):
+    """A second caller never receives the half-built shell published mid-load. An agent build waits
+    out a slow first import; a per-turn caller in bounded_load_wait() refuses after the bound instead."""
     import plugins.plugin_loader as loader
 
     monkeypatch.setattr(loader, "_CONCURRENT_LOAD_WAIT_SECS", 0.3)
@@ -97,21 +97,31 @@ def test_concurrent_load_waits_bounded_for_the_first_load(tmp_path, monkeypatch)
         results[key] = load_plugin_module(module_name, plugin_dir, parents=(),
                                           logger=logging.getLogger(__name__))
 
+    def bounded(key):
+        with loader.bounded_load_wait():
+            load(key)
+
     first = threading.Thread(target=load, args=("first",))
-    second = threading.Thread(target=load, args=("second",))
+    build = threading.Thread(target=load, args=("build",))
+    turn = threading.Thread(target=bounded, args=("turn",))
     try:
         first.start()
         assert gate.entered.wait(5)
-        second.start()
-        second.join(5)
-        assert not second.is_alive(), "second caller blocked on the hung first load"
-        assert results["second"] is None
-        load("stalled")  # later callers refuse at once while the import is still hung
+        build.start()
+        build.join(1)  # well past the bound
+        assert build.is_alive(), f"agent build gave up on a slow import: {results.get('build')!r}"
+        turn.start()
+        turn.join(5)
+        assert not turn.is_alive(), "per-turn caller blocked on the hung first load"
+        assert results["turn"] is None
+        bounded("stalled")  # later bounded callers refuse at once while the import is still hung
         assert results["stalled"] is None
         gate.release.set()
         first.join(10)
+        build.join(10)
         assert hasattr(results["first"], "register")
-        load("after")
+        assert results["build"] is results["first"]
+        bounded("after")
         assert results["after"] is results["first"]
 
         # A cross-thread cycle through importlib's own module lock (thread A imports a helper that

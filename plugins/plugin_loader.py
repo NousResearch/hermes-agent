@@ -12,6 +12,7 @@ import logging
 import sys
 import threading
 import time
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 
@@ -20,9 +21,11 @@ _log = logging.getLogger(__name__)
 _PLUGINS_ROOT = Path(__file__).parent
 _MODULE_LOAD_LOCKS: dict[str, threading.RLock] = {}
 _MODULE_LOAD_LOCKS_GUARD = threading.Lock()
-# How long a second caller waits for another thread's in-flight load of the same module. Past it
-# the module is marked stalled (a hung import) and later callers refuse at once until it finishes.
+# Inside bounded_load_wait(), how long a second caller waits for another thread's in-flight load of
+# the same module. Past it the module is marked stalled (a hung import) and later bounded callers
+# refuse at once until it finishes. Other callers (agent builds) wait for the load to finish.
 _CONCURRENT_LOAD_WAIT_SECS = 10.0
+_BOUNDED_WAIT: ContextVar[bool] = ContextVar("plugin_load_bounded_wait", default=False)
 _STALLED_LOADS: set[str] = set()
 _LOAD_OWNERS: dict[str, int] = {}  # module -> thread id running its load
 _LOAD_WAITERS: dict[int, str] = {}  # thread id -> module whose load it waits for
@@ -48,6 +51,17 @@ def _load_would_deadlock(me: int) -> bool:
             seen.add(tid)
             todo.extend(_waits_for(tid))
     return False
+
+
+@contextlib.contextmanager
+def bounded_load_wait():
+    """For per-turn callers that must not stall on another thread's hung plugin import: their
+    loads give up (None) after ``_CONCURRENT_LOAD_WAIT_SECS`` instead of waiting it out."""
+    token = _BOUNDED_WAIT.set(True)
+    try:
+        yield
+    finally:
+        _BOUNDED_WAIT.reset(token)
 
 
 def _module_load_lock(module_name: str) -> threading.RLock:
@@ -145,10 +159,11 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
     # _new_module publishes a package shell before executing it so sibling relative
     # imports work. Serialize the complete load so another thread cannot observe
     # that half-built shell as a loaded plugin.
-    # The wait is bounded (a hung import must not block every caller) and polls for a cross-thread
-    # cycle through importlib's module locks; in a cycle, accept the partial module like importlib does.
+    # The wait polls for a cross-thread cycle through importlib's module locks; in a cycle, accept the
+    # partial module like importlib does. It is bounded only inside bounded_load_wait() (per-turn callers).
     lock, me = _module_load_lock(module_name), threading.get_ident()
-    deadline = time.monotonic() + (0 if module_name in _STALLED_LOADS else _CONCURRENT_LOAD_WAIT_SECS)
+    deadline = float("inf") if not _BOUNDED_WAIT.get() else time.monotonic() + (
+        0 if module_name in _STALLED_LOADS else _CONCURRENT_LOAD_WAIT_SECS)
     _LOAD_WAITERS[me] = module_name
     try:
         while not lock.acquire(timeout=0.05):

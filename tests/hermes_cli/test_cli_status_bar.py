@@ -1,3 +1,6 @@
+import subprocess
+import sys
+import textwrap
 import threading
 import time
 from copy import deepcopy
@@ -24,7 +27,6 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj.agent = None
     # Status-bar plugin refresh state (normally created lazily on first use).
     cli_obj._status_bar_plugin_refresh_lock = threading.Lock()
-    cli_obj._status_bar_plugin_refresh_executor = None
     cli_obj._status_bar_plugin_refresh_running = False
     cli_obj._status_bar_plugin_refresh_thread = None
     return cli_obj
@@ -837,6 +839,54 @@ class TestStatusBarPluginBackgroundRefresh:
 
         # invoke_hook was only ever dispatched once, by the refresh call.
         assert hook.call_count == 1
+
+    def test_stuck_callback_does_not_pin_interpreter_exit(self):
+        """Regression: a callback that never returns must not keep the process
+        alive. The refresh timeout only bounds the wait; the worker running the
+        callback has to be a daemon that is never joined, or interpreter shutdown
+        blocks on it forever. Runs in a child interpreter because the hang only
+        shows at exit.
+        """
+        child = textwrap.dedent(
+            """
+            import threading
+            from unittest.mock import patch
+
+            from hermes_cli.cli_status_bar_mixin import CLIStatusBarMixin
+
+            class _CLI(CLIStatusBarMixin):
+                _STATUS_BAR_PLUGIN_REFRESH_TIMEOUT = 0.2
+                _STATUS_BAR_PLUGIN_CACHE_TTL = 0.05
+
+                def _get_status_bar_snapshot(self):
+                    return {"model_short": "m"}
+
+            never = threading.Event()
+            entered = threading.Event()
+
+            def _stuck(*_args, **_kwargs):
+                entered.set()
+                never.wait()
+
+            cli_obj = _CLI()
+            cli_obj._status_bar_plugin_values_cache = ("old",)
+            with patch("hermes_cli.plugins.invoke_hook", side_effect=_stuck):
+                cli_obj._refresh_status_bar_plugin_values()  # hits its timeout
+                assert entered.is_set()
+                cli_obj._status_bar_plugin_refresh_start()  # guarded: worker still stuck
+                cli_obj._status_bar_plugin_refresh_stop()
+            print(repr(cli_obj._get_status_bar_plugin_values()))
+            """
+        )
+
+        # The broken shape (a joined/non-daemon worker) never exits, so this bound
+        # only has to cover interpreter start-up and the mixin import.
+        result = subprocess.run(
+            [sys.executable, "-c", child], timeout=10, capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "['old']"
 
     def test_start_triggers_periodic_refresh_and_stop_ends_it(self):
         cli_obj = _make_cli()

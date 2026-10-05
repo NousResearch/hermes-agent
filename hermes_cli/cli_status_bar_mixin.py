@@ -7,7 +7,6 @@ inside each method (``from cli import ...``) — never at module load time (impo
 
 from __future__ import annotations
 
-import concurrent.futures
 import errno
 import re
 import shutil
@@ -1026,10 +1025,10 @@ class CLIStatusBarMixin:
     # ── plugin-contributed fragments (on_status_bar_render) ───────────────────
     #
     # Rendering runs on prompt_toolkit's synchronous repaint path, so the hook is
-    # never invoked from there: a callback that shells out (a configured shell hook)
-    # or probes an HTTP endpoint (a quota plugin) would stall every frame and freeze
-    # input. ``_get_status_bar_plugin_values()`` only reads a cache that a daemon
-    # refresh loop keeps warm; the hook itself runs on a worker thread with a bounded
+    # never invoked from there: a callback that shells out or probes an HTTP
+    # endpoint (a quota plugin) would stall every frame and freeze input.
+    # ``_get_status_bar_plugin_values()`` only reads a cache that a daemon refresh
+    # loop keeps warm; the hook itself runs on a daemon worker thread with a bounded
     # wait, and a timeout or an error leaves the previous cache untouched.
 
     _STATUS_BAR_PLUGIN_CACHE_TTL = 1.0
@@ -1042,7 +1041,6 @@ class CLIStatusBarMixin:
         with _PLUGIN_REFRESH_STATE_LOCK:
             if getattr(self, "_status_bar_plugin_refresh_lock", None) is None:
                 self._status_bar_plugin_refresh_lock = threading.Lock()
-                self._status_bar_plugin_refresh_executor = None
                 self._status_bar_plugin_refresh_running = False
                 self._status_bar_plugin_refresh_thread = None
 
@@ -1100,46 +1098,50 @@ class CLIStatusBarMixin:
     def _refresh_status_bar_plugin_values(self) -> None:
         """Refresh the status-bar plugin cache off the render/repaint path.
 
-        Dispatches ``on_status_bar_render`` via ``invoke_hook()`` on a dedicated
-        worker thread. Only one refresh may be in flight at a time: if a previous
-        callback is still running (e.g. stuck in a slow shell hook), this call is a
-        no-op rather than piling up concurrent runs of the same stuck callback. The
-        calling thread waits up to ``_STATUS_BAR_PLUGIN_REFRESH_TIMEOUT`` for a
-        result; past that it gives up and returns, but the lock is only released once
-        the underlying call actually finishes, so the in-flight guard still holds even
-        after this method has returned. Timeouts and errors leave the existing cache
-        untouched.
+        Dispatches ``on_status_bar_render`` via ``invoke_hook()`` on a daemon worker
+        thread and waits up to ``_STATUS_BAR_PLUGIN_REFRESH_TIMEOUT`` for it. Past that
+        the worker is abandoned, never joined: a callback that never returns must not
+        pin interpreter shutdown, which a non-daemon (``ThreadPoolExecutor``) worker
+        would, since those are joined at exit. Same ownership model as the bounded
+        hook path in ``hermes_cli/plugins_dispatch.py`` (#6622).
+
+        Only one refresh may be in flight: the worker releases the lock when the
+        callback actually returns, so a stuck callback leaves at most one abandoned
+        worker and later calls are no-ops until it finishes. Timeouts and errors
+        leave the existing cache untouched.
         """
         self._ensure_status_bar_plugin_state()
-        if not self._status_bar_plugin_refresh_lock.acquire(blocking=False):
+        lock = self._status_bar_plugin_refresh_lock
+        if not lock.acquire(blocking=False):
             return
 
-        def _invoke(snapshot: Dict[str, Any]) -> Optional[List[str]]:
+        done = threading.Event()
+        outcome: Dict[str, Optional[List[str]]] = {}
+
+        def _run(snapshot: Dict[str, Any]) -> None:
             try:
-                return self._invoke_status_bar_plugin_hook(snapshot)
+                outcome["value"] = self._invoke_status_bar_plugin_hook(snapshot)
+            except Exception:
+                outcome["value"] = None  # fail open: a failed round keeps the old cache
             finally:
-                self._status_bar_plugin_refresh_lock.release()
+                lock.release()
+                done.set()
 
         try:
             snapshot = self._get_status_bar_snapshot()
-            executor = self._status_bar_plugin_refresh_executor
-            if executor is None:
-                executor = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=1, thread_name_prefix="status-bar-plugin-refresh"
-                )
-                self._status_bar_plugin_refresh_executor = executor
-            future = executor.submit(_invoke, snapshot)
+            threading.Thread(
+                target=_run, args=(snapshot,), daemon=True,
+                name="status-bar-plugin-refresh",
+            ).start()
         except Exception:
-            # Nothing was actually scheduled to release the lock, so this thread must
-            # release it itself or every future refresh would be permanently blocked
-            # by the in-flight guard.
-            self._status_bar_plugin_refresh_lock.release()
+            # No worker exists to release the lock, so this thread must, or every
+            # later refresh would be permanently blocked by the in-flight guard.
+            lock.release()
             return
 
-        try:
-            normalized = future.result(timeout=self._STATUS_BAR_PLUGIN_REFRESH_TIMEOUT)
-        except Exception:
+        if not done.wait(timeout=self._STATUS_BAR_PLUGIN_REFRESH_TIMEOUT):  # do not join — that would reintroduce the hang
             return
+        normalized = outcome.get("value")
         if normalized is None:
             return
 
@@ -1166,7 +1168,11 @@ class CLIStatusBarMixin:
         self._status_bar_plugin_refresh_thread.start()
 
     def _status_bar_plugin_refresh_stop(self) -> None:
-        """Stop the background refresh loop started by ``..._refresh_start`` (idempotent)."""
+        """Stop the refresh loop started by ``..._refresh_start`` (idempotent).
+
+        Only the loop thread is waited on, briefly; a callback worker stuck in a
+        plugin is daemon and abandoned, never joined, so it cannot hold up teardown.
+        """
         self._status_bar_plugin_refresh_running = False
         thread = getattr(self, "_status_bar_plugin_refresh_thread", None)
         if thread is not None:

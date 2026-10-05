@@ -14,7 +14,7 @@ import random
 import sys
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 from agent.display import KawaiiSpinner
 from agent.interrupt_control import interrupt_issuer, interrupted_during_api_call_reason
@@ -180,19 +180,60 @@ def prepare_iteration(
             agent.session_id or "-",
         )
 
-    # Drop legacy hidden assistant placeholders carrying the raw interrupt scaffold
-    # before repair: replayed, the model echoes/self-replicates.
-    def _is_scaffold_ghost(msg: Dict[str, Any]) -> bool:
-        return (
-            msg.get("display_kind") == "hidden"
-            and msg.get("role") == "assistant"
-            and any(
-                isinstance(msg.get(k), str) and msg[k].strip() == _INTERRUPT_SCAFFOLD_MARKER
-                for k in ("content", "api_content")
-            )
+    # Retire hidden interrupt placeholders whose text the model echoes on replay
+    # (#81841 for the scaffold, #132949 for the placeholder). A hidden row still
+    # reaches the provider as assistant content; a natural-language phrase in that
+    # position is reproduced verbatim. The row must STAY when the neighbour roles
+    # would form ``tool -> user`` on removal — the strict-provider failure
+    # ``close_interrupted_tool_sequence`` exists to prevent (#48879) — so neutralise
+    # the text in place rather than dropping the row; only rows whose removal is
+    # role-safe are dropped.
+    def _neutralise_replay_echo_ghosts(seq: List[Dict[str, Any]]) -> Tuple[int, int]:
+        """(dropped, neutralised)."""
+        from agent.agent_runtime_helpers import (
+            _INTERRUPTED_PLACEHOLDER,
+            _LEGACY_INTERRUPTED_PLACEHOLDER,
         )
+        # Retire only spellings that predate the #132949 wording change: the scaffold
+        # (#81841) and the old placeholder, both reproduced verbatim. The current
+        # placeholder is the post-fix value — it stays (this is also what
+        # neutralisation rewrites to, so the rewrite does not retrigger the filter).
+        hazards = {_INTERRUPT_SCAFFOLD_MARKER, _LEGACY_INTERRUPTED_PLACEHOLDER}
+        dropped = neutralised = 0
+        out: List[Dict[str, Any]] = []
+        for i, m in enumerate(seq):
+            if not (m.get("display_kind") == "hidden" and m.get("role") == "assistant"):
+                out.append(m)
+                continue
+            if not any(
+                isinstance(m.get(k), str) and m[k].strip() in hazards
+                for k in ("content", "api_content")
+            ):
+                out.append(m)
+                continue
+            prev_role = out[-1].get("role") if out else None
+            next_role = seq[i + 1].get("role") if i + 1 < len(seq) else None
+            if prev_role == "tool" and next_role == "user":
+                # Dropping would leave ``tool -> user``; repair's tool passes
+                # leave ``assistant(tool_calls)/tool/user`` untouched, so the
+                # violation would survive to the provider. Keep the row,
+                # neutralise both sides.
+                m["content"] = ""
+                m["api_content"] = _INTERRUPTED_PLACEHOLDER
+                out.append(m)
+                neutralised += 1
+            else:
+                dropped += 1
+        if dropped:
+            seq[:] = out
+        return dropped, neutralised
 
-    messages = [msg for msg in messages if not _is_scaffold_ghost(msg)]
+    _echo_dropped, _echo_neutralised = _neutralise_replay_echo_ghosts(messages)
+    if _echo_dropped or _echo_neutralised:
+        request_logger.info(
+            "Retired %d interrupt-placeholder row(s) and neutralised %d before request (session=%s)",
+            _echo_dropped, _echo_neutralised, agent.session_id or "-",
+        )
 
     # Repair malformed role alternation (tool→user / user→user tails): providers
     # return empty content on them and the empty-retry loop spins. The _with_cursor

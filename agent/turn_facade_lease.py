@@ -55,6 +55,28 @@ class DurableTurnLease:
         self.interrupt_message: Optional[str] = None
         self.watchdog = None  # TurnLivenessWatchdog when configured
         self.timer_handles: list = []  # periodic_scheduler handles, cancelled in join_threads
+        self.observation_turn_id = None
+        self.observation_finished = False
+
+    def begin_observation(self) -> None:
+        if not callable(getattr(type(self.db), "begin_session_observation", None)):
+            return
+        try:
+            self.observation_turn_id = self.db.begin_session_observation(
+                self._current_session_id(), self.holder,
+                attention_covered=getattr(self.agent, "platform", None) in {"desktop", "tui"})
+            self.agent._observation_turn_id = self.observation_turn_id
+        except Exception as exc:
+            logger.warning("Turn observation unavailable (%s)", type(exc).__name__)
+
+    def finish_observation(self, status: str) -> None:
+        if self.observation_turn_id is None or self.observation_finished:
+            return
+        self.observation_finished = True
+        try:
+            self.db.finish_session_observation(self._current_session_id(), self.holder, self.observation_turn_id, status)
+        except Exception as exc:
+            logger.warning("Terminal observation unavailable (%s)", type(exc).__name__)
 
     def _current_session_id(self) -> str:
         return getattr(self.agent, "session_id", None) or self.session_id
@@ -120,6 +142,7 @@ class DurableTurnLease:
         if getattr(agent, "_active_session_turn_lease_holder", None) == self.holder:
             agent._active_session_turn_lease_holder = None
             agent._active_session_turn_lease_ttl_seconds = None
+            agent._observation_turn_id = None
 
     def is_turn_active(self) -> bool:
         with self._lock:

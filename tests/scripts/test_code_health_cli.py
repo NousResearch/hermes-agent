@@ -153,6 +153,18 @@ def test_json_stdout_is_json_on_every_path(tmp_path, capsys, case, switch, files
         assert "code health:" in err  # the human explanation moves to stderr
 
 
+# --- allow comments may list several rules ----------------------------------------------------
+
+
+@pytest.mark.parametrize("rules", ["BLE001 S110", "BLE001, S110", "BLE001,S110"])
+def test_allow_comment_lists_rules_by_comma_or_space(tmp_path, capsys, rules):
+    repo, base = _ratchet_repo(tmp_path)
+    swallow = ("def other():\n    try:\n        pass\n"
+               f"    except Exception:  # health: allow {rules} -- boundary\n        pass\n")
+    head = _commit(repo, {"pkg/b.py": swallow})
+    assert cli.run(repo, base, head) == 0, capsys.readouterr().out
+
+
 # --- measurement tooling failures are errors, not findings ------------------------------------
 
 

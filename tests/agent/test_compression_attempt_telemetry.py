@@ -261,14 +261,21 @@ def test_structural_no_op_is_counted_skipped_with_the_compressors_class(caplog, 
         ("summary_auth_failure", "summary_generation_aborted", "summary_auth_failure"),
         # A caller-side event the compressor cannot see still outranks a recorded class.
         ("no_compressible_window", "attempt_superseded", "attempt_superseded"),
+        # A snapshot restore put the PREVIOUS attempt's telemetry back: its class is not this attempt's.
+        (("no_compressible_window", "previous-attempt"), "no_progress", "no_progress"),
     ],
 )
 def test_generic_caller_verdicts_defer_to_the_recorded_failure_class(caplog, monkeypatch, recorded, caller, expected):
     from hermes_cli.observability import shared_metrics_events
 
+    recorded, attempt_id = recorded if isinstance(recorded, tuple) else (recorded, "this-attempt")
     monkeypatch.setattr(shared_metrics_events, "finish_compression_attempt", lambda *_args, **_kwargs: None)
-    compressor = SimpleNamespace(_last_compression_telemetry={"failure_class": recorded}, context_length=100_000)
-    agent = SimpleNamespace(context_compressor=compressor, session_id="session-telemetry-test")
+    compressor = SimpleNamespace(
+        _last_compression_telemetry={"failure_class": recorded, "attempt_id": attempt_id}, context_length=100_000,
+    )
+    agent = SimpleNamespace(
+        context_compressor=compressor, session_id="session-telemetry-test", _compression_attempt_id="this-attempt",
+    )
 
     with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
         _emit_aborted_attempt_telemetry(agent, time.monotonic(), caller)

@@ -283,3 +283,91 @@ class TestStoreIsolation:
         weird.write_bytes(b"not really")
         with pytest.raises(ValueError, match="unsupported archive"):
             extract(weird, tmp_path / "dest")
+
+
+class TestFlattenSeesThroughOsMetadata:
+    """Finder/Spotlight drop .DS_Store (and ._ AppleDouble sidecars) into a
+    staging tree mid-extract; entry counting must see through them or the
+    hoist is skipped and verify() reports a complete archive as missing its
+    binary layout. tmp_path itself carries the isolated-home fixtures, so
+    each arm flattens a nested staged/ dir."""
+
+    def _staged(self, tmp_path):
+        staged = tmp_path / "staged"
+        staged.mkdir()
+        return staged
+
+    def test_ds_store_next_to_wrapper_dir_still_flattens(self, tmp_path):
+        staged = self._staged(tmp_path)
+        (staged / "node-v26.7.0-darwin-arm64" / "bin").mkdir(parents=True)
+        (staged / "node-v26.7.0-darwin-arm64" / "bin" / "node").write_bytes(b"x")
+        (staged / ".DS_Store").write_bytes(b"junk")
+
+        flatten_single_dir(staged)
+
+        assert (staged / "bin" / "node").is_file()
+        assert not (staged / ".DS_Store").exists()
+        assert not (staged / "node-v26.7.0-darwin-arm64").exists()
+
+    def test_appledouble_sidecar_next_to_wrapper_dir_still_flattens(self, tmp_path):
+        staged = self._staged(tmp_path)
+        (staged / "wrapper" / "bin").mkdir(parents=True)
+        (staged / "wrapper" / "bin" / "tool").write_bytes(b"x")
+        (staged / "._wrapper").write_bytes(b"junk")
+
+        flatten_single_dir(staged)
+
+        assert (staged / "bin" / "tool").is_file()
+        assert not (staged / "._wrapper").exists()
+
+    def test_windows_metadata_names_are_ignored_too(self, tmp_path):
+        staged = self._staged(tmp_path)
+        (staged / "dist" / "bin").mkdir(parents=True)
+        (staged / "dist" / "bin" / "tool.exe").write_bytes(b"x")
+        (staged / "Thumbs.db").write_bytes(b"junk")
+        (staged / "Desktop.ini").write_bytes(b"junk")
+        (staged / ".localized").write_bytes(b"junk")
+
+        flatten_single_dir(staged)
+
+        assert (staged / "bin" / "tool.exe").is_file()
+        assert list(staged.iterdir()) == [staged / "bin"]
+
+    def test_metadata_inside_wrapper_dir_does_not_block_the_rmdir(self, tmp_path):
+        staged = self._staged(tmp_path)
+        (staged / "wrapper" / "bin").mkdir(parents=True)
+        (staged / "wrapper" / "bin" / "tool").write_bytes(b"x")
+        (staged / "wrapper" / ".DS_Store").write_bytes(b"junk")
+
+        flatten_single_dir(staged)
+
+        assert (staged / "bin" / "tool").is_file()
+        assert not (staged / "wrapper").exists()
+        assert not (staged / ".DS_Store").exists()
+
+    def test_metadata_only_tree_flattens_nothing_and_stays_empty(self, tmp_path):
+        staged = self._staged(tmp_path)
+        (staged / ".DS_Store").write_bytes(b"junk")
+        (staged / "._foo").write_bytes(b"junk")
+
+        flatten_single_dir(staged)
+
+        assert list(staged.iterdir()) == []
+
+    def test_genuine_two_dir_tree_still_refuses(self, tmp_path):
+        staged = self._staged(tmp_path)
+        (staged / "one").mkdir()
+        (staged / "two").mkdir()
+
+        flatten_single_dir(staged)
+
+        assert (staged / "one").is_dir() and (staged / "two").is_dir()
+
+    def test_keep_layout_next_to_metadata_still_refuses(self, tmp_path):
+        staged = self._staged(tmp_path)
+        (staged / "bin").mkdir()
+        (staged / ".DS_Store").write_bytes(b"junk")
+
+        flatten_single_dir(staged)
+
+        assert (staged / "bin").is_dir()

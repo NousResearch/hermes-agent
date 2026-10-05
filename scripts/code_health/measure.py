@@ -106,6 +106,19 @@ def _executable_lines(text: str, tree: ast.Module) -> list[str]:
     return "".join("".join(row) for row in rows).splitlines()
 
 
+def _operations(tree: ast.Module) -> list[tuple[int, str]]:
+    """Executable operation starts with original source lines, normalized by the AST."""
+    operations: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                operations.append((node.lineno, f"{ast.unparse(target)} = {ast.unparse(node.value)}"))
+        elif isinstance(node, (ast.Call, ast.Dict)):
+            operations.append((node.lineno, ast.unparse(node)))
+    return operations
+
+
 class Measurer:
     def __init__(self, repo: Path, ruff: list[str], known_env: set[str]) -> None:
         self.repo = repo
@@ -170,17 +183,23 @@ class Measurer:
         self._regex(fm, scopes, text, tree)
 
     def _regex(self, fm: FileMeasure, scopes, text: str, tree: ast.Module) -> None:
+        operations: list[tuple[int, str]] | None = None
         code_lines: list[str] | None = None
         for rule_id, pattern, path_re in self.regex_rules:
             if not rule_applies(RULES_BY_ID[rule_id], fm.path):
                 continue
             if path_re and not path_re.search(fm.path):
                 continue
-            if code_lines is None:
-                code_lines = _executable_lines(text, tree)
-            for index, line in enumerate(code_lines, start=1):
-                if pattern.search(line):
-                    fm.add_hit(rule_id, scopes.scope(index), index)
+            if rule_id in {"PS-P05", "PS-P06"}:
+                if operations is None:
+                    operations = _operations(tree)
+                rows = {line for line, operation in operations if pattern.match(operation)}
+            else:
+                if code_lines is None:
+                    code_lines = _executable_lines(text, tree)
+                rows = {index for index, line in enumerate(code_lines, start=1) if pattern.search(line)}
+            for row in sorted(rows):
+                fm.add_hit(rule_id, scopes.scope(row), row)
 
     @staticmethod
     def _typescript(fm: FileMeasure, data: dict | None) -> None:

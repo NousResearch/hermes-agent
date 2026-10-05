@@ -38,6 +38,13 @@ the purge/reload workaround and independent retry/ZIP tail compositions disappea
 Gateway exit status is written before a restart can terminate the updater's cgroup,
 and is demoted on later failure. Verification publishes the final receipt.
 
+On Windows, dashboard cleanup allows a bounded grace period for an existing
+supervisor to replace a stopped backend. Recovery requires a fresh, verified
+process identity for the same install, home, backend kind and endpoint; an
+unrelated healthy listener is not recovery. The supervisor keeps ownership of
+launch arguments and environment. Missing or mismatched replacement evidence
+still leaves the backend unrecovered and makes the update fail.
+
 ## Parent lifecycle and failures
 
 The parent waits and propagates the child's exact nonzero result (a signal is

@@ -5,14 +5,21 @@ call time so imports stay one-way (both of those modules import this one lazily)
 """
 
 import contextlib
+import http.client
+import json
+import logging
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
 
+logger = logging.getLogger(__name__)
 _PS_RUN_KWARGS = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
+_WINDOWS_SUCCESSOR_GRACE_SECONDS = 30.0
+_WINDOWS_SUCCESSOR_POLL_SECONDS = 0.25
 
 
 def _empty_result() -> dict[str, list]:
@@ -637,6 +644,8 @@ def _kill_stale_dashboard_processes(
     # is left unsupervised. Snapshot the loaded jobs once, before the kill; ``--stop`` reads them
     # too, so it can say that a KeepAlive job will undo the stop.
     launchd_jobs = _dash._loaded_launchd_backend_jobs() if sys.platform != "win32" else []
+    pid_ledger = _windows_dashboard_ledger_by_pid(pids) if restart_managed and sys.platform == "win32" else {}
+    restart_boundary = time.time() if pid_ledger else None
 
     def _launchd_owner(pid: int, cmdline: list[str] | None):
         return _dash._launchd_job_owning_backend(pid, cmdline, launchd_jobs, ancestors=_process_ancestors(pid))
@@ -676,7 +685,13 @@ def _kill_stale_dashboard_processes(
         print(f"    ✗ failed to stop PID {pid}: {err_msg}")
     if killed and restart_managed:
         unrecovered = _restart_killed_backends(
-            killed, pid_service, pid_cgroup, pid_cmdline, pid_home, pid_launchd=pid_launchd)
+            killed, pid_service, pid_cgroup, pid_cmdline, pid_home, pid_launchd=pid_launchd,
+            show_manual_hint=not bool(pid_ledger))
+        if sys.platform == "win32" and pid_ledger:
+            unrecovered = _await_windows_dashboard_successors(unrecovered, pid_ledger, restart_boundary)
+            if unrecovered:
+                print("  Restart anything not auto-restarted when you're ready:\n"
+                      "    hermes dashboard --port <port>")
     else:
         unrecovered = list(killed)
         # A stopped launchd job with KeepAlive restarts itself: say so instead of a misleading
@@ -690,10 +705,124 @@ def _kill_stale_dashboard_processes(
             "unrecovered": list(unrecovered)}
 
 
+def _windows_dashboard_ledger_by_pid(pids: list[int] | None = None) -> dict[int, dict]:
+    """Strict live ledger identities for Windows backends before taskkill.
+
+    A scheduled task keeps its custom launch environment, so update must wait
+    for that task's own successor instead of replaying a partial WMIC command.
+    """
+    try:
+        from hermes_cli.process_identity import ledger_entries
+
+        wanted = set(pids) if pids is not None else None
+        return {
+            entry["pid"]: entry for entry in ledger_entries(verified_only=True)
+            if entry.get("purpose") in ("serve", "dashboard")
+            and (wanted is None or entry.get("pid") in wanted)
+            and _windows_dashboard_identity(entry) is not None
+        }
+    except Exception as exc:
+        logger.debug("Windows dashboard ledger snapshot failed: %s", exc)
+        return {}
+
+
+def _windows_dashboard_identity(entry: dict) -> tuple | None:
+    """Stable post-bind identity required to credit a Windows task successor."""
+    purpose = entry.get("purpose")
+    home, host = entry.get("hermes_home"), entry.get("host")
+    port, registered = entry.get("port"), entry.get("registered_at")
+    if (purpose not in ("serve", "dashboard") or not isinstance(home, str) or not home
+            or not isinstance(host, str) or not host or not isinstance(port, int) or port <= 0
+            or not isinstance(registered, (int, float)) or not isinstance(entry.get("isolated"), bool)):
+        return None
+    return purpose, home, host, port, str(entry.get("profile") or ""), entry["isolated"]
+
+
+def _windows_dashboard_successor_ready(entry: dict) -> bool:
+    """The registered successor owns its recorded listener and serves health."""
+    identity = _windows_dashboard_identity(entry)
+    pid = entry.get("pid")
+    if identity is None or not isinstance(pid, int):
+        return False
+    _purpose, _home, host, port, _profile, _isolated = identity
+    try:
+        from hermes_cli.main_dashboard import _dashboard_probe_host
+        import psutil
+
+        expected_host = _dashboard_probe_host(host).lower()
+        loopback = {"localhost", "127.0.0.1", "::1"}
+        listening = False
+        for candidate in psutil.Process(pid).net_connections(kind="inet"):
+            address = candidate.laddr
+            bound_host = str(address.ip if hasattr(address, "ip") else address[0]).lower()
+            bound_port = address.port if hasattr(address, "port") else address[1]
+            if candidate.status != psutil.CONN_LISTEN or bound_port != port:
+                continue
+            if (bound_host == expected_host or bound_host in ("0.0.0.0", "::")
+                    or (bound_host in loopback and expected_host in loopback)):
+                listening = True
+                break
+    except Exception:
+        return False
+    if not listening:
+        return False
+    try:
+        connection = http.client.HTTPConnection(_dashboard_probe_host(host), port, timeout=1.0)
+        try:
+            connection.request("GET", "/api/health")
+            response = connection.getresponse()
+            body = response.read()
+        finally:
+            connection.close()
+        payload = json.loads(body)
+        return response.status == 200 and isinstance(payload, dict) and payload.get("ok") is True
+    except (OSError, ValueError, json.JSONDecodeError, http.client.HTTPException):
+        return False
+
+
+def _await_windows_dashboard_successors(
+    unrecovered: list[int], previous: dict[int, dict], restart_boundary: float | None,
+) -> list[int]:
+    """Wait briefly for a scheduled-task successor of each stopped backend.
+
+    The successor must be a post-kill strict-live ledger incarnation with the
+    same post-bind identity, own that listener, and pass the dashboard health probe.
+    Missing evidence leaves the original PID unrecovered.
+    """
+    pending = {pid: entry for pid, entry in previous.items() if pid in unrecovered}
+    if not pending:
+        return unrecovered
+    if restart_boundary is None:
+        return unrecovered
+    deadline = time.monotonic() + _WINDOWS_SUCCESSOR_GRACE_SECONDS
+    recovered: set[int] = set()
+    while pending:
+        for old_pid, prior in list(pending.items()):
+            prior_identity = _windows_dashboard_identity(prior)
+            prior_created = prior.get("create_time")
+            if prior_identity is None or not isinstance(prior_created, (int, float)):
+                continue
+            for candidate in _windows_dashboard_ledger_by_pid().values():
+                candidate_created = candidate.get("create_time")
+                if (_windows_dashboard_identity(candidate) == prior_identity
+                        and isinstance(candidate_created, (int, float))
+                        and candidate_created >= restart_boundary
+                        and candidate_created != prior_created
+                        and _windows_dashboard_successor_ready(candidate)):
+                    recovered.add(old_pid)
+                    pending.pop(old_pid, None)
+                    break
+        if not pending or time.monotonic() >= deadline:
+            break
+        time.sleep(_WINDOWS_SUCCESSOR_POLL_SECONDS)
+    return [pid for pid in unrecovered if pid not in recovered]
+
+
 def _restart_killed_backends(
     killed: list[int], pid_service: dict[int, str | None], pid_cgroup: dict[int, str | None],
     pid_cmdline: dict[int, list[str]], pid_home: dict[int, str | None], *,
-    pid_launchd: dict[int, tuple[str, str, int | None]] | None = None) -> list[int]:
+    pid_launchd: dict[int, tuple[str, str, int | None]] | None = None,
+    show_manual_hint: bool = True) -> list[int]:
     """Update path: restart systemd units, kickstart launchd jobs (macOS), respawn manual argv
     (detached, headless, logged to logs/dashboard-restart.log; one per profile, no ``--port 0``).
     Returns PIDs not brought back."""
@@ -746,7 +875,7 @@ def _restart_killed_backends(
     failed_cmds = _dash._respawn_dashboard_processes(respawn_cmds) if respawn_cmds else None
     if failed_cmds:
         unrecovered.extend(p for p in killed if pid_cmdline.get(p) in failed_cmds)
-    if failed_restarts or unrecovered:
+    if show_manual_hint and (failed_restarts or unrecovered):
         print("  Restart anything not auto-restarted when you're ready:\n    hermes dashboard --port <port>")
     return unrecovered
 

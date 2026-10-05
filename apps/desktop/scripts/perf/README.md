@@ -49,6 +49,25 @@ production renderer *with the probe included* (`VITE_PERF_PROBE=1`) and measure
 minified React — the representative shipped numbers. The committed baseline is
 captured with `--prod`.
 
+## Baselines are per-platform
+
+Every number in `baseline.json` is a property of the machine that measured it —
+spawn, parse and mount costs are CPU- and disk-bound — so the file keeps one
+bucket per `platform-arch` and a run only gates against its OWN bucket. A
+machine with no bucket of its own prints `no <platform> baseline committed` and
+reports its metrics **without** gating, instead of being judged against another
+platform's numbers:
+
+```bash
+# Capture THIS machine's bucket (e.g. win32-x64 on a Windows laptop):
+npm run perf -- cold-start stream keystroke transcript --spawn --prod --update-baseline
+```
+
+`--update-baseline` writes only your own bucket — other platforms' numbers are
+preserved, so updating on a Windows box cannot take the reference away from the
+Mac CI gates against. Re-baseline a machine when you mean to re-baseline *that*
+machine.
+
 ## Why isolation matters
 
 The measurement this harness exists to run was historically blocked: a running

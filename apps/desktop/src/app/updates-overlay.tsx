@@ -24,6 +24,7 @@ import type {
   DesktopVersionInfo,
   UpdaterMechanismClient
 } from '@/global'
+import { runDebugShare, type DebugShareResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup, formatFullChangelogText } from '@/lib/commit-changelog'
 import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
@@ -534,6 +535,32 @@ function ApplyingView({
 function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss: () => void; onRetry: () => void }) {
   const { t } = useI18n()
   const u = t.updates
+  const maintenance = t.commandCenter.maintenance
+  const [share, setShare] = useState<DebugShareResponse | null>(null)
+  const [sharing, setSharing] = useState(false)
+  const [shareError, setShareError] = useState<string | null>(null)
+
+  const handleDebugShare = async () => {
+    setSharing(true)
+    setShare(null)
+    setShareError(null)
+
+    try {
+      const result = await runDebugShare()
+      setShare(result)
+      if (!result.ok || Object.keys(result.failures).length > 0) {
+        const detail = Object.entries(result.failures)
+          .map(([label, error]) => `${label}: ${error}`)
+          .join('; ')
+
+        setShareError(detail || null)
+      }
+    } catch (error) {
+      setShareError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSharing(false)
+    }
+  }
 
   return (
     <ErrorState
@@ -548,6 +575,54 @@ function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss
       <Button className="font-semibold" onClick={onRetry} size="lg">
         {u.tryAgain}
       </Button>
+      <div className="grid gap-2">
+        <Button disabled={sharing} onClick={() => void handleDebugShare()} size="lg" variant="secondary">
+          {sharing ? <Loader className="size-4" label={maintenance.debugShareRunning} /> : null}
+          {sharing ? maintenance.debugShareRunning : maintenance.debugShare}
+        </Button>
+        <p className="text-center text-xs leading-4 text-muted-foreground">{maintenance.debugShareDesc}</p>
+      </div>
+      {shareError || (share && !share.ok) ? (
+        <div
+          className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+          role="alert"
+        >
+          {maintenance.debugShareFailed}
+          {shareError ? `: ${shareError}` : ''}
+        </div>
+      ) : null}
+      {share && Object.keys(share.urls).length > 0 ? (
+        <div
+          aria-live="polite"
+          className="grid gap-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 text-left"
+        >
+          <div className="mb-1 text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+            {maintenance.debugShareLinks}
+          </div>
+          <div className="max-h-36 overflow-y-auto">
+            {Object.entries(share.urls).map(([label, url]) => (
+              <div className="flex min-w-0 items-center gap-2 py-1" key={label}>
+                <span className="w-20 shrink-0 truncate text-xs text-muted-foreground">{label}</span>
+                <code className="min-w-0 flex-1 truncate font-mono text-xs" title={url}>
+                  {url}
+                </code>
+                <CopyButton
+                  appearance="icon"
+                  buttonSize="icon-xs"
+                  haptic={false}
+                  label={maintenance.copyLink}
+                  text={url}
+                />
+              </div>
+            ))}
+          </div>
+          {Object.keys(share.failures).length > 0 ? (
+            <p className="mt-1 text-xs text-muted-foreground" role="status">
+              {maintenance.debugShareFailed}: {Object.keys(share.failures).join(', ')}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       <Button onClick={onDismiss} variant="text">
         {u.notNow}
       </Button>

@@ -23,6 +23,7 @@ not a runtime inventory, and its entries have no corresponding
 
 from __future__ import annotations
 
+import json
 import types
 
 import pytest
@@ -196,3 +197,44 @@ def test_unmapped_stop_debt_is_not_settled_by_the_mapped_gateways_restart(monkey
     fleet_rows.append({"profile": "work", "state": "current", "code_sha": "head", "pid": 9})
     assert fleet._update_owes_fleet_restart(receipt={}, pending_manual=[]) is False
     assert not fleet._fleet_restart_obligation_armed()
+
+
+def test_same_sha_retry_adds_newly_stopped_unmapped_debt_to_an_existing_inventory(monkeypatch, tmp_path):
+    # A same-SHA catch-up keeps the standing inventory (gateway `default`, still down). If that retry
+    # also stops an unmapped gateway, its debt must join the inventory: otherwise `default` coming
+    # back settles the obligation while the unmapped gateway still has no successor.
+    from hermes_cli import update_cmd, update_cmd_fleet as fleet, update_cmd_fleet_verify as fleet_verify
+    from hermes_cli import update_host_obligation as host, update_receipt
+    from hermes_cli.update_inventory import UpdatePlan
+
+    monkeypatch.setattr(host, "host_obligation_path", lambda: tmp_path / "host-update-restart.json")
+    monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: "head")
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: "head")
+    monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
+    monkeypatch.setattr("hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **kw: None)
+    monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
+    monkeypatch.setattr(fleet_verify, "_FLEET_PROBE_SETTLE_TIMEOUT_SECONDS", 0)  # A stays down: one poll
+    # Signal delivery is the external boundary: the down row has no process to drain.
+    monkeypatch.setattr("hermes_cli.update_cmd_stale_survivors.signal_stale_fleet_survivors", lambda *a: None)
+    fleet_rows = [{"profile": "default", "state": "down", "code_sha": "old", "pid": 7}]
+    monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **kw: list(fleet_rows))
+    fleet._write_fleet_restart_pending_marker(expected_sha="head", runtimes=[
+        {"kind": "gateway", "profile": "default", "pid": 7}])
+    out = fleet._GatewayRestartOutcome(
+        incomplete=False, phase_errors=[], pre_restart_gateway_pids=[7999], restarted_services=[],
+        failed_or_stale_units=[], relaunched_profiles=[], externally_supervised_profiles=[],
+        killed_pids={7999}, stopped_unmapped_pids={7999},
+    )
+    update_receipt.begin_update_receipt()
+    fleet_verify._verify_fleet_after_update(
+        out, _pre_update_plan=UpdatePlan(runtimes=[RuntimeRecord(kind="gateway", profile="default", pid=7)]),
+        _windows_gateway_resume=None, update_complete=True)
+
+    rows = json.loads(fleet._obligation_fields()["inventory"])["runtimes"]
+    assert {"kind": "gateway", "profile": "default", "pid": 7} in rows  # earlier debt kept
+    assert {"kind": "gateway", "profile": None, "pid": 7999, "stopped_unmapped": True} in rows
+    fleet_rows[:] = [{"profile": "default", "state": "current", "code_sha": "head", "pid": 8}]
+    assert fleet._marker_only_restart_obsolete() is False  # `default`'s successor is not 7999's
+    assert fleet._fleet_restart_obligation_armed()
+    fleet_rows.append({"profile": "work", "state": "current", "code_sha": "head", "pid": 9})
+    assert fleet._marker_only_restart_obsolete() is True

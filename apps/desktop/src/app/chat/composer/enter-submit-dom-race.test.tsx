@@ -109,6 +109,8 @@ function Harness({
   // it lags the DOM until React re-renders (the source of the bug).
   const [draft, setDraft] = useState('')
   const lastEnterAtRef = useRef(0)
+  // The steer chord's own double-press stamp (the composer's `lastSteerAtRef`).
+  const lastSteerAtRef = useRef(0)
   const enterHoldTimerRef = useRef<number | undefined>(undefined)
   // What the release should do when the press did not become a gesture (the
   // composer's `pendingPressRef`).
@@ -259,8 +261,25 @@ function Harness({
     }
 
     // Shift+Enter steers a running turn: the multiline-first binding the
-    // shortcuts panel, the settings description and the docs all promise.
+    // shortcuts panel, the settings description and the docs all promise. With
+    // the double tap armed it takes the same guard as every other send.
     if (!enterSends && event.key === 'Enter' && event.shiftKey && canSteer) {
+      if (sendOnDoubleTap) {
+        const steeredAt = Date.now()
+
+        if (steeredAt - lastSteerAtRef.current > doubleEnterMs) {
+          lastSteerAtRef.current = steeredAt
+
+          if (!enterNewline) {
+            event.preventDefault()
+          }
+
+          return
+        }
+
+        lastSteerAtRef.current = 0
+      }
+
       event.preventDefault()
       onSteer?.()
 
@@ -1816,5 +1835,60 @@ describe('composer Enter — the multiline-first steer chord', () => {
     fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true })
 
     expect(onSteer).not.toHaveBeenCalled()
+  })
+
+  it('needs the second press when the double tap is armed, so a lone Shift+Enter cannot steer', async () => {
+    const onSteer = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness
+        canSteer
+        enterSends={false}
+        onCancel={vi.fn()}
+        onDrain={vi.fn()}
+        onQueue={vi.fn()}
+        onSteer={onSteer}
+        onSubmit={vi.fn()}
+        sendOnDoubleTap
+      />
+    )
+
+    const editor = getByTestId('editor')
+
+    editor.textContent = 'a stray shift, then the real one'
+    fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true })
+
+    expect(onSteer).not.toHaveBeenCalled()
+
+    // The pair completes on the second press, inside the window.
+    fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true })
+
+    expect(onSteer).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives a lone Shift+Enter nothing at all when the line break is off', async () => {
+    const onSteer = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness
+        canSteer
+        enterNewline={false}
+        enterSends={false}
+        onCancel={vi.fn()}
+        onDrain={vi.fn()}
+        onQueue={vi.fn()}
+        onSteer={onSteer}
+        onSubmit={vi.fn()}
+        sendOnDoubleTap
+      />
+    )
+
+    const editor = getByTestId('editor')
+
+    editor.textContent = 'nothing lands'
+    const reachedTheEditor = fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true }) !== false
+
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(reachedTheEditor).toBe(false)
   })
 })

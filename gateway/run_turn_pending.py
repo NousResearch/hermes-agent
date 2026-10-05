@@ -139,19 +139,32 @@ class GatewayPendingDrainMixin:
                     setattr(steer_event, "_gateway_pending_stt_text", pending_steer)
                     if hasattr(steer_event, "_gateway_pending_stt_input"):
                         del steer_event._gateway_pending_stt_input
-            if pending or pending_event:
+            if (
+                pending_event is not None
+                and pending_input is None
+                and adapter
+                and session_key
+            ):
+                self._restore_pending_dispatch(session_key, pending_event, adapter)
+                pending_event, pending = None, pending_steer
+            elif pending or pending_event:
+                if steer_event is None:
+                    steer_prompt, steer_source = self._pinned_channel_inputs(
+                        session_key,
+                        None,
+                        source,
+                        internal=True,
+                    )
+                    steer_event = MessageEvent(
+                        text=pending_steer,
+                        source=steer_source,
+                        channel_prompt=steer_prompt,
+                    )
                 if adapter and session_key:
-                    if steer_event is None:
-                        steer_prompt, steer_source = self._pinned_channel_inputs(
-                            session_key, None, source, internal=True,
-                        )
-                        steer_event = MessageEvent(
-                            text=pending_steer, source=steer_source, channel_prompt=steer_prompt,
-                        )
-                    steer_enqueued = self._enqueue_fifo(session_key, steer_event, adapter)
-                    if not steer_enqueued:
-                        unadmitted_steer = pending_steer
-                else:
+                    steer_enqueued = self._enqueue_fifo(
+                        session_key, steer_event, adapter
+                    )
+                if not steer_enqueued:
                     unadmitted_steer = pending_steer
             else:
                 pending_event, pending = steer_event, pending_steer
@@ -160,31 +173,32 @@ class GatewayPendingDrainMixin:
         pending_parts = [pending]
         if unadmitted_steer is not None:
             pending_parts.append(unadmitted_steer)
-
-        # Safety net: a pending slash command is never passed to the agent as user input.
         for position, pending_part in enumerate(pending_parts):
             if not pending_part or not pending_part.strip().startswith("/"):
                 continue
-            _pending_cmd_word = pending_part.strip().split(None, 1)[0][1:].lower()
-            if not _pending_cmd_word:
+            command_word = pending_part.strip().split(None, 1)[0][1:].lower()
+            if not command_word:
                 continue
             with suppress(Exception):
-                from hermes_cli.commands import resolve_command as _rc_pending
-                if not _rc_pending(_pending_cmd_word):
+                from hermes_cli.commands import resolve_command
+                if not resolve_command(command_word):
                     continue
                 logger.info(
-                    "Discarding command '/%s' from pending queue — "
-                    "commands must not be passed as agent input", _pending_cmd_word,
+                    "Discarding command '/%s' from pending queue, "
+                    "commands must not be passed as agent input",
+                    command_word,
                 )
-                await self._complete_discarded_event(pending_event)
-                if pending_event is not None and session_key:
-                    release_pending_dispatch(adapter, session_key, pending_event)
-                pending_event = None
+                if position == 0:
+                    await self._complete_discarded_event(pending_event)
+                    if pending_event is not None and session_key:
+                        release_pending_dispatch(adapter, session_key, pending_event)
+                    pending_event = None
                 pending_parts[position] = None
-
         pending = pending_parts[0]
         if unadmitted_steer is not None:
             pending = "\n\n".join(part for part in pending_parts if part) or None
+            if pending_parts[1] and pending_input is not None:
+                pending_event = steer_event
 
         if self._draining and (pending_event or pending):
             logger.info(

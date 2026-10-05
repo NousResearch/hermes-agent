@@ -109,6 +109,9 @@ export const arSettings = {
       originPlaceholder: 'https://github.com',
       originPlaceholderCheckout: 'https://shop.example.com',
       originInvalid: 'أدخل عنوان URL صالحاً مثل https://example.com.',
+      originAnySiteHint:
+        'اتركه فارغاً لاستخدام هذا العنوان على أي موقع؛ يطلب الوكيل تأكيدك للموقع في كل مرة يعبّئه فيها.',
+      anySite: 'أي موقع',
       identifierTypeField: 'نوع المعرّف',
       identifierTypes: { email: 'البريد الإلكتروني', phone: 'الهاتف', username: 'اسم المستخدم' },
       identifierField: 'المعرّف',

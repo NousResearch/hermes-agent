@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
 import { introZh } from './intro-zh'
+import { zhVault } from './zh_vault'
 
 export const zh = defineLocale({
   externalOpenFailed: {
@@ -580,78 +581,7 @@ export const zh = defineLocale({
       notifications: '通知',
       vault: '密码与登录'
     },
-    vault: {
-      title: '密码与登录',
-      blurb:
-        '说一句“登录 GitHub”，智能体就会代你登录。第一次遇到登录页时它会当场向你要登录信息，之后就自动完成。密码在本机加密保存并直接填入页面——模型永远看不到。',
-      count: n => `已保存 ${n} 项`,
-      loadFailed: '无法加载保险库条目',
-      empty: '尚未保存任何内容',
-      emptyDesc: '这里不必手动添加。让智能体登录某个网站时，它会当场向你询问一次登录信息。若想提前录入，可点“添加”。',
-      add: '添加',
-      addTitle: '添加登录信息、银行卡或地址',
-      addDescription: '加密保存在本机。代理永远不会看到密码。',
-      added: '已保存。',
-      adding: '保存中…',
-      addConfirm: '保存',
-      kindField: '类型',
-      kinds: { login: '登录', payment: '支付卡', address: '地址' },
-      labelField: '标签',
-      labelPlaceholder: '例如：GitHub 工作账号',
-      labelRequired: '标签为必填项。',
-      originField: '站点来源',
-      originPlaceholder: 'https://github.com',
-      originPlaceholderCheckout: 'https://shop.example.com',
-      originInvalid: '请输入有效的 URL，例如 https://example.com。',
-      identifierTypeField: '标识符类型',
-      identifierTypes: { email: '邮箱', phone: '电话', username: '用户名' },
-      identifierField: '标识符',
-      identifierShown: identifier => identifier,
-      passwordField: '密码',
-      loginFieldsRequired: '标识符和密码为必填项。',
-      cardNumberField: '卡号',
-      cardNameField: '持卡人姓名',
-      expMonthField: '到期月份',
-      expYearField: '到期年份',
-      cvcField: 'CVC',
-      postalField: '邮政编码',
-      addressLine1Field: '地址第 1 行',
-      addressLine2Field: '地址第 2 行',
-      cityField: '城市',
-      stateField: '省 / 州',
-      countryField: '国家/地区',
-      optional: '（可选）',
-      createdOn: date => `添加于 ${date}`,
-      deleteAction: '移除已保存项',
-      otpField: '验证器密钥',
-      otpPlaceholder: 'Base32 密钥或 otpauth:// 链接',
-      otpHint: '启用两步验证时网站显示的“设置密钥”。保存后 Hermes 会自动生成验证码。',
-      twoFactorBadge: '自动 2FA',
-      deleteTitle: '删除此项？',
-      deleteDescription: label => `“${label}”将从加密保险库中移除。此操作无法撤销。`,
-      deleteConfirm: '删除',
-      sources: {
-        title: '密码管理器',
-        blurb:
-          '已安装的密码管理器会被自动识别。智能体第一次需要其中的登录信息时会请你解锁（每个会话一次）；内存中只保留会话令牌，智能体永远看不到你的主密码或任何登录信息。',
-        toggleFailed: '无法更新密码管理器',
-        notInstalled: name => `未检测到。安装 ${name} 命令行工具并登录后，Hermes 会自动识别。`,
-        disabledDesc: '已检测到，但已为 Hermes 关闭。',
-        lockedDesc: '已检测到。智能体需要登录信息时会请你解锁，也可立即解锁。',
-        unlockedDesc: '本会话已解锁。闲置 30 分钟或关闭 Hermes 后会自动锁定。',
-        statusLocked: '已锁定',
-        statusNotDetected: '未检测到',
-        statusOff: '已关闭',
-        statusUnlocked: '已解锁',
-        unlock: '解锁',
-        unlocking: '解锁中…',
-        lock: '锁定',
-        unlocked: name => `${name} 已在本会话中解锁。`,
-        unlockTitle: name => `解锁 ${name}`,
-        unlockDescription: '输入主密码。它会交给本机的密码管理器后立即丢弃，不会被存储、记录或展示给智能体。',
-        masterPasswordPlaceholder: '主密码'
-      }
-    },
+    vault: zhVault,
     plugins: {
       title: '桌面插件',
       blurb:

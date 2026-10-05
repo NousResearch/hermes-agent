@@ -397,8 +397,10 @@ def test_previous_run_origin_does_not_cover_current(env):
         # Stamp an origin on the (open) run, then end it and open a new run.
         kb.record_off_board_run(c, tid, served_model="old")
         kb._end_run(c, tid, outcome="crashed", status="crashed")
-        c.commit()
-        assert kb.claim_task(c, tid) is None or True  # status now crashed
+        # _end_run clears current_run_id but does NOT change the task status;
+        # assert the real post-close state (no active run) instead of an
+        # always-true expression (review round-4 LOW).
+        assert kb._current_run_id(c, tid) is None
         # Re-open a fresh run without origin by moving the card back to ready.
         c.execute("UPDATE tasks SET status='ready', claim_lock=NULL WHERE id=?", (tid,))
         c.commit()

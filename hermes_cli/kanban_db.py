@@ -3924,8 +3924,9 @@ def _gate_off_board_served_model(
         with write_txn(conn):
             _append_event(
                 conn, task_id, "completion_blocked_served_model",
-                {"off_board": True, "declared": declared,
-                 "recorded_origin": origin is not None, "served_model": None},
+                {"reason": "served_model_missing", "off_board": True,
+                 "declared": declared, "recorded_origin": origin is not None,
+                 "served_model": None, "run_id": run_id},
             )
         raise OffBoardServedModelError(task_id)
     require = True if require_recorded_origin is None else bool(require_recorded_origin)

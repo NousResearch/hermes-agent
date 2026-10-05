@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  $agentPluginBusy,
   $agentPlugins,
+  $agentPluginsStatus,
   type AgentPluginRow,
   installAgentPlugin,
   isDesktopRelevantPlugin,
+  loadAgentPlugins,
   normalizeAgentPluginRow,
-  saveAgentPluginSettings
+  saveAgentPluginSettings,
+  toggleAgentPlugin
 } from './agent-plugins'
 
 const row = (partial: Partial<AgentPluginRow>): AgentPluginRow =>
@@ -112,4 +116,165 @@ describe('saveAgentPluginSettings (#46600, #87934)', () => {
     expect(JSON.stringify(request.mock.calls)).not.toContain('sk-1')
     expect($agentPlugins.get()[0].settings_schema).toEqual([])
   })
+})
+
+
+describe('loadAgentPlugins scope isolation', () => {
+  it('does not reuse or render local plugin state after switching to the same profile on another gateway', async () => {
+    let resolveLocalRefresh!: (value: { plugins: AgentPluginRow[] }) => void
+    let resolveHomelab!: (value: { plugins: AgentPluginRow[] }) => void
+
+    const localRow = row({ key: 'local-only', name: 'Local only', source: 'user' })
+    const homelabRow = row({ key: 'homelab-only', name: 'Homelab only', source: 'user' })
+
+    const localRequest = vi
+      .fn()
+      .mockResolvedValueOnce({ plugins: [localRow] })
+      .mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            resolveLocalRefresh = resolve
+          })
+      )
+    const homelabRequest = vi.fn(
+      () =>
+        new Promise(resolve => {
+          resolveHomelab = resolve
+        })
+    )
+
+    await loadAgentPlugins(localRequest as never, 'default', 'local::default')
+
+    expect($agentPlugins.get()).toEqual([expect.objectContaining({ key: 'local-only' })])
+    expect($agentPluginsStatus.get()).toBe('ready')
+
+    const pendingLocal = loadAgentPlugins(localRequest as never, 'default', 'local::default')
+    const pendingHomelab = loadAgentPlugins(homelabRequest as never, 'default', 'homelab::default')
+
+    expect(localRequest).toHaveBeenCalledTimes(2)
+    expect(homelabRequest).toHaveBeenCalledTimes(1)
+    expect(homelabRequest).toHaveBeenCalledWith(
+      'plugins.manage',
+      expect.objectContaining({ action: 'list', profile: 'default' })
+    )
+    expect($agentPlugins.get()).toEqual([])
+    expect($agentPluginsStatus.get()).toBe('loading')
+
+    resolveLocalRefresh({ plugins: [localRow] })
+    await pendingLocal
+
+    expect($agentPlugins.get()).toEqual([])
+    expect($agentPluginsStatus.get()).toBe('loading')
+
+    resolveHomelab({ plugins: [homelabRow] })
+    await pendingHomelab
+
+    expect($agentPlugins.get()).toEqual([expect.objectContaining({ key: 'homelab-only' })])
+    expect($agentPluginsStatus.get()).toBe('ready')
+  })
+})
+
+
+describe('agent plugin mutation scope isolation', () => {
+  it('ignores a late mutation from the previous gateway and does not clear the new scope busy state', async () => {
+    let resolveLocalToggle!: (value: { ok: boolean; plugin: AgentPluginRow }) => void
+    let resolveHomelabToggle!: (value: { ok: boolean; plugin: AgentPluginRow }) => void
+
+    const localRow = row({ key: 'shared-plugin', name: 'Shared plugin', source: 'user', status: 'disabled' })
+    const homelabRow = row({ key: 'shared-plugin', name: 'Shared plugin', source: 'user', status: 'disabled' })
+
+    const localRequest = vi.fn((_method: string, params?: Record<string, unknown>) => {
+      if (params?.action === 'list') {
+        return Promise.resolve({ plugins: [localRow] })
+      }
+
+      return new Promise(resolve => {
+        resolveLocalToggle = resolve
+      })
+    })
+    const homelabRequest = vi.fn((_method: string, params?: Record<string, unknown>) => {
+      if (params?.action === 'list') {
+        return Promise.resolve({ plugins: [homelabRow] })
+      }
+
+      return new Promise(resolve => {
+        resolveHomelabToggle = resolve
+      })
+    })
+
+    await loadAgentPlugins(localRequest as never, 'default', 'local::default')
+    const pendingLocalToggle = toggleAgentPlugin(
+      localRequest as never,
+      'shared-plugin',
+      true,
+      'toggle failed',
+      'default'
+    )
+
+    await loadAgentPlugins(homelabRequest as never, 'default', 'homelab::default')
+    const pendingHomelabToggle = toggleAgentPlugin(
+      homelabRequest as never,
+      'shared-plugin',
+      true,
+      'toggle failed',
+      'default'
+    )
+
+    resolveLocalToggle({
+      ok: true,
+      plugin: { ...localRow, status: 'enabled' }
+    })
+    await pendingLocalToggle
+
+    expect($agentPlugins.get()).toEqual([expect.objectContaining({ key: 'shared-plugin', status: 'disabled' })])
+    expect($agentPluginBusy.get()).toBe('shared-plugin')
+
+    resolveHomelabToggle({
+      ok: true,
+      plugin: { ...homelabRow, status: 'enabled' }
+    })
+    await pendingHomelabToggle
+
+    expect($agentPlugins.get()).toEqual([expect.objectContaining({ key: 'shared-plugin', status: 'enabled' })])
+    expect($agentPluginBusy.get()).toBeNull()
+  })
+
+  it('keeps a mutation bound to its starting profile when the gateway request function is reused', async () => {
+    let resolveDefaultToggle!: (value: { ok: boolean; plugin: AgentPluginRow }) => void
+
+    const defaultRow = row({ key: 'shared-plugin', name: 'Shared plugin', source: 'user', status: 'disabled' })
+    const researcherRow = row({ key: 'shared-plugin', name: 'Shared plugin', source: 'user', status: 'disabled' })
+
+    const request = vi.fn((_method: string, params?: Record<string, unknown>) => {
+      if (params?.action === 'list') {
+        return Promise.resolve({
+          plugins: [params.profile === 'researcher' ? researcherRow : defaultRow]
+        })
+      }
+
+      return new Promise(resolve => {
+        resolveDefaultToggle = resolve
+      })
+    })
+
+    await loadAgentPlugins(request as never, 'default', 'local::default')
+    const pendingDefaultToggle = toggleAgentPlugin(
+      request as never,
+      'shared-plugin',
+      true,
+      'toggle failed',
+      'default'
+    )
+
+    await loadAgentPlugins(request as never, 'researcher', 'local::researcher')
+
+    resolveDefaultToggle({
+      ok: true,
+      plugin: { ...defaultRow, status: 'enabled' }
+    })
+    await pendingDefaultToggle
+
+    expect($agentPlugins.get()).toEqual([expect.objectContaining({ key: 'shared-plugin', status: 'disabled' })])
+  })
+
 })

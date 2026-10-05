@@ -27,6 +27,7 @@ export function settingsScopeLabel(profile: Pick<ProfileInfo, 'bot_title' | 'dis
 export function ScopeChip({ active, label, onSelect }: { active: boolean; label: string; onSelect: () => void }) {
   return (
     <button
+      aria-pressed={active}
       className={cn(
         'rounded-full border px-3 py-1 text-[length:var(--conversation-caption-font-size)] transition',
         active

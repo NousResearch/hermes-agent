@@ -18,7 +18,7 @@ import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
 import { discoverRuntimePlugins, uninstallDiskPlugin } from '@/contrib/runtime-loader'
-import type { ProfileScope } from '@/hermes'
+import { profileScopeKey, type ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { DESKTOP_PLUGIN_TOOLSETS } from '@/lib/desktop-toolsets'
 import { triggerHaptic } from '@/lib/haptics'
@@ -43,6 +43,7 @@ import {
   updateAgentPlugin
 } from '@/store/agent-plugins'
 import { confirm } from '@/store/confirm'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
@@ -128,10 +129,10 @@ async function revealPluginsDir() {
 
 /** Copy any changed unified desktop halves into the app root FIRST, then
  *  rescan the root — a concurrent scan would read the pre-copy state. */
-async function rescanAll(requestGateway: GatewayRequest, scope: null | string) {
+async function rescanAll(requestGateway: GatewayRequest, scope: null | string, scopeKey: string) {
   await window.hermesDesktop?.reconcileDesktopPlugins?.().catch(() => undefined)
   await discoverRuntimePlugins()
-  await loadAgentPlugins(requestGateway, scope)
+  await loadAgentPlugins(requestGateway, scope, scopeKey)
 }
 
 /** Open the dual-target install modal pre-filled to install ONLY the agent
@@ -384,8 +385,6 @@ function PackageRow({
               ) : null
             )}
           </div>
-          {/* Fixed slot so the switch column stays straight whether or not
-            this row has a folder to reveal (bundled plugins have none). */}
           <span className="flex size-7 shrink-0 items-center justify-center">
             {desktop?.file && (
               <Tip label={d.reveal}>
@@ -395,8 +394,6 @@ function PackageRow({
               </Tip>
             )}
           </span>
-          {/* Fixed slot for the settings gear: only plugins whose manifest declares
-            a config_schema get one. */}
           <span className="flex size-7 shrink-0 items-center justify-center">
             {hasSettings && (
               <Tip label={p.settingsToggle(pkg.name)}>
@@ -413,9 +410,6 @@ function PackageRow({
               </Tip>
             )}
           </span>
-          {/* Same fixed-slot treatment for Uninstall: present on every row so the
-            halves line up, populated when the agent half is a user install or
-            the row is a standalone desktop plugin. */}
           <span className="flex size-7 shrink-0 items-center justify-center">
             {agent && agentRemovable ? (
               <Tip label={p.uninstallTip(pkg.name, scopeLabel)}>
@@ -446,10 +440,6 @@ function PackageRow({
           </span>
         </div>
 
-        {/* The two halves. Desktop is app-level and reads the same whichever
-          profile is selected; Agent follows the selector. A half the package
-          lacks shows a dash; a half it has but which is missing on this side
-          shows the install affordance. */}
         <HalfCell label={p.halfDesktop}>
           {desktop ? (
             <Switch
@@ -556,12 +546,14 @@ function PackageRow({
  *  catalog picker plus Install from Git for anything not in the catalog. */
 export const PluginsTab = memo(function PluginsTab({
   profile,
+  query = '',
   scopeSelector,
   scopeLabel
 }: {
   profile: ProfileScope
-  /** The Capabilities profile selector; rendered in the Agent column header so
-   *  it visibly governs only that column. */
+  query?: string
+  /** Legacy embedded selector slot; the page-level Capabilities surface uses
+   *  the shared Settings-style selector in its header. */
   scopeSelector?: ReactNode
   /** Display name of the selected profile for the Agent column label. */
   scopeLabel?: string
@@ -578,20 +570,44 @@ export const PluginsTab = memo(function PluginsTab({
   const busyKey = useStore($agentPluginBusy)
 
   const scope = profileParam(profile)
+  const scopeKey = profileScopeKey(profile)
   const label = scopeLabel ?? scope ?? t.skills.plugins.defaultProfile
+  const scopedRequest = useMemo<GatewayRequest>(() => {
+    if (!profile || typeof profile === 'string') {
+      return requestGateway
+    }
+
+    const connectionId = (profile.connectionId ?? '').trim() || null
+    const profileName = (profile.profile ?? '').trim() || 'default'
+
+    return (method, params = {}, timeoutMs) =>
+      requestGatewayForAgent(connectionId, profileName, method, params, timeoutMs)
+  }, [profile, requestGateway])
 
   useEffect(() => {
-    void loadAgentPlugins(requestGateway, scope)
-  }, [requestGateway, scope])
+    void loadAgentPlugins(scopedRequest, scope, scopeKey)
+  }, [scope, scopeKey, scopedRequest])
 
   const packages = useMemo(
     () => mergePluginPackages(Object.values(desktopRecords), agentRows.filter(isDesktopRelevantPlugin)),
     [agentRows, desktopRecords]
   )
+  const filteredPackages = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase()
+
+    if (!needle) {
+      return packages
+    }
+
+    return packages.filter(pkg =>
+      [pkg.name, pkg.key, pkg.description, pkg.agent?.name, pkg.agent?.description, pkg.agent?.source, pkg.agent?.version]
+        .filter((value): value is string => typeof value === 'string')
+        .some(value => value.toLocaleLowerCase().includes(needle))
+    )
+  }, [packages, query])
 
   useDeepLinkHighlight({ param: 'plugin', ready: () => true, elementId: pluginElementId })
 
-  // Catalog picker viewport (persisted height, collapse toggle, top-edge sash).
   const heightOverride = useStore($paneHeightOverride(CATALOG_PANE_ID))
   const height = heightOverride ?? CATALOG_DEFAULT_PX
   const open = height > CATALOG_COLLAPSED_PX
@@ -648,8 +664,6 @@ export const PluginsTab = memo(function PluginsTab({
         return
       }
 
-      // Already-installed short-circuit + the dialog itself live in the shared
-      // helper so a catalog deep link behaves identically to this pick.
       openCatalogPluginInstall(
         {
           name: String(data.name),
@@ -671,12 +685,7 @@ export const PluginsTab = memo(function PluginsTab({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="min-h-32 flex-1 overflow-y-auto">
-        {/* Header: what the two columns mean, and the controls that act on
-            the whole page (install, folder, rescan). */}
-        <div className="flex flex-wrap items-start justify-between gap-3 px-3 pt-3 pb-2">
-          <p className="min-w-0 flex-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-            {p.pageBlurb}
-          </p>
+        <div className="flex items-start justify-end px-3 pt-3 pb-2">
           <div className="flex shrink-0 items-center gap-1">
             <Button
               onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })}
@@ -702,7 +711,7 @@ export const PluginsTab = memo(function PluginsTab({
                 aria-label={d.rescan}
                 onClick={() => {
                   triggerHaptic('selection')
-                  void rescanAll(requestGateway, scope)
+                  void rescanAll(scopedRequest, scope, scopeKey)
                 }}
                 size="icon"
                 type="button"
@@ -717,7 +726,7 @@ export const PluginsTab = memo(function PluginsTab({
         {status === 'error' ? (
           <PanelEmpty
             action={
-              <Button onClick={() => void loadAgentPlugins(requestGateway, scope)} size="sm">
+              <Button onClick={() => void loadAgentPlugins(scopedRequest, scope, scopeKey)} size="sm">
                 {t.skills.refresh}
               </Button>
             }
@@ -729,11 +738,10 @@ export const PluginsTab = memo(function PluginsTab({
           <p className="px-3 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
             {p.emptyAll} {p.emptyHint}
           </p>
+        ) : filteredPackages.length === 0 && status === 'ready' ? (
+          <PanelEmpty icon="search" title={t.skills.emptyNothingMatches(query)} />
         ) : (
           <div className="flex flex-col" role="table">
-            {/* Column header: the visible labels for the two control columns,
-                aligned with the cells below. The profile selector sits INSIDE
-                the Agent header so it visibly governs only that column. */}
             <div
               className="flex items-center gap-3 border-y border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1.5 text-[0.68rem] text-(--ui-text-tertiary)"
               role="row"
@@ -750,7 +758,7 @@ export const PluginsTab = memo(function PluginsTab({
                 {scopeSelector ?? <span className="truncate font-medium">{p.halfAgentIn(label)}</span>}
               </div>
             </div>
-            {packages.map(pkg => (
+            {filteredPackages.map(pkg => (
               <PackageRow
                 busy={pkg.agent ? agentBusy(pkg.agent) : false}
                 key={pkg.key}
@@ -765,10 +773,9 @@ export const PluginsTab = memo(function PluginsTab({
                       return
                     }
 
-                    if (await removeAgentPlugin(requestGateway, row.name, p.uninstallFailed(row.name), scope)) {
+                    if (await removeAgentPlugin(scopedRequest, row.name, p.uninstallFailed(row.name), scope)) {
                       notify({ kind: 'success', message: p.uninstalled(row.name) })
-                      // Prunes the app-level desktop half whose source package just went away.
-                      void rescanAll(requestGateway, scope)
+                      void rescanAll(scopedRequest, scope, scopeKey)
                     }
                   })
                 }}
@@ -777,37 +784,33 @@ export const PluginsTab = memo(function PluginsTab({
                     return
                   }
 
-                  void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
+                  void toggleAgentPlugin(scopedRequest, row.key, enable, p.toggleFailed(row.name), scope)
                 }}
                 onAgentUpdate={row => {
                   const finish = (outcome: AgentPluginUpdateOutcome) => {
                     if (outcome.kind === 'applied') {
                       notify({ kind: 'success', message: p.updated(row.name) })
-                      void rescanAll(requestGateway, scope)
+                      void rescanAll(scopedRequest, scope, scopeKey)
                     }
                   }
 
-                  void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(
-                    async outcome => {
-                      if (outcome.kind !== 'consent') {
-                        finish(outcome)
+                  void updateAgentPlugin(scopedRequest, row.name, p.updateFailed(row.name), scope).then(async outcome => {
+                    if (outcome.kind !== 'consent') {
+                      finish(outcome)
 
-                        return
-                      }
-
-                      // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
-                      // half); the backend changed nothing until the user confirms the delta.
-                      const ok = await confirm({
-                        confirmLabel: p.updateConsentConfirm,
-                        description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
-                        title: p.updateConsentTitle(row.name)
-                      })
-
-                      if (ok) {
-                        finish(await updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope, true))
-                      }
+                      return
                     }
-                  )
+
+                    const ok = await confirm({
+                      confirmLabel: p.updateConsentConfirm,
+                      description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
+                      title: p.updateConsentTitle(row.name)
+                    })
+
+                    if (ok) {
+                      finish(await updateAgentPlugin(scopedRequest, row.name, p.updateFailed(row.name), scope, true))
+                    }
+                  })
                 }}
                 onDesktopRemove={record => {
                   void confirm({
@@ -831,7 +834,7 @@ export const PluginsTab = memo(function PluginsTab({
                 }}
                 pkg={pkg}
                 profile={profile}
-                request={requestGateway}
+                request={scopedRequest}
                 scope={scope}
                 scopeLabel={label}
               />

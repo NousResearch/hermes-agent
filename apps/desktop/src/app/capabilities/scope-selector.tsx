@@ -8,12 +8,13 @@ import { getProfiles, type ProfileScope, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { activeGatewayConnectionId } from '@/store/gateway'
-import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $activeGatewayProfile, normalizeProfileKey, profileLabel } from '@/store/profile'
 
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
 interface ScopeOption {
   key: string
+  /** Presentation identity only. Routing stays in `value`. */
   label: string
   value: string
 }
@@ -107,26 +108,62 @@ export function useCapabilityScope({
   // selection would be surprising.
   useOnProfileSwitch(() => setScopeOverride(null))
 
-  // Scope-selector rows. Multi-connection desktops list every reachable
-  // (connection, profile) agent from the union roster — the selected profile
-  // is configured ON ITS OWN GATEWAY. Otherwise the legacy per-profile list.
+  // Keep presentation identity separate from routing identity. Profile names
+  // stay clean in the common case; only collisions get a connection suffix so
+  // every visible choice still maps unambiguously to one backend scope. Raw
+  // addresses/ports and "current" markers never become primary UI.
   const options: ScopeOption[] = useMemo(() => {
     if (multiConnection && rosterData?.agents?.length) {
-      const activeId = activeGatewayConnectionId() ?? 'local'
+      const agents = rosterData.agents as DesktopRosterAgent[]
+      const profileCounts = new Map<string, number>()
 
-      return rosterData.agents.map((agent: DesktopRosterAgent) => ({
-        key: `${agent.connectionId}::${agent.profile}`,
-        label:
-          agent.connectionId === activeId
-            ? `${agent.profile} — ${agent.connectionLabel} (current)`
-            : `${agent.profile} — ${agent.connectionLabel}`,
-        value: `${agent.connectionId}::${agent.profile}`
-      }))
+      for (const agent of agents) {
+        const key = agent.profile.trim().toLocaleLowerCase()
+        profileCounts.set(key, (profileCounts.get(key) ?? 0) + 1)
+      }
+
+      const collisionLabels = new Map<string, number>()
+      const baseLabels = agents.map(agent => {
+        const profileKey = agent.profile.trim().toLocaleLowerCase()
+
+        if ((profileCounts.get(profileKey) ?? 0) <= 1) {
+          return agent.profile
+        }
+
+        const connectionLabel = agent.connectionLabel?.trim() || agent.connectionId
+        const looksTechnical =
+          /^https?:\/\//i.test(connectionLabel) ||
+          /^\[?[0-9a-f:.]+\]?(?::\d+)?$/i.test(connectionLabel) ||
+          /^[\w.-]+:\d+$/.test(connectionLabel)
+        const friendlyConnection =
+          agent.connectionKind === 'local'
+            ? connectionLabel || agent.connectionId
+            : looksTechnical
+              ? agent.connectionId
+              : connectionLabel
+
+        const label = `${agent.profile} · ${friendlyConnection}`
+        collisionLabels.set(label, (collisionLabels.get(label) ?? 0) + 1)
+
+        return label
+      })
+
+      return agents.map((agent, index) => {
+        const baseLabel = baseLabels[index]
+        const label =
+          (collisionLabels.get(baseLabel) ?? 0) > 1 ? `${baseLabel} (${agent.connectionId})` : baseLabel
+
+        return {
+          key: `${agent.connectionId}::${agent.profile}`,
+          label,
+          value: `${agent.connectionId}::${agent.profile}`
+        }
+      })
     }
 
     return (profilesData?.profiles ?? []).map(p => ({
       key: p.name,
-      label: p.is_default ? 'Hermes (default)' : p.name,
+      label: profileLabel(p),
       value: p.name
     }))
   }, [multiConnection, profilesData, rosterData])
@@ -177,10 +214,8 @@ export function useCapabilityScope({
 }
 
 /**
- * Scope selector, shown above EVERY Capabilities tab (Skills, Tools, MCP,
- * Plugins). Lets the user configure ANY profile's capabilities — on any
- * registered gateway — without switching the whole app. Only meaningful with
- * >1 option; hidden otherwise to avoid clutter.
+ * Legacy select presentation kept for embedded consumers. The main
+ * Capabilities page uses the shared Settings-style scope chips.
  */
 export function CapabilityScopeSelector({
   compact = false,

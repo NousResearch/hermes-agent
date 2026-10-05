@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -55,6 +55,16 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [revealed, setRevealed] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState<string | null>(null)
+  const revealGeneration = useRef<Record<string, number>>({})
+  const scopeGeneration = useRef(0)
+  const previousProfile = useRef(profile)
+
+  // Advance synchronously during render so an async completion from the old
+  // profile cannot land in the new profile's UI before the reload effect runs.
+  if (previousProfile.current !== profile) {
+    previousProfile.current = profile
+    scopeGeneration.current += 1
+  }
 
   // Best-effort cleanup of a retired localStorage flag (global "Show
   // advanced" toggle) — everything in these views is configuration-level.
@@ -77,6 +87,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
     setVars(null)
     setEdits({})
     setRevealed({})
+    setSaving(null)
 
     void (async () => {
       try {
@@ -110,18 +121,23 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
       return
     }
 
+    const scope = scopeGeneration.current
     setSaving(key)
 
     try {
       await setEnvVar(key, value, profile)
-      patchVar(key, { is_set: true, redacted_value: redactedValue(value) })
-      clearLocalState(key, editKey)
+      if (scopeGeneration.current === scope) {
+        patchVar(key, { is_set: true, redacted_value: redactedValue(value) })
+        clearLocalState(key, editKey)
+      }
       void queryClient.invalidateQueries({ queryKey: ['model-options'] })
       notify({ kind: 'success', title: toolsets.savedTitle, message: toolsets.savedMessage(key) })
     } catch (err) {
       notifyError(err, toolsets.failedSave(key))
     } finally {
-      setSaving(null)
+      if (scopeGeneration.current === scope) {
+        setSaving(null)
+      }
     }
   }
 
@@ -135,12 +151,15 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
       return { message: credentials.enterValueFirst, ok: false }
     }
 
+    const scope = scopeGeneration.current
     setSaving(key)
 
     try {
       await setEnvVar(key, trimmed, profile)
-      patchVar(key, { is_set: true, redacted_value: redactedValue(trimmed) })
-      clearLocalState(key)
+      if (scopeGeneration.current === scope) {
+        patchVar(key, { is_set: true, redacted_value: redactedValue(trimmed) })
+        clearLocalState(key)
+      }
       void queryClient.invalidateQueries({ queryKey: ['model-options'] })
       notify({ kind: 'success', message: toolsets.savedMessage(key), title: toolsets.savedTitle })
 
@@ -150,7 +169,9 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
 
       return { message: err instanceof Error ? err.message : credentials.couldNotSave, ok: false }
     } finally {
-      setSaving(null)
+      if (scopeGeneration.current === scope) {
+        setSaving(null)
+      }
     }
   }
 
@@ -159,19 +180,29 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
       return
     }
 
+    const scope = scopeGeneration.current
     setSaving(key)
 
     try {
       await deleteEnvVar(key, profile)
-      patchVar(key, { is_set: false, redacted_value: null })
-      clearLocalState(key, editKey)
+      if (scopeGeneration.current === scope) {
+        patchVar(key, { is_set: false, redacted_value: null })
+        clearLocalState(key, editKey)
+      }
       void queryClient.invalidateQueries({ queryKey: ['model-options'] })
       notify({ kind: 'success', title: toolsets.removedTitle, message: toolsets.removedMessage(key) })
     } catch (err) {
       notifyError(err, toolsets.failedRemove(key))
     } finally {
-      setSaving(null)
+      if (scopeGeneration.current === scope) {
+        setSaving(null)
+      }
     }
+  }
+
+  function handleHideReveal(key: string) {
+    revealGeneration.current[key] = (revealGeneration.current[key] ?? 0) + 1
+    setRevealed(c => withoutKey(c, key))
   }
 
   async function handleReveal(key: string) {
@@ -181,9 +212,16 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
       return
     }
 
+    const generation = (revealGeneration.current[key] ?? 0) + 1
+    const scope = scopeGeneration.current
+    revealGeneration.current[key] = generation
+
     try {
       const result = await revealEnvVar(key, profile)
-      setRevealed(c => ({ ...c, [key]: result.value }))
+
+      if (scopeGeneration.current === scope && revealGeneration.current[key] === generation) {
+        setRevealed(c => ({ ...c, [key]: result.value }))
+      }
     } catch (err) {
       notifyError(err, toolsets.failedReveal(key))
     }
@@ -199,7 +237,8 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
       setEdits,
       onSave: handleSave,
       onClear: handleClear,
-      onReveal: handleReveal
+      onReveal: handleReveal,
+      onHideReveal: handleHideReveal
     }
   }
 }

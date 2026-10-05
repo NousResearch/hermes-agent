@@ -535,32 +535,61 @@ export async function setupPackagedApp(): Promise<PackagedAppFixture> {
 
 // ─── Wait helpers ──────────────────────────────────────────────────────
 
-/** Composer readiness includes hit testing, so boot overlays cannot produce an early pass. */
-export async function waitForAppReady(fixture: MockBackendFixture | NoProviderFixture | DeadBackendFixture, timeoutMs = 60_000): Promise<void> {
+async function waitForVisibleDesktopWindow(
+  fixture: MockBackendFixture | NoProviderFixture | DeadBackendFixture,
+  timeoutMs: number,
+): Promise<void> {
   const { page, app } = fixture
 
-  await waitForChatReady(page, timeoutMs)
-
-  // On Electron 40.x, ready-to-show may never fire (electron/electron#51972)
-  // and the window stays hidden even though the DOM is rendered. The main
-  // process reveals it anyway — immediately under TEST_WORKER_INDEX, and via
-  // wireWindowReveal's post-load fallback in production — but the DOM can be
-  // ready before that lands. Poll until the window is actually visible so
-  // interactions (click, screenshot) don't hit a hidden surface.
-  if (app) {
-    const deadline = Date.now() + timeoutMs
-
-    while (Date.now() < deadline) {
-      const visible = await app.evaluate(({ BrowserWindow }) => {
-        const w = BrowserWindow.getAllWindows()[0]
-
-        return w ? w.isVisible() : false
-      }).catch(() => false)
-
-      if (visible) {break}
-      await page.waitForTimeout(500)
-    }
+  if (!app) {
+    return
   }
+
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    const visible = await app.evaluate(({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows()[0]
+
+      return w ? w.isVisible() : false
+    }).catch(() => false)
+
+    if (visible) {
+      return
+    }
+
+    await page.waitForTimeout(500)
+  }
+
+  throw new Error(`Desktop window did not become visible within ${timeoutMs}ms`)
+}
+
+/**
+ * Wait until the renderer shell is ready for page/navigation E2E.
+ *
+ * This deliberately does NOT require the chat composer. Settings, Capabilities,
+ * Command Center and similar page tests only need a mounted renderer, the
+ * primary sidebar navigation and a visible Electron window. Requiring chat
+ * readiness here couples unrelated page tests to the conversation surface and
+ * can turn a healthy shell into a false timeout.
+ */
+export async function waitForDesktopShellReady(
+  fixture: MockBackendFixture | NoProviderFixture | DeadBackendFixture,
+  timeoutMs = 60_000,
+): Promise<void> {
+  const { page } = fixture
+
+  await page.locator('#root').waitFor({ state: 'attached', timeout: timeoutMs })
+  await page.locator('[data-tour="sidebar-nav-capabilities"]').waitFor({ state: 'visible', timeout: timeoutMs })
+  await waitForVisibleDesktopWindow(fixture, timeoutMs)
+}
+
+/** Composer readiness includes hit testing, so boot overlays cannot produce an early pass. */
+export async function waitForAppReady(fixture: MockBackendFixture | NoProviderFixture | DeadBackendFixture, timeoutMs = 60_000): Promise<void> {
+  const { page } = fixture
+
+  await waitForChatReady(page, timeoutMs)
+  await waitForVisibleDesktopWindow(fixture, timeoutMs)
 }
 
 /**

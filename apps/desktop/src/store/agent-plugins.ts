@@ -123,31 +123,78 @@ export const isDesktopRelevantPlugin = (row: AgentPluginRow): boolean => {
 }
 
 let inflight: Promise<void> | null = null
-let inflightProfile: string | null = null
+let inflightScopeKey: string | null = null
+let activeScopeKey: string | null = null
+const requestScopeKeys = new WeakMap<GatewayRequest, string | null>()
 // Bumped per load so a slow response from a previous profile scope can't
 // overwrite the newer scope's list (async results can land out of order).
 let loadGeneration = 0
+// Mutations share one busy indicator. Generation ownership prevents a late
+// request from an old scope (or an older mutation in the same scope) from
+// clearing the current scope's busy state.
+let mutationGeneration = 0
 
 /** Scope a `plugins.manage` payload to a profile. Omitted (null) = the
  *  backend's launch profile — older backends ignore the extra param. */
 const withProfile = (params: Record<string, unknown>, profile?: string | null) =>
   profile ? { ...params, profile } : params
 
+const requestScopeIdentity = (request: GatewayRequest, profile?: string | null): string | null =>
+  requestScopeKeys.has(request) ? (requestScopeKeys.get(request) ?? null) : (profile ?? null)
+
+const isActiveScopeIdentity = (identity: string | null): boolean => activeScopeKey === identity
+
+const beginAgentPluginMutation = (request: GatewayRequest, key: string, profile?: string | null) => {
+  const generation = ++mutationGeneration
+  const identity = requestScopeIdentity(request, profile)
+
+  $agentPluginBusy.set(key)
+
+  return { generation, identity }
+}
+
+const finishAgentPluginMutation = (generation: number, identity: string | null) => {
+  if (generation === mutationGeneration && activeScopeKey === identity) {
+    $agentPluginBusy.set(null)
+  }
+}
+
 /** Fetch the backend plugin list, optionally scoped to another profile's
  *  HERMES_HOME. Always refetches (it's a cheap local disk scan on the
  *  backend); concurrent callers for the SAME profile share one in-flight
  *  request — a different profile starts fresh so a scope switch can't get a
  *  stale list. */
-export function loadAgentPlugins(request: GatewayRequest, profile?: string | null): Promise<void> {
+export function loadAgentPlugins(
+  request: GatewayRequest,
+  profile?: string | null,
+  scopeKey?: string | null
+): Promise<void> {
   const scope = profile ?? null
 
-  if (inflight && inflightProfile === scope) {
+  if (scopeKey !== undefined) {
+    requestScopeKeys.set(request, scopeKey)
+  }
+
+  const identity = requestScopeKeys.has(request) ? (requestScopeKeys.get(request) ?? null) : scope
+
+  if (inflight && inflightScopeKey === identity) {
     return inflight
   }
 
   const generation = ++loadGeneration
+  const scopeChanged = activeScopeKey !== identity
 
-  inflightProfile = scope
+  activeScopeKey = identity
+  inflightScopeKey = identity
+
+  if (scopeChanged) {
+    mutationGeneration += 1
+    $agentPluginBusy.set(null)
+    $agentPlugins.set([])
+    $agentPluginsError.set(null)
+    $agentPluginsStatus.set('loading')
+  }
+
   inflight = (async () => {
     if ($agentPluginsStatus.get() !== 'ready') {
       $agentPluginsStatus.set('loading')
@@ -176,7 +223,7 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
     } finally {
       if (generation === loadGeneration) {
         inflight = null
-        inflightProfile = null
+        inflightScopeKey = null
       }
     }
   })()
@@ -198,7 +245,7 @@ export async function toggleAgentPlugin(
   failMessage: string,
   profile?: string | null
 ): Promise<boolean> {
-  $agentPluginBusy.set(key)
+  const mutation = beginAgentPluginMutation(request, key, profile)
 
   try {
     const result = await request<{ ok?: boolean; plugin?: AgentPluginRow | null }>(
@@ -220,10 +267,12 @@ export async function toggleAgentPlugin(
     const refreshed = result.plugin
 
     if (refreshed) {
-      const snapshot = normalizeAgentPluginRow(refreshed)
+      if (isActiveScopeIdentity(mutation.identity)) {
+        const snapshot = normalizeAgentPluginRow(refreshed)
 
-      $agentPlugins.set($agentPlugins.get().map(row => (row.key === key ? { ...row, ...snapshot } : row)))
-    } else {
+        $agentPlugins.set($agentPlugins.get().map(row => (row.key === key ? { ...row, ...snapshot } : row)))
+      }
+    } else if (isActiveScopeIdentity(mutation.identity)) {
       await loadAgentPlugins(request, profile)
     }
 
@@ -233,7 +282,7 @@ export async function toggleAgentPlugin(
 
     return false
   } finally {
-    $agentPluginBusy.set(null)
+    finishAgentPluginMutation(mutation.generation, mutation.identity)
   }
 }
 
@@ -363,7 +412,7 @@ export async function updateAgentPlugin(
   profile?: string | null,
   acceptCapabilities = false
 ): Promise<AgentPluginUpdateOutcome> {
-  $agentPluginBusy.set(name)
+  const mutation = beginAgentPluginMutation(request, name, profile)
 
   try {
     const result = await request<{
@@ -385,7 +434,9 @@ export async function updateAgentPlugin(
       throw new Error(failMessage)
     }
 
-    await loadAgentPlugins(request, profile)
+    if (isActiveScopeIdentity(mutation.identity)) {
+      await loadAgentPlugins(request, profile)
+    }
 
     return { kind: result.unchanged ? 'unchanged' : 'applied' }
   } catch (e) {
@@ -393,7 +444,7 @@ export async function updateAgentPlugin(
 
     return { kind: 'failed' }
   } finally {
-    $agentPluginBusy.set(null)
+    finishAgentPluginMutation(mutation.generation, mutation.identity)
   }
 }
 
@@ -407,7 +458,7 @@ export async function removeAgentPlugin(
   failMessage: string,
   profile?: string | null
 ): Promise<boolean> {
-  $agentPluginBusy.set(name)
+  const mutation = beginAgentPluginMutation(request, name, profile)
 
   try {
     const result = await request<{ ok?: boolean }>('plugins.manage', withProfile({ action: 'remove', name }, profile))
@@ -416,7 +467,9 @@ export async function removeAgentPlugin(
       throw new Error(failMessage)
     }
 
-    $agentPlugins.set($agentPlugins.get().filter(row => row.name !== name))
+    if (isActiveScopeIdentity(mutation.identity)) {
+      $agentPlugins.set($agentPlugins.get().filter(row => row.name !== name))
+    }
 
     return true
   } catch (e) {
@@ -424,7 +477,7 @@ export async function removeAgentPlugin(
 
     return false
   } finally {
-    $agentPluginBusy.set(null)
+    finishAgentPluginMutation(mutation.generation, mutation.identity)
   }
 }
 
@@ -451,7 +504,7 @@ export async function saveAgentPluginSettings(
   request: GatewayRequest,
   opts: SaveAgentPluginSettingsOptions
 ): Promise<boolean> {
-  $agentPluginBusy.set(opts.key)
+  const mutation = beginAgentPluginMutation(request, opts.key, opts.profile)
 
   try {
     for (const [env, value] of Object.entries(opts.secrets)) {
@@ -473,10 +526,12 @@ export async function saveAgentPluginSettings(
     }
 
     if (result?.plugin) {
-      const refreshed = result.plugin
+      if (isActiveScopeIdentity(mutation.identity)) {
+        const refreshed = normalizeAgentPluginRow(result.plugin)
 
-      $agentPlugins.set($agentPlugins.get().map(row => (row.key === opts.key ? { ...row, ...refreshed } : row)))
-    } else {
+        $agentPlugins.set($agentPlugins.get().map(row => (row.key === opts.key ? { ...row, ...refreshed } : row)))
+      }
+    } else if (isActiveScopeIdentity(mutation.identity)) {
       await loadAgentPlugins(request, opts.profile)
     }
 
@@ -486,6 +541,6 @@ export async function saveAgentPluginSettings(
 
     return false
   } finally {
-    $agentPluginBusy.set(null)
+    finishAgentPluginMutation(mutation.generation, mutation.identity)
   }
 }

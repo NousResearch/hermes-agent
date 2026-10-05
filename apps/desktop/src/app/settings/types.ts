@@ -49,5 +49,6 @@ export interface EnvRowProps {
   onSave: (key: string, editKey?: string) => void
   onClear: (key: string, editKey?: string) => void
   onReveal: (key: string) => void
+  onHideReveal: (key: string) => void
   compact?: boolean
 }

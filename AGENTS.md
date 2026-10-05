@@ -209,7 +209,8 @@ PM activation's `PYTHONPATH` does not survive the test runner's environment scru
 `scripts/run_tests.sh` probes `.venv`, then `venv`, then `$HOME/.hermes/hermes-agent/venv`
 (worktrees sharing the main checkout's venv). **`python scripts/check`** runs every blocking lint
 check CI runs, with CI's pinned tools; run it before pushing (`--install-hook pre-push` runs it on
-every push).
+every push; re-run it after pulling to refresh the hook). `# noqa` does not waive a ratchet finding:
+use `# health: allow <RULE> -- <why>`.
 
 ## Project Structure
 
@@ -272,7 +273,8 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
   (blind repointing to defining modules broke 130+ tests).
 - **Size and complexity are ratcheted per unit** (`scripts/code_health/config.py`): new
   functions CC ≤ 20, ≤ 300 lines, nesting ≤ 6; files ≤ 2,000 lines; units already over may only
-  go down (a file already past 2,000 lines may not grow). Split along `<stem>_<topic>` first, in its own commit; behaviour goes in a sibling,
+  go down (a file already past 2,000 lines may not grow). Split along `<stem>_<topic>` first, in its own
+  commit (moved code keeps its cap and existing findings; a copy is new code); behaviour goes in a sibling,
   never a facade; name ladders become a dict → handler (`_SLASH_DISPATCH`).
 - **No re-export shims for internal moves** ("keep the old name importable"). Internal paths
   are not API: plugins build on `ctx` and the documented ABCs. The one-time Sep 2026

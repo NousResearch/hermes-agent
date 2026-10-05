@@ -216,10 +216,9 @@ class SessionPortabilityMixin:
 
     def list_cron_job_runs(self, job_id: str, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
         """Run sessions of one cron job, newest first, in the ``list_sessions_rich`` row shape.
-        Cron runs are flat ``cron_{job_id}_{timestamp}`` sessions that never compress or
-        branch, so this skips ``list_sessions_rich``'s compression-chain CTE /
-        leading-wildcard ``id_query`` path (which seeds from EVERY ``source='cron'`` row)
-        for a ``[prefix, prefix_hi)`` id range scan that scales with the window."""
+        Select stable ``cron_{job_id}_{timestamp}`` roots by an indexed prefix
+        window; resolve scheduler finalization through their verified compression
+        continuations rather than treating every ended root as finalized."""
         prefix = f"cron_{job_id}_"
         # Half-open upper bound: bump the final byte so the range covers exactly the prefix.
         prefix_hi = prefix[:-1] + chr(ord(prefix[-1]) + 1)
@@ -228,7 +227,10 @@ class SessionPortabilityMixin:
             "\n            ORDER BY s.started_at DESC, s.id DESC\n            LIMIT ? OFFSET ?",
             prompt_select=f",\n                {_PROMPT_RESOLVED_SQL}",
         )
-        return [self._rich_row(row) for row in self._read_rows(query, (prefix, prefix_hi, limit, offset))]
+        runs = [self._rich_row(row) for row in self._read_rows(query, (prefix, prefix_hi, limit, offset))]
+        for run in runs:
+            run["cron_finalized"] = self.cron_finalized_outcome(run["id"]) is not None
+        return runs
 
     def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
         """One session with the ``list_sessions_rich`` enriched columns, or None.

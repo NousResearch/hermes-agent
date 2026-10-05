@@ -871,7 +871,12 @@ class SessionSessionsMixin:
             "LEFT JOIN system_prompts tp ON tp.hash = s.tool_names WHERE s.id = ?",
             (session_id,),
         )
-        return self._session_row_dict(row) if row else None
+        if not row:
+            return None
+        data = self._session_row_dict(row)
+        if data.get("source") == "cron":
+            data["cron_finalized"] = self.cron_finalized_outcome(session_id) is not None
+        return data
 
     def get_recent_session_model_route(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Most recently used main-loop model route as one coherent per-call tuple

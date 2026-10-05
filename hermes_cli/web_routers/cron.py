@@ -544,8 +544,6 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
         for s in session_runs:
             s["is_active"] = s.get("ended_at") is None and (now - s.get("last_active", s.get("started_at", 0))) < 300
             s["scheduler_owned"] = _run_owned_by(s, inflight)
-            from hermes_state_common import is_scheduler_finalized_cron
-            s["cron_finalized"] = is_scheduler_finalized_cron(s)
             s["archived"] = bool(s.get("archived"))
             if selected:
                 s["profile"] = selected

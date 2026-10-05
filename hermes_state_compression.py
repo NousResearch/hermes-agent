@@ -84,6 +84,43 @@ _CHAIN_CAP = 1000
 class SessionCompressionMixin:
     """Compression lineage, cooldown/streak counters, locks and turn leases."""
 
+    def cron_finalized_outcome(self, session_id: str) -> Optional[str]:
+        """Read scheduler finalization through a unique, verified compression continuation.
+
+        Do not borrow facts from latest descendants: forks, delegates, resets, tool
+        sessions and independent cron attempts are different authorization objects.
+        Ambiguous or cyclic lineages fail closed. No mutable lifecycle fields are healed.
+        """
+        from hermes_state_common import scheduler_finalized_cron_outcome
+
+        with self._read_ctx() as conn:
+            seen = set()
+            current = session_id
+            outcome = None
+            for _ in range(_CHAIN_CAP):
+                if current in seen:
+                    return None
+                seen.add(current)
+                row = conn.execute("SELECT * FROM sessions WHERE id = ?", (current,)).fetchone()
+                if row is None or row["source"] != "cron":
+                    return None
+                outcome = scheduler_finalized_cron_outcome(dict(row)) or outcome
+                if row["end_reason"] != "compression":
+                    return outcome
+                children = conn.execute(
+                    "SELECT id FROM sessions WHERE parent_session_id = ? AND source = 'cron'"
+                    + self._NON_CONTINUATION_CHILD_FILTER_SQL.format(alias="")
+                    + f" AND NOT ({_RESET_CHILD_SQL.format(a='sessions')})"
+                    + " AND id NOT GLOB 'cron_*' LIMIT 2",
+                    (current,) * 4,
+                ).fetchall()
+                if not children:
+                    return outcome
+                if len(children) != 1:
+                    return None
+                current = children[0]["id"]
+            return None
+
     def reopen_if_explicitly_closed(
         self, session_id: str, *, provenance: str, patience_s: Optional[float] = None,
     ) -> Optional[str]:
@@ -226,6 +263,15 @@ class SessionCompressionMixin:
         """INSERT the compression child's ``sessions`` row copied from *parent*. Same contract as
         _insert_session_row's compression-fork backfill: the child stays on the parent's profile and keeps
         gateway routing/origin columns; no owner on either side -> this store's profile."""
+        from hermes_state_common import scheduler_finalized_cron_outcome
+
+        # Fresh agent init config is not the parent's durable metadata. Carry only
+        # the verified scheduler outcome, without mutating the caller's config.
+        model_config = dict(model_config or {})
+        model_config.pop("_cron_finalized", None)
+        outcome = scheduler_finalized_cron_outcome(dict(parent))
+        if source == "cron" and outcome is not None:
+            model_config["_cron_finalized"] = outcome
         system_prompt_hash = self._store_system_prompt(conn, system_prompt)
         # The child continues the parent's tools[] pin (the compaction refresh re-pinned it just
         # before publish), or its first hop to another surface re-derives the array.

@@ -105,7 +105,7 @@ def _complete_locked(
         # config migration, the maintenance, or (in an update) the gateway restart after it.
         try:
             run()
-        except (Exception, SystemExit) as exc:  # noqa: BLE001 — reported as an owed follow-up
+        except (Exception, SystemExit) as exc:  # health: allow BLE001 -- reported as an owed follow-up
             from hermes_cli.update_receipt import record_followup
 
             reason = str(exc) or type(exc).__name__

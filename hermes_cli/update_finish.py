@@ -33,7 +33,7 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
             had_desktop_app_before_update=had_desktop_app_before_update,
             pre_update_version=pre_update_version, followups=owed,
         )
-    except (Exception, SystemExit) as exc:  # noqa: BLE001 — the code is committed; retry later
+    except (Exception, SystemExit) as exc:  # health: allow BLE001 -- the code is committed; retry later
         reason = str(exc) or type(exc).__name__
         record_followup("maintenance", reason)
         owed.append(("maintenance", reason))
@@ -139,7 +139,7 @@ def main(context: Path, result: Path) -> int:
                 owed: list[tuple[str, str]] = []
                 try:
                     build_update_products(root, desktop=desktop)
-                except (Exception, SystemExit) as exc:  # noqa: BLE001 — committed code: owed, not failed
+                except (Exception, SystemExit) as exc:  # health: allow BLE001 -- committed code: owed, not failed
                     reason = str(exc) or type(exc).__name__
                     update_receipt.record_followup("build", reason)
                     owed.append(("build", reason))

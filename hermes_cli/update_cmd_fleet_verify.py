@@ -346,6 +346,6 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     try:
         from hermes_cli.gateway_migrate import maybe_auto_migrate_after_update
         maybe_auto_migrate_after_update()
-    except (Exception, SystemExit) as exc:  # noqa: BLE001 — a SystemExit here must not fail a committed update
+    except (Exception, SystemExit) as exc:  # health: allow BLE001 -- a SystemExit here must not fail a committed update
         logger.warning('Multiplex auto-migration after update failed: %s', exc)
         print(f"  ⚠ Gateway multiplex migration did not finish: {exc} (run `hermes gateway migrate` later)")

@@ -295,7 +295,7 @@ def _complete_selected(request: dict) -> bool:
             completion_message=request.get("completion_message"),
             announce=None if request.get("completion_message") else "\n✓ Code updated!",
             followups=followups)
-    except (Exception, SystemExit) as exc:  # noqa: BLE001 — e.g. the shared update lock refused the tail
+    except (Exception, SystemExit) as exc:  # health: allow BLE001 -- e.g. the shared update lock refused the tail
         reason = str(exc) or type(exc).__name__
         record_followup("completion", reason)
         followups.append(("completion", reason))
@@ -423,7 +423,7 @@ def _bootstrap(request: dict, request_path: Path, result_path: Path) -> int:
         update_receipt.finalize_interrupted_update_receipt(
             "KeyboardInterrupt: interrupted while installing dependencies", exit_code=130)
         return _write_bootstrap_result(request, result_path, 130, _read_terminal_receipt(request))
-    except (Exception, SystemExit) as exc:  # noqa: BLE001 — after the commit point nothing fails the update
+    except (Exception, SystemExit) as exc:  # health: allow BLE001 -- after the commit point nothing fails the update
         # The code is committed but its dependencies are not (A6): an owed follow-up, exit 0.
         # Paused Windows gateways stay the parent's to resume (it has the dependencies).
         return _settle_after_commit(request, result_path, "dependencies", str(exc) or type(exc).__name__)

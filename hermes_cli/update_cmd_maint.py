@@ -822,11 +822,11 @@ def _sweep_bytecode_after_update(branch: str) -> None:
         if removed:
             print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
         _m()._record_bytecode_fingerprint()
-    except Exception as exc:  # noqa: BLE001 — owed to the next launch's fingerprint sweep
+    except Exception as exc:  # health: allow BLE001 -- owed to the next launch's fingerprint sweep
         record_followup("bytecode_sweep", str(exc) or type(exc).__name__)
     try:
         _m()._refresh_bootstrap_cache_scripts(branch)
-    except Exception as exc:  # noqa: BLE001 — refreshed again by the next update
+    except Exception as exc:  # health: allow BLE001 -- refreshed again by the next update
         record_followup("bootstrap_scripts", str(exc) or type(exc).__name__,
                         retry="the next `hermes update` refreshes them")
 
@@ -995,7 +995,7 @@ def _run_post_update_maintenance(
     def owed_step(name, run):
         try:
             run()
-        except (Exception, SystemExit) as exc:  # noqa: BLE001 — the code is committed; retry later
+        except (Exception, SystemExit) as exc:  # health: allow BLE001 -- the code is committed; retry later
             reason = str(exc) or type(exc).__name__
             record_followup(name, reason)
             if followups is not None:

@@ -2,6 +2,27 @@
 
 import concurrent.futures
 import contextlib
+import logging
+import time
+
+logger = logging.getLogger("cron.scheduler")
+
+# One WARNING per errno per window: an unwritable store fails every 60s tick until fixed.
+_STORE_WARN_INTERVAL_SECONDS = 900.0
+_last_store_warning: dict = {}
+
+
+def warn_store_unwritable(exc: OSError, skipped: str) -> None:
+    """Rate-limited WARNING for a cron store write that failed (ENOSPC/EROFS/EACCES). The caller
+    skips the dispatch that needed the write: no job runs without a durable advance/fire claim."""
+    now = time.monotonic()
+    last = _last_store_warning.get(exc.errno)
+    if last is not None and now - last < _STORE_WARN_INTERVAL_SECONDS:
+        return
+    _last_store_warning[exc.errno] = now
+    logger.warning(
+        "Cron store is unwritable (%s); skipped %s. Jobs stay due and fire once the store "
+        "accepts writes again.", exc, skipped)
 
 
 def tick(verbose=True, adapters=None, loop=None, sync=True, *, can_dispatch=None):
@@ -80,7 +101,16 @@ def _tick_admitted(
         # Advance next_run_at for recurring jobs FIRST, under the lock, before any execution
         # (at-most-once). Re-advancing running jobs keeps the grace window alive; mark_job_run
         # overwrites it on completion. Composes with the claim-time advance in claim_job_for_fire.
-        _sched.advance_next_runs([job["id"] for job in due_jobs])
+        try:
+            _sched.advance_next_runs([job["id"] for job in due_jobs])
+        except OSError as exc:
+            # No durable advance -> a crash mid-run would re-fire recurring jobs; skipping is the
+            # at-most-once side. One-shots still go through their own fire claim.
+            recurring = [j for j in due_jobs if j.get("schedule", {}).get("kind") in {"cron", "interval"}]
+            warn_store_unwritable(exc, f"{len(recurring)} recurring job(s)")
+            due_jobs = [j for j in due_jobs if j not in recurring]
+            if not due_jobs:
+                return 0
 
         _max_workers = _sched._resolve_max_parallel_workers()
         if verbose:

@@ -78,6 +78,7 @@ from gateway.platforms.base import (
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
+from plugins.platforms.matrix.adapter_sync import _is_permanent_matrix_auth_error
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
@@ -1885,7 +1886,6 @@ class MatrixAdapter(BasePlatformAdapter):
                 if self._closing:
                     return
                 # Detect permanent auth/permission failures. Transient 5xx outages must retry.
-                from plugins.platforms.matrix.adapter_sync import _is_permanent_matrix_auth_error
                 if _is_permanent_matrix_auth_error(exc):
                     logger.error("Matrix: permanent auth error, stopping sync: %s", exc)
                     return

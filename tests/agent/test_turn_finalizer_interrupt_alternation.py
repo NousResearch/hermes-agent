@@ -16,7 +16,7 @@ an empty-content assistant turn. The synthetic row is hidden from the user
 """
 
 
-from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.turn_finalizer import finalize_turn
 
 

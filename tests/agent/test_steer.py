@@ -11,7 +11,7 @@ import threading
 
 import pytest
 
-from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.prompt_builder import STEER_MARKER_OPEN, format_steer_marker
 from run_agent import AIAgent
 from tools.registry import registry

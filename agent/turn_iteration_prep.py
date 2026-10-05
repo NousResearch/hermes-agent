@@ -118,7 +118,7 @@ class IterationPrep:
 # losing the second row's checkpoint ``api_content``. Neutralise a copy instead.
 def _neutralise_replay_echo_ghosts(seq: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
     """(new list, neutralised); never mutates ``seq`` or its row dicts."""
-    from agent.agent_runtime_helpers import (
+    from agent.agent_runtime_helpers_placeholders import (
         _INTERRUPTED_PLACEHOLDER,
         _LEGACY_INTERRUPTED_PLACEHOLDER,
     )

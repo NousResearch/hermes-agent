@@ -2678,21 +2678,6 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     return matches[0] if matches else None
 
 
-# Placeholder for an empty non-final message the provider would reject. Kept identical to the stub
-# placeholder in chat_completion_helpers so healed transcripts read consistently.
-#
-# Wording matters: this text is substituted into an assistant row's ``content`` on the wire copy
-# (``fill_empty_non_final_wire_payload``, ``repair_empty_non_final_messages``, and the projection in
-# ``run_conversation``), so the model reads it as something IT said. A short natural-language phrase
-# in that position gets echoed verbatim — a clean ``finish_reason=stop`` turn answering an ordinary
-# instruction with just the placeholder (#132949, and #81841 for the same hazard on the scaffold).
-# Keep it a structural label the model has no conversational reason to reproduce, never prose.
-_INTERRUPTED_PLACEHOLDER = "[interrupt: no assistant output for this turn]"
-
-# The spelling shipped before #132949. Models reproduce it verbatim, so rows already carrying it
-# stay poisoned after the wording change; the replay filters reference this name to retire them.
-_LEGACY_INTERRUPTED_PLACEHOLDER = "[response interrupted]"
-
 # Escalate repeated heals once per session window, then stay quiet. Default threshold; tunable via
 # ``agent.sanitizer_heal_escalation_threshold`` (<= 0 disables).
 # Repeated heals of the same poisoned transcript used to WARNING on every send (#96870).
@@ -2749,6 +2734,7 @@ def fill_empty_non_final_wire_payload(msg: Dict[str, Any], *, is_final: bool) ->
         return False
     if _msg_has_payload(msg):
         return False
+    from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
     msg["content"] = _INTERRUPTED_PLACEHOLDER
     return True
 
@@ -2851,6 +2837,7 @@ def repair_empty_non_final_messages(messages: List[Dict[str, Any]]) -> List[Dict
     deletion) keeps role alternation and tool-call pairing intact. The final message is untouched."""
     if not messages or len(messages) < 2:
         return messages
+    from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
     repaired: List[Dict[str, Any]] = []
     healed = 0
     last_idx = len(messages) - 1

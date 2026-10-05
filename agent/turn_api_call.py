@@ -15,7 +15,7 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.error_classifier import FailoverReason
-from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.message_metadata import append_message
 from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_runaway_repetition
 from agent.turn_failure_copy import site_copy, stamp_failure

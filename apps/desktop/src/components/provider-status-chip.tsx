@@ -45,6 +45,7 @@ function useChipState(provider: ModelOptionProvider): ChipState | null {
   }
 
   const reset = (ms: null | number) => (ms === null ? null : formatReset(ms))
+
   const lines = [
     copy.usageTip(provider.name),
     ...windows.map(w => copy.usageWindow(w.label, w.remaining, reset(w.resetMs)))

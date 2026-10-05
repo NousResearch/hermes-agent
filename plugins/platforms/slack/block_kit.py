@@ -153,26 +153,9 @@ def _inline_elements(text: str) -> List[Dict[str, Any]]:
         # (works in section/mrkdwn; was literal in lists/quotes/table cells).
         pos = 0
         for m in _SLACK_LINK_RE.finditer(s):
-            _walk_mentions(s[pos : m.start()], style)
+            _walk_emphasis(s[pos : m.start()], style)
             url = m.group(1)
             _emit_link(url, m.group(2) or url, style)
-            pos = m.end()
-        _walk_mentions(s[pos:], style)
-
-    def _walk_mentions(s: str, style: Dict[str, bool]) -> None:
-        # Same reason as _walk_slack_links: <@U…> / <#C…> / <!here> are mrkdwn
-        # that rich_text renders literally unless they become mention elements.
-        # Unmatched tokens fall through to the text walker verbatim.
-        pos = 0
-        for m in _SLACK_MENTION_RE.finditer(s):
-            _walk_emphasis(s[pos : m.start()], style)
-            element = _mention_element(m.group(1))
-            if element is None:  # pragma: no cover - regex only matches known forms
-                _walk_emphasis(m.group(0), style)
-            else:
-                # Mentions are atomic and take no style key (Slack rejects
-                # styled user/channel/broadcast elements).
-                elements.append(element)
             pos = m.end()
         _walk_emphasis(s[pos:], style)
 
@@ -189,7 +172,19 @@ def _inline_elements(text: str) -> List[Dict[str, Any]]:
                 _walk_emphasis(m.group(1), inner_style)
                 _walk_emphasis(s[m.end() :], style)
                 return
-        emit_text(s, dict(style) if style else None)
+        # Base case: split on mention tokens at the leaf so emphasis spans
+        # wrapping a mention are kept intact, while mentions themselves
+        # remain unstyled (Slack rejects styled mention elements).
+        pos = 0
+        for m in _SLACK_MENTION_RE.finditer(s):
+            emit_text(s[pos : m.start()], dict(style) if style else None)
+            element = _mention_element(m.group(1))
+            if element is not None:
+                elements.append(element)
+            else:
+                emit_text(m.group(0), dict(style) if style else None)
+            pos = m.end()
+        emit_text(s[pos:], dict(style) if style else None)
     walk(text, {})
     return elements or [{"type": "text", "text": text}]
 

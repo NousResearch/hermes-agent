@@ -149,6 +149,30 @@ class TestSlackMentions:
         els = self._item_elements(blocks)
         assert "a <b> c" in "".join(e.get("text") or "" for e in els)
 
+    def test_mention_inside_emphasis_preserves_styling_and_mention(self):
+        # Regression: emphasis wrapping a mention must not be destroyed into literal delimiters
+        blocks = render_blocks("- **ping <@U123> now**")
+        assert blocks is not None
+        els = self._item_elements(blocks)
+        assert not any("**" in (e.get("text") or "") for e in els)
+        assert {"type": "user", "user_id": "U123"} in els
+        assert any(e.get("text") == "ping " and e.get("style", {}).get("bold") for e in els)
+        assert any(e.get("text") == " now" and e.get("style", {}).get("bold") for e in els)
+
+        # Italic
+        blocks = render_blocks("- *ping <#C456>*")
+        els = self._item_elements(blocks)
+        assert not any("*" in (e.get("text") or "") for e in els)
+        assert {"type": "channel", "channel_id": "C456"} in els
+        assert any(e.get("text") == "ping " and e.get("style", {}).get("italic") for e in els)
+
+        # Strike
+        blocks = render_blocks("- ~~hi <!here>~~")
+        els = self._item_elements(blocks)
+        assert not any("~~" in (e.get("text") or "") for e in els)
+        assert {"type": "broadcast", "range": "here"} in els
+        assert any(e.get("text") == "hi " and e.get("style", {}).get("strike") for e in els)
+
 
 class TestTables:
     def test_pipe_table_renders_native_table_block(self):

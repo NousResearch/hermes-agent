@@ -107,6 +107,24 @@ def test_background_process_cannot_read_secret_stores(hermes_home):
 
 
 @pytest.mark.platforms("linux")
+def test_bare_home_without_secrets_allows_terminal_writes_at_root(child_env):
+    # A HERMES_HOME holding no secrets must not be frozen, or the agent terminal
+    # (and the session-snapshot bootstrap) cannot create files there. HERMES_HOME here (child_env)
+    # has no .env/auth.json/config.yaml seeded.
+    from tools.environments import local
+    home = Path(os.environ["HERMES_HOME"])
+    home.mkdir(parents=True, exist_ok=True)
+    env = local.LocalEnvironment(cwd=str(home), timeout=30)
+    try:
+        result = env.execute(f"echo ok > {shlex.quote(str(home))}/scratch.txt && cat {shlex.quote(str(home))}/scratch.txt")
+    finally:
+        env.cleanup()
+    assert result["returncode"] == 0, result
+    assert "ok" in result["output"]
+    assert (home / "scratch.txt").read_text().strip() == "ok"
+
+
+@pytest.mark.platforms("linux")
 def test_execute_code_kernel_cannot_read_secret_stores(hermes_home):
     path = str(hermes_home / ".env")
     code = ("import json\ntry:\n    data = open(%r).read()\nexcept PermissionError:\n    data = 'denied'\n"

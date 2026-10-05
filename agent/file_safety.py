@@ -428,8 +428,9 @@ def terminal_protected_paths() -> tuple[list[str], list[str]]:
     """``(no_access, read_only)`` absolute paths the kernel must enforce for agent-driven children.
 
     Covers the active HERMES_HOME, the global root and every profile under it, so one profile's
-    shell cannot read another's ``.env``. Paths need not exist: a missing ``.env`` still freezes its
-    parent directory, so a child cannot create one there.
+    shell cannot read another's ``.env``. Paths need not exist: only those holding data freeze their
+    ancestors (``landlock_exec._protection_sets``), and in a frozen home a missing ``.env`` cannot be
+    created either.
     """
     homes: list[Path] = list(_hermes_dirs())
     for base in list(homes):

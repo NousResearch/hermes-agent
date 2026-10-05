@@ -113,11 +113,34 @@ def _mount_points():
     return [unescape.sub(lambda m: chr(int(m.group(1), 8)), line.split()[4]) for line in lines if len(line.split()) > 4]
 
 
-def plan_rules(no_access, read_only, abi):
-    """``[(path, allowed_access)]`` implementing the deny semantics described in the module doc."""
+def _holds_secret(path) -> bool:
+    """A protected path holds data: a file, or a directory with any non-directory entry beneath it.
+    Hermes scaffolds empty secret dirs (``pairing/``) when it initialises a home; those hold nothing.
+    A subtree that cannot be inspected counts as a secret (fail closed)."""
+    if not os.path.isdir(path):
+        return _inode(path) is not None
+    errors = []
+    for root, dirs, files in os.walk(path, onerror=errors.append):
+        if files or any(os.path.islink(os.path.join(root, d)) for d in dirs):
+            return True
+    return bool(errors)
+
+
+def _protection_sets(no_access, read_only):
+    """``(deny, ro, walk)`` inode sets. ``walk`` (directories to freeze) is built ONLY from the
+    ancestors of protected paths that hold a secret: a home holding no secrets is never frozen, so the
+    agent terminal keeps normal file access there, while a home with real secrets has its
+    secret-bearing directories frozen so those files cannot be read, replaced, renamed or deleted."""
     deny = {k for k in map(_inode, no_access) if k}
     ro = {k for k in map(_inode, read_only) if k}
-    walk = {k for p in (*no_access, *read_only) for k in map(_inode, _ancestors(p)) if k}
+    existing = [p for p in (*no_access, *read_only) if _holds_secret(p)]
+    walk = {k for p in existing for k in map(_inode, _ancestors(p)) if k}
+    return deny, ro, walk
+
+
+def plan_rules(no_access, read_only, abi):
+    """``[(path, allowed_access)]`` implementing the deny semantics described in the module doc."""
+    deny, ro, walk = _protection_sets(no_access, read_only)
     protected_devs = {k[0] for k in deny | ro} | {k[0] for k in walk}
     for mount in _mount_points():
         key = _inode(mount)

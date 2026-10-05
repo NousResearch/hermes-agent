@@ -87,6 +87,14 @@ def wrap_argv(argv: list[str]) -> list[str]:
                            "run unprotected; set security.terminal_secret_isolation: require to refuse them")
     from agent.file_safety import terminal_protected_paths
     _harden_parent()
+    # When a real secret exists, HERMES_HOME is frozen (no new top-level entries), so the terminal
+    # session-snapshot cannot create its cache dir there on a first run. Pre-create it (and it is then
+    # enumerated as a writable subdir), so the snapshot works under the frozen root. Best-effort.
+    from hermes_constants import get_hermes_home
+    try:
+        (Path(get_hermes_home()) / "cache" / "terminal").mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning("terminal secret isolation: cannot pre-create the snapshot cache dir: %s", exc)
     no_access, read_only = terminal_protected_paths()
     wrapped = [sys.executable, "-I", "-S", _HELPER, "--mode", mode]
     for path in no_access:

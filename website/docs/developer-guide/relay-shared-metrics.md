@@ -339,7 +339,7 @@ itself ships.
 | `hermes.setup.completed` | surface (`cli`/`desktop`), provider | Which providers people choose at setup, and on which surface. |
 | `hermes.model_tokens.sum` | call role, model, provider, auxiliary task, token type | Token volume per model/provider, prompt-cache share, and what auxiliary work (compression, titles, vision, ...) costs. The value is a token sum, not an event count. |
 | `hermes.model_route.count` `ttft_bucket` | time to first token | Perceived latency per provider/model. |
-| `hermes.compression.count` | trigger, outcome, context-fill bucket | How often compaction runs, how full contexts get, and whether it fails. |
+| `hermes.compression.count` | trigger, outcome, context-fill bucket | How often compaction runs, how full contexts get, and whether it fails. `skipped` = nothing could fail: lock held elsewhere, nothing summarizable (no model call), user stop, or a newer attempt replaced it. |
 | `hermes.model_switch.count` | from/to provider, surface | Which providers people leave and move to. |
 | `hermes.fallback.count` | from/to provider, error class | How often fallback providers rescue a turn, and from what. |
 | `hermes.slash_command.count` | command, surface | Which built-in commands are used (`/retry`, `/undo`, `/new` are friction signals). Skill and plugin commands report `skill`/`plugin`. |

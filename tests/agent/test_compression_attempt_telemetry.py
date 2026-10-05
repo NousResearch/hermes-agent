@@ -225,21 +225,15 @@ def test_automatic_compaction_counts_once_in_shared_metrics(monkeypatch):
     ]
 
 
-def test_structural_no_op_keeps_the_compressors_failure_class(caplog, monkeypatch):
-    """A transcript that fits inside the tail budget is logged as ``no_compressible_window``.
-
-    The compressor classifies WHY it returned the transcript unchanged; the caller only observes THAT
-    it did (``no_progress``). The attempt log line and the shared-metrics sink must both carry the
-    compressor's class, or an operator reads "the summarizer achieved nothing" for an attempt that
-    never made a summary call (#131412).
-    """
+def test_structural_no_op_is_counted_skipped_with_the_compressors_class(caplog, monkeypatch):
+    """A transcript that fits inside the protected tail makes no summary call: the attempt log names
+    ``no_compressible_window`` (not the caller's generic ``no_progress``) and the shared metric counts
+    it ``skipped``, not ``failed`` (#131412)."""
     from hermes_cli.observability import shared_metrics_events
+    from hermes_cli.observability.shared_metrics_fields import compression_fields
 
-    finished = []
-    monkeypatch.setattr(
-        shared_metrics_events, "finish_compression_attempt",
-        lambda commit_status, failure_class, *_args, **_kwargs: finished.append((commit_status, failure_class)),
-    )
+    recorded = []
+    monkeypatch.setattr(shared_metrics_events, "record_compression", lambda **kw: recorded.append(kw))
     with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
         compressor = ContextCompressor(
             model="test/main-model", provider="test-provider", threshold_percent=0.50, quiet_mode=True,
@@ -248,16 +242,14 @@ def test_structural_no_op_keeps_the_compressors_failure_class(caplog, monkeypatc
     agent = _Agent(compressor)
     messages = _messages()
 
-    # Every row lands inside the protected tail, so the summarizable middle window is empty.
     with patch.object(compressor, "_find_tail_cut_by_tokens", return_value=0):
         with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
-            compressed, _ = compress_context(agent, messages, "system prompt", approx_tokens=75_000, force=True)
+            compressed, _ = compress_context(agent, messages, "system prompt", approx_tokens=75_000)
 
     assert compressed == messages
     payload = _extract_telemetry(caplog)
-    assert payload["commit_status"] == "aborted"
-    assert payload["failure_class"] == "no_compressible_window"
-    assert finished == [("aborted", "no_compressible_window")]
+    assert (payload["commit_status"], payload["failure_class"]) == ("aborted", "no_compressible_window")
+    assert [compression_fields(**kw)["outcome"] for kw in recorded] == ["skipped"]
 
 
 @pytest.mark.parametrize(

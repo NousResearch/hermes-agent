@@ -647,5 +647,6 @@ def descendants(proc: subprocess.Popen) -> list[Any]:
 def taskkill_tree(pid: int) -> subprocess.CompletedProcess:
     """``taskkill /T /F``: what Task Manager's End task tree / a power cut does to an update.
 
-    rc 0 means it found and terminated ``pid``: the process was alive at the kill."""
+    rc 0 means every process in the tree was terminated. rc 128 can still mean ``pid`` itself was
+    killed (a job member died with it mid-walk): read stdout, see ``_kill_delivered``."""
     return subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=60)

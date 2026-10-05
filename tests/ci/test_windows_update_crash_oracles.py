@@ -75,15 +75,23 @@ class _Proc:
         return self.returncode
 
 
-@pytest.mark.parametrize("exit_rc,taskkill_rc,point_seen,killed_there", [
-    (None, 0, True, True),  # running at its kill point: the crash the cell asserts on
-    (0, 0, True, False),  # already exited 0 with HEAD at the target: never interrupted
-    (None, 128, True, False),  # taskkill found no process: it exited between poll and kill
-    (0, 0, False, False),  # exited before the point: harness verdict
+_ROOT_KILLED = b"SUCCESS: The process with PID 4242 (child process of PID 77) has been terminated.\r\n"
+_CHILD_GONE = b'ERROR: The process with PID 5151 (child process of PID 4242) could not be terminated.\r\n'
+_ROOT_GONE = b'ERROR: The process "4242" not found.\r\n'
+
+
+@pytest.mark.parametrize("exit_rc,taskkill_rc,stdout,point_seen,killed_there", [
+    (None, 0, _ROOT_KILLED, True, True),  # running at its kill point: the crash the cell asserts on
+    (0, 0, b"", True, False),  # already exited 0 with HEAD at the target: never interrupted
+    (None, 128, _ROOT_GONE, True, False),  # taskkill found no process: it exited between poll and kill
+    # The update's job (kill-on-close) took git down with it mid-walk: the root WAS killed there.
+    (None, 128, _CHILD_GONE + _ROOT_KILLED, True, True),
+    (0, 0, b"", False, False),  # exited before the point: harness verdict
 ])
 def test_kill_point_counts_only_an_update_killed_while_running(
-        tmp_path, monkeypatch, exit_rc, taskkill_rc, point_seen, killed_there):
-    monkeypatch.setattr(crash, "taskkill_tree", lambda pid: subprocess.CompletedProcess([], taskkill_rc))
+        tmp_path, monkeypatch, exit_rc, taskkill_rc, stdout, point_seen, killed_there):
+    monkeypatch.setattr(crash, "taskkill_tree",
+                        lambda pid: subprocess.CompletedProcess([], taskkill_rc, stdout, b""))
     proc = _Proc(exit_rc)
 
     def point(*_):

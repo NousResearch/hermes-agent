@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import shlex
 import shutil
 import subprocess
@@ -271,6 +272,19 @@ def _tree_matches(tree: dict, commit: str, target: str) -> bool:
             and tree["target_file"] == (commit == target))
 
 
+def _kill_delivered(killed, pid: int) -> bool:
+    """True when ``taskkill /T /F`` terminated the update's root *pid* itself.
+
+    rc 128 does not mean the update was gone: its git runs in the update's kill-on-close job, so
+    killing the update can take a job member down while taskkill is still walking the tree, and
+    that member reports "could not be terminated". Only the root's own SUCCESS line ("with PID
+    <pid> (child process of …") proves the kill landed; a child's line names <pid> as its parent.
+    """
+    if killed is None:
+        return False
+    return killed.returncode == 0 or re.search(rb"with PID %d \(" % pid, killed.stdout or b"") is not None
+
+
 def _kill_when(machine, proc, label: str, point, target: str) -> str:
     """Poll ``point(proc, machine, target)`` until it names the moment, then taskkill the whole tree.
 
@@ -289,7 +303,7 @@ def _kill_when(machine, proc, label: str, point, target: str) -> str:
             killed = taskkill_tree(proc.pid) if proc.poll() is None else None
             proc.wait(timeout=60)
             machine.kill_owned()  # stragglers that left the tree (detached helpers)
-            if killed is None or killed.returncode != 0:
+            if not _kill_delivered(killed, proc.pid):
                 raise AssertionError(fail_with(
                     machine, f"{label}: the update was not running when killed at {seen} (exit rc="
                              f"{proc.returncode}, taskkill rc={killed and killed.returncode}): no crash "

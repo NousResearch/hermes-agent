@@ -403,6 +403,7 @@ import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { execGit, killTimedGitChildren, setNoConsoleGitRoots } from './no-console-git'
 import { registerNativeNotifications } from './notification-ipc'
+import { SilentLoginCoalescer } from './oauth-login-coalescer'
 import { isExpectedOauthNavigationAbort } from './oauth-navigation'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
@@ -7588,24 +7589,20 @@ async function clearOauthSession(baseUrl) {
 }
 
 // Open a gateway login window in the OAuth session partition, resolving once
-// the access-token cookie appears (login done) or rejecting if the user closes
-// the window first. The window navigates through the IDP and back to
-// /auth/callback, which sets the session cookies on the partition; we poll the
-// cookie jar rather than try to read the HttpOnly value.
-//
-// `silent` selects the URL the window loads, which decides interactive-vs-silent:
-//   - silent=false (default): load ``/login`` — the public interstitial that
-//     renders the "Log in with X" provider chooser. This is the interactive
-//     remote-gateway login the settings UI drives.
-//   - silent=true: load the PROTECTED root ``/`` instead. ``/login`` is a public
-//     route, so loading it NEVER triggers the gate's auto-SSO and always shows
-//     the chooser. Loading a protected page with no session cookie makes the
-//     gate run ``_auto_sso_response``: single registered provider + a live
-//     portal session in this partition → a silent 302 through
-//     ``/auth/login`` → portal ``/oauth/authorize`` (auto-approves org members)
-//     → ``/auth/callback``, which sets the gateway cookie with NO interactive
-//     prompt. This is the per-agent cloud cascade (decisions.md Q5).
-function openOauthLoginWindow(
+// the access-token cookie appears (login done) or rejecting if the window is
+// closed first. `silent` selects the URL — the protected root, so the gate's
+// auto-SSO cascade can complete with no prompt, versus `/login` for the
+// interactive chooser. Silent attempts are coalesced and backed off per
+// gateway: see oauth-login-coalescer.ts for the URL mechanics and the incident.
+const silentOauthLogins = new SilentLoginCoalescer()
+
+function openOauthLoginWindow(baseUrl, options = {}) {
+  // An interactive sign-in is the user's own gesture: its own window, at once,
+  // never held by a cooldown it did not cause.
+  return silentOauthLogins.runFor(baseUrl, options, openOauthLoginWindowUnshared)
+}
+
+function openOauthLoginWindowUnshared(
   baseUrl,
   { silent = false, background = false, connectionId = '', pendingAuthMode = '', pendingKind = '' } = {}
 ) {

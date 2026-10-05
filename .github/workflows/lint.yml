@@ -182,9 +182,13 @@ jobs:
         uses: ./.github/actions/retry
         with:
           command: >-
-            if git diff --name-only HEAD^1 HEAD | grep -qE '[.](ts|tsx|mts|cts)$'; then
-            python -c "from pathlib import Path; from scripts.code_health.ts_measure import resolve_typescript; print(resolve_typescript(Path.cwd()))";
-            fi
+            python -c "from pathlib import Path;
+            from scripts.code_health.config import in_scope;
+            from scripts.code_health.gitio import changed_files;
+            from scripts.code_health.ts_measure import resolve_typescript;
+            repo = Path.cwd();
+            ts = any(in_scope(p) == 'ts' for c in changed_files(repo, 'HEAD^1', 'HEAD') for p in (c.old, c.new) if p);
+            print(resolve_typescript(repo) if ts else 'no TypeScript changes')"
 
       - name: Ratchet the PR against the base branch tip
         run: python scripts/check --only health --base HEAD^1

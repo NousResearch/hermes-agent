@@ -181,7 +181,11 @@ class Measurer:
             # Whole-text match, anchored on the line where it starts (as the advisory
             # check_profile_scope_patterns.scan_text does): a call wrapped over two lines is
             # still the operation.
-            starts = {code.count("\n", 0, m.start()) + 1 for m in pattern.finditer(code)}
+            starts, line, pos = set(), 1, 0
+            for match in pattern.finditer(code):  # count forward: one pass over the text
+                line += code.count("\n", pos, match.start())
+                pos = match.start()
+                starts.add(line)
             for index in sorted(starts):
                 fm.add_hit(rule_id, scopes.scope(index), index)
 

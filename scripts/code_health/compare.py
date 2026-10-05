@@ -68,20 +68,22 @@ def _span(unit: Unit) -> range | None:
     return None if end is None else range(unit.line, end + 1)
 
 
-def _code_rows(fm: FileMeasure, lines: Iterable[int]) -> list[tuple[int, str]]:
-    """(line, code) for the lines that have code. Blank and comment-only lines carry no hit and
+def _code_rows(fm: FileMeasure, lines: Iterable[int] | None = None) -> list[tuple[int, str]]:
+    """(line, code) for the lines that have code (default: the whole file). Blank and comment-only lines carry no hit and
     are the most frequent element: matched with autojunk off they make a diff quadratic."""
+    if lines is None:
+        lines = range(1, len(fm.lines) + 1)
     return [(n, code) for n in lines if (code := fm.code_line(n))]
 
 
 def _matched(old_rows: list[tuple[int, str]],
              new_rows: list[tuple[int, str]]) -> tuple[set[int], set[int]]:
-    """(new lines, old lines) the line diff keeps unchanged."""
+    """(old lines, new lines) the line diff keeps unchanged."""
     # autojunk off: `except Exception:` and `pass` are frequent lines, never noise here.
     blocks = SequenceMatcher(None, [c for _, c in old_rows], [c for _, c in new_rows],
                              autojunk=False).get_matching_blocks()
-    return ({new_rows[b.b + i][0] for b in blocks for i in range(b.size)},
-            {old_rows[b.a + i][0] for b in blocks for i in range(b.size)})
+    return ({old_rows[b.a + i][0] for b in blocks for i in range(b.size)},
+            {new_rows[b.b + i][0] for b in blocks for i in range(b.size)})
 
 
 def _code(fm: FileMeasure, unit: Unit) -> tuple[str, ...] | None:
@@ -302,8 +304,8 @@ def _line_survival(hf: FileMeasure | None, bf: FileMeasure | None) -> tuple[set[
     # Line matching only places hits; without any on either side it is pure cost.
     if hf is None or bf is None or not (hf.hit_lines or bf.hit_lines):
         return set(), set()
-    return _matched(_code_rows(bf, range(1, len(bf.lines) + 1)),
-                    _code_rows(hf, range(1, len(hf.lines) + 1)))
+    survived, kept = _matched(_code_rows(bf), _code_rows(hf))
+    return kept, survived
 
 
 _CONTINUATION = re.compile(r"(?:except|else|elif|finally)\b|[)\]}]")
@@ -371,7 +373,8 @@ def _moved_unit_lines(base: dict[str, FileMeasure], head: dict[str, FileMeasure]
         new_span, old_span = _span(hf.units[qual]), _span(origin)
         if new_span is None or old_span is None:
             continue
-        kept[hpath] |= _matched(_code_rows(bf, old_span), _code_rows(hf, new_span))[0]
+        _, new = _matched(_code_rows(bf, old_span), _code_rows(hf, new_span))
+        kept[hpath] |= new
     return kept
 
 

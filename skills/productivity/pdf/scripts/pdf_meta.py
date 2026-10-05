@@ -83,6 +83,23 @@ def main() -> int:
 
     writer = PdfWriter()
     writer.append(reader)
+    # append() copies pages/outlines but neither the Info dictionary nor
+    # embedded attachments — re-apply both so composeable operations stop
+    # losing document state (#94870). Mode branches below still override
+    # (--set-meta merges over preserved values; --clear-meta wipes them).
+    if reader.metadata:
+        writer.add_metadata(dict(reader.metadata))
+    # append() also drops the catalog's XMP metadata stream (the packet most
+    # producer tools write) — handing the parsed object back re-attaches the
+    # stream to the new catalog (#94870).
+    if reader.xmp_metadata is not None:
+        writer.xmp_metadata = reader.xmp_metadata
+    for name, contents in (reader.attachments or {}).items():
+        # attachments maps a name to a *list* of payloads — a PDF may embed
+        # several files under one name; re-attach all of them, not just the
+        # first (#94870).
+        for data in contents if isinstance(contents, list) else [contents]:
+            writer.add_attachment(name, bytes(data))
 
     if args.set_meta:
         meta = {}

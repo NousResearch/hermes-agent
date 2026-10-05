@@ -43,7 +43,9 @@ class BaseTextBatchingMixin:
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():
             prior_task.cancel()
-        self._pending_text_batch_tasks[key] = asyncio.create_task(self._flush_text_batch(key))
+        self._pending_text_batch_tasks[key] = asyncio.create_task(
+            self._flush_text_batch(key)
+        )
 
     def _text_batch_boundary(
         self: BasePlatformAdapter,
@@ -51,8 +53,28 @@ class BaseTextBatchingMixin:
         existing: Optional[MessageEvent],
         event: MessageEvent,
     ) -> Optional[MessageEvent]:
-        """Return the pending batch that the event may join."""
-        return existing
+        """Dispatch the completed batch when its reply target conflicts."""
+        if existing is None or not existing.reply_context_conflicts(event):
+            return existing
+
+        prior_task = self._pending_text_batch_tasks.pop(key, None)
+        if prior_task is not None and not prior_task.done():
+            prior_task.cancel()
+        completed = self._pop_text_batch(key)
+        if completed is not None:
+            task = asyncio.create_task(self._dispatch_completed_text_batch(completed))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        return None
+
+    async def _dispatch_completed_text_batch(
+        self: BasePlatformAdapter, event: MessageEvent
+    ) -> None:
+        """Dispatch a completed batch with the shared cancellation policy."""
+        try:
+            await asyncio.shield(self._dispatch_text_batch(event))
+        except asyncio.CancelledError:
+            pass
 
     def _text_batch_delay_for(
         self: BasePlatformAdapter, pending: Optional[MessageEvent]
@@ -69,7 +91,9 @@ class BaseTextBatchingMixin:
         """Remove and return the pending batch for ``key`` (adapters with side tables override)."""
         return self._pending_text_batches.pop(key, None)
 
-    async def _dispatch_text_batch(self: BasePlatformAdapter, event: MessageEvent) -> None:
+    async def _dispatch_text_batch(
+        self: BasePlatformAdapter, event: MessageEvent
+    ) -> None:
         """Hand a flushed batch to the pipeline (adapters with per-chat guards override)."""
         await self.handle_message(event)
 
@@ -91,7 +115,9 @@ class BaseTextBatchingMixin:
         dispatch is shielded and the outer CancelledError swallowed."""
         current_task = asyncio.current_task()
         try:
-            await asyncio.sleep(self._text_batch_delay_for(self._pending_text_batches.get(key)))
+            await asyncio.sleep(
+                self._text_batch_delay_for(self._pending_text_batches.get(key))
+            )
             owner = self._pending_text_batch_tasks.get(key)
             if owner is not None and owner is not current_task:
                 return
@@ -99,7 +125,10 @@ class BaseTextBatchingMixin:
             if event is None:
                 return
             logger.info(
-                "[%s] Flushing text batch %s (%d chars)", self.name, key, len(event.text or "")
+                "[%s] Flushing text batch %s (%d chars)",
+                self.name,
+                key,
+                len(event.text or ""),
             )
             await asyncio.shield(self._dispatch_text_batch(event))
         except asyncio.CancelledError:
@@ -107,4 +136,3 @@ class BaseTextBatchingMixin:
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
-

@@ -625,12 +625,26 @@ export function AppContextMenu() {
     const onContextMenu = (event: MouseEvent) => {
       const element = event.target instanceof Element ? event.target : null
 
+      const target = resolveDomTarget(element)
+
       // Surfaces with their own Radix context menu keep the whole gesture.
       // Guard the dedicated marker first: Radix `asChild` Slot merges
       // `mergeProps(slotProps, childProps)` so the child's `data-slot` wins
       // (status bar footer is `data-slot="statusbar"`). The marker is stamped
       // after `{...props}` on ContextMenuTrigger and is not overwritten.
-      if (element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)) {
+      //
+      // EXCEPT inside a zone body: `tree-group.tsx` wraps every pane's
+      // content in a ZoneMenu trigger so a header-less pane still has a
+      // Close on screen (#92500). That wrapper swallows the composer,
+      // transcripts and code blocks too, and those have real verbs — without
+      // this the composer's Cut/Copy/Paste were unreachable (#92500 regression).
+      // Chrome (tab strips, headers) sits outside the wrapper and still defers.
+      const inZoneBody = Boolean(element?.closest('[data-zone-body]'))
+
+      if (
+        element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`) &&
+        !inZoneBody
+      ) {
         return
       }
 
@@ -654,7 +668,6 @@ export function AppContextMenu() {
         return
       }
 
-      const target = resolveDomTarget(element)
       const owned = Boolean(target.linkUrl || target.onImage || target.editable || target.selectionText)
 
       // The reaction bubble owns bare right-clicks; a link inside it still

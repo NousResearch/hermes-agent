@@ -56,11 +56,12 @@ _MUTATOR_CONFIG = ("-c", "core.fsmonitor=false", "-c", "credential.helper=")
 # git subcommands that write the worktree, the index or refs on THIS machine. Only these inherit
 # the checkout lock fd: if the updater dies mid-command, the checkout stays locked until git exits.
 # No `pull` (fetch + merge: its network half must not hold the fd; the updater fetches, then
-# merges). `gc` packs refs (and its repack writes the object store).
+# merges). `gc` packs refs (and its repack writes the object store); `pack-objects` is the pack
+# tidy's merge, whose output the update moves into the object store.
 LOCAL_MUTATORS = frozenset({
     "add", "am", "apply", "checkout", "checkout-index", "cherry-pick", "clean", "commit", "gc",
-    "merge", "mv", "read-tree", "rebase", "reset", "restore", "revert", "rm", "stash", "switch",
-    "update-index", "update-ref", "symbolic-ref", "tag", "branch", "worktree",
+    "merge", "mv", "pack-objects", "read-tree", "rebase", "reset", "restore", "revert", "rm", "stash",
+    "switch", "update-index", "update-ref", "symbolic-ref", "tag", "branch", "worktree",
 })
 # Mutators that move the checkout to another commit: what they read from a promisor remote is
 # fetched first, without the fd (_prefetch_for_move).

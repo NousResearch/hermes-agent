@@ -214,6 +214,14 @@ def _record_update_step(step: str, ok: bool, detail: str = "") -> None:
 NETWORK_GIT_TIMEOUT_SECONDS = 300
 
 
+def _network_git_timeout_seconds() -> int:
+    """Resolve the positive integer timeout for updater network Git operations."""
+    configured = _updates_config().get("fetch_timeout", NETWORK_GIT_TIMEOUT_SECONDS)
+    if type(configured) is int and configured > 0:
+        return configured
+    return NETWORK_GIT_TIMEOUT_SECONDS
+
+
 def _record_update_skip(step: str, reason: str) -> None:
     """Best-effort ``update_receipt.record_skip``; the receipt must never break an update."""
     with suppress(Exception):
@@ -257,7 +265,8 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     from hermes_cli._subprocess_compat import windows_hide_flags
     # ``_no_prompt_git_kwargs()`` already carries the hide flags for network
     # calls, so layer them instead of passing the keyword twice.
-    spawn_kwargs = {"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()} if network else {}
+    timeout_seconds = _network_git_timeout_seconds() if network else None
+    spawn_kwargs = {"timeout": timeout_seconds, **_no_prompt_git_kwargs()} if network else {}
     spawn_kwargs.setdefault("creationflags", windows_hide_flags())
     try:
         return subprocess.run(
@@ -270,7 +279,7 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
         # so every caller's existing stderr path prints one clear line.
         result = subprocess.CompletedProcess(
             exc.cmd, 124, stdout="",
-            stderr=f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s (a stalled remote, or a transfer too large for the limit)")
+            stderr=f"git {args[0]} timed out after {timeout_seconds}s (a stalled remote, or a transfer too large for the limit)")
         if check:
             raise subprocess.CalledProcessError(124, exc.cmd, output="", stderr=result.stderr) from exc
         return result

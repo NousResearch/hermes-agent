@@ -204,6 +204,7 @@ an override that permits prompting can still interrupt a background check.
 
 ```yaml
 updates:
+  fetch_timeout: 300             # Max seconds for updater network Git operations; raise for large partial-clone fetches
   pre_update_backup: quick       # quick (state snapshot, default) | full (snapshot + HERMES_HOME zip) | off
   backup_keep: 5                 # Keep this many full pre-update backup zips
   non_interactive_local_changes: stash  # stash | discard
@@ -211,6 +212,8 @@ updates:
 ```
 
 `pre_update_backup` is the single pre-update safety knob: `quick` (default) snapshots critical state files (pairing data, cron jobs, config, auth; files over 1 GiB are skipped) into `state-snapshots/`; `full` additionally zips all of `HERMES_HOME` into `backups/` and can add minutes on large homes; `off` disables both. Legacy booleans are honored (`true` → `full`, `false` → `off`).
+
+`updates.fetch_timeout` bounds network Git commands during `hermes update` in seconds (default `300`). Increase it for a slow link or a large `tree:0` partial-clone backfill, for example `1200` for 20 minutes. It must be a positive integer; the default remains in effect for invalid values.
 
 Point-in-time copies of `config.yaml` itself (taken before `hermes setup` rewrites it, before `hermes migrate` edits it, every time the file parses successfully, and when it fails to parse) go to `backups/config/config.yaml.<reason>.<timestamp>`. Identical repeats are skipped and only the newest five per reason are kept, so they never pile up beside `config.yaml`. If `config.yaml` is broken, Hermes serves the newest `good` copy instead of built-in defaults and warns on every start until the YAML is fixed; the broken file is never modified.
 

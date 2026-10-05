@@ -5,12 +5,9 @@ import contextlib
 import logging
 import time
 
+from cron.jobs import warn_store_unwritable
+
 logger = logging.getLogger("cron.scheduler")
-
-# One WARNING per errno per window: an unwritable store fails every 60s tick until fixed.
-_STORE_WARN_INTERVAL_SECONDS = 900.0
-_last_store_warning: dict = {}
-
 
 # Log the yield at most once per episode (reset when the skew changes) to avoid per-interval spam.
 _YIELD_LOG_INTERVAL_SECONDS = 3600.0
@@ -31,19 +28,6 @@ def _log_tick_yield_once(reason: str) -> None:
             reason)
     _last_yield_log = {"reason": reason, "at": now}
 
-
-
-def warn_store_unwritable(exc: OSError, skipped: str) -> None:
-    """Rate-limited WARNING for a cron store write that failed (ENOSPC/EROFS/EACCES). The caller
-    skips the dispatch that needed the write: no job runs without a durable advance/fire claim."""
-    now = time.monotonic()
-    last = _last_store_warning.get(exc.errno)
-    if last is not None and now - last < _STORE_WARN_INTERVAL_SECONDS:
-        return
-    _last_store_warning[exc.errno] = now
-    logger.warning(
-        "Cron store is unwritable (%s); skipped %s. Jobs stay due and fire once the store "
-        "accepts writes again.", exc, skipped)
 
 
 def tick(verbose=True, adapters=None, loop=None, sync=True, *, can_dispatch=None):
@@ -128,7 +112,7 @@ def _tick_admitted(
             # No durable advance -> a crash mid-run would re-fire recurring jobs; skipping is the
             # at-most-once side. One-shots still go through their own fire claim.
             recurring = [j for j in due_jobs if j.get("schedule", {}).get("kind") in {"cron", "interval"}]
-            warn_store_unwritable(exc, f"{len(recurring)} recurring job(s)")
+            warn_store_unwritable(exc, f"skipped {len(recurring)} recurring job(s)")
             due_jobs = [j for j in due_jobs if j not in recurring]
             if not due_jobs:
                 return 0

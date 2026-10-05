@@ -513,7 +513,8 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 from cron.jobs import (
     _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
-    save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
+    save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store,
+    warn_store_unwritable)
 from cron.execution_identity import enter_cron_execution, exit_cron_execution
 from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
@@ -4264,8 +4265,7 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     try:
         claimed = claim_job_for_fire(job["id"], return_job=True)
     except OSError as exc:
-        from cron.scheduler_tick import warn_store_unwritable
-        warn_store_unwritable(exc, f"job '{job.get('name') or job['id']}'")
+        warn_store_unwritable(exc, f"skipped job '{job.get('name') or job['id']}'")
         finish_execution(
             job["execution_id"], success=False, error=f"Cron store unwritable; not started: {exc}")
         return False

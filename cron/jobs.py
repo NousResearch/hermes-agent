@@ -1247,6 +1247,24 @@ def _write_marker(name: str, text: str, tmp_prefix: str) -> None:
         pass
 
 
+# One WARNING per errno per window: an unwritable store fails every 60s tick until fixed.
+_STORE_WARN_INTERVAL_SECONDS = 900.0
+_last_store_warning: dict = {}
+
+
+def warn_store_unwritable(exc: OSError, consequence: str) -> None:
+    """Rate-limited WARNING for a failed cron store write (ENOSPC/EROFS/EACCES). Callers skip the
+    dispatch that needed the write: no job runs without a durable advance/fire claim."""
+    now, key = time.monotonic(), exc.errno
+    last = _last_store_warning.get(key)
+    if last is not None and now - last < _STORE_WARN_INTERVAL_SECONDS:
+        return
+    _last_store_warning[key] = now
+    logger.warning(
+        "Cron store is unwritable (%s); %s. Jobs stay due and fire once the store accepts writes "
+        "again.", exc, consequence)
+
+
 def record_ticker_heartbeat(success: bool = False) -> None:
     """Record ticker liveness (+ last-success marker when ``success``) so `cron status` can tell
     "alive but failing" from "firing"; scoped per profile store.
@@ -3338,15 +3356,8 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     if scan.needs_save:
         try:
             save_jobs(raw_jobs, removed_ids=scan.removed or None)
-        except OSError as exc:
-            # The repairs above are already applied in memory — that is what the scan keys off — so a
-            # store that cannot be written right now (full disk, read-only mount, permissions) must
-            # not take the whole tick down with it: every job on the profile would stop firing until
-            # a write succeeds, the exact fast-forward freeze the normalization above prevents.
-            # Persisting is retried by the next tick.
-            logger.warning(
-                "Cron store repairs could not be persisted (%s); due jobs still dispatched",
-                exc)
+        except OSError as exc:  # repairs live in memory; the next tick retries the persist
+            warn_store_unwritable(exc, "due-scan repairs not persisted")
     return due
 
 

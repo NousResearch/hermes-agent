@@ -104,9 +104,11 @@ def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
     was booked as a human stop and rendered as the user-stop placeholder (#130207)."""
     agent = _bare_agent()
     try:
-        agent.interrupt("terminal batch tool did not complete", tool_reason="terminal batch aborted")
+        agent.interrupt(tool_reason="terminal batch timeout")
         assert agent._interrupt_requested is True
-        assert interrupt_issuer(agent) == "terminal_batch_aborted"
+        assert interrupt_issuer(agent) == "terminal_batch_timeout"
+        # No message: gateway/CLI re-queue ``_interrupt_message`` as the user's next turn.
+        assert agent._interrupt_message is None
     finally:
         set_interrupt(False)
 

@@ -89,12 +89,21 @@ def defer(key: str, job: dict, content: str, profile: str, home: Path, *,
         atomic_json_write(root / f"{key}.json", record, fsync_dir=True, mode=0o600)
         if not for_failure and not degraded and job.get("bot_chat_coalesce") == "latest":
             # Retire the job's older never-started snapshots only AFTER this record is durable:
-            # a crash before any retirement leaves today's queue, never a lost alert.
+            # a crash before any retirement leaves today's queue, never a lost alert. Failure
+            # notices and degraded markers are also never *retired* by a later snapshot — they
+            # are loss-of-signal receipts (a failed run's alert must survive the next success).
+            # Jobs without an id never match: two transient job dicts would otherwise
+            # suppress each other via ``None == None``.
+            job_id = job.get("id")
             for path, stale in _records(root):
+                stale_job = stale.get("job") or {}
                 if (stale["status"] == "queued"
+                        and job_id
                         and stale["id"] != key
                         and stale.get("home") == str(home)
-                        and (stale.get("job") or {}).get("id") == job.get("id")):
+                        and stale_job.get("id") == job_id
+                        and not stale.get("for_failure")
+                        and not stale.get("degraded")):
                     stale.update(status="suppressed",
                                  error=f"superseded by receipt seq {sequence}")
                     atomic_json_write(path, stale, fsync_dir=True, mode=0o600)

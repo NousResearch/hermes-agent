@@ -164,6 +164,12 @@ class GatewayPendingDrainMixin:
                     steer_enqueued = self._enqueue_fifo(
                         session_key, steer_event, adapter
                     )
+                    if not steer_enqueued and pending_input is not None:
+                        self._restore_pending_dispatch(
+                            session_key, steer_event, adapter
+                        )
+                        self._park_event_lifecycle(steer_event)
+                        steer_enqueued = True
                 if not steer_enqueued:
                     unadmitted_steer = pending_steer
             else:
@@ -197,8 +203,6 @@ class GatewayPendingDrainMixin:
         pending = pending_parts[0]
         if unadmitted_steer is not None:
             pending = "\n\n".join(part for part in pending_parts if part) or None
-            if pending_parts[1] and pending_input is not None:
-                pending_event = steer_event
 
         if self._draining and (pending_event or pending):
             logger.info(

@@ -897,6 +897,21 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if not _should_fall_through_to_cli_approval(
             is_cli=is_cli, approval_callback=approval_callback, notify_cb=notify_cb,
         ):
+            if is_gateway:
+                # An attended gateway session with no notifier: the parent turn's finally already
+                # unregistered it (a background delegate child outliving its parent turn, or the
+                # gateway shutting down). Nothing can deliver a prompt — /approve resolves only
+                # blocking gateway entries, and the _pending fallback store has no reader — so a
+                # pending_approval here is an answerable-looking lie (#133514). Fail closed with
+                # the delivery-failure outcome instead.
+                return _denied(
+                    "BLOCKED: no approval channel is available to ask the user — the gateway turn "
+                    f"that delivers approval prompts has ended, so this {spec.noun} did not run "
+                    "and no prompt can be answered from this context. Do NOT retry or rephrase; "
+                    "run it from an interactive turn instead.",
+                    pattern_key=pattern_key, description=description,
+                    outcome="notify_failed", noun=spec.noun,
+                )
             if not spec.pending_keys:
                 display_command, display_description = command, description
             return _pending_result(

@@ -138,4 +138,3 @@ def test_busy_steer_mode_steers_editor_draft():
     assert c.agent.steered == ["keep going"]
     assert c._pending_input.empty()
     assert buf.reset_called
-

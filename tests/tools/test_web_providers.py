@@ -93,6 +93,9 @@ class TestPerCapabilityBackendSelection:
         # No search_backend or extract_backend set — both fall through
         assert web_tools._get_search_backend() == "keenable"
         assert web_tools._get_extract_backend() == "keenable"
+        # No extract_backends chain either: the dispatcher's chain view is the
+        # scalar as a one-entry chain (pre-chain behavior).
+        assert web_tools._get_extract_backends() == ["keenable"]
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +103,24 @@ class TestPerCapabilityBackendSelection:
 # ---------------------------------------------------------------------------
 
 
+class TestDefaultConfig:
+    """The web section exists in DEFAULT_CONFIG with per-capability keys."""
+
+    def test_web_section_in_default_config(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert "web" in DEFAULT_CONFIG
+        web = DEFAULT_CONFIG["web"]
+        assert "backend" in web
+        assert "search_backend" in web
+        assert "extract_backend" in web
+        assert "extract_backends" in web
+        # All empty by default (no override) — the empty chain must leave
+        # scalar/auto-detect resolution in charge.
+        assert web["backend"] == ""
+        assert web["search_backend"] == ""
+        assert web["extract_backend"] == ""
+        assert web["extract_backends"] == []
 
 
 # ---------------------------------------------------------------------------

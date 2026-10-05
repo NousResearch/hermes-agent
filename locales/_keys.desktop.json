@@ -1386,8 +1386,6 @@
     "desktop.skillCommandsAvailable",
     "desktop.slashCommandIgnoredBody",
     "desktop.slashCommandIgnoredTitle",
-    "desktop.staleSessionBody",
-    "desktop.staleSessionTitle",
     "desktop.stopFailed",
     "desktop.sttDisabled",
     "desktop.unarchiveFailed",

@@ -74,6 +74,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
 | `hermes doctor` | Diagnose config and dependency issues. |
+| `hermes verify` | Detect a project's build/test/start recipe and verify it in the project checkout. |
 | `hermes security audit` | On-demand supply-chain audit (OSV.dev) for the venv, plugin requirements, and pinned MCP servers. |
 | `hermes approvals` | Approval-prompt tools — mine approval history into allowlist proposals. |
 | `hermes dump` | Copy-pasteable setup summary for support/debugging. |
@@ -111,6 +112,17 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes --version` | Show version information. |
 | `hermes update` | Pull latest code and reinstall dependencies. `--check` previews without installing; `--backup` takes a pre-pull `HERMES_HOME` snapshot. |
 | `hermes uninstall` | Remove Hermes from the system. |
+
+## `hermes verify`
+
+Python, Django, FastAPI, and Flask recipes run in a project-owned virtual environment at
+`.hermes/verify-venv`, not in Hermes' runtime. Bootstrap, build, test, and start commands
+resolve Python and pip there. The environment is retained between runs; a broken cache is
+recreated. `uv sync` also targets that environment. Non-Python recipes are unchanged.
+
+The verifier keeps `.hermes/verify.lock` to serialize Python verification for the same
+project. Both generated paths can be removed when no verification is running. Redirected
+paths, including symlinks and Windows reparse points, are refused before project commands run.
 
 ## `hermes chat`
 

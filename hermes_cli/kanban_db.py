@@ -588,6 +588,56 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
 
 
+def board_for_store_path(path: Any) -> Optional[str]:
+    """The slug of the board whose canonical store IS ``path``, else ``None``.
+
+    The single layout->board rule (``<root>/kanban.db`` = ``default``, else
+    ``<root>/kanban/boards/<slug>/<leaf>``), the inverse of :func:`kanban_db_path`.
+    A completion-time prose scan uses it to learn which board its OWN connection
+    belongs to — never the ambient current board, which a ``--board`` override or
+    a worker's injected pin may disagree with.
+    """
+    if not path:
+        return None
+    try:
+        resolved = Path(path).resolve()
+        if resolved == (kanban_home() / "kanban.db").resolve():
+            return DEFAULT_BOARD
+        rel = resolved.relative_to(boards_root().resolve())
+    except (OSError, ValueError):
+        return None
+    return rel.parts[0] if len(rel.parts) > 1 else None
+
+
+def board_for_connection(conn: sqlite3.Connection) -> Optional[str]:
+    """The slug of the board ``conn`` is open against, or ``None`` when it cannot be told.
+
+    The slug is read off the open file's path, never off the ambient current board:
+    ``HERMES_KANBAN_DB`` can pin a database no board claims (workers are spawned
+    with exactly that), and a ``--board`` override means the caller is not on
+    ``get_current_board()`` either.
+    """
+    path = ""
+    for _seq, name, file in conn.execute("PRAGMA database_list"):
+        if name == "main" and file:
+            path = file
+    return board_for_store_path(path)
+
+
+def _store_path_for_slug(slug: str, default_parts: tuple[str, ...], leaf: str) -> Path:
+    """The one layout rule for a board's canonical path, by slug alone.
+
+    Legacy ``<root>/<default_parts>`` for the ``default`` board, else
+    ``board_dir(slug)/leaf``. Takes an already-normalised slug and asks no
+    questions, deliberately: unlike :func:`_board_path` it consults no env pin and
+    no fence, which is exactly the property a read-only sibling scan wants — it
+    must open the SIBLING board's own store, never the caller's pinned one.
+    """
+    if slug == DEFAULT_BOARD:
+        return kanban_home().joinpath(*default_parts)
+    return board_dir(slug) / leaf
+
+
 def workspaces_root(board: Optional[str] = None) -> Path:
     """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins);
     ``default`` keeps the legacy ``<root>/kanban/workspaces/``."""
@@ -2734,11 +2784,74 @@ def _verify_created_cards(
 _TASK_ID_PROSE_RE = re.compile(r"\bt_[a-f0-9]{8,}\b")
 
 
-def _scan_prose_for_phantom_ids(conn: sqlite3.Connection, text: str) -> list[str]:
-    """``t_<hex>`` references in ``text`` that don't resolve to a task (deduped; advisory)."""
-    if not text:
-        return []
-    return _missing_task_ids(conn, dict.fromkeys(_TASK_ID_PROSE_RE.findall(text)))
+def _prose_ref_search_boards(conn: sqlite3.Connection) -> list[str]:
+    """Board slugs a completion-time prose scan searched, in a deterministic order.
+
+    The board ``conn`` is open against comes first (read off the file's path via
+    :func:`board_for_connection` — never the ambient current board, which a
+    ``--board`` override or a worker's injected pin may disagree with), then every
+    other registered board by slug.
+    """
+    here = board_for_connection(conn)
+    slugs: list[str] = [here] if here else []
+    for meta in list_boards(include_archived=False):
+        slug = meta.get("slug")
+        if slug and slug not in slugs:
+            slugs.append(slug)
+    return slugs
+
+
+def _missing_task_ids_everywhere(
+    conn: sqlite3.Connection, ids: Iterable[str],
+) -> tuple[list[str], list[str], dict[str, str]]:
+    """Which of ``ids`` no REACHABLE board carries, and which a SIBLING board does.
+
+    A completion summary may legitimately name a card on another board — a
+    cross-board handoff is normal — so a real card must never be recorded as a
+    fabrication. Measured 2026-09-29 (card t_89626ce6): a verified ops-board child
+    was written to ``suspected_hallucinated_references`` because the scan only knew
+    the completing board.
+
+    Sibling stores are opened READ-ONLY and only when the store file already
+    exists, so a scan can never create a stray ``<slug>.db``.
+
+    Returns ``(phantoms, boards_searched, matched)``: ids absent from EVERY board,
+    the slugs actually consulted (for the durable payload), and ``{id: slug}`` for
+    ids a sibling board carries.
+    """
+    ordered = list(dict.fromkeys(ids))
+    missing = _missing_task_ids(conn, ordered)
+    here = board_for_connection(conn)
+    # ``here`` is the connection already in hand; only genuine siblings are opened below.
+    boards_searched = [here] if here else []
+    if not missing:
+        return [], boards_searched, {}
+
+    matched: dict[str, str] = {}
+    for slug in _prose_ref_search_boards(conn):
+        if not missing or slug == here:
+            continue
+        store = _store_path_for_slug(slug, ("kanban.db",), "kanban.db")
+        try:
+            if not store.is_file():
+                continue
+            sibling = sqlite3.connect(store.resolve().as_uri() + "?mode=ro", uri=True)
+        except (OSError, sqlite3.Error):
+            continue
+        try:
+            sibling.row_factory = sqlite3.Row
+            sibling.text_factory = _lossy_text
+            boards_searched.append(slug)
+            still = _missing_task_ids(sibling, missing)
+            carried = set(missing) - set(still)
+            for tid in carried:
+                matched[tid] = slug
+            missing = still
+        except sqlite3.Error:
+            continue
+        finally:
+            sibling.close()
+    return missing, boards_searched, matched
 
 
 class HallucinatedCardsError(ValueError):
@@ -3027,18 +3140,35 @@ def _flag_phantom_prose_refs(
     conn: sqlite3.Connection, task_id: str, run_id: Optional[int],
     summary: Optional[str], result: Optional[str], verified_cards: list[str],
 ) -> None:
-    """Advisory post-commit scan of summary+result for unresolvable ``t_<hex>``
-    references; emits ``suspected_hallucinated_references`` in its own txn so
-    the completion is already durable. Never blocks."""
+    """Advisory post-commit scan of summary+result for ``t_<hex>`` references that
+    NO reachable board carries; emits ``suspected_hallucinated_references`` in its
+    own txn so the completion is already durable. Never blocks.
+
+    The scan is board-aware: an id a SIBLING board carries is a cross-board
+    reference, not a fabrication, so it is not flagged (measured 2026-09-29, card
+    t_89626ce6). The payload names the boards searched, so an operator reading the
+    event can tell a real cross-board card from an invented id without re-deriving
+    the resolver."""
     scan_text = " ".join(filter(None, [summary, result]))
     if not scan_text:
         return
-    phantom_refs = [p for p in _scan_prose_for_phantom_ids(conn, scan_text) if p not in set(verified_cards)]
+    verified = set(verified_cards)
+    ids = [i for i in dict.fromkeys(_TASK_ID_PROSE_RE.findall(scan_text)) if i not in verified]
+    if not ids:
+        return
+    phantom_refs, boards_searched, matched = _missing_task_ids_everywhere(conn, ids)
     if phantom_refs:
+        payload: dict[str, Any] = {
+            "phantom_refs": phantom_refs,
+            "source": "completion_summary",
+            "boards_searched": boards_searched,
+        }
+        if matched:
+            payload["matched_elsewhere"] = matched
         with write_txn(conn):
             _append_event(
                 conn, task_id, "suspected_hallucinated_references",
-                {"phantom_refs": phantom_refs, "source": "completion_summary"}, run_id=run_id,
+                payload, run_id=run_id,
             )
 
 

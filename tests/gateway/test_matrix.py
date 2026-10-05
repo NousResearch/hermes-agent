@@ -1191,17 +1191,21 @@ class TestMatrixSyncLoop:
         adapter._client = fake_client
 
         sync_data = {
-            "rooms": {"join": {"!enc:example.org": {
-                "timeline": {"events": [{"type": "m.room.encrypted", "event_id": "$e1"}]}}}},
+            "rooms": {"join": {
+                "!enc:example.org": {"timeline": {"events": [
+                    {"type": "m.room.encrypted", "event_id": "$e1"}]}},
+                "!plain:example.org": {"timeline": {"events": [
+                    {"type": "m.room.message", "event_id": "$m1"}]}},
+            }},
             "next_batch": "s1",
         }
         with caplog.at_level(logging.WARNING, logger="plugins.platforms.matrix.adapter"):
             await adapter._absorb_sync(fake_client, sync_data)
             await adapter._absorb_sync(fake_client, sync_data)  # rate-limited: one warning per room
 
-        warnings = [r for r in caplog.records
-                    if "!enc:example.org" in r.getMessage() and "encrypted" in r.getMessage()]
+        warnings = [r.getMessage() for r in caplog.records if "encrypted" in r.getMessage()]
         assert len(warnings) == 1
+        assert "!enc:example.org" in warnings[0] and "MATRIX_E2EE_MODE" in warnings[0]
 
     @pytest.mark.asyncio
     async def test_absorb_sync_no_encrypted_warning_when_crypto_attached(self, caplog):
@@ -1216,26 +1220,6 @@ class TestMatrixSyncLoop:
         sync_data = {
             "rooms": {"join": {"!enc:example.org": {
                 "timeline": {"events": [{"type": "m.room.encrypted", "event_id": "$e1"}]}}}},
-            "next_batch": "s1",
-        }
-        with caplog.at_level(logging.WARNING, logger="plugins.platforms.matrix.adapter"):
-            await adapter._absorb_sync(fake_client, sync_data)
-
-        assert not [r for r in caplog.records if "encrypted" in r.getMessage()]
-
-    @pytest.mark.asyncio
-    async def test_absorb_sync_no_warning_for_plaintext_events_without_crypto(
-        self, caplog
-    ):
-        """Plain rooms must not trip the encrypted-drop warning."""
-        adapter = _make_adapter()
-        adapter._closing = False
-        fake_client = self._cryptoless_client()
-        adapter._client = fake_client
-
-        sync_data = {
-            "rooms": {"join": {"!plain:example.org": {
-                "timeline": {"events": [{"type": "m.room.message", "event_id": "$m1"}]}}}},
             "next_batch": "s1",
         }
         with caplog.at_level(logging.WARNING, logger="plugins.platforms.matrix.adapter"):

@@ -56,6 +56,26 @@ _AUTH_HEADER_RE = re.compile(
     r"""(?i)(authorization\\?["']?\s*[:=]\s*\\?["']?(?:bearer|basic)\s+|\bbearer\s+)[^\s"'\\]+"""
 )
 
+# A cookie is a credential the shared redactor has no rule for. Cookie values may themselves
+# be quoted (``sid="..."``), so a match never ends at the first quote: it runs to the end of
+# the line, or to the unescaped quote that encloses the header / the JSON value / curl's argument.
+_COOKIE_RE = re.compile(
+    r"""(?ix)
+      ( (?P<q>["'])? \b(?:set-)?cookie \s*[:=]\s* )           # Cookie: a="b"; c=d  /  'Cookie: a=b'
+        (?(q) (?:\\.|(?!(?P=q))[^\\\r\n])+ | [^\r\n]+ )
+    | ( \b(?:set-)?cookie \\?["'] \s*[:=]\s* \\?(?P<v>["']) )  # "Cookie": "a=b"
+        (?:\\.|(?!(?P=v))[^\\\r\n])+
+    | ( (?<![\w-])(?:-b|--cookie)[ =] \\?(?P<c>["'])? )        # curl -b 'a=b', not -b jar.txt
+        (?(c) (?=(?:\\.|(?!(?P=c))[^\\\r\n])*=)(?:\\.|(?!(?P=c))[^\\\r\n])+ | (?=\S*=)\S+ )
+    """
+)
+# The shared redactor needs the END line. A live log, or output cut mid-key, has only BEGIN
+# and part of the body: hide BEGIN and the base64 / PEM-header lines that follow it.
+_OPEN_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN[A-Z ]*PRIVATE KEY-----"
+    r"(?:(?:\s|\\[nr])*(?:[A-Za-z0-9+/=]{24,}|(?:[A-Za-z0-9+/=]+|(?:Proc-Type|DEK-Info):[^\r\n\\]*)(?=[\r\n\\\"']|$)))*"
+)
+
 # Known-safe validation messages from ``kanban_db`` that may be echoed to an
 # external caller verbatim: they carry no filesystem paths, SQL, or other
 # internal detail — only user-facing input guidance. Anything else collapses
@@ -290,7 +310,9 @@ def _idempotency_key(
 
 def _sanitize_log(content: str) -> str:
     redacted = redact_sensitive_text(content, force=True, redact_url_credentials=True)
+    redacted = _OPEN_PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", redacted)
     redacted = _AUTH_HEADER_RE.sub(r"\1[REDACTED]", redacted)
+    redacted = _COOKIE_RE.sub(lambda m: (m[1] or m[3] or m[5]) + "[REDACTED]", redacted)
     redacted = _SESSION_ID_RE.sub("[SESSION]", redacted)
     return _ABSOLUTE_PATH_RE.sub("[PATH]", redacted)
 

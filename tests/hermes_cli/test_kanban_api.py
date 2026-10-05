@@ -848,3 +848,29 @@ def test_patch_refuses_null_for_fields_that_cannot_be_cleared(client: TestClient
     assert client.patch(url, json={"priority": None}).status_code == 422
     # body and assignee do have an empty state, so null clears them.
     assert client.patch(url, json={"body": None, "assignee": None}).status_code == 200
+
+
+def test_sanitizer_hides_cookies_and_unterminated_private_keys() -> None:
+    from hermes_cli.kanban_api import _sanitize_log
+
+    cookies = _sanitize_log(
+        "curl -H 'Cookie: session=abc123def456; csrf=Zx9Yw8Vu7T' -b 'sid=q1w2e3r4t5y6' https://x.test\n"
+        "< Set-Cookie: hermes_session=plainvalue123456; HttpOnly\n"
+        '{"Cookie": "session=jsonvalue7890"}\n'
+        'Cookie: sid="quoted-value-1234"; theme=dark\n'
+        'curl -H "Cookie: sid=\\"escaped-value-5678\\"; csrf=after-escape-9012" https://x.test\n'
+        "git checkout -b fix/thing\n"
+    )
+    for secret in ("abc123def456", "Zx9Yw8Vu7T", "q1w2e3r4t5y6", "plainvalue123456", "jsonvalue7890",
+                   "quoted-value-1234", "escaped-value-5678", "after-escape-9012"):
+        assert secret not in cookies
+    assert "git checkout -b fix/thing" in cookies  # -b without name=value is not a cookie
+
+    # A live log holds BEGIN and part of the body, never the END line the shared redactor needs.
+    body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj"
+    key = _sanitize_log(f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n{body[::-1]}\nworker: still running\n")
+    assert body not in key and body[::-1] not in key
+    assert "worker: still running" in key
+    # Dumped as a JSON string: the last line of the body ends at the closing quote.
+    dumped = _sanitize_log('{"key": "-----BEGIN PRIVATE KEY-----\\n' + body + '\\n' + body[::-1] + '"}')
+    assert body not in dumped and body[::-1] not in dumped

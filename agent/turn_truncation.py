@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.error_classifier import FailoverReason
+from agent.i18n import t, tl
 from agent.message_metadata import append_message
 from agent.message_sanitization import close_interrupted_tool_sequence
 from agent.repetition_guard import is_repetition_dominated
@@ -31,11 +32,10 @@ logger = logging.getLogger("agent.conversation_loop")
 # the Codex incomplete continuation, so the text branch below never double-continues it.
 _CONTINUABLE_MODES = {"chat_completions", "bedrock_converse", "anthropic_messages", "codex_responses"}
 _THINK_TAG_RE = re.compile(r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>', re.IGNORECASE)
-_TRUNCATED_FINAL = site_copy("truncated")
-_FIRST_TRUNCATED_FINAL = _TRUNCATED_FINAL
 # #106260: a stream that died on a context-overflow error after partial delivery must not seed a
 # continuation — the transcript already cannot fit, and appending the partial stub grows every
-# later request into the same overflow. End the turn via the recovery contract instead.
+# later request into the same overflow. End the turn via the recovery contract instead. English:
+# the closing assistant row, the stored ``error`` and the gateway's overflow matcher read it.
 _CONTEXT_OVERFLOW_PARTIAL_FINAL = (
     "The request no longer fits the model's context window, so the partial "
     "response was not continued. Continue in a fresh session (/new; gateway "
@@ -92,12 +92,10 @@ def collapse_continuation_trail(
     return partial
 
 
+# Aborts that never continue: (log line, catalog key of the user copy, English ``error``).
 _THINKING_EXHAUSTED = (
     "💭 Reasoning exhausted the output token budget — no visible response was produced.",
-    "⚠️ **Thinking Budget Exhausted**\n\nThe model used all its output tokens on reasoning "
-    "and had none left for the actual response.\n\nTo fix this:\n"
-    "→ Lower reasoning effort: `/reasoning low` or `/reasoning minimal`\n"
-    "→ Or switch to a larger/non-reasoning model with `/model`",
+    "explainer.failure.thinking_exhausted",
     "Model used all output tokens on reasoning with none left "
     "for the response. Try lowering reasoning effort or increasing max_tokens.",
 )
@@ -114,30 +112,24 @@ def repetition_copy(stopping: str, outcome: str, refusal: str) -> Tuple[str, str
     )
 
 
-_REPETITION_DOMINATED = repetition_copy(
-    "instead of continuing a degenerate response",
-    "so continuing would only produce more repeated text. The partial response was discarded.",
-    " and was truncated mid-loop; refusing to continue a",
+def _repetition_abort(stopping: str, refusal: str, key: str) -> Tuple[str, str, str]:
+    """``repetition_copy`` with the user copy replaced by its catalog key (one whole sentence per
+    variant, so a translation never embeds an English clause)."""
+    line, _, error = repetition_copy(stopping, "", refusal)
+    return line, key, error
+
+
+_REPETITION_DOMINATED = _repetition_abort(
+    "instead of continuing a degenerate response", " and was truncated mid-loop; refusing to continue a",
+    "explainer.failure.repetition_dominated",
 )
-_REPETITION_STREAM_CUT = repetition_copy(
-    "the stream mid-loop",
-    "so the stream was stopped instead of running on. The partial response was discarded.",
-    " and the stream was cut mid-loop; discarding the",
-)
-_CEILING_NO_TEXT = (
-    "⚠️ **No visible answer was produced.** The model hit its output-token limit on every "
-    "continuation attempt — its reasoning consumed the entire budget each time.\n\nTo fix this:\n"
-    "→ Lower reasoning effort: `/reasoning low` or `/reasoning none`\n→ Or raise max_tokens for this model"
+_REPETITION_STREAM_CUT = _repetition_abort(
+    "the stream mid-loop", " and the stream was cut mid-loop; discarding the",
+    "explainer.failure.repetition_stream_cut",
 )
 # Below this many free tokens the prompt itself filled the window: a continuation nudge +
 # fragment costs ~100 tokens per attempt, so retrying only shrinks the room (#106120).
 _MIN_CONTINUATION_HEADROOM = 512
-_WINDOW_FILLED = (
-    "⚠️ **Context window full.** The prompt used {prompt:,} of this model's {ctx:,}-token "
-    "context window, leaving no room to answer in. This is a context-window limit, not an "
-    "output-length limit.\n\nTo fix this:\n→ Compress the conversation with `/compress` or start "
-    "a new session\n→ Or raise the model's context window (e.g. Ollama `num_ctx`)"
-)
 
 
 def _prompt_filled_window(agent: Any, response: Any) -> Optional[tuple[int, int]]:
@@ -276,7 +268,7 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
         f"{agent.log_prefix}🛡️  Content filter terminated stream — activating fallback provider...",
         force=True, diagnostic=True,
     )
-    agent._emit_diagnostic_status("Content filter terminated stream; switching to fallback...")
+    agent._emit_diagnostic_status(tl("explainer.failure.status.content_filter_fallback"))
     if agent._try_activate_fallback():
         # Roll partial content back to the last clean turn so the fallback gets a
         # coherent continuation point; unmark survivors (their text left the partial).
@@ -359,13 +351,13 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         force=True, diagnostic=True,
     )
     if filled is not None:
-        notice = _WINDOW_FILLED.format(prompt=filled[0], ctx=filled[1])
+        notice = t("explainer.failure.context_window_full", prompt=filled[0], ctx=filled[1])
         return st.end_turn(
             f"{partial_response}\n\n{notice}" if partial_response else notice,
             f"Prompt used {filled[0]} of {filled[1]} context tokens; no room to answer",
         )
     return st.end_turn(
-        partial_response or _CEILING_NO_TEXT,
+        partial_response or t("explainer.failure.continuation_no_text"),
         "Response remained truncated after 4 continuation attempts",
     )
 
@@ -422,25 +414,28 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
             f"{agent.log_prefix}⚠️  Server kept closing the stream mid tool-call after 4 retries — the action was not executed.",
             force=True, diagnostic=True,
         )
-        _final_response = site_copy("stream_closed_tool_call", label=provider_label_for(agent.provider))
+        _code = "stream_closed_tool_call"
         _failure = "truncated"
     elif st.is_stub:
         agent._vprint(
             f"{agent.log_prefix}⚠️  Stream kept dropping mid tool-call after 4 retries — the action was not executed.",
             force=True, diagnostic=True,
         )
-        _final_response = site_copy("stream_dropped_tool_call", label=provider_label_for(agent.provider))
+        _code = "stream_dropped_tool_call"
     else:
         agent._vprint(
             f"{agent.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
             force=True, diagnostic=True,
         )
-        _final_response = _TRUNCATED_FINAL
+        _code = "truncated"
+    _label = provider_label_for(agent.provider)
+    _english = site_copy(_code, label=_label)
     agent._cleanup_task_resources(st.effective_task_id)
-    # Prior tool batches can leave a tool-result tail; this path never reaches finalize_turn.
-    close_interrupted_tool_sequence(st.messages, _final_response)
+    # Prior tool batches can leave a tool-result tail; this path never reaches finalize_turn. The
+    # closing row stays English (the model reads it next turn), as does the stored ``error``.
+    close_interrupted_tool_sequence(st.messages, _english)
     return st.end_turn(
-        _final_response, cleanup=False,
+        site_copy(_code, lang=None, label=_label), _english, cleanup=False,
         failure=(_failure, True),
     )
 
@@ -468,9 +463,9 @@ def recover_from_truncation(
     if getattr(response, "_runaway_repetition", False):
         # The streaming call cut a live repetition loop: a continuation would only re-enter it,
         # whatever the partial or its tool calls look like.
-        line, user_response, error = _REPETITION_STREAM_CUT
+        line, user_key, error = _REPETITION_STREAM_CUT
         agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
-        return st.end_turn(user_response, error)
+        return st.end_turn(t(user_key), error)
     st.window_filled = _prompt_filled_window(agent, response)
     if st.is_stub and getattr(response, "_clean_eof", False):
         _banner = ("Response truncated — server ended the stream without ever sending finish_reason "
@@ -505,7 +500,7 @@ def recover_from_truncation(
         # input to a clean session instead of leaving this bloated one authoritative
         # for the next turn.
         return st.end_turn(
-            _CONTEXT_OVERFLOW_PARTIAL_FINAL,
+            t("explainer.failure.overflow_partial"),
             error=_CONTEXT_OVERFLOW_PARTIAL_FINAL,
             failed=True,
             compression_exhausted=True,
@@ -518,9 +513,9 @@ def recover_from_truncation(
 
     abort = _abort_reason(agent, _trunc_content, _trunc_has_tool_calls)
     if abort is not None:
-        line, user_response, error = abort
+        line, user_key, error = abort
         agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
-        return st.end_turn(user_response, error)
+        return st.end_turn(t(user_key), error)
 
     if agent.api_mode in _CONTINUABLE_MODES:
         cf = _content_filter_fallback(st, _retry)
@@ -534,12 +529,13 @@ def recover_from_truncation(
     if len(messages) > 1:
         agent._vprint(f"{agent.log_prefix}   ⏪ Rolling back to last complete assistant turn", diagnostic=True)
         return st.end_turn(
-            _TRUNCATED_FINAL, result_messages=agent._get_messages_up_to_last_assistant(messages)
+            site_copy("truncated", lang=None), site_copy("truncated"),
+            result_messages=agent._get_messages_up_to_last_assistant(messages),
         )
     # First message was truncated - mark as failed
     agent._flush_status_buffer()
     agent._vprint(f"{agent.log_prefix}❌ First response truncated - cannot recover", force=True, diagnostic=True)
-    return st.end_turn(_FIRST_TRUNCATED_FINAL, cleanup=False, failed=True)
+    return st.end_turn(site_copy("truncated", lang=None), site_copy("truncated"), cleanup=False, failed=True)
 
 
 _CODEX_REPLAY_KEYS = (
@@ -640,7 +636,7 @@ def continue_codex_incomplete(
                     f"{agent.log_prefix}↻ Codex reasoning-only stall after {streak} attempts — "
                     f"switching to fallback {agent.model} ({agent.provider})", diagnostic=True,
                 )
-            agent._emit_diagnostic_wait("↻ model stuck on internal reasoning — switching to fallback provider")
+            agent._emit_diagnostic_wait(tl("explainer.failure.status.reasoning_stall_fallback"))
             agent._session_messages = messages
             return CODEX_FALLBACK_ACTIVATED
         # No fallback left: fall through to the terminal sentinel.
@@ -681,9 +677,7 @@ def continue_codex_incomplete(
         # Surface the continuation on the live spinner/status line (CLI/TUI/Desktop) and gateway heartbeat:
         # each of these retries can spend minutes waiting on the provider, and without a distinct notice the
         # user only sees a generic thinking spinner ("infinite thinking", #64434).
-        agent._emit_diagnostic_wait(
-            f"↻ model returned reasoning with no final answer — asking it to continue ({n}/3)"
-        )
+        agent._emit_diagnostic_wait(tl("explainer.failure.status.reasoning_continue", n=n))
         agent._session_messages = messages
         return None
 
@@ -741,7 +735,7 @@ def handle_content_policy_refusal(
     stop_thinking_spinner(agent, thinking_spinner)
 
     if agent._has_pending_fallback():
-        agent._buffer_diagnostic_status("⚠️ Model declined to respond (safety refusal) — trying fallback...")
+        agent._buffer_diagnostic_status(tl("explainer.failure.status.refusal_trying_fallback"))
     if agent._try_activate_fallback():
         active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
         return RefusalVerdict("break", None, active_system_prompt)
@@ -757,10 +751,11 @@ def handle_content_policy_refusal(
         getattr(response, "stop_reason", None) or "n/a", _stop_details or "n/a",
         _refusal_log or "(no text)",
     )
-    agent._emit_diagnostic_status("⚠️ The model declined to respond to this request (safety refusal).")
+    agent._emit_diagnostic_status(tl("explainer.failure.status.refusal"))
+    # Display only: the result's ``error`` carries the raw refusal and the row is never persisted.
     _refusal_response = "⚠️ " + content_policy_copy(
         label=provider_label_for(agent.provider),
-        summary=_refusal_text or "the model returned no explanation",
+        summary=_refusal_text or t("explainer.failure.refusal_no_explanation"), lang=None,
     )
     agent._cleanup_task_resources(effective_task_id)
     agent._persist_session(messages, conversation_history)

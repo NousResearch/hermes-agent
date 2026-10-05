@@ -238,12 +238,48 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
         return value
     try:
         return value.format(**format_kwargs)
-    except (KeyError, IndexError, ValueError) as exc:
+    # Overlay/pack text is user-authored: ``{x.attr}`` / ``{x[k]}`` on a str kwarg raise Attribute/TypeError.
+    except (KeyError, IndexError, ValueError, AttributeError, TypeError) as exc:
         logger.warning("i18n format failed for key=%r lang=%r kwargs=%r: %s", key, target, format_kwargs, exc)
         return value
+
+
+class LocalizedText(str):
+    """English text that also names its catalog key, for copy whose English other code relies on.
+
+    Agent status lines are regex-matched in English (gateway noise filter, provider-error rewriter,
+    TUI/Desktop compaction and fallback tagging) and land in logs and transcripts. The str value stays
+    English for all of those; only a presentation sink calls :func:`render_localized` to show the
+    active language. Wrappers that rebuild the string (``DiagnosticText``) copy ``i18n_key``/``i18n_kwargs``.
+    """
+
+    def __new__(cls, english: str, key: str, format_kwargs: dict[str, Any] | None = None) -> "LocalizedText":
+        text = super().__new__(cls, english)
+        text.i18n_key, text.i18n_kwargs = key, format_kwargs or {}
+        return text
+
+
+def tl(key: str, **format_kwargs: Any) -> LocalizedText:
+    """English rendering of ``key`` carrying the key, so a sink can localize it after matching."""
+    return LocalizedText(t(key, lang=DEFAULT_LANGUAGE, **format_kwargs), key, format_kwargs)
+
+
+def preload_catalogs() -> None:
+    """Parse the English and active-language catalogs now. ``tl()`` and the status sinks run on
+    latency-sensitive paths (stream kill, interrupt handling) that must not pay the first YAML load."""
+    home = _current_home()
+    _load_catalog(DEFAULT_LANGUAGE, home)
+    _load_catalog(_resolve_language(home), home)
+
+
+def render_localized(text: Any) -> Any:
+    """The active-language rendering of a :func:`tl` value; any other value is returned unchanged."""
+    key = getattr(text, "i18n_key", None)
+    return t(key, **text.i18n_kwargs) if key else text
 
 
 __all__ = [
     "SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "t", "get_language", "reset_language_cache",
     "supported_languages", "resolve_language_id", "language_options", "surface_catalog",
+    "LocalizedText", "tl", "render_localized", "preload_catalogs",
 ]

@@ -11,6 +11,8 @@ retry policy live with the watchdogs; this is presentation only.
 import math
 from typing import Optional
 
+from agent.i18n import tl
+
 NEAR_DEADLINE_SECS = 15.0
 
 
@@ -18,27 +20,19 @@ def _near_deadline(watchdog: Optional[tuple[str, float]]) -> bool:
     return watchdog is not None and watchdog[1] <= NEAR_DEADLINE_SECS
 
 
-_PHASE_TEXT = {
-    # Codex Responses (non-stream request path)
-    "first_event": "{n}s waiting for the first provider event",
-    "reconnect": "{n}s waiting for the first provider event after reconnect",
-    "pre_progress": "provider stream open; {n}s without substantive model progress",
-    "post_event": "provider stream active; {n}s without stream events",
-    # Chat-completions streaming path
-    "first_chunk": "{n}s waiting for the first stream chunk",
-    "post_chunk": "stream open; {n}s without stream output",
-}
-
-
 def wait_notice_text(model: str, silence_secs: float, phase: str,
                      watchdog: Optional[tuple[str, float]] = None) -> str:
-    """One neutral status line. ``watchdog`` is ``(label, seconds_until_it_fires)``."""
-    lead = "still waiting on" if _near_deadline(watchdog) else "waiting on"
-    text = f"⏳ {lead} {model} — " + _PHASE_TEXT[phase].format(n=int(silence_secs))
-    if watchdog is not None:
-        label, remaining = watchdog
-        text += f" (auto-reconnect: {label} watchdog in {max(0, int(remaining))}s)"
-    return text
+    """One neutral status line. ``watchdog`` is ``(label, seconds_until_it_fires)``.
+
+    Phases: Codex Responses ``first_event`` / ``reconnect`` / ``pre_progress`` / ``post_event``; chat-completions
+    streaming ``first_chunk`` / ``post_chunk``. One catalog line per phase, plus ``_watchdog`` (a reconnect is
+    scheduled) and ``_near`` (it fires within ``NEAR_DEADLINE_SECS``: "still waiting") variants."""
+    if watchdog is None:
+        return tl(f"display.wait.{phase}", model=model, n=int(silence_secs))
+    label, remaining = watchdog
+    variant = "near" if _near_deadline(watchdog) else "watchdog"
+    return tl(f"display.wait.{phase}_{variant}", model=model, n=int(silence_secs), watchdog=label,
+              remaining=max(0, int(remaining)))
 
 
 def codex_watchdog_deadline(*, stale_timeout: float, ttfb_enabled: bool, ttfb_timeout: float,

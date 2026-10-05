@@ -535,7 +535,8 @@ class AIAgent(
         detail = (detail or exc.__class__.__name__).strip()
         if len(detail) > 220:
             detail = detail[:217].rstrip() + "..."
-        self._emit_warning(f"⚠ Auxiliary {task} failed: {detail}")
+        from agent.i18n import tl
+        self._emit_warning(tl("display.status.auxiliary_failed", task=task, detail=detail))
 
     def _current_main_runtime(self) -> Dict[str, str]:
         """Return the live main runtime for session-scoped auxiliary routing."""

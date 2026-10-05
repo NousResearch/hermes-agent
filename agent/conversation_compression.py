@@ -20,6 +20,7 @@ import json
 import logging
 import math
 import os
+import string
 import tempfile
 import time
 import uuid
@@ -30,6 +31,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
+from agent.i18n import LocalizedText, tl
 from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
@@ -61,15 +63,34 @@ _TERMINAL_COMPRESSION_PROVENANCES = frozenset(
 # B).
 _SPLIT_FAILURE_COOLDOWN_SECONDS = 60
 
+class _StatusTemplate(str):
+    """English status template whose ``.format()`` is a :class:`LocalizedText` naming ``key``. Its value is this
+    constant's own rendering (byte-identical for the matchers); the catalog entry is this text without format specs,
+    filled with the spec-formatted values, so emit sites that only call ``.format()`` reach the chat localized."""
+
+    def __new__(cls, key: str, text: str) -> "_StatusTemplate":
+        template = super().__new__(cls, text)
+        template.key = key
+        return template
+
+    def format(self, *args: Any, **kwargs: Any) -> LocalizedText:
+        specs = {name: spec for _, name, spec, _ in string.Formatter().parse(self) if name}
+        return LocalizedText(str.format(self, *args, **kwargs), self.key,
+                             {name: format(kwargs[name], spec) for name, spec in specs.items()})
+
+
 # Marker tui_gateway/server.py::_status_update matches to tag kind="compacting" for drivers' "Summarizing…" UI. Keep
 # the phrase intact when rewording. Idle/preflight/retry lines lack it; is_compaction_progress_status covers those.
 COMPACTION_STATUS_MARKER = "Compacting context"
-COMPACTION_STATUS = f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
+COMPACTION_STATUS = LocalizedText(
+    f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue...",
+    "display.status.compress.compacting")
 # Periodic heartbeat re-emitted while a long compression is still running so remote transports with
 # idle-turn watchdogs (#98371) see progress. Same marker as COMPACTION_STATUS so consumers classify it alike.
-COMPACTION_HEARTBEAT_STATUS = f"🗜️ {COMPACTION_STATUS_MARKER} — still summarizing earlier conversation so I can continue..."
-
-COMPACTION_DONE_STATUS = "✓ Context compaction complete — continuing turn..."
+COMPACTION_HEARTBEAT_STATUS = LocalizedText(
+    f"🗜️ {COMPACTION_STATUS_MARKER} — still summarizing earlier conversation so I can continue...",
+    "display.status.compress.heartbeat")
+COMPACTION_DONE_STATUS = LocalizedText("✓ Context compaction complete — continuing turn...", "display.status.compress.done")
 
 
 def _strip_marker_for_comparison(msgs: Any) -> Any:
@@ -94,23 +115,20 @@ def _emit_compaction_done(agent: Any) -> None:
 # Every ROUTINE compression status line lives here: suppressed on chat platforms
 # by _TELEGRAM_NOISY_STATUS_RE (gateway/run.py); update that regex + telegram
 # noise test when rewording. Failure notices and /compress feedback: NOT here.
-PRE_API_COMPRESSION_STATUS_TEMPLATE = (
-    "📦 Pre-API compression: ~{tokens:,} tokens near the context/output limit. Compacting before the next model call."
-)
-PREFLIGHT_COMPRESSION_STATUS_TEMPLATE = (
-    "📦 Preflight compression: ~{tokens:,} tokens >= {threshold:,} threshold. This may take a moment."
-)
-IDLE_COMPACTION_STATUS_TEMPLATE = (
-    "💤 Resumed after {idle_seconds}s idle — compacting ~{tokens:,} tokens before continuing."
-)
-COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE = (
-    "🗜️ Context too large (~{tokens:,} tokens) — compressing ({attempt}/{cap})..."
-)
-COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE = "🗜️ Compressed {before} → {after} messages, retrying..."
-COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE = "🗜️ Compressed ~{before:,} → ~{after:,} tokens, retrying..."
-COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE = (
-    "🗜️ Context reduced to {new_ctx:,} tokens (was {old_ctx:,}), retrying..."
-)
+PRE_API_COMPRESSION_STATUS_TEMPLATE = _StatusTemplate("display.status.compress.pre_api",
+    "📦 Pre-API compression: ~{tokens:,} tokens near the context/output limit. Compacting before the next model call.")
+PREFLIGHT_COMPRESSION_STATUS_TEMPLATE = _StatusTemplate("display.status.compress.preflight",
+    "📦 Preflight compression: ~{tokens:,} tokens >= {threshold:,} threshold. This may take a moment.")
+IDLE_COMPACTION_STATUS_TEMPLATE = _StatusTemplate("display.status.compress.idle",
+    "💤 Resumed after {idle_seconds}s idle — compacting ~{tokens:,} tokens before continuing.")
+COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE = _StatusTemplate("display.status.compress.retry_too_large",
+    "🗜️ Context too large (~{tokens:,} tokens) — compressing ({attempt}/{cap})...")
+COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE = _StatusTemplate("display.status.compress.retry_messages",
+    "🗜️ Compressed {before} → {after} messages, retrying...")
+COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE = _StatusTemplate("display.status.compress.retry_tokens",
+    "🗜️ Compressed ~{before:,} → ~{after:,} tokens, retrying...")
+COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE = _StatusTemplate("display.status.compress.retry_context_reduced",
+    "🗜️ Context reduced to {new_ctx:,} tokens (was {old_ctx:,}), retrying...")
 
 # FAILURE-class notice: compression blocked, so the session grows until the provider limit kills it. Must stay visible
 # on gateways: never add it to ROUTINE_COMPRESSION_STATUS_SAMPLES or _TELEGRAM_NOISY_STATUS_RE.
@@ -119,7 +137,7 @@ COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE = (
 # so the session will keep growing until the hard provider token limit kills it. Do NOT add it to
 # ROUTINE_COMPRESSION_STATUS_SAMPLES or the gateway noise regex (_TELEGRAM_NOISY_STATUS_RE); it is pinned
 # un-swallowed in tests/gateway/test_telegram_noise_filter.py::VISIBLE_COMPRESSION_MESSAGES.
-CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE = (
+CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE = _StatusTemplate("display.status.compress.overflow_blocked",
     "⚠ Context is over the compression threshold (~{tokens:,} tokens >= {threshold:,}) "
     "but compression is currently blocked ({reason}). The model may stop responding. Run /new to start a fresh "
     "session or /compress to retry immediately."
@@ -2046,25 +2064,14 @@ def _lower_threshold_to_aux_context(
             _aux_provider_label = aux_base_url or "auto"
     _main_label = f"{_main_model} ({_main_provider})" if _main_provider else _main_model
     _aux_label = f"{aux_model} ({_aux_provider_label})"
-    msg = (
-        f"⚠ Compression model {_aux_label} context is {aux_context:,} tokens, but the main model "
-        f"{_main_label}'s compression threshold was {old_threshold:,} tokens. "
-        f"Auto-lowered this session's threshold to {new_threshold:,} tokens so compression can run.\n"
+    # Whole message per variant: the threshold one offers both fixes, the model-only one explains why lowering can't help.
+    msg = tl(
+        "display.status.compress.auto_lowered_threshold" if threshold_suggestion_viable
+        else "display.status.compress.auto_lowered_model_only",
+        aux_label=_aux_label, main_label=_main_label, aux_context=f"{aux_context:,}", old_threshold=f"{old_threshold:,}",
+        new_threshold=f"{new_threshold:,}", safe_pct=f"{safe_pct:02d}", main_ctx=f"{main_ctx:,}",
+        recomputed_threshold=f"{recomputed_threshold:,}" if recomputed_threshold is not None else "",
     )
-    if threshold_suggestion_viable:
-        msg += (
-            f"  To make this permanent, edit config.yaml — either:\n  1. Use a larger compression model:\n"
-            f"       auxiliary:\n         compression:\n           model: <model-with-{old_threshold:,}+-context>\n"
-            f"  2. Lower the compression threshold:\n       compression:\n         threshold: 0.{safe_pct:02d}"
-        )
-    else:
-        msg += (
-            f"  To make this permanent, use a larger compression model in config.yaml:\n       auxiliary:\n"
-            f"         compression:\n           model: <model-with-{old_threshold:,}+-context>\n"
-            f"  (Lowering compression.threshold cannot help here — with {_main_label}'s {main_ctx:,}-token window, "
-            f"Hermes's small-context floor and output reservation would recompute the trigger to "
-            f"{recomputed_threshold:,} tokens, still above the compression model's {aux_context:,}.)"
-        )
     _emit_feasibility_notice(agent, msg)
     logger.warning(
         "Auxiliary compression model %s has %d token context, below the main model's compression threshold of %d "
@@ -2111,16 +2118,9 @@ def check_compression_model_feasibility(agent: Any) -> None:
                     _aux_cfg_provider = fb_label.rsplit("(", 1)[1][:-1]
         if client is None or not aux_model:
             if _aux_cfg_provider and _aux_cfg_provider != "auto":
-                msg = (
-                    f"⚠ Configured auxiliary compression provider '{_aux_cfg_provider}' is unavailable, "
-                    "so older messages in long chats will be cut without a summary. Sign in to that "
-                    "provider again, or change auxiliary.compression in your config."
-                )
+                msg = tl("display.status.compress.feasibility_provider_unavailable", provider=_aux_cfg_provider)
             else:
-                msg = (
-                    "⚠ No auxiliary LLM provider configured: Hermes has no helper model for summarising "
-                    "long chats, so older messages will be cut without a summary. Run `hermes setup` to add one."
-                )
+                msg = tl("display.status.compress.feasibility_no_provider")
             _emit_feasibility_notice(agent, msg)
             logger.warning("No auxiliary LLM provider for compression — summaries will be unavailable.")
             return
@@ -2800,10 +2800,7 @@ def _sit_out_lock_contention(
     if getattr(agent, "_last_compression_lock_warning_sid", None) != lease.sid:
         agent._last_compression_lock_warning_sid = lease.sid
         with contextlib.suppress(Exception):
-            agent._emit_warning(
-                "⚠ Skipping concurrent compression — another path is already compressing this session. Will retry "
-                "after it finishes."
-            )
+            agent._emit_warning(tl("display.status.compress.lock_skipped"))
     _existing_sp = _existing_system_prompt(agent, system_message)
     with contextlib.suppress(Exception):
         if hasattr(agent.context_compressor, "_begin_compression_telemetry"):
@@ -3264,10 +3261,7 @@ def _salvage_or_refuse_grown_transcript(
         with contextlib.suppress(Exception):
             agent.context_compressor._last_compress_refused_would_grow = True
         with contextlib.suppress(Exception):
-            agent._emit_warning(
-                "⚠️ Compression refused: the generated summary would have GROWN the conversation instead of "
-                "shrinking it. No messages were dropped — conversation continues unchanged."
-            )
+            agent._emit_warning(tl("display.status.compress.refused_would_grow"))
         _existing_sp = _existing_system_prompt(agent, system_message)
         _emit_aborted_attempt_telemetry(agent, attempt_started_at, "would_grow")
         # Count the refusal as an ineffective-compaction strike so the anti-thrash
@@ -3422,7 +3416,7 @@ def _warn_summary_or_aux_fallback(agent: Any) -> None:
     if summary_error:
         if getattr(agent, "_last_compression_summary_warning", None) != summary_error:
             agent._last_compression_summary_warning = summary_error
-            agent._emit_warning(f"⚠ Compression summary failed: {summary_error}. Inserted a fallback context marker.")
+            agent._emit_warning(tl("display.status.compress.summary_failed", error=summary_error))
     else:
         # Aux model may have errored and been recovered on main; tell the user their
         # auxiliary.compression.model is broken even though compression succeeded.
@@ -3436,10 +3430,7 @@ def _warn_summary_or_aux_fallback(agent: Any) -> None:
                 "Configured compression model %r failed (%s); recovered using the main model.",
                 _aux_fail_model, _aux_fail_err or "unknown error",
             )
-            agent._emit_warning(
-                f"ℹ Configured compression model '{_aux_fail_model}' failed, so Hermes summarised "
-                "with your main model instead. Check auxiliary.compression.model in your config."
-            )
+            agent._emit_warning(tl("display.status.compress.aux_model_failed", model=_aux_fail_model))
 
 
 def _reset_read_dedup_caches(task_id: str, *, session_id: str = "") -> None:
@@ -3504,9 +3495,7 @@ def _finish_compaction_boundary(
     compressor = agent.context_compressor
     _cc = compressor.compression_count
     if _cc >= 2:
-        _cc_msg = (
-            f"{agent.log_prefix}⚠️  Session compressed {_cc} times — accuracy may degrade. Consider /new to start fresh."
-        )
+        _cc_msg = tl("display.status.compress.compressed_many_times", prefix=agent.log_prefix, count=_cc)
         agent._compression_warning = _cc_msg
         agent._emit_diagnostic_status(_cc_msg)
 
@@ -3569,11 +3558,7 @@ def _candidate_rejected(
         _err = _summary_error or "unknown error"
         if getattr(agent, "_last_compression_summary_warning", None) != _err:
             agent._last_compression_summary_warning = _err
-            agent._emit_warning(
-                f"⚠ Compression aborted: {_err}. "
-                "No messages were dropped — conversation continues unchanged. "
-                "Run /compress to retry, or /new to start a fresh session."
-            )
+            agent._emit_warning(tl("display.status.compress.aborted", error=_err))
         _emit_aborted_attempt_telemetry(
             agent, attempt_started_at, _summary_error and "summary_generation_aborted"
         )
@@ -3606,9 +3591,7 @@ def _candidate_rejected(
             agent.session_id or "none",
         )
         with contextlib.suppress(Exception):
-            agent._emit_warning(
-                "⚠ Compression returned an empty transcript. No session split was performed; conversation continues unchanged."
-            )
+            agent._emit_warning(tl("display.status.compress.empty_transcript"))
         return True
 
     # A newer WORKING attempt supersedes us; discard the late candidate. No-op
@@ -4399,7 +4382,7 @@ def _compress_context_via_codex_app_server(
         agent._codex_session = None
     if failed:
         with contextlib.suppress(Exception):
-            agent._emit_warning(f"⚠ Codex app-server compaction failed: {result.error}")
+            agent._emit_warning(tl("display.status.compress.codex_failed", error=result.error))
         # The transcript is returned unchanged, so the session is still over
         # threshold. Without a brake the next turn retries immediately.
         _record_codex_compaction_failure(agent, str(getattr(result, "error", None) or "compaction interrupted"))

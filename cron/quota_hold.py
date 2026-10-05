@@ -20,6 +20,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+from agent.i18n import t
 from hermes_time import now as _hermes_now, safe_strftime
 
 logger = logging.getLogger("cron.scheduler")
@@ -156,8 +157,5 @@ def hold_notice(job: Dict[str, Any], hold_seconds: Optional[float]) -> str:
         return ""
     window_end = _window_end(hold_seconds)
     hours = float(hold_seconds) / 3600.0
-    return (
-        f"\nThe provider's usage window is closed for about {hours:.1f}h. This job is held "
-        f"through {safe_strftime(window_end, '%Y-%m-%d %H:%M %Z')} and resumes at the first safe "
-        "opportunity afterwards; no further alerts are sent while the provider is unavailable."
-    )
+    return t("gateway.cron.failure.quota_hold", hours=f"{hours:.1f}",
+             until=safe_strftime(window_end, "%Y-%m-%d %H:%M %Z"))

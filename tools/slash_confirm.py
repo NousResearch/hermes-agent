@@ -15,6 +15,8 @@ import threading
 import time
 from typing import Any, Awaitable, Callable, Dict, Optional
 
+from agent.i18n import t
+
 logger = logging.getLogger(__name__)
 
 # session_key -> {"confirm_id", "command", "handler", "created_at"}
@@ -85,5 +87,5 @@ async def resolve(session_key: str, confirm_id: str, choice: str,
         result = await handler(choice)
     except Exception as exc:
         logger.error("Slash-confirm handler for /%s raised: %s", command, exc, exc_info=True)
-        return f"❌ Error handling confirmation: {exc}"
+        return t("gateway.confirm.handler_error", error=exc)
     return result if isinstance(result, str) else None

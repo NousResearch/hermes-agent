@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 
 from agent.error_classifier import FailoverReason
 from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+from agent.i18n import tl
 from agent.message_metadata import append_message
 from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_runaway_repetition
 from agent.turn_failure_copy import site_copy, stamp_failure
@@ -260,10 +261,13 @@ def nous_rate_limit_guard(
                 if _anonymous:
                     _nous_msg = anon_auth.FREE_TIER_RATE_LIMIT_CHAT.format(
                         reset=anon_auth.friendly_wait(_nous_remaining))
+                    _nous_status = f"⏳ {_nous_msg}"
                 else:
+                    # ``_nous_msg`` stays English: it is also the persisted final response / error.
                     _nous_msg = f"Your Nous account has hit its rate limit; it resets in {reset}."
+                    _nous_status = tl("display.status.turn.nous_rate_limited", reset=reset)
                 agent._buffer_vprint(f"⏳ {_nous_msg} Trying fallback...")
-                agent._buffer_diagnostic_status(f"⏳ {_nous_msg}")
+                agent._buffer_diagnostic_status(_nous_status)
                 if agent._try_activate_fallback():
                     active_system_prompt = _arm_fallback_restart(
                         agent, api_messages, active_system_prompt, _retry)

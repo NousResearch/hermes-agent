@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
+from agent.i18n import render_localized, tl
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
 from agent.memory_manager import StreamingContextScrubber
@@ -185,12 +186,7 @@ def _build_codex_gpt5_autoraise_notice(
         cap = "128K" if model.startswith("gpt-5.3-codex-spark") else "272K"
     from_pct = int(round(autoraise["from"] * 100))
     to_pct = int(round(autoraise["to"] * 100))
-    return (
-        f"ℹ Codex {model} caps context at {cap}, so auto-compaction was raised "
-        f"to {to_pct}% (from {from_pct}%) to use more of the window before "
-        f"summarizing.\n"
-        f"  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
-    )
+    return tl("display.notice.codex_autoraise", model=model, cap=cap, to_pct=to_pct, from_pct=from_pct)
 
 
 def _resolve_compression_threshold(
@@ -706,6 +702,8 @@ def _init_turn_state(agent, run_budget_seconds):
     agent.run_budget_seconds = _normalize_run_budget_seconds(run_budget_seconds)
     from agent.credits_tracker import new_credits_latch
     agent._credits_latch = new_credits_latch()  # threshold-notice latch (sticky keys + gates)
+    from agent.i18n import preload_catalogs
+    preload_catalogs()  # status lines render on stream/abort paths; parse catalogs here, not mid-stream
 
 
 def _setup_logging(agent):
@@ -2276,7 +2274,7 @@ def _emit_compression_summary(agent, cs):
             print(f"📊 Context limit: {_cc.context_length:,} tokens (auto-compression disabled)")
         # Gateway users get the same text via _compression_warning on turn 1.
         if _autoraise_notice:
-            agent._safe_print(_autoraise_notice, diagnostic=True)
+            agent._safe_print(render_localized(_autoraise_notice), diagnostic=True)
 
     # status_callback isn't wired yet: stash for replay on the first turn; mark shown so
     # repeated inits stay silent.

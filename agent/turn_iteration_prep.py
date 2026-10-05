@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from agent.display import KawaiiSpinner
+from agent.i18n import tl
 from agent.interrupt_control import interrupt_issuer, interrupted_during_api_call_reason
 from agent.turn_context_compaction import _reanchor
 from agent.turn_truncation import boosted_output_cap
@@ -536,7 +537,7 @@ def apply_retry_restarts(
     # All retries may exhaust with `response` still None; break out cleanly.
     if response is None:
         _turn_exit_reason = "all_retries_exhausted_no_response"
-        agent._emit_diagnostic_status("❌ The model provider didn't answer after all retries. Send /retry, or switch models with /model.")
+        agent._emit_diagnostic_status(tl("display.status.turn.no_response_after_retries"))
         agent._persist_session(messages, conversation_history)
         return _verdict("break")
     # A response arrived, so the turn is not stuck re-issuing a cancelled request: start

@@ -31,6 +31,8 @@ import secrets
 import logging
 from typing import Any, Dict, Optional
 
+from agent.i18n import t
+
 logger = logging.getLogger(__name__)
 
 
@@ -576,10 +578,9 @@ def _confirm_payment_fill(label: str, origin: str) -> bool:
     from tools.approval_prompt import request_elicitation_consent
 
     return request_elicitation_consent(
-        f"Fill payment card '{label}' on {origin}",
-        "The agent wants to enter your saved card details into this checkout page. The card number and "
-        "CVC never enter the conversation. Approve only if you intend to pay here.",
-        surface="vault-payment", title="Confirm payment card fill?") == "accept"
+        t("approval.elicitation.payment_fill_command", label=label, origin=origin),
+        t("approval.elicitation.payment_fill_description"),
+        surface="vault-payment", title=t("approval.elicitation.payment_fill_title")) == "accept"
 
 
 # ---------------------------------------------------------------------------

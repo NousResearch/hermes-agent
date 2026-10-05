@@ -38,14 +38,10 @@ def is_thinking_timeout(classified: object, model: str, error_msg: str) -> bool:
 def build_thinking_timeout_guidance(provider: str, model: str, model_label: Optional[str] = None) -> str:
     """User-facing guidance appended to the final response: easiest fix first (``/reasoning
     low``), the config knob last. ``model`` is used verbatim in the config path so it is
-    copy-pasteable; ``model_label`` is the optional prose name."""
+    copy-pasteable; ``model_label`` is the optional prose name. Active language: it rides the failed turn's
+    ``final_response`` (shown, never persisted as model-read content) and the CLI hint line."""
+    from agent.i18n import t
     from hermes_constants import display_hermes_home
 
-    label = model_label or model
-    return (
-        f"{label} was thinking for so long that the connection timed out before it wrote anything "
-        "(common for reasoning models behind cloud gateways such as NVIDIA NIM, OpenAI, Anthropic, "
-        "DeepSeek). Easiest fixes: `/reasoning low`, or switch to a faster model with /model. "
-        f"Advanced: set `providers.{provider}.models.{model}.stale_timeout_seconds: 900` in "
-        f"`{display_hermes_home()}/config.yaml` to allow a longer wait."
-    )
+    return t("display.notice.thinking_timeout_guidance", label=model_label or model, provider=provider, model=model,
+             home=display_hermes_home())

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.conversation_compression import recover_rotated_compression_session
+from agent.i18n import tl
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
@@ -630,11 +631,7 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
     if agent.api_mode != "anthropic_messages":
         with suppress(Exception):
             if agent._cleanup_dead_connections():
-                agent._emit_diagnostic_status(
-                    "🔌 Detected stale connections from a previous provider "
-                    "issue — cleaned up automatically. Proceeding with fresh "
-                    "connection."
-                )
+                agent._emit_diagnostic_status(tl("display.status.turn.stale_connections_cleaned"))
     # Replay compression warning through status_callback for gateway platforms.
     if agent._compression_warning:
         agent._replay_compression_warning()

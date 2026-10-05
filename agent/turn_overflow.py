@@ -21,6 +21,7 @@ from agent.conversation_compression import (
     compression_skipped_due_to_lock, context_compression_timed_out,
 )
 from agent.error_classifier import FailoverReason
+from agent.i18n import tl
 from agent.message_sanitization import serialized_messages_bytes
 from agent.model_metadata import (
     get_context_length_from_provider_error, is_local_endpoint, is_output_cap_error,
@@ -233,10 +234,10 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
     exhausted = st.count_attempt(payload_too_large=True)
     if exhausted is not None:
         return exhausted
-    agent._buffer_diagnostic_status(
-        f"⚠️  Request payload too large (413) — compression attempt "
-        f"{st.compression_attempts}/{st.max_compression_attempts}..."
-    )
+    agent._buffer_diagnostic_status(tl(
+        "display.status.turn.payload_too_large_compressing",
+        attempt=st.compression_attempts, cap=st.max_compression_attempts,
+    ))
 
     messages = st.messages
     original_len = len(messages)
@@ -261,18 +262,15 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
         if len(messages) < original_len:
             agent._buffer_diagnostic_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
         else:
-            agent._buffer_diagnostic_status(
-                f"🗜️ Compressed {original_bytes:,} → {new_bytes:,} " f"payload bytes, retrying..."
-            )
+            agent._buffer_diagnostic_status(tl(
+                "display.status.turn.payload_bytes_compressed", before=f"{original_bytes:,}", after=f"{new_bytes:,}",
+            ))
         time.sleep(2)  # Brief pause between compression retries
         _retry.restart_with_compressed_messages = True
         return st.done("break")
 
     if agent._try_strip_image_parts_from_tool_messages(st.api_messages, remember_model=False):
-        agent._buffer_diagnostic_status(
-            "📐 Compression could not reduce the request further — "
-            "removed retained vision payloads and retrying..."
-        )
+        agent._buffer_diagnostic_status(tl("display.status.turn.vision_payloads_stripped"))
         return st.done("continue")
 
     return st.fail_turn(

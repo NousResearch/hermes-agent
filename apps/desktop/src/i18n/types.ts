@@ -10,6 +10,7 @@ import type { TipId } from '@/lib/tips/catalog'
 
 import type { AuxTaskCopyMap } from './types_aux_tasks'
 import type { ModelMenuTranslations } from './types_model_menu'
+import type { SharedMetricsTranslations } from './types_shared_metrics'
 
 /** The locales compiled into the app (`TRANSLATIONS`). */
 export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
@@ -65,36 +66,7 @@ interface ModeOptionCopy {
 
 export interface Translations {
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
-  sharedMetrics: {
-    consentTitle: string
-    consentBody: string
-    whatIsCollected: string
-    collectedIntro: string
-    collectedActivity: string
-    collectedModels: string
-    collectedNames: string
-    collectedMilestones: string
-    collectedReliability: string
-    collectedUsage: string
-    collectedMachine: string
-    installId: string
-    consentWindow: string
-    readDocs: string
-    share: string
-    local: string
-    off: string
-    changeLater: string
-    saveFailed: string
-    collectLabel: string
-    collectDesc: string
-    sendLabel: string
-    sendDesc: string
-    unavailable: string
-    stripBody: string
-    stripReaskBody: string
-    stripChoices: { share: string; local: string; off: string }
-    stripDetails: string
-  }
+  sharedMetrics: SharedMetricsTranslations
   externalOpenFailed: {
     title: string
     message: string

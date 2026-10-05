@@ -86,8 +86,30 @@ pub fn installer_dest() -> PathBuf {
 /// Lives directly under HERMES_HOME (same rationale as `installer_dest`) so the
 /// Electron desktop — which resolves HERMES_HOME identically and pins it into
 /// the updater's env — agrees on the exact path.
+///
+/// One lock per install: a profile home (`<root>/profiles/<name>`) resolves to
+/// `<root>`, matching `update_marker_path()` in hermes_cli/update_lock.py (#123376).
 pub fn update_in_progress_marker() -> PathBuf {
-    hermes_home().join(".hermes-update-in-progress")
+    marker_in_install_root(&hermes_home())
+}
+
+fn marker_in_install_root(home: &Path) -> PathBuf {
+    let is_profile = home
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            if cfg!(windows) {
+                name.eq_ignore_ascii_case("profiles")
+            } else {
+                name == "profiles"
+            }
+        });
+    let root = match home.parent().and_then(Path::parent) {
+        Some(root) if is_profile => root,
+        _ => home,
+    };
+    root.join(".hermes-update-in-progress")
 }
 
 /// Copy the currently-running installer binary to `installer_dest()` so it's
@@ -213,4 +235,20 @@ pub fn open_log_dir(app: tauri::AppHandle) -> Result<(), String> {
     app.opener()
         .open_path(path.to_string_lossy(), None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_home_shares_the_install_root_update_marker() {
+        let root = Path::new("/srv/hermes");
+        let expected = root.join(".hermes-update-in-progress");
+        assert_eq!(
+            marker_in_install_root(&root.join("profiles").join("work")),
+            expected
+        );
+        assert_eq!(marker_in_install_root(root), expected);
+    }
 }

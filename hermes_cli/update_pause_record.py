@@ -413,6 +413,20 @@ def mark_stop_consumed(path: Path, marker: dict) -> None:
         _atomic_write(src, body)  # Failure leaves the request intact for recovery.
 
 
+def _accepted_path(marker_path: Path) -> Path:
+    return marker_path.with_name(marker_path.name + ".accepted")
+
+
+def mark_stop_accepted(path: Path, marker: dict) -> None:
+    """The consumer's receipt when it cannot checkpoint into the record (busy mutex, refused
+    replace): this incarnation accepted the request and drains until it exits, however long past
+    the request's TTL. Written beside the marker, in the gateway's own home, never into the record."""
+    try:
+        _atomic_write(_accepted_path(path), dict(marker))
+    except OSError as exc:
+        print(f"  ⚠ Could not record the accepted stop request {path}: {exc}", file=sys.stderr)
+
+
 def discharge(token: dict, path: Path | None = None) -> None:
     """Remove the record only while it still names this pause (decided under the mutex)."""
     path = path or record_path()
@@ -694,16 +708,25 @@ def _without(token: dict, pids: set[str]) -> dict:
 def _request_on_disk(token: dict, pid: str) -> bool:
     """The planned-stop marker this update's stopper wrote for *pid* is still on disk (the gateway's
     watcher has not consumed it yet): the request was issued even if the updater died before
-    :func:`mark_stop_sent`. A marker naming another stopper (a user's ``hermes gateway stop``) is not."""
+    :func:`mark_stop_sent` — or the gateway's receipt of accepting it (:func:`mark_stop_accepted`).
+    A marker naming another stopper (a user's ``hermes gateway stop``) is not."""
     path = (token.get("stop_markers") or {}).get(str(pid))
     if not path:
         return False
-    from gateway.status import _marker_is_stale, _PLANNED_STOP_MARKER_TTL_S, get_process_start_time
+    from gateway.status import _PLANNED_STOP_MARKER_TTL_S
+    # An unconsumed request expires; the receipt of an accepted one is evidence for the whole drain
+    # (only the accepting incarnation is ever judged: a later one is not this entry's live process).
+    return (_names_request(token, pid, Path(path), _PLANNED_STOP_MARKER_TTL_S)
+            or _names_request(token, pid, _accepted_path(Path(path)), None))
+
+
+def _names_request(token: dict, pid: str, path: Path, ttl_s: int | None) -> bool:
+    from gateway.status import _marker_is_stale, get_process_start_time
     try:
-        marker = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        marker = json.loads(path.read_text(encoding="utf-8-sig"))
         if (int(marker["target_pid"]) != int(pid)
                 or int(marker["stopper_pid"]) != int(token["stopper_pid"])
-                or _marker_is_stale(marker.get("written_at") or "", _PLANNED_STOP_MARKER_TTL_S)):
+                or (ttl_s is not None and _marker_is_stale(marker.get("written_at") or "", ttl_s))):
             return False
         expected, actual = marker.get("target_start_time"), get_process_start_time(int(pid))
         # Match the consumer's optional birth fingerprint, including unavailable clocks.

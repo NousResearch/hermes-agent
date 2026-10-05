@@ -661,6 +661,41 @@ def test_an_unreadable_orphan_is_never_overwritten_by_a_new_pause(tmp_path, monk
     assert pause_record.read()["token"]["profiles"] == {"alpha": 11, "beta": 12}
 
 
+# --- Review B: an accepted stop stays owed for the whole drain -----------------------------------
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes a read-only directory")
+@pytest.mark.parametrize("consumed", [True, False])
+def test_an_accepted_stop_the_record_could_not_checkpoint_outlives_the_request_ttl(tmp_path, monkeypatch, consumed):
+    """Producer and consumer checkpoints both refused (a read-only record directory stands in for
+    a Windows replace refusal), the updater gone, the gateway (this process) still draining past the
+    request's TTL: recovery keeps it owed. A request nobody consumed still expires (control)."""
+    from datetime import datetime, timedelta, timezone
+
+    from gateway import status
+    root, home = tmp_path / "root", tmp_path / "root" / "profiles" / "p"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    pid = os.getpid()
+    marker = status._get_planned_stop_marker_path()
+    token = pause_record.record_pause({"resume_needed": True, "profiles": {"p": pid},
+                                       "identities": {str(pid): pause_record.identity(pid)["ct"]}}, None, [])
+    pause_record.mark_stop_requested(token, [pid], markers={pid: marker})
+    assert status.write_planned_stop_marker(pid)
+    root.chmod(0o555)
+    try:
+        pause_record.mark_stop_sent(token, pid)  # refused: best effort
+        if consumed:
+            assert status.consume_planned_stop_marker_for_self() is True
+    finally:
+        root.chmod(0o755)
+    saved = pause_record.read()["token"]
+    assert saved["stop_sent"] == [], "premise: no checkpoint landed"
+    body = json.loads(marker.read_text(encoding="utf-8"))
+    body["written_at"] = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()  # past the TTL
+    marker.write_text(json.dumps(body), encoding="utf-8")
+    owed = pause_record.drop_never_stopped(dict(saved))["profiles"]
+    assert owed == ({"p": pid} if consumed else {}), "a gateway draining an accepted stop lost its restart debt"
+
+
 # --- Review W3: record hygiene --------------------------------------------------------------------
 def test_a_refused_publish_leaves_no_temp_beside_the_record(tmp_path, monkeypatch):
     target = tmp_path / "records" / "record.json"

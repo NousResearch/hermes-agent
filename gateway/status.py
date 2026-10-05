@@ -1970,11 +1970,11 @@ def consume_planned_stop_marker_for_self() -> bool:
             )
     except OSError as exc:
         # The pause bookkeeping (a busy mutex, a checkpoint that cannot be written) never decides
-        # whether this stop was planned: classify without consuming, so the request stays on
-        # disk as the evidence recovery reads in place of the checkpoint (it expires by TTL).
+        # whether this stop was planned: classify without consuming, and leave a receipt beside the
+        # request so recovery keeps this drain owed after the request's TTL (mark_stop_accepted).
         logger.warning("Planned-stop checkpoint skipped (%s); the stop request stays on disk", exc)
-        return _consume_pid_marker_for_self(
-            _get_planned_stop_marker_path(), ttl_s=_PLANNED_STOP_MARKER_TTL_S, keep=True)
+        return _consume_pid_marker_for_self(_get_planned_stop_marker_path(), ttl_s=_PLANNED_STOP_MARKER_TTL_S,
+                                            keep=True, on_consume=update_pause_record.mark_stop_accepted)
 
 
 def planned_stop_marker_targets_self() -> bool:

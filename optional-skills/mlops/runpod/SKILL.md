@@ -32,8 +32,7 @@ Rent short-lived RunPod GPU pods for heavy diffusion, video, or model jobs the l
 
 - RunPod account with funds. Keep the balance low (~$10–25) as a circuit-breaker against a forgotten pod.
 - `RUNPOD_API_KEY` set through Hermes' secret setup — never pasted into chat.
-- `curl`, `ssh`, `scp`, and an SSH key pair. On a fresh machine:
-  `terminal(command="mkdir -p ~/.ssh && chmod 700 ~/.ssh && test -f ~/.ssh/id_ed25519 || ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519 -q")`
+- `curl`, `ssh`, `scp`, and an SSH key pair the user already has. Read the public key with `terminal(command="ssh-add -L")`. If there is none, ask the user to create one themselves — don't generate keys on their behalf.
 
 ## How to Run
 
@@ -75,7 +74,7 @@ mutation { podFindAndDeployOnDemand(input: { cloudType: SECURE, gpuCount: 1,
 3. **Volume in the same datacenter.** Reuse an existing volume there, or create one now. *Done when:* the volume's `dataCenterId` matches the chosen datacenter.
 4. **Register the SSH public key** before deploying (pods copy the account key at creation). *Done when:* `updateUserSettings` returns an id.
 5. **Deploy, then poll** every ~10 s until `runtime.ports` is populated (usually 25–60 s). The SSH endpoint is the entry with `privatePort: 22` and `isIpPublic: true` — use its `ip:publicPort`. *Done when:* that entry exists. Report `costPerHr` to the user.
-6. **Bootstrap.** `ssh-keyscan -p <port> <ip> >> ~/.ssh/known_hosts`, `scp` the bootstrap script, start it detached: `nohup bash bootstrap.sh > /workspace/bootstrap.log 2>&1 &`. The script should skip files already on the volume (`[ -s "$dest" ] && return`), resume partial downloads (`curl -C -`), and end by printing a unique sentinel line. *Done when:* the sentinel appears in the log.
+6. **Bootstrap.** Connect with `ssh -o StrictHostKeyChecking=accept-new -p <port> root@<ip>` (trusts a new pod's host key on first contact but still rejects a changed one), `scp` the bootstrap script with the same option, start it detached: `nohup bash bootstrap.sh > /workspace/bootstrap.log 2>&1 &`. The script should skip files already on the volume (`[ -s "$dest" ] && return`), resume partial downloads (`curl -C -`), and end by printing a unique sentinel line. *Done when:* the sentinel appears in the log.
 7. **Run the job** through the service's own API (e.g. ComfyUI on :8188), then download every output. *Done when:* outputs exist locally with non-zero size.
 8. **Terminate and verify in the same turn.** Call `podTerminate`, then query the pod. *Done when:* the pod query returns `null`. Report total spend, false starts included.
 

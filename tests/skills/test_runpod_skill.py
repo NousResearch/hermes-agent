@@ -70,3 +70,13 @@ def test_pitfalls_numbered_sequentially(skill) -> None:
     pitfalls = body.split("## Pitfalls", 1)[1].split("\n## ", 1)[0]
     numbers = [int(n) for n in re.findall(r"^(\d+)\. ", pitfalls, flags=re.MULTILINE)]
     assert numbers == list(range(1, len(numbers) + 1))
+
+
+def test_passes_skills_guard_as_community_install() -> None:
+    # The skill is also distributed through a community tap; the hub scanner
+    # blocks community installs on caution verdicts, so it must scan clean.
+    from tools.skills_guard import scan_skill, should_allow_install
+
+    result = scan_skill(SKILL_MD.parent, source="community")
+    allowed, reason = should_allow_install(result)
+    assert allowed, f"{reason}: {[(f.pattern_id, f.line) for f in result.findings]}"

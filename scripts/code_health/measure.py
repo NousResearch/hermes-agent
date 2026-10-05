@@ -127,7 +127,9 @@ class Measurer:
             for path, text in contents.items():
                 dest = root / path
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_text(text, encoding="utf-8")
+                # newline="": the blob's own line endings, so ruff's line numbers match the
+                # AST's (Windows text mode would turn a CRLF blob into CR CR LF).
+                dest.write_text(text, encoding="utf-8", newline="")
             return self._measure_in(root, contents)
 
     def _measure_in(self, root: Path, contents: dict[str, str]) -> dict[str, FileMeasure]:

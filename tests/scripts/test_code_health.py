@@ -9,8 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from scripts.code_health import replay
+from scripts.code_health import gitio, replay
 from scripts.code_health.cli import run
+from scripts.code_health.compare import compare
+from scripts.code_health.measure import Measurer
+from scripts.code_health.report import apply_allows
+from scripts.code_health.ruff_runner import resolve_ruff
 
 REPO = Path(__file__).resolve().parents[2]
 _LEGACY = "def legacy(x):\n" + "".join(f"    if x == {i}:\n        return {i}\n" for i in range(21))
@@ -202,3 +206,34 @@ def test_replay_reports_unmeasured_prs_and_fails(tmp_path, monkeypatch, capsys):
     assert "1 of 1 measured PRs had at least one blocking finding" in out, out
     assert "2 of 3 PRs could not be measured: #2, #3" in out, out
 
+
+# --- a blob's line endings never move a hit, its scope or its waiver ---
+
+
+def _windows_write_text(self, data, encoding=None, errors=None, newline=None):
+    """``Path.write_text`` as on Windows, where ``newline=None`` turns each "\n" into "\r\n"."""
+    if newline is None:
+        data = data.replace("\n", "\r\n")
+    with open(self, "w", encoding=encoding, errors=errors, newline="") as fh:
+        return fh.write(data)
+
+
+def test_crlf_blob_measures_like_lf(tmp_path, monkeypatch):
+    waived = _SWALLOW.replace("except Exception:", "except Exception:  # health: allow BLE001 S110 -- boundary")
+    results = {}
+    for name, eol in (("lf", "\n"), ("crlf", "\r\n")):
+        repo, base = _repo(tmp_path / name)
+        _git(repo, "config", "core.autocrlf", "false")
+        (repo / "pkg/b.py").write_bytes(waived.replace("\n", eol).encode("utf-8"))
+        head = _commit(repo, {})
+        assert (eol == "\r\n") == (b"\r\n" in subprocess.run(
+            ["git", "show", f"{head}:pkg/b.py"], cwd=repo, capture_output=True, timeout=60, check=True).stdout)
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "write_text", _windows_write_text)
+            measurer = Measurer(repo, resolve_ruff(repo), known_env=set())
+            base_m, head_m = measurer.measure(base, []), measurer.measure(head, ["pkg/b.py"])
+        findings = compare(base_m, head_m, gitio.changed_files(repo, base, head))
+        apply_allows(findings, head_m)
+        results[name] = sorted((f.rule, f.scope, f.line, f.allowed_reason) for f in findings)
+    assert results["lf"] == [("BLE001", "other", 4, "boundary"), ("S110", "other", 4, "boundary")]
+    assert results["crlf"] == results["lf"]

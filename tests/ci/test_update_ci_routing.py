@@ -360,8 +360,8 @@ def _tracked_mentions(name: str) -> list[str]:
 
 # Listed consumers that land in a named sibling PR merged BEFORE this one (the update batch
 # lands LOCK, COMMIT, WIN, DESK, SCRIPTS, POST, then this CI PR). Only these may be absent,
-# and only while the sibling is unmerged; once it lands, its files are in every tree this
-# guard sees. Empty this table when the siblings are on main: nothing else changes.
+# and only while the sibling is unmerged: an entry whose file exists fails the guard, so the
+# table empties when the siblings land and a later deletion of a consumer turns it red.
 _LANDS_IN_SIBLING_PR: dict[str, str] = {
     "apps/desktop/electron/update-marker-corpus.test.ts": "#132345 desktop update gate",
     "tests/scripts/desktop_update/test_desktop_update_posix_marker_corpus.py": "#132354 hand-off scripts",
@@ -376,6 +376,8 @@ def test_every_test_that_reads_a_shared_fixture_is_routed_by_it():
     every_listed = {c for listed in cc._SHARED_FIXTURE_CONSUMERS.values() for c in listed}
     stale = sorted(set(_LANDS_IN_SIBLING_PR) - every_listed)
     assert not stale, f"sibling-PR allowance names no listed consumer: {stale}"
+    landed = sorted(c for c in _LANDS_IN_SIBLING_PR if (_REPO / c).is_file())
+    assert not landed, f"sibling landed: delete its _LANDS_IN_SIBLING_PR allowance: {landed}"
     for fixture, listed in cc._SHARED_FIXTURE_CONSUMERS.items():
         assert (_REPO / fixture).is_file(), f"missing shared fixture: {fixture}"
         assert listed, f"{fixture}: no listed consumers"
@@ -391,6 +393,14 @@ def test_every_test_that_reads_a_shared_fixture_is_routed_by_it():
             own = cc.classify([consumer])
             lost = [lane for lane in cc._FIXTURE_CONSUMER_LANES if own[lane] and not on[lane]]
             assert not lost, f"{fixture}: editing it skips {lost}, which run {consumer}"
+
+
+def test_sibling_allowance_expires_once_its_consumer_is_in_the_tree(monkeypatch):
+    """An allowance that outlives its sibling's merge would excuse that consumer's later deletion."""
+    present = next(c for c in cc._SHARED_FIXTURE_CONSUMERS[_CORPUS] if (_REPO / c).is_file())
+    monkeypatch.setitem(_LANDS_IN_SIBLING_PR, present, "a sibling that already landed")
+    with pytest.raises(AssertionError, match="sibling landed"):
+        test_every_test_that_reads_a_shared_fixture_is_routed_by_it()
 
 
 # -- replay guard sensitivity: mutate data, not the replay implementation ------------------

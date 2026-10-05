@@ -109,9 +109,7 @@ export function ManagedUpdatesSection() {
           const updating = state?.status === 'updating'
           const label = statusLabel(state)
           const receipt = state ? receiptLine(state) : null
-          const restored = state?.scopes.filter(scope => scope.restored).map(scope => scope.profile) ?? []
-          const unrestored = state?.scopes.filter(scope => !scope.restored) ?? []
-          const details = state ? [...(state.message ? [state.message] : []), ...state.details] : []
+          const { restored, unrestored, details } = updateScopeSummary(state)
 
           return (
             <ListRow
@@ -163,4 +161,12 @@ export function ManagedUpdatesSection() {
       </div>
     </section>
   )
+}
+
+function updateScopeSummary(state: ManagedUpdateState | undefined) {
+  const restored = state?.scopes.filter(scope => scope.restored).map(scope => scope.profile) ?? []
+  const unrestored = state?.scopes.filter(scope => !scope.restored) ?? []
+  const details = state ? [...(state.message ? [state.message] : []), ...state.details] : []
+
+  return { restored, unrestored, details }
 }

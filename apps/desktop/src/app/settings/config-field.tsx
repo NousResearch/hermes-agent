@@ -9,9 +9,9 @@ import { cn } from '@/lib/utils'
 import type { ConfigFieldSchema } from '@/types/hermes'
 
 import { ComboboxInput } from './combobox-input'
-import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, FREE_INPUT_KEYS } from './constants'
+import { resolveConfigFieldCopy } from './config-field-copy'
+import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FREE_INPUT_KEYS } from './constants'
 import { FallbackModelsField } from './fallback-models-field'
-import { fieldCopyForSchemaKey } from './field-copy'
 import { ListRow, ToggleRow } from './primitives'
 import { SearchableSelect } from './searchable-select'
 
@@ -44,30 +44,7 @@ export function ConfigField({
   const c = t.settings.config
   const fieldId = useId()
 
-  const label =
-    fieldCopyForSchemaKey(t.settings.fieldLabels, schemaKey) ??
-    fieldCopyForSchemaKey(FIELD_LABELS, schemaKey) ??
-    prettyName(schemaKey.split('.').pop() ?? schemaKey)
-
-  const normalize = (v: string) =>
-    v
-      .toLowerCase()
-      .normalize('NFC')
-      .replace(/[^\p{L}\p{M}\p{N}]+/gu, '')
-
-  const rawDescription = (
-    fieldCopyForSchemaKey(t.settings.fieldDescriptions, schemaKey) ??
-    fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, schemaKey) ??
-    schema.description ??
-    ''
-  ).trim()
-
-  const normalizedDesc = normalize(rawDescription)
-
-  const description =
-    rawDescription && normalizedDesc !== normalize(label) && normalizedDesc !== normalize(schemaKey)
-      ? rawDescription
-      : undefined
+  const { label, description } = resolveConfigFieldCopy(t, schemaKey, schema)
 
   const descriptionNode: ReactNode = descriptionExtra ? (
     <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">

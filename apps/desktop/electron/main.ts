@@ -253,6 +253,7 @@ import {
 } from './external-terminal'
 import { f12ShortcutDecision, toF12KeyboardEventPayload } from './f12-shortcut'
 import { resolveFeatureFlags } from './feature-flags'
+import { looksBinary } from './file-preview-content'
 import {
   installFindShortcut,
   installFoundInPageForwarder,
@@ -1746,27 +1747,6 @@ const PREVIEW_LANGUAGE_BY_EXT = {
   '.yaml': 'yaml',
   '.yml': 'yaml',
   '.zsh': 'shell'
-}
-
-function looksBinary(buffer) {
-  if (!buffer.length) {
-    return false
-  }
-
-  let suspicious = 0
-
-  for (const byte of buffer) {
-    if (byte === 0) {
-      return true
-    }
-
-    // Allow common whitespace controls: tab, LF, CR.
-    if (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13) {
-      suspicious += 1
-    }
-  }
-
-  return suspicious / buffer.length > 0.12
 }
 
 function previewFileMetadata(filePath, mimeType) {

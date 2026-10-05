@@ -6,6 +6,7 @@ import { writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider
 import { startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import { buildAppEnv, createSandbox, launchDesktop, waitForAppReady } from './fixtures'
+import { stripKoreanQaOverrides } from './korean-qa-env'
 import { type ElectronApplication, expect, type Page, test } from './test'
 
 const { prepareWindowForInput } = createRequire(import.meta.url)(
@@ -53,21 +54,7 @@ test('Korean Bot and Group drafts survive collapse at every zoom, and settings h
     HERMES_DESKTOP_CWD: workspace
   })
 
-  for (const k of Object.keys(env)) {
-    if (
-      (k !== 'MOCK_API_KEY' && /TOKEN|PASSWORD|SECRET|API_KEY|PAT_|CREDENTIAL|ACCESS_KEY|PRIVATE_KEY/i.test(k)) ||
-      [
-        'HERMES_DESKTOP_DEV_SERVER',
-        'HERMES_DESKTOP_REMOTE_URL',
-        'HERMES_DESKTOP_FAKE_BOOT',
-        'ELECTRON_RUN_AS_NODE',
-        'NODE_OPTIONS'
-      ].includes(k) ||
-      k.startsWith('HERMES_DESKTOP_BOOT_FAKE')
-    ) {
-      delete env[k]
-    }
-  }
+  stripKoreanQaOverrides(env)
 
   let desktop: Awaited<ReturnType<typeof launchDesktop>> | undefined
   let win: Awaited<ReturnType<ElectronApplication['browserWindow']>> | undefined
@@ -80,6 +67,7 @@ test('Korean Bot and Group drafts survive collapse at every zoom, and settings h
     if (!win) {
       return
     }
+
     const png = await win.evaluate(async w => (await w.webContents.capturePage()).toPNG().toString('base64'))
     writeFileSync(path.join(captures, id + '.png'), Buffer.from(png, 'base64'))
   }
@@ -124,6 +112,7 @@ test('Korean Bot and Group drafts survive collapse at every zoom, and settings h
             if (actual === width) {
               break
             }
+
             await win.evaluate(
               (w, delta) => {
                 const [x, y] = w.getContentSize()
@@ -149,6 +138,7 @@ test('Korean Bot and Group drafts survive collapse at every zoom, and settings h
         // Close: those would hide whether the key reached the topmost dialog.
         const escape = await page.evaluateHandle(() => {
           const active = document.activeElement
+
           const evidence = {
             documentFocused: document.hasFocus(),
             activeTag: active?.tagName ?? null,
@@ -156,6 +146,7 @@ test('Korean Bot and Group drafts survive collapse at every zoom, and settings h
             focusInDialog: Boolean(active?.closest('[role="dialog"]')),
             key: null as null | { key: string; composing: boolean; trusted: boolean; prevented: boolean }
           }
+
           document.addEventListener(
             'keydown',
             event => {
@@ -166,14 +157,17 @@ test('Korean Bot and Group drafts survive collapse at every zoom, and settings h
                 prevented: event.defaultPrevented
               }
               queueMicrotask(() => {
-                if (evidence.key) evidence.key.prevented = event.defaultPrevented
+                if (evidence.key) {evidence.key.prevented = event.defaultPrevented}
               })
             },
             { capture: true, once: true }
           )
+
           return evidence
         })
+
         const native = await win.evaluate(w => ({ focused: w.isFocused(), zoom: w.webContents.getZoomFactor() }))
+
         try {
           await page.keyboard.press('Escape')
           await expect(dialog).toHaveCount(0)
@@ -218,6 +212,7 @@ test('Korean Bot and Group drafts survive collapse at every zoom, and settings h
     if (win) {
       await snap('failure').catch(() => {})
     }
+
     throw e
   } finally {
     save()
@@ -225,6 +220,7 @@ test('Korean Bot and Group drafts survive collapse at every zoom, and settings h
     if (desktop) {
       await desktop.app.close().catch(() => {})
     }
+
     await mock.close()
     sandbox.cleanup()
   }

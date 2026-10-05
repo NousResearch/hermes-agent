@@ -714,7 +714,11 @@ def _handle_complete(args: dict, **kw) -> str:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
                 created_cards=created_cards, expected_run_id=_worker_run_id(tid),
-                off_board=True if _parse_bool_arg(args, "off_board") else None)
+                off_board=True if _parse_bool_arg(args, "off_board") else None,
+                # Tool surface attests the served model directly; it has no launch
+                # step to record an origin. An ORIGIN-bearing run is still forced
+                # through the off-board gate regardless of the flag.
+                require_recorded_origin=False)
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the

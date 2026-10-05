@@ -921,10 +921,16 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
                                         expected_run_id=_worker_run_id_for(tid),
                                         force=bool(getattr(args, "force", False)),
-                                        off_board=True if getattr(args, "off_board", False) else None)
+                                        off_board=True if getattr(args, "off_board", False) else None,
+                                        # CLI operator surface: no launch step to record the
+                                        # origin, and the served model is attested directly.
+                                        require_recorded_origin=False)
             except kb.OffBoardServedModelError as ob_err:
                 fail_msg[tid] = (f"cannot complete {tid}: {ob_err}. Re-run with "
                                  f"--metadata '{{\"served_model\": \"<model>\"}}'.")
+                return False
+            except kb.OffBoardOriginError as ob_origin_err:
+                fail_msg[tid] = (f"cannot complete {tid}: {ob_origin_err}.")
                 return False
             except kb.LiveClaimError:
                 fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "

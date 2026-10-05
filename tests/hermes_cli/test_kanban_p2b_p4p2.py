@@ -318,7 +318,7 @@ class TestP4P2OffBoardServedModel:
         assert run_id is not None
         ok = kb.complete_task(
             conn, tid, result="r", metadata={"served_model": "glm-5.3-flash"},
-            off_board=True,
+            off_board=True, require_recorded_origin=False,
         )
         assert ok is True
         assert _status(conn, tid) == "done"
@@ -396,7 +396,7 @@ class TestP4P2OnBoardUnchanged:
         tid = kb.create_task(conn, title="offboard unclaimed", assignee="coder")
         ok = kb.complete_task(
             conn, tid, result="r", metadata={"served_model": "qwen-max"},
-            off_board=True,
+            off_board=True, require_recorded_origin=False,
         )
         assert ok is True
         run_row = conn.execute(
@@ -426,7 +426,7 @@ class TestP4P2OnBoardUnchanged:
         tid = _claimed_task(conn)
         ok = kb.complete_task(
             conn, tid, result="r", metadata={"served_model": "glm-5.3-flash"},
-            off_board=True,
+            off_board=True, require_recorded_origin=False,
         )
         assert ok is True
         row = conn.execute(

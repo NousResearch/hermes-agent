@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from pathlib import Path
 from hermes_cli.doctor_report import (
     Finding, _fail_and_issue, _section, check_bool, check_info, check_ok, check_warn, doctor_check, ensure_dir,
@@ -285,6 +286,12 @@ def _session_count(state_db_path: Path):
 
 # Above this the snapshot copy a held store needs costs more than the probe is worth; --fix still probes.
 _WRITE_PROBE_SNAPSHOT_MAX_BYTES = 1 << 30
+_WRITE_PROBE_SNAPSHOT_MAX_SECONDS = 30
+_WRITE_PROBE_SNAPSHOT_PAGES = 256
+
+
+class StateSnapshotBusy(Exception):
+    """The live store changed too often to make a bounded health snapshot."""
 
 
 def _write_health_reason(state_db_path: Path, *, should_fix: bool):
@@ -306,7 +313,15 @@ def _write_health_reason(state_db_path: Path, *, should_fix: bool):
         try:
             dest = sqlite3.connect(str(snapshot))
             try:
-                src.backup(dest)
+                started = time.monotonic()
+
+                def bounded_progress(_status, _remaining, _total):
+                    if time.monotonic() - started >= _WRITE_PROBE_SNAPSHOT_MAX_SECONDS:
+                        raise StateSnapshotBusy("live writes prevented a timely state.db snapshot")
+
+                # SQLite restarts backup when the source changes; without a progress callback an
+                # active gateway can keep this diagnostic blocked indefinitely.
+                src.backup(dest, pages=_WRITE_PROBE_SNAPSHOT_PAGES, progress=bounded_progress)
             finally:
                 dest.close()
         finally:
@@ -390,6 +405,11 @@ def _state_db_health(f: Finding, should_fix: bool, state_db_path: Path, _DHH: st
         check_ok(f"{_DHH}/state.db exists ({_session_count(state_db_path)} sessions)")
         # COUNT(*) succeeds even when the FTS index is corrupt and every write fails through the triggers.
         _write_reason = _write_health_reason(state_db_path, should_fix=should_fix)
+    except StateSnapshotBusy as e:
+        check_warn(f"{_DHH}/state.db write-health probe inconclusive", f"({e})")
+        f.issues.append("state.db write-health probe could not finish while the gateway was active; "
+                        "retry in a quiet window (do not run --fix against the live store)")
+        return
     except Exception as e:
         return _classify_unreadable_state_db(f, should_fix, state_db_path, _DHH, e)
     if _write_reason is not None:

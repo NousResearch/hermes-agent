@@ -95,6 +95,9 @@ _GENERATION_TRANSITIONS = {
     "defer": (
         "indeterminate", "status='deferred', result_json=?, terminal_at=?, updated_at=?", _INDETERMINATE_STALE,
         "indeterminate task changed during deferral"),
+    "reopen_deferred": (
+        "deferred", "status='indeterminate', result_json=NULL, terminal_at=NULL, indeterminate_at=?, updated_at=?",
+        "deferred task generation changed", "deferred task changed during reopen"),
     "requeue_deferred": (
         "deferred",
         f"{_REQUEUE_SET}, result_json=NULL, started_at=NULL, terminal_at=NULL, indeterminate_at=NULL, updated_at=?",
@@ -725,6 +728,17 @@ def requeue_deferred_task(
     return _generation_transition(
         db_path, identity, lease, "requeue_deferred", expected_execution_generation, expected_cancel_generation,
         now=now, set_params=(now,))
+
+
+def reopen_deferred_task(
+    db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
+    expected_cancel_generation: int, clock: Clock) -> dict[str, Any]:
+    """Return a deferred turn to indeterminate at its same generation (its peer still owns that generation)."""
+    _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
+    now = _timestamp(clock)
+    return _generation_transition(
+        db_path, identity, lease, "reopen_deferred", expected_execution_generation, expected_cancel_generation,
+        now=now, set_params=(now, now))
 
 
 def requeue_not_admitted_task(db_path: DbPath, attempt: TaskAttempt, *, clock: Clock) -> dict[str, Any]:

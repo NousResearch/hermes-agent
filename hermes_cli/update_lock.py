@@ -34,6 +34,7 @@ import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
+from stat import S_ISREG
 
 logger = logging.getLogger(__name__)
 
@@ -1029,7 +1030,8 @@ def _open_lock_file(path: Path) -> tuple[int | None, object]:
     """``(fd, True)`` read-write; ``(fd, False)`` read-only for an existing lock file we may not
     write (left root-owned by a ``sudo hermes update``: the kernel lock works on a read-only fd,
     contract A5); ``(None, reason)`` when neither opens."""
-    binary = getattr(os, "O_BINARY", 0)
+    # Never follow a link planted at the name: the holder record is written into this file.
+    binary = getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         return os.open(path, os.O_RDWR | os.O_CREAT | binary, 0o644), True
     except PermissionError as exc:
@@ -1056,6 +1058,12 @@ def _acquire_checkout(install_root: Path) -> UpdateHolder | None:
     fd, writable = _open_lock_file(path)
     if fd is None:
         return UpdateHolder(pid=0, age_seconds=0.0, reason=f"{path} is not writable ({writable})")
+    found = os.fstat(fd)
+    if not S_ISREG(found.st_mode) or found.st_nlink != 1:
+        # A hard link (or special file) at the name: truncating it would rewrite data outside
+        # the install. Refuse; never unlink/recreate it (waiters need one stable inode).
+        os.close(fd)
+        return UpdateHolder(pid=0, age_seconds=0.0, reason=f"{path} is not a regular single-link file; delete it")
     try:
         if not _lock_with_contention_wait(fd, path):
             if _held_by_our_windows_ancestor(path):

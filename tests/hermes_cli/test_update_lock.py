@@ -865,3 +865,19 @@ def test_unwritable_lock_file_still_locks_the_checkout(tmp_path):
     )
     first.release()
     assert second.returncode == 3, "a second update ran while the read-only-locked checkout was held"
+
+
+@pytest.mark.parametrize("link", [pytest.param("symlink", marks=pytest.mark.platforms("posix")), "link"])
+def test_checkout_lock_never_writes_through_a_link_to_a_file_outside_the_install(tmp_path, link):
+    """The holder record is written into the lock file itself: a symlink or hard link planted at
+    its name is refused, never followed into truncating the file it points at."""
+    root = tmp_path / "install"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"PRECIOUS USER DATA")
+    getattr(os, link)(outside, checkout_lock_path(root))
+
+    lock = UpdateLock(path=tmp_path / "home" / ".hermes-update-in-progress", install_root=root)
+    assert lock.acquire() is False
+    assert lock.holder is not None and lock.holder.reason
+    assert outside.read_bytes() == b"PRECIOUS USER DATA"

@@ -31,7 +31,7 @@ sleep() {{ :; }}
 git() {{
     if [ "$1" = clone ]; then
         printf '%s\\n' "$*" >> {shlex.quote(attempts.as_posix())}
-        case " $* " in *" --filter=tree:0 --no-checkout "*) ;; *) return 1 ;; esac
+        case " $* " in *" --filter=blob:none --no-checkout "*) ;; *) return 1 ;; esac
     fi
     if [ "{int(materialize_fails)}" = 1 ] && [ "${{3:-}}" = reset ]; then return 1; fi
     command git "$@"

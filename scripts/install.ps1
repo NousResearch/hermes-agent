@@ -330,6 +330,22 @@ function Initialize-ResolvedPaths {
     } else {
         Join-Path $resolvedHome 'hermes-agent'
     }
+    # A HermesHome equal to or inside InstallDir puts the pm tool store
+    # (<home>\tools) inside the checkout: the repository stage's
+    # occupied-directory preflight then refuses every retry after the first
+    # run populated it, and `git stash --include-untracked` would sweep the
+    # toolchain into the stash. Refuse before anything downloads (#124526)
+    # unless HERMES_RUNTIME_DIR parks the store outside the checkout.
+    # The store lands in HERMES_RUNTIME_DIR when set (Get-PmStoreRoot), else under HermesHome.
+    $cmpStore = if ($env:HERMES_RUNTIME_DIR) { "$env:HERMES_RUNTIME_DIR" } else { "$resolvedHome" }
+    $cmpStore = $cmpStore.TrimEnd('\', '/')
+    $cmpDir = "$resolvedDir".TrimEnd('\', '/')
+    $dirPrefix = $cmpDir + [IO.Path]::DirectorySeparatorChar
+    $storeInside = $cmpStore -eq $cmpDir -or
+        $cmpStore.StartsWith($dirPrefix, [StringComparison]::OrdinalIgnoreCase)
+    if ($storeInside) {
+        Fail "HermesHome ($resolvedHome) cannot be the install directory or live inside it ($resolvedDir): the tool store would land inside the checkout. Use a separate -HermesHome, or point HERMES_RUNTIME_DIR outside -InstallDir."
+    }
     # The param() variables live in the CALLER's scope, which is the script
     # scope only under -File. Under the documented
     # `& ([scriptblock]::Create((irm ...)))` install they live in the
@@ -614,9 +630,22 @@ function Write-Banner {
 # Native calls run through here; the exit code stays in $LASTEXITCODE for the
 # caller to judge. (The relaxed preference lives in this function's scope and
 # reaches only the block invoked from it.)
-function Invoke-Native([scriptblock]$Command) {
+function Invoke-Native([scriptblock]$Command, [switch]$Utf8Output) {
     $ErrorActionPreference = 'Continue'
-    & $Command
+    if (-not $Utf8Output) { & $Command; return }
+
+    # Windows PowerShell 5.1 decodes captured native stdout using the console
+    # code page. uv prints UTF-8 even when that code page is CP936/CP437.
+    # Scope the decoder to UTF-8 producers; other tools and an iex caller
+    # must retain their original encoding. $OutputEncoding controls stdin,
+    # so changing it would not repair paths returned by `uv python find`.
+    $previousNativeOutputEncoding = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+        & $Command
+    } finally {
+        [Console]::OutputEncoding = $previousNativeOutputEncoding
+    }
 }
 
 # Interactive runs collapse child-process output (git, uv, pm, the builds)
@@ -873,13 +902,14 @@ function Stage-Repository {
         try {
             $cloned = $false
             foreach ($attempt in 1..3) {
-                # Treeless: every commit and release tag (runtime identity is the
-                # nearest reachable release; -Commit pins and branch switches
-                # still resolve), trees and blobs fetched on demand, so the
-                # download stays close to a --depth 1 clone.
+                # Blobless: every commit, tree and release tag (runtime identity is
+                # the nearest reachable release; -Commit pins and branch switches
+                # still resolve), file contents fetched on demand. Not treeless:
+                # a long-lived treeless checkout re-downloads whole trees on every
+                # checkout and history walk (#129712).
                 $cloneLabel = "Cloning $RepoUrl ($Branch) into $InstallDir"
                 if ($attempt -gt 1) { $cloneLabel += " (attempt $attempt of 3)" }
-                Invoke-Logged $cloneLabel { git clone @progress --filter=tree:0 --branch $Branch $RepoUrl $tree }
+                Invoke-Logged $cloneLabel { git clone @progress --filter=blob:none --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) { $cloned = $true; break }
                 Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue
                 if ($attempt -lt 3) { Start-Sleep -Seconds ($attempt * 5) }
@@ -888,7 +918,7 @@ function Stage-Repository {
                 # The checkout step is where throttled downloads die: clone the
                 # graph alone, then retry materializing the tree separately.
                 Write-Warn "direct clone failed; trying deferred checkout"
-                Invoke-Logged "Cloning history" { git clone @progress --filter=tree:0 --no-checkout --branch $Branch $RepoUrl $tree }
+                Invoke-Logged "Cloning history" { git clone @progress --filter=blob:none --no-checkout --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) {
                     foreach ($attempt in 1..2) {
                         Invoke-Logged "Checking out files (attempt $attempt of 2)" { git -C $tree reset --hard HEAD }
@@ -941,11 +971,11 @@ function Get-BootstrapPython {
     # A bare version lets uv pick emulated x86_64 on Windows-on-ARM.
     $pyArch = if ((Get-WindowsArch) -eq 'arm64') { 'aarch64' } else { 'x86_64' }
     $pyRequest = "cpython-$pyVersion-windows-$pyArch-none"
-    $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest 2>$null }) -join "`n"
+    $bootPy = (Invoke-Native -Utf8Output { & $uv python find --managed-python --no-project $pyRequest 2>$null }) -join "`n"
     if ($LASTEXITCODE -or -not $bootPy) {
         Invoke-Logged "Downloading Python $pyVersion" { & $uv python install --no-bin --no-registry $pyRequest }
         if ($LASTEXITCODE) { Fail "bootstrap Python installation failed" }
-        $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest }) -join "`n"
+        $bootPy = (Invoke-Native -Utf8Output { & $uv python find --managed-python --no-project $pyRequest }) -join "`n"
     }
     if ($LASTEXITCODE -or -not $bootPy) { Fail "bootstrap Python lookup failed" }
     $script:BootstrapPython = $bootPy.Trim()

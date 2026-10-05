@@ -1161,7 +1161,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Reply threading mode: "off", "first" (default; first chunk only), "all" (every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
-        self._processing_emoji: str = self.config.extra.get("processing_emoji", "👀")
+        processing_emoji = self.config.extra.get("processing_emoji")
+        self._processing_emoji: str = (
+            processing_emoji.strip()
+            if isinstance(processing_emoji, str) and processing_emoji.strip()
+            else "👀"
+        )
         # Bot's last message ID per channel: lets history backfill skip the full channel.history() scan.
         self._last_self_message_id: Dict[str, str] = {}
         # Bot-authored lifecycle/status message IDs that must not bound history after restart.

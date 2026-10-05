@@ -926,8 +926,10 @@ def describe_holder(holder: UpdateHolder | None) -> str:
         return (
             f"✗ Cannot lock this install for the update: {holder.reason}.\n"
             "\n"
-            "  Updating without the lock could let two updates corrupt the install.\n"
-            "  Run `hermes update` as the user that owns the install."
+            "  Updating without the lock could let two updates corrupt the install, or run\n"
+            "  under a Desktop app, gateway or installer that cannot see it. Make that path\n"
+            "  writable (fix its owner or permissions, or remount a read-only filesystem\n"
+            "  read-write), or run `hermes update` as the user that owns the install."
         )
     minutes, seconds = divmod(int(max(0 if holder is None else holder.age_seconds, 0)), 60)
     elapsed = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
@@ -1074,7 +1076,8 @@ def _acquire_checkout(install_root: Path) -> UpdateHolder | None:
         return None
     fd, writable = _open_lock_file(path)
     if fd is None:
-        return UpdateHolder(pid=0, age_seconds=0.0, reason=f"{path} is not writable ({writable})")
+        return UpdateHolder(pid=0, age_seconds=0.0, reason=f"{path} is not writable ({writable}); the update "
+                            "locks the checkout there, in its git directory, which git must write too")
     found = os.fstat(fd)
     if not S_ISREG(found.st_mode) or found.st_nlink != 1:
         # A hard link (or special file) at the name: truncating it would rewrite data outside
@@ -1361,6 +1364,12 @@ def _publish_exclusive(path: Path, body: bytes) -> bool:
     return True
 
 
+def _marker_unwritable(path: Path, exc: OSError) -> str:
+    """Why an unwritable marker location refuses the update, not just that it is unwritable."""
+    return (f"{path} is not writable ({exc}); the update records itself there so the Desktop app, "
+            "gateways, installers and other updaters wait for it")
+
+
 # Per-process claim depth for each marker path: nested UpdateLocks (an update's completion run
 # in-process, venv_sync finishing a tail) share one claim, released by the outermost.
 _CLAIMS: dict[str, int] = {}
@@ -1426,7 +1435,7 @@ class UpdateLock:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            self.holder = UpdateHolder(pid=0, age_seconds=0.0, reason=f"{self.path.parent} is not writable ({exc})")
+            self.holder = UpdateHolder(pid=0, age_seconds=0.0, reason=_marker_unwritable(self.path.parent, exc))
             return False
         _sweep_dead_tmp_siblings(self.path)
         if _CLAIMS.get(str(self.path)) is None:
@@ -1466,7 +1475,7 @@ class UpdateLock:
             self.holder = UpdateHolder(pid=0, age_seconds=0.0)
             return False
         except OSError as exc:
-            self.holder = UpdateHolder(pid=0, age_seconds=0.0, reason=f"{self.path} is not writable ({exc})")
+            self.holder = UpdateHolder(pid=0, age_seconds=0.0, reason=_marker_unwritable(self.path, exc))
             return False
         self.holder = read_live_update(path=self.path, install_root=self.install_root) \
             or UpdateHolder(pid=0, age_seconds=0.0)

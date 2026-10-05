@@ -15,7 +15,7 @@ from typing import Optional
 
 from pm import paths
 from pm.downloader import DownloadPaused, ProgressFn
-from pm.filesystem import remove_tree
+from pm.filesystem import is_junction, remove_tree
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.plugin_inputs import Candidates, Members, PluginInput, Selection, StagedUpdate
@@ -223,13 +223,20 @@ def _remove_entry(store: Store, entry_name: str, *, attempts: int = 5) -> None:
 
     Corruption may leave a file where the directory belonged. Failure
     must propagate so recovery never claims to have removed surviving bytes.
+
+    A junction takes the unlink branch. ``is_symlink()`` is False for one, but
+    ``remove_tree`` (like the ``shutil.rmtree`` it wraps) refuses it with
+    "Cannot call rmtree on a symbolic link", and PM does publish junction
+    entries -- a bundled tool linked to a host install is exactly the shape
+    ``_copy_links`` permits -- so omitting it here aborts the very update that
+    is trying to retire the entry.
     """
     import time
 
     entry = store.entry(entry_name)
     for attempt in range(attempts):
         try:
-            if entry.is_symlink() or not entry.is_dir():
+            if entry.is_symlink() or is_junction(entry) or not entry.is_dir():
                 entry.unlink(missing_ok=True)
             else:
                 remove_tree(entry)

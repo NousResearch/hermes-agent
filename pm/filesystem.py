@@ -19,8 +19,19 @@ _LOCK_POLL_SECONDS = 0.05
 
 
 def is_junction(path: Path) -> bool:
-    """Keep junctions opaque even before Python 3.12's Path.is_junction exists."""
-    return os.name == "nt" and path.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    """Keep junctions opaque even before Python 3.12's Path.is_junction exists.
+
+    Total: a path that is not there -- or cannot be stat'ed -- is simply not a junction.
+    ``lstat`` raises ``FileNotFoundError`` for a missing entry, and the removal paths that
+    consult this run *after* the entry may already be gone, so an existence check at every
+    call site would be the same predicate written twice.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        return path.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    except OSError:
+        return False
 
 
 def lock_fd(fd: int, *, wait: bool, timeout: float | None = None) -> bool:

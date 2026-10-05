@@ -48,9 +48,10 @@ DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT = 5.0
 # ``restart_drain_timeout``, the force-interrupt budget once ``stop()`` runs (short under TimeoutStopSec).
 DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT = float(DEFAULT_CONFIG["agent"]["restart_after_turn_timeout"])
 
-# Cron-only floor under the ``stop()`` drain. ``restart_drain_timeout`` defaults to 0 because
-# interrupting a *chat* turn is cheap and recoverable (user told, session resume_pending); an
-# interrupted *cron* run is a permanent failure in jobs.json — a 0s drain silently destroys work.
+# Floor under the ``stop()`` drain for cron jobs and api_server (/v1) runs. ``restart_drain_timeout``
+# defaults to 0 because interrupting a *chat* turn is cheap and recoverable (user told, session
+# resume_pending); an interrupted *cron* run is a permanent failure in jobs.json and an interrupted
+# /v1 run fails its waiting caller — a 0s drain silently destroys work.
 DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT = float(DEFAULT_CONFIG["agent"]["cron_drain_timeout"])
 # Watchdog leash held back for post-drain work (interrupt agents, kill subprocesses, mark jobs,
 # disconnect adapters). Waiting for cron past that trades a job killed *and recorded* for one
@@ -307,9 +308,9 @@ def parse_restart_after_turn_timeout(raw: object) -> float:
 
 
 def parse_cron_drain_timeout(raw: object) -> float:
-    """Parse the cron-only drain floor (``0`` = opt out; cron interrupted on the chat budget).
+    """Parse the cron/api_server drain floor (``0`` = opt out; both interrupted on the chat budget).
 
-    ``0`` is a deliberate opt-out — cron work is then interrupted on the same budget as chat work, the
+    ``0`` is a deliberate opt-out — cron and api_server (/v1) work is then interrupted on the same budget as chat work, the
     pre-#82161 behaviour — and must not fall through to the default, unlike empty/missing input.
     """
     return _parse_timeout_keeping_zero(raw, DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT)

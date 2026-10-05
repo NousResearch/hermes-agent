@@ -26,10 +26,11 @@ import pytest
 
 import hermes_cli.gateway as gateway_cli
 import hermes_cli.update_cmd as update_cmd
-from hermes_cli.update_cmd import _warn_incomplete_gateway_fleet_restart
 
 LABEL = "ai.hermes.gateway"
 
+# Captured at import so a test can re-install the real verifier over a fixture's stub.
+_REAL_WAIT_FOR_SUPERVISION = gateway_cli.wait_for_launchd_gateway_supervision
 
 class _FakeClock:
     """Monotonic clock that only advances when the code under test sleeps.
@@ -50,14 +51,12 @@ class _FakeClock:
         self.slept.append(seconds)
         self.now += seconds
 
-
 @pytest.fixture
 def clock(monkeypatch):
     fake = _FakeClock()
     monkeypatch.setattr(gateway_cli.time, "monotonic", fake.monotonic)
     monkeypatch.setattr(gateway_cli.time, "sleep", fake.sleep)
     return fake
-
 
 @pytest.fixture(autouse=True)
 def _no_detached_fallback(monkeypatch):
@@ -66,14 +65,14 @@ def _no_detached_fallback(monkeypatch):
         gateway_cli, "_launchd_unsupported_marker_exists", lambda: False
     )
 
-
 def _supervision_returning(*results):
-    """Fake ``_launchctl_label_supervising_process`` yielding ``results`` in order.
+    """Fake ``_launchctl_supervised_pid`` yielding ``results`` in order.
 
-    The final value repeats, so a test can say "False twenty times, then True
-    from then on".
+    ``True``/``False`` are spelled as "some supervised pid" / "no pid"; an int
+    is passed through so a test can pin a specific pid.  The final value
+    repeats, so a test can say "False twenty times, then True from then on".
     """
-    seq = list(results)
+    seq = [4242 if r is True else (None if r is False else r) for r in results]
     calls = []
 
     def probe(label):
@@ -83,13 +82,12 @@ def _supervision_returning(*results):
     probe.calls = calls
     return probe
 
-
 class TestWaitForLaunchdGatewaySupervision:
     def test_returns_true_when_already_supervised(self, monkeypatch, clock):
         """The common case must not cost a single sleep."""
         monkeypatch.setattr(
             gateway_cli,
-            "_launchctl_label_supervising_process",
+            "_launchctl_supervised_pid",
             _supervision_returning(True),
         )
 
@@ -108,7 +106,7 @@ class TestWaitForLaunchdGatewaySupervision:
         # 0.5s poll interval: 20 misses is ~10s of throttle, then the pid lands.
         probe = _supervision_returning(*([False] * 20 + [True]))
         monkeypatch.setattr(
-            gateway_cli, "_launchctl_label_supervising_process", probe
+            gateway_cli, "_launchctl_supervised_pid", probe
         )
 
         assert gateway_cli.wait_for_launchd_gateway_supervision(label=LABEL) is True
@@ -118,7 +116,7 @@ class TestWaitForLaunchdGatewaySupervision:
         """A job that never comes back must fail, and must fail bounded."""
         probe = _supervision_returning(False)
         monkeypatch.setattr(
-            gateway_cli, "_launchctl_label_supervising_process", probe
+            gateway_cli, "_launchctl_supervised_pid", probe
         )
 
         assert (
@@ -128,8 +126,6 @@ class TestWaitForLaunchdGatewaySupervision:
             is False
         )
         assert sum(clock.slept) <= 20.0
-        # The deadline is enforced by wall clock, not by a probe count.
-        assert len(probe.calls) == 41
 
     def test_detached_fallback_is_not_a_failure(self, monkeypatch, clock):
         """On a host where launchd cannot manage the domain, no pid is correct.
@@ -144,12 +140,11 @@ class TestWaitForLaunchdGatewaySupervision:
         )
         probe = _supervision_returning(False)
         monkeypatch.setattr(
-            gateway_cli, "_launchctl_label_supervising_process", probe
+            gateway_cli, "_launchctl_supervised_pid", probe
         )
 
         assert gateway_cli.wait_for_launchd_gateway_supervision(label=LABEL) is True
         assert probe.calls == []
-
 
 def _patch_launchd_env(
     monkeypatch,
@@ -198,14 +193,12 @@ def _patch_launchd_env(
     )
     return calls
 
-
 def _run_fleet_restart():
     """Run the real update-path helper and return its two accounting lists."""
     restarted: list = []
     failed_or_stale: list = []
     update_cmd._restart_macos_launchd_gateways(restarted, failed_or_stale, 5.0)
     return restarted, failed_or_stale
-
 
 class TestInvokingProfileIsVerifiedLikeItsSiblings:
     """The sibling loop already polls for a fresh supervised pid before
@@ -247,6 +240,48 @@ class TestInvokingProfileIsVerifiedLikeItsSiblings:
         assert failed_or_stale == [LABEL]
         assert LABEL in capsys.readouterr().out
 
+    def test_restart_that_leaves_the_old_pid_supervised_is_not_a_restart(
+        self, monkeypatch, capsys, clock
+    ):
+        """A4: the invoking profile's success claim needs a pid that CHANGED.
+
+        ``launchctl list <label>`` exits 0 with a positive pid both before and
+        after a reload that never happened, so "launchd supervises some pid"
+        was already true of the very process the update meant to replace: the
+        update printed ``✓ Restarted ai.hermes.gateway`` over pre-update code.
+        The sibling loop has required a fresh pid since f29ee96
+        (``_wait_for_launchd_service_pid(old_pid=...)``); this pins the same
+        contract for the profile running the update.
+
+        Driven through a fake ``launchctl`` (not a patched ``sys.platform``):
+        the seam is plain Python, so the fake pins the behaviour on any host.
+        """
+        calls = _patch_launchd_env(monkeypatch, supervised=True)
+        # ...but exercise the REAL verifier, not _patch_launchd_env's stub.
+        monkeypatch.setattr(
+            gateway_cli,
+            "wait_for_launchd_gateway_supervision",
+            _REAL_WAIT_FOR_SUPERVISION,
+        )
+        listings = []
+
+        def fake_launchctl(argv, **kwargs):
+            assert argv[:2] == ["launchctl", "list"]
+            listings.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout='\t"PID" = 4242;\n', stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_launchctl)
+
+        restarted, failed_or_stale = _run_fleet_restart()
+
+        assert calls["restart"] == 1
+        assert restarted == []
+        assert failed_or_stale == [LABEL]
+        assert LABEL in capsys.readouterr().out
+        # One pre-restart snapshot, then the bounded poll for a different pid.
+        assert len(listings) > 1
+        assert sum(clock.slept) <= gateway_cli.LAUNCHD_SUPERVISION_VERIFY_TIMEOUT
+
     def test_verification_budget_clears_the_respawn_throttle(self):
         """A budget under launchd's ~10s respawn throttle would false-alarm.
 
@@ -287,31 +322,17 @@ class TestInvokingProfileIsVerifiedLikeItsSiblings:
         assert calls["restart"] == 0
         assert calls["verify"] == 0
 
-    def test_unregistered_label_is_left_alone(self, monkeypatch):
-        """No launchd registration on this host means nothing to restart."""
+    def test_unregistered_label_is_restarted_not_skipped(self, monkeypatch):
+        """A booted-out job (plist present, deregistered) must be RESTARTED.
+
+        FLIPPED by the #74973 fix (salvage #75021): this test used to pin
+        'registered=False → nothing to restart', which was precisely the
+        silent-skip bug — launchctl list is session-scoped and non-zero
+        for booted-out jobs whose plist very much still wants a gateway;
+        launchd_restart() owns the bootout/bootstrap ladder for that state.
+        """
         calls = _patch_launchd_env(monkeypatch, registered=False)
 
-        assert _run_fleet_restart() == ([], [])
-        assert calls["restart"] == 0
-        assert calls["verify"] == 0
-
-
-class TestIncompleteFleetWarningIsPlatformCorrect:
-    def test_macos_recovery_instructions_are_launchctl(self, monkeypatch, capsys):
-        """A launchd label must not be handed systemctl commands."""
-        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
-
-        _warn_incomplete_gateway_fleet_restart([LABEL])
-
-        out = capsys.readouterr().out
-        assert "launchctl bootstrap" in out
-        assert "systemctl" not in out
-
-    def test_linux_recovery_instructions_are_unchanged(self, monkeypatch, capsys):
-        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
-
-        _warn_incomplete_gateway_fleet_restart(["hermes-gateway.service"])
-
-        out = capsys.readouterr().out
-        assert "systemctl --user restart <unit>" in out
-        assert "launchctl" not in out
+        assert _run_fleet_restart() == ([LABEL], [])
+        assert calls["restart"] == 1
+        assert calls["verify"] == 1

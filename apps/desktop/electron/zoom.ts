@@ -4,9 +4,6 @@
  * through this one clamped scale. Percent is the user-facing unit (100 = the
  * Chromium actual-size baseline); Chromium's internal unit is the zoom level,
  * where factor = 1.2 ^ level.
- *
- * Our shipped default is the Appearance 90% preset — tight enough to feel
- * denser than Chromium 100%, and selected in the UI Scale control on first run.
  */
 
 export const ZOOM_STORAGE_KEY = 'hermes:desktop:zoomLevel'
@@ -18,7 +15,6 @@ const MAX_ZOOM_LEVEL = 9
 /** Half Chromium's default step; matching the shortcuts and View menu. */
 export const ZOOM_STEP = 0.1
 
-/** Appearance 90% preset. Fresh installs + Actual Size / Ctrl+0. */
 export const DEFAULT_ZOOM_LEVEL = Math.log(0.9) / Math.log(ZOOM_FACTOR_BASE)
 
 export function clampZoomLevel(value) {
@@ -78,9 +74,15 @@ export const ZOOM_REASSERT_SETTLE_DELAY_MS = 300
 export const ZOOM_REASSERT_MAX_SETTLE_CHECKS = 3
 
 export function zoomReassertWindowEvents(platform = process.platform) {
-  return platform === 'linux'
-    ? ['show', 'restore', 'focus', 'resize', 'move']
-    : ['show', 'restore', 'focus', 'resized', 'moved']
+  if (platform === 'linux') {
+    return ['show', 'restore', 'focus', 'resize', 'move']
+  }
+
+  if (platform === 'win32') {
+    return ['show', 'restore', 'focus', 'maximize', 'unmaximize', 'resized', 'moved']
+  }
+
+  return ['show', 'restore', 'focus', 'resized', 'moved']
 }
 
 // Linux/Wayland fires `focus` on intra-app focus shifts (sidebar clicks,
@@ -152,6 +154,45 @@ export function installZoomReassertOnWindowEvents(win, reassert, platform = proc
       }, ZOOM_RESIZE_REASSERT_DELAY_MS)
     })
   }
+}
+
+/**
+ * Chromium persists zoom PER URL, and a hash route is a distinct URL. Desktop
+ * is a HashRouter over one `file://index.html`, so every session/settings route
+ * carries its own `partition.per_host_zoom_levels` record, and an in-page
+ * navigation applies the target route's record over whatever the window is
+ * showing. A route the user never zoomed on has no record at all, so it
+ * resolves to the host default — level 0, i.e. 100%.
+ *
+ * In-page navigation fires neither `did-finish-load` nor any window event, so
+ * nothing re-asserted the persisted level: opening a fresh session dropped the
+ * window to 100% while the Appearance control kept reading the chosen scale (it
+ * only learns of changes through `hermes:zoom:changed`, which never fired —
+ * which is why touching the setting appeared to fix it). #48658, #38854, #79863.
+ *
+ * Verified on real Electron 40.10.2 / Chromium 144 (win32): at
+ * `did-navigate-in-page` the frame already reports the target route's level, so
+ * restorePersistedZoomLevel's drift-guard sees the drop and re-applies — and
+ * still no-ops when the route's record already matches. Subframe hash changes
+ * must not touch the chat window's UI scale.
+ */
+export function installZoomReassertOnNavigation(webContents, reassert) {
+  if (!webContents?.on) {
+    return
+  }
+
+  const reassertIfAlive = () => {
+    if (!webContents.isDestroyed?.()) {
+      reassert()
+    }
+  }
+
+  webContents.on('did-finish-load', reassertIfAlive)
+  webContents.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
+    if (isMainFrame) {
+      reassertIfAlive()
+    }
+  })
 }
 
 /**

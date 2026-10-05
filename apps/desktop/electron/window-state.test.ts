@@ -13,11 +13,9 @@ import {
   bindGeometryPersistence,
   computeWindowOptions,
   debounce,
-  DEFAULT_HEIGHT,
-  DEFAULT_WIDTH,
+  matchingWorkArea,
   MIN_HEIGHT,
   MIN_WIDTH,
-  onScreen,
   sanitizeWindowState
 } from './window-state'
 
@@ -71,31 +69,54 @@ test('sanitizeWindowState treats isMaximized strictly', () => {
   assert.equal(sanitizeWindowState({ width: 1400, height: 900, isMaximized: 'yes' }).isMaximized, false)
 })
 
-// ─── onScreen ──────────────────────────────────────────────────────────────
-
-test('onScreen accepts a window on the primary or a secondary display', () => {
-  const dual = [...PRIMARY, { workArea: { x: 1920, y: 0, width: 2560, height: 1400 } }]
-  assert.equal(onScreen({ x: 100, y: 100, width: 1220, height: 800 }, PRIMARY), true)
-  assert.equal(onScreen({ x: 2200, y: 200, width: 1220, height: 800 }, dual), true)
+test('sanitizeWindowState treats boundsCapturedFullScreen strictly and stays optional', () => {
+  assert.equal(
+    sanitizeWindowState({ width: 1400, height: 900, boundsCapturedFullScreen: true }).boundsCapturedFullScreen,
+    true
+  )
+  assert.equal(
+    sanitizeWindowState({ width: 1400, height: 900, boundsCapturedFullScreen: 'yes' }).boundsCapturedFullScreen,
+    undefined
+  )
+  assert.equal(sanitizeWindowState({ width: 1400, height: 900 }).boundsCapturedFullScreen, undefined)
 })
 
-test('onScreen rejects off-screen, slivers, and bad input', () => {
-  assert.equal(onScreen({ x: 3000, y: 100, width: 1220, height: 800 }, PRIMARY), false) // past right edge
-  assert.equal(onScreen({ x: 100, y: -900, width: 1220, height: 800 }, PRIMARY), false) // above top
-  assert.equal(onScreen({ x: 1910, y: 100, width: 1220, height: 800 }, PRIMARY), false) // ~10px sliver
-  assert.equal(onScreen({ x: 0, y: 0, width: 1220, height: 800 }, []), false)
-  assert.equal(onScreen({ x: 0, y: 0, width: 1220, height: 800 }, null), false)
+// ─── matchingWorkArea ──────────────────────────────────────────────────────────────
+
+test('matchingWorkArea accepts a window on the primary or a secondary display', () => {
+  const dual = [...PRIMARY, { workArea: { x: 1920, y: 0, width: 2560, height: 1400 } }]
+  assert.notEqual(matchingWorkArea({ x: 100, y: 100, width: 1220, height: 800 }, PRIMARY), null)
+  assert.notEqual(matchingWorkArea({ x: 2200, y: 200, width: 1220, height: 800 }, dual), null)
+})
+
+test('matchingWorkArea rejects off-screen, slivers, and bad input', () => {
+  assert.equal(matchingWorkArea({ x: 3000, y: 100, width: 1220, height: 800 }, PRIMARY), null) // past right edge
+  assert.equal(matchingWorkArea({ x: 100, y: -900, width: 1220, height: 800 }, PRIMARY), null) // above top
+  assert.equal(matchingWorkArea({ x: 1910, y: 100, width: 1220, height: 800 }, PRIMARY), null) // ~10px sliver
+  assert.equal(matchingWorkArea({ x: 0, y: 0, width: 1220, height: 800 }, []), null)
+  assert.equal(matchingWorkArea({ x: 0, y: 0, width: 1220, height: 800 }, null), null)
 })
 
 // ─── computeWindowOptions ──────────────────────────────────────────────────
 
-test('computeWindowOptions falls back to defaults with no saved state', () => {
-  assert.deepEqual(computeWindowOptions(null, PRIMARY), { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT })
+test('computeWindowOptions restores an on-screen position', () => {
+  const saved = sanitizeWindowState({ x: 200, y: 100, width: 1400, height: 900 })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY), { width: 1400, height: 900, x: 200, y: 100 })
 })
 
-test('computeWindowOptions restores an on-screen position', () => {
-  const saved = sanitizeWindowState({ x: 200, y: 150, width: 1400, height: 900 })
-  assert.deepEqual(computeWindowOptions(saved, PRIMARY), { width: 1400, height: 900, x: 200, y: 150 })
+test('computeWindowOptions clamps a trusted saved position fully inside its display work area', () => {
+  const saved = sanitizeWindowState({ x: -102, y: 175, width: 960, height: 1032 })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY), { width: 960, height: 1032, x: 0, y: 8 })
+})
+
+test('computeWindowOptions caps a positioned window to the display it overlaps', () => {
+  const dual = [
+    { workArea: { x: 0, y: 0, width: 2560, height: 1400 } },
+    { workArea: { x: 2560, y: 0, width: 1366, height: 728 } }
+  ]
+
+  const saved = sanitizeWindowState({ x: 2700, y: 100, width: 1400, height: 900 })
+  assert.deepEqual(computeWindowOptions(saved, dual), { width: 1366, height: 728, x: 2560, y: 0 })
 })
 
 test('computeWindowOptions keeps the size but drops an off-screen position', () => {
@@ -117,6 +138,70 @@ test('computeWindowOptions keeps the MIN floor on a sub-minimum display', () => 
 test('computeWindowOptions does not clamp when displays are unknown', () => {
   const saved = sanitizeWindowState({ width: 2560, height: 1440 })
   assert.deepEqual(computeWindowOptions(saved, []), { width: 2560, height: 1440 })
+})
+
+test('computeWindowOptions recovers stale fullscreen normal bounds to a centered windowed size on Windows', () => {
+  const saved = sanitizeWindowState({
+    x: 0,
+    y: 0,
+    width: 1920,
+    height: 1040,
+    isMaximized: false,
+    boundsCapturedFullScreen: true
+  })
+
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY, 'win32'), { width: 1536, height: 832 })
+})
+
+test('computeWindowOptions recovers a legacy exact-work-area snapshot written before the provenance flag', () => {
+  // Pre-boundsCapturedFullScreen snapshot: fullscreen bounds persisted as
+  // normal, matching the work area to the pixel. Unambiguous, so recovered.
+  const saved = sanitizeWindowState({ x: 0, y: 0, width: 1920, height: 1040, isMaximized: false })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY, 'win32'), { width: 1536, height: 832 })
+})
+
+test('computeWindowOptions recovers a legacy snapshot matching the full display bounds', () => {
+  // A fullscreen window over a hidden taskbar reports the display's full
+  // bounds, not the work area. Still an exact match, so still recovered.
+  const displays = [
+    { workArea: { x: 0, y: 0, width: 1920, height: 1040 }, bounds: { x: 0, y: 0, width: 1920, height: 1080 } }
+  ]
+
+  const saved = sanitizeWindowState({ x: 0, y: 0, width: 1920, height: 1080, isMaximized: false })
+  assert.deepEqual(computeWindowOptions(saved, displays, 'win32'), { width: 1536, height: 832 })
+})
+
+test('computeWindowOptions preserves a deliberate near-fullscreen normal window near the origin on Windows', () => {
+  // The reviewer's case: a valid normal window the user sized on purpose,
+  // satisfying the old ≥90% + near-origin predicates. It must survive
+  // restore untouched (position clamped inside the work area).
+  const saved = sanitizeWindowState({ x: 0, y: 0, width: 1824, height: 988, isMaximized: false })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY, 'win32'), {
+    width: 1824,
+    height: 988,
+    x: 0,
+    y: 0
+  })
+})
+
+test('computeWindowOptions preserves deliberate near-fullscreen normal bounds outside Windows', () => {
+  const saved = sanitizeWindowState({ x: 0, y: 0, width: 1920, height: 1040, isMaximized: false })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY, 'darwin'), {
+    width: 1920,
+    height: 1040,
+    x: 0,
+    y: 0
+  })
+})
+
+test('computeWindowOptions preserves full bounds when the saved state is actually maximized', () => {
+  const saved = sanitizeWindowState({ x: 0, y: 0, width: 1920, height: 1040, isMaximized: true })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY, 'win32'), { width: 1920, height: 1040, x: 0, y: 0 })
+})
+
+test('computeWindowOptions does not shrink a large normal window away from the work-area origin', () => {
+  const saved = sanitizeWindowState({ x: 240, y: 120, width: 1740, height: 950, isMaximized: false })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY, 'win32'), { width: 1740, height: 950, x: 180, y: 90 })
 })
 
 // ─── debounce ──────────────────────────────────────────────────────────────

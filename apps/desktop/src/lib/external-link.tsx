@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { ArrowUpRight } from '@/lib/icons'
 import { IS_MAC } from '@/lib/keybinds/combo'
+import { $alwaysExternalLinks } from '@/store/external-links'
 
 import { resolveBrandIcon } from './brand-icon'
 import { cn } from './utils'
@@ -103,18 +104,37 @@ export function urlSlugTitleLabel(value: string): string {
       continue
     }
 
-    const titled = cleaned.replace(/\b[a-z]/g, c => c.toUpperCase())
+    // Title-case word slugs (`some-guide` → `Some Guide`), but keep the
+    // exact casing of a separator-less token that looks like a
+    // case-sensitive identifier — it carries a digit, a dot, or mixed case,
+    // as in a release tag (`v1.0.1`) or a filename (`README.md`) — so the
+    // link never invents a different identifier. A plain lowercase word
+    // (`quantumcomputing` → `Quantumcomputing`) still title-cases. (#121321)
+    const looksLikeIdentifier = /\d/.test(cleaned) || /[A-Z]/.test(cleaned) || cleaned.includes('.')
 
-    if (titled.length >= 4) {
-      return titled
+    const label =
+      looksLikeIdentifier && !cleaned.includes(' ') ? cleaned : cleaned.replace(/\b[a-z]/g, c => c.toUpperCase())
+
+    if (label.length >= 4) {
+      return label
     }
   }
 
   return hostPathLabel(value)
 }
 
+/** Authorization URLs must never be consumed by link-title previews. */
+export function isConnectorAuthorizationLink(value: string): boolean {
+  const url = parseUrl(value)
+
+  // Composio links are single-use; keep previews away until the gateway exposes authorization URL metadata.
+  return (
+    !!url && url.protocol === 'https:' && url.hostname === 'connect.composio.dev' && url.pathname.startsWith('/link/')
+  )
+}
+
 export function isTitleFetchable(value: string): boolean {
-  if (!value || SKIP_PROTO_RE.test(value)) {
+  if (!value || SKIP_PROTO_RE.test(value) || isConnectorAuthorizationLink(value)) {
     return false
   }
 
@@ -212,6 +232,19 @@ export function wantsNativeBrowser(event: Pick<MouseEvent, 'button' | 'ctrlKey' 
 }
 
 /**
+ * The HUD is a chrome-free bar with no in-app browser. A preview tile there
+ * either no-ops or tries to paint a webview into the transparent overlay —
+ * the OAuth-in-the-HUD case. Always hand off to the OS browser.
+ */
+export function hudForcesNativeLinks(search = typeof window === 'undefined' ? '' : window.location.search): boolean {
+  try {
+    return new URLSearchParams(search).get('win') === 'hud'
+  } catch {
+    return false
+  }
+}
+
+/**
  * Where a link the user clicked should open.
  *
  * A web page opens in the in-app browser — that pane exists so reading a doc
@@ -220,7 +253,9 @@ export function wantsNativeBrowser(event: Pick<MouseEvent, 'button' | 'ctrlKey' 
  * where you go for anything needing your logged-in session or a password.
  *
  * Everything that ISN'T a web page — `mailto:`, `file:`, a custom scheme — has
- * no business in the webview and always hands off to the OS.
+ * no business in the webview and always hands off to the OS. The HUD has no
+ * browser pane, so it always takes the OS path. The "Always open links in
+ * external browser" setting (`$alwaysExternalLinks`) sends every click there.
  */
 export function openLink(href: string, options: { native?: boolean } = {}): void {
   const target = normalizeExternalUrl(href)
@@ -229,7 +264,13 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
     return
   }
 
-  if (options.native || !/^https?:$/i.test(parseUrl(target)?.protocol ?? '')) {
+  if (
+    options.native ||
+    $alwaysExternalLinks.get() ||
+    isConnectorAuthorizationLink(target) ||
+    hudForcesNativeLinks() ||
+    !/^https?:$/i.test(parseUrl(target)?.protocol ?? '')
+  ) {
     openExternalLink(target)
 
     return
@@ -240,7 +281,7 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
   // link helper drag that whole tree into anything that renders a link. The
   // tab lands a microtask later, which is invisible.
   void import('@/store/preview').then(({ openPreview }) =>
-    openPreview({ kind: 'url', label: hostPathLabel(target), source: target, url: target }, 'explicit-link')
+    openPreview({ kind: 'url', label: hostPathLabel(target), source: target, url: target })
   )
 }
 

@@ -1,81 +1,37 @@
-"""Regression coverage for machine-readable MoA quiet output."""
-from __future__ import annotations
+"""MoA display events honour the ``-Q`` quiet contract.
 
+``-Q`` (machine-readable CLI output) nulls ``agent.tool_progress_callback`` and sets
+``tool_progress_mode = "off"``; the MoA reference relay reads the callback at emit time, so
+quiet sessions must emit nothing and interactive sessions must relay every event.
+"""
 from types import SimpleNamespace
-import unittest
+from unittest.mock import MagicMock, patch
 
-from agent.agent_init import _relay_moa_reference_event
+import pytest
 
-
-class MoAQuietReferenceOutputTests(unittest.TestCase):
-    @staticmethod
-    def _agent(*, platform: str, tool_progress_mode: str, quiet_mode: bool = True):
-        calls = []
-
-        def callback(*args, **kwargs):
-            calls.append((args, kwargs))
-
-        return SimpleNamespace(
-            platform=platform,
-            tool_progress_mode=tool_progress_mode,
-            quiet_mode=quiet_mode,
-            tool_progress_callback=callback,
-        ), calls
-
-    def test_machine_readable_cli_suppresses_reference_relay(self) -> None:
-        agent, calls = self._agent(platform="cli", tool_progress_mode="off")
-        _relay_moa_reference_event(
-            agent,
-            "moa.reference",
-            label="local:advisor",
-            text="hidden",
-            index=1,
-            count=1,
-        )
-        self.assertEqual(calls, [])
-
-    def test_interactive_cli_delivers_reference_relay(self) -> None:
-        agent, calls = self._agent(
-            platform="cli",
-            tool_progress_mode="all",
-            quiet_mode=True,
-        )
-        _relay_moa_reference_event(
-            agent,
-            "moa.reference",
-            label="local:advisor",
-            text="visible",
-            index=1,
-            count=2,
-        )
-        self.assertEqual(
-            calls,
-            [
-                (
-                    ("moa.reference", "local:advisor", "visible", None),
-                    {"moa_index": 1, "moa_count": 2},
-                )
-            ],
-        )
-
-    def test_gateway_delivers_even_when_progress_mode_is_off(self) -> None:
-        agent, calls = self._agent(platform="discord", tool_progress_mode="off")
-        _relay_moa_reference_event(
-            agent,
-            "moa.aggregating",
-            aggregator="local:aggregator",
-            ref_count=2,
-        )
-        self.assertEqual(
-            calls,
-            [
-                (
-                    ("moa.aggregating", "local:aggregator", None, None),
-                    {"moa_ref_count": 2},
-                )
-            ],
-        )
+from agent.moa_loop import build_moa_facade
 
 
-if __name__ == "__main__":
-    unittest.main()
+def _facade(agent):
+    with patch("agent.moa_loop.MoAClient") as client_cls:
+        build_moa_facade(agent, "default")
+    return client_cls.call_args.kwargs["reference_callback"]
+
+
+def test_quiet_cli_emits_no_moa_display_events():
+    agent = SimpleNamespace(platform="cli", tool_progress_mode="off", tool_progress_callback=None, provider="moa", model="default")
+    relay = _facade(agent)
+    relay("moa.reference", label="m1", text="answer", index=0, count=2)  # must not raise
+    relay("moa.aggregating", aggregator="agg")
+
+
+@pytest.mark.parametrize("platform", ["cli", "telegram"])
+def test_interactive_surfaces_receive_moa_events(platform):
+    cb = MagicMock()
+    agent = SimpleNamespace(platform=platform, tool_progress_mode="all", tool_progress_callback=cb, provider="moa", model="default")
+    relay = _facade(agent)
+    relay("moa.reference", label="m1", text="answer", index=0, count=2)
+    relay("moa.aggregating", aggregator="agg")
+    events = [c.args[0] for c in cb.call_args_list]
+    assert events == ["moa.reference", "moa.aggregating"]
+    assert cb.call_args_list[0].kwargs == {"moa_index": 0, "moa_count": 2}

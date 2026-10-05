@@ -1,7 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { HUD_RESIZE_DIRECTIONS, hudResizeBounds, hudResizeDirections, useHudResizeHandle } from './resize-handle'
+import { hudResizeBounds, hudResizeDirections, useHudResizeHandle } from './resize-handle'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
@@ -61,12 +61,8 @@ describe('hudResizeBounds', () => {
 })
 
 describe('hudResizeDirections', () => {
-  it('keeps every edge and corner on platforms with global window positioning', () => {
-    expect(hudResizeDirections(false)).toBe(HUD_RESIZE_DIRECTIONS)
-  })
-
-  it('exposes only position-preserving handles on native Wayland', () => {
-    expect(hudResizeDirections(true)).toEqual(['e', 'se', 's'])
+  it('exposes only position-preserving handles when the client cannot place the window', () => {
+    expect(hudResizeDirections(false)).toEqual(['e', 'se', 's'])
   })
 })
 
@@ -89,9 +85,7 @@ describe('useHudResizeHandle', () => {
         'nw'
       )
     )
-    act(() =>
-      void window.dispatchEvent(new PointerEvent('pointermove', { pointerId: 4, screenX: 250, screenY: 275 }))
-    )
+    act(() => void window.dispatchEvent(new PointerEvent('pointermove', { pointerId: 4, screenX: 250, screenY: 275 })))
 
     expect(setBounds).toHaveBeenCalledWith({ x: 50, y: 175, width: 670, height: 345 })
   })

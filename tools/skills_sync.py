@@ -386,6 +386,14 @@ def _seed_category_descriptions(bundled_dir: Path, only_dirs: Optional[Set[Path]
         dest_desc = _skills_dir() / desc_md.relative_to(bundled_dir)
         if (only_dirs is not None and dest_desc.parent not in only_dirs) or dest_desc.exists():
             continue
+        # Only seed into a category the profile actually holds. This runs after the skill
+        # loop, so the parent exists iff a skill of that category was materialised locally;
+        # a category whose only skill resolved elsewhere (external_dirs, or a manifest entry
+        # with no copy on disk) has no local member, and materialising its DESCRIPTION.md
+        # alone leaves a stray top-level real dir -- the drift defect where a lane's skills
+        # root holds `autonomous-ai-agents/` containing nothing but DESCRIPTION.md.
+        if not dest_desc.parent.is_dir():
+            continue
         try:
             dest_desc.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(desc_md, dest_desc)

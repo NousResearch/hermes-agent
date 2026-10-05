@@ -174,7 +174,7 @@ def _classify_exhausted_status(entry) -> tuple[str, bool]:
     return "exhausted", True
 
 
-def _format_exhausted_status(entry) -> str:
+def _format_exhausted_status(entry, *, sole_credential: bool = False) -> str:
     if entry.last_status != STATUS_EXHAUSTED:
         return ""
     label, show_retry_window = _classify_exhausted_status(entry)
@@ -184,7 +184,7 @@ def _format_exhausted_status(entry) -> str:
     head = f" {label}{reason_text}{code}"
     if not show_retry_window:
         return f"{head} (re-auth may be required)"
-    exhausted_until = _exhausted_until(entry)
+    exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)
     if exhausted_until is None:
         return head
     remaining = max(0, int(math.ceil(exhausted_until - time.time())))
@@ -530,9 +530,10 @@ def auth_list_command(args) -> None:
             print()
             continue
         print(f"{provider} ({len(entries)} credentials):")
+        sole_credential = pool._is_sole_credential()
         for idx, entry in enumerate(entries, start=1):
             marker = "← " if current is not None and entry.id == current.id else "  "
-            status = _format_exhausted_status(entry)
+            status = _format_exhausted_status(entry, sole_credential=sole_credential)
             source = _display_source(entry.source)
             row = (
                 f"  #{idx}  {entry.label:<20} {entry.auth_type:<7} "
@@ -840,8 +841,9 @@ def _interactive_remove() -> None:
     if not pool.has_credentials():
         print(f"No credentials for {provider}.")
         return
+    sole_credential = pool._is_sole_credential()
     for i, e in enumerate(pool.entries(), 1):
-        print(f"  #{i}  {e.label:25s} {e.auth_type:10s} {e.source}{_format_exhausted_status(e)} [id:{e.id}]")
+        print(f"  #{i}  {e.label:25s} {e.auth_type:10s} {e.source}{_format_exhausted_status(e, sole_credential=sole_credential)} [id:{e.id}]")
     raw = _ask("Remove #, id, or label (blank to cancel): ", line_input)
     if raw:
         auth_remove_command(SimpleNamespace(provider=provider, target=raw))

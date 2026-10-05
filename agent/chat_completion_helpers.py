@@ -1970,15 +1970,6 @@ def _pool_exhaustion_detail(agent, fb_provider: str, fb_model: str) -> "Optional
     return None
 
 
-def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
-    """True when every credential the candidate would use sits in an exhaustion cooldown longer
-    than the retry loop's longest wait (the 600s Retry-After cap): switching to it only fails the
-    turn the same way the primary just did (#89401). A short throttle still gets its chance.
-    An unusable pool with no wait information (unfilled borrowed row) also counts — see
-    _pool_exhaustion_detail for the distinction the log message needs (#131993)."""
-    return _pool_exhaustion_detail(agent, fb_provider, fb_model) is not None
-
-
 def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:
     """True when the entry is already unavailable, malformed, locally unusable, or resolves
     to the backend that just failed (falling back to it would loop the failure)."""

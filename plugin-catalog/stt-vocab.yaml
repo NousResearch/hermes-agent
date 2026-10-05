@@ -1,6 +1,6 @@
 name: stt-vocab
 repo: https://github.com/pierrenode/hermes-stt-vocab
-sha: e3ae526227774fc6bf3a58dfaa2b1a881d38ee7a
+sha: 6145d065d50f196d51b3ab80fe4a76fb2827c115
 subdir: stt-vocab
 description: >-
   Puts the names a speech-to-text model mis-hears into the transcription prompt Hermes sends with
@@ -18,6 +18,7 @@ category: voice
 requires_hermes: ">=0.21"
 docs_url: https://github.com/pierrenode/hermes-stt-vocab
 version: "1.0.0"
+image: https://raw.githubusercontent.com/pierrenode/hermes-stt-vocab/6145d065d50f196d51b3ab80fe4a76fb2827c115/docs/card.png
 platforms: []
 capabilities:
   provides_tools: []

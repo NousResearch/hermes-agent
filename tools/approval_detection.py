@@ -11,6 +11,7 @@ import re
 import shlex
 import tempfile
 import unicodedata
+from tools.shell_comment_context import ShellCommentContext, ShellSubstitutionDepth
 
 logger = logging.getLogger("tools.approval")
 
@@ -996,15 +997,6 @@ def _execution_flag_findings(command: str):
                         yield (f"arbitrary program execution via {executable_name} {finding[0]}", finding[1])
 
 
-def _is_escaped(text: str, index: int) -> bool:
-    """True when ``text[index]`` follows an odd backslash run (``\\$'`` is a
-    literal ``$``, so the ``'`` is a plain quote, not ANSI-C)."""
-    j = index - 1
-    while j >= 0 and text[j] == "\\":
-        j -= 1
-    return (index - j - 1) % 2 == 1
-
-
 def _skip_shell_whitespace(command: str, pos: int) -> int:
     while pos < len(command) and command[pos] in " \t\n":
         pos += 1
@@ -1029,11 +1021,12 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
     n = len(text) if end is None else end
     quote: str | None = None
     ansi = False  # inside $'...' ANSI-C quoting, where backslash escapes apply
+    context = ShellCommentContext()
     i = start
     while i < n:
         ch = text[i]
         kind, j = "char", i + 1
-        if comments and quote is None and _is_shell_comment_start(text, i):
+        if comments and quote is None and ch == "#" and context.starts_comment():
             kind, j = "comment", text.find("\n", i, n)
             if j < 0:
                 j = n
@@ -1056,23 +1049,23 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
                 yield ("subst", i, None, quote)
                 return
         yield (kind, i, j, quote)
+        ansi_open = ch == "'" and context.previous == "$"
+        context.advance(text, kind, i, j, quote)
         if kind == "quote":
             if quote:
                 quote, ansi = None, False
             else:
-                ansi = ch == "'" and i > 0 and text[i - 1] == "$" and not _is_escaped(text, i - 1)
+                ansi = ansi_open
                 quote = ch
         i = j
 
 
 def _scan_dollar_paren_end(command: str, start: int) -> int | None:
     """Return the offset after a balanced ``$(...)`` command substitution."""
-    depth = 1
-    for kind, i, _, quote in _scan_shell(command, start + 2):
-        if kind == "char" and not quote:
-            depth += command.startswith("$(", i) - (command[i] == ")")
-            if depth == 0:
-                return i + 1
+    context = ShellSubstitutionDepth()
+    for kind, i, j, quote in _scan_shell(command, start + 2, subst="uq", brace=True, comments=True):
+        if context.advance(command, kind, i, j, quote):
+            return j
     return None
 
 
@@ -1152,11 +1145,17 @@ def _deobfuscate_shell_word_for_detection(word: str) -> str:
 
 
 def _is_shell_comment_start(command: str, index: int) -> bool:
-    # POSIX: ``#`` opens a comment only at a word start, and word boundaries are
-    # IFS whitespace (space/tab/newline) plus command operators -- ``\r``,
-    # ``\xa0`` etc. are ordinary characters, and ``(``/``)`` after ``$(...)``
-    # continue the word, so ``touch ok\r#x; rm -rf x`` still surfaces the ``rm``.
-    return command[index] == "#" and (index == 0 or command[index - 1] in " \t\n;&|<>")
+    """Use the same lexical decision for callers inspecting an individual word.
+
+    The scanner maintains its own state; this query is only needed at candidate
+    command/word starts, never once per character in the hot scanning loop.
+    """
+    if command[index] != "#":
+        return False
+    for kind, start, end, _ in _scan_shell(command, comments=True, subst="uq", brace=True):
+        if start <= index < end:
+            return kind == "comment" and start == index
+    return False
 
 
 def _iter_shell_command_starts(command: str):

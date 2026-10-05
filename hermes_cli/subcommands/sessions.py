@@ -19,6 +19,13 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         description="View and manage the SQLite session store")
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
+    attention = sessions_subparsers.add_parser("attention", help="Declare or resolve an observation (not mutation permission)")
+    attention.add_argument("attention_action", choices=("open", "resolve"))
+    attention.add_argument("session_id", help="Exact session identifier (no prefix or title)")
+    attention.add_argument("--turn-id", required=True, help="Exact current observation generation")
+    attention.add_argument("--request-id", help="Exact request to resolve")
+    attention.add_argument("--request-turn-id", help="Original generation of a validation retained across turns")
+
     sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
     sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
     sessions_list.add_argument("--limit", type=int, default=20, help="Max sessions to show")

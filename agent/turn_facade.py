@@ -96,6 +96,8 @@ class TurnFacadeMixin:
                 return admission.early_result
             lease = admission.lease
             conversation_history = admission.conversation_history
+            if lease is not None:
+                lease.begin_observation()
 
             relay_session_cwd, relay_turn_cwd = resolve_relay_scope_cwds(
                 self,
@@ -162,6 +164,12 @@ class TurnFacadeMixin:
                     if lease is not None:
                         lease.stop_refresher()
             terminal = result if isinstance(result, dict) else {}
+            if lease is not None and isinstance(result, dict):
+                status = ("interrupted" if terminal.get("interrupted") is True else
+                          "error" if terminal.get("failed") is True or terminal.get("error") else
+                          "complete" if terminal.get("completed") is True else None)
+                if status is not None:
+                    lease.finish_observation(status)
             relay_outcome = (
                 "cancelled" if terminal.get("interrupted") is True
                 else "failed" if terminal.get("failed") is True
@@ -173,6 +181,9 @@ class TurnFacadeMixin:
                 finish_task_run(**task_context, result=result)
             return result
         except BaseException as exc:
+            if lease is not None:
+                lease.finish_observation("interrupted" if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or
+                                         type(exc).__name__ == "CancelledError" else "error")
             if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (
                 type(exc).__name__ == "CancelledError"
             ):

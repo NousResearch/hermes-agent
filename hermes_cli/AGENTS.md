@@ -2,6 +2,11 @@
 
 Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide/cli-internals.md`.
 
+`GET /api/session-observations` uses native auth/profile resolution but opens SessionDB
+read-only, never the schema-healing session-list opener. `sessions attention` is the
+explicit generation-fenced validation indicator, not mutation permission. Contract:
+`website/docs/developer-guide/conversation-observations.md`.
+
 ## CLI architecture
 
 `cli.py` holds `HermesCLI` (REPL loop, config, slash dispatch); behaviour lives in mixins

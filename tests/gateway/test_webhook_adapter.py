@@ -1252,11 +1252,13 @@ def test_route_profile_validation_fails_closed():
 
 
 class TestBlankRouteSecretFailsClosed:
-    @pytest.mark.parametrize("blank", ["   ", "\t", "\n", 123])
-    def test_connect_rejects_a_whitespace_only_route_secret(self, blank):
-        adapter = _make_adapter(routes={"hook": {"secret": blank}})
+    @pytest.mark.parametrize("secret", ["   ", "\t", "\n", 123])
+    def test_connect_rejects_an_unusable_route_secret(self, secret):
+        adapter = _make_adapter(routes={"hook": {"secret": secret}})
         with pytest.raises(ValueError, match="missing, blank, or not a string"):
             asyncio.run(adapter.connect())
+        # The hot-reload path applies the same guard to agent-created dynamic routes.
+        assert adapter._dynamic_route_allowed("hook", {"secret": secret}) is False
 
 
 @pytest.mark.parametrize(

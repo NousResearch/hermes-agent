@@ -386,8 +386,8 @@ class WebhookAdapter(BasePlatformAdapter):
         return web.json_response({"status": "ok", "platform": "webhook"})
 
     def _dynamic_route_allowed(self, name: str, route: dict) -> bool:
-        """An empty effective secret would make _handle_webhook skip HMAC validation → reject such
-        dynamic routes; INSECURE_NO_AUTH is loopback-only."""
+        """Reject dynamic routes whose effective secret is missing, blank, or not a string
+        (_is_usable_secret); INSECURE_NO_AUTH is loopback-only."""
         effective_secret = route.get("secret", self._global_secret)
         if not _is_usable_secret(effective_secret):
             logger.warning("[webhook] Dynamic route '%s' skipped: 'secret' is missing, blank, or not a string. "

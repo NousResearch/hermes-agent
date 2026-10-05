@@ -201,11 +201,15 @@ class LSPClient:
         self._seed_first_push = seed_diagnostics_on_first_push
 
         self._proc: Optional[asyncio.subprocess.Process] = None
-        # Process group of the live server, registered with the shared parent-death
-        # supervisor so an ungraceful Hermes exit (os._exit paths, kill -9, OOM) cannot
-        # orphan it.  Cleared once the group is observed gone.  See
+        # Process groups of servers this client spawned, registered with the shared
+        # parent-death supervisor so an ungraceful Hermes exit (os._exit paths, kill -9,
+        # OOM) cannot orphan them.  A group leaves the set only once it has no members
+        # left; a group whose members survived teardown stays registered on purpose (the
+        # supervisor is then the only thing left that can reap an escaped descendant), and
+        # the pgid is retained here so a later spawn or teardown can notice it has since
+        # emptied and release it.  See
         # _register_process_group_with_parent_death_supervisor.
-        self._supervised_pgid: Optional[int] = None
+        self._supervised_pgids: Set[int] = set()
         self._stderr_task: Optional[asyncio.Task] = None
         # Ring buffer of the most recent server stderr lines, surfaced when spawn/initialize fails.
         self._stderr_tail: List[str] = []
@@ -340,24 +344,59 @@ class LSPClient:
             # The child exited between spawn and here — nothing to cover.
             return
         if _register_process_group_with_parent_death_supervisor(pgid):
-            self._supervised_pgid = pgid
+            self._supervised_pgids.add(pgid)
+        # A re-entered ``start()`` (documented re-call-to-retry, and a failed handshake leaves it
+        # re-callable) can spawn a second server while a group registered by the first attempt is
+        # still covered.  Nothing else would ever release the superseded pgid again, so sweep here:
+        # a retained group that has since emptied is dropped, one still holding members stays
+        # covered.
+        self._release_dead_process_group_supervisions()
 
-    def _release_process_group_supervision(self) -> None:
-        """Drop supervisor coverage once the group has no members left.
+    def _release_dead_process_group_supervisions(self) -> None:
+        """Drop supervisor coverage for retained groups whose members are all gone.
+
+        A registration whose group outlived teardown is kept on purpose (see
+        :meth:`_release_process_group_supervision`), so it must be revisited: this client is the
+        only holder of that pgid, and once the group empties the registration is stale — the pgid
+        can then be recycled by a stranger, which is the residual process-group-reuse risk
+        ``tools/mcp_death_supervisor.py`` documents.  Runs on every spawn and teardown, the two
+        points where the set can change.
+        """
+        for pgid in [p for p in self._supervised_pgids if not _process_group_alive(p)]:
+            self._supervised_pgids.discard(pgid)
+            _unregister_process_group_with_parent_death_supervisor(pgid)
+
+    def _release_process_group_supervision(self, pgid: Optional[int]) -> None:
+        """Drop supervisor coverage once the group ``pgid`` has no members left.
 
         A group still holding live members stays registered on purpose: a server (or a descendant
         it left behind) that survived teardown would otherwise be orphaned with nobody to reap it —
         the supervisor kills it when this process dies, and prunes the registration if the members
-        exit on their own first.
+        exit on their own first.  The pgid stays in ``_supervised_pgids`` so a later spawn or
+        teardown releases it once it empties.  ``None`` (nothing spawned, or not POSIX) still
+        sweeps the retained set.
         """
-        pgid = self._supervised_pgid
-        if pgid is None:
-            return
-        self._supervised_pgid = None
-        if _process_group_alive(pgid):
-            logger.debug("LSP: process group %s outlived teardown; keeping supervisor coverage", pgid)
-            return
-        _unregister_process_group_with_parent_death_supervisor(pgid)
+        if pgid is not None and pgid in self._supervised_pgids:
+            if _process_group_alive(pgid):
+                logger.debug("LSP: process group %s outlived teardown; keeping supervisor coverage", pgid)
+            else:
+                self._supervised_pgids.discard(pgid)
+                _unregister_process_group_with_parent_death_supervisor(pgid)
+        # Revisit every retained registration, not just this teardown's: a group kept covered above
+        # (or by an earlier attempt) may since have emptied, and its pgid is then stale and
+        # recyclable — see :meth:`_release_dead_process_group_supervisions`.
+        self._release_dead_process_group_supervisions()
+
+    def _supervised_pgid_of(self, proc: Optional[asyncio.subprocess.Process]) -> Optional[int]:
+        """The covered pgid of ``proc``; read it while the process is still live (its pid is gone
+        once reaped, and with it ``getpgid``)."""
+        if proc is None or os.name != "posix":
+            return None
+        try:
+            pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, OSError):
+            return None
+        return pgid if pgid in self._supervised_pgids else None
 
     async def _drain_stderr(self) -> None:
         if self._proc is None or self._proc.stderr is None:
@@ -509,19 +548,22 @@ class LSPClient:
             tasks = [self._reader_task, self._stderr_task]
             self._reader_task = self._stderr_task = None
             proc, self._proc = self._proc, None
+            # Resolve the covered pgid while the pid is still observable: after the kill and the
+            # reap below ``getpgid`` has nothing to read, and a stale registration would linger.
+            pgid = self._supervised_pgid_of(proc)
             live = [t for t in tasks if t is not None and not t.done() and t is not asyncio.current_task()]
             for t in live:
                 t.cancel()
             await asyncio.gather(*live, return_exceptions=True)
             if proc is None:
-                self._release_process_group_supervision()
+                self._release_process_group_supervision(None)
                 return
             if proc.returncode is not None:
                 if self._exit_code is None:
                     self._exit_code = proc.returncode
                 # The leader is already gone, but a descendant may outlive it — the release check
                 # looks at the whole group, not just the leader.
-                self._release_process_group_supervision()
+                self._release_process_group_supervision(pgid)
                 return
             try:
                 # ``shutdown`` has already given the protocol a grace period.  Hard-kill
@@ -539,7 +581,7 @@ class LSPClient:
                 pass
             if self._exit_code is None and proc.returncode is not None:
                 self._exit_code = proc.returncode
-            self._release_process_group_supervision()
+            self._release_process_group_supervision(pgid)
 
     # ---- request / notification plumbing ----
 

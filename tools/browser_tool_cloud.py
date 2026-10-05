@@ -241,12 +241,26 @@ def _auto_local_for_private_urls() -> bool:
     )
 
 
+_REAL_PROFILE_LOCK_ENV = "HERMES_BROWSER_NO_REAL_PROFILE"
+
+
+def _real_profile_locked_off() -> bool:
+    """Host-level veto: ``HERMES_BROWSER_NO_REAL_PROFILE=1`` (``.env`` or launch environment) forces
+    real-profile browsing off no matter what config.yaml says. config.yaml is rewritten by several
+    writers (approval allowlist saves, Desktop settings), so a user who must never have agents in
+    their own browser needs a switch outside that file."""
+    return os.environ.get(_REAL_PROFILE_LOCK_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _use_real_profile() -> bool:
     """Whether the user consented to real-profile local browsing.
 
     Read on EVERY call: it is a consent switch (flipping it off must not need a restart) and each multiplexed
     profile must decide for itself. One YAML load per local session creation, so no hot-path cost.
+    ``HERMES_BROWSER_NO_REAL_PROFILE`` vetoes the config value (see ``_real_profile_locked_off``).
     """
+    if _real_profile_locked_off():
+        return False
     return _origin()._browser_cfg("use_real_profile", False, bool, "use_real_profile from config")
 
 

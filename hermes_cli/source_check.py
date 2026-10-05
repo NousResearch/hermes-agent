@@ -366,6 +366,15 @@ def _check_branch(result: dict, co: _Checkout, selected_branch: str, *,
                       else "Could not resolve the remote branch tip.")
         return
     behind, commits = _behind_count(co, target)
+    if behind and co.repository == OFFICIAL_REPOSITORY and _is_full_sha(target):
+        from hermes_cli.prebuilt_desktop import prebuilt_state
+
+        # 404 means CI has not published this commit. Do not offer an update
+        # that would compile the desktop app on the user's machine.
+        if prebuilt_state(co.repository, target) is False:
+            result["commits"] = []
+            result.update(targetSha=target, behind=0, updateAvailable=False, prebuiltPending=True)
+            return
     result["commits"] = commits
     result.update(targetSha=target, behind=behind, updateAvailable=behind != 0)
 

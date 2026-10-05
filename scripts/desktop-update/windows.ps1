@@ -658,6 +658,12 @@ function Start-DesktopRelaunch {
     # so a one-shot existence check races the rebuild and strands the user.
     $relaunchDeadline = (Get-Date).AddSeconds(120)
     while (-not (Test-Path -LiteralPath $RelaunchExe)) {
+        $renamed = Join-Path (Split-Path -Parent $RelaunchExe) "IVX-Agency.exe"
+        if (Test-Path -LiteralPath $renamed) {
+            Write-HandoffLog "relaunch target is now $renamed"
+            $RelaunchExe = $renamed
+            break
+        }
         if ((Get-Date) -ge $relaunchDeadline) {
             Write-HandoffLog "WARNING: desktop relaunch executable did not reappear within 120s: $RelaunchExe"
             return $false

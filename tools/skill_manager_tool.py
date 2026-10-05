@@ -638,6 +638,16 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     """Flat-shape gate: stage the full kwargs so approval can replay them; bypassed during replay."""
     if action not in _ACTION_HANDLERS or _skill_gate_bypass.get():
         return None
+    # Stage-time precheck: the apply path (_create_skill) rejects over-limit
+    # descriptions via _validate_frontmatter(new_skill=True), but the gate
+    # stages BEFORE that validation runs — so an over-limit create would sit
+    # in the pending queue and only fail when the user approves it. Reject it
+    # here so the generating agent sees the error immediately and the queue
+    # never holds a create that cannot be applied.
+    if action == "create" and (payload_kwargs.get("content") or "").strip():
+        _err = _validate_frontmatter(payload_kwargs["content"], new_skill=True)
+        if _err:
+            return tool_error(_err, success=False)
     def _staging(wa):
         payload = {"action": action, "name": name,
                    **{k: v for k, v in payload_kwargs.items() if v is not None}}

@@ -151,3 +151,20 @@ def test_json_stdout_is_json_on_every_path(tmp_path, capsys, case, switch, files
     assert isinstance(data, list) and len(data) == findings, (case, out)
     if case in ("no measured change", "enforcement off"):
         assert "code health:" in err  # the human explanation moves to stderr
+
+
+# --- measurement tooling failures are errors, not findings ------------------------------------
+
+
+def test_tooling_failure_exits_2_without_a_traceback(tmp_path, monkeypatch, capsys):
+    repo, base = _ratchet_repo(tmp_path)
+    lock = {"packages": {"node_modules/typescript": {"version": "0.0.0-not-published"}}}
+    _commit(repo, {"package-lock.json": json.dumps(lock), "web/a.ts": "export const a = 1;\n"})
+    if not shutil.which("npm") or not shutil.which("node"):
+        pytest.skip("needs node + npm to reach the npm install path")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("npm_config_offline", "true")  # a real npm failure, without the network
+    monkeypatch.chdir(repo)
+    assert cli.main(["--base", base, "--head", "HEAD"]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("code health:") and "npm" in err

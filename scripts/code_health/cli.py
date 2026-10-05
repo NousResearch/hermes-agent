@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 import time
 from dataclasses import asdict
@@ -117,4 +118,9 @@ def main(argv: list[str] | None = None) -> int:
         return run(repo, base, head, as_json=args.json)
     except RuntimeError as exc:
         print(f"code health: {exc}", file=sys.stderr)
+        return 2
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        # A measuring tool (npm install of the pinned TypeScript, ...) failed: that is a broken
+        # run, not a finding, so it must not exit 1 behind a traceback.
+        print(f"code health: measurement tooling failed: {exc}", file=sys.stderr)
         return 2

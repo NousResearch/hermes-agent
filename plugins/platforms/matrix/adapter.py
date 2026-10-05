@@ -2828,7 +2828,11 @@ class MatrixAdapter(BasePlatformAdapter):
                     RoomID(room_id), memberships=(Membership.JOIN,)
                 )
                 if members is not None:
-                    return {str(member) for member in members} == {own_user_id, sender}
+                    joined = {str(member) for member in members}
+                    if joined == {own_user_id, sender}:
+                        return True
+                    if len(joined) > 2:
+                        return False
             except Exception as exc:
                 logger.debug("Matrix: joined-member lookup failed in %s: %s", room_id, exc)
         if client is not None and hasattr(client, "get_joined_members"):

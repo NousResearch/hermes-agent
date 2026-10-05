@@ -186,10 +186,10 @@ def prepare_iteration(
     # position is reproduced verbatim. The row must STAY when the neighbour roles
     # would form ``tool -> user`` on removal — the strict-provider failure
     # ``close_interrupted_tool_sequence`` exists to prevent (#48879) — so neutralise
-    # the text in place rather than dropping the row; only rows whose removal is
+    # a copy of the row rather than dropping it; only rows whose removal is
     # role-safe are dropped.
-    def _neutralise_replay_echo_ghosts(seq: List[Dict[str, Any]]) -> Tuple[int, int]:
-        """(dropped, neutralised)."""
+    def _neutralise_replay_echo_ghosts(seq: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int, int]:
+        """(new list, dropped, neutralised); never mutates ``seq`` or its row dicts."""
         from agent.agent_runtime_helpers import (
             _INTERRUPTED_PLACEHOLDER,
             _LEGACY_INTERRUPTED_PLACEHOLDER,
@@ -218,17 +218,13 @@ def prepare_iteration(
                 # leave ``assistant(tool_calls)/tool/user`` untouched, so the
                 # violation would survive to the provider. Keep the row,
                 # neutralise both sides.
-                m["content"] = ""
-                m["api_content"] = _INTERRUPTED_PLACEHOLDER
-                out.append(m)
+                out.append({**m, "content": "", "api_content": _INTERRUPTED_PLACEHOLDER})
                 neutralised += 1
             else:
                 dropped += 1
-        if dropped:
-            seq[:] = out
-        return dropped, neutralised
+        return (out if dropped or neutralised else seq), dropped, neutralised
 
-    _echo_dropped, _echo_neutralised = _neutralise_replay_echo_ghosts(messages)
+    messages, _echo_dropped, _echo_neutralised = _neutralise_replay_echo_ghosts(messages)
     if _echo_dropped or _echo_neutralised:
         request_logger.info(
             "Retired %d interrupt-placeholder row(s) and neutralised %d before request (session=%s)",

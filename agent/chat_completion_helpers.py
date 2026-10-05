@@ -62,13 +62,6 @@ _PROVIDER_STREAM_ERROR_FINISH_REASONS = {"error", "error_finish"}
 _PROVIDER_STREAM_SSE_FIELDS = {"event", "data", "id", "retry"}
 _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
 
-# Fallback chain exhausted on a non-rate-limit failure (#24996): arm a short
-# cooldown so the NEXT turn's restore_primary_runtime stays gated instead of
-# resetting _fallback_index=0 and re-marshaling the whole context across every
-# provider again (memory/swap exhaustion on constrained hosts). Rate-limit /
-# billing reasons keep their own longer cooldown.
-_FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
-
 # Streaming 5xx unmask probe: one non-streaming re-issue per this window. Covers the
 # outer retry loop (up to ~3 attempts x backoff, well under 60s) so an outage doesn't
 # double traffic every attempt, while later turns re-arm automatically.
@@ -1933,17 +1926,6 @@ def _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb
     )
 
 
-def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
-    """Chain exhausted (always False). A non-empty chain walked on a non-rate-limit failure arms a
-    short cooldown so next turn's restore_primary_runtime stays gated instead of replaying the whole
-    context across every provider again."""
-    from agent.fallback_cooldown import _RATE_LIMIT_FAILOVER_REASONS
-    if agent._fallback_chain and reason not in _RATE_LIMIT_FAILOVER_REASONS:
-        agent._rate_limited_until = max(
-            getattr(agent, "_rate_limited_until", 0) or 0, hermes_time.deadline_clock() + _FALLBACK_EXHAUSTED_COOLDOWN_S)
-    return False
-
-
 def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
     """True when every credential the candidate would use sits in an exhaustion cooldown longer
     than the retry loop's longest wait (the 600s Retry-After cap): switching to it only fails the
@@ -2076,7 +2058,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
-    from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
+    from agent.fallback_cooldown import (
+        _arm_rate_limit_cooldown, _fallback_chain_exhausted, switch_deferred_by_reset,
+    )
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)

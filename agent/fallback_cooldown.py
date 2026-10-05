@@ -11,6 +11,23 @@ logger = logging.getLogger(__name__)
 
 _RATE_LIMIT_FAILOVER_REASONS = frozenset({FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit})
 
+# Fallback chain exhausted on a non-rate-limit failure (#24996): arm a short
+# cooldown so the NEXT turn's restore_primary_runtime stays gated instead of
+# resetting _fallback_index=0 and re-marshaling the whole context across every
+# provider again (memory/swap exhaustion on constrained hosts). Rate-limit /
+# billing reasons keep their own longer cooldown.
+_FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
+
+
+def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
+    """Chain exhausted (always False). A non-empty chain walked on a non-rate-limit failure arms a
+    short cooldown so next turn's restore_primary_runtime stays gated instead of replaying the whole
+    context across every provider again."""
+    if agent._fallback_chain and reason not in _RATE_LIMIT_FAILOVER_REASONS:
+        agent._rate_limited_until = max(
+            getattr(agent, "_rate_limited_until", 0) or 0, hermes_time.deadline_clock() + _FALLBACK_EXHAUSTED_COOLDOWN_S)
+    return False
+
 
 def _provider_reset_delay(reset_at) -> float | None:
     """Seconds until the provider-declared reset, or None when missing/invalid/expired."""

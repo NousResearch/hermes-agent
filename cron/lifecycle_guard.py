@@ -1261,6 +1261,13 @@ def _lifecycle_command_scan_with_data_exemption(text: str, budget: Optional[_Lif
     nothing), then re-scan with data-sink arguments masked; only a surviving match blocks."""
     if not contains_gateway_lifecycle_command(text):
         return False
+    # The SSH exemption is only for gateway lifecycle payloads, not interpreter
+    # kills. Preserve the newer raw host-interpreter check before any quote-losing
+    # masking: e.g. echo '#' must not comment out a later local pkill/taskkill.
+    # This preserves every raw interpreter-kill verdict, without extending the
+    # existing detector's coverage to previously unsupported remote payloads.
+    if contains_host_interpreter_kill(text):
+        return True
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
     masked = _mask_remote_ssh_command_payloads(normalized, budget)
     return contains_gateway_lifecycle_command(_mask_data_sink_arguments(masked))

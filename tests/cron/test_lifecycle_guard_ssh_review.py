@@ -20,6 +20,9 @@ def config(tmp_path, monkeypatch):
     "ssh --future-option 192.168.3.184 localhost 'hermes gateway restart'",
     "ssh 192.168.3.184 'echo hermes gateway restart' | /bin/sh",
     "ssh 192.168.3.184 'echo hermes.exe gateway stop' | env sh",
+    "ssh 192.168.3.184 uptime; echo '#'; pkill python3",
+    "ssh 192.168.3.184 uptime; echo '#'; taskkill /F /IM python.exe",
+    "ssh 192.168.3.184 uptime; echo '#'; Stop-Process -Name python",
 ])
 def test_new_option_and_pipeline_consumers_fail_closed(config, command):
     assert g.contains_gateway_lifecycle_command_or_referenced_script(command)

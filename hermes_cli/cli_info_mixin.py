@@ -448,6 +448,25 @@ class CLIInfoMixin:
         print(f"  {t('cli.whoami.slash_commands_label'):<15} {t('cli.whoami.slash_commands_value')}")
         print()
 
+    def _busy_slash_command(self, text: str, has_images: bool):
+        """Resolve a slash command typed while the agent runs, or None.
+
+        Shared preamble for the mid-run inline detectors: non-empty, no attached images,
+        looks like a slash command, agent running. Returns ``(CommandDef, arg)``, where the
+        ``CommandDef`` is None for an unknown command, or None when the preamble fails.
+        """
+        from cli import _looks_like_slash_command
+        if not text or has_images or not _looks_like_slash_command(text):
+            return None
+        if not getattr(self, "_agent_running", False):
+            return None
+        try:
+            from hermes_cli.commands import resolve_command
+            parts = text.split(None, 1)
+            return resolve_command(parts[0].lower().lstrip('/')), (parts[1] if len(parts) > 1 else "")
+        except Exception:
+            return None
+
     def _busy_inline_command(self, text: str, has_images: bool, names: tuple) -> bool:
         """True when ``text`` is a slash command in ``names`` typed while the agent is running.
 
@@ -457,17 +476,8 @@ class CLIInfoMixin:
         next-turn message. Dispatching inline on the UI thread acts mid-run (``agent.steer()`` is
         thread-safe; ``/bg`` / ``/btw`` start their side session without touching the foreground turn).
         """
-        from cli import _looks_like_slash_command
-        if not text or has_images or not _looks_like_slash_command(text):
-            return False
-        if not getattr(self, "_agent_running", False):
-            return False
-        try:
-            from hermes_cli.commands import resolve_command
-            cmd = resolve_command(text.split(None, 1)[0].lower().lstrip('/'))
-            return bool(cmd and cmd.name in names)
-        except Exception:
-            return False
+        resolved = self._busy_slash_command(text, has_images)
+        return bool(resolved and resolved[0] and resolved[0].name in names)
 
     def _should_handle_steer_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /steer or /queue should be dispatched immediately while the agent is
@@ -490,23 +500,15 @@ class CLIInfoMixin:
         ``/goal <new goal text>`` stays queued so it cannot race a second continuation
         against the running turn, mirroring ``gateway/run_busy.py::_busy_goal_command``.
         """
-        from cli import _looks_like_slash_command
-        if not text or has_images or not _looks_like_slash_command(text):
+        resolved = self._busy_slash_command(text, has_images)
+        if not resolved:
             return False
-        if not getattr(self, "_agent_running", False):
-            return False
-        try:
-            from hermes_cli.commands import resolve_command
-            from hermes_cli.goal_command import is_goal_control
-            parts = text.split(None, 1)
-            cmd = resolve_command(parts[0].lower().lstrip('/'))
-            arg = parts[1] if len(parts) > 1 else ""
-            return bool(cmd and (
-                cmd.name == "subgoal" or
-                (cmd.name == "goal" and is_goal_control(arg))
-            ))
-        except Exception:
-            return False
+        cmd, arg = resolved
+        from hermes_cli.goal_command import is_goal_control
+        return bool(cmd and (
+            cmd.name == "subgoal" or
+            (cmd.name == "goal" and is_goal_control(arg))
+        ))
 
     def _should_handle_readonly_dispatch_inline(
         self, text: str, has_images: bool = False) -> bool:
@@ -515,27 +517,19 @@ class CLIInfoMixin:
         Commands with ``busy_policy="dispatch"`` are meant to run without queuing behind the active
         turn. The gateway honours this; the classic CLI derives eligibility from the ``CommandDef``
         instead of a hard-coded name list, so new dispatch-policy commands pick up the behavior.
-        Commands with their own inline handler (/model, /steer, /background) and ``gateway_only``
-        commands are excluded. Only fires while the agent is running — idle commands follow the
-        normal ``process_loop`` path.
+        ``gateway_only`` commands, and commands with their own inline handler, are excluded.
+        Only fires while the agent is running. Idle commands follow the normal
+        ``process_loop`` path.
         """
-        from cli import _looks_like_slash_command
-        if not text or has_images or not _looks_like_slash_command(text):
+        resolved = self._busy_slash_command(text, has_images)
+        if not resolved:
             return False
-        if not getattr(self, "_agent_running", False):
+        cmd, _ = resolved
+        if not cmd or cmd.busy_policy != "dispatch" or cmd.gateway_only:
             return False
-        try:
-            from hermes_cli.commands import resolve_command
-            cmd = resolve_command(text.split(None, 1)[0].lower().lstrip('/'))
-            if not cmd or cmd.busy_policy != "dispatch" or cmd.gateway_only:
-                return False
-            if cmd.name in {"model", "steer", "background"}:
-                return False
-            if cmd.execute is not None:
-                return True
-            return cmd.name in {"status", "agents", "context"}
-        except Exception:
-            return False
+        if cmd.execute is not None:
+            return True
+        return cmd.name in {"status", "agents", "context"}
 
     def handle_bang_shell(self, text: str) -> bool:
         """Run a ``!<command>`` submission. Returns True when it was handled.

@@ -51,7 +51,9 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
     monkeypatch.setattr(local_env.subprocess, "Popen",
                         lambda args, **kw: (seen.update(argv=list(args), kwargs=kw), _FakeProc())[1])
     monkeypatch.setattr(local_env, "_find_bash", lambda: "/bin/bash")
-    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: case != "not_the_gateway")
+    probed: list[int] = []
+    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process",
+                        lambda: probed.append(1) or case != "not_the_gateway")
     monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: case != "no_scope")
     # "not_systemd" = an s6/Docker supervised gateway: no systemd unit, nothing to scope into.
     if case == "not_systemd":
@@ -88,6 +90,9 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
         assert getattr(proc, "_hermes_scope_unit", None) is None
         assert kwargs["env"] == local_env._make_run_env(env.env)
         assert local_env._foreground_scope_issued is False  # nothing for the host-exit sweep
+        # No systemd unit: the free INVOCATION_ID check decides before the gateway probe
+        # (which reads the gateway PID record) runs on every foreground command.
+        assert (not probed) is (case == "not_systemd")
         # Every fallback after the gateway check is a degraded failure domain, reported once.
         assert ("share the gateway cgroup" in caplog.text) is (case in ("no_scope", "no_wrapper", "bus_gone"))
         return

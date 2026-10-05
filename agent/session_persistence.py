@@ -20,6 +20,7 @@ from agent.context_compressor import (
 )
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
 from agent.memory_manager import sanitize_context
+from agent.session_identity import SessionIdentityMixin, identity_transaction
 
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
 from agent.trajectory import save_trajectory as _save_trajectory_to_file
@@ -305,6 +306,7 @@ def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Di
         drop_shadowed_checkpoints(messages)
 
 
+@identity_transaction
 def _db_flush_adopt_compression_tip(agent) -> bool:
     """Adopt the live continuation of a compression-closed session. Same-id tip = no continuation; a tip
     whose row is missing or already ended is not adopted either."""
@@ -410,7 +412,7 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
 
 
 
-class SessionPersistenceMixin:
+class SessionPersistenceMixin(SessionIdentityMixin):
     """Session DB flush and trajectory persistence (see module docstring)."""
 
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:

@@ -140,9 +140,27 @@ named profile retains the normal `4064` profile error.
 This bounded prerequisite currently supports **unbuilt idle creation records**
 only. Materialized agents, running/inflight sessions and compute-host-owned
 records are refused: engine-side compression/persistence can rotate identity
-before the gateway receives its new key. Supporting those runtimes requires
-those writers to join an enforceable identity boundary. Do not treat the presence
-of this method as support for reconnecting to a healthy running session.
+before the gateway receives its new key. The local engine primitive below is
+implemented, but gateway comparison/subscription has not yet been qualified
+against it. Do not treat this method's presence as support for reconnecting to a
+healthy running session.
+
+`AIAgent` now inherits the local boundary in `agent/session_identity.py` through
+its persistence mixin. Segment assignments take `session_identity_guard()` and
+advance `session_identity_revision` only when the ID changes; changing away and
+back cannot rewind that revision. Existing `session_id` attribute storage and
+ordinary reads are preserved. Compression child publication, compression-child
+adoption and persistence-tip adoption hold the same reentrant guard over their
+DB operation and engine state update, including failure cleanup. Duck-typed
+non-engine callers keep legacy behavior and provide no proof of this guard.
+
+This is a local engine primitive, not a cross-process DB or gateway fence. A
+certifying reader must hold the guard across comparison and subscription, capture
+the original engine object/revision, and compare engine and gateway segment IDs.
+It must try the guard without waiting while holding gateway locks needed by engine
+callbacks; a settling transition must refuse. Gateway qualification, full lease
+reload/adoption ordering, host identity and subsequent-operation fencing remain
+separate gates. The RPC's supported scope remains unbuilt idle creation records.
 
 For a supported record, registry object membership, creator, requested and current
 resolved store, original exact stored segment, incarnation and scope are compared

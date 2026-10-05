@@ -17,11 +17,13 @@ from typing import Any, Dict, Optional
 
 from agent.api_error_summary import is_provider_stream_parse_error
 from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
+from agent.i18n import tl
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
-    _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, interruptible_backoff_sleep,
+    abort_turn_on_interrupt, compute_error_backoff, interruptible_backoff_sleep,
     log_api_error_attempt,
-    max_retries_exhausted_result, nonretryable_client_error_result, recover_after_classification,
+    max_retries_exhausted_result, nonretryable_client_error_result, nonretryable_fallback_status,
+    recover_after_classification,
     recover_before_classification, route_classified_error, settle_delivered_partial,
 )
 
@@ -335,8 +337,7 @@ def settle_unrecovered_error(
             # Announce the fallback only when a chain exists, else "trying fallback..." lies
             # before a silent abort.
             if agent._has_pending_fallback():
-                _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
-                agent._buffer_diagnostic_status(f"⚠️ {_label} — trying fallback...")
+                agent._buffer_diagnostic_status(nonretryable_fallback_status(classified.reason, status_code))
             reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
             if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
                 # Direct ``return _verdict("break")`` is load-bearing: the restart handler
@@ -368,7 +369,7 @@ def settle_unrecovered_error(
             agent._fallback_activated = False
             return _verdict("continue")
         if agent._has_pending_fallback():
-            agent._buffer_diagnostic_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
+            agent._buffer_diagnostic_status(tl("display.status.turn.max_retries_fallback", max=max_retries))
         reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
         if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
             # Direct ``return _verdict("break")`` is load-bearing: the restart handler

@@ -538,35 +538,24 @@ class TestPrunePreCheckpointItems:
             "tail ask",
         ]
 
-    def test_retention_budget_newest_first_with_truncation(self):
+    @pytest.mark.parametrize(
+        ("char", "kept_chars"),
+        # ASCII 4 chars/token; Cyrillic 2 bytes/char; CJK 1 token/char.
+        [("x", 400), ("ж", 200), ("中", 100)],
+    )
+    def test_retention_budget_newest_first_with_truncation(self, char, kept_chars):
         from agent.native_compaction import prune_pre_checkpoint_items
 
-        old = {"role": "user", "content": "x" * 4000}   # ~1000 tokens
+        old = {"role": "user", "content": char * 4000}
         newer = {"role": "user", "content": "y" * 2000}  # ~500 tokens
         items = [old, newer, {"type": "compaction", "encrypted_content": "b"}]
         out = prune_pre_checkpoint_items(items, retained_user_token_budget=600)
         users = [i["content"] for i in out if i.get("role") == "user"]
-        # Newest kept whole; boundary (older) head-truncated to remaining budget.
+        # Newest kept whole; boundary (older) head-truncated to the remaining
+        # 100 tokens as costed by the budget's estimator, not budget*4 chars.
         assert users[-1] == "y" * 2000
-        assert users[0] == "x" * 400  # (600-500)*4 chars
+        assert users[0] == char * kept_chars
         assert out[0]["type"] == "compaction"
-
-    @pytest.mark.parametrize(
-        ("char", "kept_chars"),
-        [("ж", 200), ("中", 100)],  # Cyrillic 2 bytes/char; CJK 1 token/char
-    )
-    def test_boundary_truncation_fits_byte_aware_budget(self, char, kept_chars):
-        from agent.model_metadata import estimate_tokens_rough
-        from agent.native_compaction import prune_pre_checkpoint_items
-
-        items = [{"role": "user", "content": char * 4000},
-                 {"type": "compaction", "encrypted_content": "b"}]
-        out = prune_pre_checkpoint_items(items, retained_user_token_budget=100)
-        users = [i["content"] for i in out if i.get("role") == "user"]
-        # The kept head is costed with the same estimator as the budget, not
-        # sliced at budget*4 chars (which kept 2x/4x the budget here).
-        assert estimate_tokens_rough(users[0]) == 100
-        assert users == [char * kept_chars]
 
     def test_zero_budget_keeps_only_post_tail(self):
         from agent.native_compaction import prune_pre_checkpoint_items

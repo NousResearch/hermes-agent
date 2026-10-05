@@ -87,13 +87,20 @@ def test_durable_external_store_still_publishes(tmp_path, monkeypatch):
     assert _launchers.expose_cli(repo, create=False)["ok"] is True
 
 
-def test_unstamped_task_home_symlink_cannot_republish(tmp_path, monkeypatch):
+@pytest.mark.parametrize("workspace_dir, workspace_id", [
+    ("multica_workspaces_fixture", ""),
+    ("multica_workspaces_desktop-api.multica.ai", "vanderzege-a7151c285975"),
+])
+def test_unstamped_task_home_symlink_cannot_republish(tmp_path, monkeypatch, workspace_dir, workspace_id):
     repo, home, _ = fixture_tree(tmp_path, monkeypatch)
     local = repo / ".hermes" / "bin"
     assert len(_launchers.ensure_install_launchers(repo, local)) == 2
     original = {path.name: path.read_bytes() for path in local.iterdir()}
 
-    task_home = tmp_path.parent / "multica_workspaces_fixture" / "task-abcdef123456" / "hermes-home"
+    task_home = tmp_path.parent / workspace_dir
+    if workspace_id:
+        task_home /= workspace_id
+    task_home = task_home / "task-abcdef123456" / "hermes-home"
     task_home.mkdir(parents=True)
     (task_home / "tools").symlink_to(home / "tools", target_is_directory=True)
     monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
@@ -580,7 +587,7 @@ def test_sync_migrates_old_store_wrapper_before_python_collection(tmp_path, monk
                             capture_output=True, text=True, timeout=30, encoding="utf-8")
     assert result.returncode == 7, result.stderr
     assert json.loads(result.stdout)["value"] == "ready"
-    assert Path(json.loads(result.stdout)["exe"]) == store / "python-B/bin/python3"
+    assert Path(json.loads(result.stdout)["exe"]).samefile(store / "python-B/bin/python3")
 
 
 def test_update_import_probe_uses_selected_dependencies(tmp_path, monkeypatch):

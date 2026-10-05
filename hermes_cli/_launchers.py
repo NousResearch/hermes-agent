@@ -105,10 +105,10 @@ def _multica_task_path(path: Path) -> bool:
     """Recognize the lexical task home before symlink resolution erases it."""
     parts = path.parts
     return any(
-        part.startswith("multica_workspaces_")
-        and i + 2 < len(parts)
-        and re.fullmatch(r"task-[0-9a-f]{12}", parts[i + 1])
-        and parts[i + 2] == "hermes-home"
+        re.fullmatch(r"task-[0-9a-f]{12}", part)
+        and i + 1 < len(parts)
+        and parts[i + 1] == "hermes-home"
+        and any(parent.startswith("multica_workspaces_") for parent in parts[:i])
         for i, part in enumerate(parts)
     )
 

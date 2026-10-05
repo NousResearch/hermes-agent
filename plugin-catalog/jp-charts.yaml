@@ -1,0 +1,20 @@
+name: jp-charts
+repo: https://github.com/TakeshiTGAL/hermes-plugin-charts
+sha: 870b5fcb1c9ca3db00f4fe956ee8d860f20ea661
+description: "Bar, line, stacked and 100% band charts as phone-sized PNGs for chat replies and reports, with Japanese text, 万/億 units and a required unit and source line. Every bar, point, label and tick is read back from the finished figure and compared with the parsed data before the image is returned. Disclosure: no network calls at run time; reads a local .csv/.tsv/.txt/.json only when given its path (never hidden files or the Hermes home); writes PNGs to the Hermes image cache; a transform_llm_output hook adds a forgotten MEDIA line to replies on chat platforms and cron deliveries (setting auto_attach, on by default)."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-charts#readme
+version: "0.1.0"
+requires_hermes: ">=0.21.4"
+platforms: []
+capabilities:
+  provides_tools:
+  - chart_render
+  - chart_validate
+  - chart_types
+  provides_hooks:
+  - transform_llm_output
+  provides_middleware: []
+  requires_env: []

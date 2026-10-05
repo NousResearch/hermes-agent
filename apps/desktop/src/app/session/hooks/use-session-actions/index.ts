@@ -35,9 +35,11 @@ import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
+import { resetSessionBackground } from '@/store/composer-status'
 import { $connectionRequests } from '@/store/connection-request'
 import {
   $gateway,
+  isActivePrimary,
   openGatewayForAgent,
   openGatewayForProfile,
   pendingSessionReplay,
@@ -45,9 +47,10 @@ import {
   retainGatewayForAgent
 } from '@/store/gateway'
 import { $gatewaySwitching } from '@/store/gateway-switch'
+import { clearSessionGoal } from '@/store/goals'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
-import { prunePreviewTabsForSession } from '@/store/preview'
+import { adoptDraftPreviewTabs, prunePreviewTabsForSession } from '@/store/preview'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
@@ -75,6 +78,7 @@ import {
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
+  $currentServiceTier,
   $messages,
   $newChatWorkspaceTarget,
   $sessions,
@@ -94,7 +98,6 @@ import {
   setCurrentCwd,
   setCurrentCwdExplicit,
   setCurrentCwdTransient,
-  setCurrentServiceTier,
   setCurrentUsage,
   setFreshDraftReady,
   setIntroSeed,
@@ -110,6 +113,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { clearSessionControl } from '@/store/session-control'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
 import {
   beginSessionMutation,
@@ -126,7 +130,6 @@ import {
   type SessionProfileRoute
 } from '@/store/session-request-router'
 import {
-  $focusedStoredSessionId,
   $sessionTiles,
   closeSessionTile,
   dropSessionState,
@@ -143,7 +146,8 @@ import {
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { $archivedSessions } from '@/store/sidebar-archive'
-import { restoreSessionTodosFromSnapshot } from '@/store/todos'
+import { clearSessionSubagents } from '@/store/subagents'
+import { clearSessionTodos, restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { dropTranscriptTail, dropTranscriptTailEverywhere, saveTranscriptTail } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
 import type {
@@ -355,6 +359,7 @@ async function desktopSessionCreateParams(
   const selection = {
     effort: $currentReasoningEffort.get().trim(),
     fast: $currentFastMode.get(),
+    serviceTier: $currentServiceTier.get().trim(),
     model: isManualSelection ? $currentModel.get().trim() : '',
     provider: isManualSelection ? $currentProvider.get().trim() : ''
   }
@@ -387,7 +392,10 @@ async function desktopSessionCreateParams(
             ? { model: selection.model, ...(selection.provider ? { provider: selection.provider } : {}) }
             : {}),
           ...(selection.effort ? { reasoning_effort: selection.effort } : {}),
-          fast: selection.fast
+          fast: selection.fast,
+          // Only Ultrafast needs the tier: `fast` already pins Priority/normal, and a
+          // pre-Ultrafast backend rejects the field (createGatewaySession drops it).
+          ...(selection.serviceTier === 'ultrafast' ? { service_tier: 'ultrafast' } : {})
         }
       : {})
   }
@@ -739,9 +747,8 @@ export function useSessionActions({
       // localStorage) — a new chat FOLLOWS your last pick instead of snapping
       // back to the profile default, so we deliberately don't reset it here. The
       // profile default still owns first-run seeding and profile switches (see
-      // refreshCurrentModel). Only $currentServiceTier (a live-session mirror)
-      // is cleared.
-      setCurrentServiceTier('')
+      // refreshCurrentModel). Keep the canonical service tier too: clearing
+      // it while retaining fast=true would silently downgrade Ultrafast.
       setYoloActive(false)
       setNewChatWorkspaceTarget(hasWorkspaceTarget ? workspaceTarget : undefined)
       // #52589 provenance: only a deliberate string workspace target is an explicit
@@ -920,6 +927,8 @@ export function useSessionActions({
           // Anything still parked under the pre-session draft bucket belongs
           // to this chat now (#114122); the composer moves it on scope swap.
           announceNewSessionDraftKey(stored)
+          // The draft's preview tabs follow it the same way (#73890).
+          adoptDraftPreviewTabs(stored)
           createOverrides?.onComposerScopeAssigned?.(stored)
           // Hold creatingSessionRef until the route lands on `stored` (release
           // effect above). setTimeout(0) raced use-route-resume back onto the
@@ -1431,8 +1440,13 @@ export function useSessionActions({
       // wrong machine ("resume failed: session not found").
       const ambientConnection = $connection.get()
 
+      // Keep the legacy primary-local profile door: main may resolve a named
+      // profile to its own remote override (#94166). A registry secondary is
+      // already an explicit source, even when it is This device under Home.
       const ambientConnectionId =
-        ambientConnection?.mode === 'remote' ? ambientConnection.connectionId?.trim() || '' : ''
+        ambientConnection?.mode === 'remote' || (ambientConnection?.registryScoped && !isActivePrimary())
+          ? ambientConnection.connectionId?.trim() || ''
+          : ''
 
       const provisional = provisionalTranscriptPaint(
         storedSessionId,
@@ -1484,6 +1498,21 @@ export function useSessionActions({
               profile: sessionProfile || 'default'
             }
           : sessionProfile)
+
+      // Preserve this resolved source for later prompt/approval RPCs too;
+      // otherwise an untagged row falls back to its bare profile after resume.
+      // Only for a row the ambient source actually returned: an id that did not
+      // resolve (deep link, routed restore) proves nothing about its owner, and
+      // a persisted hint would pin it to whichever source was in front.
+      if (
+        !ownerRoute &&
+        storedForProfile &&
+        !storedForProfile.connection_id &&
+        sessionOwner &&
+        typeof sessionOwner === 'object'
+      ) {
+        setSessionOwnerHint(storedSessionId, sessionOwner)
+      }
 
       const sessionRestScope = transcriptRestScope(ownerRoute, storedForProfile, ambientConnectionId)
       provisional.paint(sessionRestScope)
@@ -2711,6 +2740,9 @@ export function useSessionActions({
   // Shared fork: create a child session seeded with `branchMessages`, linked to
   // `parentStoredId` so it nests under its parent, then open it as its own tab
   // and switch to it — the parent chat stays put (mirrors openNewSessionTile).
+  // `idempotencyKey` lets a caller-driven retry reuse the SAME key so the
+  // backend can dedupe (without it, every call generates a fresh key and a
+  // response-lost retry would spawn a duplicate child).
   const forkBranch = useCallback(
     async (
       branchMessages: BranchMessage[],
@@ -2719,9 +2751,15 @@ export function useSessionActions({
       cwd?: string,
       profile?: null | string,
       branchCount?: number,
-      ownerRoute?: SessionOwnerRoute
+      ownerRoute?: SessionOwnerRoute,
+      idempotencyKey?: string
     ): Promise<boolean> => {
       creatingSessionRef.current = true
+
+      // Stable per-attempt key so a backend retry after a lost response returns
+      // the SAME child session instead of spawning a duplicate. Generated here
+      // for first-time calls; supplied by the retry action on subsequent tries.
+      const key = idempotencyKey ?? `branch-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 
       try {
         // A branch belongs to its parent's OWNING backend. Two facets, and both
@@ -2772,6 +2810,9 @@ export function useSessionActions({
         if (!createFlight) {
           const branchParams = {
             session_id: sourceSessionId,
+            // Stable per-attempt key: a lost-response retry of session.branch /
+            // session.branch_whole returns the SAME child (#65410).
+            idempotency_key: key,
             ...(branchCount !== undefined ? { count: branchCount } : {})
           }
 
@@ -2780,7 +2821,10 @@ export function useSessionActions({
             source: 'desktop',
             ...(cwd && { cwd }),
             ...(profile ? { profile } : {}),
-            ...(parentStoredId && { parent_session_id: parentStoredId })
+            ...(parentStoredId && { parent_session_id: parentStoredId }),
+            // Stable per-attempt key: a backend retry after a lost response
+            // returns the SAME child instead of spawning a duplicate (#65410).
+            idempotency_key: key
           }
 
           createFlight = (
@@ -2930,7 +2974,28 @@ export function useSessionActions({
         // Navigate throw or earlier failure after arming pending — never leave
         // creatingSessionRef stuck true.
         releaseCreatingSessionGuard()
-        notifyError(err, copy.branchFailed)
+        // Backend restart / WS drop mid-RPC leaves the branch uncreated with no
+        // recovery path. Surface a persistent error with a retry action so the
+        // user can re-attempt without re-doing the whole branch flow. The retry
+        // passes the SAME idempotency key so the backend can dedupe if the
+        // first create actually committed but its response was lost.
+        notifyError(err, copy.branchFailed, {
+          action: {
+            label: t.common.retry,
+            onClick: () => {
+              void forkBranch(
+                branchMessages,
+                sourceSessionId,
+                parentStoredId,
+                cwd,
+                profile,
+                branchCount,
+                ownerRoute,
+                key
+              )
+            }
+          }
+        })
 
         return false
       } finally {
@@ -2947,6 +3012,7 @@ export function useSessionActions({
       requestGateway,
       resumeSession,
       selectedStoredSessionIdRef,
+      t,
       updateSessionState
     ]
   )
@@ -3284,6 +3350,18 @@ export function useSessionActions({
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
           sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
           dropSessionState(tiledRuntimeId)
+        }
+
+        // Live per-session stores (the same four the stop paths clear) key on
+        // the gateway event's session_id, i.e. the runtime id. When the deleted
+        // row is selected, closingRuntimeId is the foreground runtime, which can
+        // differ from the stored→runtime mapping (cached/tiled runtime), so
+        // clear the stored id and both runtime ids — once per distinct id.
+        for (const sid of new Set([storedSessionId, closingRuntimeId, tiledRuntimeId].filter(Boolean) as string[])) {
+          clearSessionSubagents(sid)
+          clearSessionTodos(sid)
+          clearSessionGoal(sid)
+          resetSessionBackground(sid)
         }
       } catch (err) {
         if (listed?.session) {

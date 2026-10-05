@@ -234,6 +234,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Keybind | `KEYBINDS_AREA` | `data: KeybindContribution` |
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
+| Model menu rows | `MODEL_MENU_ROW_AREA` | `data: ModelMenuRowContribution` — a leading icon / trailing badge per model |
 | Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
 
 ### Panes
@@ -420,6 +421,45 @@ manual pick. To tint the *active* theme rather than replace it, use
 `setAccentOverride(hex)` and clear it in `ctx.onDispose` — the standalone
 [Accent Picker](https://github.com/NousResearch/hermes-desktop-accent-picker)
 plugin is the worked example (it is also a complete, installable disk plugin).
+
+#### Styling the chat switch — `data-session-switching`
+
+Opening a chat places its transcript in steps: the session loads, the rows
+land, then the restored scroll position settles a few frames later. A theme
+that wants that hidden (or faded) targets one documented attribute instead of
+watching the route or the DOM: core sets `data-session-switching="true"` on the
+chat surface root (`[data-chat-surface]`) from the frame the switch starts until
+the new transcript's rows are on screen and its scroll position has settled,
+then removes it.
+
+```css
+/* Hide the transcript while it is being placed, fade it in when it lands. */
+:root[data-hermes-theme="noir"] [data-chat-surface] [data-slot="aui_thread-viewport"] {
+  transition: opacity 0.12s ease-out;
+}
+:root[data-hermes-theme="noir"] [data-chat-surface][data-session-switching] [data-slot="aui_thread-viewport"] {
+  opacity: 0;
+  transition: none;
+}
+```
+
+- **Per surface.** The primary chat and every tile has its own
+  `[data-chat-surface]`; the attribute marks only the one switching. Narrow to
+  the primary pane with `[data-composer-target="main"]`.
+- **Always ends.** It is held by core's own load and scroll-restore phases:
+  the load phase ends when the transcript arrives or the resume gives up, the
+  restore phase on settle (a bounded number of frames) or the first user
+  scroll/key/pointer input, and both on unmount — a theme that hides content
+  under it cannot strand the chat hidden. A brand-new empty draft never sets it.
+- **The contract is the attribute.** Target `[data-session-switching]` and the
+  `data-chat-surface` / `data-slot` hooks; internal class names are not a
+  contract and change without notice. Do not toggle the attribute yourself or
+  reproduce it with a route listener or `MutationObserver` (catalog rule 8).
+
+This replaces the t3-code-theme `installSwitchFade` pattern (a focus-store
+listener plus a `requestAnimationFrame` loop that polled the transcript's rows
+and scroll position, then toggled its own root attribute): the CSS above is the
+whole migration.
 
 ### Composer extensions
 
@@ -651,6 +691,60 @@ register(ctx) {
 
 The reasoning-pill visibility CSS the plugin also injected has no hook; it is
 only needed if the app ever hides that label at narrow widths.
+
+#### Model menu row decorations
+
+`MODEL_MENU_ROW_AREA` puts a per-model mark inside the native model menu — the
+one the composer's pill opens, and every other surface that renders
+`ModelCatalogMenu`. A contribution supplies `decorate(row)`; core paints what it
+returns in two fixed slots of the row: a **leading icon** before the model name
+and a **trailing badge** after core's own chips. The row's markup, name,
+star, submenu and click stay core's.
+
+```ts
+import { MODEL_MENU_ROW_AREA, type ModelMenuRowContribution } from '@hermes/plugin-sdk'
+
+interface ModelMenuRowContext {
+  provider: string  // provider slug: 'anthropic', 'openrouter', …
+  model: string     // the model id the row commits
+  label: string     // the display name core paints on the row
+}
+interface ModelMenuRowDecoration {
+  icon?: ReactNode  // element (<img>, <svg>, a component) or short text, drawn in a 1rem box
+  badge?: string    // plain text chip
+}
+
+ctx.register({
+  area: MODEL_MENU_ROW_AREA,
+  id: 'provider-marks',
+  data: {
+    decorate: ({ provider }) => {
+      const src = PROVIDER_ICONS[provider]   // data: URL of an SVG mark
+      return src ? { icon: <img alt="" src={src} /> } : null
+    }
+  } satisfies ModelMenuRowContribution
+})
+```
+
+**Arbitration.** Decorators run in registry order, **per slot**: the first one
+that returns a usable `icon` fills the icon slot, the first usable `badge` the
+badge slot, so an icon plugin and a pricing-badge plugin compose on the same
+row. `null` (or nothing usable) declines. Only a React element or a non-empty
+string is an icon and only a non-empty string is a badge; anything else is
+ignored rather than rendered. A decorator that **throws** declines too, and an
+icon component that throws while rendering blanks only its own slot (it sits
+in its own error boundary) — a broken plugin can never take the menu down.
+`decorate()` re-runs only when the registry or the row's provider/model/label
+changes, so keep it a pure lookup.
+
+**Teardown.** An ordinary data contribution: the `ctx.register` disposer (and
+plugin disable/reload) removes it and the rows repaint bare.
+
+**Migrating t3-code-theme.** Its provider marks were painted into the open menu
+by a `MutationObserver` that located the rows in the menu's DOM and wrote mask
+images onto them. The same marks come from `decorate({ provider })` returning
+`{ icon: <img alt="" src={providerSvgDataUrl(provider)} /> }` — no DOM reads,
+and the row keeps working when the menu's markup changes.
 
 ### Appearance settings
 
@@ -1109,6 +1203,7 @@ wins (no plugin "owns" the value afterwards, nothing to tear down for `set`).
 ```ts
 type DesktopSettingValues = {
   'backdrop.v1': boolean
+  chatTextScale: 90 | 100 | 110 | 125 | 150 | 175 // percent; Appearance → Chat Text Size
   'composerPopout.gesturesEnabled': boolean
   'intro-splash.v1': boolean
   'reasoning.collapsedByDefault': boolean
@@ -1132,6 +1227,22 @@ register(ctx) {
 }
 ```
 
+`chatTextScale` is the user's chat text size (default `110`). It scales the
+transcript and composer text (and its line height) through the host's
+`--chat-text-scale` CSS variable, so a plugin or theme that wants larger/smaller
+reading text sets the same preset the user would pick; pane geometry, row
+spacing and chrome stay core-owned. Only the
+six presets are accepted: an off-preset number (`112`, `'125'`) throws instead of
+being snapped, so a typo can't silently reset the user's size. Like every key
+here it is the user's preference, not a plugin override: write it from an
+explicit user action in your UI (never at `register`), and read/subscribe to
+adapt your own rendering.
+
+```ts
+const dispose = host.settings.subscribe('chatTextScale', pct => setMyFontScale(pct / 100))
+ctx.onDispose(dispose)
+```
+
 Arbitration: the allowlist above is closed. An unknown key or a value outside
 the key's type throws **synchronously** (`Unsupported desktop setting: …` /
 `Invalid value for desktop setting: …`) and nothing is written — `host.settings`
@@ -1145,6 +1256,7 @@ Deliberately **not** keys, and why:
 | keybind map (`hermes.desktop.keybinds`) | `KEYBINDS_AREA` contribution | a raw map write rebinds every other plugin's shortcuts; the area merges per plugin and is torn down with it |
 | active theme / mode record | `THEMES_AREA` (register a theme; the user selects it) | theme selection is per window/profile and arbitrated by the app, not a flat preference |
 | `pluginDecisions` (desktop plugin on/off) | the app's Plugins tab (a read-only view is a separate SDK hook) | a plugin toggling another plugin's enable state is plugins interfering with each other |
+| chat / composer width, turn spacing, session-row geometry | nothing yet — these become keys only once they exist as core Appearance preferences (chat width: #55287) | layout is host-owned; a plugin-owned geometry contract would make every theme a layout contract |
 | `toolView.technical`, `embed-mode`, `titlebarAppActions`, `translucency.v2`, `user-bubble-transparency.v1`, `hermesDesktop.zoom.*` | follow-up keys after each store is audited | some drive the main process or window chrome; each needs its own guard and ownership review before it becomes plugin-writable |
 
 Migration — `hermes-appearance-hub`, which today does
@@ -1634,7 +1746,7 @@ pipeline as a trust boundary.
 |----------|---------|
 | Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
-| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS` |
+| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |

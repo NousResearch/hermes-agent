@@ -14,6 +14,7 @@ function touchIndex(dir) {
 
 function withTempRoot(fn) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-dashboard-web-dist-'))
+
   try {
     return fn(root)
   } finally {
@@ -24,6 +25,7 @@ function withTempRoot(fn) {
 test('desktop-spawned dashboard resolves hermes_cli/web_dist, not Desktop renderer dist', () => {
   withTempRoot(root => {
     const activeHermesRoot = path.join(root, 'hermes-agent')
+
     const desktopDist = path.join(
       activeHermesRoot,
       'apps',
@@ -34,6 +36,7 @@ test('desktop-spawned dashboard resolves hermes_cli/web_dist, not Desktop render
       'app.asar.unpacked',
       'dist'
     )
+
     const dashboardDist = path.join(activeHermesRoot, 'hermes_cli', 'web_dist')
     touchIndex(desktopDist)
     touchIndex(dashboardDist)

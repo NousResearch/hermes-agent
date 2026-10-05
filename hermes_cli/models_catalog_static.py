@@ -9,6 +9,11 @@ from __future__ import annotations
 from typing import NamedTuple
 
 
+class CuratedFallbackModels(list[str]):
+    """A curated list served because the provider's live catalog was unavailable. The disk cache
+    treats it as a placeholder, never as the account's real catalog (#107391)."""
+
+
 # Fallback OpenRouter snapshot used when the live catalog is unavailable, as
 # ``(model_id, description shown in menus)``. ``:free`` SKUs are described "free".
 _OPENROUTER_DESCRIPTIONS = {
@@ -47,6 +52,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
         "tencent/hy3",
         "stepfun/step-3.7-flash", "nvidia/nemotron-3-super-120b-a12b", "meta/muse-spark-1.2",
         "meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3", "meta/muse-spark-1.3-contributor", "sakana/fugu-ultra",
+        "upstage/solar-pro4", "upstage/solar-mini4",
         "openrouter/pareto-code", "thinkingmachines/inkling:free", "thinkingmachines/inkling-small:free",
         "minimax/minimax-m3:free", "z-ai/glm-5.2:free", "poolside/laguna-s-2.1:free", "poolside/laguna-xs-2.1:free",
         "nvidia/nemotron-3-super-120b-a12b:free", "nvidia/nemotron-3-ultra-550b-a55b:free",
@@ -202,7 +208,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5",
         "kimi-k2-thinking", "kimi-k2-turbo-preview", "kimi-k2-0905-preview",
     ],
-    "stepfun": ["step-3.5-flash", "step-3.5-flash-2603"],
+    "stepfun": ["step-3.7-flash", "step-3.5-flash", "step-3.5-flash-2603"],
     "moonshot": [
         "kimi-k3", "kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview", "kimi-k2-0905-preview",
     ],

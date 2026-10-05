@@ -432,12 +432,23 @@ stage_prerequisites() {
     command -v curl >/dev/null 2>&1 || fail "curl is required. Install it with your system package manager."
     # PM's Node on musl is the unofficial-builds musl archive, which links the
     # system libstdc++; without it every node/npm stage fails verification.
-    if [[ "$(uv_bootstrap_target 2>/dev/null)" == *-musl ]]; then
+    local _target
+    _target="$(uv_bootstrap_target 2>/dev/null)" || _target=""
+    if [[ "$_target" == *-musl ]]; then
         local _libdir _stdcxx=""
         for _libdir in /lib /usr/lib /usr/local/lib; do
             compgen -G "$_libdir/libstdc++.so.6*" >/dev/null && { _stdcxx=yes; break; }
         done
         [ -n "$_stdcxx" ] || fail "musl host: the Node.js runtime needs the system libstdc++. Install it (Alpine: apk add libstdc++, Void: xbps-install libstdc++) and re-run."
+    fi
+    # glibc Node links libatomic.so.1, absent on minimal Debian/RHEL hosts. PM
+    # installs the distro package with `sudo -n` under its install lock, so
+    # cache sudo credentials now, while the terminal can answer the prompt.
+    if [ "$NON_INTERACTIVE" != true ] && [[ "$_target" == linux-* && "$_target" != *-musl ]] \
+        && [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && has_terminal \
+        && ! { ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null; } | grep -q 'libatomic\.so\.1'; then
+        log "Node.js needs libatomic.so.1; sudo may ask for your password to install it"
+        sudo -v </dev/tty || log_warn "sudo failed; if Node.js fails, install libatomic (Debian/Ubuntu: libatomic1) and re-run"
     fi
     log_success "prerequisites ok (git, curl)"
 }
@@ -473,6 +484,13 @@ stage_repository() {
                     : > "${pack%.pack}.promisor" || log_warn "could not mark $pack as a partial-clone pack"
                 fi
             done
+            # Existing treeless checkout: same commit-graph lazy-fetch loop guard (#127711).
+            git -C "$INSTALL_DIR" config maintenance.commit-graph.enabled false \
+                || log_warn "could not disable maintenance.commit-graph.enabled in $INSTALL_DIR"
+            git -C "$INSTALL_DIR" config gc.writeCommitGraph false \
+                || log_warn "could not disable gc.writeCommitGraph in $INSTALL_DIR"
+            git -C "$INSTALL_DIR" config fetch.writeCommitGraph false \
+                || log_warn "could not disable fetch.writeCommitGraph in $INSTALL_DIR"
         fi
         run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
             || fail "git fetch failed"
@@ -589,6 +607,16 @@ stage_repository() {
             fail "cannot publish cloned checkout"
         fi
         rmdir "$staged"
+        # A treeless checkout must never write a commit-graph: over a graph with
+        # changed-path data that lazy-fetches the trees of every unseen commit, in a
+        # loop (#127711). gc.auto stays on: `hermes update` folds lazy-fetch packs with
+        # `gc --auto`.
+        git -C "$INSTALL_DIR" config maintenance.commit-graph.enabled false \
+            || log_warn "could not disable maintenance.commit-graph.enabled in $INSTALL_DIR"
+        git -C "$INSTALL_DIR" config gc.writeCommitGraph false \
+            || log_warn "could not disable gc.writeCommitGraph in $INSTALL_DIR"
+        git -C "$INSTALL_DIR" config fetch.writeCommitGraph false \
+            || log_warn "could not disable fetch.writeCommitGraph in $INSTALL_DIR"
         log_success "Hermes Agent cloned"
     fi
     if [ -n "$INSTALL_COMMIT" ]; then
@@ -646,6 +674,9 @@ bootstrap_pm() {
     [ "$SKIP_BROWSER" = true ] && pm_args+=(--without agent-browser)
     [ "$SKIP_COMPUTER_USE" = true ] && pm_args+=(--without cua-driver)
     bootstrap_python
+    # Refresh the sudo ticket cached in prerequisites (never prompts): the
+    # clone and downloads can outlast sudo's timestamp_timeout.
+    if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then sudo -n -v 2>/dev/null || :; fi
     (cd "$INSTALL_DIR" && run_logged "Installing dependencies (hash-verified via uv.lock)" \
         "$boot_py" -m pm.cli "${pm_args[@]}") \
         || fail "pm install failed"
@@ -705,10 +736,14 @@ wire_shell_path() {
         *)
             append_shell_path "$HOME/.bashrc" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
             append_shell_path "$HOME/.profile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
-            # Bash prefers .bash_profile over .profile if both exist.
-            if [ -f "$HOME/.bash_profile" ]; then
-                append_shell_path "$HOME/.bash_profile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
-            fi
+            # A login bash reads only the first of .bash_profile, .bash_login, .profile,
+            # so an existing earlier file hides the .profile line above.
+            local rc
+            for rc in "$HOME/.bash_profile" "$HOME/.bash_login"; do
+                if [ -f "$rc" ]; then
+                    append_shell_path "$rc" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
+                fi
+            done
             ;;
     esac
 }

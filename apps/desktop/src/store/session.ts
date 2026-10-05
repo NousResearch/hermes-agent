@@ -36,6 +36,7 @@ const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
 const COMPOSER_MODEL_SOURCE_KEY = 'hermes.desktop.composer.model-source'
 const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
 const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
+const COMPOSER_SERVICE_TIER_KEY = 'hermes.desktop.composer.service-tier'
 
 // Unlike presentation-oriented $connection, this scope is published from the
 // gateway activation coordinate before profile-change effects can reseed the
@@ -659,11 +660,9 @@ export function mergeSessionPage(
   // root so a mid-turn refresh can't drop a touchSessionActivity bump.
   const prevByLineage = new Map(previous.map(session => [lineageIdentity(session), session]))
 
-
   const merged = incoming
     .filter(session => !session.is_internal_child)
     .map(session => {
-
       const prev = prevById.get(identity(session)) ?? prevByLineage.get(lineageIdentity(session))
       // User-send stamps last_active before the DB flushes the user row
       // (last_active = MAX(messages.timestamp)). Keep the fresher of the two.
@@ -1386,7 +1385,7 @@ export const $resumeExhaustedSessionId = atom<string | null>(null)
 export const $currentModel = atom(storedComposerString(COMPOSER_MODEL_KEY) ?? '')
 export const $currentProvider = atom(storedComposerString(COMPOSER_PROVIDER_KEY) ?? '')
 export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
-export const $currentServiceTier = atom('')
+export const $currentServiceTier = atom(storedString(COMPOSER_SERVICE_TIER_KEY) ?? '')
 export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
 // Effective approval-bypass state mirrored from the gateway (session.info).
 // Persistence lives in the backend config (approvals.mode), so this is a plain
@@ -1640,7 +1639,17 @@ export const setBusy = (next: Updater<boolean>) => updateAtom($busy, next)
 export const setAwaitingResponse = (next: Updater<boolean>) => updateAtom($awaitingResponse, next)
 
 export const setCurrentModel = (next: Updater<string>) => {
+  const previous = $currentModel.get()
   updateAtom($currentModel, next)
+
+  if ($currentModel.get() !== previous) {
+    // The wire level belongs to one (provider, model, effort) triple, and a
+    // different model clamps a different set. Carrying the old route's stamp
+    // makes the pill present a stale escalation as a confirmed one, so drop it
+    // and let the next `session.info` re-stamp.
+    $currentReasoningEffortWire.set('')
+  }
+
   const key = composerSelectionKey(COMPOSER_MODEL_KEY)
 
   if (key !== null) {
@@ -1649,7 +1658,13 @@ export const setCurrentModel = (next: Updater<string>) => {
 }
 
 export const setCurrentProvider = (next: Updater<string>) => {
+  const previous = $currentProvider.get()
   updateAtom($currentProvider, next)
+
+  if ($currentProvider.get() !== previous) {
+    $currentReasoningEffortWire.set('')
+  }
+
   const key = composerSelectionKey(COMPOSER_PROVIDER_KEY)
 
   if (key !== null) {
@@ -1730,7 +1745,10 @@ export const $defaultReasoningEffort = atom('')
 
 export const setDefaultReasoningEffort = (next: string) => updateAtom($defaultReasoningEffort, next)
 
-export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
+export const setCurrentServiceTier = (next: Updater<string>) => {
+  updateAtom($currentServiceTier, next)
+  persistString(COMPOSER_SERVICE_TIER_KEY, $currentServiceTier.get())
+}
 
 export const setCurrentFastMode = (next: Updater<boolean>) => {
   updateAtom($currentFastMode, next)

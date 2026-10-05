@@ -330,6 +330,22 @@ function Initialize-ResolvedPaths {
     } else {
         Join-Path $resolvedHome 'hermes-agent'
     }
+    # A HermesHome equal to or inside InstallDir puts the pm tool store
+    # (<home>\tools) inside the checkout: the repository stage's
+    # occupied-directory preflight then refuses every retry after the first
+    # run populated it, and `git stash --include-untracked` would sweep the
+    # toolchain into the stash. Refuse before anything downloads (#124526)
+    # unless HERMES_RUNTIME_DIR parks the store outside the checkout.
+    # The store lands in HERMES_RUNTIME_DIR when set (Get-PmStoreRoot), else under HermesHome.
+    $cmpStore = if ($env:HERMES_RUNTIME_DIR) { "$env:HERMES_RUNTIME_DIR" } else { "$resolvedHome" }
+    $cmpStore = $cmpStore.TrimEnd('\', '/')
+    $cmpDir = "$resolvedDir".TrimEnd('\', '/')
+    $dirPrefix = $cmpDir + [IO.Path]::DirectorySeparatorChar
+    $storeInside = $cmpStore -eq $cmpDir -or
+        $cmpStore.StartsWith($dirPrefix, [StringComparison]::OrdinalIgnoreCase)
+    if ($storeInside) {
+        Fail "HermesHome ($resolvedHome) cannot be the install directory or live inside it ($resolvedDir): the tool store would land inside the checkout. Use a separate -HermesHome, or point HERMES_RUNTIME_DIR outside -InstallDir."
+    }
     # The param() variables live in the CALLER's scope, which is the script
     # scope only under -File. Under the documented
     # `& ([scriptblock]::Create((irm ...)))` install they live in the
@@ -614,9 +630,22 @@ function Write-Banner {
 # Native calls run through here; the exit code stays in $LASTEXITCODE for the
 # caller to judge. (The relaxed preference lives in this function's scope and
 # reaches only the block invoked from it.)
-function Invoke-Native([scriptblock]$Command) {
+function Invoke-Native([scriptblock]$Command, [switch]$Utf8Output) {
     $ErrorActionPreference = 'Continue'
-    & $Command
+    if (-not $Utf8Output) { & $Command; return }
+
+    # Windows PowerShell 5.1 decodes captured native stdout using the console
+    # code page. uv prints UTF-8 even when that code page is CP936/CP437.
+    # Scope the decoder to UTF-8 producers; other tools and an iex caller
+    # must retain their original encoding. $OutputEncoding controls stdin,
+    # so changing it would not repair paths returned by `uv python find`.
+    $previousNativeOutputEncoding = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+        & $Command
+    } finally {
+        [Console]::OutputEncoding = $previousNativeOutputEncoding
+    }
 }
 
 # Interactive runs collapse child-process output (git, uv, pm, the builds)
@@ -733,6 +762,16 @@ function Stage-Prerequisites {
     Write-Ok "prerequisites ok (git)"
 }
 
+# A treeless checkout must never write a commit-graph: over a graph with changed-path
+# data that lazy-fetches the trees of every unseen commit, in a loop (#127711).
+# gc.auto stays on: `hermes update` folds lazy-fetch packs with `gc --auto`.
+function Disable-TreelessGraphWrites([string]$Dir) {
+    foreach ($key in 'maintenance.commit-graph.enabled', 'gc.writeCommitGraph', 'fetch.writeCommitGraph') {
+        Invoke-Native { git -C $Dir config $key false } | Out-Null
+        if ($LASTEXITCODE) { Write-Warn "could not set $key in $Dir" }
+    }
+}
+
 function Stage-Repository {
     # Refuse an occupied non-checkout before provisioning Git. This check
     # needs no tool download and must not overwrite a user's existing files.
@@ -779,6 +818,7 @@ function Stage-Repository {
                     catch { Write-Warn "could not mark $marker as a partial-clone pack" }
                 }
             }
+            Disable-TreelessGraphWrites $InstallDir
         }
         Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
         if ($LASTEXITCODE) { Fail "git fetch failed" }
@@ -888,6 +928,7 @@ function Stage-Repository {
             }
             if (-not $cloned) { Fail "git clone failed; no checkout published" }
             Move-Item -LiteralPath $tree -Destination $InstallDir
+            Disable-TreelessGraphWrites $InstallDir
             Write-Ok "Hermes Agent cloned"
         } finally {
             Remove-Item -LiteralPath $staged -Recurse -Force -ErrorAction SilentlyContinue
@@ -929,11 +970,11 @@ function Get-BootstrapPython {
     # A bare version lets uv pick emulated x86_64 on Windows-on-ARM.
     $pyArch = if ((Get-WindowsArch) -eq 'arm64') { 'aarch64' } else { 'x86_64' }
     $pyRequest = "cpython-$pyVersion-windows-$pyArch-none"
-    $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest 2>$null }) -join "`n"
+    $bootPy = (Invoke-Native -Utf8Output { & $uv python find --managed-python --no-project $pyRequest 2>$null }) -join "`n"
     if ($LASTEXITCODE -or -not $bootPy) {
         Invoke-Logged "Downloading Python $pyVersion" { & $uv python install --no-bin --no-registry $pyRequest }
         if ($LASTEXITCODE) { Fail "bootstrap Python installation failed" }
-        $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest }) -join "`n"
+        $bootPy = (Invoke-Native -Utf8Output { & $uv python find --managed-python --no-project $pyRequest }) -join "`n"
     }
     if ($LASTEXITCODE -or -not $bootPy) { Fail "bootstrap Python lookup failed" }
     $script:BootstrapPython = $bootPy.Trim()

@@ -538,6 +538,34 @@ class TestGatewayRedeliverySweep:
         assert [r["obligation_id"] for r in dl.sweep_failed_for_runtime("slack")] == ["ob-1"]
 
     @pytest.mark.asyncio
+    async def test_redelivery_anchors_reply_to_the_inbound_message(self):
+        """A recovered reply is sent as a platform reply to the message it answers, so the user can
+        tell which question a late answer belongs to; rows without an anchor stay unanchored."""
+        _record()
+        dl.mark_attempting("ob-1")
+        _orphan("ob-1")
+        with dl._DB_LOCK, dl._transaction() as conn:
+            conn.execute("UPDATE delivery_obligations SET reply_to='4242' WHERE obligation_id='ob-1'")
+        adapter = self._adapter()
+        runner = self._runner(adapter)
+
+        await runner._redeliver_pending_obligations()
+
+        assert adapter.send.call_args.kwargs["reply_to"] == "4242"
+
+    @pytest.mark.asyncio
+    async def test_redelivery_without_anchor_sends_unanchored(self):
+        _record()
+        dl.mark_attempting("ob-1")
+        _orphan("ob-1")
+        adapter = self._adapter()
+        runner = self._runner(adapter)
+
+        await runner._redeliver_pending_obligations()
+
+        assert adapter.send.call_args.kwargs["reply_to"] is None
+
+    @pytest.mark.asyncio
     async def test_runtime_failed_redelivery_clears_resume_before_send(self):
         from gateway.config import Platform
 
@@ -808,3 +836,13 @@ class TestOwnerAlivePidProbe:
 
         monkeypatch.setattr(status, "_pid_exists", boom)
         assert dl._owner_alive(12345, 999) is False
+
+
+def test_record_obligation_stores_reply_anchor():
+    dl.record_obligation(obligation_id="ob-anchor", session_key="agent:main:telegram:dm:1", platform="telegram",
+                         chat_id="1", thread_id=None, content="answer", reply_to="77")
+    dl.record_obligation(obligation_id="ob-plain", session_key="agent:main:telegram:dm:1", platform="telegram",
+                         chat_id="1", thread_id=None, content="answer")
+    assert dl.get_reply_to("ob-anchor") == "77"
+    assert dl.get_reply_to("ob-plain") is None
+    assert dl.get_reply_to("missing") is None

@@ -183,6 +183,8 @@ export function createUpdateHoldScreen(host: UpdateHoldScreenHost) {
 export interface UpdateHoldIpcHost {
   /** Only the primary window's boot surface may drive the hold. */
   isPrimaryBootSender: (event: IpcMainInvokeEvent) => boolean
+  /** main.ts's boot progress snapshot (`hermes:boot-progress:get`). */
+  bootProgress: () => { updateHold?: UpdateHoldWire | null }
   currentHold: () => HeldState | null
   log: (line: string) => void
   flushLog: () => void
@@ -192,6 +194,16 @@ export interface UpdateHoldIpcHost {
 // The blocked boot screen's three ways out (R8 D3). Only the primary window's
 // boot surface can drive them, and only for the hold it is showing.
 export function registerUpdateHoldIpc(ipc: IpcMain, host: UpdateHoldIpcHost) {
+  // The boot snapshot every window pulls on mount. Only the primary window
+  // gets the hold: boot-progress pushes (the hold clearing included) reach the
+  // main window alone and the ways out refuse every other sender, so a HUD or
+  // session window that mounted the blocked screen would keep it forever.
+  ipc.handle('hermes:boot-progress:get', async event => {
+    const state = host.bootProgress()
+
+    return host.isPrimaryBootSender(event) ? state : { ...state, updateHold: null }
+  })
+
   ipc.handle('hermes:update-hold:recheck', async event => {
     const hold = host.currentHold()
 

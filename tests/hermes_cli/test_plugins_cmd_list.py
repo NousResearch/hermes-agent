@@ -132,6 +132,42 @@ def test_declared_capabilities_for_entrypoint_uses_distribution_metadata(
     ]
 
 
+def test_entrypoint_spec_does_not_abort_plugin_status(monkeypatch, tmp_path):
+    """A pip entry point is stored as ``module:attr``. Status must not open that
+    string as a plugin directory: on Windows the colon is WinError 123 and the
+    exception takes down the whole plugin list. A directory model provider still
+    reports enabled with no ``plugins.enabled`` entry.
+    """
+    from pathlib import Path
+
+    provider = tmp_path / "acme-provider"
+    provider.mkdir()
+    (provider / "plugin.yaml").write_text(
+        "name: acme-provider\nkind: model-provider\n", encoding="utf-8")
+
+    real_stat = Path.stat
+
+    def stat(self, *args, **kwargs):
+        text = str(self)
+        drive = len(text) > 1 and text[0].isalpha() and text[1] == ":"
+        if ":" in text and not drive:
+            err = OSError(22, "The filename, directory name, or volume label syntax is incorrect")
+            err.winerror = 123
+            raise err
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+
+    assert plugins_cmd._plugin_status(
+        "mnemosyne_hermes", set(), set(), key="mnemosyne_hermes",
+        source="entrypoint", dir_path="mnemosyne_hermes:register",
+    ) == "not enabled"
+    assert plugins_cmd._plugin_status(
+        "acme-provider", set(), set(), key="acme-provider",
+        source="user", dir_path=provider,
+    ) == "enabled"
+
+
 @pytest.mark.platforms("posix")  # chmod is a no-op on Windows
 @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores file permissions")
 def test_unreadable_plugin_dir_is_skipped_by_every_manifest_scan(monkeypatch, tmp_path, caplog):

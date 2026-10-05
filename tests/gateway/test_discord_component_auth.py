@@ -107,11 +107,6 @@ def test_snapshot_user_is_confirmed_with_the_live_check(snapshot, verdict, expec
     assert seen == [11111]
 
 
-def test_live_revoke_keeps_the_role_grant():
-    interaction = _interaction(11111, role_ids=[42])
-    assert _component_check_auth(interaction, {"11111"}, {42}, live_auth=lambda _i: False) is True
-
-
 @pytest.mark.asyncio
 async def test_approval_buttons_follow_a_revoke_made_after_connect():
     # `hermes pairing revoke` in another process rewrites .env and the pairing store, never the

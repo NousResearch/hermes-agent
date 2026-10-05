@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import suppress
 from typing import Any, Optional
 
+from agent.i18n import render_localized, tl
 from hermes_constants import get_hermes_home
 
 
@@ -25,12 +26,7 @@ def _build_codex_gpt5_autoraise_notice(
         cap = "128K" if model.startswith("gpt-5.3-codex-spark") else "272K"
     from_pct = round(autoraise["from"] * 100)
     to_pct = round(autoraise["to"] * 100)
-    return (
-        f"ℹ Codex {model} caps context at {cap}, so auto-compaction was raised "
-        f"to {to_pct}% (from {from_pct}%) to use more of the window before "
-        f"summarizing.\n"
-        f"  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
-    )
+    return tl("display.notice.codex_autoraise", model=model, cap=cap, to_pct=to_pct, from_pct=from_pct)
 
 
 def _codex_gpt55_autoraise_notice_marker():
@@ -102,7 +98,7 @@ def _emit_compression_summary(agent, cs):
             print(f"📊 Context limit: {_cc.context_length:,} tokens (auto-compression disabled)")
         # Gateway users get the same text via _compression_warning on turn 1.
         if _autoraise_notice:
-            agent._safe_print(_autoraise_notice, diagnostic=True)
+            agent._safe_print(render_localized(_autoraise_notice), diagnostic=True)
 
     # status_callback isn't wired yet: stash for replay on the first turn; mark shown so
     # repeated inits stay silent.

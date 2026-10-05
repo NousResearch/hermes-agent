@@ -42,6 +42,8 @@ def automatic_compaction_status_message(engine: Any, *, phase: str, default_mess
     message = formatter(phase=phase, default_message=default_message, **context) if callable(formatter) else default_message
     if message is None:
         return None
+    if getattr(message, "i18n_key", None):  # a tl() line: stripping would drop the key the chat sink localizes
+        return message
     return str(message).strip() or None
 
 

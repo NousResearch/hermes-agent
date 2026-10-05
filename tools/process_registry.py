@@ -25,6 +25,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 # (not merely "not Windows") so macOS and other POSIX platforms never touch systemd.
 # See #70716.
 _IS_LINUX = platform.system() == "Linux"
+from tools.environments.base import BaseEnvironment
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
@@ -115,6 +116,8 @@ _SYSTEMD_SCOPE_PROBE_TTL_SECONDS = 60.0
 # older systemd-run rejects the option (and never expanded there), so the probe drops it on rejection.
 _SYSTEMD_RUN_NO_EXPAND = True
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
+# Consecutive sandbox status probes with no usable answer (2s apart) before the session is lost.
+_ENV_POLL_MAX_UNREADABLE = 3
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
 _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
 
@@ -1308,6 +1311,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             f"( nohup bash -lc {q(command)} > {q(log_path)} 2>&1; "
             f"rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)} ) & "
             f"echo $! > {q(pid_path)} && cat {q(pid_path)}")
+        if cwd:
+            # Launch in the resolved cwd, not env.cwd (the shared cwd of whichever command, any
+            # session, last reported one). The cd runs in a subshell: passing cwd= to execute()
+            # would cd the wrapper itself, whose CWD marker then repoints the shared env.cwd for
+            # every session. A bad cwd exits 126 before the launch, so no PID -> failed_start.
+            quote_cd = getattr(env, "_quote_cwd_for_cd", None) or BaseEnvironment._quote_cwd_for_cd
+            bg_command = f"( builtin cd -- {quote_cd(cwd)} || exit 126; {bg_command} )"
         try:
             result = env.execute(bg_command, timeout=timeout, rewrite_compound_background=False)
             output = result.get("output", "").strip()
@@ -1484,61 +1494,99 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             f"tail -c +$((O+1)) {quoted_log_path} 2>/dev/null | head -c $((S-O)); fi"
         )
 
+    @staticmethod
+    def _env_status_command(quoted_pid_path: str, quoted_exit_path: str) -> str:
+        """Shell command printing ``exit <code>``, ``running`` or ``gone``.
+
+        The exit file decides completion: the wrapper writes it only after the command
+        finished, whereas ``kill -0`` also succeeds on a zombie, and a PID 1 that does not
+        reap (docker without ``--init``) leaves the wrapper one forever. ``kill -0`` (minus
+        /proc zombies) is only the fallback for a process that vanished without writing
+        it; the file is re-read after the probe so an exit landing in between is not
+        reported as ``gone``."""
+        e, p = quoted_exit_path, quoted_pid_path
+        return (
+            f"P=$(cat {p} 2>/dev/null); "
+            f'if [ ! -s {e} ] && kill -0 "$P" 2>/dev/null '
+            f'&& ! grep -qs "^State:[[:space:]]*Z" "/proc/$P/status"; then echo running; '
+            f'elif [ -s {e} ]; then echo "exit $(cat {e})"; else echo gone; fi')
+
+    def _ingest_env_log_delta(self, session: ProcessSession, env: Any, quoted_log_path: str, offset: int) -> int:
+        """Read the log bytes written since ``offset`` into the session (buffer, watch
+        patterns, live stream) and return the new offset (bytes: the shell counts bytes)."""
+        raw = env.execute(self._log_delta_command(quoted_log_path, offset), timeout=10).get("output", "")
+        header, _, delta = raw.partition("\n")
+        try:
+            size_str, offset_str = header.split()
+            new_size, used_offset = int(size_str), int(offset_str)
+        except ValueError:
+            # No usable header (command failed, shell missing a tool): skip this read
+            # rather than act on a half-read value.
+            return offset
+        if used_offset < offset:
+            # Log rotated/truncated: what we hold no longer lines up. Restart.
+            with session._lock:
+                session.output_buffer = ""
+        if delta:
+            with session._lock:
+                session.output_buffer += delta
+                if len(session.output_buffer) > session.max_output_chars:
+                    session.output_buffer = session.output_buffer[-session.max_output_chars:]
+            self._check_watch_patterns(session, delta)
+            self._emit_output(session, delta)
+        return new_size
+
     def _env_poller_loop(self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str):
         """Background thread: poll a sandbox log file for non-local backends."""
         q = shlex.quote
-        # Byte offset already read from the log (bytes, not chars: the shell counts bytes).
+        status_command = self._env_status_command(q(pid_path), q(exit_path))
         prev_output_bytes = 0
+        unreadable = 0
         while not session.exited:
             time.sleep(2)
             try:
-                # Read only the bytes written since the last poll.
-                raw = env.execute(self._log_delta_command(q(log_path), prev_output_bytes),
-                                  timeout=10).get("output", "")
-                header, _, delta = raw.partition("\n")
-                try:
-                    size_str, offset_str = header.split()
-                    new_size = int(size_str)
-                    used_offset = int(offset_str)
-                except ValueError:
-                    # No usable header (command failed, shell missing a tool): skip this
-                    # poll rather than act on a half-read value.
-                    new_size = None
-                    used_offset = None
-                    delta = ""
-                if new_size is not None:
-                    if used_offset < prev_output_bytes:
-                        # Log rotated/truncated: what we hold no longer lines up. Restart.
-                        with session._lock:
-                            session.output_buffer = ""
-                    prev_output_bytes = new_size
-                if delta:
-                    with session._lock:
-                        session.output_buffer += delta
-                        if len(session.output_buffer) > session.max_output_chars:
-                            session.output_buffer = session.output_buffer[-session.max_output_chars:]
-                    self._check_watch_patterns(session, delta)
-                    self._emit_output(session, delta)
-
-                check = env.execute(
-                    f"kill -0 \"$(cat {q(pid_path)} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5)
-                check_output = check.get("output", "").strip()
-                if check_output and check_output.splitlines()[-1].strip() != "0":
-                    # Exited -- read the exit code captured by the wrapper shell.
-                    exit_str = env.execute(f"cat {q(exit_path)} 2>/dev/null", timeout=5).get("output", "").strip()
-                    try:
-                        exit_code = int(exit_str.splitlines()[-1].strip())
-                    except (ValueError, IndexError):
-                        exit_code = -1
-                    session.exit_code = exit_code  # unlike mark_exited, a raced kill still takes this code
-                    self._finish_exited(session, exit_code)
+                prev_output_bytes = self._ingest_env_log_delta(session, env, q(log_path), prev_output_bytes)
+                status = env.execute(status_command, timeout=5).get("output", "").strip()
+                state, _, code = (status.splitlines() or [""])[-1].strip().partition(" ")
+                if state == "running":
+                    unreadable = 0
+                    continue
+                if state not in ("exit", "gone"):
+                    # Backends report a dead sandbox as a result, not an exception (managed Modal
+                    # "exec failed: 404", docker "No such container", a 124 probe timeout), so an
+                    # answer that is none of the three must not mean "running" forever: tolerate a
+                    # transient blip, then finish the session as lost.
+                    unreadable += 1
+                    if unreadable < _ENV_POLL_MAX_UNREADABLE:
+                        continue
+                    logger.warning("background process %s: status probe unreadable %d times in a row "
+                                   "(last answer %r); treating its sandbox as lost",
+                                   session.id, unreadable, status[-200:])
+                    self._finish_backend_lost(session)
                     return
+                try:
+                    exit_code = int(code)
+                except ValueError:
+                    exit_code = -1
+                # The read above sampled the log before the exit: whatever the process
+                # wrote after that (usually its last lines) is only on disk now.
+                try:
+                    self._ingest_env_log_delta(session, env, q(log_path), prev_output_bytes)
+                except Exception:
+                    logger.debug("final log read failed for %s", session.id, exc_info=True)
+                session.exit_code = exit_code  # unlike mark_exited, a raced kill still takes this code
+                self._finish_exited(session, exit_code)
+                return
             except Exception:
                 # Environment might be gone (sandbox reaped, etc.)
-                session.exited, session.exit_code = True, -1
-                session.completion_reason, session.termination_source = "lost", "backend_lost"
-                self._move_to_finished(session)
+                self._finish_backend_lost(session)
                 return
+
+    def _finish_backend_lost(self, session: ProcessSession) -> None:
+        """End a sandbox session whose backend can no longer answer for it."""
+        session.exited, session.exit_code = True, -1
+        session.completion_reason, session.termination_source = "lost", "backend_lost"
+        self._move_to_finished(session)
 
     def _pty_reader_loop(self, session: ProcessSession):
         """Background thread: read output from a PTY process."""

@@ -262,8 +262,14 @@ def run(argv: Sequence[str], *, inherit_lock: bool = False, **kwargs) -> subproc
         try:
             stdout, stderr = proc.communicate(input, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
+            _kill_tree(proc)
             proc.kill()
-            exc.stdout, exc.stderr = proc.communicate()
+            try:
+                exc.stdout, exc.stderr = proc.communicate(timeout=_DRAIN_SECONDS)
+            except subprocess.TimeoutExpired:
+                # A descendant the tree kill missed still holds the pipes: leave them to the
+                # reader threads (closing a pipe a thread is reading blocks) and give up on them.
+                proc.stdin = proc.stdout = proc.stderr = None
             raise
         except BaseException:
             proc.kill()
@@ -272,6 +278,20 @@ def run(argv: Sequence[str], *, inherit_lock: bool = False, **kwargs) -> subproc
     if check and code:
         raise subprocess.CalledProcessError(code, proc.args, output=stdout, stderr=stderr)
     return subprocess.CompletedProcess(proc.args, code, stdout, stderr)
+
+
+# How long a timed-out child's output may still drain after its tree was killed.
+_DRAIN_SECONDS = 5
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Windows: kill the child AND what it started (git.exe's git-remote-https inherits the
+    stdout/stderr pipes; killing git.exe alone leaves communicate() waiting on the helper). Not
+    TerminateJobObject: the job also holds the update's other children."""
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
 def run_git(git_cmd: Sequence[str], args: Sequence[str], **kwargs) -> subprocess.CompletedProcess:

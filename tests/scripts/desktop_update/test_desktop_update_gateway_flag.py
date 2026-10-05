@@ -13,6 +13,7 @@ opt-out can silently regress.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
@@ -34,10 +35,11 @@ requires_posix_handoff = pytest.mark.skipif(
 FAKE_HERMES = """#!/usr/bin/env bash
 case "$*" in *--help*) echo "--keep-stash"; exit 0 ;; esac
 printf '%s\\n' "$*" >> "$HERMES_TEST_ARGV"
+case " $* " in *" update "*) printf '%s\\n' "${HERMES_TEST_UPDATE_OUTPUT:-}" ;; esac
 exit 0
 """
 
-def _run_handoff(tmp_path: Path, extra_args: list[str]) -> list[str]:
+def _run_handoff(tmp_path: Path, extra_args: list[str], update_output: str = "") -> list[str]:
     """Run the real hand-off end to end; return the argv of each hermes call."""
     install_root = tmp_path / "hermes-agent"
     (install_root / "venv" / "bin").mkdir(parents=True)
@@ -47,7 +49,8 @@ def _run_handoff(tmp_path: Path, extra_args: list[str]) -> list[str]:
 
     argv_log = tmp_path / "argv.jsonl"
     # posix.sh honours an ambient HERMES_HOME; the result file must land where this test looks.
-    env = {**os.environ, "TMPDIR": str(tmp_path), "HERMES_TEST_ARGV": str(argv_log), "HERMES_HOME": str(tmp_path)}
+    env = {**os.environ, "TMPDIR": str(tmp_path), "HERMES_TEST_ARGV": str(argv_log), "HERMES_HOME": str(tmp_path),
+           "HERMES_TEST_UPDATE_OUTPUT": update_output}
     subprocess.run(
         ["/bin/bash", str(SHIM_DIR / "posix.sh"), "--install-root", str(install_root), "--no-ui", *extra_args],
         env=env,
@@ -89,3 +92,19 @@ def test_no_gateway_flag_omits_gateway_from_update(tmp_path):
         assert "--gateway" not in argv, f"--gateway reappeared in update argv: {call}"
         assert "--keep-stash" in argv, "--no-gateway must not disturb --keep-stash"
         assert "--yes" in argv
+
+
+@requires_posix_handoff
+def test_owed_desktop_build_is_a_manual_outcome_even_when_the_followup_is_truncated(tmp_path):
+    """Contract C3: the update committed (exit 0) but this app was not rebuilt.
+
+    The receipt follow-up is capped at 500 chars and leads with whichever product failed first,
+    so it can lose the desktop part; the CLI's own whole-line marker is what the hand-off reads.
+    """
+    followup = "  ⚠ Update follow-up 'build' did not finish: feature dependencies: " + "x" * 440
+    _run_handoff(tmp_path, [], f"{followup}\n  Desktop app build owed: desktop app build failed\n✓ Update complete!")
+
+    result = json.loads((tmp_path / ".hermes-update-result.json").read_text(encoding="utf-8-sig"))
+    assert result["exit_code"] == 0
+    assert result["manual"] is True
+    assert "could not be rebuilt" in result["message"]

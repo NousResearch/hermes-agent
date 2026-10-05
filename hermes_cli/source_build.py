@@ -138,12 +138,18 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     attempt("feature dependencies", lambda: _install_configured_features_missing_deps(project_root))
     frontends = source_frontends(project_root)
     if frontends:
-        env = source_build_env(explicit=True)
+        desktop_built = False
+        env: dict = {}
         workspaces = frontends + (("apps/desktop",) if desktop else ())
         publish_stage("Updating Node dependencies")
+
+        def node_dependencies() -> None:
+            # Acquiring npm is part of this step: its failure must be reported like the install's.
+            env.update(source_build_env(explicit=True))
+            prepare_source_dependencies(project_root, workspaces, env=env, explicit=True)
+
         # Every product compiles from these node_modules: without them there is nothing to build.
-        if attempt("Node dependencies", lambda: prepare_source_dependencies(
-                project_root, workspaces, env=env, explicit=True)):
+        if attempt("Node dependencies", node_dependencies):
             # An update that changed no TUI/web input reuses the receipted output, as the
             # launch path already does; recompiling it produces the same bytes. Desktop
             # additionally needs the packaged app to name HEAD (its baked stamp carries the
@@ -162,7 +168,11 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
                     publish_stage("Building the web UI")
                     attempt("web UI build", lambda: build_source_web(project_root, env=env))
             if desktop:
-                attempt("desktop app build", lambda: _build_desktop_product(project_root, env, publish_stage))
+                desktop_built = attempt("desktop app build", lambda: _build_desktop_product(project_root, env, publish_stage))
+        if desktop and not desktop_built:
+            # One whole line the Desktop hand-off scripts match: the follow-up text is truncated
+            # and names whichever products failed first, so it cannot say if THIS app was rebuilt.
+            print(f"  Desktop app build owed: {failures[-1][0]} failed")
     # A configured memory provider that no longer ships in core is installed from the
     # catalog for every profile home sharing this venv (config, data and tool names
     # unchanged). The update must finish even if the migration blows up.

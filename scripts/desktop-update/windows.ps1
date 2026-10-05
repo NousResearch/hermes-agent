@@ -1731,6 +1731,15 @@ try {
         }
     }
 
+    # Contract C3: a Desktop build that failed after the code committed is an owed follow-up
+    # (exit 0); the CLI prints one whole "Desktop app build owed:" line for it. The user is on
+    # the new Hermes but this app was not rebuilt: a manual outcome, never plain success.
+    if ($res.Code -eq 0 -and -not $desktopBuildFailed -and $res.Output -match '(?m)^\s*Desktop app build owed: ') {
+        $manualAction = $true
+        $manualMsg = ("Hermes was updated, but the Desktop app could not be rebuilt, so it still runs its old build. Run ``hermes desktop --force-build`` in a terminal to rebuild it; the update log has the build error. " + $manualMsg).Trim()
+        Write-HandoffLog $manualMsg
+    }
+
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
         $finalCode = 0
         $finalMsg = "Update complete."

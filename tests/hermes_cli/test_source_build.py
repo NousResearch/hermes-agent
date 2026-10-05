@@ -322,6 +322,35 @@ def test_update_failure_raises_without_retries_or_replacing_live_app(source_prod
 
 
 @pytest.mark.platforms("linux")
+@pytest.mark.parametrize("failure", ["npm-unavailable", "desktop-after-long-feature-failure"])
+def test_unbuilt_desktop_is_named_on_one_whole_line(source_products, monkeypatch, capsys, failure):
+    # The Desktop hand-off keys on this line: the receipt follow-up is truncated and leads with
+    # whichever product failed first, and an npm acquisition failure used to escape un-named.
+    import hermes_cli.main_install_repair as install_repair
+    from hermes_cli.source_build import ProductBuildError, build_update_products
+
+    root, _ = source_products
+
+    def fail(error):
+        def raiser(*_args, **_kwargs):
+            raise error
+        return raiser
+
+    if failure == "npm-unavailable":
+        monkeypatch.setattr(pm, "ensure", fail(pm.InstallError("npm", "unavailable")))
+        expected = "Desktop app build owed: Node dependencies failed"
+    else:
+        monkeypatch.setattr(install_repair, "_install_configured_features_missing_deps",
+                            fail(RuntimeError("pip install failed: " + "x" * 600)))
+        (root / "fail-desktop").touch()
+        expected = "Desktop app build owed: desktop app build failed"
+    with pytest.raises(ProductBuildError):
+        build_update_products(root, desktop=True)
+    lines = [line.strip() for line in capsys.readouterr().out.splitlines()]
+    assert [line for line in lines if line.startswith("Desktop app build owed:")] == [expected]
+
+
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("desktop", [False, True])
 def test_module_cli_builds_the_requested_products(source_products, desktop, monkeypatch):
     import runpy

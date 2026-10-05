@@ -811,6 +811,9 @@ class GatewayAdapterLifecycleMixin:
         logger.info("Reconnecting %s (attempt %d)...", platform.value, attempt)
         adapter = None
         try:
+            from gateway.platform_registry import platform_registry
+            # A re-armed plugin import + register() joins its load deadline: run it off the event loop.
+            await self._run_in_executor_with_context(platform_registry.get, platform.value)
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
                 if not self._adapter_may_heal(platform, platform_config):

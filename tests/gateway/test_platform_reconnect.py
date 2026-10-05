@@ -1,6 +1,7 @@
 """Tests for the gateway platform reconnection watcher."""
 
 import asyncio
+import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -379,8 +380,10 @@ class TestPlatformReconnectWatcher:
         manager.rearm_failed_platform.side_effect = lambda name: rearmed.append(name) or True
         monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
         adapter = StubAdapter(platform=platform)
-        healed = []
+        healed, on_loop = [], []
         monkeypatch.setattr(runner, "_create_adapter", lambda p, c: adapter if rearmed and healed else None)
+        monkeypatch.setattr("gateway.platform_registry.platform_registry.get",
+                            lambda name: on_loop.append(threading.current_thread() is threading.main_thread()))
 
         for tick in range(6):
             if tick == 5:
@@ -389,6 +392,7 @@ class TestPlatformReconnectWatcher:
             await runner._reconnect_failed_platform(platform, time.monotonic())
 
         assert rearmed == ["irc"] * 3  # a permanently broken plugin stops being re-imported after the cap
+        assert on_loop and not any(on_loop)  # the plugin load never blocks the event loop
         runner._install_reconnected_adapter.assert_awaited_once_with(platform, adapter)
 
 

@@ -148,6 +148,14 @@ class CLIModalMixin:
                 app.invalidate()
 
         # `!<command>` shell mode is checked before slash dispatch, matching the Enter path.
+        # Enter queues a bang command while a turn runs (it is a local dispatch, never
+        # steered), so a long `!cmd` cannot block the prompt_toolkit loop for a live turn.
+        if self._agent_running and text.strip().startswith("!"):
+            self._pending_input.put(text)
+            preview = text[:80] + ("..." if len(text) > 80 else "")
+            _cprint(f"  {t('cli.editor.queued_next_turn', preview=preview)}")
+            _done()
+            return
         try:
             if self.handle_bang_shell(text):
                 _done()
@@ -192,14 +200,10 @@ class CLIModalMixin:
             return
 
         if self._agent_running:
-            # Agent busy → honour the configured busy-input behaviour (interrupt/steer remain
-            # reachable via the normal Enter path).
-            if self.busy_input_mode == "interrupt":
-                self._interrupt_queue.put(text)
-            else:
-                self._pending_input.put(text)
-            preview = text[:80] + ("..." if len(text) > 80 else "")
-            _cprint(f"  {t('cli.editor.queued_next_turn', preview=preview)}")
+            # Agent busy → honour the configured busy-input behaviour exactly as Enter does
+            # (steer / interrupt / queue), so a Ctrl+G draft is steered when the session is in
+            # steer mode instead of always being queued for the next turn.
+            self._tui_enter_while_busy(text, [], text)
         else:
             self._pending_input.put(text)
         _done()

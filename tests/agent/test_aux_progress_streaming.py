@@ -266,52 +266,159 @@ class TestAggregateChatStream:
         assert result.choices[0].message.content == "ok"
         assert closed == [True]
 
-    def test_silent_stream_fails_fast_through_the_real_transport(self, monkeypatch):
-        """#100501: an endpoint that sends one chunk then goes silent must fail at the no-progress
-        window as a timeout (so retry/fallback run), not block until the request read timeout."""
+    @staticmethod
+    def _sse_server(gates: dict):
+        """Loopback HTTP/1.1 keepalive SSE endpoint; the request's ``model`` picks the script."""
         import http.server
         import json
 
-        import openai
+        def frame(handler, payload):
+            raw = (payload if isinstance(payload, str) else f"data: {json.dumps(payload)}\n\n").encode()
+            handler.wfile.write(b"%x\r\n%s\r\n" % (len(raw), raw))
+            handler.wfile.flush()
 
-        from agent.auxiliary_client import _should_skip_same_provider_retry
+        def chunk(content=None, finish=None, usage=None):
+            return {"id": "c1", "object": "chat.completion.chunk", "created": 0, "model": "m",
+                    "choices": [{"index": 0, "delta": {"content": content} if content else {},
+                                 "finish_reason": finish}], **({"usage": usage} if usage else {})}
 
-        release = threading.Event()
-
-        class _Silent(http.server.BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.0"
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
 
             def log_message(self, *args):
                 pass
 
             def do_POST(self):
-                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                script = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))["model"]
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Transfer-Encoding", "chunked")
                 self.end_headers()
-                chunk = {"id": "c1", "object": "chat.completion.chunk", "created": 0, "model": "m",
-                         "choices": [{"index": 0, "delta": {"content": "partial"}, "finish_reason": None}]}
-                self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
                 self.wfile.flush()
-                release.wait(30)
+                try:
+                    if script == "openai/o3":  # silent reasoning before the first token
+                        time.sleep(2.0)
+                    if script == "b":
+                        gates["b_started"].set()
+                    frame(self, chunk(content="partial"))
+                    if script == "usage":  # terminal chunk with billed usage, then a stalled teardown
+                        frame(self, chunk(finish="stop", usage={
+                            "prompt_tokens": 100, "completion_tokens": 9, "total_tokens": 109}))
+                    gates.get(script, gates["release"]).wait(30)
+                    if script != "a":  # "a" ends its body at EOF (no [DONE]), freeing the keepalive socket
+                        frame(self, "data: [DONE]\n\n")
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
+                except OSError:
+                    pass
 
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Silent)
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        server.daemon_threads = True
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        monkeypatch.setattr("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.5)
+        return server
+
+    @pytest.fixture
+    def sse(self, monkeypatch):
+        """(gates, call(model, task)) against the real OpenAI SDK + loopback transport. The default
+        window is 3s and ``auxiliary.compression.no_progress_timeout`` is 0.4s."""
+        import openai
+
+        gates = {name: threading.Event() for name in ("release", "a", "b", "b_started", "usage")}
+        server = self._sse_server(gates)
+        monkeypatch.setattr("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 3.0)
+        monkeypatch.setattr("agent.auxiliary_client._get_task_no_progress_timeout",
+                            lambda task: 0.4 if task == "compression" else None)
         # Loopback stands in for a remote endpoint: the first-token window applies to non-local ones.
         monkeypatch.setattr("agent.model_metadata.is_local_endpoint", lambda _url: False)
         client = openai.OpenAI(api_key="k", base_url=f"http://127.0.0.1:{server.server_port}/v1", max_retries=0)
-        started = time.monotonic()
+
+        def call(model, task, *, via_relay_seam=False):
+            from agent.auxiliary_client import _relay_aux_call_scope, _relay_sync_completion
+
+            request = {"model": model, "messages": [], "timeout": 20.0}
+            with aux_progress_hook(lambda: None):
+                if via_relay_seam:  # a recovery rung / credential retry: the default relay callback
+                    with _relay_aux_call_scope((task,), {}):
+                        return _relay_sync_completion(client, request)
+                return _create_with_progress(client, request, task)
+
         try:
-            with aux_progress_hook(lambda: None), pytest.raises(TimeoutError) as excinfo:
-                _create_with_progress(client, {"model": "m", "messages": [], "timeout": 20.0}, "compression")
+            yield gates, call
         finally:
-            release.set()
+            for gate in gates.values():
+                gate.set()
             server.shutdown()
             client.close()
+
+    @pytest.mark.parametrize("via_relay_seam", [False, True], ids=["primary", "recovery_rung"])
+    def test_silent_stream_fails_fast_through_the_real_transport(self, sse, via_relay_seam):
+        """#100501: an endpoint that sends one chunk then goes silent fails at the task's no-progress
+        window as a timeout (so retry/fallback run), not at the request read timeout. Recovery rungs
+        go through the default relay callback and must keep the task's window."""
+        from agent.auxiliary_client import _should_skip_same_provider_retry
+
+        _gates, call = sse
+        started = time.monotonic()
+        with pytest.raises(TimeoutError) as excinfo:
+            call("m", "compression", via_relay_seam=via_relay_seam)
         assert time.monotonic() - started < 5.0
-        assert "stalled" in str(excinfo.value)
+        assert "stalled: no new output for 0.4s" in str(excinfo.value)
         assert _should_skip_same_provider_retry("compression", excinfo.value)
+
+    @pytest.mark.parametrize("case", ["reasoning_before_first_token", "stall_after_terminal_usage",
+                                      "late_timer_after_pool_reuse"])
+    def test_watchdog_only_cuts_its_own_unfinished_stream(self, sse, case):
+        """The no-progress watchdog must not cut (a) a reasoning model thinking silently before its
+        first token for 5x the inter-chunk window (main-loop reasoning floor applies), (b) a response
+        whose terminal chunk and billed usage already arrived, nor (c) a later request that reused
+        the keepalive connection after a stalled attempt's timer had already woken."""
+        gates, call = sse
+        if case == "reasoning_before_first_token":
+            gates["release"].set()  # the stream ends right after its first chunk
+            assert call("openai/o3", "compression").choices[0].message.content == "partial"
+            return
+        if case == "stall_after_terminal_usage":
+            result = call("usage", "compression")
+            assert result.choices[0].message.content == "partial"
+            assert (result.usage.prompt_tokens, result.usage.completion_tokens) == (100, 9)
+            return
+        # Hold the stalled attempt's timer at the moment it shuts a socket down; meanwhile let
+        # attempt A end at EOF (its connection may return to the pool) and start B on the client.
+        paused, resume, outcome = threading.Event(), threading.Event(), {}
+
+        def tracer(frame, event, _arg):
+            if (event == "call" and frame.f_code.co_name == "_shutdown_socket"
+                    and not paused.is_set()):
+                paused.set()
+                resume.wait(3)
+
+        def run(name, model, task):
+            try:
+                outcome[name] = call(model, task)
+            except Exception as exc:
+                outcome[name] = exc
+
+        threading.settrace(tracer)
+        try:
+            attempt_a = threading.Thread(target=run, args=("a", "a", "compression"))
+            attempt_a.start()
+            assert paused.wait(3)
+            gates["a"].set()
+            attempt_a.join(0.3)
+            attempt_b = threading.Thread(target=run, args=("b", "b", None))
+            attempt_b.start()
+            assert gates["b_started"].wait(3)
+            resume.set()
+            time.sleep(0.2)
+            gates["b"].set()
+            attempt_b.join(5)
+            attempt_a.join(5)
+        finally:
+            threading.settrace(None)
+            resume.set()
+        assert isinstance(outcome["a"], TimeoutError)
+        assert getattr(outcome["b"], "choices", None), outcome["b"]
+        assert outcome["b"].choices[0].message.content == "partial"
 
 
 

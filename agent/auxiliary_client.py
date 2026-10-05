@@ -2631,7 +2631,9 @@ def _relay_sync_completion(
     kwargs = prepare_chat_messages(client, kwargs)
     # The progress hook is installed per TASK, so every attempt (retries, recovery rungs, fallbacks)
     # must stream through _create_with_progress or the compression watchdog sees silence (#98466).
-    callback = create or (lambda request: _create_with_progress(client, request))
+    # Recovery rungs / credential retries keep the task's ``no_progress_timeout`` window.
+    task = (_RELAY_AUX_CALL_CONTEXT.get() or {}).get("task")
+    callback = create or (lambda request: _create_with_progress(client, request, task))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
@@ -7211,60 +7213,24 @@ def _create_with_progress_once(
     if hasattr(chunks, "choices"):
         _notify_aux_provider_response()
         return chunks
+    from agent.auxiliary_stream_watchdog import chat_stream_windows
     return _aggregate_chat_stream(
-        chunks, model=model, total_ceiling=total_ceiling, no_progress=_chat_stream_no_progress(client, kwargs, task))
-
-
-def _chat_stream_no_progress(client: Any, kwargs: Dict[str, Any], task: Optional[str]) -> "Tuple[float, bool]":
-    """(window, enforce before the first token) for a streamed chat-completions attempt: the Codex
-    guard's window (``auxiliary.<task>.no_progress_timeout``, 60s default, capped at the request
-    timeout). Local servers keep their silent prefill on the request timeout, as the main loop does."""
-    window = _get_task_no_progress_timeout(task or "") or _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS
-    timeout = kwargs.get("timeout")
-    if isinstance(timeout, (int, float)) and timeout > 0:
-        window = min(window, float(timeout))
-    from agent.model_metadata import is_local_endpoint
-    return window, not is_local_endpoint(str(getattr(client, "base_url", "") or ""))
-
-
-def _close_chunk_stream(chunks: Any, *, allow_aclose: bool = False) -> Any:
-    """Best-effort ``close()`` (or ``aclose()``); returns a pending awaitable or None."""
-    close_fn = getattr(chunks, "close", None) or (
-        getattr(chunks, "aclose", None) if allow_aclose else None)
-    if not callable(close_fn):
-        return None
-    try:
-        result = close_fn()
-    except Exception:
-        return None
-    return result if inspect.isawaitable(result) else None
+        chunks, model=model, total_ceiling=total_ceiling, no_progress=chat_stream_windows(client, kwargs, task))
 
 
 def _aggregate_chat_stream(
     chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None,
-    no_progress: "Optional[Tuple[float, bool]]" = None,
+    no_progress: "Optional[Tuple[float, Optional[float]]]" = None,
 ) -> Any:
     """Consume a chunk stream into a complete response; TimeoutError (phrased "timed out" so
-    ``_is_timeout_error`` matches) when *total_ceiling* elapses, or when the stream is silent for
-    the *no_progress* ``(window, first_token)`` window (#100501)."""
-    from agent.auxiliary_stream_watchdog import ChatStreamWatchdog
+    ``_is_timeout_error`` matches) past *total_ceiling* or the *no_progress* windows (#100501)."""
+    from agent.auxiliary_stream_watchdog import _close_chunk_stream, consume_chat_stream
     acc = _ChatStreamAccumulator(
         model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline())
-    watchdog = ChatStreamWatchdog(chunks, no_progress[0], first_token=no_progress[1]) if no_progress else None
     try:
-        for chunk in chunks:
-            if acc.feed(chunk) and watchdog is not None:
-                watchdog.progress()
-    except Exception as exc:
-        if watchdog is not None and watchdog.fired:
-            raise watchdog.timeout_error() from exc
-        raise
+        consume_chat_stream(chunks, acc, no_progress)
     finally:
-        if watchdog is not None:
-            watchdog.finish()
         _close_chunk_stream(chunks)
-    if watchdog is not None and watchdog.fired:
-        raise watchdog.timeout_error()
     return acc.finish()
 
 
@@ -7408,6 +7374,7 @@ async def _aggregate_chat_stream_async(
         async for chunk in chunks:
             acc.feed(chunk)
     finally:
+        from agent.auxiliary_stream_watchdog import _close_chunk_stream
         pending = _close_chunk_stream(chunks, allow_aclose=True)
         if pending is not None:
             with contextlib.suppress(Exception):
@@ -7935,7 +7902,6 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     if reason == "request timed out":
         # WARNING, naming the endpoint, the budget and the knob: the only other trace of a slow
         # local model is the fallback provider's complaint about a model it never had (#89445).
-        # A no-progress stall names its own window; the request budget is the wrong knob for it.
         stalled = "Auxiliary chat stream" in str(first_err)
         logger.warning("Auxiliary %s%s: request to %s %s (raise auxiliary.%s.%s for slow or reasoning "
                        "models) on %s, trying fallback", task or "call", tag, route.base_info or resolved_provider,

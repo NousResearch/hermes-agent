@@ -75,7 +75,7 @@ def test_explicit_base_anthropic_messages_keeps_anthropic_path():
     )
     # The wrapper — and the Anthropic SDK client it was built from — must keep
     # the /anthropic path, NOT the /v1-rewritten one.
-    mock_build.assert_called_once_with("k", _ANTHROPIC_BASE)
+    mock_build.assert_called_once_with("k", _ANTHROPIC_BASE, provider="custom")
     assert client.base_url == _ANTHROPIC_BASE
     assert model == "claude-opus-4-8"
 

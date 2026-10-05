@@ -264,6 +264,14 @@ def tl(key: str, **format_kwargs: Any) -> LocalizedText:
     return LocalizedText(t(key, lang=DEFAULT_LANGUAGE, **format_kwargs), key, format_kwargs)
 
 
+def preload_catalogs() -> None:
+    """Parse the English and active-language catalogs now. ``tl()`` and the status sinks run on
+    latency-sensitive paths (stream kill, interrupt handling) that must not pay the first YAML load."""
+    home = _current_home()
+    _load_catalog(DEFAULT_LANGUAGE, home)
+    _load_catalog(_resolve_language(home), home)
+
+
 def render_localized(text: Any) -> Any:
     """The active-language rendering of a :func:`tl` value; any other value is returned unchanged."""
     key = getattr(text, "i18n_key", None)
@@ -273,5 +281,5 @@ def render_localized(text: Any) -> Any:
 __all__ = [
     "SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "t", "get_language", "reset_language_cache",
     "supported_languages", "resolve_language_id", "language_options", "surface_catalog",
-    "LocalizedText", "tl", "render_localized",
+    "LocalizedText", "tl", "render_localized", "preload_catalogs",
 ]

@@ -702,6 +702,8 @@ def _init_turn_state(agent, run_budget_seconds):
     agent.run_budget_seconds = _normalize_run_budget_seconds(run_budget_seconds)
     from agent.credits_tracker import new_credits_latch
     agent._credits_latch = new_credits_latch()  # threshold-notice latch (sticky keys + gates)
+    from agent.i18n import preload_catalogs
+    preload_catalogs()  # status lines render on stream/abort paths; parse catalogs here, not mid-stream
 
 
 def _setup_logging(agent):

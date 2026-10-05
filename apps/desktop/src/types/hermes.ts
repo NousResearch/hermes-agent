@@ -1096,6 +1096,10 @@ export interface AutomationBlueprint {
   fields: AutomationBlueprintField[]
   command: string
   appUrl: string
+  /** Where it comes from; absent on backends that predate plugin blueprints. */
+  source?: 'builtin' | 'plugin'
+  /** The registering plugin's name when source is 'plugin' (key is `<plugin>:<key>`). */
+  plugin?: null | string
 }
 
 export interface ProfileCreatePayload {

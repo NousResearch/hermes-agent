@@ -1010,38 +1010,7 @@ class PluginContext:
         self._manager._subscribe_event(self.plugin_id, event, callback)
         logger.debug("Plugin %s subscribed to event: %s", self.manifest.name, event)
 
-    @_serialized_replacement
-    def register_skill(
-        self, name: str, path: Path, description: str = "",
-        frontmatter: Optional[Mapping[str, Any]] = None,
-    ) -> PluginRegistration:
-        """Register a read-only skill resolvable as ``'<plugin_name>:<name>'`` via ``skill_view()``
-        and listed by ``skills_list``. Not copied into ``~/.hermes/skills/`` and not in the system
-        prompt's ``<available_skills>``. Raises ``ValueError`` (``':'``/invalid chars) or
-        ``FileNotFoundError``."""
-        from agent.skill_utils import _NAMESPACE_RE
-        if ":" in name:
-            raise ValueError(f"Skill name '{name}' must not contain ':' (the namespace is derived from the "
-                             f"plugin name '{self.manifest.name}' automatically).")
-        if not name or not _NAMESPACE_RE.match(name):
-            raise ValueError(f"Invalid skill name '{name}'. Must match [a-zA-Z0-9_-]+.")
-        # Plugin register() helpers commonly pass the SKILL.md location as str
-        # (PluginManifest.path is stored as str); the registry and find_plugin_skill()
-        # promise a Path downstream.
-        path = Path(path)
-        if not path.exists():
-            raise FileNotFoundError(f"SKILL.md not found at {path}")
-        namespace = self.manifest.skill_namespace or self.manifest.name
-        qualified = f"{namespace}:{name}"
-        if self.manifest.portable and qualified in self._manager._plugin_skills:
-            raise ValueError(f"Plugin skill '{qualified}' is already registered")
-        entry = {
-            "path": path, "plugin": namespace, "plugin_key": self.plugin_id, "bare_name": name,
-            "description": description, "frontmatter": dict(frontmatter or {}),
-        }
-        return self._register_entry("skill", qualified, self._manager._plugin_skills, entry,
-                                    "Plugin %s registered skill: %s", qualified)
-
+    from hermes_cli.plugins_content import register_automation_blueprint, register_skill
 
 # -- scoped provider registrars ------------------------------------------------------------------
 # Every ``register_<category>_provider`` shares one body (:meth:`PluginContext._register_scoped_provider`):
@@ -1218,6 +1187,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._plugin_commands: Dict[str, dict] = {}
         self._system_prompt_sections: Dict[str, PluginSystemPromptSection] = {}
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
+        self._automation_blueprints: Dict[str, Any] = {}  # "<plugin>:<key>" -> AutomationBlueprint
         self._portable_mcp_servers: Dict[str, Dict[str, Any]] = {}
         self._portable_mcp_server_plugins: Dict[str, str] = {}
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
@@ -1590,6 +1560,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
                 "category": "plugin", "frontmatter": dict(entry.get("frontmatter", {})),
             } for qualified, entry in sorted(self._plugin_skills.items())
         ]
+
+    def list_automation_blueprints(self) -> List[Any]:
+        """Plugin-registered ``AutomationBlueprint``s, sorted by key."""
+        return [bp for _key, bp in sorted(self._automation_blueprints.items())]
 
     def has_portable_mcp_servers(self) -> bool:
         return bool(self._portable_mcp_servers)

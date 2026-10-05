@@ -32,6 +32,7 @@ import {
   clearDashboardTokenReloadAttempt,
 } from "@/lib/dashboard-auth-reload";
 import { apiErrorFromNetworkFailure, apiErrorFromResponse } from "@/lib/api-error";
+import type { AutomationBlueprint } from "@/lib/automation-blueprints";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -2475,29 +2476,6 @@ export interface CronDeliveryTarget {
   name: string;
   home_target_set: boolean;
   home_env_var: string | null;
-}
-
-export interface AutomationBlueprintField {
-  name: string;
-  type: "time" | "enum" | "text" | "weekdays";
-  label: string;
-  default: string | null;
-  options: string[];
-  optional: boolean;
-  /** When false, options are suggestions — any value is accepted. */
-  strict?: boolean;
-  help: string;
-}
-
-export interface AutomationBlueprint {
-  key: string;
-  title: string;
-  description: string;
-  category: string;
-  tags: string[];
-  fields: AutomationBlueprintField[];
-  command: string;
-  appUrl: string;
 }
 
 export interface SkillInfo {

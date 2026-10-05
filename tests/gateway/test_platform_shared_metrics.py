@@ -84,9 +84,13 @@ def test_every_connect_attempt_records_one_health_row_with_a_closed_error_class(
     ]
 
 
-def test_a_reconnect_backoff_loop_is_one_failed_connect_until_it_recovers(rows):
+def test_a_reconnect_backoff_loop_is_one_failed_connect_until_it_recovers(rows, monkeypatch):
     outage = ConnectionResetError("network down")
-    assert _connect(_Adapter(connect=outage)) == "ConnectionResetError"  # cold start
+    monkeypatch.setattr(rsm, "enabled", lambda: False)  # collection off: nothing recorded, so nothing latched
+    assert _connect(_Adapter(connect=outage)) == "ConnectionResetError"
+    smg.drain()
+    monkeypatch.setattr(rsm, "enabled", lambda: True)
+    assert _connect(_Adapter(connect=outage)) == "ConnectionResetError"  # opted in mid-outage: counts
     for _ in range(5):  # the watcher's backoff retries during the same outage
         assert _connect(_Adapter(connect=outage), is_reconnect=True) == "ConnectionResetError"
     assert _connect(_Adapter(platform=Platform.DISCORD, connect=outage)) == "ConnectionResetError"
@@ -95,9 +99,13 @@ def test_a_reconnect_backoff_loop_is_one_failed_connect_until_it_recovers(rows):
     smg.drain()
     smg._failing_connects.update(dict.fromkeys(smg._failing_connects, "2000-01-01"))  # ...still down a day later
     assert _connect(_Adapter(connect=outage), is_reconnect=True) == "ConnectionResetError"
+    # Two custom adapters both emit "plugin" but are separate outages: beta's recovery leaves alpha's open.
+    for name, result in (("alpha", outage), ("beta", outage), ("beta", True), ("alpha", outage)):
+        _connect(_Adapter(platform=name, connect=result), is_reconnect=True)
     assert [(r["event"], r["platform"]) for r in rows("hermes.platform.health")] == [
         ("connect_failed", "telegram"), ("connect_failed", "discord"),
         ("reconnect", "telegram"), ("connect_failed", "telegram"), ("connect_failed", "telegram"),
+        ("connect_failed", "plugin"), ("connect_failed", "plugin"), ("reconnect", "plugin"),
     ]
 
 

@@ -81,6 +81,11 @@ def _fake_pool_store(monkeypatch):
 
     monkeypatch.setattr("agent.credential_pool.write_credential_pool", _write)
     monkeypatch.setattr("agent.credential_pool.read_credential_pool", _read)
+    # ``persist_pool_entries`` (the pool's write path) lives in the root
+    # write-through sibling and resolves ``write_credential_pool`` from its
+    # own globals; patch that seam too or the winner's rotation never lands
+    # in the fake store and the loser has nothing to adopt.
+    monkeypatch.setattr("agent.credential_pool_root_writethrough.write_credential_pool", _write)
     return store
 
 

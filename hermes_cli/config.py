@@ -48,7 +48,7 @@ from hermes_constants import (  # noqa: F401
 from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F401
 from utils import atomic_replace, fast_safe_load, file_signature, mkstemp_beside
 from hermes_cli.config_read_errors import (
-    _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
+    _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, UnparseableConfigError, _backups_dir_display,
     _refuse_failed_read, _refuse_overwrite, _warn_config_parse_failure, _yaml_error_details,
     _yaml_error_location)
 
@@ -2036,7 +2036,8 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
     except Exception as exc:
         _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
         raise _refuse_overwrite(
-            config_path, "has a formatting error", exc, _FIX_YAML.format(backups=_backups_dir_display())) from exc
+            config_path, "has a formatting error", exc, _FIX_YAML.format(backups=_backups_dir_display()),
+            unparseable=True) from exc
     if loaded is None:
         return {}
     if not isinstance(loaded, dict):
@@ -2044,7 +2045,7 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
         _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
         raise _refuse_overwrite(
             config_path, f"must start with settings names, but its top level is a {type(loaded).__name__}",
-            exc, _FIX_YAML.format(backups=_backups_dir_display())) from exc
+            exc, _FIX_YAML.format(backups=_backups_dir_display()), unparseable=True) from exc
     return loaded
 
 
@@ -2075,7 +2076,7 @@ def _omitted_config_paths(
 
 def _write_config_state(
     config_path: Path, data: Dict[str, Any], *, allow_omissions: bool,
-    extra_content_on_create: Optional[str] = None,
+    extra_content_on_create: Optional[str] = None, replace_unparseable: bool = False,
 ) -> None:
     """Shared comment-preserving config writer; omission policy is selected by the public wrapper."""
     from utils import atomic_roundtrip_yaml_save
@@ -2096,7 +2097,8 @@ def _write_config_state(
                 "Pass the complete current config, or use atomic_config_replace() only when "
                 "deletion by omission is deliberate.",
             ) from exc
-    atomic_roundtrip_yaml_save(config_path, data, extra_content_on_create=extra_content_on_create)
+    atomic_roundtrip_yaml_save(
+        config_path, data, extra_content_on_create=extra_content_on_create, replace_unparseable=replace_unparseable)
 
 
 def atomic_config_write(
@@ -2114,10 +2116,13 @@ def atomic_config_write(
 
 def atomic_config_replace(
     config_path: Path, data: Dict[str, Any], *, extra_content_on_create: Optional[str] = None,
+    replace_unparseable: bool = False,
 ) -> None:
-    """Persist the complete desired config state; omitted mapping keys are deliberately deleted."""
+    """Persist the complete desired config state; omitted mapping keys are deliberately deleted.
+    ``replace_unparseable``: see ``save_config``."""
     _write_config_state(
-        config_path, data, allow_omissions=True, extra_content_on_create=extra_content_on_create)
+        config_path, data, allow_omissions=True, extra_content_on_create=extra_content_on_create,
+        replace_unparseable=replace_unparseable)
 
 
 def load_config() -> Dict[str, Any]:
@@ -2508,12 +2513,17 @@ def _commented_sections_for_save(normalized: Dict[str, Any]) -> Optional[str]:
 
 def save_config(
     config: Dict[str, Any], *, strip_defaults: bool = True,
-    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False):
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False,
+    replace_unparseable: bool = False):
     """Save configuration to ~/.hermes/config.yaml.
     Schema defaults are not written unless the user explicitly set them (the path exists in the
     raw config before normalisation), so config.yaml is never contaminated with defaults that
     would hide future default changes. ``merge_existing`` deep-merges the on-disk raw config
-    under *config* so partial callers cannot drop sections they omitted."""
+    under *config* so partial callers cannot drop sections they omitted. ``replace_unparseable``
+    is for a caller that sends the whole document (the dashboard's YAML editor): the fail-closed
+    guard protects callers that build *config* from a read of the file, so a file that does not
+    parse is replaced instead of refused — its bytes were already copied to backups/config/ when
+    the parse failure was recorded. A file that cannot be read at all is still refused."""
     with _CONFIG_LOCK:
         if is_managed():
             managed_error("save configuration")
@@ -2529,7 +2539,12 @@ def save_config(
         # fail-closed read is the single authority here: ``read_raw_config()`` is cached and
         # swallows transient stat/open errors into ``{}``, and a ``{}`` at this point makes the
         # strip pass drop every user section whose value matches a default (#113301).
-        _raw_for_paths = require_readable_config_before_write(config_path)
+        try:
+            _raw_for_paths = require_readable_config_before_write(config_path)
+        except UnparseableConfigError:
+            if not replace_unparseable:
+                raise
+            _raw_for_paths = {}
         if merge_existing and _raw_for_paths:
             config = _merge_partial_save(_raw_for_paths, config)
 
@@ -2545,7 +2560,8 @@ def save_config(
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
-        atomic_config_replace(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
+        atomic_config_replace(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized),
+                              replace_unparseable=replace_unparseable)
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)

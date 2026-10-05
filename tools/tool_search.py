@@ -447,6 +447,9 @@ def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[s
                          config: Optional[ToolSearchConfig] = None,
                          connector_search: Optional[Any] = None) -> str:
     config = config or load_config()
+    # tolerate legacy callers that send {"query": ...} instead of {"queries": [...]}
+    if "queries" not in args and "query" in args:
+        args = {**args, "queries": args["query"]}
     queries, err = _string_list_arg(args, "queries", dedupe=False, max_items=_MAX_QUERIES_PER_CALL,
                                     retry_hint="Retry with fewer, more targeted queries.")
     if err:

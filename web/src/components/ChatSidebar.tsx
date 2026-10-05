@@ -92,6 +92,67 @@ export function sidecarSessionCreateParams(profile?: string): Record<string, unk
   }
 }
 
+interface ChatSidebarBannerProps {
+  banner: string
+  error: boolean
+  credential: boolean
+  sidecarGaveUp: boolean
+  eventKind?: 'reconnecting' | 'rejected' | 'gaveUp'
+  onReconnect(): void
+  onSwitchModel(): void
+}
+
+function ChatSidebarBanner({
+  banner,
+  error,
+  credential,
+  sidecarGaveUp,
+  eventKind,
+  onReconnect,
+  onSwitchModel
+}: ChatSidebarBannerProps) {
+  const { t } = useI18n()
+  const navigate = useNavigate()
+  return (
+    <Card className="flex items-start gap-2 border-destructive/40 bg-destructive/5 px-3 py-2 text-xs">
+      <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />
+
+      <div className="min-w-0 flex-1">
+        <div className="wrap-break-word text-destructive">{banner}</div>
+
+        {!error && !credential && eventKind === 'rejected' && (
+          <Button size="sm" outlined className="mt-1" onClick={() => window.location.reload()} prefix={<RefreshCw />}>
+            {t.chatSidebar.reloadPage}
+          </Button>
+        )}
+        {(error || sidecarGaveUp || (!credential && eventKind !== 'rejected')) && (
+          <Button size="sm" outlined className="mt-1" onClick={onReconnect} prefix={<RefreshCw />}>
+            {t.chatSidebar.reconnectSidePanel}
+          </Button>
+        )}
+        {!error && credential && (
+          <div className="mt-1 flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              outlined
+              prefix={<KeyRound />}
+              // Router navigation: a full page load would tear down the
+              // xterm scrollback and the chat sockets. (The mobile portal
+              // still lives under ChatPage, so router context is present.)
+              onClick={() => navigate('/env')}
+            >
+              {t.chatSidebar.addKey}
+            </Button>
+            <Button size="sm" outlined onClick={() => onSwitchModel()}>
+              {t.chatSidebar.switchModelAction}
+            </Button>
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+}
+
 export function ChatSidebar({
   channel,
   profile,
@@ -100,7 +161,6 @@ export function ChatSidebar({
   onSessionTitleChange
 }: ChatSidebarProps) {
   const { t, format } = useI18n()
-  const navigate = useNavigate()
   // `version` bumps on reconnect (manual button, profile/channel switch) and
   // re-runs the socket effects. The clients themselves live for the whole
   // component: the shared client keeps per-session seq watermarks and asks
@@ -510,48 +570,15 @@ export function ChatSidebar({
       )}
 
       {banner && (
-        <Card className="flex items-start gap-2 border-destructive/40 bg-destructive/5 px-3 py-2 text-xs">
-          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />
-
-          <div className="min-w-0 flex-1">
-            <div className="wrap-break-word text-destructive">{banner}</div>
-
-            {!error && !credential && eventsError?.kind === 'rejected' && (
-              <Button
-                size="sm"
-                outlined
-                className="mt-1"
-                onClick={() => window.location.reload()}
-                prefix={<RefreshCw />}
-              >
-                {t.chatSidebar.reloadPage}
-              </Button>
-            )}
-            {(error || sidecarGaveUp || (!credential && eventsError && eventsError.kind !== 'rejected')) && (
-              <Button size="sm" outlined className="mt-1" onClick={reconnect} prefix={<RefreshCw />}>
-                {t.chatSidebar.reconnectSidePanel}
-              </Button>
-            )}
-            {!error && credential && (
-              <div className="mt-1 flex flex-wrap gap-2">
-                <Button
-                  size="sm"
-                  outlined
-                  prefix={<KeyRound />}
-                  // Router navigation: a full page load would tear down the
-                  // xterm scrollback and the chat sockets. (The mobile portal
-                  // still lives under ChatPage, so router context is present.)
-                  onClick={() => navigate('/env')}
-                >
-                  {t.chatSidebar.addKey}
-                </Button>
-                <Button size="sm" outlined onClick={() => setModelOpen(true)}>
-                  {t.chatSidebar.switchModelAction}
-                </Button>
-              </div>
-            )}
-          </div>
-        </Card>
+        <ChatSidebarBanner
+          banner={banner}
+          error={Boolean(error)}
+          credential={Boolean(credential)}
+          sidecarGaveUp={sidecarGaveUp}
+          eventKind={eventsError?.kind}
+          onReconnect={reconnect}
+          onSwitchModel={() => setModelOpen(true)}
+        />
       )}
 
       {modelOpen && (

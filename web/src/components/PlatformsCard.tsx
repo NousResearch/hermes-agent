@@ -1,19 +1,19 @@
-import { AlertTriangle, PowerOff, Radio, Wifi, WifiOff } from 'lucide-react'
-import type { PlatformStatus } from '@/lib/api'
-import { isoTimeAgo } from '@/lib/utils'
-import { Badge } from '@nous-research/ui/ui/components/badge'
-import { Card, CardContent, CardHeader, CardTitle } from '@nous-research/ui/ui/components/card'
-import { useI18n } from '@/i18n'
+import { AlertTriangle, PowerOff, Radio, Wifi, WifiOff } from "lucide-react";
+import type { PlatformStatus } from "@/lib/api";
+import { isoTimeAgo } from "@/lib/utils";
+import { Badge } from "@nous-research/ui/ui/components/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
+import { useI18n } from "@/i18n";
 
 export function PlatformsCard({ platforms }: PlatformsCardProps) {
-  const { locale, t } = useI18n()
-  const platformStateBadge: Record<string, { tone: 'success' | 'warning' | 'destructive' | 'outline'; label: string }> =
+  const { locale, t } = useI18n();
+  const platformStateBadge: Record<string, { tone: "success" | "warning" | "destructive" | "outline"; label: string }> =
     {
-      connected: { tone: 'success', label: t.status.connected },
-      disconnected: { tone: 'warning', label: t.status.disconnected },
-      disabled: { tone: 'outline', label: t.status.disabled },
-      fatal: { tone: 'destructive', label: t.status.error }
-    }
+      connected: { tone: "success", label: t.status.connected },
+      disconnected: { tone: "warning", label: t.status.disconnected },
+      disabled: { tone: "outline", label: t.status.disabled },
+      fatal: { tone: "destructive", label: t.status.error },
+    };
 
   return (
     <Card>
@@ -27,17 +27,17 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
       <CardContent className="grid gap-3">
         {platforms.map(([name, info]) => {
           const display = platformStateBadge[info.state] ?? {
-            tone: 'outline' as const,
-            label: info.state
-          }
+            tone: "outline" as const,
+            label: info.state,
+          };
           const IconComponent =
-            info.state === 'connected'
+            info.state === "connected"
               ? Wifi
-              : info.state === 'fatal'
+              : info.state === "fatal"
                 ? AlertTriangle
-                : info.state === 'disabled'
+                : info.state === "disabled"
                   ? PowerOff
-                  : WifiOff
+                  : WifiOff;
 
           return (
             <div
@@ -47,13 +47,13 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
               <div className="flex items-center gap-3 min-w-0 w-full">
                 <IconComponent
                   className={`h-4 w-4 shrink-0 ${
-                    info.state === 'connected'
-                      ? 'text-success'
-                      : info.state === 'fatal'
-                        ? 'text-destructive'
-                        : info.state === 'disabled'
-                          ? 'text-muted-foreground'
-                          : 'text-warning'
+                    info.state === "connected"
+                      ? "text-success"
+                      : info.state === "fatal"
+                        ? "text-destructive"
+                        : info.state === "disabled"
+                          ? "text-muted-foreground"
+                          : "text-warning"
                   }`}
                 />
 
@@ -63,7 +63,7 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
                   {info.error_message && (
                     <span
                       className={`font-mondwest normal-case text-xs ${
-                        info.state === 'disabled' ? 'text-muted-foreground' : 'text-destructive'
+                        info.state === "disabled" ? "text-muted-foreground" : "text-destructive"
                       }`}
                     >
                       {info.error_message}
@@ -79,19 +79,19 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
               </div>
 
               <Badge tone={display.tone} className="shrink-0 self-start sm:self-center">
-                {display.tone === 'success' && (
+                {display.tone === "success" && (
                   <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
                 )}
                 {display.label}
               </Badge>
             </div>
-          )
+          );
         })}
       </CardContent>
     </Card>
-  )
+  );
 }
 
 interface PlatformsCardProps {
-  platforms: [string, PlatformStatus][]
+  platforms: [string, PlatformStatus][];
 }

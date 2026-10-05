@@ -598,7 +598,10 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         raise HTTPException(status_code=400, detail="name required")
     if not base_url:
         raise HTTPException(status_code=400, detail="base_url required")
-    parsed = urllib.parse.urlparse(base_url)
+    try:
+        parsed = urllib.parse.urlparse(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="base_url must include scheme and host") from exc
     if not parsed.scheme or not parsed.netloc:
         raise HTTPException(status_code=400, detail="base_url must include scheme and host")
     if not model:
@@ -615,7 +618,25 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     stored_key, existing = _resolve_custom_endpoint_entry(providers, body.id or body.name)
     endpoint_id = coerce_provider_id(stored_key) if existing is not None else _custom_endpoint_id(body.id or body.name)
     if existing is None:
+        # Settings saves the row the list rendered. A legacy custom_providers
+        # entry is not in providers, so resolving only there forked a keyless
+        # twin and left the list row (and its key_env) behind.
+        from hermes_cli.config_providers import _custom_provider_entry_to_provider_config
+
+        legacy = _pop_legacy_custom_provider(cfg, endpoint_id)
+        converted = (
+            _custom_provider_entry_to_provider_config(legacy, provider_key=endpoint_id)
+            if legacy is not None else None
+        )
+        if isinstance(converted, dict):
+            existing = converted
+        elif legacy is not None:
+            restored = cfg.get("custom_providers")
+            if isinstance(restored, list):
+                restored.append(legacy)
+    if existing is None:
         existing = {}
+
 
     # Merge onto the existing entry rather than replacing it: a providers.<name>
     # block can carry hand-written keys the dashboard has no field for

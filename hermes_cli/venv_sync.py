@@ -176,8 +176,81 @@ def arm_completion(project_root: Path) -> Path:
     return pending
 
 
-def clear_completion(project_root: Path) -> None:
-    completion_pending_path(project_root).unlink(missing_ok=True)
+#: Relaunch-driven completion retries are bounded (#122206): a tail that keeps
+#: failing re-runs on every launch ("every launch burns ~4 minutes"), so after
+#: this many consecutive failures the tail waits out a backoff window before
+#: trying again, and past the cap it stops self-starting entirely and leaves
+#: the marker for an explicit ``hermes update`` instead. The counter is the
+#: tail's own attempt record beside the pending marker: same lifetime, same
+#: install scope, cleared by the same success path.
+COMPLETION_RETRY_BACKOFF_ATTEMPTS = 2
+COMPLETION_RETRY_BACKOFF_SECONDS = 15 * 60
+COMPLETION_RETRY_MAX_ATTEMPTS = 6
+
+
+def _completion_attempts_path(project_root: Path) -> Path:
+    return completion_pending_path(project_root).with_name("source-completion-attempts")
+
+
+def _record_completion_attempt(root: Path, *, failed: bool) -> None:
+    """Track consecutive completion-tail failures beside the pending marker.
+
+    The pending marker itself is armed *before* the tail runs (a crash between
+    the dependency commit and the tail must leave the obligation), so the
+    marker alone cannot distinguish "never tried" from "tried and failed N
+    times". The attempts record can: success clears both, failure bumps it.
+    """
+    record = _completion_attempts_path(root)
+    if not failed:
+        record.unlink(missing_ok=True)
+        return
+    try:
+        attempts = int(record.read_text(encoding="utf-8-sig").strip() or "0") + 1
+    except (OSError, ValueError):
+        attempts = 1
+    try:
+        record.write_text(f"{attempts}\n", encoding="utf-8")
+    except OSError:
+        pass  # a read-only install state degrades to unbounded retries, never blocks boot
+
+
+def completion_retry_state(project_root: Path, *, now=None) -> tuple[bool, int, int]:
+    """``(may_retry_now, attempts, backoff_seconds)`` for the owed tail.
+
+    Never raises; an unreadable record answers ``(True, 0, 0)`` — the
+    historical unbounded behavior — because a bookkeeping failure must not
+    stop a launch from finishing its own update.
+    """
+    import time as _time
+
+    record = _completion_attempts_path(project_root)
+    try:
+        attempts = int(record.read_text(encoding="utf-8-sig").strip() or "0")
+    except (OSError, ValueError):
+        return True, 0, 0
+    if attempts <= 0:
+        return True, 0, 0
+    if attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
+        return False, attempts, 0
+    if attempts < COMPLETION_RETRY_BACKOFF_ATTEMPTS:
+        # A single failure is the historical case (a flaky tail that a plain
+        # relaunch fixes): retry immediately, exactly as before (#122206's
+        # "the next launch owes the tail only" contract).
+        return True, attempts, 0
+    try:
+        mtime = record.stat().st_mtime
+    except OSError:
+        return True, attempts, 0
+    reference = (now or _time.time)()
+    age = max(0.0, reference - mtime)
+    if age >= COMPLETION_RETRY_BACKOFF_SECONDS:
+        return True, attempts, COMPLETION_RETRY_BACKOFF_SECONDS
+    return False, attempts, int(COMPLETION_RETRY_BACKOFF_SECONDS - age)
+
+
+def clear_completion(root: Path) -> None:
+    completion_pending_path(root).unlink(missing_ok=True)
+    _completion_attempts_path(root).unlink(missing_ok=True)
 
 
 def refuse_foreign_owned_venv(project_root: Path) -> None:
@@ -236,6 +309,32 @@ def _supervised_child() -> bool:
     )
 
 
+def _tree_matches_completed_stamp(root: Path) -> bool:
+    """True when the checkout is the exact clean tree the last install/update completed.
+
+    Every finished tail records its tree in install-stamp.json (write_source_stamp);
+    when that commit is a clean HEAD, the products in the tree were built for it, so a
+    stale venv only needs re-provisioning and a marker armed BEFORE that stamp is a
+    leftover from a previous home/install, never a rebuild of the same SHA (fresh
+    Windows installs and pristine HERMES_HOMEs hit exactly this: #123314). A marker
+    armed after the stamp is newer debt (a same-commit ``hermes update`` that failed
+    or was killed) and is still owed. Boot-time adoption also stamps HEAD but builds
+    nothing, so its stamp (``adoptedAt``) is not evidence; neither is a dirty tree.
+    """
+    from hermes_cli.steward import read_install_stamp
+    from hermes_cli.version_info import _git_version_info
+
+    stamp = read_install_stamp(root)
+    commit = stamp.get("commit")
+    if not isinstance(commit, str) or not commit or "adoptedAt" in stamp or stamp.get("dirty") is not False:
+        return False
+    pending = completion_pending_path(root)
+    if pending.is_file() and pending.stat().st_mtime >= (root / "install-stamp.json").stat().st_mtime:
+        return False
+    info = _git_version_info(root, include_untracked=True)
+    return info.commit == commit and not info.dirty
+
+
 def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     """Finish a self-managed source update before importing app dependencies.
 
@@ -280,9 +379,28 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     from hermes_cli.update_lock import UpdateLock, read_live_update
 
     current = pm.venv_is_current(project_root=root)
+    from pm.environments import owning_home_root
+
+    owner = owning_home_root(root)
+    if owner is not None:
+        return _prepare_borrowed_launch(root, owner, current=current)
     pending = completion_pending_path(root)
     owed_to_cli = current and pending.is_file() and _supervised_child()
-    if not owed_to_cli and (not current or pending.is_file()):
+    _may_retry, _attempts, _backoff = completion_retry_state(root)
+    if not _may_retry and _attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
+        # The tail has failed often enough that every relaunch re-running it
+        # does more harm than good (#122206: "every launch burns ~4 minutes").
+        # Leave the marker for an explicit `hermes update`; say so once.
+        print(
+            f"hermes: a source update could not be finished automatically "
+            f"({_attempts} attempts); run `hermes update` from a shell to finish it",
+            file=sys.stderr, flush=True,
+        )
+    elif not _may_retry:
+        # Backoff window not yet elapsed: skip this launch's retry without
+        # noise (the record's age tracks the wait), leaving the marker armed.
+        pass
+    elif not owed_to_cli and (not current or pending.is_file()):
         lock = UpdateLock()
         if not lock.acquire():
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
@@ -323,6 +441,41 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     return None
 
 
+def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path | None:
+    """Launch a checkout that another data root owns (#123238).
+
+    Dependency state is per data root, so a borrowing root -- a test's temporary
+    ``HERMES_HOME``, a per-task home -- still gets an environment of its own, synced exactly
+    as a process spawned under a live update syncs. The rest is the checkout's, and so the
+    owner's: launchers, product builds, post-update maintenance, the install stamp and the
+    owner's own update markers. None of it is armed, run or published from here, so a
+    borrowing launch cannot rebind the shared launchers, rebuild products another root is
+    serving, or race the owner's tail under a lock that lives in a different home.
+    """
+    import os
+    import sys
+    import pm
+    from hermes_cli._launchers import resolve_store_python
+    from hermes_cli.update_lock import UpdateLock
+
+    if not current:
+        lock = UpdateLock()
+        if not lock.acquire():
+            raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
+        try:
+            _sync_source_dependencies(root, arm=False, borrowed_from=owner)
+        finally:
+            lock.release()
+        if not pm.venv_is_current(project_root=root):
+            # Relaunching would land back here and sync again, forever.
+            raise RuntimeError("dependency sync left this install out of date")
+    python = resolve_store_python(root)
+    if python is None:
+        raise RuntimeError("source update has no managed Python; run `hermes pm install`")
+    same = os.path.normcase(os.path.abspath(python)) == os.path.normcase(os.path.abspath(sys.executable))
+    return python if not current or not same else None
+
+
 def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     """Sync dependencies when they are stale, then run the tail the marker still owes."""
     import sys
@@ -336,7 +489,19 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
         if any(_marker_owner_is_live(marker) for marker in legacy_markers):
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
         print("hermes: completing source-update dependencies...", file=sys.stderr, flush=True)
-        _sync_source_dependencies(root, arm=True)
+        completed = _tree_matches_completed_stamp(root)
+        # ponytail: commit-only match; a product dir deleted by hand is rebuilt on demand
+        # by its own entry point (the TUI/web freshness gates), not here.
+        _sync_source_dependencies(root, arm=not completed)
+        if completed:
+            clear_completion(root)
+            return
+    elif _tree_matches_completed_stamp(root):
+        # The stamp names HEAD, so the last install/update already built this tree:
+        # a pending marker is a leftover from a previous home/install, not an
+        # interrupted update, and owing nothing is quieter than announcing one.
+        clear_completion(root)
+        return
     else:
         print("hermes: finishing an interrupted source update...", file=sys.stderr, flush=True)
     # Sync commits the dependency generation, but a source update also owes
@@ -359,21 +524,29 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
         cwd=root, env=activation_environment(root), stdout=sys.__stderr__,
     )
     if code != 0:
+        _record_completion_attempt(root, failed=True)
         raise RuntimeError(
             "source update completion failed; run `hermes update` to finish it"
         )
     clear_completion(root)
 
 
-def _sync_source_dependencies(root: Path, *, arm: bool) -> None:
-    """Commit the tree's dependency generation; *arm* also owes the tail afterwards."""
+def _sync_source_dependencies(root: Path, *, arm: bool, borrowed_from: Path | None = None) -> None:
+    """Commit the tree's dependency generation; *arm* also owes the tail afterwards.
+
+    *borrowed_from* names the data root that owns the checkout when this one only borrows
+    it: the sync is this root's own, but the checkout's update markers stay the owner's.
+    """
     import sys
     import pm
     from pm.client import ensure_tools_for_sync
     from pm.environments import runtime_facts_path
     from pm.extras import legacy_selection
 
-    if not arm:
+    if borrowed_from is not None:
+        print(f"hermes: preparing dependencies for this data root (the checkout's updates belong to "
+              f"{borrowed_from})...", file=sys.stderr, flush=True)
+    elif not arm:
         print("hermes: preparing dependencies for this update...", file=sys.stderr, flush=True)
     refuse_foreign_owned_venv(root)
     if arm:
@@ -388,6 +561,8 @@ def _sync_source_dependencies(root: Path, *, arm: bool) -> None:
     ensure_tools_for_sync()
     pm.sync_venv(extras, explicit=True, project_root=root, evict_incompatible_plugins=True)
     collect_superseded_generations(root)
+    if borrowed_from is not None:
+        return  # The checkout's markers describe the owner's environment, not this one.
     # These can predate the swap. Once PM commits the replacement they
     # must not make early recovery immediately rebuild it a second time.
     for name in (".update-incomplete", ".lazy-refresh-incomplete"):

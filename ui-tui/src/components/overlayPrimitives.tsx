@@ -218,7 +218,7 @@ export function UsageBars({ model, t }: { model: undefined | UsageModelData; t: 
  * /usage transcript panel). Returns one string per line: a plan bar, a top-up
  * bar, and a total-spendable summary, whichever apply. Dollars only.
  */
-export function usageBarsText(model: undefined | UsageModelData, locale: string = 'en'): string[] {
+export function usageBarsText(model: undefined | UsageModelData): string[] {
   if (!model || !model.available) {
     return []
   }

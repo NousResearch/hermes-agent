@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -29,6 +30,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from utils import file_signature, is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
+from agent.fast_mode import STATIC_TIERS
 from agent.replay_cleanup import canonicalize_replay_history
 from agent.reasoning_effort import clamp_effort, route_supported_efforts
 from agent.compaction_display import project_compaction_message_for_display  # noqa: F401
@@ -100,6 +102,12 @@ _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run un
 _cfg_cache: dict | None = None
 _cfg_sig: tuple | None = None
 _cfg_path = None
+
+# Idempotency registry for session.create: maps client-supplied key → sid so a
+# retried create (e.g. response lost in transit) returns the same session
+# instead of spawning a duplicate child. Entries expire with the session.
+_idempotency_keys: dict[str, tuple[str, float]] = {}
+_IDEMPOTENCY_KEY_TTL = 300.0  # 5 min: longer than any realistic retry window
 _session_resume_lock = threading.Lock()
 _SLASH_WORKER_TIMEOUT_S = max(5.0, env_float("HERMES_TUI_SLASH_TIMEOUT_S", 45.0))
 
@@ -162,7 +170,8 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # open; bot_relay.* = a FULL one-turn agent conversation (600s); setup.* / session.active_list =
 # Desktop-polled and under GIL pressure block the WS read loop (false "needs setup", stalled
 # interrupts); voice.*/wake.* = SYNCHRONOUS faster-whisper install (300s); session.workspace.move =
-# git subprocess probes on an arbitrary (maybe slow) mount.
+# git subprocess probes on an arbitrary (maybe slow) mount; session.save = a full stored-session read + JSON
+# render (up to sessions.max_export_messages rows, ~0.8s at the default cap).
 _LONG_HANDLERS = frozenset({
     "session.foreign.list", "session.foreign.preview", "session.foreign.import",
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",
@@ -176,7 +185,7 @@ _LONG_HANDLERS = frozenset({
     "projects.record_repos", "projects.for_cwd", "projects.tree", "projects.project_sessions",
     "setup.runtime_check", "setup.status", "free_tier.provision", "voice.toggle", "voice.record", "voice.tts", "wake.start",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
-    "session.resume", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
+    "session.resume", "session.save", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
     "shared_metrics.set",  # consent reconcile waits on the metrics store's write lock
 })
@@ -247,7 +256,8 @@ class _SlashWorker:
         # ``--provider`` pins the child to the parent agent's virtual provider: without it the
         # worker re-resolves provider from config, so a MoA session (provider=moa, model=<preset>)
         # dispatched its preset NAME to the configured real provider and 402/503'd (#57283).
-        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key] \
+        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key,
+                "--parent-pid", str(os.getpid())] \
             + (["--model", model] if model else []) \
             + (["--provider", provider] if provider else [])
         self._closed = False
@@ -298,6 +308,12 @@ class _SlashWorker:
                 self.stderr_tail = (self.stderr_tail + [text])[-80:]
 
     def run(self, command: str) -> str:
+        """Run one command; return its output text.
+
+        A command like /prompt may also have parked a next-turn prompt (a "seed")
+        on the worker CLI; it rides back on the reply's ``seed`` field and is
+        retrieved separately via ``pop_seed()``.
+        """
         if self.proc.poll() is not None:
             raise RuntimeError("slash worker exited")
         with self._lock:
@@ -316,9 +332,15 @@ class _SlashWorker:
                     continue
                 if not msg.get("ok"):
                     raise RuntimeError(msg.get("error", "slash worker failed"))
+                self._last_seed = str(msg.get("seed", "") or "")
                 return str(msg.get("output", "")).rstrip()
             raise RuntimeError(
                 f"slash worker closed pipe{': ' + chr(10).join(self.stderr_tail[-8:]) if self.stderr_tail else ''}")
+
+    def pop_seed(self) -> str:
+        """Return and clear the seed from the last ``run()`` (empty when none)."""
+        seed, self._last_seed = getattr(self, "_last_seed", ""), ""
+        return seed
 
     def close(self):
         if getattr(self, "_closed", False):
@@ -965,8 +987,7 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
             notified_slow = True  # one keyed, replace-in-place notice (toast / status bar)
             _emit("notification.show", sid, {
                 "text": "Still starting the agent (tool discovery / model setup) — your message will be sent as soon as it's ready.",
-                "text_key": "notification.agentStartingSlow",
-                "level": "info", "kind": "agent", "ttl_ms": None,
+                "text_key": "notification.agentStartingSlow", "level": "info", "kind": "agent", "ttl_ms": None,
                 "key": _AGENT_BUILD_SLOW_NOTICE_KEY, "id": _AGENT_BUILD_SLOW_NOTICE_KEY})
     if notified_slow:
         _emit("notification.clear", sid, {"key": _AGENT_BUILD_SLOW_NOTICE_KEY})
@@ -1055,17 +1076,24 @@ def _await_resume_history(sid: str, current: dict) -> bool:
         return _sessions.get(sid) is current
 
 
-def _attach_built_agent(current: dict, agent) -> None:
-    """Attach a freshly built agent to its live record (session DB row deferred to first run_conversation())."""
+def _attach_built_agent(sid: str, current: dict, agent) -> bool:
+    """Attach a freshly built agent to its live record (session DB row deferred to first run_conversation()).
+    False when ``session.close`` popped this record mid-build: teardown saw ``agent=None`` and closed
+    nothing, so the caller owns closing the orphan (#49852)."""
     # Bot Mode gate hint: the DB title lands post-first-turn but the system prompt builds at turn START.
     if _title_hint := str(current.get("pending_title") or "").strip():
         agent._session_title_hint = _title_hint
-    current["agent"] = agent
+    # Under the same lock session.close takes to pop the record: no window between "still live" and "attached".
+    with _sessions_lock:
+        if _sessions.get(sid) is not current:
+            return False
+        current["agent"] = agent
     # A workspace move can land while construction is still in flight.
     _register_session_cwd(current)
     _session_todo_state(current)
     # Baseline for the per-turn config sync (profile home override still active).
     current["config_model_seen"] = _config_model_target()
+    return True
 
 
 def _announce_built_agent(sid: str, key: str, current: dict, agent) -> None:
@@ -1087,8 +1115,8 @@ def _finish_agent_build(sid: str, key: str, current: dict, *, notify_registered:
     """Release build scopes and settle ownership of the late notify registration + dedicated db handle."""
     if scopes is not None:
         _release_build_profile_scopes(scopes)
-    # Reaped mid-build: _attach_worker closed the worker; only a late notify registration can still
-    # leak (session.close unregistered before _build registered).
+    # Reaped after the agent was attached: _attach_worker closed the worker; only a late notify
+    # registration can still leak (session.close unregistered before _build registered).
     with _sessions_lock:
         replaced = _sessions.get(sid) is not current
     if replaced and notify_registered:
@@ -1154,14 +1182,31 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 agent = _make_agent(sid, key, **_deferred_build_agent_kwargs(current, session_db))
             finally:
                 _clear_session_context(tokens)
-            _attach_built_agent(current, agent)
+            # Attach atomically against session teardown: ``session.close`` may have popped this
+            # session while the expensive build was in flight, in which case teardown could not close
+            # an agent that did not exist yet. Release the orphan immediately and do not keep wiring
+            # workers/callbacks for a dead session (#49852).
+            if not _attach_built_agent(sid, current, agent):
+                # Same contract as the replaced-before-attach exit above: a turn admitted against
+                # this record must refuse with the real reason rather than a generic missing agent.
+                current["agent_error"] = AGENT_BUILD_ABANDONED
+                with contextlib.suppress(Exception):
+                    if hasattr(agent, "close"):
+                        agent.close()
+                return
             # No eager slash-worker pre-warm (slash.exec spawns on demand): each worker forks the full stdio
             # MCP fleet, and live-transport sessions are never reaped, so fleets would accumulate.
             notify_registered = _wire_session_agent(sid, key, agent)
             _announce_built_agent(sid, key, current, agent)
         except Exception as e:
+            from agent.auxiliary_unavailable import ProviderNotConfiguredError
             current["agent_error"] = str(e)
-            _emit("error", sid, {"message": agent_init_failed_message(e)})
+            # A client can route "no provider is set up" to its setup flow instead of a dead-end
+            # error toast — but only if it can tell. The sentence is for the reader, the code is
+            # for the client; older clients keep matching the text.
+            _emit("error", sid, {
+                "message": agent_init_failed_message(e),
+                **({"code": "provider_not_configured"} if isinstance(e, ProviderNotConfiguredError) else {})})
         finally:
             _finish_agent_build(
                 sid, key, current, notify_registered=notify_registered, scopes=scopes, session_db=session_db)
@@ -1279,9 +1324,9 @@ def _load_cfg() -> dict:
 
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_sig, _cfg_path
-    from hermes_cli.config import atomic_config_write
+    from hermes_cli.config import atomic_config_replace
     path = _active_config_path()
-    atomic_config_write(path, cfg)
+    atomic_config_replace(path, cfg)
     with _cfg_lock:
         _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
         try:
@@ -1797,13 +1842,24 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db:
             if db is not None:
                 from agent.context_compressor import _DB_PERSISTED_MARKER
+                # Same stale-key hazard as the submit row: this durable pivot must land in the session the
+                # live agent writes to, or a model switch between turns on a rotated session files the notice
+                # under a parent the conversation no longer reads from (#123545).
+                target = _submit_row_target_key(session)
+                # The in-memory strip above keeps one marker; the durable rows need the same invariant or N
+                # switches leave N active rows that all replay on resume (#65891 kept it in memory only).
+                db.deactivate_messages_by_display_kind(target, "model_switch")
                 from agent.message_metadata import stamp_message_uid
                 entry["_row_id"] = db.append_message(
-                    session_id=session_key, role="user", content=marker, display_kind="model_switch",
+                    session_id=target, role="user", content=marker, display_kind="model_switch",
                     message_uid=stamp_message_uid(entry))
                 entry[_DB_PERSISTED_MARKER] = True
     except Exception:
-        logger.debug("failed to persist model switch marker", exc_info=True)
+        # warning, not debug: filing the pivot in the LIVE session (#123545) means this write can now hit
+        # CompressionSessionClosedError on a closed parent, which the old session_key target could not.
+        # Swallowed at debug, a model switch silently loses its durable notice — the next resume replays
+        # without it and nothing lands in errors.log. Matches _persist_live_session_system_prompt above.
+        logger.warning("failed to persist model switch marker", exc_info=True)
 
 
 def _write_config_key(key_path: str, value):
@@ -1871,12 +1927,10 @@ def _load_reasoning_config(model: str = "") -> dict | None:
     return resolve_reasoning_config(_load_cfg(), model)
 
 
-_SERVICE_TIER_ALIASES = {"fast": "priority", "priority": "priority", "on": "priority", "auto": "auto", "cold": "cold"}
-
-
 def _load_service_tier() -> str | None:
-    raw = str((_load_cfg().get("agent") or {}).get("service_tier", "") or "").strip().lower()
-    return _SERVICE_TIER_ALIASES.get(raw)
+    from agent.fast_mode import parse_service_tier
+
+    return parse_service_tier((_load_cfg().get("agent") or {}).get("service_tier", ""))
 
 
 def _load_provider_routing() -> dict:
@@ -2263,7 +2317,7 @@ def _live_session_identity(session: dict) -> tuple[str, str]:
     return str(model), str(provider or "")
 
 
-def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool) -> bool:
+def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool, tier: str | None = None) -> bool:
     """Whether a priority tier reaches this session's route. Every request builder asks the same gate, so a
     profile-wide ``service_tier: fast`` sends nothing to a local server or a proxy, and the session must not
     report Fast there either. ``route_known`` is False while a switch is pending: the agent's base URL still
@@ -2275,7 +2329,7 @@ def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool) -
             base_url = getattr(agent, "_anthropic_base_url", None)
         base_url = base_url or getattr(agent, "base_url", None)
     try:
-        return resolve_fast_mode_overrides(model, provider=provider or None, base_url=base_url) is not None
+        return resolve_fast_mode_overrides(model, provider=provider or None, base_url=base_url, tier=tier) is not None
     except Exception:
         return False
 
@@ -2320,14 +2374,15 @@ def _session_info(agent, session: dict | None = None) -> dict:
     # Hermes-internal step (#61634) as a wire level the route does not have.
     reasoning_effort_wire = ""
     if reasoning_effort and reasoning_effort != "none":
-        reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(pending_provider or provider, model)) or "")
+        reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(
+            pending_provider or provider, model, getattr(agent, "api_mode", None))) or "")
     info: dict = {
         "model": model,
         "provider": pending_provider or provider,
         "reasoning_effort": reasoning_effort, "reasoning_effort_wire": reasoning_effort_wire,
         "service_tier": service_tier,
-        "fast": service_tier == "priority" and _fast_tier_applies(agent, model, pending_provider or provider,
-                                                                  route_known=not pending_provider),
+        "fast": service_tier in STATIC_TIERS and _fast_tier_applies(agent, model, pending_provider or provider,
+                                                                    route_known=not pending_provider, tier=service_tier),
         "yolo": yolo, "approval_mode": approval_mode,
         "tools": dict(mirror.get("tools") or {}) if isinstance(mirror.get("tools"), dict) else {},
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
@@ -2546,14 +2601,13 @@ def _startup_system_prompt(cfg: dict, task_id: str) -> str:
     startup_skills = _parse_tui_skills_env()
     if not startup_skills:
         return system_prompt
-    from agent.skill_commands import build_preloaded_skills_prompt
+    from agent.skill_commands import build_preloaded_skills_prompt, format_missing_skills
     skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(startup_skills, task_id=task_id)
     if missing_skills:
-        missing_display = ", ".join(missing_skills)
         if not loaded_skills:
-            raise ValueError(f"Unknown skill(s): {missing_display}")
-        logger.warning("Unknown skill(s) requested, skipping: %s. Continuing with: %s. "
-                       "List available skills with `hermes skills list`.", missing_display, ", ".join(loaded_skills))
+            raise ValueError(format_missing_skills(missing_skills))
+        logger.warning("Skipping %s. Continuing with: %s. List available skills with `hermes skills list`.",
+                       format_missing_skills(missing_skills), ", ".join(loaded_skills))
     if skills_prompt:
         system_prompt = "\n\n".join(part for part in (system_prompt, skills_prompt) if part).strip()
     return system_prompt
@@ -2645,7 +2699,7 @@ def _make_agent(
 
 
 def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | None) -> None:
-    """Adopt the stored row's cwd, or persist the fresh session's cwd (+ schedule git meta) when the row has none."""
+    """Adopt the stored row's cwd and fill missing Git metadata, or persist a fresh cwd."""
     owns_db, db = False, session_db
     if db is None and not profile_home:
         db = _get_db()
@@ -2661,7 +2715,7 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
     try:
         if db is not None:
             row = db.get_session(key) if hasattr(db, "get_session") else None
-            if row and row.get("cwd"):
+            if row and _resumable_stored_cwd(row.get("cwd"), profile_home):
                 # An ssh session's stored cwd is its workspace: explicit, so the remote terminal uses it instead of
                 # the profile's ~. Other backends keep main's semantics (resolved outside the sessions lock: I/O).
                 remote = _cwd_is_remote(profile_home)
@@ -2670,7 +2724,20 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
                         _sessions[sid]["cwd"] = row["cwd"]
                         if remote:
                             _sessions[sid]["explicit_cwd"] = True
-            elif hasattr(db, "update_session_cwd"):
+                # Lazy desktop rows already carry their explicitly chosen cwd, so they never reach the fresh-cwd
+                # branch below. Claim a generation before probing to keep an older probe from overwriting a later
+                # workspace move; complete rows do not need another probe on every resume.
+                if (not row.get("git_branch") or not row.get("git_repo_root")) and hasattr(
+                    db, "update_session_cwd"
+                ):
+                    try:
+                        _persist_session_cwd_and_schedule_git_meta(_sessions[sid], row["cwd"], db=db)
+                    except Exception:
+                        logger.debug("failed to enrich resumed session git metadata", exc_info=True)
+            elif not (row and row.get("cwd")) and hasattr(db, "update_session_cwd") and not _is_remote_launch_cwd(
+                _sessions.get(sid)
+            ):
+                # A stored cwd that was set aside (Hermes's own host tree) stays as stored: only an empty row is filled.
                 try:
                     _persist_session_cwd_and_schedule_git_meta(_sessions[sid], _sessions[sid]["cwd"], db=db)
                 except Exception:
@@ -2713,6 +2780,34 @@ def _init_session(
 
 def _new_session_key() -> str:
     return new_session_id()
+
+
+# Server-minted session keys are ``%Y%m%d_%H%M%S_`` + 6 hex chars (see
+# ``_new_session_key``). session.resume uses this shape as the fail-closed gate
+# for materializing a row for a minted-but-never-persisted key: only keys the
+# server itself could have produced qualify — arbitrary strings and 8-hex
+# runtime session ids (``uuid4().hex[:8]``) are rejected.
+_MINTED_SESSION_KEY_RE = re.compile(r"^\d{8}_\d{6}_[0-9a-f]{6}$")
+
+
+def _is_server_minted_key(value: str | None) -> bool:
+    return bool(value and _MINTED_SESSION_KEY_RE.fullmatch(value))
+
+
+def _any_live_session_claims_key(target: str) -> bool:
+    """True if any live registry record claims this stored key (any profile).
+
+    Fail-closed gate for minted-key materialization: a key claimed by a live
+    session — even one scoped to a different profile — is owned, so an
+    unscoped resume must not mint a phantom row in the launch store (#93296
+    cross-profile rule: routing guesses are forbidden).
+    """
+    for record in list(_sessions.values()):
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("session_key") or "") == target:
+            return True
+    return False
 
 
 def _with_checkpoints(session, fn):
@@ -2880,7 +2975,14 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             if session is None:
                 return
             _emit("session.resume_progress", sid, {"phase": "history", "status": "loading"})
-            db.reopen_session(stored_id)
+            # Read-only mount (#85303): hydration is a read; an ended row stays ended —
+            # the first real turn (prompt.submit) reopens it. But a restart discarded the
+            # busy-queue, so retire never-drained accept rows (#125577) before the read —
+            # with #128508 the reopen (and its retire) no longer runs on this path.
+            # Best-effort like the resume guard: a handle without the method skips it.
+            retire = getattr(db, "retire_undrained_queue_rows", None)
+            if callable(retire):
+                retire(stored_id)
             raw_history, display_history, prefix = _load_resume_transcript(
                 db, stored_id, model_history_only=model_history_only)
             # Display keeps the full transcript; the model-fed history uses the

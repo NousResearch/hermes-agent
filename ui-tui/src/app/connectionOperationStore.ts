@@ -43,7 +43,7 @@ export const isSettledOperation = (opId: string): boolean => settledOperationIds
 
 export const isDismissedOperation = (opId: string): boolean => dismissedOperationIds.includes(opId)
 
-const outcomeWord = (target: ConnectionOperationTarget, locale: string): string => {
+const outcomeWord = (target: ConnectionOperationTarget): string => {
   if (target.state === 'connected') {
     return tr('chatBits.branding.connected')
   }
@@ -72,7 +72,7 @@ export function applyConnectionRequest(payload: ConnectionRequestPayload): void 
   patchOverlayState({ connection: { opId: payload.op_id } })
 }
 
-export function applyConnectionUpdate(payload: ConnectionUpdatePayload, locale: string = 'en'): string[] {
+export function applyConnectionUpdate(payload: ConnectionUpdatePayload): string[] {
   const current = $connectionOperation.get()
   const shown = current !== null && current.opId === payload.op_id
 
@@ -87,7 +87,7 @@ export function applyConnectionUpdate(payload: ConnectionUpdatePayload, locale: 
       clearConnectionOperation()
     }
 
-    return payload.targets.map(target => `${target.name}: ${outcomeWord(target, locale)}`)
+    return payload.targets.map(target => `${target.name}: ${outcomeWord(target)}`)
   }
 
   if (!shown || !current || payload.seq <= current.seq) {

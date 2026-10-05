@@ -179,11 +179,13 @@ gateway:
     label_normal: "ОБЫЧНЫЙ"
     status_fast: "быстрый"
     status_normal: "обычный"
-    picker_title: "⚡ **Priority Processing**\\n\\nТекущий режим: `{mode}`\\n\\nВыберите вариант:"
+    picker_title: "⚡ **Priority Processing**\n\nТекущий режим: `{mode}`\n\nВыберите вариант:"
     choice_fast: "fast — Priority Processing включён"
     choice_normal: "normal — стандартная обработка"
     choice_auto: "auto — быстро в первые секунды каждого хода"
     choice_cold: "cold — быстро только на первом ходе сессии"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, цена ×6)"
+    ultrafast_not_supported: "⚡ Ultrafast доступен только для GPT-6 Astra (текущая модель: `{model}`)."
   footer:
     status: "📎 Нижний колонтитул среды выполнения: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"
     usage: "Использование: `/footer [on|off|status]`"
@@ -280,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ `/reasoning reset --global` не поддерживается. Используйте `/reasoning <level> --global`, чтобы изменить глобальное значение по умолчанию."
     reset_done: "🧠 ✓ Переопределение рассуждений для сеанса сброшено; возврат к глобальной конфигурации."
     unknown_arg: "⚠️ Неизвестный аргумент: `{arg}`\n\n**Допустимые уровни:** none, minimal, low, medium, high, xhigh, max, ultra\n**Отображение:** show, hide\n**Сохранение:** добавьте `--global`, чтобы сохранить за пределами этого сеанса"
-    picker_title: "🧠 **Настройки рассуждений**\\n\\n**Усилия:** `{level}`\\n**Область:** {scope}\\n**Отображение:** {display}\\n\\nВыберите вариант:"
+    picker_title: "🧠 **Настройки рассуждений**\n\n**Усилия:** `{level}`\n**Область:** {scope}\n**Отображение:** {display}\n\nВыберите вариант:"
     choice_none: "none — отключить рассуждения"
     choice_reset: "reset — сбросить переопределение сессии"
     choice_show: "показывать рассуждения в ответах"
@@ -1446,8 +1448,6 @@ platform:
   irc:
     quit_message: "Hermes Agent завершает работу"
     standalone_quit: "доставлено"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Одобрить один раз"
     confirm_always_approve: "Одобрять всегда"
@@ -1598,7 +1598,7 @@ slash:
   reasoning:
     description: "Управлять уровнем и отображением рассуждений"
   fast:
-    description: "Быстрый режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Быстрый режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Показать или сменить скин/тему оформления"
   indicator:
@@ -2353,6 +2353,7 @@ cli:
     removed: "Удалён элемент очереди {index}: {preview}"
     item_not_found: "Элемент очереди {index} не найден. Текущий размер: {size}"
     usage_edit: "Использование: /queue edit <номер> <новый промпт>"
+    usage_remove: "Использование: /queue rm <номер>"
     updated: "Обновлён элемент очереди {index}: {preview}"
     usage_move: "Использование: /queue move <откуда> <куда>"
     move_out_of_range: "Перемещение выходит за границы очереди. Текущий размер: {size}"
@@ -2651,7 +2652,9 @@ cli:
       feature_generic: "Быстрый режим"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Использование: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast доступен только для GPT-6 Astra (текущая модель: {model})."
+      usage: "Использование: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature}: установлено {value} {scope}"
     hatch:
@@ -2716,6 +2719,7 @@ cli:
       restored: "Состояние восстановлено из: {snapshot_id}"
       restart_recommended: "Рекомендуется перезапустить процессы шлюза/дашборда, чтобы они подхватили изменения state.db."
       not_found: "Снимок не найден: {snapshot_id}"
+      restore_incomplete: "Снимок {snapshot_id} восстановлен не полностью: некоторые файлы отклонены (см. логи)"
       usage_prune: "Использование: /snapshot prune [сколько-оставить]"
       pruned: "Удалено старых снимков: {deleted} (оставлено {keep})."
     export:
@@ -3283,6 +3287,7 @@ cli:
     shallow_clone_keeping: "⚠ Неглубокий клон (shallow) — не могу проверить состояние push, оставляю: {path}"
     next_session_deepens: "Следующий сеанс `hermes -w` углубит клон и автоматически удалит слитые worktree."
     unpushed_keeping: "⚠ В worktree есть неотправленные коммиты, оставляю: {path}"
+    uncommitted_keeping: "⚠ В worktree есть незакоммиченные изменения, оставляю: {path}"
     clean_up_manually: "Чтобы очистить вручную: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree очищен: {path}"
 display:
@@ -3669,7 +3674,7 @@ tips:
   t197: "Сохранение траекторий (--save-trajectories) записывает полные трассы использования инструментов для обучения моделей."
   t198: "Три типа плагинов: общие (инструменты/хуки), провайдеры памяти и движки контекста."
   t199: "hermes plugins install owner/repo устанавливает плагины напрямую с GitHub."
-  t200: "Внешние провайдеры памяти: Honcho, OpenViking, Mem0 встроены; Hindsight и другие — через hermes plugins install."
+  t200: "Внешние провайдеры памяти: OpenViking, Mem0 встроены; Honcho, Hindsight и другие — через hermes plugins install."
   t201: "Хуки плагинов включают pre/post_tool_call, pre/post_llm_call и transform_terminal_output для нормализации вывода."
   t202: "Кэширование промптов (Anthropic) снижает стоимость за счёт повторного использования кэшированных префиксов системного промпта."
   t203: "Агент генерирует названия сеансов в фоновом потоке — без влияния на задержку."

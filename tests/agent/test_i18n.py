@@ -76,7 +76,6 @@ def test_catalog_placeholders_match_english(lang: str):
     would either raise KeyError at runtime or silently drop the interpolated
     value.  Pin parity at the test layer.
     """
-    import re
     placeholder_re = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
     en_flat = _flatten(_load_raw("en"))
     lang_flat = _flatten(_load_raw(lang))
@@ -88,6 +87,14 @@ def test_catalog_placeholders_match_english(lang: str):
             f"{lang}.yaml key={key!r}: placeholders {lang_placeholders} "
             f"don't match English {en_placeholders}"
         )
+
+
+@pytest.mark.parametrize("lang", list(i18n.SUPPORTED_LANGUAGES))
+def test_catalog_values_have_no_escaped_newlines(lang: str):
+    """A double-escaped ``\\\\n`` in YAML loads as a visible backslash-n, so
+    pickers render ``\\n`` text instead of line breaks (e.g. /reasoning, /fast)."""
+    escaped = [key for key, value in _flatten(_load_raw(lang)).items() if "\\n" in value]
+    assert not escaped, f"{lang}.yaml has literal \\n in: {escaped}"
 
 
 # ---------------------------------------------------------------------------

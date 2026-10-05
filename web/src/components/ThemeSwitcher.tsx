@@ -1,15 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
-import { Palette, Check, Type } from 'lucide-react'
-import { Button } from '@nous-research/ui/ui/components/button'
-import { ListItem } from '@nous-research/ui/ui/components/list-item'
-import { BottomSheet } from '@nous-research/ui/ui/components/bottom-sheet'
-import { Typography } from '@nous-research/ui/ui/components/typography/index'
-import { useBelowBreakpoint } from '@nous-research/ui/hooks/use-below-breakpoint'
-import { BUILTIN_THEMES, THEME_DEFAULT_FONT_ID, useTheme } from '@/themes'
-import type { DashboardTheme, FontChoice, ThemeListEntry } from '@/themes'
-import { useI18n } from '@/i18n'
-import { cn } from '@/lib/utils'
+import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Palette, Check, Type } from "lucide-react";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { ListItem } from "@nous-research/ui/ui/components/list-item";
+import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
+import { Typography } from "@nous-research/ui/ui/components/typography/index";
+import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
+import { BUILTIN_THEMES, THEME_DEFAULT_FONT_ID, useTheme } from "@/themes";
+import type { DashboardTheme, FontChoice, ThemeListEntry } from "@/themes";
+import { useI18n } from "@/i18n";
+import { cn } from "@/lib/utils";
 
 /**
  * Compact theme picker mounted next to the language switcher in the header.
@@ -25,59 +25,59 @@ import { cn } from '@/lib/utils'
  * the sidebar (same idea as a responsive Drawer).
  */
 export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitcherProps) {
-  const { themeName, availableThemes, setTheme, fontId, fontChoices, setFont } = useTheme()
-  const { t } = useI18n()
-  const [open, setOpen] = useState(false)
-  const [dropUpStyle, setDropUpStyle] = useState<{ bottom: number; left: number } | undefined>()
-  const wrapperRef = useRef<HTMLDivElement>(null)
-  const dropdownRef = useRef<HTMLDivElement>(null)
-  const narrowViewport = useBelowBreakpoint(640)
-  const useMobileSheet = Boolean(dropUp && narrowViewport)
+  const { themeName, availableThemes, setTheme, fontId, fontChoices, setFont } = useTheme();
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const [dropUpStyle, setDropUpStyle] = useState<{ bottom: number; left: number } | undefined>();
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const narrowViewport = useBelowBreakpoint(640);
+  const useMobileSheet = Boolean(dropUp && narrowViewport);
 
-  const close = useCallback(() => setOpen(false), [])
+  const close = useCallback(() => setOpen(false), []);
 
   useEffect(() => {
-    if (!open) return
+    if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close()
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [open, close])
+      if (e.key === "Escape") close();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, close]);
 
   useEffect(() => {
-    if (!open || useMobileSheet) return
+    if (!open || useMobileSheet) return;
     const onMouseDown = (e: MouseEvent) => {
-      const target = e.target as Node
-      if (wrapperRef.current?.contains(target)) return
-      if (dropdownRef.current?.contains(target)) return
-      close()
-    }
-    document.addEventListener('mousedown', onMouseDown)
-    return () => document.removeEventListener('mousedown', onMouseDown)
-  }, [open, close, useMobileSheet])
+      const target = e.target as Node;
+      if (wrapperRef.current?.contains(target)) return;
+      if (dropdownRef.current?.contains(target)) return;
+      close();
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [open, close, useMobileSheet]);
 
-  const current = availableThemes.find(th => th.name === themeName)
-  const label = current?.label ?? themeName
-  const sheetTitle = t.theme.title
+  const current = availableThemes.find((th) => th.name === themeName);
+  const label = current?.label ?? themeName;
+  const sheetTitle = t.theme.title;
   const toggleOpen = () => {
     if (!open && dropUp && !useMobileSheet) {
-      const rect = wrapperRef.current?.getBoundingClientRect()
-      setDropUpStyle(rect ? { bottom: window.innerHeight - rect.top + 4, left: rect.left } : undefined)
+      const rect = wrapperRef.current?.getBoundingClientRect();
+      setDropUpStyle(rect ? { bottom: window.innerHeight - rect.top + 4, left: rect.left } : undefined);
     }
-    setOpen(value => !value)
-  }
+    setOpen((value) => !value);
+  };
 
   return (
     <div ref={wrapperRef} className="relative">
       <Button
         ghost
-        size={collapsed ? 'icon' : undefined}
+        size={collapsed ? "icon" : undefined}
         onClick={toggleOpen}
         className={cn(
           collapsed
-            ? 'text-text-secondary hover:text-foreground hover:bg-transparent'
-            : 'px-2 py-1 normal-case tracking-normal font-normal text-xs text-text-secondary hover:text-foreground'
+            ? "text-text-secondary hover:text-foreground hover:bg-transparent"
+            : "px-2 py-1 normal-case tracking-normal font-normal text-xs text-text-secondary hover:text-foreground",
         )}
         title={`${t.theme.switchTheme}: ${label}`}
         aria-label={t.theme.switchTheme}
@@ -116,10 +116,10 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
               ref={dropdownRef}
               aria-label={sheetTitle}
               className={cn(
-                'min-w-[240px] max-h-[70dvh] overflow-y-auto',
-                'border border-current/20 bg-background-base/95',
-                'shadow-[0_12px_32px_-8px_rgba(0,0,0,0.6)]',
-                dropUp ? 'fixed z-[100]' : 'absolute z-50 right-0 top-full mt-1'
+                "min-w-[240px] max-h-[70dvh] overflow-y-auto",
+                "border border-current/20 bg-background-base/95",
+                "shadow-[0_12px_32px_-8px_rgba(0,0,0,0.6)]",
+                dropUp ? "fixed z-[100]" : "absolute z-50 right-0 top-full mt-1",
               )}
               role="listbox"
               style={dropUp ? dropUpStyle : undefined}
@@ -139,19 +139,19 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
               />
               <FontSection fontChoices={fontChoices} fontId={fontId} setFont={setFont} />
             </div>
-          )
-          return dropUp ? createPortal(dropdown, document.body) : dropdown
+          );
+          return dropUp ? createPortal(dropdown, document.body) : dropdown;
         })()}
     </div>
-  )
+  );
 }
 
 function ThemeSwitcherOptions({ availableThemes, close, setTheme, t, themeName }: ThemeSwitcherOptionsProps) {
   return (
     <>
-      {availableThemes.map(th => {
-        const isActive = th.name === themeName
-        const paletteTheme = BUILTIN_THEMES[th.name] ?? th.definition
+      {availableThemes.map((th) => {
+        const isActive = th.name === themeName;
+        const paletteTheme = BUILTIN_THEMES[th.name] ?? th.definition;
 
         return (
           <ListItem
@@ -160,8 +160,8 @@ function ThemeSwitcherOptions({ availableThemes, close, setTheme, t, themeName }
             className="gap-3"
             key={th.name}
             onClick={() => {
-              setTheme(th.name)
-              close()
+              setTheme(th.name);
+              close();
             }}
             role="option"
           >
@@ -178,26 +178,26 @@ function ThemeSwitcherOptions({ availableThemes, close, setTheme, t, themeName }
               )}
             </div>
 
-            <Check className={cn('h-3 w-3 shrink-0 text-midground', isActive ? 'opacity-100' : 'opacity-0')} />
+            <Check className={cn("h-3 w-3 shrink-0 text-midground", isActive ? "opacity-100" : "opacity-0")} />
           </ListItem>
-        )
+        );
       })}
     </>
-  )
+  );
 }
 
-const FONT_CATEGORY_LABEL_KEY: Record<FontChoice['category'], 'fontSans' | 'fontSerif' | 'fontMono'> = {
-  sans: 'fontSans',
-  serif: 'fontSerif',
-  mono: 'fontMono'
-}
+const FONT_CATEGORY_LABEL_KEY: Record<FontChoice["category"], "fontSans" | "fontSerif" | "fontMono"> = {
+  sans: "fontSans",
+  serif: "fontSerif",
+  mono: "fontMono",
+};
 
 /** Font-override section rendered below the theme list. Lets the user pick
  *  any catalog font independently of the active theme, or "Theme default"
  *  to clear the override. Each row previews itself in its own font. */
 function FontSection({ fontChoices, fontId, setFont }: FontSectionProps) {
-  const { t } = useI18n()
-  const order: FontChoice['category'][] = ['sans', 'serif', 'mono']
+  const { t } = useI18n();
+  const order: FontChoice["category"][] = ["sans", "serif", "mono"];
   return (
     <>
       <div className="mt-1 border-t border-current/20 px-3 pb-1 pt-2">
@@ -226,16 +226,16 @@ function FontSection({ fontChoices, fontId, setFont }: FontSectionProps) {
         </div>
         <Check
           className={cn(
-            'h-3 w-3 shrink-0 text-midground',
-            fontId === THEME_DEFAULT_FONT_ID ? 'opacity-100' : 'opacity-0'
+            "h-3 w-3 shrink-0 text-midground",
+            fontId === THEME_DEFAULT_FONT_ID ? "opacity-100" : "opacity-0",
           )}
         />
       </ListItem>
 
-      {order.map(cat => {
-        const fonts = fontChoices.filter(f => f.category === cat)
-        if (fonts.length === 0) return null
-        const catLabel = t.theme?.[FONT_CATEGORY_LABEL_KEY[cat]] ?? cat
+      {order.map((cat) => {
+        const fonts = fontChoices.filter((f) => f.category === cat);
+        if (fonts.length === 0) return null;
+        const catLabel = t.theme?.[FONT_CATEGORY_LABEL_KEY[cat]] ?? cat;
         return (
           <div key={cat}>
             <div className="px-3 pb-0.5 pt-1.5">
@@ -243,8 +243,8 @@ function FontSection({ fontChoices, fontId, setFont }: FontSectionProps) {
                 {catLabel}
               </Typography>
             </div>
-            {fonts.map(f => {
-              const isActive = f.id === fontId
+            {fonts.map((f) => {
+              const isActive = f.id === fontId;
               return (
                 <ListItem
                   active={isActive}
@@ -261,51 +261,51 @@ function FontSection({ fontChoices, fontId, setFont }: FontSectionProps) {
                       {f.label}
                     </span>
                   </div>
-                  <Check className={cn('h-3 w-3 shrink-0 text-midground', isActive ? 'opacity-100' : 'opacity-0')} />
+                  <Check className={cn("h-3 w-3 shrink-0 text-midground", isActive ? "opacity-100" : "opacity-0")} />
                 </ListItem>
-              )
+              );
             })}
           </div>
-        )
+        );
       })}
     </>
-  )
+  );
 }
 
 function ThemeSwatch({ theme }: { theme: DashboardTheme }) {
   const [c1, c2, c3] = theme.swatchColors ?? [
     theme.palette.background.hex,
     theme.palette.midground.hex,
-    theme.palette.warmGlow
-  ]
+    theme.palette.warmGlow,
+  ];
   return (
     <div aria-hidden className="flex h-4 w-9 shrink-0 overflow-hidden border border-current/20">
       <span className="flex-1" style={{ background: c1 }} />
       <span className="flex-1" style={{ background: c2 }} />
       <span className="flex-1" style={{ background: c3 }} />
     </div>
-  )
+  );
 }
 
 function PlaceholderSwatch() {
-  return <div aria-hidden className="h-4 w-9 shrink-0 border border-dashed border-current/20" />
+  return <div aria-hidden className="h-4 w-9 shrink-0 border border-dashed border-current/20" />;
 }
 
 interface ThemeSwitcherOptionsProps {
-  availableThemes: ThemeListEntry[]
-  close: () => void
-  setTheme: (name: string) => void
-  t: ReturnType<typeof useI18n>['t']
-  themeName: string
+  availableThemes: ThemeListEntry[];
+  close: () => void;
+  setTheme: (name: string) => void;
+  t: ReturnType<typeof useI18n>["t"];
+  themeName: string;
 }
 
 interface FontSectionProps {
-  fontChoices: FontChoice[]
-  fontId: string
-  setFont: (id: string) => void
+  fontChoices: FontChoice[];
+  fontId: string;
+  setFont: (id: string) => void;
 }
 
 interface ThemeSwitcherProps {
-  collapsed?: boolean
-  dropUp?: boolean
+  collapsed?: boolean;
+  dropUp?: boolean;
 }

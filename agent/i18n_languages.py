@@ -21,10 +21,10 @@ class LanguageOption(TypedDict):
 
 
 # 内置语言的身份与别名来自共享注册表；插件语言仍由上游分层注册机制发现。
-_registry_dir = Path(os.environ.get("HERMES_BUNDLED_LOCALES", ""))
+_registry_dir = Path(os.environ.get("HERMES_BUNDLED_LOCALES", ""))  # health: allow HX005 -- bundled asset root is process-scoped, not profile configuration
 if not (_registry_dir / "registry.json").is_file():
     _registry_dir = Path(__file__).resolve().parent.parent / "locales"
-LOCALE_REGISTRY = json.loads((_registry_dir / "registry.json").read_text(encoding="utf-8"))
+LOCALE_REGISTRY = json.loads((_registry_dir / "registry.json").read_text(encoding="utf-8-sig"))
 BUNDLED_LANGUAGE_INFO: dict[str, tuple[str, bool]] = {
     lang: (meta["name"], meta.get("direction") == "rtl")
     for lang, meta in LOCALE_REGISTRY["locales"].items()

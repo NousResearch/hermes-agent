@@ -4,7 +4,7 @@ import { Component, type ReactNode } from 'react'
 
 import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiTheme } from '../app/uiStore.js'
-import { getLocale, t as tr } from '../i18n/index.js'
+import { t as tr } from '../i18n/index.js'
 import { recordParentLifecycle } from '../lib/parentLog.js'
 
 import { getWidgetApp, widgetUsage } from './registry.js'
@@ -62,7 +62,7 @@ export function launchWidget(id: string, arg = ''): null | string {
   const state = app.init(arg)
 
   if (state === null) {
-    return widgetUsage(app, getLocale())
+    return widgetUsage(app)
   }
 
   place(app, state)

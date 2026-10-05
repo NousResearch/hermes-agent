@@ -1,22 +1,23 @@
-import { en } from '@/i18n/en'
-import { Button } from '@nous-research/ui/ui/components/button'
-import { Checkbox } from '@nous-research/ui/ui/components/checkbox'
-import { ListItem } from '@nous-research/ui/ui/components/list-item'
-import { Spinner } from '@nous-research/ui/ui/components/spinner'
-import { Input } from '@nous-research/ui/ui/components/input'
-import { Label } from '@nous-research/ui/ui/components/label'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
-import type { GatewayClient } from '@/lib/gatewayClient'
-import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
-import { Check, RefreshCw, Search, X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
-import { useI18n } from '@/i18n'
-import { Link } from 'react-router'
-import { cn, themedBody } from '@/lib/utils'
-import { queryMatchesProviderOnly } from '@/lib/model-picker-filter'
-import { fuzzyRank, modelSearchText } from '@hermes/shared'
-import { errorMessage } from '@/lib/api-error'
+import { en } from "@/i18n/en";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
+import { ListItem } from "@nous-research/ui/ui/components/list-item";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Input } from "@nous-research/ui/ui/components/input";
+import { Label } from "@nous-research/ui/ui/components/label";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import type { GatewayClient } from "@/lib/gatewayClient";
+import type { ModelOptionProvider, ModelOptionsResult } from "@hermes/shared";
+import { Check, RefreshCw, Search, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useI18n } from "@/i18n";
+import { Link } from "react-router";
+import { cn, themedBody } from "@/lib/utils";
+import { queryMatchesProviderOnly } from "@/lib/model-picker-filter";
+import { fuzzyRank, modelSearchText } from "@hermes/shared";
+import { errorMessage } from "@/lib/api-error";
+import { isAutoPickerCurrent, resolveInitialProviderSlug, resolvePickerCurrent } from "@/lib/model-picker-current";
 
 /**
  * Two-stage model picker modal.
@@ -39,152 +40,159 @@ import { errorMessage } from '@/lib/api-error'
  */
 
 interface ExpensiveModelConfirmResponse {
-  confirm_message?: string
-  confirm_required?: boolean
-  warning?: string
+  confirm_message?: string;
+  confirm_required?: boolean;
+  warning?: string;
 }
 
 interface ConfigSetResponse extends ExpensiveModelConfirmResponse {
-  value?: string
+  value?: string;
 }
 
 interface PendingExpensiveConfirm {
-  message: string
-  model: string
-  persistGlobal: boolean
-  provider: string
+  message: string;
+  model: string;
+  persistGlobal: boolean;
+  provider: string;
 }
 
 interface Props {
   /** Chat-mode: when present, picker emits a slash command via onSubmit. */
-  gw?: GatewayClient
-  sessionId?: string
-  onSubmit?(slashCommand: string): void
+  gw?: GatewayClient;
+  sessionId?: string;
+  onSubmit?(slashCommand: string): void;
 
   /** Standalone-mode: when present (and onSubmit absent), picker calls onApply. */
-  loader?(options?: { refresh?: boolean }): Promise<ModelOptionsResult>
+  loader?(options?: { refresh?: boolean }): Promise<ModelOptionsResult>;
   onApply?(args: {
-    confirmExpensiveModel?: boolean
-    provider: string
-    model: string
-    persistGlobal: boolean
-  }): Promise<ExpensiveModelConfirmResponse | void> | ExpensiveModelConfirmResponse | void
+    confirmExpensiveModel?: boolean;
+    provider: string;
+    model: string;
+    persistGlobal: boolean;
+  }): Promise<ExpensiveModelConfirmResponse | void> | ExpensiveModelConfirmResponse | void;
 
-  onClose(): void
-  title?: string
+  onClose(): void;
+  title?: string;
   /** If true, hides "Persist globally" checkbox — always saves to config.yaml. */
-  alwaysGlobal?: boolean
+  alwaysGlobal?: boolean;
+  /**
+   * Current assignment for this picker *slot* (auxiliary task, MoA model).
+   * The options loader always returns the main chat model; without this,
+   * "Set Auxiliary: Vision" shows `current: glm-5.3` while Vision is Qwen.
+   */
+  currentAssignment?: { model?: string; provider?: string } | null;
 }
 
 export function ModelPickerDialog(props: Props) {
-  const { t } = useI18n()
-  const { gw, sessionId, onSubmit, loader, onApply, onClose, title, alwaysGlobal = false } = props
-  const standalone = !!loader && !!onApply
+  const { t } = useI18n();
+  const { gw, sessionId, onSubmit, loader, onApply, onClose, title, alwaysGlobal = false, currentAssignment } = props;
+  const standalone = !!loader && !!onApply;
 
-  const [providers, setProviders] = useState<ModelOptionProvider[]>([])
-  const [currentModel, setCurrentModel] = useState('')
-  const [currentProviderSlug, setCurrentProviderSlug] = useState('')
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [selectedSlug, setSelectedSlug] = useState('')
-  const [selectedModel, setSelectedModel] = useState('')
-  const [query, setQuery] = useState('')
-  const [persistGlobal, setPersistGlobal] = useState(alwaysGlobal)
-  const [applying, setApplying] = useState(false)
-  const [refreshing, setRefreshing] = useState(false)
-  const [pendingConfirm, setPendingConfirm] = useState<PendingExpensiveConfirm | null>(null)
-  const closedRef = useRef(false)
+  const [providers, setProviders] = useState<ModelOptionProvider[]>([]);
+  const [currentModel, setCurrentModel] = useState("");
+  const [currentProviderSlug, setCurrentProviderSlug] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedSlug, setSelectedSlug] = useState("");
+  const [selectedModel, setSelectedModel] = useState("");
+  const [query, setQuery] = useState("");
+  const [persistGlobal, setPersistGlobal] = useState(alwaysGlobal);
+  const [applying, setApplying] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [pendingConfirm, setPendingConfirm] = useState<PendingExpensiveConfirm | null>(null);
+  const closedRef = useRef(false);
 
   const applyOptions = (r: ModelOptionsResult) => {
-    const next = r?.providers ?? []
-    setProviders(next)
-    setCurrentModel(String(r?.model ?? ''))
-    setCurrentProviderSlug(String(r?.provider ?? ''))
-    setSelectedSlug(prev => {
-      if (prev && next.some(p => p.slug === prev)) return prev
-      return (next.find(p => p.is_current) ?? next[0])?.slug ?? ''
-    })
-    setSelectedModel('')
-  }
+    const next = r?.providers ?? [];
+    const current = resolvePickerCurrent(r, currentAssignment);
+    setProviders(next);
+    setCurrentModel(current.model);
+    setCurrentProviderSlug(current.provider);
+    setSelectedSlug((prev) => {
+      if (prev && next.some((p) => p.slug === prev)) return prev;
+      return resolveInitialProviderSlug(next, current.provider);
+    });
+    setSelectedModel("");
+  };
 
   const requestOptions = (refresh = false) =>
     standalone
       ? (loader as (options?: { refresh?: boolean }) => Promise<ModelOptionsResult>)({
-          refresh
+          refresh,
         })
-      : (gw as GatewayClient).request<ModelOptionsResult>('model.options', {
+      : (gw as GatewayClient).request<ModelOptionsResult>("model.options", {
           ...(sessionId ? { session_id: sessionId } : {}),
           ...(refresh ? { refresh: true } : {}),
           // Dashboard picker mirrors the TUI: full provider universe with
           // setup warnings. The backend now defaults to the configured
           // subset (#56974), so opt into unconfigured rows explicitly.
-          include_unconfigured: true
-        })
+          include_unconfigured: true,
+        });
 
   const refreshOptions = () => {
-    setError(null)
-    setRefreshing(true)
+    setError(null);
+    setRefreshing(true);
 
     requestOptions(true)
-      .then(r => {
-        if (closedRef.current) return
-        applyOptions(r)
+      .then((r) => {
+        if (closedRef.current) return;
+        applyOptions(r);
       })
-      .catch(e => {
-        if (closedRef.current) return
-        setError(errorMessage(e, t.common))
+      .catch((e) => {
+        if (closedRef.current) return;
+        setError(errorMessage(e, t.common));
       })
       .finally(() => {
-        if (closedRef.current) return
-        setRefreshing(false)
-      })
-  }
+        if (closedRef.current) return;
+        setRefreshing(false);
+      });
+  };
 
   // Load providers + models on open.
   useEffect(() => {
-    closedRef.current = false
+    closedRef.current = false;
 
     requestOptions()
-      .then(r => {
-        if (closedRef.current) return
-        applyOptions(r)
+      .then((r) => {
+        if (closedRef.current) return;
+        applyOptions(r);
       })
-      .catch(e => {
-        if (closedRef.current) return
-        setError(errorMessage(e, t.common))
+      .catch((e) => {
+        if (closedRef.current) return;
+        setError(errorMessage(e, t.common));
       })
       .finally(() => {
-        if (closedRef.current) return
-        setLoading(false)
-      })
+        if (closedRef.current) return;
+        setLoading(false);
+      });
 
     return () => {
-      closedRef.current = true
-    }
+      closedRef.current = true;
+    };
     // Deliberately omit props from deps — stable for the dialog's lifetime.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, []);
 
   // Esc closes.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        onClose()
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
       }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   const selectedProvider = useMemo(
-    () => providers.find(p => p.slug === selectedSlug) ?? null,
-    [providers, selectedSlug]
-  )
+    () => providers.find((p) => p.slug === selectedSlug) ?? null,
+    [providers, selectedSlug],
+  );
 
-  const models = useMemo(() => selectedProvider?.models ?? [], [selectedProvider])
+  const models = useMemo(() => selectedProvider?.models ?? [], [selectedProvider]);
 
-  const trimmedQuery = query.trim()
+  const trimmedQuery = query.trim();
 
   // Fuzzy-ranked providers: match on name + slug + the provider's model ids so
   // typing a model name surfaces its provider (preserves the prior behaviour
@@ -195,14 +203,14 @@ export function ModelPickerDialog(props: Props) {
   // a couple are configured — burying "OpenRouter · 37 models" under a wall
   // of "0 models" rows made the picker feel broken.
   const filteredProviders = useMemo(() => {
-    const ranked = fuzzyRank(providers, trimmedQuery, p => `${p.name} ${p.slug} ${(p.models ?? []).join(' ')}`).map(
-      r => r.item
-    )
-    if (trimmedQuery) return ranked
-    const withModels = ranked.filter(p => (p.models ?? []).length > 0)
-    const withoutModels = ranked.filter(p => (p.models ?? []).length === 0)
-    return [...withModels, ...withoutModels]
-  }, [providers, trimmedQuery])
+    const ranked = fuzzyRank(providers, trimmedQuery, (p) => `${p.name} ${p.slug} ${(p.models ?? []).join(" ")}`).map(
+      (r) => r.item,
+    );
+    if (trimmedQuery) return ranked;
+    const withModels = ranked.filter((p) => (p.models ?? []).length > 0);
+    const withoutModels = ranked.filter((p) => (p.models ?? []).length === 0);
+    return [...withModels, ...withoutModels];
+  }, [providers, trimmedQuery]);
 
   // A query that matched the SELECTED provider by name/slug (not its models)
   // located that provider — it shouldn't also hide that provider's models
@@ -212,91 +220,91 @@ export function ModelPickerDialog(props: Props) {
   // case; a query that also matches a model id keeps filtering normally.
   const queryMatchesSelectedProviderOnly = useMemo(
     () => queryMatchesProviderOnly(selectedProvider, models, trimmedQuery),
-    [trimmedQuery, selectedProvider, models]
-  )
+    [trimmedQuery, selectedProvider, models],
+  );
 
   // Fuzzy-ranked models carrying the matched character positions so the model
   // list can highlight why each entry matched. modelSearchText adds aliases
   // for brand-less wire ids (e.g. Kimi Coding `k3` ↔ search "kimi").
   const filteredModels = useMemo(
     () =>
-      fuzzyRank(models, queryMatchesSelectedProviderOnly ? '' : trimmedQuery, modelSearchText).map(r => ({
+      fuzzyRank(models, queryMatchesSelectedProviderOnly ? "" : trimmedQuery, modelSearchText).map((r) => ({
         model: r.item,
         // Positions may land in alias suffixes — keep only in-id highlights.
-        positions: r.positions.filter(i => i >= 0 && i < r.item.length)
+        positions: r.positions.filter((i) => i >= 0 && i < r.item.length),
       })),
-    [models, trimmedQuery, queryMatchesSelectedProviderOnly]
-  )
+    [models, trimmedQuery, queryMatchesSelectedProviderOnly],
+  );
 
-  const canConfirm = !!selectedProvider && !!selectedModel && !applying
+  const canConfirm = !!selectedProvider && !!selectedModel && !applying;
 
   const applySelection = async (confirmExpensiveModel = false, forced?: PendingExpensiveConfirm) => {
-    const providerSlug = forced?.provider ?? selectedProvider?.slug ?? ''
-    const model = forced?.model ?? selectedModel
-    const shouldPersistGlobal = forced?.persistGlobal ?? persistGlobal
+    const providerSlug = forced?.provider ?? selectedProvider?.slug ?? "";
+    const model = forced?.model ?? selectedModel;
+    const shouldPersistGlobal = forced?.persistGlobal ?? persistGlobal;
 
-    if (!providerSlug || !model || applying) return
+    if (!providerSlug || !model || applying) return;
 
     if (standalone && onApply) {
-      setApplying(true)
+      setApplying(true);
       try {
         const result = await onApply({
           confirmExpensiveModel,
           provider: providerSlug,
           model,
-          persistGlobal: shouldPersistGlobal
-        })
+          persistGlobal: shouldPersistGlobal,
+        });
         if (result?.confirm_required) {
           setPendingConfirm({
             provider: providerSlug,
             model,
             persistGlobal: shouldPersistGlobal,
-            message: result.confirm_message || result.warning || t.modelPicker.expensiveWarningFallback
-          })
-          return
+            message: result.confirm_message || result.warning || t.modelPicker.expensiveWarningFallback,
+          });
+          return;
         }
-        onClose()
+        onClose();
       } catch (e) {
-        setError(errorMessage(e, t.common))
+        setError(errorMessage(e, t.common));
       } finally {
-        setApplying(false)
+        setApplying(false);
       }
     } else if (gw && sessionId) {
-      setApplying(true)
+      setApplying(true);
       try {
-        const global = shouldPersistGlobal ? ' --global' : ''
-        const result = await gw.request<ConfigSetResponse>('config.set', {
+        const global = shouldPersistGlobal ? " --global" : "";
+        const result = await gw.request<ConfigSetResponse>("config.set", {
           confirm_expensive_model: confirmExpensiveModel,
-          key: 'model',
+          key: "model",
           session_id: sessionId,
-          value: `${model} --provider ${providerSlug}${global}`
-        })
+          value: `${model} --provider ${providerSlug}${global}`,
+        });
         if (result?.confirm_required) {
           setPendingConfirm({
             provider: providerSlug,
             model,
             persistGlobal: shouldPersistGlobal,
-            message: result.confirm_message || result.warning || t.modelPicker.expensiveWarningFallback
-          })
-          return
+            message: result.confirm_message || result.warning || t.modelPicker.expensiveWarningFallback,
+          });
+          return;
         }
-        onClose()
+        onClose();
       } catch (e) {
-        setError(errorMessage(e, t.common))
+        setError(errorMessage(e, t.common));
       } finally {
-        setApplying(false)
+        setApplying(false);
       }
     } else if (onSubmit) {
-      const global = shouldPersistGlobal ? ' --global' : ''
-      onSubmit(`/model ${model} --provider ${providerSlug}${global}`)
-      onClose()
+      const global = shouldPersistGlobal ? " --global" : "";
+      onSubmit(`/model ${model} --provider ${providerSlug}${global}`);
+      onClose();
     }
-  }
+  };
 
   const confirm = () => {
-    if (!canConfirm) return
-    void applySelection()
-  }
+    if (!canConfirm) return;
+    void applySelection();
+  };
 
   // Portal to document.body: the main dashboard column in App.tsx is
   // `relative z-2`, which creates a stacking context that traps fixed
@@ -308,7 +316,7 @@ export function ModelPickerDialog(props: Props) {
   return createPortal(
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
-      onClick={e => e.target === e.currentTarget && onClose()}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
       role="dialog"
       aria-modal="true"
       aria-labelledby="model-picker-title"
@@ -316,7 +324,7 @@ export function ModelPickerDialog(props: Props) {
       <div
         className={cn(
           themedBody,
-          'relative w-full max-w-3xl max-h-[80vh] border border-border bg-card shadow-2xl flex flex-col'
+          "relative w-full max-w-3xl max-h-[80vh] border border-border bg-card shadow-2xl flex flex-col",
         )}
       >
         <Button
@@ -334,8 +342,12 @@ export function ModelPickerDialog(props: Props) {
             {title ?? t.modelPicker.title}
           </h2>
           <p className="text-xs text-muted-foreground mt-1 font-mono">
-            {t.modelPicker.currentModelLabel.replace('{model}', currentModel || `(${t.common.unknown})`)}
-            {currentProviderSlug && ` · ${currentProviderSlug}`}
+            {t.modelPicker.currentModelLabel.replace(
+              "{model}",
+              isAutoPickerCurrent({ model: currentModel, provider: currentProviderSlug })
+                ? t.modelSettings.autoUseMain
+                : [currentModel || t.modelPicker.unknownModel, currentProviderSlug].filter(Boolean).join(" · "),
+            )}
           </p>
         </header>
 
@@ -346,7 +358,7 @@ export function ModelPickerDialog(props: Props) {
               autoFocus
               placeholder={t.modelPicker.filterPlaceholder}
               value={query}
-              onChange={e => setQuery(e.target.value)}
+              onChange={(e) => setQuery(e.target.value)}
               className="pl-7 h-8 text-sm"
             />
           </div>
@@ -360,10 +372,11 @@ export function ModelPickerDialog(props: Props) {
             providers={filteredProviders}
             total={providers.length}
             selectedSlug={selectedSlug}
+            currentProviderSlug={currentProviderSlug}
             query={trimmedQuery}
-            onSelect={slug => {
-              setSelectedSlug(slug)
-              setSelectedModel('')
+            onSelect={(slug) => {
+              setSelectedSlug(slug);
+              setSelectedModel("");
             }}
           />
 
@@ -375,14 +388,14 @@ export function ModelPickerDialog(props: Props) {
             currentModel={currentModel}
             currentProviderSlug={currentProviderSlug}
             onSelect={setSelectedModel}
-            onConfirm={m => {
-              setSelectedModel(m)
+            onConfirm={(m) => {
+              setSelectedModel(m);
               void applySelection(false, {
-                provider: selectedProvider?.slug ?? '',
+                provider: selectedProvider?.slug ?? "",
                 model: m,
                 persistGlobal,
-                message: ''
-              })
+                message: "",
+              });
             }}
           />
         </div>
@@ -395,7 +408,7 @@ export function ModelPickerDialog(props: Props) {
               <Checkbox
                 checked={persistGlobal}
                 id="model-picker-persist-global"
-                onCheckedChange={checked => setPersistGlobal(checked === true)}
+                onCheckedChange={(checked) => setPersistGlobal(checked === true)}
               />
 
               <Label
@@ -431,15 +444,15 @@ export function ModelPickerDialog(props: Props) {
         loading={applying}
         onCancel={() => setPendingConfirm(null)}
         onConfirm={() => {
-          const pending = pendingConfirm
-          if (!pending) return
-          setPendingConfirm(null)
-          void applySelection(true, pending)
+          const pending = pendingConfirm;
+          if (!pending) return;
+          setPendingConfirm(null);
+          void applySelection(true, pending);
         }}
       />
     </div>,
-    document.body
-  )
+    document.body,
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -447,7 +460,7 @@ export function ModelPickerDialog(props: Props) {
 /* ------------------------------------------------------------------ */
 
 /** Empty picker: no key and no OAuth login anywhere. Points at the two in-app fixes. */
-export const NO_PROVIDERS_MESSAGE = en.modelPicker.noProvidersConfigured
+export const NO_PROVIDERS_MESSAGE = en.modelPicker.noProvidersConfigured;
 
 function ProviderColumn({
   loading,
@@ -455,21 +468,23 @@ function ProviderColumn({
   providers,
   total,
   selectedSlug,
+  currentProviderSlug,
   query,
   onSelect,
-  onClose
+  onClose,
 }: {
-  loading: boolean
-  error: string | null
-  providers: ModelOptionProvider[]
-  total: number
-  selectedSlug: string
-  query: string
-  onSelect(slug: string): void
+  loading: boolean;
+  error: string | null;
+  providers: ModelOptionProvider[];
+  total: number;
+  selectedSlug: string;
+  currentProviderSlug: string;
+  query: string;
+  onSelect(slug: string): void;
   /** The links below navigate away; the full-screen dialog must close or it keeps covering the target page. */
-  onClose(): void
+  onClose(): void;
 }) {
-  const { t } = useI18n()
+  const { t } = useI18n();
   return (
     <div className="border-r border-border overflow-y-auto">
       {loading && (
@@ -500,30 +515,32 @@ function ProviderColumn({
         </div>
       )}
 
-      {providers.map(p => {
-        const active = p.slug === selectedSlug
+      {providers.map((p) => {
+        const active = p.slug === selectedSlug;
+        const isCurrentProvider =
+          p.slug === currentProviderSlug && !isAutoPickerCurrent({ model: "", provider: currentProviderSlug });
         return (
           <ListItem
             key={p.slug}
             active={active}
             onClick={() => onSelect(p.slug)}
-            className={`items-start text-xs border-l-2 ${active ? 'border-l-primary' : 'border-l-transparent'}`}
+            className={`items-start text-xs border-l-2 ${active ? "border-l-primary" : "border-l-transparent"}`}
           >
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1.5">
                 <span className="font-medium truncate">{p.name}</span>
-                {p.is_current && <CurrentTag />}
+                {isCurrentProvider && <CurrentTag />}
               </div>
               <div className="text-xs text-text-secondary font-mono truncate">
-                {p.slug} ·{' '}
-                {t.modelPicker.modelsCount.replace('{count}', String(p.total_models ?? p.models?.length ?? 0))}
+                {p.slug} ·{" "}
+                {t.modelPicker.modelsCount.replace("{count}", String(p.total_models ?? p.models?.length ?? 0))}
               </div>
             </div>
           </ListItem>
-        )
+        );
       })}
     </div>
-  )
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -538,24 +555,24 @@ function ModelColumn({
   currentModel,
   currentProviderSlug,
   onSelect,
-  onConfirm
+  onConfirm,
 }: {
-  provider: ModelOptionProvider | null
-  models: { model: string; positions: number[] }[]
-  allModels: string[]
-  selectedModel: string
-  currentModel: string
-  currentProviderSlug: string
-  onSelect(model: string): void
-  onConfirm(model: string): void
+  provider: ModelOptionProvider | null;
+  models: { model: string; positions: number[] }[];
+  allModels: string[];
+  selectedModel: string;
+  currentModel: string;
+  currentProviderSlug: string;
+  onSelect(model: string): void;
+  onConfirm(model: string): void;
 }) {
-  const { t } = useI18n()
+  const { t } = useI18n();
   if (!provider) {
     return (
       <div className="overflow-y-auto">
         <div className="p-4 text-xs text-muted-foreground italic">{t.modelPicker.pickProvider}</div>
       </div>
-    )
+    );
   }
 
   return (
@@ -570,8 +587,8 @@ function ModelColumn({
         </div>
       ) : (
         models.map(({ model: m, positions }) => {
-          const active = m === selectedModel
-          const isCurrent = m === currentModel && provider.slug === currentProviderSlug
+          const active = m === selectedModel;
+          const isCurrent = m === currentModel && provider.slug === currentProviderSlug;
 
           return (
             <ListItem
@@ -581,22 +598,22 @@ function ModelColumn({
               onDoubleClick={() => onConfirm(m)}
               className="px-3 py-1.5 text-xs font-mono"
             >
-              <Check className={`h-3 w-3 shrink-0 ${active ? 'text-primary' : 'text-transparent'}`} />
+              <Check className={`h-3 w-3 shrink-0 ${active ? "text-primary" : "text-transparent"}`} />
               <span className="flex-1 truncate">
                 <HighlightedText text={m} positions={positions} />
               </span>
               {isCurrent && <CurrentTag />}
             </ListItem>
-          )
+          );
         })
       )}
     </div>
-  )
+  );
 }
 
 function CurrentTag() {
-  const { t } = useI18n()
-  return <span className="text-display text-xs tracking-wider text-primary shrink-0">{t.modelPicker.currentTag}</span>
+  const { t } = useI18n();
+  return <span className="text-display text-xs tracking-wider text-primary shrink-0">{t.modelPicker.currentTag}</span>;
 }
 
 /**
@@ -606,10 +623,10 @@ function CurrentTag() {
  */
 function HighlightedText({ text, positions }: { text: string; positions: number[] }) {
   if (!positions.length) {
-    return <>{text}</>
+    return <>{text}</>;
   }
 
-  const hit = new Set(positions)
+  const hit = new Set(positions);
 
   return (
     <>
@@ -620,8 +637,8 @@ function HighlightedText({ text, positions }: { text: string; positions: number[
           </mark>
         ) : (
           <span key={i}>{ch}</span>
-        )
+        ),
       )}
     </>
-  )
+  );
 }

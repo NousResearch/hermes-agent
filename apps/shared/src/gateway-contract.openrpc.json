@@ -314,7 +314,7 @@
     },
     {
       "name": "browser.manage",
-      "summary": "Inspect, attach to, or drop the CDP browser the tools use; ``messages`` narrate a connect.",
+      "summary": "Inspect, attach to, or drop the CDP browser the tools use, or switch Browser Use mode (``use``, applies to new sessions); ``messages`` narrate a connect.",
       "params": [
         {
           "name": "params",
@@ -4908,6 +4908,44 @@
         "title": "AgentsListResult",
         "type": "object"
       },
+      "ApprovalCancelledPayload": {
+        "additionalProperties": false,
+        "description": "``session_lifecycle._announce_cancelled_gateway_approvals`` (broadcast).\n\nOne frame for every pending approval dropped by an interrupt / reap / teardown (#106678) \u2014 the\ndeny-resolve is silent without it, so a reconnecting client's prompt looks lost rather than cancelled.\n``cancelled_count`` is the number of dropped entries; ``request_ids`` omits empty/missing ids, so the\ntwo can disagree when an entry has no request_id.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "stored_session_id": {
+            "title": "Stored Session Id",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "cancelled_count": {
+            "title": "Cancelled Count",
+            "type": "integer"
+          },
+          "request_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Request Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session_id",
+          "stored_session_id",
+          "reason",
+          "cancelled_count",
+          "request_ids"
+        ],
+        "title": "ApprovalCancelledPayload",
+        "type": "object"
+      },
       "ApprovalChoice": {
         "enum": [
           "once",
@@ -7082,7 +7120,8 @@
         "enum": [
           "status",
           "connect",
-          "disconnect"
+          "disconnect",
+          "use"
         ],
         "title": "BrowserAction",
         "type": "string"
@@ -7359,6 +7398,18 @@
             "default": null,
             "title": "Url"
           },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Enabled"
+          },
           "session_id": {
             "anyOf": [
               {
@@ -7420,6 +7471,18 @@
             ],
             "default": null,
             "title": "Messages"
+          },
+          "browser_use": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser Use"
           }
         },
         "required": [
@@ -7869,6 +7932,21 @@
             ],
             "default": null,
             "title": "Desktop"
+          },
+          "desktop_subcommands": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Desktop Subcommands"
           }
         },
         "title": "CommandCatalogMeta",
@@ -11369,7 +11447,10 @@
           "last_delivery_unverified": {
             "anyOf": [
               {
-                "type": "boolean"
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               {
                 "type": "null"
@@ -18433,6 +18514,18 @@
             "default": null,
             "title": "Response Previewed"
           },
+          "response_reused": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Response Reused"
+          },
           "response_transformed": {
             "anyOf": [
               {
@@ -18868,6 +18961,11 @@
         "properties": {
           "fast": {
             "title": "Fast",
+            "type": "boolean"
+          },
+          "ultrafast": {
+            "default": false,
+            "title": "Ultrafast",
             "type": "boolean"
           },
           "reasoning": {
@@ -21991,6 +22089,7 @@
           "no_interactive_session",
           "version_too_old",
           "missing_app",
+          "unsupported_gpu",
           "unknown"
         ],
         "title": "PluginServerState",
@@ -23358,6 +23457,18 @@
             "default": 0,
             "title": "Message Count",
             "type": "integer"
+          },
+          "live_message_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Live Message Count"
           }
         },
         "required": [
@@ -23659,6 +23770,18 @@
             "default": 0,
             "title": "Message Count",
             "type": "integer"
+          },
+          "live_message_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Live Message Count"
           }
         },
         "required": [
@@ -24437,7 +24560,7 @@
       },
       "ProfilesListResult": {
         "additionalProperties": false,
-        "description": "``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself.",
+        "description": "``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself;\n``install_id`` (as on ``/api/status``) names the machine that answered.",
         "properties": {
           "profiles": {
             "items": {
@@ -24450,6 +24573,11 @@
             "default": true,
             "title": "Bot Mode Protocol",
             "type": "boolean"
+          },
+          "install_id": {
+            "default": "",
+            "title": "Install Id",
+            "type": "string"
           }
         },
         "title": "ProfilesListResult",
@@ -28677,6 +28805,18 @@
             ],
             "default": null,
             "title": "Count"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
           }
         },
         "required": [
@@ -28786,6 +28926,18 @@
             ],
             "default": null,
             "title": "Cwd"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
           }
         },
         "required": [
@@ -28857,6 +29009,18 @@
             ],
             "default": null,
             "title": "Name"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
           }
         },
         "required": [
@@ -29728,6 +29892,18 @@
             "default": null,
             "title": "Fast"
           },
+          "service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Service Tier"
+          },
           "close_on_disconnect": {
             "default": false,
             "title": "Close On Disconnect",
@@ -29747,6 +29923,18 @@
             "default": false,
             "title": "Follow Profile Config",
             "type": "boolean"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
           }
         },
         "title": "SessionCreateParams",
@@ -30661,6 +30849,18 @@
             "default": 0,
             "title": "Message Count",
             "type": "integer"
+          },
+          "live_message_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Live Message Count"
           },
           "source": {
             "default": "",
@@ -39395,6 +39595,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/TerminalOutputPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "approval.cancelled",
+      "summary": "Pending gateway approvals were dropped by interrupt/reap/teardown; the wait resolved as deny (not a user refusal).",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ApprovalCancelledPayload"
           }
         }
       ]

@@ -2,6 +2,7 @@ import { afterEach } from 'vitest'
 
 import { resetLocale } from '../i18n/runtime.js'
 
+import { buildCtx, ref } from './gatewayEventFixture.js'
 import { activateZh } from './localeFixture.js'
 afterEach(resetLocale)
 import type { ConnectionOperationTarget } from '@hermes/shared/gateway-events'
@@ -30,48 +31,6 @@ const openExternalUrlMock = vi.fn((_url: string) => true)
 vi.mock('../lib/openExternalUrl.js', () => ({
   openExternalUrl: (url: string) => openExternalUrlMock(url)
 }))
-
-const ref = <T>(current: T) => ({ current })
-
-const buildCtx = (appended: Msg[]) =>
-  ({
-    composer: {
-      dequeue: () => undefined,
-      queueEditRef: ref<null | number>(null),
-      sendQueued: vi.fn(),
-      setInput: vi.fn()
-    },
-    gateway: {
-      gw: { request: vi.fn(async () => null) },
-      rpc: vi.fn(async () => null)
-    },
-    session: {
-      STARTUP_RESUME_ID: '',
-      colsRef: ref(80),
-      newSession: vi.fn(),
-      resetSession: vi.fn(),
-      resumeById: vi.fn(),
-      setCatalog: vi.fn()
-    },
-    submission: {
-      submitRef: { current: vi.fn() }
-    },
-    system: {
-      bellOnComplete: false,
-      sys: vi.fn()
-    },
-    transcript: {
-      appendMessage: (msg: Msg) => appended.push(msg),
-      panel: (title: string, sections: any[]) =>
-        appended.push({ kind: 'panel', panelData: { sections, title }, role: 'system', text: '' }),
-      setHistoryItems: vi.fn()
-    },
-    voice: {
-      setProcessing: vi.fn(),
-      setRecording: vi.fn(),
-      setVoiceEnabled: vi.fn()
-    }
-  }) as any
 
 /** Deliver one server→client request (`tui_gateway/server_requests.py`) to the TUI's request handler. */
 const serverRequest = (method: string, params: Record<string, unknown>, id = `srq-${method}`) => {
@@ -1382,7 +1341,7 @@ describe('createGatewayEventHandler', () => {
   })
 
   it('declines the requests a terminal cannot answer so the channel fails them fast', () => {
-    for (const method of ['preview.act', 'window.read', 'tour', 'mcp.setup', 'vault.code']) {
+    for (const method of ['preview.act', 'window.read', 'tour', 'mcp.setup', 'terminal.read']) {
       expect(serverRequest(method, {}).handled).toBe(false)
     }
   })
@@ -2377,6 +2336,66 @@ describe('createGatewayEventHandler', () => {
       // Turn continues without finalizing or throwing
       expect(getUiState().busy).toBe(true)
       expect(appended).toHaveLength(0)
+    })
+
+    describe('vault.save_login prompt (#109101)', () => {
+      it('opens the two-step save-login card for the server request', () => {
+        const { handled } = serverRequest(
+          'vault.save_login',
+          {
+            origin: 'https://www.linkedin.com',
+            session_id: 'sess',
+            site: 'www.linkedin.com'
+          },
+          'save-9'
+        )
+
+        expect(handled).toBe(true)
+        expect(getOverlayState().vaultSaveLogin).toEqual({
+          origin: 'https://www.linkedin.com',
+          requestId: 'save-9',
+          site: 'www.linkedin.com'
+        })
+        expect(getUiState().status).toBe('save login for www.linkedin.com')
+      })
+
+      it('tears the card down on request.cancel, but only for the matching request', () => {
+        const onEvent = createGatewayEventHandler(buildCtx([]))
+
+        serverRequest(
+          'vault.save_login',
+          {
+            origin: 'https://a.example',
+            session_id: 'sess',
+            site: 'a.example'
+          },
+          'save-1'
+        )
+        expect(getOverlayState().vaultSaveLogin).not.toBeNull()
+
+        onEvent({ payload: { id: 'save-2' }, type: 'request.cancel' } as any)
+        expect(getOverlayState().vaultSaveLogin).not.toBeNull()
+
+        onEvent({ payload: { id: 'save-1' }, type: 'request.cancel' } as any)
+        expect(getOverlayState().vaultSaveLogin).toBeNull()
+      })
+
+      it('opens the verification-code card for vault.code and tears it down on request.cancel', () => {
+        const onEvent = createGatewayEventHandler(buildCtx([]))
+
+        const { handled } = serverRequest(
+          'vault.code',
+          { hint: 'sent to •••42', session_id: 'sess', site: 'github.com' },
+          'code-1'
+        )
+
+        expect(handled).toBe(true)
+        expect(getOverlayState().vaultCode).toEqual({ hint: 'sent to •••42', requestId: 'code-1', site: 'github.com' })
+        expect(getUiState().status).toBe('verification code for github.com')
+
+        onEvent({ payload: { id: 'code-1' }, type: 'request.cancel' } as any)
+        expect(getOverlayState().vaultCode).toBeNull()
+      })
     })
   })
 })

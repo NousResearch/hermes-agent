@@ -136,16 +136,15 @@ VALID_HOOKS: Set[str] = {
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
-    "pre_gateway_dispatch",
+    "pre_gateway_dispatch", "post_gateway_admission",  # post_*: fail-open consume, gateway/run_inbound_consumer.py
     # agent_loop_stopped: an agent turn was interrupted mid-run (/stop, or the running-agent
     # fast-path of /new; see gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key,
     # platform, reason, invalidation_reason. Return values are ignored.
     "agent_loop_stopped",
-    # Approval observers (tools/approval.py); returns ignored — plugins cannot veto or pre-answer
-    # (use pre_tool_call). Kwargs: command, description, pattern_key, pattern_keys, session_key,
-    # surface: "cli"|"gateway"|"smart"; post_approval_response adds choice ("once"|"session"|
-    # "always"|"deny"|"timeout"|"smart_approve"|"smart_deny") and decided_by.
-    "pre_approval_request", "post_approval_response",
+    # Approval observers (returns ignored; veto via pre_tool_call). Kwargs: command, description, pattern_key,
+    # pattern_keys, session_key, surface ("cli"|"gateway"|"smart"|"mcp-elicitation/<server>"|"mcp-trust/<server>"|
+    # "vault-payment"); post_approval_response adds choice/decided_by. on_human_input_*: tools/human_input_hooks.py.
+    "pre_approval_request", "post_approval_response", "on_human_input_request", "on_human_input_resolved",
     # on_room_member_activity: a hosted Group Chat member's live runtime events (tool.started/completed,
     # request.opened, message.delta, reasoning.delta, turn.error, ...) stamped with room_id, thread_id,
     # member_id, turn_id, task_id, execution_generation. Observer, queued per consumer off the token
@@ -250,10 +249,7 @@ class PluginContext:
 
     def has_plugin(self, plugin_id: str) -> bool:
         """Return True when another plugin is loaded and enabled (runtime probe for advisory
-        ``requires_plugins``). Matches on registry key or manifest name.
-
-        See #64165.
-        """
+        ``requires_plugins``, #64165). Matches on registry key or manifest name."""
         return any(
             loaded.enabled and (key == plugin_id or loaded.manifest.name == plugin_id)
             for key, loaded in self._manager._plugins.items()
@@ -312,8 +308,7 @@ class PluginContext:
     def _track(
         self, kind: str, key: str, release: Callable[[], None], *, persistent: bool = False,
     ) -> PluginRegistration:
-        """Record host-owned cleanup for a successful registration (see
-        :meth:`PluginManager._track_registration` for ``persistent``)."""
+        """Record host-owned cleanup for a registration (``persistent``: see ``_track_registration``)."""
         return self._manager._track_registration(self.manifest, kind, key, release, persistent=persistent)
 
     def _track_replacement(
@@ -342,8 +337,7 @@ class PluginContext:
         self, kind: str, key: str, mapping: Dict[str, Any], entry: Any, log_fmt: str, *log_args: Any,
         previous: Any = _UNSET,
     ) -> PluginRegistration:
-        """Shared tail of the manager-mapping registrars: store + lease the entry, then log
-        ``log_fmt % (plugin name, *log_args)`` at debug."""
+        """Store + lease a manager-mapping entry, then debug-log ``log_fmt % (plugin name, *log_args)``."""
         handle = self._track_mapping_entry(kind, key, mapping, entry, previous)
         logger.debug(log_fmt, self.manifest.name, *log_args)
         return handle
@@ -406,6 +400,11 @@ class PluginContext:
             return get_active_profile_name()
         except Exception:
             return "default"
+
+    def current_cron_execution(self) -> Any:
+        """The cron run executing now (``cron.execution_identity.CronExecution``), else ``None``."""
+        from cron.execution_identity import current_cron_execution
+        return current_cron_execution()
 
     def on_unload(self, callback: Callable[[], None]) -> PluginRegistration:
         """Register a cleanup callback for unload: runs in reverse acquisition order interleaved
@@ -815,7 +814,9 @@ class PluginContext:
         it freely); an ACTIVE installer goes in ``ensure_deps_fn`` (called from ``create_adapter()`` when
         ``check_fn`` is False). Extra kwargs (``setup_fn``, ``emoji``, ``allowed_users_env``,
         ``platform_hint``, ``ensure_deps_fn``) forward to ``PlatformEntry``; unknown keys raise TypeError."""
-        from gateway.platform_registry import platform_registry, PlatformEntry
+        from gateway.platform_registry import core_ships_platform, platform_registry, PlatformEntry
+        if entry_kwargs.get("trusted_inbound") and self.manifest.source != "bundled" and core_ships_platform(name):
+            raise self._refuse(f"core platform '{name}' with trusted_inbound (it would waive allowlists and pairing)")
         entry_kwargs.setdefault("plugin_name", self.manifest.name)
         entry = PlatformEntry(
             name=name, label=label, adapter_factory=adapter_factory, check_fn=check_fn,
@@ -1234,6 +1235,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self.home_path = Path(self.scope_key)
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
+        # True once a discovery re-applied plugin secret sources for this home: the per-home snapshot and
+        # the installed scope may then hold plugin-supplied names, and a later discovery that finds NO
+        # enabled plugin source (plugin removed / disabled) must still reconcile once to drop them.
+        self._plugin_secret_sources_reconciled: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         self._gateway_message_injector: tuple[object, Callable] | None = None
         # Ink TUI / desktop. Must not alias ``_gateway_message_injector``: a live
@@ -1412,24 +1417,34 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             plugin_sources = list_plugin_sources()
         except Exception:
             return
-        if not plugin_sources:
-            return
-        try:
-            from hermes_cli.config import load_config
-            secrets = (load_config() or {}).get("secrets") or {}
-        except Exception:
-            secrets = {}
-
-        def _enabled(source) -> bool:
-            section = secrets.get(getattr(source, "name", ""))
+        enabled_names: list[str] = []
+        if plugin_sources:
             try:
-                return bool(source.is_enabled(section if isinstance(section, dict) else {}))
+                from hermes_cli.config import load_config
+                secrets = (load_config() or {}).get("secrets") or {}
             except Exception:
-                return False  # mirrors the orchestrator: a raising is_enabled() is skipped
+                secrets = {}
 
-        enabled_names = [getattr(s, "name", "") for s in plugin_sources if _enabled(s)]
+            def _enabled(source) -> bool:
+                section = secrets.get(getattr(source, "name", ""))
+                try:
+                    return bool(source.is_enabled(section if isinstance(section, dict) else {}))
+                except Exception:
+                    return False  # mirrors the orchestrator: a raising is_enabled() is skipped
+
+            enabled_names = [getattr(s, "name", "") for s in plugin_sources if _enabled(s)]
         if not enabled_names:
-            return
+            # Nothing enabled now. If an earlier discovery re-applied plugin sources for this home, the
+            # snapshot and installed scope still carry that plugin's names (force-reload unloads the
+            # registration first, so this is exactly the "last plugin source removed" path) — reconcile
+            # once so they drop out. A home that never had one stays a no-op: no re-pull, no re-load.
+            if not self._plugin_secret_sources_reconciled:
+                return
+            # The marker is cleared only AFTER the cleanup below succeeds: reset/reload/refresh are
+            # fallible, and clearing first left the stale credential active with no retry on the next
+            # discovery (review on f5f88d5058).
+        else:
+            self._plugin_secret_sources_reconciled = True
         try:
             # Reset and reload the SAME home the process (or routed turn) resolves to: under multiplex this
             # runs at gateway boot after sibling profiles may already have hydrated, and a global clear
@@ -1438,8 +1453,16 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             home = get_hermes_home()
             reset_secret_source_cache(home)
             load_hermes_dotenv(hermes_home=home)
+            # A scope installed for this home was frozen BEFORE these sources existed — a routed cron
+            # fire builds its scope in run_one_job and only then, on its first agent build, discovers
+            # plugins; under multiplex semantics the load above is hydrate-only, so fold the values
+            # into the installed scope or THIS fire never sees the plugin credential.
+            from agent.secret_scope import refresh_installed_secret_scope
+            refresh_installed_secret_scope(Path(home))
+            if not enabled_names:
+                self._plugin_secret_sources_reconciled = False  # cleanup succeeded; nothing left to drop
             logger.debug("Re-applied secret sources after plugin discovery for: %s",
-                         ", ".join(sorted(enabled_names)))
+                         ", ".join(sorted(enabled_names)) or "<none — reconciled removed plugin sources>")
         except Exception as exc:
             logger.debug("secret source re-apply after discovery failed: %s", exc)
 
@@ -1460,7 +1483,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         stale_relay_keys = legacy_relay_plugin_keys(enabled)
         if stale_relay_keys:
             logger.warning("Removed Hermes plugin %s is still listed in plugins.enabled; "
-                           "remove it and configure native Relay plugins with %s",
+                           "remove it and configure a standard user or system Relay plugins.toml, or use %s "
+                           "for an explicit user-file override",
                            ", ".join(stale_relay_keys), RELAY_PLUGINS_CONFIG_ENV)
         # Later sources win on key collision (project > user > bundled) except a flat impostor claiming a
         # bundled key from another directory (resolve_manifest_winners); gate the winners, then

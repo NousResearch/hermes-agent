@@ -179,11 +179,13 @@ gateway:
     label_normal: "GNÁTH"
     status_fast: "tapa"
     status_normal: "gnáth"
-    picker_title: "⚡ **Priority Processing**\\n\\nMód reatha: `{mode}`\\n\\nRoghnaigh rogha:"
+    picker_title: "⚡ **Priority Processing**\n\nMód reatha: `{mode}`\n\nRoghnaigh rogha:"
     choice_fast: "fast — Priority Processing ar siúl"
     choice_normal: "normal — gnáthphróiseáil"
     choice_auto: "auto — tapa do na chéad soicindí de gach seal"
     choice_cold: "cold — tapa don chéad seal de sheisiún amháin"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, praghas x6)"
+    ultrafast_not_supported: "⚡ Níl Ultrafast ar fáil ach do GPT-6 Astra (samhail reatha: `{model}`)."
   footer:
     status: "📎 Buntásc rite: **{state}**\nRéimsí: `{fields}`\nArdán: `{platform}`"
     usage: "Úsáid: `/footer [on|off|status]`"
@@ -280,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ Ní thacaítear le `/reasoning reset --global`. Úsáid `/reasoning <level> --global` chun an réamhshocrú domhanda a athrú."
     reset_done: "🧠 ✓ Sárú réasúnaíochta seisiúin glanta; ag titim siar ar an gcumraíocht dhomhanda."
     unknown_arg: "⚠️ Argóint anaithnid: `{arg}`\n\n**Leibhéil bhailí:** none, minimal, low, medium, high, xhigh, max, ultra\n**Taispeáint:** show, hide\n**Coinnigh:** cuir `--global` leis chun sábháil thar an seisiún seo"
-    picker_title: "🧠 **Socruithe Réasúnaíochta**\\n\\n**Iarracht:** `{level}`\\n**Scóip:** {scope}\\n**Taispeáint:** {display}\\n\\nRoghnaigh rogha:"
+    picker_title: "🧠 **Socruithe Réasúnaíochta**\n\n**Iarracht:** `{level}`\n**Scóip:** {scope}\n**Taispeáint:** {display}\n\nRoghnaigh rogha:"
     choice_none: "none — díchumasaigh réasúnaíocht"
     choice_reset: "reset — glan sárú an tseisiúin"
     choice_show: "taispeáin réasúnaíocht sna freagraí"
@@ -1446,8 +1448,6 @@ platform:
   irc:
     quit_message: "Hermes Agent ag múchadh"
     standalone_quit: "seachadta"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Ceadaigh uair amháin"
     confirm_always_approve: "Ceadaigh i gcónaí"
@@ -1598,7 +1598,7 @@ slash:
   reasoning:
     description: "Bainistigh iarracht agus taispeáint na réasúnaíochta"
   fast:
-    description: "Mód tapa — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Mód tapa — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Taispeáin nó athraigh craiceann/téama na taispeána"
   indicator:
@@ -2353,6 +2353,7 @@ cli:
     removed: "Baineadh mír scuaine {index}: {preview}"
     item_not_found: "Níor aimsíodh mír scuaine {index}. Méid reatha: {size}"
     usage_edit: "Úsáid: /queue edit <number> <new prompt>"
+    usage_remove: "Úsáid: /queue rm <number>"
     updated: "Nuashonraíodh mír scuaine {index}: {preview}"
     usage_move: "Úsáid: /queue move <from> <to>"
     move_out_of_range: "Bogadh scuaine as raon. Méid reatha: {size}"
@@ -2651,7 +2652,9 @@ cli:
       feature_generic: "Mód tapa"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Úsáid: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Níl Ultrafast ar fáil ach do GPT-6 Astra (samhail reatha: {model})."
+      usage: "Úsáid: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} socraithe go {value} {scope}"
     hatch:
@@ -2716,6 +2719,7 @@ cli:
       restored: "Staid aischurtha ó: {snapshot_id}"
       restart_recommended: "Moltar atosú do phróisis gateway/deais chun athruithe state.db a ghlacadh."
       not_found: "Níor aimsíodh an roghchóip: {snapshot_id}"
+      restore_incomplete: "Níor athchóiríodh an roghchóip {snapshot_id} go hiomlán; diúltaíodh roinnt comhad (féach na logaí)"
       usage_prune: "Úsáid: /snapshot prune [keep-count]"
       pruned: "Baineadh {deleted} seanroghchóip(eanna) (ag coinneáil {keep})."
     export:
@@ -3283,6 +3287,7 @@ cli:
     shallow_clone_keeping: "⚠ Clón éadomhain — ní féidir staid an bhrú a fhíorú, á choinneáil: {path}"
     next_session_deepens: "Déanann an chéad seisiún `hermes -w` eile an clón a dhoimhniú agus bearrann sé worktrees cumaiscthe go huathoibríoch."
     unpushed_keeping: "⚠ Tá tiomantais gan bhrú sa worktree, á choinneáil: {path}"
+    uncommitted_keeping: "⚠ Tá athruithe gan tiomantas sa worktree, á choinneáil: {path}"
     clean_up_manually: "Chun glanadh de láimh: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree glanta: {path}"
 display:
@@ -3669,7 +3674,7 @@ tips:
   t197: "Gabhann sábháil trajectóirí (--save-trajectories) rianta iomlána úsáide uirlisí le haghaidh oiliúna samhlacha."
   t198: "Trí chineál breiseáin: ginearálta (uirlisí/crúcaí), soláthraithe cuimhne, agus innill chomhthéacs."
   t199: "Suiteálann hermes plugins install owner/repo breiseáin go díreach ó GitHub."
-  t200: "Soláthraithe cuimhne seachtracha: Honcho, OpenViking, Mem0 cuachta; Hindsight agus tuilleadh trí hermes plugins install."
+  t200: "Soláthraithe cuimhne seachtracha: OpenViking, Mem0 cuachta; Honcho, Hindsight agus tuilleadh trí hermes plugins install."
   t201: "I measc crúcaí breiseán tá pre/post_tool_call, pre/post_llm_call, agus transform_terminal_output le haghaidh canónú aschuir."
   t202: "Laghdaíonn taisceadh leideanna (Anthropic) costais trí réimíreanna taiscthe leid an chórais a athúsáid."
   t203: "Gineann an gníomhaire teidil seisiún go huathoibríoch i snáithe cúlra — gan aon tionchar ar aga freagartha."

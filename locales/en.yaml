@@ -174,8 +174,8 @@ gateway:
     denied_reason_plural: "❌ Commands denied ({count} commands). Reason relayed to the agent: \"{reason}\""
   fast:
     not_supported: "⚡ /fast is only available for OpenAI models that support Priority Processing."
-    status: "⚡ Priority Processing\n\nCurrent mode: `{mode}`\n\n_Usage:_ `/fast <normal|fast|auto|cold|status>`"
-    unknown_arg: "⚠️ Unknown argument: `{arg}`\n\n**Valid options:** normal, fast, auto, cold, status"
+    status: "⚡ Priority Processing\n\nCurrent mode: `{mode}`\n\n_Usage:_ `/fast <normal|fast|auto|cold|ultrafast|status>`"
+    unknown_arg: "⚠️ Unknown argument: `{arg}`\n\n**Valid options:** normal, fast, auto, cold, ultrafast, status"
     saved: "⚡ ✓ Priority Processing: **{label}** (saved to config)\n_(takes effect on next message)_"
     session_only: "⚡ ✓ Priority Processing: **{label}** (this session only)"
     label_fast: "FAST"
@@ -187,6 +187,8 @@ gateway:
     choice_normal: "normal — standard processing"
     choice_auto: "auto — fast for the first seconds of every turn"
     choice_cold: "cold — fast for the first turn of a session only"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, 6x price)"
+    ultrafast_not_supported: "⚡ Ultrafast is only available for GPT-6 Astra (current model: `{model}`)."
   footer:
     status: "📎 Runtime footer: **{state}**\nFields: `{fields}`\nPlatform: `{platform}`"
     usage: "Usage: `/footer [on|off|status]`"
@@ -1517,8 +1519,6 @@ platform:
     quit_message: "Hermes Agent shutting down"
     standalone_quit: "delivered"
 
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Approve Once"
     confirm_always_approve: "Always Approve"
@@ -1669,7 +1669,7 @@ slash:
   reasoning:
     description: "Manage reasoning effort and display"
   fast:
-    description: "Fast mode — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Fast mode — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Show or change the display skin/theme"
   indicator:
@@ -2453,6 +2453,7 @@ cli:
     removed: "Removed queue item {index}: {preview}"
     item_not_found: "Queue item {index} not found. Current size: {size}"
     usage_edit: "Usage: /queue edit <number> <new prompt>"
+    usage_remove: "Usage: /queue rm <number>"
     updated: "Updated queue item {index}: {preview}"
     usage_move: "Usage: /queue move <from> <to>"
     move_out_of_range: "Queue move out of range. Current size: {size}"
@@ -2751,7 +2752,9 @@ cli:
       feature_generic: "Fast mode"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Usage: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast is only available for GPT-6 Astra (current model: {model})."
+      usage: "Usage: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} set to {value} {scope}"
     hatch:
@@ -2816,6 +2819,7 @@ cli:
       restored: "Restored state from: {snapshot_id}"
       restart_recommended: "Restart recommended for gateway/dashboard processes to pick up state.db changes."
       not_found: "Snapshot not found: {snapshot_id}"
+      restore_incomplete: "Snapshot {snapshot_id} was not fully restored; some files were refused (see logs)"
       usage_prune: "Usage: /snapshot prune [keep-count]"
       pruned: "Pruned {deleted} old snapshot(s) (keeping {keep})."
     export:
@@ -3384,6 +3388,7 @@ cli:
     shallow_clone_keeping: "⚠ Shallow clone — cannot verify push state, keeping: {path}"
     next_session_deepens: "The next `hermes -w` session deepens the clone and prunes merged worktrees automatically."
     unpushed_keeping: "⚠ Worktree has unpushed commits, keeping: {path}"
+    uncommitted_keeping: "⚠ Worktree has uncommitted changes, keeping: {path}"
     clean_up_manually: "To clean up manually: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree cleaned up: {path}"
 
@@ -3783,7 +3788,7 @@ tips:
   t197: "Trajectory saving (--save-trajectories) captures full tool-use traces for model training."
   t198: "Three plugin types: general (tools/hooks), memory providers, and context engines."
   t199: "hermes plugins install owner/repo installs plugins directly from GitHub."
-  t200: "External memory providers: Honcho, OpenViking, Mem0 bundled; Hindsight and more via hermes plugins install."
+  t200: "External memory providers: OpenViking, Mem0 bundled; Honcho, Hindsight and more via hermes plugins install."
   t201: "Plugin hooks include pre/post_tool_call, pre/post_llm_call, and transform_terminal_output for output canonicalization."
   t202: "Prompt caching (Anthropic) reduces costs by reusing cached system prompt prefixes."
   t203: "The agent auto-generates session titles in a background thread — zero latency impact."

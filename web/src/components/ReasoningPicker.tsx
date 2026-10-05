@@ -19,57 +19,57 @@
  * reads/writes the same config the chat PTY was launched from.
  */
 
-import { Select, SelectOption } from '@nous-research/ui/ui/components/select'
-import { Brain } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
+import { Brain } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import { useI18n } from '@/i18n'
-import { api } from '@/lib/api'
-import { EFFORT_OPTIONS, normalizeEffort, VALID_EFFORTS } from '@/lib/reasoning-effort'
+import { useI18n } from "@/i18n";
+import { api } from "@/lib/api";
+import { EFFORT_OPTIONS, normalizeEffort, VALID_EFFORTS } from "@/lib/reasoning-effort";
 
 interface ReasoningPickerProps {
   /** Current model string from config — re-reads the saved effort when it
    *  changes (a different model may have been selected). */
-  currentModel: string
+  currentModel: string;
   /** Profile whose config should be read/written. */
-  profile?: string
+  profile?: string;
   /** Bumped after the model picker saves, to re-read config in lockstep. */
-  refreshKey?: number
+  refreshKey?: number;
   /** Called after a successful change so the sidebar can show an "apply on
    *  /new or reload" notice, matching the model-switch UX. */
-  onChanged?: (effort: string) => void
+  onChanged?: (effort: string) => void;
 }
 
 export function ReasoningPicker({ currentModel, profile, refreshKey = 0, onChanged }: ReasoningPickerProps) {
-  const { t } = useI18n()
-  const [effort, setEffort] = useState('medium')
-  const [loaded, setLoaded] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const lastFetchKeyRef = useRef('')
+  const { t } = useI18n();
+  const [effort, setEffort] = useState("medium");
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const lastFetchKeyRef = useRef("");
 
   useEffect(() => {
-    const fetchKey = `${profile ?? ''}:${currentModel}:${refreshKey}`
-    if (fetchKey === lastFetchKeyRef.current) return
-    lastFetchKeyRef.current = fetchKey
+    const fetchKey = `${profile ?? ""}:${currentModel}:${refreshKey}`;
+    if (fetchKey === lastFetchKeyRef.current) return;
+    lastFetchKeyRef.current = fetchKey;
     void api
       .getConfig(profile)
-      .then(cfg => {
-        const agent = (cfg?.agent as Record<string, unknown> | undefined) ?? {}
-        setEffort(normalizeEffort(agent.reasoning_effort))
-        setLoaded(true)
+      .then((cfg) => {
+        const agent = (cfg?.agent as Record<string, unknown> | undefined) ?? {};
+        setEffort(normalizeEffort(agent.reasoning_effort));
+        setLoaded(true);
       })
       .catch(() => {
         // Best-effort: keep the last known value rather than blanking it.
-        setLoaded(true)
-      })
-  }, [currentModel, profile, refreshKey])
+        setLoaded(true);
+      });
+  }, [currentModel, profile, refreshKey]);
 
   const onSelect = useCallback(
     (next: string) => {
-      if (!VALID_EFFORTS.has(next) || next === effort) return
-      const prev = effort
-      setEffort(next) // optimistic
-      setSaving(true)
+      if (!VALID_EFFORTS.has(next) || next === effort) return;
+      const prev = effort;
+      setEffort(next); // optimistic
+      setSaving(true);
       // Sparse patch: PUT /api/config deep-merges onto disk, so sending only
       // the edited key never clobbers sibling keys — and never echoes a
       // default-expanded snapshot back over values another surface changed
@@ -77,15 +77,15 @@ export function ReasoningPicker({ currentModel, profile, refreshKey = 0, onChang
       void api
         .saveConfig({ agent: { reasoning_effort: next } }, profile)
         .then(() => {
-          onChanged?.(next)
+          onChanged?.(next);
         })
         .catch(() => {
-          setEffort(prev) // revert on failure
+          setEffort(prev); // revert on failure
         })
-        .finally(() => setSaving(false))
+        .finally(() => setSaving(false));
     },
-    [effort, onChanged, profile]
-  )
+    [effort, onChanged, profile],
+  );
 
   return (
     <div className="flex items-center gap-2 px-3 py-2 text-xs">
@@ -94,12 +94,12 @@ export function ReasoningPicker({ currentModel, profile, refreshKey = 0, onChang
         <span className="text-display tracking-wider">{t.chatSidebar.reasoning}</span>
       </div>
       <Select className="ml-auto min-w-0" disabled={!loaded || saving} onValueChange={onSelect} value={effort}>
-        {EFFORT_OPTIONS.map(opt => (
+        {EFFORT_OPTIONS.map((opt) => (
           <SelectOption key={opt.value} value={opt.value}>
             {t.chatSidebar.reasoningEfforts[opt.labelKey]}
           </SelectOption>
         ))}
       </Select>
     </div>
-  )
+  );
 }

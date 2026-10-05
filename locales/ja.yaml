@@ -179,11 +179,13 @@ gateway:
     label_normal: "標準"
     status_fast: "高速"
     status_normal: "標準"
-    picker_title: "⚡ **Priority Processing**\\n\\n現在のモード: `{mode}`\\n\\nオプションを選択:"
+    picker_title: "⚡ **Priority Processing**\n\n現在のモード: `{mode}`\n\nオプションを選択:"
     choice_fast: "fast — Priority Processing オン"
     choice_normal: "normal — 標準処理"
     choice_auto: "auto — 各ターンの最初の数秒間だけ高速"
     choice_cold: "cold — セッションの最初のターンのみ高速"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast（GPT-6 Astra、料金 6 倍）"
+    ultrafast_not_supported: "⚡ Ultrafast は GPT-6 Astra でのみ利用できます（現在のモデル: `{model}`）。"
   footer:
     status: "📎 ランタイムフッター: **{state}**\nフィールド: `{fields}`\nプラットフォーム: `{platform}`"
     usage: "使い方: `/footer [on|off|status]`"
@@ -280,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ `/reasoning reset --global` はサポートされていません。グローバルのデフォルトを変更するには `/reasoning <level> --global` を使用してください。"
     reset_done: "🧠 ✓ セッションの推論オーバーライドをクリアしました。グローバル設定にフォールバックします。"
     unknown_arg: "⚠️ 不明な引数: `{arg}`\n\n**有効なレベル:** none, minimal, low, medium, high, xhigh, max, ultra\n**表示:** show, hide\n**永続化:** セッションを越えて保存するには `--global` を追加"
-    picker_title: "🧠 **推論設定**\\n\\n**強度:** `{level}`\\n**スコープ:** {scope}\\n**表示:** {display}\\n\\nオプションを選択:"
+    picker_title: "🧠 **推論設定**\n\n**強度:** `{level}`\n**スコープ:** {scope}\n**表示:** {display}\n\nオプションを選択:"
     choice_none: "none — 推論を無効化"
     choice_reset: "reset — セッション上書きをクリア"
     choice_show: "返信に推論を表示"
@@ -1446,8 +1448,6 @@ platform:
   irc:
     quit_message: "Hermes Agent をシャットダウンしています"
     standalone_quit: "配信済み"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "一度だけ承認"
     confirm_always_approve: "常に承認"
@@ -2353,6 +2353,7 @@ cli:
     removed: "キュー項目 {index} を削除しました: {preview}"
     item_not_found: "キュー項目 {index} が見つかりません。現在のサイズ: {size}"
     usage_edit: "使い方: /queue edit <number> <new prompt>"
+    usage_remove: "使い方: /queue rm <number>"
     updated: "キュー項目 {index} を更新しました: {preview}"
     usage_move: "使い方: /queue move <from> <to>"
     move_out_of_range: "キューの移動先が範囲外です。現在のサイズ: {size}"
@@ -2651,7 +2652,9 @@ cli:
       feature_generic: "高速モード"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "使い方: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast は GPT-6 Astra でのみ利用できます（現在のモデル: {model}）。"
+      usage: "使い方: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} を {value} に設定しました {scope}"
     hatch:
@@ -2716,6 +2719,7 @@ cli:
       restored: "状態を復元しました: {snapshot_id}"
       restart_recommended: "state.db の変更を反映するため、ゲートウェイ/ダッシュボードのプロセスを再起動することをおすすめします。"
       not_found: "スナップショットが見つかりません: {snapshot_id}"
+      restore_incomplete: "スナップショット {snapshot_id} は完全には復元されませんでした: 一部のファイルが拒否されました（ログを参照）"
       usage_prune: "使い方: /snapshot prune [keep-count]"
       pruned: "古いスナップショット {deleted} 件を削除しました（{keep} 件を保持）。"
     export:
@@ -3283,6 +3287,7 @@ cli:
     shallow_clone_keeping: "⚠ シャロークローン — プッシュ状態を確認できないため保持します: {path}"
     next_session_deepens: "次回の `hermes -w` セッションでクローンを深化し、マージ済みのワークツリーを自動的に削除します。"
     unpushed_keeping: "⚠ ワークツリーに未プッシュのコミットがあるため保持します: {path}"
+    uncommitted_keeping: "⚠ ワークツリーに未コミットの変更があるため保持します: {path}"
     clean_up_manually: "手動でクリーンアップするには: git worktree remove --force {path}"
     cleaned_up: "✓ ワークツリーをクリーンアップしました: {path}"
 display:
@@ -3669,7 +3674,7 @@ tips:
   t197: "トラジェクトリ保存（--save-trajectories）は、モデル学習用にツール使用の完全なトレースを記録します。"
   t198: "プラグインには 3 種類あります。汎用（ツール/フック）、メモリプロバイダー、コンテキストエンジンです。"
   t199: "hermes plugins install owner/repo で GitHub から直接プラグインをインストールできます。"
-  t200: "外部メモリプロバイダーとして Honcho、OpenViking、Mem0 が同梱されており、Hindsight などは hermes plugins install で追加できます。"
+  t200: "外部メモリプロバイダーとして OpenViking、Mem0 が同梱されており、Honcho、Hindsight などは hermes plugins install で追加できます。"
   t201: "プラグインフックには pre/post_tool_call、pre/post_llm_call、出力の正規化用の transform_terminal_output などがあります。"
   t202: "プロンプトキャッシュ（Anthropic）は、キャッシュ済みのシステムプロンプトのプレフィックスを再利用してコストを削減します。"
   t203: "エージェントはセッションタイトルをバックグラウンドスレッドで自動生成するため、レイテンシへの影響はゼロです。"

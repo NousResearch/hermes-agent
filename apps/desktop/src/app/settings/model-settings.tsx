@@ -31,6 +31,7 @@ import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { findCatalogProvider } from '@/lib/model-options'
+import { composerServiceTier } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { $customModels, withCustomModels } from '@/store/custom-models'
 import { setMainModelAssignment } from '@/store/model-assignment'
@@ -84,14 +85,7 @@ export function ModelSettingsSkeleton({ subpage }: Pick<ModelSettingsProps, 'sub
   )
 }
 
-// agent.service_tier stores "fast"/"priority"/"on" for fast; anything else is
-// normal (mirrors tui_gateway _load_service_tier).
-const isFastTier = (tier: unknown): boolean =>
-  ['fast', 'priority', 'on'].includes(
-    String(tier ?? '')
-      .trim()
-      .toLowerCase()
-  )
+type SpeedTier = 'fast' | 'normal' | 'ultrafast'
 
 // A provider row is "ready" to pick a model from when it reports models. The
 // backend now surfaces the full `hermes model` universe (every canonical
@@ -625,6 +619,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
   const reasoningSupported = mainCaps?.reasoning ?? true
   const fastSupported = mainCaps?.fast ?? false
+  const ultrafastSupported = mainCaps?.ultrafast ?? false
 
   // Hand-written `reasoning_effort: false`/`off` reaches us as boolean false
   // ("false" once stringified) — show it as Off, not an empty select.
@@ -634,7 +629,11 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
   const effortValue = rawEffort === 'false' || rawEffort === 'disabled' ? 'none' : rawEffort || DEFAULT_REASONING_EFFORT
 
-  const fastOn = isFastTier(getNested(config ?? {}, 'agent.service_tier'))
+  // One profile-default speed: Standard, Fast (Priority) or Ultrafast. Ultrafast
+  // only shows as a choice on models that offer it.
+  const tier = composerServiceTier(getNested(config ?? {}, 'agent.service_tier'))
+  const fastOn = tier === 'priority'
+  const speedValue: SpeedTier = fastOn ? 'fast' : tier === 'ultrafast' ? 'ultrafast' : 'normal'
 
   // Persist a single agent.* default as a sparse patch (PUT /api/config
   // deep-merges onto disk). Never send the whole cached record: it is a
@@ -642,7 +641,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // surface changed meanwhile — a CLI-pinned auxiliary slot came back as
   // provider "auto" / model "" (#95460). Optimistic, with rollback on failure.
   const writeAgentDefault = useCallback(
-    async (key: string, value: string) => {
+    async (key: string, value: boolean | string) => {
       if (!config) {
         return
       }
@@ -1019,7 +1018,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                 : `${selectedProviderRow?.name} signs in through your browser — Hermes runs the flow for you.`}
             </p>
           )}
-          {config && mainModel && (reasoningSupported || fastSupported) && (
+          {config && mainModel && (reasoningSupported || fastSupported || ultrafastSupported) && (
             <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
               <span className="text-xs text-muted-foreground">{m.defaultsLabel}</span>
               {reasoningSupported && (
@@ -1042,17 +1041,36 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                   </Select>
                 </div>
               )}
-              {fastSupported && (
-                <label className="flex items-center gap-2 text-xs">
-                  {t.shell.modelOptions.fast}
-                  <Switch
-                    checked={fastOn}
-                    onCheckedChange={checked =>
-                      void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')
-                    }
-                    size="xs"
-                  />
-                </label>
+              {ultrafastSupported ? (
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="shrink-0 whitespace-nowrap">{m.speed}</span>
+                  <Select
+                    onValueChange={value => void writeAgentDefault('agent.service_tier', value)}
+                    value={speedValue}
+                  >
+                    <SelectTrigger aria-label={m.speed} className={cn('min-w-28', CONTROL_TEXT)}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="normal">{m.speedStandard}</SelectItem>
+                      {fastSupported && <SelectItem value="fast">{t.shell.modelOptions.fast}</SelectItem>}
+                      <SelectItem value="ultrafast">{t.shell.modelOptions.ultrafast}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : (
+                fastSupported && (
+                  <label className="flex items-center gap-2 text-xs">
+                    {t.shell.modelOptions.fast}
+                    <Switch
+                      checked={fastOn}
+                      onCheckedChange={checked =>
+                        void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')
+                      }
+                      size="xs"
+                    />
+                  </label>
+                )
               )}
             </div>
           )}

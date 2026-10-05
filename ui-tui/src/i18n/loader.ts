@@ -60,6 +60,7 @@ export function syncTuiLocale(
   if (signal?.aborted) {
     return Promise.resolve(false)
   }
+
   const lang = normalizeLanguageId(rawLanguage)
 
   if (current?.gw === gw && current.lang === lang && current.signal === signal) {
@@ -79,6 +80,7 @@ export function syncTuiLocale(
     if (current !== request || signal?.aborted) {
       return false
     }
+
     applyLocale(pack?.lang ?? lang, pack)
 
     if (!pack) {

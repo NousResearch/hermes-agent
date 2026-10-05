@@ -1,28 +1,28 @@
-import { useCallback, useEffect, useState } from 'react'
-import { createPortal } from 'react-dom'
-import { Check, ExternalLink, Loader2, Terminal, X } from 'lucide-react'
-import { api } from '@/lib/api'
-import type { ToolsetConfig, ToolsetInfo, ToolsetProvider } from '@/lib/api'
-import { useToast } from '@nous-research/ui/hooks/use-toast'
-import { Button } from '@nous-research/ui/ui/components/button'
-import { Input } from '@nous-research/ui/ui/components/input'
-import { Label } from '@nous-research/ui/ui/components/label'
-import { Badge } from '@nous-research/ui/ui/components/badge'
-import { Switch } from '@nous-research/ui/ui/components/switch'
-import { Spinner } from '@nous-research/ui/ui/components/spinner'
-import { Toast } from '@nous-research/ui/ui/components/toast'
-import { cn, themedBody } from '@/lib/utils'
-import { useI18n } from '@/i18n'
+import { useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
+import { Check, ExternalLink, Loader2, Terminal, X } from "lucide-react";
+import { api } from "@/lib/api";
+import type { ToolsetConfig, ToolsetInfo, ToolsetProvider } from "@/lib/api";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Input } from "@nous-research/ui/ui/components/input";
+import { Label } from "@nous-research/ui/ui/components/label";
+import { Badge } from "@nous-research/ui/ui/components/badge";
+import { Switch } from "@nous-research/ui/ui/components/switch";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Toast } from "@nous-research/ui/ui/components/toast";
+import { cn, themedBody } from "@/lib/utils";
+import { useI18n } from "@/i18n";
 
 interface Props {
   /** The toolset whose backends are being configured. */
-  toolset: ToolsetInfo
+  toolset: ToolsetInfo;
   /** Optional profile to scope config reads/writes to (Skills page profile
    *  selector). Omitted = the dashboard process's own profile. */
-  profile?: string
-  onClose: () => void
+  profile?: string;
+  onClose: () => void;
   /** Called after a toggle/provider/key change so the parent grid refreshes. */
-  onChanged: () => void
+  onChanged: () => void;
 }
 
 /**
@@ -32,28 +32,28 @@ interface Props {
  * post-setup install hook (npm/pip/binary) with a live log tail.
  */
 export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Props) {
-  const { format, t } = useI18n()
-  const { toast, showToast } = useToast()
-  const [config, setConfig] = useState<ToolsetConfig | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [enabled, setEnabled] = useState(toolset.enabled)
-  const [toggling, setToggling] = useState(false)
-  const [selecting, setSelecting] = useState<string | null>(null)
-  const [activeProvider, setActiveProvider] = useState<string | null>(null)
+  const { format, t } = useI18n();
+  const { toast, showToast } = useToast();
+  const [config, setConfig] = useState<ToolsetConfig | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [enabled, setEnabled] = useState(toolset.enabled);
+  const [toggling, setToggling] = useState(false);
+  const [selecting, setSelecting] = useState<string | null>(null);
+  const [activeProvider, setActiveProvider] = useState<string | null>(null);
   // Per-env-var draft input values, keyed by env var name.
-  const [drafts, setDrafts] = useState<Record<string, string>>({})
-  const [savingProvider, setSavingProvider] = useState<string | null>(null)
-  const [isSet, setIsSet] = useState<Record<string, boolean>>({})
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [savingProvider, setSavingProvider] = useState<string | null>(null);
+  const [isSet, setIsSet] = useState<Record<string, boolean>>({});
 
   // Post-setup install log tail state.
-  const [postSetupRunning, setPostSetupRunning] = useState(false)
-  const [postSetupLog, setPostSetupLog] = useState<string[]>([])
-  const [postSetupKey, setPostSetupKey] = useState<string | null>(null)
+  const [postSetupRunning, setPostSetupRunning] = useState(false);
+  const [postSetupLog, setPostSetupLog] = useState<string[]>([]);
+  const [postSetupKey, setPostSetupKey] = useState<string | null>(null);
   // Bumped each time a post-setup is kicked off, to (re)trigger the poll
   // effect below. Mirrors the SkillsPage HubBrowser action-poll pattern so
   // the recursive timer lives inside the effect (lint-clean — no ref
   // mutation, no self-referencing memo).
-  const [postSetupTrigger, setPostSetupTrigger] = useState(0)
+  const [postSetupTrigger, setPostSetupTrigger] = useState(0);
 
   const loadConfig = useCallback(() => {
     // Promise-chain shape (not async/await with a leading synchronous
@@ -62,156 +62,156 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
     // async .then/.catch/.finally callbacks.
     return api
       .getToolsetConfig(toolset.name, profile)
-      .then(cfg => {
-        setConfig(cfg)
-        setActiveProvider(cfg.active_provider)
-        const seed: Record<string, boolean> = {}
+      .then((cfg) => {
+        setConfig(cfg);
+        setActiveProvider(cfg.active_provider);
+        const seed: Record<string, boolean> = {};
         for (const p of cfg.providers) {
-          for (const e of p.env_vars) seed[e.key] = e.is_set
+          for (const e of p.env_vars) seed[e.key] = e.is_set;
         }
-        setIsSet(seed)
+        setIsSet(seed);
       })
-      .catch(() => showToast(t.toolsetConfig.loadFailed, 'error'))
-      .finally(() => setLoading(false))
-  }, [profile, showToast, t.toolsetConfig.loadFailed, toolset.name])
+      .catch(() => showToast(t.toolsetConfig.loadFailed, "error"))
+      .finally(() => setLoading(false));
+  }, [profile, showToast, t.toolsetConfig.loadFailed, toolset.name]);
 
   useEffect(() => {
-    void loadConfig()
-  }, [loadConfig])
+    void loadConfig();
+  }, [loadConfig]);
 
   // Poll the post-setup action's log until it exits. Driven by
   // postSetupTrigger; the recursive timer + cleanup live entirely inside the
   // effect (matches the SkillsPage HubBrowser pattern — lint-clean).
   useEffect(() => {
-    if (postSetupTrigger === 0) return
-    let cancelled = false
-    let timer: ReturnType<typeof setTimeout> | null = null
+    if (postSetupTrigger === 0) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const poll = async () => {
       try {
-        const st = await api.getActionStatus('tools-post-setup', 300)
-        if (cancelled) return
-        setPostSetupLog(st.lines)
+        const st = await api.getActionStatus("tools-post-setup", 300);
+        if (cancelled) return;
+        setPostSetupLog(st.lines);
         if (st.running) {
-          timer = setTimeout(() => void poll(), 1200)
+          timer = setTimeout(() => void poll(), 1200);
         } else {
-          setPostSetupRunning(false)
-          const ok = st.exit_code === 0
-          showToast(ok ? t.toolsetConfig.postSetupComplete : t.toolsetConfig.postSetupErrors, ok ? 'success' : 'error')
+          setPostSetupRunning(false);
+          const ok = st.exit_code === 0;
+          showToast(ok ? t.toolsetConfig.postSetupComplete : t.toolsetConfig.postSetupErrors, ok ? "success" : "error");
           // Refresh — a backend may now report itself configured/available.
-          void loadConfig()
-          onChanged()
+          void loadConfig();
+          onChanged();
         }
       } catch {
         if (!cancelled) {
-          setPostSetupRunning(false)
-          showToast(t.toolsetConfig.postSetupLost, 'error')
+          setPostSetupRunning(false);
+          showToast(t.toolsetConfig.postSetupLost, "error");
         }
       }
-    }
+    };
     // Small delay so the spawned action has a log file to read.
-    timer = setTimeout(() => void poll(), 800)
+    timer = setTimeout(() => void poll(), 800);
     return () => {
-      cancelled = true
-      if (timer) clearTimeout(timer)
-    }
-  }, [loadConfig, onChanged, postSetupTrigger, showToast, t.toolsetConfig])
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [loadConfig, onChanged, postSetupTrigger, showToast, t.toolsetConfig]);
 
   const handleToggle = async (next: boolean) => {
-    setToggling(true)
+    setToggling(true);
     try {
-      await api.toggleToolset(toolset.name, next, profile)
-      setEnabled(next)
+      await api.toggleToolset(toolset.name, next, profile);
+      setEnabled(next);
       showToast(
         format(next ? t.toolsetConfig.enabledNamed : t.toolsetConfig.disabledNamed, {
-          name: toolset.label || toolset.name
+          name: toolset.label || toolset.name,
         }),
-        'success'
-      )
-      onChanged()
+        "success",
+      );
+      onChanged();
     } catch {
-      showToast(t.toolsetConfig.toggleFailed, 'error')
+      showToast(t.toolsetConfig.toggleFailed, "error");
     } finally {
-      setToggling(false)
+      setToggling(false);
     }
-  }
+  };
 
   const handleSelectProvider = async (provider: ToolsetProvider) => {
-    setSelecting(provider.name)
+    setSelecting(provider.name);
     try {
-      await api.selectToolsetProvider(toolset.name, provider.name, profile)
-      setActiveProvider(provider.name)
-      showToast(format(t.toolsetConfig.providerSelected, { provider: provider.name }), 'success')
-      onChanged()
+      await api.selectToolsetProvider(toolset.name, provider.name, profile);
+      setActiveProvider(provider.name);
+      showToast(format(t.toolsetConfig.providerSelected, { provider: provider.name }), "success");
+      onChanged();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : t.toolsetConfig.providerSelectFailed, 'error')
+      showToast(e instanceof Error ? e.message : t.toolsetConfig.providerSelectFailed, "error");
     } finally {
-      setSelecting(null)
+      setSelecting(null);
     }
-  }
+  };
 
   const handleSaveKeys = async (provider: ToolsetProvider) => {
-    const env: Record<string, string> = {}
+    const env: Record<string, string> = {};
     for (const e of provider.env_vars) {
-      const v = drafts[e.key]
-      if (v && v.trim()) env[e.key] = v.trim()
+      const v = drafts[e.key];
+      if (v && v.trim()) env[e.key] = v.trim();
     }
     if (Object.keys(env).length === 0) {
-      showToast(t.toolsetConfig.enterValue, 'error')
-      return
+      showToast(t.toolsetConfig.enterValue, "error");
+      return;
     }
-    setSavingProvider(provider.name)
+    setSavingProvider(provider.name);
     try {
-      const res = await api.saveToolsetEnv(toolset.name, env, profile)
-      setIsSet(prev => ({ ...prev, ...res.is_set }))
+      const res = await api.saveToolsetEnv(toolset.name, env, profile);
+      setIsSet((prev) => ({ ...prev, ...res.is_set }));
       // Clear saved drafts so the inputs reset to the "saved" placeholder.
-      setDrafts(prev => {
-        const next = { ...prev }
-        for (const k of res.saved) delete next[k]
-        return next
-      })
+      setDrafts((prev) => {
+        const next = { ...prev };
+        for (const k of res.saved) delete next[k];
+        return next;
+      });
       showToast(
         res.saved.length
           ? format(t.toolsetConfig.keysSaved, { count: res.saved.length })
           : t.toolsetConfig.nothingToSave,
-        'success'
-      )
-      onChanged()
+        "success",
+      );
+      onChanged();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : t.toolsetConfig.saveKeysFailed, 'error')
+      showToast(e instanceof Error ? e.message : t.toolsetConfig.saveKeysFailed, "error");
     } finally {
-      setSavingProvider(null)
+      setSavingProvider(null);
     }
-  }
+  };
 
   const handleRunPostSetup = async (provider: ToolsetProvider) => {
-    if (!provider.post_setup) return
-    setPostSetupRunning(true)
-    setPostSetupLog([])
-    setPostSetupKey(provider.post_setup)
+    if (!provider.post_setup) return;
+    setPostSetupRunning(true);
+    setPostSetupLog([]);
+    setPostSetupKey(provider.post_setup);
     try {
-      await api.runToolsetPostSetup(toolset.name, provider.post_setup, profile)
+      await api.runToolsetPostSetup(toolset.name, provider.post_setup, profile);
       // Bump the trigger so the poll effect (re)starts tailing the log.
-      setPostSetupTrigger(n => n + 1)
+      setPostSetupTrigger((n) => n + 1);
     } catch (e) {
-      setPostSetupRunning(false)
-      showToast(e instanceof Error ? e.message : t.toolsetConfig.postSetupStartFailed, 'error')
+      setPostSetupRunning(false);
+      showToast(e instanceof Error ? e.message : t.toolsetConfig.postSetupStartFailed, "error");
     }
-  }
+  };
 
-  const labelText = toolset.label?.trim() || toolset.name
-  const platformText = toolset.platform_label?.trim() || toolset.platform
+  const labelText = toolset.label?.trim() || toolset.name;
+  const platformText = toolset.platform_label?.trim() || toolset.platform;
 
   return createPortal(
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
-      onMouseDown={e => {
-        if (e.target === e.currentTarget) onClose()
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
       }}
     >
       <div
         className={cn(
           themedBody,
-          'relative w-full max-w-2xl max-h-[85vh] border border-border bg-card shadow-2xl flex flex-col'
+          "relative w-full max-w-2xl max-h-[85vh] border border-border bg-card shadow-2xl flex flex-col",
         )}
       >
         <Button
@@ -228,7 +228,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
         <header className="p-5 pb-3 border-b border-border">
           <div className="flex items-center gap-3 pr-8">
             <span className="font-mondwest text-display text-base tracking-wider">{labelText}</span>
-            <Badge tone={enabled ? 'success' : 'outline'} className="text-xs">
+            <Badge tone={enabled ? "success" : "outline"} className="text-xs">
               {enabled ? t.toolsetConfig.active : t.toolsetConfig.inactive}
             </Badge>
           </div>
@@ -236,19 +236,19 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
           <div className="mt-3 flex items-center gap-2">
             <Switch
               checked={enabled}
-              onCheckedChange={v => void handleToggle(v)}
+              onCheckedChange={(v) => void handleToggle(v)}
               disabled={toggling}
               aria-label={format(t.toolsetConfig.enableToolsetForPlatform, {
-                platform: platformText
+                platform: platformText,
               })}
             />
             <span className="text-xs text-muted-foreground">
               {enabled
                 ? format(t.toolsetConfig.enabledForPlatform, {
-                    platform: platformText
+                    platform: platformText,
                   })
                 : format(t.toolsetConfig.disabledForPlatform, {
-                    platform: platformText
+                    platform: platformText,
                   })}
             </span>
           </div>
@@ -265,12 +265,12 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
           ) : config.providers.length === 0 ? (
             <p className="text-sm text-muted-foreground py-6 text-center">{t.toolsetConfig.noProviders}</p>
           ) : (
-            config.providers.map(provider => {
-              const isActive = provider.name === activeProvider
+            config.providers.map((provider) => {
+              const isActive = provider.name === activeProvider;
               return (
                 <div
                   key={provider.name}
-                  className={cn('border border-border p-3', isActive && 'border-emerald-500/60 bg-emerald-500/5')}
+                  className={cn("border border-border p-3", isActive && "border-emerald-500/60 bg-emerald-500/5")}
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0">
@@ -311,7 +311,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
                   {/* API key inputs */}
                   {provider.env_vars.length > 0 && (
                     <div className="mt-3 space-y-2.5">
-                      {provider.env_vars.map(ev => (
+                      {provider.env_vars.map((ev) => (
                         <div key={ev.key} className="space-y-1">
                           <div className="flex items-center justify-between gap-2">
                             <Label htmlFor={`env-${ev.key}`} className="text-xs font-mono">
@@ -328,11 +328,11 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
                             type="password"
                             className="h-8 rounded-none text-xs font-mono"
                             placeholder={isSet[ev.key] ? t.toolsetConfig.savedPlaceholder : ev.prompt || ev.key}
-                            value={drafts[ev.key] ?? ''}
-                            onChange={e =>
-                              setDrafts(prev => ({
+                            value={drafts[ev.key] ?? ""}
+                            onChange={(e) =>
+                              setDrafts((prev) => ({
                                 ...prev,
-                                [ev.key]: e.target.value
+                                [ev.key]: e.target.value,
                               }))
                             }
                           />
@@ -368,14 +368,14 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
                     <div className="mt-3 border-t border-border pt-3">
                       <p className="text-xs text-muted-foreground mb-1.5">
                         {format(t.toolsetConfig.installHint, {
-                          command: provider.post_setup
+                          command: provider.post_setup,
                         })}
                       </p>
                       <Button
                         size="sm"
                         outlined
                         className={cn(
-                          postSetupRunning && postSetupKey === provider.post_setup && '[&_svg]:animate-spin'
+                          postSetupRunning && postSetupKey === provider.post_setup && "[&_svg]:animate-spin",
                         )}
                         onClick={() => void handleRunPostSetup(provider)}
                         disabled={postSetupRunning}
@@ -388,7 +388,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
                     </div>
                   )}
                 </div>
-              )
+              );
             })
           )}
 
@@ -399,13 +399,13 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
                 <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
                 <span className="text-xs font-mono text-muted-foreground">
                   {format(t.toolsetConfig.postSetup, {
-                    command: postSetupKey ?? ''
+                    command: postSetupKey ?? "",
                   })}
                 </span>
                 {postSetupRunning && <Loader2 className="h-3 w-3 animate-spin ml-auto text-muted-foreground" />}
               </div>
               <pre className="max-h-48 overflow-y-auto p-3 text-xs font-mono whitespace-pre-wrap text-text-secondary">
-                {postSetupLog.length ? postSetupLog.join('\n') : t.toolsetConfig.starting}
+                {postSetupLog.length ? postSetupLog.join("\n") : t.toolsetConfig.starting}
               </pre>
             </div>
           )}
@@ -413,6 +413,6 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
       </div>
       <Toast toast={toast} />
     </div>,
-    document.body
-  )
+    document.body,
+  );
 }

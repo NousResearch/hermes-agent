@@ -20,8 +20,7 @@ export const stickyPromptFromViewport = (
   offsets: ArrayLike<number>,
   top: number,
   bottom: number,
-  sticky: boolean,
-  locale: string = 'en'
+  sticky: boolean
 ) => {
   if (sticky || !messages.length) {
     return ''

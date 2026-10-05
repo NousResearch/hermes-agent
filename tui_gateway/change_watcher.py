@@ -30,13 +30,10 @@ def resolve_skin() -> dict:
 
 
 def resolve_language() -> str:
-    """Resolve the session presentation locale without rebuilding agent state."""
-    try:
-        from agent.i18n import get_language
+    """Resolve presentation through the shared process-stable locale contract."""
+    from agent.i18n import get_language
 
-        return get_language()
-    except Exception:
-        return "en"
+    return get_language()
 
 
 # (name, user-file mtime) of the last skin broadcast: ``skin.changed`` fires on a name

@@ -1,9 +1,9 @@
-import { useCallback } from 'react'
-import { Input } from '@nous-research/ui/ui/components/input'
-import { Label } from '@nous-research/ui/ui/components/label'
-import { Select, SelectOption } from '@nous-research/ui/ui/components/select'
-import { Button } from '@nous-research/ui/ui/components/button'
-import { useI18n } from '@/i18n'
+import { useCallback } from "react";
+import { Input } from "@nous-research/ui/ui/components/input";
+import { Label } from "@nous-research/ui/ui/components/label";
+import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { useI18n } from "@/i18n";
 import {
   buildScheduleString,
   DEFAULT_SCHEDULE_STATE,
@@ -11,8 +11,8 @@ import {
   type ScheduleBuilderState,
   type ScheduleMode,
   type Weekday,
-  WEEKDAY_INDEXES
-} from '@/lib/schedule'
+  WEEKDAY_INDEXES,
+} from "@/lib/schedule";
 
 /**
  * Human-readable schedule picker for cron job create/edit flows.
@@ -37,32 +37,32 @@ import {
  *    past it.
  */
 export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
-  const { t } = useI18n()
-  const cronStrings = t.cron
-  const modeStrings = cronStrings.scheduleModes
+  const { t } = useI18n();
+  const cronStrings = t.cron;
+  const modeStrings = cronStrings.scheduleModes;
 
   const update = useCallback(
     (patch: Partial<ScheduleBuilderState>) => {
-      onChange({ ...value, ...patch })
+      onChange({ ...value, ...patch });
     },
-    [onChange, value]
-  )
+    [onChange, value],
+  );
 
   const toggleWeekday = useCallback(
     (day: Weekday) => {
-      const present = value.weekdays.includes(day)
+      const present = value.weekdays.includes(day);
       update({
-        weekdays: present ? value.weekdays.filter(d => d !== day) : [...value.weekdays, day]
-      })
+        weekdays: present ? value.weekdays.filter((d) => d !== day) : [...value.weekdays, day],
+      });
     },
-    [update, value.weekdays]
-  )
+    [update, value.weekdays],
+  );
 
   return (
     <div className="grid gap-3">
       <div className="grid gap-2">
         <Label htmlFor="cron-schedule-mode">{cronStrings.scheduleMode}</Label>
-        <Select id="cron-schedule-mode" value={value.mode} onValueChange={v => update({ mode: v as ScheduleMode })}>
+        <Select id="cron-schedule-mode" value={value.mode} onValueChange={(v) => update({ mode: v as ScheduleMode })}>
           <SelectOption value="interval">{modeStrings.interval}</SelectOption>
           <SelectOption value="daily">{modeStrings.daily}</SelectOption>
           <SelectOption value="weekly">{modeStrings.weekly}</SelectOption>
@@ -72,7 +72,7 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
         </Select>
       </div>
 
-      {value.mode === 'interval' && (
+      {value.mode === "interval" && (
         <div className="grid grid-cols-[1fr_1.4fr] gap-3">
           <div className="grid gap-2">
             <Label htmlFor="cron-interval-value">{modeStrings.intervalEvery}</Label>
@@ -82,11 +82,11 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
               min={1}
               max={9999}
               value={String(value.intervalValue)}
-              onChange={e => {
-                const n = parseInt(e.target.value, 10)
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10);
                 update({
-                  intervalValue: Number.isFinite(n) && n > 0 ? n : 1
-                })
+                  intervalValue: Number.isFinite(n) && n > 0 ? n : 1,
+                });
               }}
             />
           </div>
@@ -95,7 +95,7 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
             <Select
               id="cron-interval-unit"
               value={value.intervalUnit}
-              onValueChange={v => update({ intervalUnit: v as IntervalUnit })}
+              onValueChange={(v) => update({ intervalUnit: v as IntervalUnit })}
             >
               <SelectOption value="minutes">{modeStrings.unitMinutes}</SelectOption>
               <SelectOption value="hours">{modeStrings.unitHours}</SelectOption>
@@ -105,22 +105,22 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
         </div>
       )}
 
-      {value.mode === 'daily' && (
+      {value.mode === "daily" && (
         <TimeOfDayField
           id="cron-daily-time"
           label={modeStrings.timeOfDay}
           value={value.timeOfDay}
-          onChange={timeOfDay => update({ timeOfDay })}
+          onChange={(timeOfDay) => update({ timeOfDay })}
         />
       )}
 
-      {value.mode === 'weekly' && (
+      {value.mode === "weekly" && (
         <>
           <div className="grid gap-2">
             <Label>{modeStrings.weekdays}</Label>
             <div className="flex flex-wrap gap-1.5" role="group" aria-label={modeStrings.weekdays}>
-              {WEEKDAY_INDEXES.map(d => {
-                const isOn = value.weekdays.includes(d)
+              {WEEKDAY_INDEXES.map((d) => {
+                const isOn = value.weekdays.includes(d);
                 return (
                   <Button
                     key={d}
@@ -133,7 +133,7 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
                   >
                     {modeStrings.weekdaysShort[d]}
                   </Button>
-                )
+                );
               })}
             </div>
           </div>
@@ -141,12 +141,12 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
             id="cron-weekly-time"
             label={modeStrings.timeOfDay}
             value={value.timeOfDay}
-            onChange={timeOfDay => update({ timeOfDay })}
+            onChange={(timeOfDay) => update({ timeOfDay })}
           />
         </>
       )}
 
-      {value.mode === 'monthly' && (
+      {value.mode === "monthly" && (
         <div className="grid grid-cols-[1fr_1fr] gap-3">
           <div className="grid gap-2">
             <Label htmlFor="cron-month-day">{modeStrings.dayOfMonth}</Label>
@@ -156,11 +156,11 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
               min={1}
               max={31}
               value={String(value.dayOfMonth)}
-              onChange={e => {
-                const n = parseInt(e.target.value, 10)
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10);
                 update({
-                  dayOfMonth: Number.isFinite(n) && n >= 1 && n <= 31 ? n : 1
-                })
+                  dayOfMonth: Number.isFinite(n) && n >= 1 && n <= 31 ? n : 1,
+                });
               }}
             />
           </div>
@@ -168,12 +168,12 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
             id="cron-monthly-time"
             label={modeStrings.timeOfDay}
             value={value.timeOfDay}
-            onChange={timeOfDay => update({ timeOfDay })}
+            onChange={(timeOfDay) => update({ timeOfDay })}
           />
         </div>
       )}
 
-      {value.mode === 'once' && (
+      {value.mode === "once" && (
         <div className="grid gap-2">
           <Label htmlFor="cron-once-at">{modeStrings.onceAt}</Label>
           {/* Native datetime-local — emits the exact "YYYY-MM-DDTHH:MM"
@@ -183,19 +183,19 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
             type="datetime-local"
             className="flex h-9 w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
             value={value.onceAt}
-            onChange={e => update({ onceAt: e.target.value })}
+            onChange={(e) => update({ onceAt: e.target.value })}
           />
         </div>
       )}
 
-      {value.mode === 'custom' && (
+      {value.mode === "custom" && (
         <div className="grid gap-2">
           <Label htmlFor="cron-custom-expr">{modeStrings.customLabel}</Label>
           <Input
             id="cron-custom-expr"
             placeholder={modeStrings.customPlaceholder}
             value={value.custom}
-            onChange={e => update({ custom: e.target.value })}
+            onChange={(e) => update({ custom: e.target.value })}
             className="font-mono-ui"
           />
           <p className="text-xs text-muted-foreground">{modeStrings.customHint}</p>
@@ -210,7 +210,7 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
         <span className="font-mono-ui text-foreground">{buildScheduleString(value) || modeStrings.previewEmpty}</span>
       </p>
     </div>
-  )
+  );
 }
 
 function TimeOfDayField({ id, label, onChange, value }: TimeOfDayFieldProps) {
@@ -226,22 +226,22 @@ function TimeOfDayField({ id, label, onChange, value }: TimeOfDayFieldProps) {
         type="time"
         className="flex h-9 w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
         value={value}
-        onChange={e => onChange(e.target.value)}
+        onChange={(e) => onChange(e.target.value)}
       />
     </div>
-  )
+  );
 }
 
-export { DEFAULT_SCHEDULE_STATE }
+export { DEFAULT_SCHEDULE_STATE };
 
 interface ScheduleBuilderProps {
-  onChange: (state: ScheduleBuilderState) => void
-  value: ScheduleBuilderState
+  onChange: (state: ScheduleBuilderState) => void;
+  value: ScheduleBuilderState;
 }
 
 interface TimeOfDayFieldProps {
-  id: string
-  label: string
-  onChange: (value: string) => void
-  value: string
+  id: string;
+  label: string;
+  onChange: (value: string) => void;
+  value: string;
 }

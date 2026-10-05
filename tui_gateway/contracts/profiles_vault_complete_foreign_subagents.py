@@ -124,6 +124,7 @@ class ProfileSessionPreview(Result):
     started_at: float | int = 0
     last_active: float | int = 0
     message_count: int = 0
+    live_message_count: int | None = None
 
 
 class ProfileWorkerSession(Result):
@@ -146,6 +147,7 @@ class ProfileCanonicalSession(Result):
     started_at: float | int = 0
     last_active: float | int = 0
     message_count: int = 0
+    live_message_count: int | None = None
 
 
 class ProfileRow(Result):
@@ -174,10 +176,12 @@ class ProfilesListParams(ProfileParams):
 
 
 class ProfilesListResult(Result):
-    """``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself."""
+    """``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself;
+    ``install_id`` (as on ``/api/status``) names the machine that answered."""
 
     profiles: list[ProfileRow] = Field(default_factory=list)
     bot_mode_protocol: bool = True
+    install_id: str = ""
 
 
 method("profiles.list", params=ProfilesListParams, result=ProfilesListResult,

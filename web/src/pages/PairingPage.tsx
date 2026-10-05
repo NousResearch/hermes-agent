@@ -1,113 +1,113 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from 'react'
-import { Check, ShieldCheck, Trash2, Users, X } from 'lucide-react'
-import { Badge } from '@nous-research/ui/ui/components/badge'
-import { Button } from '@nous-research/ui/ui/components/button'
-import { Spinner } from '@nous-research/ui/ui/components/spinner'
-import { H2 } from '@nous-research/ui/ui/components/typography/h2'
-import { api } from '@/lib/api'
-import type { PairingResponse, PairingUser } from '@/lib/api'
-import { DeleteConfirmDialog } from '@/components/DeleteConfirmDialog'
-import { useToast } from '@nous-research/ui/hooks/use-toast'
-import { useConfirmDelete } from '@nous-research/ui/hooks/use-confirm-delete'
-import { Toast } from '@nous-research/ui/ui/components/toast'
-import { Card, CardContent } from '@nous-research/ui/ui/components/card'
-import { usePageHeader } from '@/contexts/usePageHeader'
-import { useI18n } from '@/i18n'
-import { errorMessage } from '@/lib/api-error'
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { Check, ShieldCheck, Trash2, Users, X } from "lucide-react";
+import { Badge } from "@nous-research/ui/ui/components/badge";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { H2 } from "@nous-research/ui/ui/components/typography/h2";
+import { api } from "@/lib/api";
+import type { PairingResponse, PairingUser } from "@/lib/api";
+import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
+import { Toast } from "@nous-research/ui/ui/components/toast";
+import { Card, CardContent } from "@nous-research/ui/ui/components/card";
+import { usePageHeader } from "@/contexts/usePageHeader";
+import { useI18n } from "@/i18n";
+import { errorMessage } from "@/lib/api-error";
 
 function getUserKey(user: PairingUser): string {
-  return `${user.platform}:${user.user_id}`
+  return `${user.platform}:${user.user_id}`;
 }
 
 function splitUserKey(key: string): { platform: string; user_id: string } {
-  const idx = key.indexOf(':')
-  if (idx === -1) return { platform: '', user_id: key }
-  return { platform: key.slice(0, idx), user_id: key.slice(idx + 1) }
+  const idx = key.indexOf(":");
+  if (idx === -1) return { platform: "", user_id: key };
+  return { platform: key.slice(0, idx), user_id: key.slice(idx + 1) };
 }
 
 function getUserLabel(user: PairingUser): string {
-  return user.user_name || user.user_id
+  return user.user_name || user.user_id;
 }
 
 export default function PairingPage() {
-  const { format, t } = useI18n()
-  const [pending, setPending] = useState<PairingUser[]>([])
-  const [approved, setApproved] = useState<PairingUser[]>([])
-  const [loading, setLoading] = useState(true)
-  const [approving, setApproving] = useState<string | null>(null)
-  const [clearing, setClearing] = useState(false)
-  const { toast, showToast } = useToast()
-  const { setEnd } = usePageHeader()
+  const { format, t } = useI18n();
+  const [pending, setPending] = useState<PairingUser[]>([]);
+  const [approved, setApproved] = useState<PairingUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [approving, setApproving] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
+  const { toast, showToast } = useToast();
+  const { setEnd } = usePageHeader();
 
   const loadPairing = useCallback(() => {
     api
       .getPairing()
       .then((res: PairingResponse) => {
-        setPending(res.pending)
-        setApproved(res.approved)
+        setPending(res.pending);
+        setApproved(res.approved);
       })
-      .catch(() => showToast(t.pairing.loadFailed, 'error'))
-      .finally(() => setLoading(false))
-  }, [showToast, t.pairing.loadFailed])
+      .catch(() => showToast(t.pairing.loadFailed, "error"))
+      .finally(() => setLoading(false));
+  }, [showToast, t.pairing.loadFailed]);
 
   useEffect(() => {
-    loadPairing()
-  }, [loadPairing])
+    loadPairing();
+  }, [loadPairing]);
 
   const handleApprove = async (user: PairingUser) => {
     if (!user.request_id) {
-      showToast(t.pairing.missingRequest, 'error')
-      return
+      showToast(t.pairing.missingRequest, "error");
+      return;
     }
-    const key = getUserKey(user)
-    setApproving(key)
+    const key = getUserKey(user);
+    setApproving(key);
     try {
-      await api.approvePairing(user.platform, user.request_id)
-      showToast(format(t.pairing.approved, { user: getUserLabel(user) }), 'success')
-      loadPairing()
+      await api.approvePairing(user.platform, user.request_id);
+      showToast(format(t.pairing.approved, { user: getUserLabel(user) }), "success");
+      loadPairing();
     } catch (e) {
-      showToast(format(t.pairing.error, { error: errorMessage(e, t.common) }), 'error')
+      showToast(format(t.pairing.error, { error: errorMessage(e, t.common) }), "error");
     } finally {
-      setApproving(null)
+      setApproving(null);
     }
-  }
+  };
 
   const handleClearPending = useCallback(async () => {
-    if (!window.confirm(t.pairing.clearConfirm)) return
-    setClearing(true)
+    if (!window.confirm(t.pairing.clearConfirm)) return;
+    setClearing(true);
     try {
-      const res = await api.clearPendingPairing()
-      showToast(format(t.pairing.cleared, { count: res.cleared }), 'success')
-      loadPairing()
+      const res = await api.clearPendingPairing();
+      showToast(format(t.pairing.cleared, { count: res.cleared }), "success");
+      loadPairing();
     } catch (e) {
-      showToast(format(t.pairing.error, { error: errorMessage(e, t.common) }), 'error')
+      showToast(format(t.pairing.error, { error: errorMessage(e, t.common) }), "error");
     } finally {
-      setClearing(false)
+      setClearing(false);
     }
-  }, [format, loadPairing, showToast, t.pairing])
+  }, [format, loadPairing, showToast, t.pairing]);
 
   const userRevoke = useConfirmDelete({
     onDelete: useCallback(
       async (key: string) => {
-        const { platform, user_id } = splitUserKey(key)
-        const user = approved.find(u => getUserKey(u) === key)
+        const { platform, user_id } = splitUserKey(key);
+        const user = approved.find((u) => getUserKey(u) === key);
         try {
-          await api.revokePairing(platform, user_id)
+          await api.revokePairing(platform, user_id);
           showToast(
             format(t.pairing.revoked, {
-              user: user ? getUserLabel(user) : user_id
+              user: user ? getUserLabel(user) : user_id,
             }),
-            'success'
-          )
-          loadPairing()
+            "success",
+          );
+          loadPairing();
         } catch (e) {
-          showToast(format(t.pairing.error, { error: errorMessage(e, t.common) }), 'error')
-          throw e
+          showToast(format(t.pairing.error, { error: errorMessage(e, t.common) }), "error");
+          throw e;
         }
       },
-      [approved, format, loadPairing, showToast, t.pairing]
-    )
-  })
+      [approved, format, loadPairing, showToast, t.pairing],
+    ),
+  });
 
   // Put "Clear pending" button in page header
   useLayoutEffect(() => {
@@ -120,22 +120,22 @@ export default function PairingPage() {
         prefix={clearing ? <Spinner /> : <Trash2 className="h-4 w-4" />}
       >
         {t.pairing.clearPending}
-      </Button>
-    )
+      </Button>,
+    );
     return () => {
-      setEnd(null)
-    }
-  }, [clearing, handleClearPending, setEnd, t.pairing.clearPending])
+      setEnd(null);
+    };
+  }, [clearing, handleClearPending, setEnd, t.pairing.clearPending]);
 
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
         <Spinner className="text-2xl text-primary" />
       </div>
-    )
+    );
   }
 
-  const pendingRevokeUser = userRevoke.pendingId ? approved.find(u => getUserKey(u) === userRevoke.pendingId) : null
+  const pendingRevokeUser = userRevoke.pendingId ? approved.find((u) => getUserKey(u) === userRevoke.pendingId) : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -149,7 +149,7 @@ export default function PairingPage() {
         description={
           pendingRevokeUser
             ? format(t.pairing.revokeUserDescription, {
-                user: getUserLabel(pendingRevokeUser)
+                user: getUserLabel(pendingRevokeUser),
               })
             : t.pairing.revokeGenericDescription
         }
@@ -170,8 +170,8 @@ export default function PairingPage() {
           </Card>
         )}
 
-        {pending.map(user => {
-          const key = getUserKey(user)
+        {pending.map((user) => {
+          const key = getUserKey(user);
           return (
             <Card key={key}>
               <CardContent className="flex items-start gap-4 py-4">
@@ -182,10 +182,10 @@ export default function PairingPage() {
                   </div>
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
                     <span className="truncate">{user.user_id}</span>
-                    {typeof user.age_minutes === 'number' && (
+                    {typeof user.age_minutes === "number" && (
                       <span>
                         {format(t.pairing.minutesAgo, {
-                          count: user.age_minutes
+                          count: user.age_minutes,
                         })}
                       </span>
                     )}
@@ -205,7 +205,7 @@ export default function PairingPage() {
                 </div>
               </CardContent>
             </Card>
-          )
+          );
         })}
       </div>
 
@@ -222,8 +222,8 @@ export default function PairingPage() {
           </Card>
         )}
 
-        {approved.map(user => {
-          const key = getUserKey(user)
+        {approved.map((user) => {
+          const key = getUserKey(user);
           return (
             <Card key={key}>
               <CardContent className="flex items-start gap-4 py-4">
@@ -249,9 +249,9 @@ export default function PairingPage() {
                 </div>
               </CardContent>
             </Card>
-          )
+          );
         })}
       </div>
     </div>
-  )
+  );
 }

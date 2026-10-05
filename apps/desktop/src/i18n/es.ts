@@ -1134,6 +1134,9 @@ export const esOverrides = {
       }
     },
     appearance: {
+      chatTextScaleTitle: 'Tamaño del texto del chat',
+      chatTextScaleDesc:
+        'Ajusta el texto de la conversación y del editor respecto a la escala de la interfaz. Las barras laterales y los controles mantienen su tamaño.',
       title: 'Apariencia',
       intro: 'Solo escritorio. El modo es el brillo; el tema es la paleta y el marco del chat.',
       colorMode: 'Modo de color',
@@ -1691,7 +1694,10 @@ export const esOverrides = {
         '¿Quitar todos los conjuntos de herramientas activados? Esto desactiva la memoria, el terminal, la búsqueda web, la delegación y la mayoría de las demás herramientas hasta que los vuelvas a activar.',
       keepAwakeTitle: 'Mantener el equipo activo',
       keepAwakeDesc:
-        'Impide que este equipo entre en reposo para que las ejecuciones largas o nocturnas continúen. La pantalla puede seguir atenuándose.',
+        'Impide que este equipo entre en reposo. «Mientras trabaja» solo se aplica mientras hay un turno en curso: las ejecuciones nocturnas continúan sin mantener el portátil despierto toda la semana. La pantalla puede seguir atenuándose.',
+      keepAwakeOff: 'Desactivado',
+      keepAwakeWhileWorking: 'Mientras trabaja',
+      keepAwakeAlways: 'Siempre',
       disableF12Title: 'Desactivar DevTools con F12',
       disableF12Desc:
         'Impide que F12 abra las herramientas para desarrolladores. Ctrl+Shift+I (o Cmd+Opt+I en Mac) sigue funcionando.',
@@ -2092,6 +2098,8 @@ export const esOverrides = {
       defaultsLabel: 'Valores predeterminados',
       reasoning: 'Razonamiento',
       reasoningOff: 'Desactivado',
+      speed: 'Velocidad',
+      speedStandard: 'Estándar',
       defaultsFailed: 'No se pudieron guardar los valores predeterminados del modelo',
       loadFailed: 'No se pudieron cargar los modelos',
       restartRequired:
@@ -2851,6 +2859,7 @@ export const esOverrides = {
         no_interactive_session: 'sin sesión interactiva',
         version_too_old: 'versión demasiado antigua',
         missing_app: 'falta la app',
+        unsupported_gpu: 'GPU no compatible',
         unknown: 'estado desconocido'
       },
       catalogTitle: 'Catálogo de plugins',
@@ -3297,6 +3306,9 @@ export const esOverrides = {
     replaceValue: 'Reemplazar valor actual',
     openDocs: 'Abrir docs',
     clearField: key => `Limpiar ${key}`,
+    addListEntry: 'Añadir otro',
+    removeListEntry: 'Quitar',
+    listEntryPlaceholder: 'Introduce un ID',
     enableAria: name => `Activar ${name}`,
     disableAria: name => `Desactivar ${name}`,
     platformEnabled: name => `${name} activado`,
@@ -3377,7 +3389,7 @@ export const esOverrides = {
       },
       TELEGRAM_ALLOWED_USERS: {
         label: 'IDs de usuarios de Telegram permitidos',
-        help: 'Recomendado. IDs numéricos separados por comas desde @userinfobot. Sin esto, cualquiera puede enviar DM a tu bot.'
+        help: 'Recomendado. IDs numéricos (uno por casilla) desde @userinfobot. Sin esto, cualquiera puede enviar DM a tu bot.'
       },
       TELEGRAM_PROXY: {
         label: 'URL de proxy',
@@ -3389,7 +3401,7 @@ export const esOverrides = {
       },
       DISCORD_ALLOWED_USERS: {
         label: 'IDs de usuarios de Discord permitidos',
-        help: 'Recomendado. IDs de usuarios de Discord separados por comas.'
+        help: 'Recomendado. IDs de usuarios de Discord (uno por casilla).'
       },
       DISCORD_REPLY_TO_MODE: {
         label: 'Estilo de respuesta',
@@ -3439,7 +3451,7 @@ export const esOverrides = {
       },
       SLACK_ALLOWED_USERS: {
         label: 'IDs de usuarios de Slack permitidos',
-        help: 'Recomendado. IDs de Slack separados por comas.'
+        help: 'Recomendado. IDs de Slack (uno por casilla).'
       },
       MATTERMOST_URL: {
         label: 'URL del servidor',
@@ -3450,7 +3462,7 @@ export const esOverrides = {
       },
       MATTERMOST_ALLOWED_USERS: {
         label: 'IDs de usuarios permitidos',
-        help: 'Recomendado. IDs de Mattermost separados por comas.'
+        help: 'Recomendado. IDs de Mattermost (uno por casilla).'
       },
       MATRIX_HOMESERVER: {
         label: 'URL del homeserver',
@@ -3465,7 +3477,7 @@ export const esOverrides = {
       },
       MATRIX_ALLOWED_USERS: {
         label: 'IDs de usuarios de Matrix permitidos',
-        help: 'Recomendado. IDs separados por comas en formato @usuario:servidor.'
+        help: 'Recomendado. IDs (uno por casilla) en formato @usuario:servidor.'
       },
       SIGNAL_HTTP_URL: {
         label: 'URL del puente Signal',
@@ -3478,7 +3490,7 @@ export const esOverrides = {
       },
       SIGNAL_ALLOWED_USERS: {
         label: 'Usuarios de Signal permitidos',
-        help: 'Recomendado. Identificadores de Signal separados por comas.'
+        help: 'Recomendado. Identificadores de Signal (uno por casilla).'
       },
       WHATSAPP_ENABLED: {
         label: 'Activar puente de WhatsApp',
@@ -3489,7 +3501,7 @@ export const esOverrides = {
       },
       WHATSAPP_ALLOWED_USERS: {
         label: 'Usuarios de WhatsApp permitidos',
-        help: 'Recomendado. Números de teléfono o IDs de WhatsApp separados por comas.'
+        help: 'Recomendado. Números de teléfono o IDs de WhatsApp (uno por casilla).'
       }
     },
     platformIntro: {}
@@ -4042,6 +4054,8 @@ export const esOverrides = {
       reveal: 'Revelar en carpeta',
       copyPath: 'Copiar ruta',
       removeFromSidebar: 'Ocultar de la barra lateral',
+      createdInPreviousContext:
+        'El proyecto se creó en la conexión o el perfil anterior. Vuelve allí; no se escribió IDEA.md.',
       createFailed: 'No se pudo crear el proyecto',
       staleBackend:
         'Actualiza el backend de Hermes para crear proyectos: tu backend es más antiguo que esta aplicación de escritorio (Configuración → Actualizaciones → Backend).',
@@ -4281,7 +4295,7 @@ export const esOverrides = {
       '/init': 'Generar o actualizar las instrucciones de proyecto AGENTS.md a partir de un análisis del repositorio',
       '/suggestions': 'Revisar las automatizaciones sugeridas (aceptar/descartar)',
       '/blueprint': 'Configurar una automatización a partir de una plantilla',
-      '/browser': 'Gestionar la conexión CDP del navegador [connect|disconnect|status] (solo gateway local)',
+      '/browser': 'Gestionar el navegador del agente [connect|disconnect|status|use]',
       '/palette': 'Abrir la paleta de comandos aproximada (también Ctrl+P)',
       '/usage':
         'Mostrar el uso de tokens y los límites de frecuencia; `reset` canjea un restablecimiento de límite de Codex acumulado',
@@ -5033,6 +5047,10 @@ export const esOverrides = {
       editModels: 'Editar modelos…',
       followDefault: 'Usar el predeterminado de Ajustes',
       refreshModels: 'Actualizar modelos',
+      favorites: 'Favoritos',
+      addFavorite: 'Añadir a favoritos',
+      removeFavorite: 'Quitar de favoritos',
+      favoriteShortcut: '⇧ Clic',
       fast: 'Rápido',
       free: 'gratis',
       cacheRead: 'lectura en caché',
@@ -5044,6 +5062,8 @@ export const esOverrides = {
       options: 'Opciones',
       thinking: 'Razonamiento',
       fast: 'Rápido',
+      ultrafast: 'Ultrafast',
+      useStandardSpeed: 'Usar velocidad estándar',
       effort: 'Esfuerzo',
       minimal: 'Mínimo',
       low: 'Bajo',
@@ -5229,6 +5249,8 @@ export const esOverrides = {
   },
   preview: {
     tab: 'Vista previa',
+    pin: 'Fijar al espacio de trabajo',
+    unpin: 'Desfijar del espacio de trabajo',
     closePane: 'Cerrar panel de vista previa',
     loading: 'Cargando vista previa',
     unavailable: 'Vista previa no disponible',
@@ -5257,6 +5279,7 @@ export const esOverrides = {
     editing: 'Edición',
     unsavedChanges: 'Cambios no guardados',
     saveFailed: message => `No se pudo guardar: ${message}`,
+    saveScopeChanged: 'Vuelve a la conexión y al perfil originales para guardar este borrador.',
     diskChangedTitle: 'Archivo cambiado en el disco',
     diskChangedBody:
       'Este archivo cambió desde que lo abriste. ¿Quieres sobrescribirlo con tu versión o descartar tus cambios y recargar?',
@@ -5453,6 +5476,7 @@ export const esOverrides = {
       branchNewChat: 'Ramificar en chat nuevo',
       react: 'Reaccionar',
       dismissError: 'Descartar error',
+      responseStopped: 'Respuesta detenida',
       errorLayers: {
         auth: 'Problema de inicio de sesión',
         billing: 'Créditos agotados',
@@ -5519,6 +5543,10 @@ export const esOverrides = {
           title: 'No se pudo conectar con el servicio de IA',
           body: (provider: string) =>
             `No se pudo conectar con ${provider} o no respondió a tiempo. Revisa tu conexión a internet y vuelve a intentarlo.`
+        },
+        no_reply: {
+          title: 'La respuesta no terminó',
+          body: 'Hermes terminó este turno sin respuesta. Reinténtalo para enviarla de nuevo.'
         },
         stream_drop: {
           title: 'La respuesta se cortó',
@@ -5704,6 +5732,8 @@ export const esOverrides = {
       skipped: 'Omitido',
       noAnswer: 'Sin respuesta',
       confirmAndContinueLabel: 'Confirmar y continuar',
+      singleSelectHint: 'Elige una',
+      multiSelectHint: 'Elige todas las que correspondan',
       questionProgress: (answered, total) => `${answered} de ${total} respondidas`,
       notDelivered:
         'Esta pregunta no llegó a la app, así que no se puede responder aquí. Pulsa Detener para terminar el turno y luego responde en el chat.'

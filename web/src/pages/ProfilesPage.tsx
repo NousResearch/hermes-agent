@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router'
-import { useProfileScope } from '@/contexts/useProfileScope'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router";
+import { useProfileScope } from "@/contexts/useProfileScope";
 import {
   AlignLeft,
   Check,
@@ -13,52 +13,52 @@ import {
   Terminal,
   Trash2,
   Users,
-  X
-} from 'lucide-react'
-import spinners from 'unicode-animations'
-import { H2 } from '@nous-research/ui/ui/components/typography/h2'
-import { api } from '@/lib/api'
-import type { ActiveProfileInfo, ProfileInfo } from '@/lib/api'
-import { copyTextToClipboard } from '@/lib/clipboard'
-import { DeleteConfirmDialog } from '@/components/DeleteConfirmDialog'
-import { useToast } from '@nous-research/ui/hooks/use-toast'
-import { useConfirmDelete } from '@nous-research/ui/hooks/use-confirm-delete'
-import { useModalBehavior } from '@/hooks/useModalBehavior'
-import { Toast } from '@nous-research/ui/ui/components/toast'
-import { Card, CardContent } from '@nous-research/ui/ui/components/card'
-import { Badge } from '@nous-research/ui/ui/components/badge'
-import { Button } from '@nous-research/ui/ui/components/button'
-import { Input } from '@nous-research/ui/ui/components/input'
-import { Label } from '@nous-research/ui/ui/components/label'
-import { Select, SelectOption } from '@nous-research/ui/ui/components/select'
-import { Checkbox } from '@nous-research/ui/ui/components/checkbox'
-import { useI18n } from '@/i18n'
-import { usePageHeader } from '@/contexts/usePageHeader'
-import { cn, themedBody } from '@/lib/utils'
-import { errorMessage } from '@/lib/api-error'
+  X,
+} from "lucide-react";
+import spinners from "unicode-animations";
+import { H2 } from "@nous-research/ui/ui/components/typography/h2";
+import { api } from "@/lib/api";
+import type { ActiveProfileInfo, ProfileInfo } from "@/lib/api";
+import { copyTextToClipboard } from "@/lib/clipboard";
+import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
+import { useModalBehavior } from "@/hooks/useModalBehavior";
+import { Toast } from "@nous-research/ui/ui/components/toast";
+import { Card, CardContent } from "@nous-research/ui/ui/components/card";
+import { Badge } from "@nous-research/ui/ui/components/badge";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Input } from "@nous-research/ui/ui/components/input";
+import { Label } from "@nous-research/ui/ui/components/label";
+import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
+import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
+import { useI18n } from "@/i18n";
+import { usePageHeader } from "@/contexts/usePageHeader";
+import { cn, themedBody } from "@/lib/utils";
+import { errorMessage } from "@/lib/api-error";
 
 // Mirrors hermes_cli/profiles.py::_PROFILE_ID_RE so we can reject obviously
 // invalid names (uppercase, spaces, …) before round-tripping a doomed POST.
-const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 /** Braille unicode spinner (`unicode-animations`); static first frame when reduced motion is preferred. */
 function ProfilesLoadingSpinner() {
-  const { frames, interval } = spinners.braille
-  const [frameIndex, setFrameIndex] = useState(0)
+  const { frames, interval } = spinners.braille;
+  const [frameIndex, setFrameIndex] = useState(0);
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      return
+    if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
     }
-    const id = window.setInterval(() => setFrameIndex(i => (i + 1) % frames.length), interval)
-    return () => window.clearInterval(id)
-  }, [frames.length, interval])
+    const id = window.setInterval(() => setFrameIndex((i) => (i + 1) % frames.length), interval);
+    return () => window.clearInterval(id);
+  }, [frames.length, interval]);
 
   return (
     <span aria-hidden className="inline-block select-none font-mono text-xl leading-none text-muted-foreground">
       {frames[frameIndex]}
     </span>
-  )
+  );
 }
 
 /**
@@ -82,33 +82,33 @@ function ProfileActionsMenu({
   onEditSoul,
   onManageSkills,
   onRename,
-  onSetActive
+  onSetActive,
 }: ProfileActionsMenuProps) {
-  const [open, setOpen] = useState(false)
-  const containerRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!open) return
+    if (!open) return;
     const onDown = (e: MouseEvent) => {
-      const target = e.target as Node | null
+      const target = e.target as Node | null;
       // Close only when the click lands outside *this* menu. Matching any
       // `[data-profile-actions]` would treat another card's menu as "inside"
       // and leave several menus open at once.
-      if (target && !containerRef.current?.contains(target)) setOpen(false)
-    }
-    window.addEventListener('mousedown', onDown)
-    return () => window.removeEventListener('mousedown', onDown)
-  }, [open])
+      if (target && !containerRef.current?.contains(target)) setOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [open]);
 
   // Run the action, then collapse the menu. Toggle editors (model/description/
   // SOUL) expand the inline section below the card once the menu closes.
   const run = (fn: () => void) => () => {
-    fn()
-    setOpen(false)
-  }
+    fn();
+    setOpen(false);
+  };
 
   const itemClass =
-    'flex w-full items-center gap-2.5 px-3 py-2 text-xs uppercase tracking-wider hover:bg-muted/50 disabled:opacity-40'
+    "flex w-full items-center gap-2.5 px-3 py-2 text-xs uppercase tracking-wider hover:bg-muted/50 disabled:opacity-40";
 
   return (
     <div className="relative" data-profile-actions ref={containerRef}>
@@ -119,7 +119,7 @@ function ProfileActionsMenu({
         aria-label={labels.actions}
         aria-haspopup="menu"
         aria-expanded={open}
-        onClick={() => setOpen(v => !v)}
+        onClick={() => setOpen((v) => !v)}
       >
         <MoreVertical className="h-4 w-4" />
       </Button>
@@ -177,7 +177,7 @@ function ProfileActionsMenu({
             <button
               type="button"
               role="menuitem"
-              className={cn(itemClass, 'border-t border-border/50')}
+              className={cn(itemClass, "border-t border-border/50")}
               onClick={run(onRename)}
             >
               <Pencil className="h-4 w-4" />
@@ -189,7 +189,7 @@ function ProfileActionsMenu({
             <button
               type="button"
               role="menuitem"
-              className={cn(itemClass, 'text-destructive hover:bg-destructive/10')}
+              className={cn(itemClass, "text-destructive hover:bg-destructive/10")}
               onClick={run(onDelete)}
             >
               <Trash2 className="h-4 w-4" />
@@ -199,141 +199,143 @@ function ProfileActionsMenu({
         </div>
       )}
     </div>
-  )
+  );
 }
 
 export default function ProfilesPage() {
-  const navigate = useNavigate()
-  const [profiles, setProfiles] = useState<ProfileInfo[]>([])
-  const [activeInfo, setActiveInfo] = useState<ActiveProfileInfo | null>(null)
-  const [loading, setLoading] = useState(true)
-  const { toast, showToast } = useToast()
-  const { format, t } = useI18n()
-  const { setEnd } = usePageHeader()
-  const { setProfile } = useProfileScope()
+  const navigate = useNavigate();
+  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
+  const [activeInfo, setActiveInfo] = useState<ActiveProfileInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const { toast, showToast } = useToast();
+  const { format, t } = useI18n();
+  const { setEnd } = usePageHeader();
+  const { setProfile } = useProfileScope();
 
   // Every locale is resolved against the complete English catalog at the
   // i18n boundary, so components never need their own fallback copy.
-  const L = t.profiles
+  const L = t.profiles;
 
   // Create modal
-  const [createModalOpen, setCreateModalOpen] = useState(false)
-  const [newName, setNewName] = useState('')
-  const [cloneFrom, setCloneFrom] = useState<string | null>('default')
-  const [cloneAll, setCloneAll] = useState(false)
-  const [noSkills, setNoSkills] = useState(false)
-  const [newDescription, setNewDescription] = useState('')
-  const [creating, setCreating] = useState(false)
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [cloneFrom, setCloneFrom] = useState<string | null>("default");
+  const [cloneAll, setCloneAll] = useState(false);
+  const [noSkills, setNoSkills] = useState(false);
+  const [newDescription, setNewDescription] = useState("");
+  const [creating, setCreating] = useState(false);
   // Model picker (lazy-loaded the first time a picker is opened). modelChoice
   // is a "slug\u0000model" key, or "" to inherit from clone/default.
-  const [modelChoices, setModelChoices] = useState<{ provider: string; model: string; label: string }[] | null>(null)
-  const modelChoicesLoading = useRef(false)
-  const [modelChoice, setModelChoice] = useState('')
-  const closeCreateModal = useCallback(() => setCreateModalOpen(false), [])
+  const [modelChoices, setModelChoices] = useState<{ provider: string; model: string; label: string }[] | null>(null);
+  const modelChoicesLoading = useRef(false);
+  const [modelChoice, setModelChoice] = useState("");
+  const closeCreateModal = useCallback(() => setCreateModalOpen(false), []);
   const createModalRef = useModalBehavior({
     open: createModalOpen,
-    onClose: closeCreateModal
-  })
+    onClose: closeCreateModal,
+  });
 
   // Inline rename state
-  const [renamingFrom, setRenamingFrom] = useState<string | null>(null)
-  const [renameTo, setRenameTo] = useState('')
+  const [renamingFrom, setRenamingFrom] = useState<string | null>(null);
+  const [renameTo, setRenameTo] = useState("");
 
   // Inline SOUL editor state
-  const [editingSoulFor, setEditingSoulFor] = useState<string | null>(null)
-  const [soulText, setSoulText] = useState('')
-  const [soulSaving, setSoulSaving] = useState(false)
+  const [editingSoulFor, setEditingSoulFor] = useState<string | null>(null);
+  const [soulText, setSoulText] = useState("");
+  const [soulSaving, setSoulSaving] = useState(false);
   // Tracks the latest SOUL request so out-of-order responses don't overwrite
   // newer state when the user switches profiles or closes the editor.
-  const activeSoulRequest = useRef<string | null>(null)
+  const activeSoulRequest = useRef<string | null>(null);
 
   // Inline description editor state
-  const [editingDescFor, setEditingDescFor] = useState<string | null>(null)
-  const [descText, setDescText] = useState('')
-  const [descSaving, setDescSaving] = useState(false)
-  const [describing, setDescribing] = useState(false)
+  const [editingDescFor, setEditingDescFor] = useState<string | null>(null);
+  const [descText, setDescText] = useState("");
+  const [descSaving, setDescSaving] = useState(false);
+  const [describing, setDescribing] = useState(false);
   // Tracks the latest description request (save / auto-describe) so a late
   // response can't overwrite state for a different, newly-opened editor.
-  const activeDescRequest = useRef<string | null>(null)
+  const activeDescRequest = useRef<string | null>(null);
   // Counts in-flight save / auto-describe requests so the saving indicator
   // is only cleared when the last concurrent request settles.
-  const descSavingCount = useRef(0)
-  const describingCount = useRef(0)
+  const descSavingCount = useRef(0);
+  const describingCount = useRef(0);
 
   // Inline model editor state
-  const [editingModelFor, setEditingModelFor] = useState<string | null>(null)
-  const [modelEditChoice, setModelEditChoice] = useState('')
-  const [modelSaving, setModelSaving] = useState(false)
+  const [editingModelFor, setEditingModelFor] = useState<string | null>(null);
+  const [modelEditChoice, setModelEditChoice] = useState("");
+  const [modelSaving, setModelSaving] = useState(false);
 
   // Per-profile "set active" in-flight name
-  const [settingActive, setSettingActive] = useState<string | null>(null)
+  const [settingActive, setSettingActive] = useState<string | null>(null);
 
   const modelKey = (provider: string | null, model: string | null) =>
-    provider && model ? `${provider}\u0000${model}` : ''
+    provider && model ? `${provider}\u0000${model}` : "";
 
   const loadModelChoices = useCallback(() => {
-    if (modelChoices !== null || modelChoicesLoading.current) return
-    modelChoicesLoading.current = true
+    if (modelChoices !== null || modelChoicesLoading.current) return;
+    modelChoicesLoading.current = true;
     api
       .getModelOptions()
-      .then(res => {
-        const flat: { provider: string; model: string; label: string }[] = []
+      .then((res) => {
+        const flat: { provider: string; model: string; label: string }[] = [];
         for (const prov of res.providers ?? []) {
           for (const m of prov.models ?? []) {
             flat.push({
               provider: prov.slug,
               model: m,
-              label: `${prov.name} · ${m}`
-            })
+              label: `${prov.name} · ${m}`,
+            });
           }
         }
-        setModelChoices(flat)
+        setModelChoices(flat);
       })
       .catch(() => setModelChoices([]))
       .finally(() => {
-        modelChoicesLoading.current = false
-      })
-  }, [modelChoices])
+        modelChoicesLoading.current = false;
+      });
+  }, [modelChoices]);
 
   const load = useCallback(() => {
     Promise.all([api.getProfiles(), api.getActiveProfile().catch(() => null)])
       .then(([res, active]) => {
-        setProfiles(res.profiles)
-        setActiveInfo(active)
+        setProfiles(res.profiles);
+        setActiveInfo(active);
       })
-      .catch(e => showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, 'error'))
-      .finally(() => setLoading(false))
-  }, [showToast, t.status.error])
+      .catch((e) => showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error"))
+      .finally(() => setLoading(false));
+  }, [showToast, t.status.error]);
 
   useEffect(() => {
-    load()
-  }, [load])
+    load();
+  }, [load]);
 
   // Lazily load the model picker the first time the create modal opens.
   useEffect(() => {
-    if (createModalOpen) loadModelChoices()
-  }, [createModalOpen, loadModelChoices])
+    if (createModalOpen) loadModelChoices();
+  }, [createModalOpen, loadModelChoices]);
 
   const isActive = useCallback(
     (p: ProfileInfo) =>
-      activeInfo != null && (activeInfo.active === p.name || (activeInfo.active === 'default' && p.is_default)),
-    [activeInfo]
-  )
+      activeInfo != null && (activeInfo.active === p.name || (activeInfo.active === "default" && p.is_default)),
+    [activeInfo],
+  );
 
   const handleCreate = async () => {
-    const name = newName.trim()
+    const name = newName.trim();
     if (!name) {
-      showToast(t.profiles.nameRequired, 'error')
-      return
+      showToast(t.profiles.nameRequired, "error");
+      return;
     }
     if (!PROFILE_NAME_RE.test(name)) {
-      showToast(`${t.profiles.invalidName}: ${t.profiles.nameRule}`, 'error')
-      return
+      showToast(`${t.profiles.invalidName}: ${t.profiles.nameRule}`, "error");
+      return;
     }
-    setCreating(true)
+    setCreating(true);
     try {
-      const cloning = cloneFrom !== null
-      const picked = modelChoice ? modelChoices?.find(c => `${c.provider}\u0000${c.model}` === modelChoice) : undefined
+      const cloning = cloneFrom !== null;
+      const picked = modelChoice
+        ? modelChoices?.find((c) => `${c.provider}\u0000${c.model}` === modelChoice)
+        : undefined;
       const res = await api.createProfile({
         name,
         clone_from: cloneFrom,
@@ -341,306 +343,306 @@ export default function ProfilesPage() {
         no_skills: cloning ? false : noSkills,
         description: newDescription.trim() || undefined,
         provider: picked?.provider,
-        model: picked?.model
-      })
-      showToast(`${t.profiles.created}: ${name}`, 'success')
+        model: picked?.model,
+      });
+      showToast(`${t.profiles.created}: ${name}`, "success");
       if (picked && res.model_set === false) {
-        showToast(t.profiles.modelSaveAfterCreateFailed, 'error')
+        showToast(t.profiles.modelSaveAfterCreateFailed, "error");
       }
-      setNewName('')
-      setNewDescription('')
-      setNoSkills(false)
-      setCloneAll(false)
-      setCloneFrom('default')
-      setModelChoice('')
-      setCreateModalOpen(false)
-      load()
+      setNewName("");
+      setNewDescription("");
+      setNoSkills(false);
+      setCloneAll(false);
+      setCloneFrom("default");
+      setModelChoice("");
+      setCreateModalOpen(false);
+      load();
     } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, 'error')
+      showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
     } finally {
-      setCreating(false)
+      setCreating(false);
     }
-  }
+  };
 
   const handleRenameSubmit = async () => {
-    if (!renamingFrom) return
-    const target = renameTo.trim()
+    if (!renamingFrom) return;
+    const target = renameTo.trim();
     if (!target || target === renamingFrom) {
-      setRenamingFrom(null)
-      setRenameTo('')
-      return
+      setRenamingFrom(null);
+      setRenameTo("");
+      return;
     }
     if (!PROFILE_NAME_RE.test(target)) {
-      showToast(`${t.profiles.invalidName}: ${t.profiles.nameRule}`, 'error')
-      return
+      showToast(`${t.profiles.invalidName}: ${t.profiles.nameRule}`, "error");
+      return;
     }
     try {
-      await api.renameProfile(renamingFrom, target)
-      showToast(`${t.profiles.renamed}: ${renamingFrom} → ${target}`, 'success')
-      setRenamingFrom(null)
-      setRenameTo('')
-      load()
+      await api.renameProfile(renamingFrom, target);
+      showToast(`${t.profiles.renamed}: ${renamingFrom} → ${target}`, "success");
+      setRenamingFrom(null);
+      setRenameTo("");
+      load();
     } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, 'error')
+      showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
     }
-  }
+  };
 
   const handleSetActive = async (name: string) => {
-    setSettingActive(name)
+    setSettingActive(name);
     try {
       // The backend normalizes/validates the name; trust the canonical
       // value it returns rather than the raw input.
-      const { active } = await api.setActiveProfile(name)
-      setProfile(active)
-      showToast(format(L.activeSetToast, { name: active }), 'success')
-      setActiveInfo(prev => (prev ? { ...prev, active } : { active, current: active }))
+      const { active } = await api.setActiveProfile(name);
+      setProfile(active);
+      showToast(format(L.activeSetToast, { name: active }), "success");
+      setActiveInfo((prev) => (prev ? { ...prev, active } : { active, current: active }));
     } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, 'error')
+      showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
     } finally {
-      setSettingActive(null)
+      setSettingActive(null);
     }
-  }
+  };
 
   // Closes whichever editor dialog is open (model / description / SOUL).
   const closeEditor = useCallback(() => {
-    activeSoulRequest.current = null
-    activeDescRequest.current = null
-    setEditingModelFor(null)
-    setEditingDescFor(null)
-    setEditingSoulFor(null)
-  }, [])
+    activeSoulRequest.current = null;
+    activeDescRequest.current = null;
+    setEditingModelFor(null);
+    setEditingDescFor(null);
+    setEditingSoulFor(null);
+  }, []);
 
   const openSoulEditor = useCallback(
     async (name: string) => {
       // Re-selecting the action for the already-open editor collapses it,
       // matching the chevron-down affordance in the actions menu.
       if (editingSoulFor === name) {
-        closeEditor()
-        return
+        closeEditor();
+        return;
       }
-      setEditingDescFor(null)
-      setEditingModelFor(null)
-      setEditingSoulFor(name)
-      setSoulText('')
-      activeSoulRequest.current = name
+      setEditingDescFor(null);
+      setEditingModelFor(null);
+      setEditingSoulFor(name);
+      setSoulText("");
+      activeSoulRequest.current = name;
       try {
-        const soul = await api.getProfileSoul(name)
+        const soul = await api.getProfileSoul(name);
         if (activeSoulRequest.current === name) {
-          setSoulText(soul.content)
+          setSoulText(soul.content);
         }
       } catch (e) {
         if (activeSoulRequest.current === name) {
-          showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, 'error')
+          showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
         }
       }
     },
-    [closeEditor, editingSoulFor, showToast, t.status.error]
-  )
+    [closeEditor, editingSoulFor, showToast, t.status.error],
+  );
 
   const handleSaveSoul = async (name: string) => {
-    setSoulSaving(true)
+    setSoulSaving(true);
     try {
-      await api.updateProfileSoul(name, soulText)
-      showToast(`${t.profiles.soulSaved}: ${name}`, 'success')
-      activeSoulRequest.current = null
-      setEditingSoulFor(null)
+      await api.updateProfileSoul(name, soulText);
+      showToast(`${t.profiles.soulSaved}: ${name}`, "success");
+      activeSoulRequest.current = null;
+      setEditingSoulFor(null);
     } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, 'error')
+      showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
     } finally {
-      setSoulSaving(false)
+      setSoulSaving(false);
     }
-  }
+  };
 
   const openDescEditor = useCallback(
     (p: ProfileInfo) => {
       if (editingDescFor === p.name) {
-        closeEditor()
-        return
+        closeEditor();
+        return;
       }
-      activeDescRequest.current = p.name
-      setEditingSoulFor(null)
-      setEditingModelFor(null)
-      setEditingDescFor(p.name)
-      setDescText(p.description ?? '')
+      activeDescRequest.current = p.name;
+      setEditingSoulFor(null);
+      setEditingModelFor(null);
+      setEditingDescFor(p.name);
+      setDescText(p.description ?? "");
     },
-    [closeEditor, editingDescFor]
-  )
+    [closeEditor, editingDescFor],
+  );
 
   const handleSaveDesc = async (name: string) => {
-    descSavingCount.current += 1
-    setDescSaving(true)
-    activeDescRequest.current = name
+    descSavingCount.current += 1;
+    setDescSaving(true);
+    activeDescRequest.current = name;
     try {
-      const res = await api.updateProfileDescription(name, descText)
+      const res = await api.updateProfileDescription(name, descText);
       // Profile-list state always reflects the persisted result, but only
       // touch the open editor if it's still showing this profile.
-      setProfiles(prev =>
-        prev.map(p =>
+      setProfiles((prev) =>
+        prev.map((p) =>
           p.name === name
             ? {
                 ...p,
                 description: res.description,
-                description_auto: res.description_auto
+                description_auto: res.description_auto,
               }
-            : p
-        )
-      )
+            : p,
+        ),
+      );
       if (activeDescRequest.current === name) {
-        showToast(`${L.descriptionSaved}: ${name}`, 'success')
-        setEditingDescFor(null)
+        showToast(`${L.descriptionSaved}: ${name}`, "success");
+        setEditingDescFor(null);
       }
     } catch (e) {
       if (activeDescRequest.current === name) {
-        showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, 'error')
+        showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
       }
     } finally {
-      descSavingCount.current -= 1
-      if (descSavingCount.current === 0) setDescSaving(false)
+      descSavingCount.current -= 1;
+      if (descSavingCount.current === 0) setDescSaving(false);
     }
-  }
+  };
 
   const handleAutoDescribe = async (name: string) => {
-    describingCount.current += 1
-    setDescribing(true)
-    activeDescRequest.current = name
+    describingCount.current += 1;
+    setDescribing(true);
+    activeDescRequest.current = name;
     try {
-      const res = await api.describeProfileAuto(name)
-      const current = activeDescRequest.current === name
+      const res = await api.describeProfileAuto(name);
+      const current = activeDescRequest.current === name;
       if (res.ok && res.description != null) {
-        if (current) setDescText(res.description)
-        setProfiles(prev =>
-          prev.map(p =>
+        if (current) setDescText(res.description);
+        setProfiles((prev) =>
+          prev.map((p) =>
             p.name === name
               ? {
                   ...p,
-                  description: res.description ?? '',
-                  description_auto: res.description_auto
+                  description: res.description ?? "",
+                  description_auto: res.description_auto,
                 }
-              : p
-          )
-        )
-        if (current) showToast(`${L.descriptionSaved}: ${name}`, 'success')
+              : p,
+          ),
+        );
+        if (current) showToast(`${L.descriptionSaved}: ${name}`, "success");
       } else if (current) {
-        showToast(`${L.describeFailed}: ${res.reason}`, 'error')
+        showToast(`${L.describeFailed}: ${res.reason}`, "error");
       }
     } catch (e) {
       if (activeDescRequest.current === name) {
-        showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, 'error')
+        showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
       }
     } finally {
-      describingCount.current -= 1
-      if (describingCount.current === 0) setDescribing(false)
+      describingCount.current -= 1;
+      if (describingCount.current === 0) setDescribing(false);
     }
-  }
+  };
 
   const openModelEditor = useCallback(
     (p: ProfileInfo) => {
       if (editingModelFor === p.name) {
-        closeEditor()
-        return
+        closeEditor();
+        return;
       }
-      setEditingSoulFor(null)
-      setEditingDescFor(null)
-      setEditingModelFor(p.name)
-      setModelEditChoice(modelKey(p.provider, p.model))
-      loadModelChoices()
+      setEditingSoulFor(null);
+      setEditingDescFor(null);
+      setEditingModelFor(p.name);
+      setModelEditChoice(modelKey(p.provider, p.model));
+      loadModelChoices();
     },
-    [closeEditor, editingModelFor, loadModelChoices]
-  )
+    [closeEditor, editingModelFor, loadModelChoices],
+  );
 
   const handleSaveModel = async (name: string) => {
     const picked = modelEditChoice
-      ? modelChoices?.find(c => `${c.provider}\u0000${c.model}` === modelEditChoice)
-      : undefined
-    if (!picked) return
-    setModelSaving(true)
+      ? modelChoices?.find((c) => `${c.provider}\u0000${c.model}` === modelEditChoice)
+      : undefined;
+    if (!picked) return;
+    setModelSaving(true);
     try {
-      await api.setProfileModel(name, picked.provider, picked.model)
-      showToast(`${L.modelSaved}: ${picked.model}`, 'success')
-      setProfiles(prev =>
-        prev.map(p => (p.name === name ? { ...p, model: picked.model, provider: picked.provider } : p))
-      )
-      setEditingModelFor(null)
+      await api.setProfileModel(name, picked.provider, picked.model);
+      showToast(`${L.modelSaved}: ${picked.model}`, "success");
+      setProfiles((prev) =>
+        prev.map((p) => (p.name === name ? { ...p, model: picked.model, provider: picked.provider } : p)),
+      );
+      setEditingModelFor(null);
     } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, 'error')
+      showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
     } finally {
-      setModelSaving(false)
+      setModelSaving(false);
     }
-  }
+  };
 
   // Exactly one editor is open at a time; derive which profile + kind so a
   // single dialog can render the right body.
-  const editorName = editingModelFor ?? editingDescFor ?? editingSoulFor
-  const editorKind: 'model' | 'desc' | 'soul' | null = editingModelFor
-    ? 'model'
+  const editorName = editingModelFor ?? editingDescFor ?? editingSoulFor;
+  const editorKind: "model" | "desc" | "soul" | null = editingModelFor
+    ? "model"
     : editingDescFor
-      ? 'desc'
+      ? "desc"
       : editingSoulFor
-        ? 'soul'
-        : null
+        ? "soul"
+        : null;
   const editorModalRef = useModalBehavior({
     open: editorName != null,
-    onClose: closeEditor
-  })
+    onClose: closeEditor,
+  });
 
   const handleCopyTerminalCommand = async (name: string) => {
-    let cmd: string
+    let cmd: string;
     try {
-      const res = await api.getProfileSetupCommand(name)
-      cmd = res.command
+      const res = await api.getProfileSetupCommand(name);
+      cmd = res.command;
     } catch (e) {
-      showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, 'error')
-      return
+      showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
+      return;
     }
     if (await copyTextToClipboard(cmd)) {
-      showToast(`${t.profiles.commandCopied}: ${cmd}`, 'success')
+      showToast(`${t.profiles.commandCopied}: ${cmd}`, "success");
     } else {
-      showToast(`${t.profiles.copyFailed}: ${cmd}`, 'error')
+      showToast(`${t.profiles.copyFailed}: ${cmd}`, "error");
     }
-  }
+  };
 
   const profileDelete = useConfirmDelete<string>({
     onDelete: useCallback(
       async (name: string) => {
         try {
-          await api.deleteProfile(name)
-          showToast(`${t.profiles.deleted}: ${name}`, 'success')
-          load()
+          await api.deleteProfile(name);
+          showToast(`${t.profiles.deleted}: ${name}`, "success");
+          load();
         } catch (e) {
-          showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, 'error')
-          throw e
+          showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error");
+          throw e;
         }
       },
-      [load, showToast, t.profiles.deleted, t.status.error]
-    )
-  })
+      [load, showToast, t.profiles.deleted, t.status.error],
+    ),
+  });
 
-  const pendingName = profileDelete.pendingId
-  const pendingProfile = pendingName ? profiles.find(p => p.name === pendingName) : undefined
+  const pendingName = profileDelete.pendingId;
+  const pendingProfile = pendingName ? profiles.find((p) => p.name === pendingName) : undefined;
   const deleteMessage = (() => {
-    if (!pendingName) return t.profiles.confirmDeleteMessage
-    const base = t.profiles.confirmDeleteMessage.replace('{name}', pendingName)
-    return pendingProfile?.gateway_running ? `${base}\n\n${L.gatewayRunningWarning}` : base
-  })()
+    if (!pendingName) return t.profiles.confirmDeleteMessage;
+    const base = t.profiles.confirmDeleteMessage.replace("{name}", pendingName);
+    return pendingProfile?.gateway_running ? `${base}\n\n${L.gatewayRunningWarning}` : base;
+  })();
 
   // Put "Build" (full builder) + "Create" (quick modal) buttons in header
   useLayoutEffect(() => {
     setEnd(
       <div className="flex items-center gap-2">
-        <Button className="uppercase" size="sm" outlined onClick={() => navigate('/profiles/new')}>
+        <Button className="uppercase" size="sm" outlined onClick={() => navigate("/profiles/new")}>
           {t.profiles.build}
         </Button>
         <Button className="uppercase" size="sm" onClick={() => setCreateModalOpen(true)}>
           {t.common.create}
         </Button>
-      </div>
-    )
+      </div>,
+    );
     return () => {
-      setEnd(null)
-    }
-  }, [navigate, setEnd, t.common.create, t.profiles.build])
+      setEnd(null);
+    };
+  }, [navigate, setEnd, t.common.create, t.profiles.build]);
 
-  const cloning = cloneFrom !== null
+  const cloning = cloneFrom !== null;
 
   if (loading) {
     return (
@@ -649,7 +651,7 @@ export default function ProfilesPage() {
 
         <ProfilesLoadingSpinner />
       </div>
-    )
+    );
   }
 
   return (
@@ -670,7 +672,7 @@ export default function ProfilesPage() {
         <div
           ref={createModalRef}
           className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
-          onClick={e => e.target === e.currentTarget && setCreateModalOpen(false)}
+          onClick={(e) => e.target === e.currentTarget && setCreateModalOpen(false)}
           role="dialog"
           aria-modal="true"
           aria-labelledby="create-profile-title"
@@ -678,7 +680,7 @@ export default function ProfilesPage() {
           <div
             className={cn(
               themedBody,
-              'relative w-full max-w-md border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]'
+              "relative w-full max-w-md border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]",
             )}
           >
             <Button
@@ -706,11 +708,11 @@ export default function ProfilesPage() {
                   autoFocus
                   placeholder={t.profiles.namePlaceholder}
                   value={newName}
-                  onChange={e => setNewName(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') handleCreate()
+                  onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleCreate();
                   }}
-                  aria-invalid={newName.trim() !== '' && !PROFILE_NAME_RE.test(newName.trim())}
+                  aria-invalid={newName.trim() !== "" && !PROFILE_NAME_RE.test(newName.trim())}
                 />
 
                 <p className="text-xs text-muted-foreground">{t.profiles.nameRule}</p>
@@ -720,15 +722,15 @@ export default function ProfilesPage() {
                 <Label htmlFor="clone-from">{t.profiles.cloneFrom}</Label>
                 <Select
                   id="clone-from"
-                  value={cloneFrom ?? ''}
-                  onValueChange={v => {
-                    const next = v || null
-                    setCloneFrom(next)
-                    if (next === null) setCloneAll(false)
+                  value={cloneFrom ?? ""}
+                  onValueChange={(v) => {
+                    const next = v || null;
+                    setCloneFrom(next);
+                    if (next === null) setCloneAll(false);
                   }}
                 >
                   <SelectOption value="">{t.profiles.cloneFromNone}</SelectOption>
-                  {profiles.map(profile => (
+                  {profiles.map((profile) => (
                     <SelectOption key={profile.name} value={profile.name}>
                       {profile.name}
                     </SelectOption>
@@ -744,7 +746,7 @@ export default function ProfilesPage() {
                   className="flex min-h-[64px] w-full border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   placeholder={L.descriptionPlaceholder}
                   value={newDescription}
-                  onChange={e => setNewDescription(e.target.value)}
+                  onChange={(e) => setNewDescription(e.target.value)}
                 />
               </div>
 
@@ -759,7 +761,7 @@ export default function ProfilesPage() {
                 >
                   <SelectOption value="">{modelChoices === null ? L.modelLoading : L.modelInherit}</SelectOption>
 
-                  {(modelChoices ?? []).map(c => (
+                  {(modelChoices ?? []).map((c) => (
                     <SelectOption key={`${c.provider}\u0000${c.model}`} value={`${c.provider}\u0000${c.model}`}>
                       {c.label}
                     </SelectOption>
@@ -781,13 +783,13 @@ export default function ProfilesPage() {
                     checked={cloneAll}
                     disabled={!cloning}
                     id="clone-all"
-                    onCheckedChange={checked => setCloneAll(checked === true)}
+                    onCheckedChange={(checked) => setCloneAll(checked === true)}
                   />
 
                   <Label
                     className={cn(
-                      'font-mondwest normal-case tracking-normal text-sm cursor-pointer',
-                      !cloning && 'opacity-50'
+                      "font-mondwest normal-case tracking-normal text-sm cursor-pointer",
+                      !cloning && "opacity-50",
                     )}
                     htmlFor="clone-all"
                   >
@@ -800,13 +802,13 @@ export default function ProfilesPage() {
                     checked={noSkills}
                     id="no-skills"
                     disabled={cloning}
-                    onCheckedChange={checked => setNoSkills(checked === true)}
+                    onCheckedChange={(checked) => setNoSkills(checked === true)}
                   />
 
                   <Label
                     className={cn(
-                      'font-mondwest normal-case tracking-normal text-sm cursor-pointer',
-                      cloning && 'opacity-50'
+                      "font-mondwest normal-case tracking-normal text-sm cursor-pointer",
+                      cloning && "opacity-50",
                     )}
                     htmlFor="no-skills"
                   >
@@ -860,12 +862,12 @@ export default function ProfilesPage() {
         )}
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {profiles.map(p => {
-            const isRenaming = renamingFrom === p.name
-            const isEditingSoul = editingSoulFor === p.name
-            const isEditingDesc = editingDescFor === p.name
-            const isEditingModel = editingModelFor === p.name
-            const active = isActive(p)
+          {profiles.map((p) => {
+            const isRenaming = renamingFrom === p.name;
+            const isEditingSoul = editingSoulFor === p.name;
+            const isEditingDesc = editingDescFor === p.name;
+            const isEditingModel = editingModelFor === p.name;
+            const active = isActive(p);
             return (
               <Card key={p.name} className="h-full">
                 <CardContent className="flex h-full flex-col gap-2 py-4">
@@ -874,24 +876,24 @@ export default function ProfilesPage() {
                       <Input
                         autoFocus
                         value={renameTo}
-                        onChange={e => setRenameTo(e.target.value)}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter') handleRenameSubmit()
-                          if (e.key === 'Escape') setRenamingFrom(null)
+                        onChange={(e) => setRenameTo(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleRenameSubmit();
+                          if (e.key === "Escape") setRenamingFrom(null);
                         }}
                         aria-invalid={
-                          renameTo.trim() !== '' && renameTo.trim() !== p.name && !PROFILE_NAME_RE.test(renameTo.trim())
+                          renameTo.trim() !== "" && renameTo.trim() !== p.name && !PROFILE_NAME_RE.test(renameTo.trim())
                         }
                       />
 
                       {(() => {
-                        const trimmed = renameTo.trim()
-                        const invalid = trimmed !== '' && trimmed !== p.name && !PROFILE_NAME_RE.test(trimmed)
+                        const trimmed = renameTo.trim();
+                        const invalid = trimmed !== "" && trimmed !== p.name && !PROFILE_NAME_RE.test(trimmed);
                         return (
-                          <p className={cn('text-xs', invalid ? 'text-destructive' : 'text-muted-foreground')}>
+                          <p className={cn("text-xs", invalid ? "text-destructive" : "text-muted-foreground")}>
                             {invalid ? `${t.profiles.invalidName}: ${t.profiles.nameRule}` : t.profiles.nameRule}
                           </p>
-                        )
+                        );
                       })()}
 
                       <div className="flex gap-1.5">
@@ -924,7 +926,7 @@ export default function ProfilesPage() {
                             <Badge tone="outline" className="gap-1">
                               <Package className="h-3 w-3" />
                               {p.distribution_name}
-                              {p.distribution_version ? `@${p.distribution_version}` : ''}
+                              {p.distribution_version ? `@${p.distribution_version}` : ""}
                             </Badge>
                           )}
                         </div>
@@ -945,7 +947,7 @@ export default function ProfilesPage() {
                             manageSkills: L.manageSkills,
                             openInTerminal: t.profiles.openInTerminal,
                             rename: t.profiles.rename,
-                            delete: t.common.delete
+                            delete: t.common.delete,
                           }}
                           onCopyCommand={() => handleCopyTerminalCommand(p.name)}
                           onDelete={() => profileDelete.requestDelete(p.name)}
@@ -954,8 +956,8 @@ export default function ProfilesPage() {
                           onEditSoul={() => openSoulEditor(p.name)}
                           onManageSkills={() => navigate(`/skills?profile=${encodeURIComponent(p.name)}`)}
                           onRename={() => {
-                            setRenamingFrom(p.name)
-                            setRenameTo(p.name)
+                            setRenamingFrom(p.name);
+                            setRenameTo(p.name);
                           }}
                           onSetActive={() => handleSetActive(p.name)}
                         />
@@ -964,12 +966,12 @@ export default function ProfilesPage() {
                       <div className="flex items-center gap-1.5 text-xs">
                         <span
                           className={cn(
-                            'h-1.5 w-1.5 rounded-full',
-                            p.gateway_running ? 'bg-success' : 'bg-muted-foreground/40'
+                            "h-1.5 w-1.5 rounded-full",
+                            p.gateway_running ? "bg-success" : "bg-muted-foreground/40",
                           )}
                         />
 
-                        <span className={cn(p.gateway_running ? 'text-success' : 'text-muted-foreground')}>
+                        <span className={cn(p.gateway_running ? "text-success" : "text-muted-foreground")}>
                           {p.gateway_running ? L.gatewayRunning : L.gatewayStopped}
                         </span>
                       </div>
@@ -977,8 +979,8 @@ export default function ProfilesPage() {
                       <div className="flex items-start gap-2 text-xs">
                         <span
                           className={cn(
-                            'line-clamp-2',
-                            p.description ? 'text-muted-foreground' : 'text-muted-foreground/60 italic'
+                            "line-clamp-2",
+                            p.description ? "text-muted-foreground" : "text-muted-foreground/60 italic",
                           )}
                         >
                           {p.description || L.noDescription}
@@ -995,7 +997,7 @@ export default function ProfilesPage() {
                         {p.model && (
                           <span className="truncate">
                             {t.profiles.model}: {p.model}
-                            {p.provider ? ` (${p.provider})` : ''}
+                            {p.provider ? ` (${p.provider})` : ""}
                           </span>
                         )}
 
@@ -1009,7 +1011,7 @@ export default function ProfilesPage() {
                   )}
                 </CardContent>
               </Card>
-            )
+            );
           })}
         </div>
       </div>
@@ -1019,7 +1021,7 @@ export default function ProfilesPage() {
         <div
           ref={editorModalRef}
           className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
-          onClick={e => e.target === e.currentTarget && closeEditor()}
+          onClick={(e) => e.target === e.currentTarget && closeEditor()}
           role="dialog"
           aria-modal="true"
           aria-labelledby="profile-editor-title"
@@ -1027,7 +1029,7 @@ export default function ProfilesPage() {
           <div
             className={cn(
               themedBody,
-              'relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]'
+              "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]",
             )}
           >
             <Button
@@ -1042,13 +1044,13 @@ export default function ProfilesPage() {
 
             <header className="p-5 pb-3 border-b border-border">
               <h2 id="profile-editor-title" className="font-mondwest text-display text-base tracking-wider">
-                {editorKind === 'model' ? L.editModel : editorKind === 'desc' ? L.description : t.profiles.soulSection}
+                {editorKind === "model" ? L.editModel : editorKind === "desc" ? L.description : t.profiles.soulSection}
                 <span className="text-muted-foreground"> · {editorName}</span>
               </h2>
             </header>
 
-            <div className={cn('p-5 grid gap-4', editorKind === 'soul' && 'min-h-0 overflow-y-auto')}>
-              {editorKind === 'model' &&
+            <div className={cn("p-5 grid gap-4", editorKind === "soul" && "min-h-0 overflow-y-auto")}>
+              {editorKind === "model" &&
                 (modelChoices !== null && modelChoices.length === 0 ? (
                   <p className="text-xs text-muted-foreground">{L.modelNone}</p>
                 ) : (
@@ -1059,7 +1061,7 @@ export default function ProfilesPage() {
                       placeholder={modelChoices === null ? L.modelLoading : L.modelSelect}
                       onValueChange={setModelEditChoice}
                     >
-                      {(modelChoices ?? []).map(c => (
+                      {(modelChoices ?? []).map((c) => (
                         <SelectOption key={`${c.provider}\u0000${c.model}`} value={`${c.provider}\u0000${c.model}`}>
                           {c.label}
                         </SelectOption>
@@ -1072,7 +1074,7 @@ export default function ProfilesPage() {
                         className="uppercase"
                         onClick={() => handleSaveModel(editorName)}
                         disabled={
-                          modelSaving || !modelChoices?.some(c => `${c.provider}\u0000${c.model}` === modelEditChoice)
+                          modelSaving || !modelChoices?.some((c) => `${c.provider}\u0000${c.model}` === modelEditChoice)
                         }
                       >
                         {modelSaving ? t.common.saving : t.common.save}
@@ -1081,7 +1083,7 @@ export default function ProfilesPage() {
                   </>
                 ))}
 
-              {editorKind === 'desc' && (
+              {editorKind === "desc" && (
                 <>
                   <div className="flex items-center justify-between gap-2">
                     <Label
@@ -1108,7 +1110,7 @@ export default function ProfilesPage() {
                     className="flex min-h-[96px] w-full border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     placeholder={L.descriptionPlaceholder}
                     value={descText}
-                    onChange={e => setDescText(e.target.value)}
+                    onChange={(e) => setDescText(e.target.value)}
                   />
 
                   <div className="flex justify-end">
@@ -1124,7 +1126,7 @@ export default function ProfilesPage() {
                 </>
               )}
 
-              {editorKind === 'soul' && (
+              {editorKind === "soul" && (
                 <>
                   <Label
                     htmlFor="profile-soul-editor"
@@ -1138,7 +1140,7 @@ export default function ProfilesPage() {
                     className="flex min-h-[280px] w-full border border-input bg-transparent px-3 py-2 text-sm font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     placeholder={t.profiles.soulPlaceholder}
                     value={soulText}
-                    onChange={e => setSoulText(e.target.value)}
+                    onChange={(e) => setSoulText(e.target.value)}
                   />
 
                   <div className="flex justify-end">
@@ -1158,33 +1160,33 @@ export default function ProfilesPage() {
         </div>
       )}
     </div>
-  )
+  );
 }
 
 interface ProfileActionsMenuProps {
-  isActive: boolean
-  isDefault: boolean
-  isEditingDesc: boolean
-  isEditingModel: boolean
-  isEditingSoul: boolean
+  isActive: boolean;
+  isDefault: boolean;
+  isEditingDesc: boolean;
+  isEditingModel: boolean;
+  isEditingSoul: boolean;
   labels: {
-    actions: string
-    delete: string
-    editDescription: string
-    editModel: string
-    editSoul: string
-    manageSkills: string
-    openInTerminal: string
-    rename: string
-    setActive: string
-  }
-  settingActive: boolean
-  onCopyCommand: () => void
-  onDelete: () => void
-  onEditDescription: () => void
-  onEditModel: () => void
-  onEditSoul: () => void
-  onManageSkills: () => void
-  onRename: () => void
-  onSetActive: () => void
+    actions: string;
+    delete: string;
+    editDescription: string;
+    editModel: string;
+    editSoul: string;
+    manageSkills: string;
+    openInTerminal: string;
+    rename: string;
+    setActive: string;
+  };
+  settingActive: boolean;
+  onCopyCommand: () => void;
+  onDelete: () => void;
+  onEditDescription: () => void;
+  onEditModel: () => void;
+  onEditSoul: () => void;
+  onManageSkills: () => void;
+  onRename: () => void;
+  onSetActive: () => void;
 }

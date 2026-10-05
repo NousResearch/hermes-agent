@@ -1,83 +1,83 @@
-import { useEffect, useLayoutEffect, useState, useCallback, useRef } from 'react'
-import { FileText, RefreshCw } from 'lucide-react'
-import { useSearchParams } from 'react-router'
-import { api } from '@/lib/api'
-import { Badge } from '@nous-research/ui/ui/components/badge'
-import { Button } from '@nous-research/ui/ui/components/button'
-import { FilterGroup, Segmented } from '@nous-research/ui/ui/components/segmented'
-import { Spinner } from '@nous-research/ui/ui/components/spinner'
-import { Switch } from '@nous-research/ui/ui/components/switch'
-import { Card, CardContent, CardHeader, CardTitle } from '@nous-research/ui/ui/components/card'
-import { Label } from '@nous-research/ui/ui/components/label'
-import { useI18n } from '@/i18n'
-import { usePageHeader } from '@/contexts/usePageHeader'
-import { PluginSlot } from '@/plugins'
+import { useEffect, useLayoutEffect, useState, useCallback, useRef } from "react";
+import { FileText, RefreshCw } from "lucide-react";
+import { useSearchParams } from "react-router";
+import { api } from "@/lib/api";
+import { Badge } from "@nous-research/ui/ui/components/badge";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { FilterGroup, Segmented } from "@nous-research/ui/ui/components/segmented";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Switch } from "@nous-research/ui/ui/components/switch";
+import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
+import { Label } from "@nous-research/ui/ui/components/label";
+import { useI18n } from "@/i18n";
+import { usePageHeader } from "@/contexts/usePageHeader";
+import { PluginSlot } from "@/plugins";
 // Level classification is unit-tested in @/lib/log-classify; it prefers the
 // structured level token and falls back to word-boundary matching so payload
 // text like "parse_errors=0" can't render an INFO line red.
-import { classifyLine } from '@/lib/log-classify'
-import { errorMessage } from '@/lib/api-error'
+import { classifyLine } from "@/lib/log-classify";
+import { errorMessage } from "@/lib/api-error";
 
-const FILES = ['agent', 'errors', 'gateway'] as const
-const LEVELS = ['ALL', 'DEBUG', 'INFO', 'WARNING', 'ERROR'] as const
-const COMPONENTS = ['all', 'gateway', 'agent', 'tools', 'cli', 'cron'] as const
-const LINE_COUNTS = [50, 100, 200, 500] as const
+const FILES = ["agent", "errors", "gateway"] as const;
+const LEVELS = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"] as const;
+const COMPONENTS = ["all", "gateway", "agent", "tools", "cli", "cron"] as const;
+const LINE_COUNTS = [50, 100, 200, 500] as const;
 
 const LINE_COLORS: Record<string, string> = {
-  error: 'text-destructive',
-  warning: 'text-warning',
-  info: 'text-foreground',
-  debug: 'text-text-tertiary'
-}
+  error: "text-destructive",
+  warning: "text-warning",
+  info: "text-foreground",
+  debug: "text-text-tertiary",
+};
 
-const formatFilterLabel = (value: string) => value.toUpperCase()
+const formatFilterLabel = (value: string) => value.toUpperCase();
 
 const toSegmentOptions = <T extends string>(values: readonly T[]) =>
-  values.map(v => ({ value: v, label: formatFilterLabel(v) }))
+  values.map((v) => ({ value: v, label: formatFilterLabel(v) }));
 
 const filterGroupClass =
-  'flex min-w-0 w-full flex-col items-start gap-1.5 sm:w-auto sm:max-w-full sm:flex-row sm:items-center'
+  "flex min-w-0 w-full flex-col items-start gap-1.5 sm:w-auto sm:max-w-full sm:flex-row sm:items-center";
 
-const segmentedClass = 'w-fit max-w-full flex-wrap justify-start self-start'
+const segmentedClass = "w-fit max-w-full flex-wrap justify-start self-start";
 
-type LogFile = (typeof FILES)[number]
+type LogFile = (typeof FILES)[number];
 
 function isLogFile(value: string | null): value is LogFile {
-  return (FILES as readonly string[]).includes(value ?? '')
+  return (FILES as readonly string[]).includes(value ?? "");
 }
 
 export default function LogsPage() {
   // `?file=gateway` deep link (System page "Open logs" next to a failed gateway).
-  const [searchParams] = useSearchParams()
-  const requestedFile = searchParams.get('file')
-  const [file, setFile] = useState<LogFile>(() => (isLogFile(requestedFile) ? requestedFile : 'agent'))
-  const [level, setLevel] = useState<(typeof LEVELS)[number]>('ALL')
-  const [component, setComponent] = useState<(typeof COMPONENTS)[number]>('all')
-  const [lineCount, setLineCount] = useState<(typeof LINE_COUNTS)[number]>(100)
-  const [autoRefresh, setAutoRefresh] = useState(false)
-  const [lines, setLines] = useState<string[]>([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const { t } = useI18n()
-  const { setAfterTitle, setEnd } = usePageHeader()
+  const [searchParams] = useSearchParams();
+  const requestedFile = searchParams.get("file");
+  const [file, setFile] = useState<LogFile>(() => (isLogFile(requestedFile) ? requestedFile : "agent"));
+  const [level, setLevel] = useState<(typeof LEVELS)[number]>("ALL");
+  const [component, setComponent] = useState<(typeof COMPONENTS)[number]>("all");
+  const [lineCount, setLineCount] = useState<(typeof LINE_COUNTS)[number]>(100);
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [lines, setLines] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const { t } = useI18n();
+  const { setAfterTitle, setEnd } = usePageHeader();
 
   const fetchLogs = useCallback(() => {
-    setLoading(true)
-    setError(null)
+    setLoading(true);
+    setError(null);
     api
       .getLogs({ file, lines: lineCount, level, component })
-      .then(resp => {
-        setLines(resp.lines)
+      .then((resp) => {
+        setLines(resp.lines);
         setTimeout(() => {
           if (scrollRef.current) {
-            scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
           }
-        }, 50)
+        }, 50);
       })
-      .catch(err => setError(errorMessage(err, t.common)))
-      .finally(() => setLoading(false))
-  }, [file, lineCount, level, component])
+      .catch((err) => setError(errorMessage(err, t.common)))
+      .finally(() => setLoading(false));
+  }, [file, lineCount, level, component]);
 
   useLayoutEffect(() => {
     setAfterTitle(
@@ -96,8 +96,8 @@ export default function LogsPage() {
         >
           {loading ? <Spinner /> : <RefreshCw />}
         </Button>
-      </span>
-    )
+      </span>,
+    );
     setEnd(
       <div className="flex w-full min-w-0 flex-wrap items-center justify-start gap-2 sm:justify-end sm:gap-3">
         <div className="flex items-center gap-2">
@@ -112,12 +112,12 @@ export default function LogsPage() {
             </Badge>
           )}
         </div>
-      </div>
-    )
+      </div>,
+    );
     return () => {
-      setAfterTitle(null)
-      setEnd(null)
-    }
+      setAfterTitle(null);
+      setEnd(null);
+    };
   }, [
     autoRefresh,
     component,
@@ -129,18 +129,18 @@ export default function LogsPage() {
     t.common.live,
     t.common.refresh,
     t.logs.autoRefresh,
-    fetchLogs
-  ])
+    fetchLogs,
+  ]);
 
   useEffect(() => {
-    fetchLogs()
-  }, [fetchLogs])
+    fetchLogs();
+  }, [fetchLogs]);
 
   useEffect(() => {
-    if (!autoRefresh) return
-    const interval = setInterval(fetchLogs, 5000)
-    return () => clearInterval(interval)
-  }, [autoRefresh, fetchLogs])
+    if (!autoRefresh) return;
+    const interval = setInterval(fetchLogs, 5000);
+    return () => clearInterval(interval);
+  }, [autoRefresh, fetchLogs]);
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-4">
@@ -171,10 +171,10 @@ export default function LogsPage() {
           <Segmented
             className={segmentedClass}
             value={String(lineCount)}
-            onChange={v => setLineCount(Number(v) as (typeof LINE_COUNTS)[number])}
-            options={LINE_COUNTS.map(n => ({
+            onChange={(v) => setLineCount(Number(v) as (typeof LINE_COUNTS)[number])}
+            options={LINE_COUNTS.map((n) => ({
               value: String(n),
-              label: String(n)
+              label: String(n),
             }))}
           />
         </FilterGroup>
@@ -202,17 +202,17 @@ export default function LogsPage() {
               <p className="text-muted-foreground text-center py-8">{t.logs.noLogLines}</p>
             )}
             {lines.map((line, i) => {
-              const cls = classifyLine(line)
+              const cls = classifyLine(line);
               return (
                 <div key={i} className={`${LINE_COLORS[cls]} hover:bg-secondary/20 px-1 -mx-1`}>
                   {line}
                 </div>
-              )
+              );
             })}
           </div>
         </CardContent>
       </Card>
       <PluginSlot name="logs:bottom" />
     </div>
-  )
+  );
 }

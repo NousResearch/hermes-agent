@@ -2855,7 +2855,10 @@ cli:
     cron:
       repeat_must_be_integer: "(._.) --repeat muss eine Ganzzahl sein"
       unknown_command: "(._.) Unbekannter Cron-Befehl: {subcommand}"
-      available: "Verfügbar: list, add, edit, pause, resume, run, remove"
+      available: "Verfügbar: list, add, edit, hint, pause, resume, run, remove"
+      hint_usage: "Verwendung: /cron hint <job_id oder \"Aufgabenname\"> [on|off] — off überspringt den Hinweis; on stellt ihn wieder her; ohne Angabe wird der Status angezeigt."
+      hint_on: "Cron-Hinweis für „{name}“: on (Standardanweisungen enthalten)."
+      hint_off: "Cron-Hinweis für „{name}“: off (Standardanweisungen übersprungen)."
       overview_title: "(^_^) Geplante Aufgaben"
       overview_commands: "Befehle:"
       overview_usage: "/cron list\n/cron add \"every 2h\" \"Serverstatus prüfen\" [--skill blogwatcher]\n/cron edit <job_id> --schedule \"every 4h\" --prompt \"Neue Aufgabe\"\n/cron edit <job_id> --skill blogwatcher --skill maps\n/cron edit <job_id> --remove-skill blogwatcher\n/cron edit <job_id> --clear-skills\n/cron pause <job_id>\n/cron resume <job_id>\n/cron run <job_id>\n/cron remove <job_id>"

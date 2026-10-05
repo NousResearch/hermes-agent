@@ -244,6 +244,7 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
         ("Changed", mon_state.get("last_changed_at") if monitor_source else ""),
         ("Mode", color("no-agent", Colors.DIM) + " (script stdout delivered directly)"
          if job.get("no_agent") else ""),
+        ("Cron hint", "skipped" if job.get("skip_cron_hint") else ""),
         ("Workdir", job.get("workdir")),
         ("Python", job.get("interpreter")),
         ("Last run", f"{job.get('last_run_at', '?')}  {_last_run_display(job)}"
@@ -716,7 +717,7 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("model", "model"), ("provider", "model_provider"), ("pinned", "pinned"),
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
                    ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"),
-                   ("interpreter", "interpreter"))
+                   ("interpreter", "interpreter"), ("skip_cron_hint", "skip_cron_hint"))
 
 
 def _job_api_kwargs(args) -> Dict[str, Any]:
@@ -729,6 +730,7 @@ _JOB_DETAIL_LINES = (
     ("monitor_script", "  Monitor: {} (agent runs only on output change)"),
     ("monitor_url", "  Monitor: {} (agent runs only on output change)"),
     ("no_agent", "  Mode: no-agent (script stdout delivered directly)"),
+    ("skip_cron_hint", "  Cron hint: skipped"),
     ("continuity", "  Continuity: on (each run sees the previous run's output)"),
     ("workdir", "  Workdir: {}"),
     ("interpreter", "  Python: {}"))
@@ -739,6 +741,32 @@ def _print_job_details(job_data: Dict[str, Any]) -> None:
     for key, template in _JOB_DETAIL_LINES:
         if job_data.get(key):
             print(template.format(job_data[key]))
+
+
+def cron_hint_command(args: List[str]) -> None:
+    """Inspect or change one job's hint from the interactive ``/cron`` command."""
+    from agent.i18n import t
+    from cron.jobs import AmbiguousJobReference, resolve_job_ref
+
+    if len(args) not in (1, 2) or (len(args) == 2 and args[1].lower() not in {"on", "off"}):
+        print(t("cli.commands.cron.hint_usage"))
+        return
+    try:
+        job = resolve_job_ref(args[0])
+    except AmbiguousJobReference as exc:
+        print(str(exc))
+        return
+    if job is None:
+        print(t("cli.commands.cron.job_not_found", job_id=args[0]))
+        return
+    if len(args) == 2:
+        result = _cron_api(action="update", job_id=job["id"], skip_cron_hint=args[1].lower() == "off")
+        if not result.get("success"):
+            print(t("cli.commands.cron.update_failed", error=result.get("error")))
+            return
+        job = result["job"]
+    key = "hint_off" if job.get("skip_cron_hint", False) else "hint_on"
+    print(t(f"cli.commands.cron.{key}", name=job["name"]))
 
 
 def cron_create(args):

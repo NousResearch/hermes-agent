@@ -42,6 +42,46 @@ Whichever provider a job resolves to, its provider-specific request settings (e.
 Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron management tools inside cron executions to prevent runaway scheduling loops.
 :::
 
+### Omitting the cron prompt hint
+
+Each agent-driven job normally prepends instructions about scheduled execution,
+automatic delivery, `[SILENT]`, `[CRON_FAILURE]`, and avoiding recursive scheduling.
+For a minimal sample-message job, set `skip_cron_hint=true` on that job to omit
+this block. Inside the interactive Hermes CLI, use `/cron list` to find the job,
+then toggle or inspect its hint without leaving the session:
+
+```text
+/cron hint <job_id> off
+/cron hint <job_id> on
+/cron hint <job_id>
+/cron hint "Sample ping" off
+```
+
+`off` skips the hint, `on` restores it, and omitting the final argument shows
+the current setting. Job names containing spaces must be quoted. If a name
+matches multiple jobs, Hermes asks you to use a job ID. The command appears in
+`/cron` help and subcommand completion. Like the existing `/cron` command, this
+shortcut is for the interactive CLI; it does not add a messaging-platform command.
+
+From a terminal, you can also choose the setting at creation or edit time:
+
+```bash
+hermes cron create "every 5h" "Reply with pong." --skip-cron-hint --deliver local
+hermes cron edit <job_id> --skip-cron-hint
+hermes cron edit <job_id> --cron-hint  # restore the default hint
+```
+
+The `cronjob_manage` tool accepts `skip_cron_hint` on create and update. The
+default is `false`; omitting it during an update preserves the saved setting.
+Existing jobs retain the hint without migration.
+
+This removes only the prepended task-prompt block. The agent's system/platform
+instructions, attached skills, script output, run context, prompt scanning,
+scheduling, and automatic delivery still apply. It does not create a raw API
+request or bypass provider limits. With the hint omitted, include any needed
+delivery or silence instructions in your own prompt. Script-only `no_agent`
+jobs do not build an agent prompt, so this option has no effect on them.
+
 ## Creating scheduled tasks
 
 ### In chat with `/cron`

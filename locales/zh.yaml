@@ -2855,7 +2855,10 @@ cli:
     cron:
       repeat_must_be_integer: "(._.) --repeat 必须是整数"
       unknown_command: "(._.) 未知的 cron 命令：{subcommand}"
-      available: "可用：list、add、edit、pause、resume、run、remove"
+      available: "可用：list、add、edit、hint、pause、resume、run、remove"
+      hint_usage: "用法：/cron hint <任务ID或\"任务名\"> [on|off] — off 跳过提示；on 恢复提示；省略则查看。"
+      hint_on: "任务“{name}”的 cron 提示：on（包含标准指令）。"
+      hint_off: "任务“{name}”的 cron 提示：off（跳过标准指令）。"
       overview_title: "(^_^) 定时任务"
       overview_commands: "命令："
       overview_usage: "/cron list\n/cron add \"every 2h\" \"检查服务器状态\" [--skill blogwatcher]\n/cron edit <job_id> --schedule \"every 4h\" --prompt \"新任务\"\n/cron edit <job_id> --skill blogwatcher --skill maps\n/cron edit <job_id> --remove-skill blogwatcher\n/cron edit <job_id> --clear-skills\n/cron pause <job_id>\n/cron resume <job_id>\n/cron run <job_id>\n/cron remove <job_id>"

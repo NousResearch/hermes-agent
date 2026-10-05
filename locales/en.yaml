@@ -2955,7 +2955,10 @@ cli:
     cron:
       repeat_must_be_integer: "(._.) --repeat must be an integer"
       unknown_command: "(._.) Unknown cron command: {subcommand}"
-      available: "Available: list, add, edit, pause, resume, run, remove"
+      available: "Available: list, add, edit, hint, pause, resume, run, remove"
+      hint_usage: 'Usage: /cron hint <job_id or "job name"> [on|off] — off skips the hint; on restores it; omit to check.'
+      hint_on: 'Cron hint for "{name}": on (standard instructions included).'
+      hint_off: 'Cron hint for "{name}": off (standard instructions skipped).'
       overview_title: "(^_^) Scheduled Tasks"
       overview_commands: "Commands:"
       overview_usage: "/cron list\n/cron add \"every 2h\" \"Check server status\" [--skill blogwatcher]\n/cron edit <job_id> --schedule \"every 4h\" --prompt \"New task\"\n/cron edit <job_id> --skill blogwatcher --skill maps\n/cron edit <job_id> --remove-skill blogwatcher\n/cron edit <job_id> --clear-skills\n/cron pause <job_id>\n/cron resume <job_id>\n/cron run <job_id>\n/cron remove <job_id>"

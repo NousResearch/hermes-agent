@@ -690,6 +690,7 @@ def _action_create(a: Dict[str, Any]) -> str:
             script=_normalize_optional_job_value(script), context_from=context_from,
             enabled_toolsets=a["enabled_toolsets"] or None, workdir=_normalize_optional_job_value(a["workdir"]),
             no_agent=_no_agent, attach_to_session=a["attach_to_session"],
+            skip_cron_hint=bool(a["skip_cron_hint"]),
             monitor_script=_normalize_optional_job_value(a["monitor_script"]),
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
@@ -905,6 +906,8 @@ def _update_run_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str
         updates["enabled_toolsets"] = a["enabled_toolsets"] or None
     if a["attach_to_session"] is not None:
         updates["attach_to_session"] = bool(a["attach_to_session"])
+    if a["skip_cron_hint"] is not None:
+        updates["skip_cron_hint"] = bool(a["skip_cron_hint"])
     if a["workdir"] is not None:
         # Empty string clears; otherwise update_job() validates/normalizes.
         updates["workdir"] = _normalize_optional_job_value(a["workdir"]) or None
@@ -1011,7 +1014,8 @@ def cronjob(
     paused: bool = False,
     paused_reason: Optional[str] = None,
     pinned: Optional[bool] = None,
-    interpreter: Optional[str] = None) -> str:
+    interpreter: Optional[str] = None,
+    skip_cron_hint: Optional[bool] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility
@@ -1117,6 +1121,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "default": False,
                 "description": "True = no LLM: the scheduler runs `script` (required) on schedule and delivers its stdout verbatim; empty stdout sends nothing (watchdog pattern). Use for script-only pings with fixed output; keep False for anything needing reasoning."
             },
+            "skip_cron_hint": {
+                "type": "boolean",
+                "description": "Omit the scheduled-run instructions prepended to this job's prompt (default false). Skills, context, scanning, and automatic delivery still apply. On update, false restores the hint; omission preserves the current setting."
+            },
             "context_from": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -1167,7 +1175,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "pinned")
+    "paused_reason", "pinned", "skip_cron_hint")
 
 
 def _cronjob_handler(args, **kw):

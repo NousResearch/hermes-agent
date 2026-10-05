@@ -3140,7 +3140,10 @@ cli:
     cron:
       repeat_must_be_integer: "(._.) --repeat doit être un entier"
       unknown_command: "(._.) Commande cron inconnue : {subcommand}"
-      available: "Disponibles : list, add, edit, pause, resume, run, remove"
+      available: "Disponibles : list, add, edit, hint, pause, resume, run, remove"
+      hint_usage: "Utilisation : /cron hint <job_id ou \"nom\"> [on|off] — off omet les consignes ; on les rétablit ; sans option, affiche leur état."
+      hint_on: "Consignes cron pour « {name} » : on (consignes standard incluses)."
+      hint_off: "Consignes cron pour « {name} » : off (consignes standard omises)."
       overview_title: "(^_^) Tâches planifiées"
       overview_commands: "Commandes :"
       overview_usage: |-

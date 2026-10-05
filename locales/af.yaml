@@ -2855,7 +2855,10 @@ cli:
     cron:
       repeat_must_be_integer: "(._.) --repeat moet 'n heelgetal wees"
       unknown_command: "(._.) Onbekende cron-opdrag: {subcommand}"
-      available: "Beskikbaar: list, add, edit, pause, resume, run, remove"
+      available: "Beskikbaar: list, add, edit, hint, pause, resume, run, remove"
+      hint_usage: "Gebruik: /cron hint <job_id of \"taaknaam\"> [on|off] — off slaan die wenk oor; on herstel dit; laat weg om die status te sien."
+      hint_on: "Cron-wenk vir \"{name}\": on (standaardinstruksies ingesluit)."
+      hint_off: "Cron-wenk vir \"{name}\": off (standaardinstruksies oorgeslaan)."
       overview_title: "(^_^) Geskeduleerde Take"
       overview_commands: "Opdragte:"
       overview_usage: "/cron list\n/cron add \"every 2h\" \"Kontroleer bedienerstatus\" [--skill blogwatcher]\n/cron edit <job_id> --schedule \"every 4h\" --prompt \"Nuwe taak\"\n/cron edit <job_id> --skill blogwatcher --skill maps\n/cron edit <job_id> --remove-skill blogwatcher\n/cron edit <job_id> --clear-skills\n/cron pause <job_id>\n/cron resume <job_id>\n/cron run <job_id>\n/cron remove <job_id>"

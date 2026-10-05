@@ -2855,7 +2855,10 @@ cli:
     cron:
       repeat_must_be_integer: "(._.) --repeat debe ser un número entero"
       unknown_command: "(._.) Comando de cron desconocido: {subcommand}"
-      available: "Disponibles: list, add, edit, pause, resume, run, remove"
+      available: "Disponibles: list, add, edit, hint, pause, resume, run, remove"
+      hint_usage: "Uso: /cron hint <job_id o \"nombre\"> [on|off] — off omite las instrucciones; on las restaura; sin opción muestra el estado."
+      hint_on: "Instrucciones cron de «{name}»: on (se incluyen las instrucciones estándar)."
+      hint_off: "Instrucciones cron de «{name}»: off (se omiten las instrucciones estándar)."
       overview_title: "(^_^) Tareas programadas"
       overview_commands: "Comandos:"
       overview_usage: "/cron list\n/cron add \"every 2h\" \"Revisar el estado del servidor\" [--skill blogwatcher]\n/cron edit <job_id> --schedule \"every 4h\" --prompt \"Nueva tarea\"\n/cron edit <job_id> --skill blogwatcher --skill maps\n/cron edit <job_id> --remove-skill blogwatcher\n/cron edit <job_id> --clear-skills\n/cron pause <job_id>\n/cron resume <job_id>\n/cron run <job_id>\n/cron remove <job_id>"

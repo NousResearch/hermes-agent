@@ -29,6 +29,7 @@ from pm.receipt import accept_worker_receipt as _accept_completion_pm_receipt
 from hermes_cli import update_receipt as _completion_receipt, update_cmd_config as _completion_config
 from hermes_cli._old_updater import stop_for_relaunch
 from hermes_cli._early_recovery import git_operation_in_progress, interrupted_pull_marker
+from hermes_cli import update_pause_record as _pause_record
 from hermes_cli import update_cmd_check as _check
 
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
@@ -985,6 +986,8 @@ def _pull_updates(
             encoding="utf-8")
     try:
         try:
+            # The paused gateways' tree gate must know this move's target before git writes a file.
+            _pause_record.mark_move(_windows_gateway_resume, target_sha)
             # merge --ff-only the already-fetched ref instead of `git pull`, which would do a
             # SECOND network fetch; identical in effect given the fresh tracking ref.
             if merge_ref != f"origin/{branch}":

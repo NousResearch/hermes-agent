@@ -840,3 +840,56 @@ def test_an_unmoved_head_holds_gateways_only_for_paths_the_updates_move_could_wr
     token = pause_record.stamp_tree({"resume_needed": True}, root)
     (root / "b.lock").write_text("rewritten by the dependency sync\n", encoding="utf-8")
     assert pause_record.tree_is_whole(token, root) == (True, "")
+
+
+def _cloned_checkout(tmp_path: Path) -> tuple[Path, Path]:
+    origin, root = tmp_path / "origin", tmp_path / "checkout"
+    origin.mkdir()
+    _git(origin, "init", "-q")
+    for name in ("a.py", "b.py"):
+        (origin / name).write_text("v1\n", encoding="utf-8")
+    _git(origin, "add", ".")
+    _git(origin, "commit", "-qm", "X")
+    _git(tmp_path, "clone", "-q", str(origin), str(root))
+    (origin / "a.py").write_text("v2\n", encoding="utf-8")
+    _git(origin, "commit", "-qam", "B")  # the update's target changes a.py
+    return origin, root
+
+
+def test_a_later_fetch_never_certifies_bytes_an_earlier_recorded_move_left(tmp_path, monkeypatch):
+    """Review D: the move's target goes on the record before git writes; a later fetch whose refs
+    no longer touch a.py must not turn the gate from false to true on the same partial bytes."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    origin, root = _cloned_checkout(tmp_path)
+    token = pause_record.stamp_tree({"resume_needed": True, "profiles": {"default": 4242}}, root)
+    _git(root, "fetch", "-q", "origin")
+    pause_record.mark_move(token, _git(root, "rev-parse", "origin/HEAD"))
+    (root / "a.py").write_text("v2 half\n", encoding="utf-8")  # git wrote a.py, died before HEAD
+    assert not pause_record.tree_is_whole(token, root)[0], "premise: the torn path holds the set"
+
+    (origin / "a.py").write_text("v1\n", encoding="utf-8")
+    (origin / "b.py").write_text("v2\n", encoding="utf-8")
+    _git(origin, "commit", "-qam", "C")  # a.py back to X's bytes: no fetched ref touches it now
+    _git(root, "fetch", "-q", "origin")
+    saved = pause_record.read()["token"]
+    for judged in (token, saved):
+        whole, why = pause_record.tree_is_whole(judged, root)
+        assert not whole and "a.py" in why, "a later fetch certified the earlier move's partial bytes"
+
+
+def test_an_autostashed_edit_vouches_only_for_its_own_bytes(tmp_path, monkeypatch):
+    """Review D / F3: a.py was dirty at pause, the update stashed it and its move wrote a.py partly.
+    The pathname alone no longer admits the different bytes; the restored edit itself still passes."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    _origin, root = _cloned_checkout(tmp_path)
+    (root / "a.py").write_text("user edit\n", encoding="utf-8")
+    token = pause_record.stamp_tree({"resume_needed": True, "profiles": {"default": 4242}}, root)
+    _git(root, "stash", "-q")
+    _git(root, "fetch", "-q", "origin")
+    pause_record.mark_move(token, _git(root, "rev-parse", "origin/HEAD"))
+    (root / "a.py").write_text("v2 half\n", encoding="utf-8")
+    whole, why = pause_record.tree_is_whole(token, root)
+    assert not whole and "a.py" in why, "the dirty pathname admitted git's half-written bytes"
+    _git(root, "checkout", "-q", "--", "a.py")
+    _git(root, "stash", "pop", "-q")  # the user's own edit back, byte for byte
+    assert pause_record.tree_is_whole(token, root) == (True, "")

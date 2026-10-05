@@ -210,18 +210,51 @@ def stamp_tree(token: dict, root: Path | None = None) -> dict:
     pause_id = token.setdefault("pause_id", uuid.uuid4().hex)
     baselines = token.setdefault("baselines", [])
     if (root / ".git").exists() and not any(b.get("pause_id") == pause_id for b in baselines):
-        baselines.append({"pause_id": pause_id, "pre_sha": head_sha(root), "dirty_at_pause": tracked_changes(root)})
+        dirty = tracked_changes(root)
+        # The bytes, not just the names: an autostashed edit and git's half-written bytes share a path.
+        baselines.append({"pause_id": pause_id, "pre_sha": head_sha(root), "dirty_at_pause": dirty,
+                          "dirty_digests": {path: _digest(root / path) for path in dirty or []}})
     return token
+
+
+def _digest(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:  # deleted (or unreadable) at pause: it must read the same way to count as unchanged
+        return None
+
+
+def mark_move(token: dict | None, target: str) -> None:
+    """Persist, BEFORE git writes the tree, the commit this run's checkout move goes to, on this
+    pause's own baseline: an unmoved HEAD is later judged against what THAT move could write, never
+    against refs a later fetch replaced. Raises when it cannot be recorded: the move must not run."""
+    if not token or not token.get("pause_id") or not target:
+        return
+    for baseline in token.get("baselines") or []:
+        if baseline.get("pause_id") == token["pause_id"]:
+            baseline["move_targets"] = sorted({*baseline.get("move_targets", []), target})
+    write({**token, "resume_needed": True})
 
 
 _MAX_MOVE_TARGETS = 16
 
 
+def _paths_between(root: Path, targets) -> set[str] | None:
+    """Tracked paths that differ between HEAD and any of *targets* — all a fast-forward, reset or
+    merge toward them can write; ``None`` when git cannot say."""
+    paths: set[str] = set()
+    for target in sorted(targets):
+        diff = _git(root, "diff", "--name-only", "-z", "--no-renames", "HEAD", target, "--")
+        if diff is None or diff.returncode != 0:
+            return None
+        paths.update(filter(None, diff.stdout.split("\0")))
+    return paths
+
+
 def _paths_a_move_could_write(root: Path) -> set[str] | None:
-    """Tracked paths an update's checkout move could have written while HEAD stayed put: the ones
-    that differ between HEAD and a commit the checkout fetched (``FETCH_HEAD``) or tracks
-    (``refs/remotes``) — a fast-forward, reset or merge only writes those. ``None`` when git cannot
-    say or nothing was fetched (the move's target is then unknown)."""
+    """For a pause with no recorded move (:func:`mark_move`: none attempted, or a record from before
+    it was kept): the paths between HEAD and a commit the checkout fetched (``FETCH_HEAD``) or tracks
+    (``refs/remotes``). ``None`` when git cannot say or nothing was fetched (target unknown)."""
     where = _git(root, "rev-parse", "--git-path", "FETCH_HEAD")
     refs = _git(root, "for-each-ref", "--format=%(objectname)", "refs/remotes")
     if where is None or where.returncode != 0 or refs is None or refs.returncode != 0:
@@ -235,13 +268,16 @@ def _paths_a_move_could_write(root: Path) -> set[str] | None:
     targets = {line.split()[0] for line in fetched if line.split()} | set(refs.stdout.split())
     if not targets or len(targets) > _MAX_MOVE_TARGETS:
         return None
-    paths: set[str] = set()
-    for target in sorted(targets):
-        diff = _git(root, "diff", "--name-only", "-z", "--no-renames", "HEAD", target, "--")
-        if diff is None or diff.returncode != 0:
-            return None
-        paths.update(filter(None, diff.stdout.split("\0")))
-    return paths
+    return _paths_between(root, targets)
+
+
+def _seen_at_pause(root: Path, baseline: dict, path: str) -> bool:
+    """*path* is as the pause saw it: dirty then, with the same bytes now (a baseline from before
+    digests were kept has only the name)."""
+    if path not in (baseline.get("dirty_at_pause") or []):
+        return False
+    digests = baseline.get("dirty_digests")
+    return digests is None or digests.get(path) == _digest(root / path)
 
 
 def _half_written(root: Path, changes: list[str], at_head: list[dict]) -> list[str]:
@@ -249,13 +285,14 @@ def _half_written(root: Path, changes: list[str], at_head: list[dict]) -> list[s
     baseline that has any. A change the pause did not see counts only on a path the update's move
     could write: a build/sync step (or the user) rewriting any other tracked file is not git's
     doing, and holding the set for it would keep gateways stopped until someone cleans the file.
-    When the move's target is unknown every unseen change still counts."""
-    writable: set[str] | None = None
-    probed = False
+    The move is the one recorded before it ran, so a later fetch never narrows it; with none
+    recorded the fetched refs stand in, and when even those are unknown every unseen change counts."""
     for baseline in at_head:
-        unexpected = sorted(set(changes) - set(baseline.get("dirty_at_pause") or []))
-        if unexpected and not probed:
-            writable, probed = _paths_a_move_could_write(root), True
+        unexpected = sorted(path for path in changes if not _seen_at_pause(root, baseline, path))
+        if not unexpected:
+            continue
+        targets = baseline.get("move_targets")
+        writable = _paths_between(root, targets) if targets else _paths_a_move_could_write(root)
         torn = unexpected if writable is None else [path for path in unexpected if path in writable]
         if torn:
             return torn

@@ -686,7 +686,7 @@ class TestMappingGuard:
         ({}, "[a, b]"),
         ({"model": "gpt-4o"}, "[a, b]"),
     ])
-    def test_bare_model_mapping_literal_is_refused(self, _isolated_hermes_home, start, literal):
+    def test_bare_model_container_literal_is_refused(self, _isolated_hermes_home, start, literal):
         """A JSON/YAML mapping/list under bare ``model`` must be refused, not redirected (#131435).
 
         ``model`` is seeded as a string default, so the generic coerce kept the literal

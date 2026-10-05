@@ -63,6 +63,7 @@ vi.mock('@/store/session', () => ({
 }))
 
 const { shouldNotify, startMcpHealthChecker, stopMcpHealthChecker } = await import('./mcp-health')
+const { probeCache, probeKey } = await import('@/lib/mcp-probe-cache')
 
 type Status = 'error' | 'needs-auth' | 'ok'
 
@@ -191,6 +192,124 @@ it('honors a persisted snooze in a fresh module session, then re-notifies after 
     freshSession?.stopMcpHealthChecker()
     nowSpy.mockRestore()
   }
+})
+
+it('confirms a transient launch failure before notifying or arming the snooze', async () => {
+  const server = { url: 'http://127.0.0.1:9999/mcp' }
+  const key = probeKey('launch-recovery', server, 'default')
+  window.localStorage.clear()
+  probeCache.clear()
+  mocks.getHermesConfigRecord.mockResolvedValue({ mcp_servers: { 'launch-recovery': server } })
+  mocks.testMcpServer
+    .mockRejectedValueOnce(new Error('startup connection interrupted'))
+    .mockResolvedValue({ ok: true, tools: [] })
+
+  startMcpHealthChecker()
+  mocks.gatewayState.set('open')
+  await flush()
+  await flush()
+
+  expect(mocks.notify).not.toHaveBeenCalled()
+  expect(mocks.testMcpServer).toHaveBeenCalledTimes(2)
+  expect(probeCache.get(key)?.result.ok).toBe(true)
+  expect(window.localStorage.getItem('hermes:mcp-health-snooze-until:default::launch-recovery')).toBeNull()
+})
+
+it.each(['returned', 'raised', 'cached'] as const)(
+  'bounds confirmation of a %s failure and preserves recovery',
+  async mode => {
+    const name = `persistent-${mode}`
+    const server = { url: 'http://127.0.0.1:9999/mcp' }
+    const key = probeKey(name, server, 'default')
+    const failure = { ok: false, error: 'connection interrupted', tools: [] }
+    window.localStorage.clear()
+    probeCache.clear()
+    mocks.getHermesConfigRecord.mockResolvedValue({ mcp_servers: { [name]: server } })
+    if (mode === 'raised') {
+      mocks.testMcpServer.mockRejectedValue(new Error(failure.error))
+    } else {
+      mocks.testMcpServer.mockResolvedValue(failure)
+    }
+    if (mode === 'cached') probeCache.set(key, { at: Date.now(), result: failure })
+
+    startMcpHealthChecker()
+    mocks.gatewayState.set('open')
+    await flush()
+    await flush()
+    expect(mocks.testMcpServer).toHaveBeenCalledTimes(mode === 'cached' ? 1 : 2)
+    expect(mocks.notify).toHaveBeenCalledTimes(1)
+    expect(probeCache.get(key)?.result.ok).toBe(false)
+
+    // Once confirmed, reconnects reuse the cache and daily snooze, not another retry.
+    mocks.gatewayState.set('closed')
+    mocks.gatewayState.set('open')
+    await flush()
+    expect(mocks.testMcpServer).toHaveBeenCalledTimes(mode === 'cached' ? 1 : 2)
+    expect(mocks.notify).toHaveBeenCalledTimes(1)
+
+    probeCache.delete(key)
+    mocks.testMcpServer.mockResolvedValue({ ok: true, tools: [] })
+    mocks.gatewayState.set('closed')
+    mocks.gatewayState.set('open')
+    await flush()
+    expect(probeCache.get(key)?.result.ok).toBe(true)
+    expect(mocks.notify).toHaveBeenCalledTimes(1)
+  }
+)
+
+it.each(['ok', 'auth', 'cached-ok'] as const)('does not retry %s or extend a cached result lifetime', async mode => {
+  const name = `single-${mode}`
+  const server = { url: 'http://127.0.0.1:9999/mcp' }
+  const key = probeKey(name, server, 'default')
+  const result = { ok: mode !== 'auth', error: mode === 'auth' ? '401 unauthorized' : undefined, tools: [] }
+  window.localStorage.clear()
+  probeCache.clear()
+  mocks.getHermesConfigRecord.mockResolvedValue({
+    mcp_servers: { [name]: server, stdio: { command: 'never-spawn' }, disabled: { url: server.url, enabled: false } }
+  })
+  mocks.testMcpServer.mockResolvedValue(result)
+  const at = Date.now() - 1000
+  if (mode === 'cached-ok') probeCache.set(key, { at, result })
+  startMcpHealthChecker()
+  mocks.gatewayState.set('open')
+  await flush()
+  await flush()
+  expect(mocks.testMcpServer).toHaveBeenCalledTimes(mode === 'cached-ok' ? 0 : 1)
+  expect(mocks.notify).toHaveBeenCalledTimes(mode === 'auth' ? 1 : 0)
+  if (mode === 'cached-ok') expect(probeCache.get(key)?.at).toBe(at)
+})
+
+it.each(['disconnect', 'profile', 'stop'] as const)('drops a late confirmation on %s', async change => {
+  const name = `late-${change}`
+  const server = { url: 'http://127.0.0.1:9999/mcp' }
+  const key = probeKey(name, server, 'default')
+  let finish!: (result: { ok: boolean; error: string; tools: [] }) => void
+  const pending = new Promise(resolve => {
+    finish = resolve
+  })
+  window.localStorage.clear()
+  probeCache.clear()
+  mocks.getHermesConfigRecord.mockResolvedValue({ mcp_servers: { [name]: server } })
+  mocks.testMcpServer
+    .mockResolvedValueOnce({ ok: false, error: 'startup timeout', tools: [] })
+    .mockReturnValueOnce(pending)
+  startMcpHealthChecker()
+  mocks.gatewayState.set('open')
+  await flush()
+  expect(mocks.testMcpServer).toHaveBeenCalledTimes(2)
+
+  if (change === 'disconnect') mocks.gatewayState.set('closed')
+  if (change === 'stop') stopMcpHealthChecker()
+  if (change === 'profile') {
+    mocks.getHermesConfigRecord.mockResolvedValue({ mcp_servers: {} })
+    mocks.activeProfile.set('other')
+  }
+  finish({ ok: false, error: 'late timeout', tools: [] })
+  await flush()
+  await flush()
+  expect(mocks.notify).not.toHaveBeenCalled()
+  expect(probeCache.has(key)).toBe(false)
+  expect(window.localStorage.getItem(`hermes:mcp-health-snooze-until:default::${name}`)).toBeNull()
 })
 
 it('coalesces reconnects during a sweep into one fresh follow-up sweep', async () => {

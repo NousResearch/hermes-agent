@@ -26,35 +26,57 @@ from utils import env_int
 
 HERMES_KANBAN_SPECIFY_MAX_TOKENS = max(1500, env_int("HERMES_KANBAN_SPECIFY_MAX_TOKENS", 6000))
 
+# The specifier must SEE the whole brief to preserve it: real triage cards on
+# the shared board have been authored at 8 KB - 49 KB, and a 4,000-char clamp
+# silently halved every long brief before the model ever saw it (the model
+# then faithfully rewrote the half it was given; the other half was gone from
+# the card). The defaults below are far above any realistic card; an operator
+# running a small-context auxiliary model can lower them via env. When a bound
+# DOES bite, the user prompt carries an explicit truncation marker (see
+# ``_task_prompt_fields``) so the model knows the brief is partial instead of
+# silently summarising half of it.
+HERMES_KANBAN_SPECIFY_MAX_BODY_CHARS = max(1, env_int("HERMES_KANBAN_SPECIFY_MAX_BODY_CHARS", 100_000))
+HERMES_KANBAN_SPECIFY_MAX_TITLE_CHARS = max(1, env_int("HERMES_KANBAN_SPECIFY_MAX_TITLE_CHARS", 2_000))
+
 logger = logging.getLogger(__name__)
 
 
 _SYSTEM_PROMPT = """You are the Kanban triage specifier for the Hermes Agent board.
-A user dropped a rough idea into the Triage column. Your job is to turn it
-into a concrete, actionable task spec that an autonomous worker can pick up
-and execute without further clarification.
+A user dropped an idea into the Triage column. Your job is to make sure the
+task is concrete, actionable, and executable by an autonomous worker without
+further clarification - WITHOUT destroying anything the author already wrote.
 
 Output a single JSON object with exactly two keys:
 
   {
     "title": "<tightened task title, <= 80 chars, imperative voice>",
-    "body":  "<multi-line spec, see structure below>"
+    "body":  "<the spec>"
   }
 
-The body MUST include these sections, each prefixed with a bold markdown
-heading, in this order:
+How to build the body - preserving detail is the priority:
 
-  **Goal** — one sentence, user-facing outcome.
-  **Approach** — 2-5 bullets on how a worker should tackle it.
-  **Acceptance criteria** — checklist of concrete, verifiable conditions.
-  **Out of scope** — short list of things NOT to touch (omit if nothing
-      obvious; never invent scope creep).
+  - If the incoming body is ALREADY a complete or detailed spec (it names
+    files, paths, ids, measurements, acceptance criteria, steps, or
+    decisions), it is the deliverable. Keep ALL of its text: copy it into
+    your reply essentially verbatim, preserving every anchor, id, path,
+    number, and list. Do not summarise it, do not reshape it into a
+    different structure, and do not drop anything. You may only ADD what is
+    genuinely missing. Prefer keeping the author's structure; add the
+    sections below only where they are absent, using bold markdown headings:
+
+      **Goal** - one sentence, user-facing outcome.
+      **Approach** - 2-5 bullets on how a worker should tackle it.
+      **Acceptance criteria** - checklist of concrete, verifiable conditions.
+      **Out of scope** - short list of things NOT to touch.
+
+  - If the incoming body is a rough one-liner or vague idea, restructure it
+    into the sections above, inventing nothing the author did not imply.
 
 Rules:
-  - Keep the tightened title close in meaning to the original idea — do
+  - When in doubt, keep the original wording over a rewrite. A longer body
+    that preserves the author's meaning beats a shorter, cleaner-looking one.
+  - Keep the tightened title close in meaning to the original idea - do
     NOT invent a different project.
-  - If the original idea is already detailed, preserve its substance and
-    just reformat into the sections above.
   - Never add invented requirements the user didn't hint at.
   - No preamble, no closing remarks, no code fences around the JSON.
   - Output only the JSON object and nothing else.
@@ -68,6 +90,11 @@ Current body:
 """
 
 
+# Marker the model sees when the body/title above was clipped before it got
+# here. Explicit and unmissable: a silent cap is what this replaces.
+_TRUNCATION_MARKER = "[... TRUNCATED BY THE BOARD: this field is {total} chars and only the first {kept} are shown above. The rest is NOT included - base your rewrite only on the text you can see and keep everything shown, in full. The full original text is preserved on the card in a comment.]"
+
+
 @dataclass
 class SpecifyOutcome:
     """Result of specifying a single triage task."""
@@ -78,11 +105,19 @@ class SpecifyOutcome:
     new_title: Optional[str] = None
 
 
-def _truncate(text: str, limit: int) -> str:
-    # Plain length clamp for LLM prompt fields; these never reach a terminal, so no escape stripping here.
+def _clamp_field(text: str, limit: int) -> str:
+    """Clamp a prompt field with an explicit, unmissable marker.
+
+    Unlike a bare ellipsis (only suitable for short human-facing previews),
+    the marker states in the prompt that the brief is partial - the silent
+    half-brief is what let the specifier rewrite away the other half. The
+    full original body survives on the card regardless (see
+    ``kb.specify_triage_task``, which snapshots it as a comment).
+    """
     if len(text) <= limit:
         return text
-    return text[: limit - 1] + "…"
+    marker = _TRUNCATION_MARKER.format(total=len(text), kept=limit)
+    return text[:limit] + "\n\n" + marker
 
 
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
@@ -135,11 +170,21 @@ def _load_triage_task(task_id: str) -> tuple[Optional[kb.Task], str]:
 
 
 def _task_prompt_fields(task: kb.Task) -> dict[str, str]:
-    """Bounded ``task_id``/``title``/``body`` for the user prompt templates."""
+    """Bounded ``task_id``/``title``/``body`` for the user prompt templates.
+
+    The bounds are deliberately far above any realistic card (100 KB body /
+    2 KB title, env-overridable) because the specifier's whole job is to
+    preserve what it sees. A brief longer than the bound still arrives whole
+    unless it is truly enormous, and when a clamp does bite the prompt carries
+    an explicit ``TRUNCATED BY THE BOARD`` marker (``_clamp_field``) instead of
+    silently shipping half the brief.
+    """
     return {
         "task_id": task.id,
-        "title": _truncate(task.title or "", 400),
-        "body": _truncate(task.body or "(no body)", 4000),
+        "title": _clamp_field(task.title or "", HERMES_KANBAN_SPECIFY_MAX_TITLE_CHARS),
+        "body": _clamp_field(
+            task.body or "(no body)", HERMES_KANBAN_SPECIFY_MAX_BODY_CHARS
+        ),
     }
 
 

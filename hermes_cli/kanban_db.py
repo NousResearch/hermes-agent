@@ -3751,6 +3751,34 @@ def invalidate_descendants_for_parent_reopen(
     return {"invalidated": invalidated, "terminations": terminations}
 
 
+# Fence for the pre-rewrite snapshot comment. The specifier's rewrite is
+# lossy by nature (it is an LLM), so the card body can never be the only copy
+# of what the author wrote: this comment is the durable original. Kept
+# machine-readable so a future restore can find and parse it without guessing.
+_PRE_SPECIFY_FENCE = "kanban-original-brief"
+
+
+def _original_brief_comment(pre_title: str, pre_body: str) -> str:
+    """Comment body preserving the pre-specify title and body verbatim.
+
+    The brief is fenced between ``_PRE_SPECIFY_FENCE`` markers so it can be
+    extracted mechanically; the fence is lengthened if the brief itself
+    contains a conflicting fence (a body quoting the marker must not break
+    round-trip). ``title``/``---``/``body`` is the parse contract.
+    """
+    fence = "```"
+    while fence in pre_body or fence in pre_title:
+        fence += "`"
+    return (
+        "Original brief preserved before the specifier rewrite (fenced, verbatim).\n\n"
+        f"{fence}{_PRE_SPECIFY_FENCE}\n"
+        f"title: {pre_title}\n"
+        "---\n"
+        f"{pre_body}\n"
+        f"{fence}"
+    )
+
+
 def specify_triage_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, assignee: Optional[str] = None, author: Optional[str] = None,
@@ -3758,6 +3786,13 @@ def specify_triage_task(
     """Update title/body/assignee (when given) and move ``triage -> todo`` in one
     txn; False when not in triage. Lands in ``todo`` (not ``ready``) so parent
     gating still applies; the audit comment is written only when a field changed.
+
+    Whenever a rewrite actually replaces a non-empty prior title or body, the
+    PRE-rewrite values are snapshotted into a ``kanban-original-brief`` comment
+    inside the same transaction - a lossy specifier rewrite can degrade the
+    body, but never destroy the author's brief. Snapshotting here (not in the
+    specifier module) means every promotion path - CLI ``specify``, the
+    dashboard endpoint, ``decompose``'s single-task fallback - is covered.
     """
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
@@ -3769,6 +3804,8 @@ def specify_triage_task(
         ).fetchone()
         if existing is None:
             return False
+        pre_title = existing["title"] or ""
+        pre_body = existing["body"] or ""
         sets: list[str] = ["status = 'todo'"]
         params: list[Any] = []
         changed_fields: list[str] = []
@@ -3791,16 +3828,36 @@ def specify_triage_task(
         )
         if cur.rowcount != 1:
             return False
+        now = int(time.time())
+        # Preserve the ORIGINAL brief before it is (possibly) lost to a lossy
+        # rewrite. Written in the same txn as the promotion, so no crash window
+        # can leave a rewritten card without its original. Only when the
+        # rewrite actually replaces non-empty content - a pure title tighten
+        # of an empty body needs no snapshot (nothing was lost), and a
+        # re-specify of an unchanged field is not a loss.
+        if (body is not None and pre_body and (body or "") != pre_body) or (
+            title is not None and pre_title and title.strip() != pre_title
+        ):
+            # Not add_comment (own txn + 'commented' event); 'specified' below records it.
+            _insert_comment(
+                conn, task_id, "specifier", _original_brief_comment(pre_title, pre_body), now,
+            )
         if changed_fields and author and author.strip():
             # Not add_comment (own txn + 'commented' event); 'specified' below records it.
             _insert_comment(
                 conn, task_id, author.strip(),
                 "Specified — updated " + ", ".join(changed_fields) + " and promoted to todo.",
-                int(time.time()),
+                now,
             )
         _append_event(
             conn, task_id, "specified",
-            {"changed_fields": changed_fields} if changed_fields else None,
+            {
+                "changed_fields": changed_fields,
+                "original_preserved": bool(
+                    (body is not None and pre_body and (body or "") != pre_body)
+                    or (title is not None and pre_title and title.strip() != pre_title)
+                ),
+            } if changed_fields else None,
         )
     # Own IMMEDIATE txn (outside the one above): a parent-free specified task
     # flips to 'ready' now instead of idling until the next tick.

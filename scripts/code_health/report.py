@@ -33,7 +33,7 @@ def apply_allows(findings: list[Finding], head: dict[str, FileMeasure]) -> None:
         for line_no in _allow_lines(finding, fm):
             text = fm.comments.get(line_no, "")
             match = _ALLOW.search(text)
-            # `allow BLE001 S110` and `allow BLE001, S110` both name two rules (_ALLOW takes either).
+            # `allow BLE001 S110` and `allow BLE001, S110` both name two rules (_ALLOW takes both).
             if match and finding.rule in re.split(r"[,\s]+", match.group(1).strip()):
                 finding.allowed_reason = match.group(2).strip()
                 break

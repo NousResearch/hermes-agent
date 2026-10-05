@@ -47,8 +47,8 @@ def _sh(cwd: Path, *argv: str, env: dict[str, str] | None = None) -> subprocess.
                           timeout=600, check=False)
 
 
-def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
-    proc = _sh(repo, "git", *args, env=env)
+def _git(repo: Path, *args: str) -> str:
+    proc = _sh(repo, "git", *args)
     assert proc.returncode == 0, (args, proc.stdout, proc.stderr)
     return proc.stdout.strip()
 
@@ -63,10 +63,10 @@ def _write(repo: Path, files: Mapping[str, str | None]) -> None:
             path.write_text(text, encoding="utf-8")
 
 
-def _commit(repo: Path, files: Mapping[str, str | None], env: dict[str, str] | None = None) -> str:
+def _commit(repo: Path, files: Mapping[str, str | None]) -> str:
     _write(repo, files)
     _git(repo, "add", "--all", "--", *files)
-    _git(repo, "commit", "-q", "-m", "step", env=env)
+    _git(repo, "commit", "-q", "-m", "step")
     return _git(repo, "rev-parse", "HEAD")
 
 
@@ -104,8 +104,8 @@ def _engine_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def _check(repo: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    return _sh(repo, sys.executable, str(repo / "scripts/check"), *args, env=env)
+def _check(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return _sh(repo, sys.executable, str(repo / "scripts/check"), *args)
 
 
 def _ratchet_repo(tmp_path: Path, switch: str | None = None) -> tuple[Path, str]:
@@ -124,8 +124,8 @@ def _ratchet_repo(tmp_path: Path, switch: str | None = None) -> tuple[Path, str]
 
 @pytest.mark.parametrize("unstaged", [
     # the policy file read by the PS-P05 rule, narrowed so it no longer covers pkg/
-    ("scripts/ci/profile_scope_patterns.json", lambda t: t.replace('"id": "P05",', '"id": "P05",\n'
-                                                                   '      "path_regex": "^nowhere/",')),
+    ("scripts/ci/profile_scope_patterns.json", lambda t: t.replace(
+        '"id": "P05",', '"id": "P05",\n      "path_regex": "^nowhere/",')),
     # the engine itself, edited to exempt pkg/ from PS-P05
     ("scripts/code_health/config.py", lambda t: t.replace(
         'exclude=SINGLE_PROFILE, pattern_id="P05"',
@@ -256,7 +256,8 @@ def test_hooks_prefer_the_repo_virtualenv_over_path_python(tmp_path):
     fake = tmp_path / "fakebin"
     fake.mkdir()
     for name in ("python3", "python"):
-        (fake / name).write_text("#!/bin/sh\necho 'wrong interpreter' >&2\nexit 97\n", encoding="utf-8")
+        (fake / name).write_text("#!/bin/sh\necho 'wrong interpreter' >&2\nexit 97\n",
+                                 encoding="utf-8")
         (fake / name).chmod(0o755)
     env = _env()
     env["PATH"] = f"{fake}{os.pathsep}{env['PATH']}"

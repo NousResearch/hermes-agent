@@ -36,8 +36,9 @@ _MODES = ("blocking", "advisory", "off")
 
 
 def parse_switch(text: str) -> str:
-    """The module-level ``ENFORCEMENT`` value (plain or annotated assignment, the last one wins,
-    as at runtime). Missing, unparseable or unknown is "blocking": no edit relaxes it by accident."""
+    """The module-level ``ENFORCEMENT`` value (plain or annotated assignment; the last one wins,
+    as at runtime). Missing, unparseable or unknown is "blocking", so no edit relaxes it by
+    accident."""
     try:
         body = ast.parse(text).body
     except SyntaxError:

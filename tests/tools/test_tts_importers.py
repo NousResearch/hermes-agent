@@ -26,7 +26,15 @@ def test_sdk_import_fallback(tmp_path, monkeypatch, importer, module, attribute,
     else:
         package = tmp_path / parts[0]
         package.mkdir()
-        (package / "__init__.py").write_text("marker = 'installed outside venv'\n", encoding="utf-8")
+        package_init = "marker = 'installed outside venv'\n"
+        if feature == "edge-tts":
+            package_init += "from . import communicate, voices\n"
+            for name in ("communicate", "voices"):
+                (package / f"{name}.py").write_text(
+                    "import ssl\n_SSL_CTX = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)\n",
+                    encoding="utf-8",
+                )
+        (package / "__init__.py").write_text(package_init, encoding="utf-8")
         if attribute:
             (package / "client.py").write_text(f"class {attribute}: pass\n", encoding="utf-8")
         monkeypatch.syspath_prepend(str(tmp_path))

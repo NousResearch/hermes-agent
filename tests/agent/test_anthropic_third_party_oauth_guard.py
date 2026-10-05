@@ -143,6 +143,45 @@ class TestOAuthFlagOnRefresh:
         assert agent._anthropic_api_key == agent.api_key == agent.context_compressor.api_key == new
         assert set(agent._primary_runtime.values()) == {new}
 
+    def test_auxiliary_main_route_uses_refreshed_token(self, agent):
+        """Production order: the turn publishes its aux runtime BEFORE the first request triggers
+        the silent refresh, so same-turn `auto` aux calls must still pick up the new token."""
+        from agent import auxiliary_client as aux
+        from agent.turn_context import _publish_runtime_main
+
+        old, new = "sk-ant...aaaa", "sk-ant...bbbb"
+        agent.api_mode, agent.provider, agent.model = "anthropic_messages", "anthropic", "claude-opus-4-6"
+        agent.base_url = agent._anthropic_base_url = "https://api.anthropic.com"
+        agent.api_key = agent._anthropic_api_key = old
+        agent._anthropic_client = MagicMock()
+        agent._is_anthropic_oauth = True
+        seen = {}
+
+        def fake_resolve(provider, model, explicit_api_key=None, **kwargs):
+            seen["api_key"] = explicit_api_key
+            return MagicMock(), model
+
+        try:
+            _publish_runtime_main(agent)
+            with (
+                patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
+                patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            ):
+                assert agent._try_refresh_anthropic_client_credentials() is True
+            runtime = aux._normalize_main_runtime(None)
+            assert runtime.get("api_key") == new
+            with (
+                patch.object(aux, "resolve_provider_client", side_effect=fake_resolve),
+                patch.object(aux, "_is_provider_unhealthy", return_value=False),
+            ):
+                aux._try_main_provider_route(
+                    "anthropic", agent.model, runtime.get("base_url", ""), runtime.get("api_key"), "anthropic_messages",
+                )
+            assert seen["api_key"] == new
+        finally:
+            aux.clear_runtime_main()
+
+
 
 class TestOAuthFlagOnCredentialSwap:
     """Site 4 — _swap_credential (credential pool rotation)."""

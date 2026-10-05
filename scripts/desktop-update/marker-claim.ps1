@@ -201,7 +201,7 @@ function Add-MarkerDelegate([int[]]$Candidates) {
         }
         foreach ($candidate in @($Candidates)) {
             if ($candidate -le 0 -or $candidate -eq $PID) { continue }
-            $probe = Get-LiveProcessCt $candidate
+            $probe = Get-LiveProcessCt $candidate -Fresh
             if (-not $probe.Alive -or $null -eq $probe.Ct) { continue }
             $line = "delegate:$candidate ct:$(Format-Ct $probe.Ct)"
             if (-not (Set-MarkerBodyLocked (Format-MarkerBody $info.Pid $info.StartedAtText $info.CtText $line $info.Runs))) { return 'lost' }

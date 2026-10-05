@@ -67,10 +67,12 @@ function Get-ParentProcessId([int]$ProcessId) {
     return 0
 }
 
-function Get-LiveProcessCt([int64]$ProcessId) {
+function Get-LiveProcessCt([int64]$ProcessId, [switch]$Fresh) {
     # Alive + creation time (unix seconds, $null when unreadable). The time is
     # read once per pid and kept while that pid stays alive: a waiter polls
-    # liveness, never one CIM query per poll.
+    # liveness, never one CIM query per poll. The cache only forgets a pid it
+    # SAW dead, so a pid that exited and was reused between two polls keeps the
+    # old incarnation's time: every marker decision passes -Fresh (re-read).
     if ($ProcessId -le 0 -or $ProcessId -gt [int]::MaxValue) { return @{ Alive = $false; Ct = $null } }
     $id = [int]$ProcessId
     $p = Get-Process -Id $id -ErrorAction SilentlyContinue
@@ -80,7 +82,7 @@ function Get-LiveProcessCt([int64]$ProcessId) {
         $script:ProcessCtCache.Remove($id)
         return @{ Alive = $false; Ct = $null }
     }
-    if (-not $script:ProcessCtCache.ContainsKey($id)) {
+    if ($Fresh -or -not $script:ProcessCtCache.ContainsKey($id)) {
         $script:ProcessCtCache[$id] = Get-ProcessCreationCt $id
     }
     return @{ Alive = $true; Ct = $script:ProcessCtCache[$id] }
@@ -193,8 +195,10 @@ function Get-MarkerDelegateLine($Info) {
 
 function New-MarkerContext {
     # Who "we" are and how a pid is probed; the corpus test injects its own.
+    # Fresh creation times: a judgement here decides a claim, a delegate or a
+    # hand-over, which must never ride a reused pid's cached identity.
     $own = Get-LiveProcessCt $PID
-    return @{ OwnPid = [int64]$PID; OwnCt = $own.Ct; Now = (Get-UnixNow); Probe = { param($p) Get-LiveProcessCt $p } }
+    return @{ OwnPid = [int64]$PID; OwnCt = $own.Ct; Now = (Get-UnixNow); Probe = { param($p) Get-LiveProcessCt $p -Fresh } }
 }
 
 function Get-MarkerIdentityState([int64]$ProcessId, $RecordedCt, [int64]$StartedAt, $Ctx) {

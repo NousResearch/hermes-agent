@@ -90,12 +90,17 @@ def test_marker_op_withdraw(tmp_path: Path, sleeper: subprocess.Popen) -> None:
 # -- release / heartbeat (production functions in a real PowerShell process) ---
 
 HARNESS = r"""
-param([string]$MarkerPs1, [string]$Marker, [string]$Body, [string]$Action, [string]$InstallRoot = '', [int]$Heartbeat = 300)
+param([string]$MarkerPs1, [string]$Marker, [string]$Body, [string]$Action, [string]$InstallRoot = '', [int]$Heartbeat = 300,
+      [string]$StaleCt = '')
 $MarkerPath = $Marker
 $NoMarkerCleanup = $false
 function Write-HandoffLog([string]$Message) { [Console]::Error.WriteLine($Message) }
 . $MarkerPs1
 $script:MarkerHeartbeatSeconds = $Heartbeat
+if ($StaleCt) {   # "<pid>:<ct>": what the cache kept for an earlier incarnation of that pid
+    $stale = $StaleCt.Split(':')
+    $script:ProcessCtCache[[int]$stale[0]] = [double]::Parse($stale[1], [Globalization.CultureInfo]::InvariantCulture)
+}
 $own = Format-Ct (Get-LiveProcessCt $PID).Ct
 [System.IO.File]::WriteAllText($MarkerPath, $Body.Replace('{self}', "$PID").Replace('{selfct}', $own))
 $script:MarkerClaim = 'claimed'
@@ -105,12 +110,12 @@ if ($Action -eq 'heartbeat') { $script:MarkerHeartbeatSeconds = 0; Update-Marker
 """
 
 
-def _harness(tmp_path: Path, body: str, action: str) -> tuple[str, str]:
+def _harness(tmp_path: Path, body: str, action: str, *extra: str) -> tuple[str, str]:
     harness = tmp_path / 'harness.ps1'
     harness.write_text(HARNESS, encoding='utf-8')
     proc = subprocess.run([POWERSHELL, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(harness),
                            '-MarkerPs1', str(MARKER_PS1), '-Marker', str(tmp_path / MARKER),
-                           '-Body', body, '-Action', action],
+                           '-Body', body, '-Action', action, *extra],
                           capture_output=True, text=True, timeout=120)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     pid, ct = proc.stdout.split()
@@ -132,6 +137,19 @@ def test_release_hands_the_claim_to_a_live_delegate(
         assert not (tmp_path / MARKER).exists()
     else:
         assert (tmp_path / MARKER).read_bytes().decode() == f'{dpid}\n{started}\nct:{dct}\nrun:desk-3\n'
+
+
+@pytest.mark.platforms('windows')
+def test_release_rereads_a_cached_delegate_identity_before_handing_over(
+    tmp_path: Path, sleeper: subprocess.Popen,
+) -> None:
+    """Get-LiveProcessCt forgets a pid only when it SEES it dead: a delegate that exited and
+    whose pid was reused between two polls keeps its cached creation time. The release must
+    re-read it, or the marker is handed to the unrelated process now wearing that pid."""
+    started = int(time.time()) - 60
+    stale = f'{{self}}\n{started}\nct:{{selfct}}\ndelegate:{sleeper.pid} ct:5.000\nrun:desk-3\n'
+    _harness(tmp_path, stale, 'release', '-StaleCt', f'{sleeper.pid}:5.0')
+    assert not (tmp_path / MARKER).exists(), (tmp_path / MARKER).read_bytes()
 
 
 @pytest.mark.platforms('windows')

@@ -125,7 +125,7 @@ def _past_commit() -> bool:
         from hermes_cli.update_receipt import _current
 
         current = _current.get()
-    except Exception:  # noqa: BLE001 - unknown: never claim that nothing changed
+    except Exception:  # health: allow BLE001 -- fail closed: unknown = past commit, never "nothing changed"
         return True
     return current is not None and any(stage.get("name") == "apply" for stage in current.data.get("stages") or ())
 
@@ -166,7 +166,7 @@ def git_argv(git_cmd: Sequence[str], args: Sequence[str]) -> list[str]:
 def _held() -> dict | None:
     try:
         from hermes_cli import update_lock
-    except Exception:  # noqa: BLE001 - a torn tree's launch repair: no updater runs from it
+    except Exception:  # health: allow BLE001 -- a torn tree's half-written module raises anything; no updater runs
         return None
     return update_lock._HELD
 

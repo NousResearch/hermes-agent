@@ -349,6 +349,7 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
     # and dependency graph. No application maintenance runs in this bootstrap.
     from hermes_cli.update_lock import checkout_lock_fds
 
+    # health: allow HX006 -- the prepared completion child is the update's build; it runs to the end
     code = _exit_status(subprocess.call(command, cwd=root, env=activation_environment(root),
                                         pass_fds=checkout_lock_fds(root)))
     if not result_path.exists():

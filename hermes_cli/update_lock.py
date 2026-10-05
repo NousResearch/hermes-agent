@@ -227,7 +227,7 @@ def process_create_time(pid: int | None = None) -> float | None:
         return _stdlib_create_time(target)
     try:
         return float(psutil.Process(target).create_time())
-    except Exception:
+    except Exception:  # health: allow BLE001 -- liveness probe: any psutil failure degrades to the stdlib probe
         return _stdlib_create_time(target)
 
 
@@ -870,7 +870,7 @@ def read_live_update(*, path: Path | None = None, install_root: Path | str | Non
         if _reclaim_dead(marker, install_root) == "held":
             return UpdateHolder(pid=0, age_seconds=max(parsed.age(), 0.0) if parsed.started_at is not None else 0.0,
                                 held=True)
-    except Exception as exc:  # "never raises": an unreadable state is no live update
+    except Exception as exc:  # health: allow BLE001 -- documented never-raises probe: unjudgeable = no live update
         logger.debug("Could not judge update marker %s: %s", marker, exc)
     return None
 

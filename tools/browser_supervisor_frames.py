@@ -96,6 +96,7 @@ class FrameTrackingMixin:
         target_type = info.get("type")
         if not sid or target_type not in {"iframe", "worker"}:
             return
+        self._child_sessions[sid] = dict(info)
         if target_type == "iframe":
             # Record the frame with its OOPIF session id for interaction routing;
             # origin is filled by frameNavigated on the child session.
@@ -119,12 +120,33 @@ class FrameTrackingMixin:
         await self._install_dialog_bridge(sid)
 
     def _on_target_detached(self, params: Dict[str, Any], session_id: Optional[str] = None) -> None:
-        """Clear the session binding of frames on a detached child session. Frames are
-        deliberately NOT dropped: Browserbase fires transient detaches during page transitions
-        while the iframe is still visible; ``Page.frameDetached`` cleans up if it truly goes away."""
+        """Clear a top-level binding or a detached child-session binding.
+
+        Top-level detach is terminal for this exact target: retaining active
+        state would let eval/dialog calls target a vanished page. Child OOPIF
+        records remain until ``Page.frameDetached`` proves the iframe is gone.
+        """
         sid = params.get("sessionId")
+        target_id = params.get("targetId")
+        top_level = bool(
+            (sid and sid == self._page_session_id)
+            or (target_id and target_id == self._attached_target_id)
+        )
+        if top_level:
+            with self._state_lock:
+                self._page_session_id = None
+                self._attached_target_id = None
+                self._active = False
+                self._pending_dialogs.clear()
+                self._frames.clear()
+            for handle in list(self._dialog_watchdogs.values()):
+                handle.cancel()
+            self._dialog_watchdogs.clear()
+            self._child_sessions.clear()
+            return
         if not sid:
             return
+        self._child_sessions.pop(sid, None)
         with self._state_lock:
             self._frames.update({fid: replace(f, cdp_session_id=None) for fid, f in self._frames.items()
                                  if f.cdp_session_id == sid})

@@ -694,20 +694,54 @@ def test_resolve_short_name_matches_identifier_slug(monkeypatch):
 @pytest.mark.parametrize("identifier", [
     "computer-use", "NousResearch/hermes-agent/skills/productivity/pdf",
     "skills-sh/nousresearch/hermes-agent/google-workspace"])
-def test_install_of_a_bundled_name_restores_it_and_never_touches_the_hub(monkeypatch, identifier):
+def test_install_of_a_bundled_name_restores_it_and_never_touches_the_hub(monkeypatch, tmp_path, identifier):
     """`hermes skills install <bundled skill>` failed every time: the name resolved to a stranger's
     same-named hub skill or an ambiguity table, and this repo's own copy was rescanned as community
     content and refused. It now makes the shipped skill active and fetches nothing."""
     import hermes_cli.skills_hub as cli_hub
     from tools import skills_sync
 
+    import tools.skills_hub as hub
+    from tools import skill_usage
+    from tools.skills_hub import HubLockFile
+
+    # hub_env's undo leaves its resolved paths as real globals; drop them so the hub follows the profile.
+    for stale in [n for n in vars(hub) if n.isupper() and n.endswith(("_DIR", "_FILE", "_LOG"))]:
+        monkeypatch.delitem(vars(hub), stale)
     monkeypatch.setattr(cli_hub, "_sources", lambda: pytest.fail("a bundled skill must not hit the hub"))
     name = identifier.rsplit("/", 1)[-1]
+    # The curator pruned it (prune_builtins on): suppressed from re-seeding and recorded archived.
+    monkeypatch.setattr(skill_usage, "_prune_builtins_enabled", lambda: True)
+    skill_usage._toggle_suppressed_name(name, add=True)
+    skill_usage.save_usage({name: {"state": skill_usage.STATE_ARCHIVED}})
+    # A symlinked category must not carry the restore out of the skills tree (the hub's guard).
+    category = skill_usage._skills_dir() / dict(skills_sync._discover_bundled_skills(
+        skills_sync._get_bundled_dir()))[name].parent.name
+    (outside := tmp_path / "outside").mkdir()
+    category.parent.mkdir(parents=True, exist_ok=True)
+    category.symlink_to(outside, target_is_directory=True)
     console, sink = _sink_console()
+    assert cli_hub.do_install(identifier, console=console, skip_confirm=True) is False
+    assert not any(outside.iterdir())
+    category.unlink()
 
     assert cli_hub.do_install(identifier, console=console, skip_confirm=True) is True
     assert "Restored built-in skill" in sink.getvalue()
     assert name in skills_sync._read_manifest()
     assert any(skills_sync._read_skill_name(md, "") == name for md in skills_sync._iter_active_skill_mds())
+    assert name not in skill_usage.read_suppressed_names()
+    assert skill_usage.load_usage()[name]["state"] == skill_usage.STATE_ACTIVE
     # Already active now: a no-op the user owns, not a failure (exit 0, no reinstall).
     assert cli_hub.do_install(identifier, console=console, skip_confirm=True) is None
+    # A hub skill that took the name is reported as such (with the way back), never as the built-in.
+    stranger = skill_usage._skills_dir() / "hub-installs" / name
+    stranger.mkdir(parents=True)
+    (stranger / "SKILL.md").write_text(f"---\nname: {name}\n---\nstranger\n")
+    HubLockFile().record_install(name=name, source="skills-sh", identifier=f"skills-sh/x/y/{name}",
+                                 trust_level="community", scan_verdict="safe", skill_hash="h",
+                                 install_path=f"hub-installs/{name}", files=["SKILL.md"])
+    console, sink = _sink_console()
+    assert cli_hub.do_install(identifier, console=console, skip_confirm=True) is False
+    out = " ".join(sink.getvalue().split())
+    assert "already available" not in out and f"hermes skills uninstall {name}" in out
+    assert (stranger / "SKILL.md").read_text().endswith("stranger\n")

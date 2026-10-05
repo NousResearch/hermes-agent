@@ -76,24 +76,34 @@ def bundled_skill_for_install(identifier: str) -> Optional[str]:
 
 def ensure_bundled_skill(name: str) -> dict:
     """Make bundled ``name`` active: ``{ok, action, path, message}``, action ``present`` (any active
-    copy, user edits included, is left alone) or ``restored`` (copied from the bundled source and
-    re-tracked, so an opt-out, curator prune or manual delete no longer hides it)."""
+    copy, user edits included, is left alone), ``restored`` (copied from the bundled source and
+    re-tracked, so an opt-out, curator prune or manual delete no longer hides it), or
+    ``hub_shadowed`` (a hub install owns the name; it is the user's to remove, never overwritten)."""
+    from tools import skill_usage
     ss, manifest, bundled_dir, bundled_by_name = _bundled_state()
     src = bundled_by_name[name]
     dest = ss._compute_relative_dest(src, bundled_dir)
+    if skill_usage.is_hub_installed(name):
+        return {"ok": True, "action": "hub_shadowed", "path": None, "message": (
+            f"'{name}' is a built-in skill, but a skill installed from the hub uses the same name and "
+            f"shadows it. To get the built-in back: `hermes skills uninstall {name}`, then "
+            f"`hermes skills install {name}`.")}
     active = next((md.parent for md in ss._iter_active_skill_mds()
                    if ss._read_skill_name(md, md.parent.name) == name), None)
     if active is not None or name in ss._build_external_skill_index():
         return {"ok": True, "action": "present", "path": active, "message": ""}
-    try:
+    try:  # the hub's containment check: a symlinked category must not carry the copy out of skills/
+        from tools.skills_hub_install import _resolve_lock_install_path
+        rel = dest.relative_to(ss._skills_dir()).as_posix()
+        _resolve_lock_install_path(rel, dest.name)
         ss._copy_dir(src, dest)
-    except OSError as e:
+    except (OSError, ValueError) as e:
         return {"ok": False, "action": "not_restored", "path": dest,
                 "message": f"Could not copy the built-in skill '{name}' to {dest}: {e}"}
     manifest[name] = ss._dir_hash(src)
     ss._write_manifest(manifest)
-    from tools.skill_usage import _toggle_suppressed_name
-    _toggle_suppressed_name(name, add=False)
+    skill_usage._toggle_suppressed_name(name, add=False)  # lift a curator prune the way restore_skill does
+    skill_usage.set_state(name, skill_usage.STATE_ACTIVE)
     return {"ok": True, "action": "restored", "path": dest, "message": ""}
 
 

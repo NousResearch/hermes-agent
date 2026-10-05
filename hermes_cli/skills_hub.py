@@ -715,6 +715,9 @@ def _install_bundled(c: Console, name: str, invalidate_cache: bool) -> tuple:
     if not result["ok"]:
         _print_error(c, result["message"])
         return None, "failed", False
+    if result["action"] == "hub_shadowed":  # not the built-in, so exit 1; the hub install stays (no install event)
+        _print_error(c, result["message"])
+        return None, None, False
     if result["action"] == "present":
         where = f" at {result['path']}" if result["path"] else ""
         c.print(f"[green]'{name}' is a built-in skill and is already available{where}.[/]\n")

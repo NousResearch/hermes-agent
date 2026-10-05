@@ -131,3 +131,23 @@ def test_valid_selector_runs_its_check_and_keeps_its_status(tmp_path):
     _git(repo, "add", "--", "pkg/c.py")
     proc = _check(repo, "--staged", "--only", "health,shebangs", "--base", "HEAD")
     assert proc.returncode == 1 and "2 checks, FAILED: health" in proc.stdout, proc.stdout
+
+
+# --- JSON output on every return path ----------------------------------------------------------
+
+
+@pytest.mark.parametrize("case, switch, files, code, findings", [
+    ("no measured change", None, {"README.md": "docs\n"}, 0, 0),
+    ("enforcement off", 'ENFORCEMENT = "off"\n', {"pkg/a.py": _GROWN}, 0, 0),
+    ("findings", None, {"pkg/a.py": _GROWN}, 1, 1),
+    ("clean measured diff", None, {"pkg/b.py": "def b():\n    return 2\n"}, 0, 0),
+])
+def test_json_stdout_is_json_on_every_path(tmp_path, capsys, case, switch, files, code, findings):
+    repo, base = _ratchet_repo(tmp_path, switch)
+    head = _commit(repo, files)
+    assert cli.run(repo, base, head, as_json=True) == code, case
+    out, err = capsys.readouterr()
+    data = json.loads(out)
+    assert isinstance(data, list) and len(data) == findings, (case, out)
+    if case in ("no measured change", "enforcement off"):
+        assert "code health:" in err  # the human explanation moves to stderr

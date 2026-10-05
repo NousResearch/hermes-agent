@@ -58,17 +58,24 @@ def _report(repo: Path, head: str | None) -> int:
     return 0
 
 
+def _skipped(why: str, as_json: bool) -> None:
+    """A run that measured nothing: an empty findings list for --json, the reason for humans."""
+    if as_json:
+        print("[]")
+    print(why, file=sys.stderr if as_json else sys.stdout)
+
+
 def run(repo: Path, base: str, head: str | None, as_json: bool = False) -> int:
     started = time.monotonic()
     mode = enforcement(repo, base)
     if mode == "off":
-        print(f"code health: off (ENFORCEMENT in {_SWITCH_FILE} on {base[:12]})")
+        _skipped(f"code health: off (ENFORCEMENT in {_SWITCH_FILE} on {base[:12]})", as_json)
         return 0
     changes = gitio.changed_files(repo, base, head)
     head_paths = sorted({c.new for c in changes if c.new and in_scope(c.new)})
     base_paths = sorted({c.old for c in changes if c.old and in_scope(c.old)})
     if not head_paths:
-        print("code health: no measured files changed")
+        _skipped("code health: no measured files changed", as_json)
         return 0
     # Base files are measured too: a deleted .py still needs ruff on the base side.
     needs_ruff = any(p.endswith(".py") for p in (*head_paths, *base_paths))

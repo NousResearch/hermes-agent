@@ -279,3 +279,59 @@ def test_seven_physical_else_if_levels_block(tmp_path, capsys):
     assert code == 1 and "NESTING" in out, out
     code, out = _judge(tmp_path / "flat", capsys, {}, {"pkg/n.py": _elif(7)})
     assert code == 0, out
+
+
+# --- HX001 / HX003 / HX012 precision ---
+
+@pytest.mark.parametrize("expr, flagged", [
+    ('Path.home() / ".hermes"', True),
+    ('Path.home() / ".hermes/profiles"', True),
+    ('Path.home() / ".hermes" / "x"', True),
+    ('Path.home() / ".hermes-profile-exports"', False),
+    ('Path.home() / ".hermes_backup"', False),
+    ('os.path.expanduser("~/.hermes")', True),
+    ('os.path.expanduser("~/.hermes/config.yaml")', True),
+    ('os.path.expanduser("~/.hermes-profile-exports")', False),
+])
+def test_hardcoded_home_matches_the_exact_component(expr, flagged):
+    src = f"import os\nfrom pathlib import Path\n\n\ndef f():\n    return {expr}\n"
+    assert bool(_hits("HX001", src)) is flagged
+
+
+@pytest.mark.parametrize("src, flagged", [
+    ('"""Unlike `ps aux`, this reads /proc."""\n', False),
+    ('def f():\n    """Never `pgrep -f hermes`: argv substrings lie."""\n    return 1\n', False),
+    ('import subprocess\n\n\ndef f():\n    return subprocess.run("ps aux", shell=True, timeout=5)\n', True),
+    ('CMD = "pgrep -f hermes"\n', True),
+    ('def f(n):\n    return f"pgrep -f {n}"\n', True),
+])
+def test_argv_identity_ignores_docstrings(src, flagged):
+    assert bool(_hits("HX003", src)) is flagged
+
+
+_THREAD = "import contextvars\nimport threading\n\n\ndef f(fn):\n{}"
+
+
+@pytest.mark.parametrize("body, flagged", [
+    ("    return threading.Thread(target=contextvars.copy_context().run, args=(fn,))\n", False),
+    ("    ctx = contextvars.copy_context()\n    return threading.Thread(target=ctx.run, args=(fn,))\n", False),
+    ("    ctx = contextvars.copy_context()\n    return threading.Thread(None, ctx.run, args=(fn,))\n", False),
+    ("    return threading.Thread(target=fn)\n", True),
+    ("    ctx = make()\n    return threading.Thread(target=ctx.run, args=(fn,))\n", True),
+    ("    ctx = contextvars.copy_context()\n    ctx = make()\n    return threading.Thread(target=ctx.run)\n", True),
+    ("    return threading.Thread(target=ctx.run, args=(fn,))\n", True),  # ctx from elsewhere
+])
+def test_raw_thread_accepts_a_copied_context(body, flagged):
+    assert bool(_hits("HX012", _THREAD.format(body))) is flagged
+
+
+def test_raw_thread_accepts_from_import_copy_context():
+    src = ("from contextvars import copy_context\nimport threading\n\n\ndef f(fn):\n"
+           "    return threading.Thread(target=copy_context().run, args=(fn,))\n")
+    assert _hits("HX012", src) == []
+
+
+def test_raw_thread_context_from_another_function_is_not_accepted():
+    src = ("import contextvars\nimport threading\n\n\ndef g():\n    ctx = contextvars.copy_context()\n"
+           "    return ctx\n\n\ndef f(fn, ctx):\n    return threading.Thread(target=ctx.run)\n")
+    assert _hits("HX012", src) == [11]

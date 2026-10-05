@@ -8,6 +8,7 @@ allow comment on every hit and stops meaning anything.
 from __future__ import annotations
 
 import ast
+import re
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 
@@ -292,6 +293,14 @@ def _eager(node: ast.AST) -> Iterator[ast.AST]:
         stack.extend(ast.iter_child_nodes(current))
 
 
+def _hermes_home_path(text: str, prefix: str = "") -> bool:
+    """``text`` (after ``prefix``) starts with the exact ``.hermes`` path component, so
+    ``.hermes/x`` matches and ``.hermes-profile-exports`` does not."""
+    if not text.startswith(prefix):
+        return False
+    return re.split(r"[/\\]", text[len(prefix):].lstrip("/\\"), maxsplit=1)[0] == ".hermes"
+
+
 def hardcoded_home(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
     for node in ast.walk(tree):
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
@@ -301,13 +310,13 @@ def hardcoded_home(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
                 and _call_name(node.left).endswith("Path.home")
                 and isinstance(right, ast.Constant)
                 and isinstance(right.value, str)
-                and right.value.strip("/").startswith(".hermes")
+                and _hermes_home_path(right.value)
             ):
                 yield node.lineno
         elif isinstance(node, ast.Call):
             name = _call_name(node)
             arg = _str_arg(node)
-            if arg and arg.startswith("~/.hermes") and name.endswith(("expanduser", "Path")):
+            if arg and _hermes_home_path(arg, "~/") and name.endswith(("expanduser", "Path")):
                 yield node.lineno
 
 
@@ -321,6 +330,9 @@ def new_env_var(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
 
 
 def argv_identity(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
+    # A docstring or bare string statement is prose about the pattern, not a command.
+    prose = {id(n.value) for n in ast.walk(tree)
+             if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)}
     for node in ast.walk(tree):
         if isinstance(node, ast.Compare) and len(node.ops) == 1:
             if isinstance(node.ops[0], (ast.In, ast.NotIn)):
@@ -329,7 +341,7 @@ def argv_identity(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
                 if isinstance(left, ast.Constant) and isinstance(left.value, str):
                     if "cmdline" in target:
                         yield node.lineno
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in prose:
             if any(cmd in node.value for cmd in _SHELL_IDENTITY):
                 yield node.lineno
 
@@ -825,10 +837,45 @@ def elif_ladder(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
             yield node.lineno
 
 
+_COPY_CONTEXT = "contextvars.copy_context"
+
+
+def _context_names(own: list[ast.AST]) -> set[str]:
+    """Names this scope binds only to ``contextvars.copy_context()``."""
+    copied: set[str] = set()
+    targets: set[int] = set()
+    for node in own:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Call):
+            if _call_name(node.value) == _COPY_CONTEXT:
+                names = [t for t in (node.targets if isinstance(node, ast.Assign) else [node.target])
+                         if isinstance(t, ast.Name)]
+                copied.update(t.id for t in names)
+                targets.update(id(t) for t in names)
+    rebound = {n.id for n in own if isinstance(n, ast.Name) and not isinstance(n.ctx, ast.Load)
+               and id(n) not in targets}
+    return copied - rebound
+
+
+def _runs_in_copied_context(call: ast.Call, contexts: set[str]) -> bool:
+    """``Thread(target=<ctx>.run, ...)`` with ``ctx`` a ``copy_context()``: the thread runs
+    in the caller's context, which is what ``spawn_context_thread`` does."""
+    target = next((kw.value for kw in call.keywords if kw.arg == "target"),
+                  call.args[1] if len(call.args) > 1 else None)
+    if not (isinstance(target, ast.Attribute) and target.attr == "run"):
+        return False
+    ctx = target.value
+    if isinstance(ctx, ast.Call):
+        return _call_name(ctx) == _COPY_CONTEXT
+    return isinstance(ctx, ast.Name) and ctx.id in contexts
+
+
 def raw_thread(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and _call_name(node) == "threading.Thread":
-            yield node.lineno
+    for _, _, own in _scopes(tree):
+        contexts = _context_names(own)
+        for node in own:
+            if (isinstance(node, ast.Call) and _call_name(node) == "threading.Thread"
+                    and not _runs_in_copied_context(node, contexts)):
+                yield node.lineno
 
 
 CHECKERS: dict[str, Callable[[ast.Module, Ctx], Iterable[int]]] = {

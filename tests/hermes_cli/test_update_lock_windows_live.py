@@ -358,12 +358,17 @@ def test_a_command_that_would_start_outside_the_job_never_runs(tmp_path):
                     ("working_set", ctypes.c_size_t * 2), ("ActiveProcessLimit", ctypes.c_uint32),
                     ("Affinity", ctypes.c_size_t), ("classes", ctypes.c_uint32 * 2)]
 
+    class _Extended(ctypes.Structure):  # JOBOBJECT_EXTENDED_LIMIT_INFORMATION: the breakaway flags need it
+        _fields_ = [("basic", _Basic), ("io", ctypes.c_uint64 * 6), ("memory", ctypes.c_size_t * 4)]
+
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateJobObjectW.restype = ctypes.c_void_p
     kernel32.SetInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong]
     job = kernel32.CreateJobObjectW(None, None)
-    limits = _Basic(LimitFlags=0x1000)  # JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK
-    assert kernel32.SetInformationJobObject(job, 2, ctypes.byref(limits), ctypes.sizeof(limits))
+    limits = _Extended()
+    limits.basic.LimitFlags = 0x1000  # JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK
+    assert kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)), \
+        ctypes.get_last_error()
     os.set_handle_inheritable(job, True)
     launcher = tmp_path / "join_job.py"
     launcher.write_text(_JOIN_JOB, encoding="utf-8")

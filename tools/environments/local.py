@@ -1076,11 +1076,13 @@ def stop_foreground_scopes() -> None:
     The PID stays in the glob, so profiles sharing one user manager never stop each
     other's commands, and a glob that matches nothing is a no-op (``systemctl stop``
     exits 0). A dead gateway's scopes are swept by ``sweep_dead_foreground_scopes``.
+    The stop is enqueued, not awaited: a SIGTERM-ignoring escapee must not hold gateway
+    shutdown for the stop job's timeout.
     """
     if not _foreground_scope_issued:
         return
     from tools.process_registry import _stop_systemd_unit
-    _stop_systemd_unit(f"{_FOREGROUND_SCOPE_PREFIX}-{os.getpid()}-*.scope")
+    _stop_systemd_unit(f"{_FOREGROUND_SCOPE_PREFIX}-{os.getpid()}-*.scope", no_block=True)
 
 
 class LocalEnvironment(BaseEnvironment):

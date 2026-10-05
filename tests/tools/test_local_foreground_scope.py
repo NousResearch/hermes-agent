@@ -159,11 +159,15 @@ def test_scope_is_stopped_even_when_the_group_kill_raises_and_survives_adoption(
     from tools import terminal_tool_lifecycle
     monkeypatch.setattr(terminal_tool_lifecycle, "_scratch_paths", lambda: [])
     monkeypatch.setattr(local_env, "_foreground_scope_issued", True)
-    stopped.clear()
+    exit_stops: list = []
+    monkeypatch.setattr(process_registry, "_stop_systemd_unit",
+                        lambda unit, **kw: exit_stops.append((unit, kw)) or True)
     terminal_tool_lifecycle.cleanup_all_environments()
-    assert len(stopped) == 1
-    assert fnmatch.fnmatchcase(f"hermes-fg-{os.getpid()}-0123abcd.scope", stopped[0])
-    assert not fnmatch.fnmatchcase("hermes-fg-1-0123abcd.scope", stopped[0])  # another gateway's
+    assert len(exit_stops) == 1
+    glob, kw = exit_stops[0]
+    assert fnmatch.fnmatchcase(f"hermes-fg-{os.getpid()}-0123abcd.scope", glob)
+    assert not fnmatch.fnmatchcase("hermes-fg-1-0123abcd.scope", glob)  # another gateway's
+    assert kw == {"no_block": True}  # enqueued: shutdown never waits out the stop job
 
 
 @pytest.fixture

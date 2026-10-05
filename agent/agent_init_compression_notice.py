@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import suppress
 from typing import Any, Optional
 
-from agent.i18n import render_localized, tl
+from agent.i18n import preload_catalogs, render_localized, tl
 from hermes_constants import get_hermes_home
 
 
@@ -66,6 +66,7 @@ def _record_codex_gpt55_autoraise_notice(autoraise: dict[str, Any]) -> None:
 
 
 def _emit_compression_summary(agent, cs):
+    preload_catalogs()  # status lines render on stream/abort paths; parse catalogs at init, not mid-stream
     # Codex autoraise notice: once per profile/config state (persisted marker; the gateway
     # rebuilds the agent per message). The display gate hides the banner, not the autoraise.
     _autoraise = agent._compression_threshold_autoraised or {}

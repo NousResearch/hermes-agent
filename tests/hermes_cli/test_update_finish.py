@@ -215,6 +215,12 @@ def completion(tmp_path, monkeypatch):
                             restarted_services=[], failed_or_stale_units=[], relaunched_profiles=[],
                             externally_supervised_profiles=[], killed_pids=set())
                     update._restart_gateway_fleet_after_update = restart
+                    if fault == 'interrupt':
+                        verify = update._verify_fleet_after_update
+                        def verify_then_interrupt(*args, **kwargs):
+                            verify(*args, **kwargs)  # closes the run as a success
+                            raise KeyboardInterrupt()
+                        update._verify_fleet_after_update = verify_then_interrupt
                     merge = update._resume_windows_gateways_and_merge_outcome
                     def resume(outcome, token, gateway_mode):
                         assert token == request['windows_resume']
@@ -321,6 +327,21 @@ def test_raising_fleet_restart_after_commit_is_a_followup_not_exit_1(completion)
     owed = {row["step"]: row["reason"] for row in receipt["followups"]}
     assert "systemctl restart timed out" in owed.get("gateway_restart", ""), child.stdout + child.stderr
     assert (home / ".update_exit_code").read_text(encoding="utf-8-sig").strip() == "0"
+
+
+@pytest.mark.platforms("posix")
+def test_interrupt_after_verification_closed_the_run_keeps_gateway_status_0(completion):
+    """Review regression 3: verification already finalized the takeover's run as ``success``; an
+    interrupt landing after it must not rewrite the gateway /update status to 1."""
+    source, home, request, context, result, run = completion
+    request["gateway_mode"] = True
+    request["receipt"]["started_at"] = "2026-10-04T12:00:00+00:00"
+    context.write_text(json.dumps(request), encoding="utf-8")
+    child = run("interrupt")
+    receipt = json.loads((home / "logs/update_receipts/latest.json").read_text(encoding="utf-8-sig"))
+    assert receipt["update_id"] == request["update_id"]
+    assert receipt["outcome"] == "success", child.stdout + child.stderr
+    assert (home / ".update_exit_code").read_text(encoding="utf-8-sig").strip() == "0", child.stdout + child.stderr
 
 
 @pytest.mark.platforms("posix")

@@ -218,3 +218,69 @@ def test_followup_line_is_the_one_both_desktop_handoffs_parse(tmp_path, monkeypa
     pattern = re.search(r"\[regex\]::Matches\(\(\$res\.Output -join \"`n\"\), \"([^\"]+)\"\)",
                         (scripts / "windows.ps1").read_text(encoding="utf-8")).group(1)
     assert [m.group(1) for m in re.finditer(pattern, out)] == ["gateway_restart", "windows_resume"]
+
+
+def test_interrupt_after_the_run_closed_as_success_never_tells_the_gateway_1(tmp_path, monkeypatch):
+    """Review regression 3, the ``cmd_update`` boundary: once this run's receipt says ``success``,
+    an interrupt escaping afterwards must not write 1 to the gateway /update status."""
+    from types import SimpleNamespace
+    from hermes_cli import main, update_cmd
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
+    monkeypatch.setattr(main, "_install_hangup_protection", lambda **kw: None)
+    monkeypatch.setattr(main, "_finalize_update_output", lambda state: None)
+
+    def committed_then_interrupted(args, gateway_mode):
+        update_receipt.begin_update_receipt()
+        update_receipt.finalize_update_receipt("success")
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(update_cmd, "_cmd_update_impl", committed_then_interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        main.cmd_update(SimpleNamespace(gateway=True))
+    assert _latest(tmp_path)["outcome"] == "success"
+    assert (tmp_path / ".update_exit_code").read_text(encoding="utf-8").strip() == "0"
+
+
+def test_a_failure_before_the_run_closed_still_tells_the_gateway_1(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from hermes_cli import main, update_cmd
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
+    monkeypatch.setattr(main, "_install_hangup_protection", lambda **kw: None)
+    monkeypatch.setattr(main, "_finalize_update_output", lambda state: None)
+
+    def interrupted_while_open(args, gateway_mode):
+        update_receipt.begin_update_receipt()
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(update_cmd, "_cmd_update_impl", interrupted_while_open)
+    with pytest.raises(KeyboardInterrupt):
+        main.cmd_update(SimpleNamespace(gateway=True))
+    assert (tmp_path / ".update_exit_code").read_text(encoding="utf-8").strip() == "1"
+
+
+def test_completion_child_interrupted_after_verification_answers_its_success(tmp_path, monkeypatch):
+    """Review regression 3, the selected completion child: verification finalized ``success`` and
+    then an interrupt landed. Exit, result and gateway status follow the receipt (0), not 130/1."""
+    from hermes_cli import update_completion
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    update_receipt.begin_update_receipt()
+    data = dict(update_receipt._current.get().data)
+    update_receipt._current.set(None)
+
+    def verified_then_interrupted(request):
+        update_receipt.finalize_update_receipt("success")
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(update_completion, "_complete_selected", verified_then_interrupted)
+    request = {"receipt": data, "pm_receipt": None, "gateway_mode": True, "windows_resume": None}
+    result_path = tmp_path / "result.json"
+    assert update_completion._finish(request, result_path) == 0
+    answer = json.loads(result_path.read_text(encoding="utf-8"))
+    assert answer["exit_code"] == 0 and answer["receipt"]["outcome"] == "success"
+    assert not (tmp_path / ".update_exit_code").exists() or \
+        (tmp_path / ".update_exit_code").read_text(encoding="utf-8").strip() == "0"

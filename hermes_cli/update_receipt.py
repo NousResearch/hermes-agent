@@ -58,16 +58,40 @@ COMMAND_BOUNDARY_STOP_REASON = "completed at command boundary"
 _current: contextvars.ContextVar[Optional["UpdateReceipt"]] = contextvars.ContextVar(
     "update_receipt_current", default=None
 )
+#: The terminal outcome of the run the enclosing command scope finalized or adopted (from a
+#: completion child): ``committed_success`` answers the command boundary's gateway status from it.
+_scope_terminal: contextvars.ContextVar[Optional[dict[str, Any]]] = contextvars.ContextVar(
+    "update_receipt_scope_terminal", default=None
+)
 
 
 @contextmanager
 def update_receipt_scope():
     """Keep the command's finalization guard away from an enclosing update."""
     token = _current.set(None)
+    terminal = _scope_terminal.set({})
     try:
         yield
     finally:
+        _scope_terminal.reset(terminal)
         _current.reset(token)
+
+
+def adopt_terminal_receipt(data: Any) -> None:
+    """A completion child finalized this command's run: its terminal outcome is this scope's too."""
+    cell = _scope_terminal.get()
+    if cell is not None and isinstance(data, dict) and data.get("finished_at"):
+        cell["outcome"] = data.get("outcome")
+
+
+def committed_success() -> bool:
+    """True when this command's run is closed and its receipt says ``success`` (C3).
+
+    The gateway ``/update`` status written at the command boundary follows the receipt: an
+    interrupt or error that escapes after the run closed as a success never reports it failed.
+    """
+    cell = _scope_terminal.get()
+    return _current.get() is None and bool(cell) and cell.get("outcome") == "success"
 
 
 def current_correlation_id() -> Optional[str]:
@@ -475,6 +499,7 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
         # The terminal facts exist before the store is touched; a store that refuses the write
         # (after the commit point) must not erase them for this process's own caller.
         _FINALIZED[str(receipt.data.get("update_id"))] = receipt.data
+        adopt_terminal_receipt(receipt.data)
         if fleet is not None:
             receipt.data["fleet"] = fleet
         # Manual serve restart obligations outlive one receipt rotation: carry the previous

@@ -167,12 +167,15 @@ def main(context: Path, result: Path) -> int:
         update_receipt.record_step("historical_completion", False, str(exc))
         print(f"Update completion failed: {exc}", file=sys.stderr, flush=True)
     finally:
+        terminal = update_receipt.finalized_receipt(request["update_id"]) or {}
         if code and request.get("gateway_mode"):
-            # Even an application import failure must wake the gateway watcher.
+            # Even an application import failure must wake the gateway watcher. A run that already
+            # closed as a success (an interrupt after verification) stays 0 (review regression 3).
             from hermes_constants import get_hermes_home
             from hermes_cli.runtime_state import _atomic_bytes
 
-            _atomic_bytes(get_hermes_home() / ".update_exit_code", b"1")
+            _atomic_bytes(get_hermes_home() / ".update_exit_code",
+                          b"0" if terminal.get("outcome") == "success" else b"1")
         if restarting and not cli_started:
             # Startup failed before the replacement command could own a
             # receipt. Preserve the original handoff, just like preparation.

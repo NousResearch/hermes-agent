@@ -793,6 +793,14 @@ def _complete_source_update(request: dict | None) -> None:
         result, lost = settle_lost_completion(
             request, result.get("error") or f"the completion process exited {result['exit_code']}"), True
     _accept_completion_pm_receipt(result.get("pm_receipt"), request["receipt"]["update_id"])
+    if result.get("receipt") is not None:
+        # The child closed the run: drop the stale pre-child context before anything below can
+        # write it (a later follow-up amends the terminal archive), and let the command boundary
+        # answer the gateway status from the receipt (C3, review regression 3).
+        _completion_receipt.adopt_terminal_receipt(result["receipt"])
+        current = _completion_receipt._current.get()
+        if current is not None:
+            _completion_receipt._current.reset(current.current_token)
     token = request["windows_resume"]
     if token is not None and result.get("windows_resume") is not None:
         resumed = dict(result["windows_resume"])
@@ -810,10 +818,6 @@ def _complete_source_update(request: dict | None) -> None:
             record_followup("windows_resume", reason)
             amend_terminal_followup(request["receipt"]["update_id"], "windows_resume", reason)
         _settle_windows_resume(request)
-    if result.get("receipt") is not None:
-        current = _completion_receipt._current.get()
-        if current is not None:
-            _completion_receipt._current.reset(current.current_token)
     if result["exit_code"]:
         raise SystemExit(result["exit_code"])
     if lost:

@@ -454,9 +454,6 @@ def _finish(request: dict, result_path: Path) -> int:
         _report_unbuilt_desktop(request)
         update_receipt.record_followup("completion", f"{type(exc).__name__}: {exc}")
     finally:
-        if code and request["gateway_mode"]:
-            from hermes_cli.update_cmd import _write_gateway_update_exit_code
-            _write_gateway_update_exit_code(False)
         # The new interpreter owns recovery too. The original parent's atexit
         # token is updated from the response; it acts only if this process dies.
         try:
@@ -469,8 +466,13 @@ def _finish(request: dict, result_path: Path) -> int:
                 update_receipt.amend_terminal_followup(request["receipt"]["update_id"], "windows_resume", step_reason)
         update_receipt.finalize_pending_update_receipt(code, reason)
         terminal_receipt = _read_terminal_receipt(request)
+        if terminal_receipt and terminal_receipt.get("outcome") == "success":
+            code = 0  # an interrupt that landed after verification closed the run (review regression 3)
+        if code and request["gateway_mode"]:
+            from hermes_cli.update_cmd import _write_gateway_update_exit_code
+            _write_gateway_update_exit_code(False)
         if not terminal_receipt:
-            code = code or 1
+            code = code or 1  # the parent settles a lost result (settle_lost_completion)
         _write_json(result_path, {
             "schema": 1, "update_id": request["receipt"]["update_id"], "exit_code": code,
             "receipt": terminal_receipt, "windows_resume": request["windows_resume"],

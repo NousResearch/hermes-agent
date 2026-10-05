@@ -7,7 +7,7 @@ Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO
 import logging
 import sys
 
-from agent.i18n import t
+from agent.i18n import render_localized, t
 from agent.session_activity import ActivityProvenance
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
@@ -76,7 +76,7 @@ class StatusOutputMixin:
         from gateway.warning_notifications import is_warning_status
         try:
             if not is_warning_status(kind, message) or self._warning_presentation_enabled():
-                self._vprint(f"{self.log_prefix}{message}", force=True)
+                self._vprint(f"{self.log_prefix}{render_localized(message)}", force=True)
         except Exception:
             pass
         self._call_callback("status_callback", kind, message, origin=origin)

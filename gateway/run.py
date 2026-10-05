@@ -31,7 +31,7 @@ from datetime import datetime
 from typing import Callable, Dict, Optional, Any, List, Tuple, cast
 
 from agent.async_utils import safe_schedule_threadsafe
-from agent.i18n import t
+from agent.i18n import render_localized, t
 from agent.conversation_compression import (
     COMPACTION_DONE_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_STATUS, COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
@@ -745,14 +745,14 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return None
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
-    return text
+    return _redact_gateway_user_facing_secrets(str(render_localized(message)).strip())
 
 
 def render_notice_line(notice) -> str:
     """Render an AgentNotice to a single plaintext line (messaging has no status bar: one-shot push).
 
     The level glyph is already baked into the text (prepending would DOUBLE it); malformed/empty -> ""."""
-    return str(getattr(notice, "text", "") or "").strip()
+    return str(render_localized(getattr(notice, "text", "")) or "").strip()
 
 
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):

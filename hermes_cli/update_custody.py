@@ -8,7 +8,7 @@ can still write the checkout, and must NOT leak into processes that outlive the 
   forks a detached gc/maintenance child that would inherit (POSIX) or outlive (Windows) the lock.
 * POSIX: the lock fd is inherited ONLY by git commands that mutate the worktree, index or refs
   locally (:data:`LOCAL_MUTATORS`, run with ``core.fsmonitor=false`` so no fsmonitor daemon
-  starts under them, and with no credential helper). Network/credential commands (fetch,
+  starts under them, with no credential helper and no repository hooks). Network/credential commands (fetch,
   ls-remote, credential) and readers run without it: a ``git credential-cache--daemon`` they
   start never holds the checkout. A partial clone's mutator would lazily fetch the objects a move
   needs as a child holding the fd (and start the daemon under it), so before a move the objects
@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -50,8 +51,11 @@ logger = logging.getLogger(__name__)
 GIT_NO_DETACH = ("-c", "gc.autoDetach=false", "-c", "maintenance.auto=false")
 # Local mutators only (they hold the lock fd): never start an fsmonitor daemon under it, and no
 # credential helper — a promisor lazy fetch under a mutator would start `git
-# credential-cache--daemon` holding the fd for its lifetime (900 s by default, m3).
-_MUTATOR_CONFIG = ("-c", "core.fsmonitor=false", "-c", "credential.helper=")
+# credential-cache--daemon` holding the fd for its lifetime (900 s by default, m3). No repository
+# hooks either (F1): a hook inherits the fd, and one that backgrounds a process (a post-merge
+# daemon) kept a completed update's checkout locked until it exited. Per command only: the
+# repository's own hook configuration is untouched.
+_MUTATOR_CONFIG = ("-c", "core.fsmonitor=false", "-c", "credential.helper=", "-c", f"core.hooksPath={os.devnull}")
 
 # git subcommands that write the worktree, the index or refs on THIS machine. Only these inherit
 # the checkout lock fd: if the updater dies mid-command, the checkout stays locked until git exits.

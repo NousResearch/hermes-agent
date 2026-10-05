@@ -111,6 +111,42 @@ def test_lock_fd_reaches_local_mutators_only(repo, tmp_path, monkeypatch):
     assert "yes" in out_stash.read_text(encoding="utf-8-sig").split(), "a local mutator's child lost the checkout lock"
 
 
+@pytest.mark.platforms("posix")
+@pytest.mark.live_system_guard_bypass  # kills the orphaned hook child it planted
+def test_a_background_hook_never_keeps_a_completed_update_locked(repo, tmp_path):
+    """F1: a local mutator holds the lock fd, and a repository hook it ran inherited that fd; a
+    hook that backgrounds a daemon kept the checkout locked after the merge returned and the
+    owner released, so the next update was refused. Once the owner releases, a contender acquires."""
+    import signal
+
+    base = _git(repo, "rev-parse", "HEAD")
+    (repo / "f.txt").write_text("two\n", encoding="utf-8")
+    _git(repo, "commit", "-qam", "two")
+    target = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "reset", "-q", "--hard", base)
+    pid_file = tmp_path / "hook-child.pid"
+    hook = repo / ".git" / "hooks" / "post-merge"
+    hook.write_text(f"#!/bin/sh\nsleep 60 </dev/null >/dev/null 2>&1 &\necho $! > {pid_file}\n", encoding="utf-8")
+    hook.chmod(0o755)
+    from hermes_cli.update_custody import run_git
+
+    lock = ul.UpdateLock(path=tmp_path / "marker", install_root=repo)
+    assert lock.acquire()
+    try:
+        merged = run_git(["git"], ["merge", "--ff-only", target], cwd=repo, capture_output=True, text=True, timeout=30)
+        assert merged.returncode == 0, merged.stderr
+    finally:
+        lock.release()
+    contender = ul.UpdateLock(path=tmp_path / "next-marker", install_root=repo)
+    try:
+        assert (repo / "f.txt").read_text(encoding="utf-8") == "two\n"
+        assert contender.acquire(), f"a background git hook kept the completed update's checkout locked: {contender.holder}"
+    finally:
+        contender.release()
+        if pid_file.exists():
+            os.kill(int(pid_file.read_text(encoding="utf-8")), signal.SIGKILL)  # windows-footgun: ok - POSIX-only test
+
+
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="parent-death signal is Linux-only")
 def test_network_git_dies_with_its_killed_owner(repo, tmp_path):
     """The fd-less fetch must not keep rewriting refs after the owner died (the next owner's lease)."""

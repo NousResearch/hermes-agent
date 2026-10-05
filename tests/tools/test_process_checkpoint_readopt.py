@@ -201,7 +201,7 @@ class TestCheckpointReadopt:
                 "tools.process_registry.CHECKPOINT_PATH", checkpoint
             )
             monkeypatch.setattr(
-                "tools.process_registry._stop_systemd_unit",
+                "tools.process_registry_systemd._stop_systemd_unit",
                 lambda unit: stopped.append(unit) or True,
             )
 

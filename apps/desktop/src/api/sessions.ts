@@ -464,7 +464,7 @@ export function getSessionMessages(
   id: string,
   profile?: ProfileScope,
   page: { limit?: number; offset?: number; order?: 'latest' | 'oldest'; includeCompacted?: boolean } = {},
-  options: { passive?: boolean } = {}
+  options: { includeCompacted?: boolean; passive?: boolean } = {}
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
 
@@ -512,7 +512,7 @@ export const LATEST_SESSION_MESSAGES_LIMIT = 120
 export function getLatestSessionMessages(
   id: string,
   profile?: ProfileScope,
-  options: { passive?: boolean } = {}
+  options: { includeCompacted?: boolean; passive?: boolean } = {}
 ): Promise<SessionMessagesResponse> {
   // Key pagination by the effective request owner, not the caller's spelling
   // (ambient, profile string, or explicit pin). Otherwise refreshes create
@@ -532,7 +532,7 @@ export function getLatestSessionMessages(
     {
       limit: LATEST_SESSION_MESSAGES_LIMIT,
       order: 'latest',
-      includeCompacted: true
+      includeCompacted: options.includeCompacted ?? true
     },
     options
   ).then(async page => {

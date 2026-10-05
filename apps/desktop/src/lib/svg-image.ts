@@ -10,6 +10,17 @@ function isPercentLength(raw: string | null): boolean {
   return Boolean(raw?.trim().endsWith('%'))
 }
 
+// Mermaid — even at securityLevel 'strict' — serialises label line breaks as
+// bare HTML `<br>` tags (HTML serialisation never writes the slash). An XML
+// parser rejects the unterminated tag, so the data: URI the renderer builds
+// never loads and the diagram shows a broken image (#133089). Self-close HTML
+// void tags up front; tags that already carry a slash stay byte-identical.
+const VOID_TAG_PATTERN = /<(br|hr|img|input|wbr)((?:\s[^<>]*?)?)\/?>/g
+
+export function selfCloseVoidTags(svg: string): string {
+  return svg.replace(VOID_TAG_PATTERN, (_match, tag: string, attrs: string) => `<${tag}${attrs}/>`)
+}
+
 function viewBoxSize(el: Element): { height: number; width: number } | null {
   const [, , vbW, vbH] = (el.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number)
 

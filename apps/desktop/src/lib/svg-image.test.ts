@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
-import { normalizeSvgSize, svgSize } from './svg-image'
+import { normalizeSvgSize, selfCloseVoidTags, svgSize } from './svg-image'
 
 // Real mermaid 11.16 render output shape (verified against the installed
 // package): width="100%" + inline style="max-width: Npx" + viewBox.
 const MERMAID_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="100%" class="flowchart" style="max-width: 260.34375px;" viewBox="0 0 260.34375 70" role="graphics-document document"><g><rect x="0" y="0" width="260.34375" height="70" fill="#eee"/></g></svg>`
+
+// Mermaid serialises a label's <br/> as a bare HTML <br> inside a
+// foreignObject label — the shape that breaks XML parsing (#133089).
+const MERMAID_BR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 260 70"><foreignObject><div xmlns="http://www.w3.org/1999/xhtml" class="label"><p><span class="nodeLabel">ice point<br>limit-up</span></p></div></foreignObject></svg>`
 
 describe('svgSize', () => {
   it('reads explicit pixel width/height', () => {
@@ -62,5 +66,43 @@ describe('normalizeSvgSize', () => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="100%"><rect/></svg>'
 
     expect(normalizeSvgSize(svg)).toBe(svg)
+  })
+})
+
+describe('selfCloseVoidTags', () => {
+  it('self-closes bare <br> tags so the svg parses as XML (#133089)', () => {
+    const out = selfCloseVoidTags(MERMAID_BR_SVG)
+
+    expect(out).toContain('ice point<br/>limit-up')
+
+    const root = new DOMParser().parseFromString(out, 'image/svg+xml').documentElement
+
+    expect(root.tagName).toBe('svg')
+  })
+
+  it('leaves already-closed void tags byte-identical', () => {
+    const svg = '<svg><text>ice point<br/>limit-up</text><img src="x.png"/><hr /></svg>'
+
+    expect(selfCloseVoidTags(svg)).toBe(svg)
+  })
+
+  it('self-closes a void tag that carries attributes', () => {
+    const out = selfCloseVoidTags('<svg><br style="font-weight: bold"></svg>')
+
+    expect(out).toBe('<svg><br style="font-weight: bold"/></svg>')
+  })
+
+  it('does not touch longer tags that start with the same letters', () => {
+    const svg = '<svg><break>not a void tag</break><inputx/></svg>'
+
+    expect(selfCloseVoidTags(svg)).toBe(svg)
+  })
+
+  it('runs before normalizeSvgSize so the size pass sees a parsable svg', () => {
+    const out = normalizeSvgSize(selfCloseVoidTags(MERMAID_BR_SVG))
+
+    expect(out).toContain('width="260"')
+    expect(out).toContain('height="70"')
+    expect(out).toMatch(/ice point<br\s*\/>limit-up/)
   })
 })

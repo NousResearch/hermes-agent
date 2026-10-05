@@ -41,6 +41,13 @@ approval:
     minute_other: "{count} perc"
     second_one: "{count} másodperc"
     second_other: "{count} másodperc"
+  elicitation:
+    mcp_untrusted_command: "A(z) '{tool}' MCP-eszköz a NEM MEGBÍZHATÓ '{server}' szerveren futni szeretne. Ez az eszköz írni is képes (nincs readOnlyHint=true annotációja), és módosíthatja a külső állapotot."
+    mcp_untrusted_description: "A(z) '{server}' szerver 'trust: untrusted' beállítással van konfigurálva. Hagyd jóvá a(z) '{tool}' egyszeri futtatásához, vagy utasítsd el a blokkolásához."
+    mcp_untrusted_title: "A(z) '{server}' MCP-szerver kérdez"
+    payment_fill_command: "A(z) '{label}' bankkártya kitöltése itt: {origin}"
+    payment_fill_description: "Az ügynök be szeretné írni a mentett kártyaadataidat erre a fizetési oldalra. A kártyaszám és a CVC soha nem kerül a beszélgetésbe. Csak akkor hagyd jóvá, ha itt szándékozol fizetni."
+    payment_fill_title: "Jóváhagyod a bankkártya kitöltését?"
 gateway:
   approval_expired: "⚠️ A jóváhagyás lejárt (az ügynök már nem vár). Kérd meg az ügynököt, hogy próbálja újra."
   draining: "⏳ {count} aktív ügynök befejezésére várunk az újraindítás előtt..."
@@ -367,6 +374,16 @@ gateway:
     kept_oversize: "↷ Megtartva (túl nagy az ellenőrzőpontokhoz, nincs tárolt másolat, amire vissza lehetne állni): {files}"
     failed_deletes: "⚠️ Nem sikerült eltávolítani (a helyén maradt): {files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "Ehhez a könyvtárhoz nem létezik ellenőrzőpont"
+    err_not_found: "A(z) '{hash}' ellenőrzőpont nem található"
+    err_changed_files: "Nem sikerült kiszámítani a módosult fájlokat: {err}"
+    err_diff_failed: "Nem sikerült diffet készíteni"
+    err_inspect_checkpoint: "Nem sikerült megvizsgálni az ellenőrzőpontot: {err}"
+    err_inspect_selection: "Nem sikerült megvizsgálni a visszaállítási kijelölést: {err}"
+    err_selection_empty: "A visszaállítási kijelölés egyetlen fájlra sem illeszkedett az ellenőrzőpontban: {path}"
+    err_nested_repos: "Az ellenőrzőpont nem rögzített, beágyazott git-tárolókat tartalmaz ({paths}); a visszaállítás nem történt meg"
+    err_safe_plan_failed: "A biztonságos visszaállítási terv sikertelen"
+    err_restore_failed: "A visszaállítás sikertelen: {err}"
   diff:
     not_enabled: "A checkpointok nincsenek engedélyezve, így nincs munkamenet-alapvonal.\nEngedélyezd a config.yaml-ban:\n```\ncheckpoints:\n  enabled: true\n```\nA sima /diff továbbra is működik — közvetlenül a gitet használja."
     no_changes: "Nincs változás."
@@ -654,6 +671,7 @@ gateway:
     owner_hint_env: "add hozzá az azonosítót a {env_var} változóhoz a {home}/.env fájlban, és indítsd újra az átjárót"
     owner_hint_generic: "add hozzá az azonosítót a platform engedélyezett felhasználóinak listájához, és indítsd újra az átjárót"
     owner_notice: "Eldobtam egy ismeretlen {platform} felhasználó ({who}) üzenetét. Ha te vagy az, vagy valaki, akiben megbízol, {allowlist}; vagy állítsd be az `unauthorized_dm_behavior: pair` értéket a(z) {platform} platformhoz a {home}/config.yaml fájlban, hogy az ismeretlen feladók párosítókódot kapjanak, amit a `hermes pairing approve {platform} <code>` paranccsal hagyhatsz jóvá."
+    decline_default: "Szia! Személyes asszisztens vagyok, és csak a tulajdonosommal beszélgethetek, ezért közvetlenül nem tudok segíteni neked. Bocsi!"
   picker:
     page_info: " ({start}–{end} / {total})"
   clarify:
@@ -779,6 +797,7 @@ gateway:
     detail_new: "Ez új munkamenetet indít, és eldobja a jelenlegi beszélgetési előzményeket."
     detail_undo_one: "Ez eltávolítja az utolsó felhasználó/asszisztens üzenetváltást az előzményekből."
     detail_undo_many: "Ez eltávolítja az utolsó {count} felhasználói kört az előzményekből."
+    handler_error: "❌ Hiba a megerősítés feldolgozásakor: {error}"
   hooks:
     command_blocked: "A `/{command}` parancsot egy hook blokkolta."
   prompt_command:
@@ -813,6 +832,9 @@ gateway:
     info_context: "◆ Kontextus: {tokens} token ({source})"
     info_acting_model: "◆ Végrehajtó modell (a futást ez alapján számlázzák): {provider}:{model}"
     info_endpoint: "◆ Végpont: {url}"
+    context_source_config: "konfiguráció"
+    context_source_default: "alapértelmezett — felülíráshoz állítsd be a model.context_length értéket a konfigurációban"
+    context_source_detected: "észlelt"
   proxy:
     requires_aiohttp: "⚠️ A proxy módhoz aiohttp szükséges. Futtasd: {hint}"
     url_missing: "⚠️ A proxy URL nincs beállítva (GATEWAY_PROXY_URL vagy gateway.proxy_url)"
@@ -839,6 +861,7 @@ gateway:
     task_status_error: "hiba"
     task_line: "- {title} - {status}"
     task_card_title: "A Hermes dolgozik"
+    stall_notice: "⚠️ Úgy tűnik, elakadtam ({minutes} perce nincs aktivitás). Küldd a /stop parancsot az aktuális feladat megszakításához, vagy a /new parancsot új beszélgetés indításához."
   pairing:
     validity_hour: "{hours} óra"
     validity_hours: "{hours} óra"
@@ -979,6 +1002,19 @@ gateway:
       stale_code_hint: " Valószínű ok: az átjáró elavult kódot futtat (indításkor: {boot_rev}, a lemezen: {disk_rev}) — a javításhoz futtasd: `hermes gateway restart`."
       quota_hold: "\nA szolgáltató használati ablaka nagyjából {hours} órára lezárult. Ez a feladat eddig várakozik: {until}, utána az első biztonságos alkalommal folytatódik; amíg a szolgáltató nem érhető el, további figyelmeztetést nem küldünk."
     registration_pending: "A(z) '{label}' cron-feladat mentve, de a külső ütemezőnél még nem sikerült regisztrálni. A feladat megmarad — ne hozd létre újra; a regisztráció újrapróbálásához szüneteltesd és folytasd, vagy szerkeszd (pl. a /cron paranccsal)."
+    output_truncated: "\n\n... [csonkolva, a teljes kimenet ide mentve: {path}]"
+  recovered_reply:
+    restart: "♻️ Helyreállított válasz — az átjáró kézbesítés közben újraindult, így ez duplikátum lehet:"
+    reconnect: "♻️ Helyreállított válasz — az üzenetküldő platform újracsatlakozott, miután az eredeti kézbesítés sikertelen volt, így ez duplikátum lehet:"
+    flood: "♻️ Helyreállított válasz — az üzenetküldő platform sebességkorlátja elutasította az eredetit, így egy része már fentebb megérkezhetett:"
+  subagent:
+    goal: " („{goal}”)"
+    after: " {elapsed} után"
+    duration_min: "{n} perc"
+    duration_sec: "{n} mp"
+    reason: ": {reason}"
+    timed_out: "⚠️ Az alügynök{goal}{after} időtúllépés miatt befejezés nélkül leállt. Nélküle folytatom; kérd, hogy próbáljam újra, vagy növeld a delegation.child_timeout_seconds értékét a config.yaml-ben, ha ezek a feladatok jogosan tartanak tovább."
+    failed: "⚠️ Az alügynök{goal}{after} hibával leállt{reason}. Részletek: /agents, vagy kérd, hogy egy kisebb feladattal próbáljam újra."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Egyéb"

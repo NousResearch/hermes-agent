@@ -41,6 +41,13 @@ approval:
     minute_other: "{count} nóiméad"
     second_one: "{count} soicind"
     second_other: "{count} soicind"
+  elicitation:
+    mcp_untrusted_command: "Tá an uirlis MCP '{tool}' ar an bhfreastalaí NEAMHIONTAOFA '{server}' ag iarraidh rith. Is féidir leis an uirlis seo scríobh (níl an nóta readOnlyHint=true aici) agus d'fhéadfadh sí staid sheachtrach a athrú."
+    mcp_untrusted_description: "Tá an freastalaí '{server}' cumraithe le 'trust: untrusted'. Ceadaigh chun '{tool}' a rith uair amháin, nó diúltaigh chun cosc a chur air."
+    mcp_untrusted_title: "Tá an freastalaí MCP '{server}' ag iarraidh ceada"
+    payment_fill_command: "Líon an cárta íocaíochta '{label}' ar {origin}"
+    payment_fill_description: "Tá an gníomhaire ag iarraidh sonraí do chárta sábháilte a chur isteach ar an leathanach íocaíochta seo. Ní théann uimhir an chárta ná an CVC isteach sa chomhrá riamh. Ná ceadaigh ach más mian leat íoc anseo."
+    payment_fill_title: "An cárta íocaíochta a líonadh?"
 gateway:
   approval_expired: "⚠️ Tá an cead imithe in éag (níl an gníomhaire ag fanacht níos mó). Iarr ar an ngníomhaire iarracht eile a dhéanamh."
   draining: "⏳ Ag fanacht le {count} gníomhaire(í) gníomhach roimh atosú..."
@@ -364,6 +371,16 @@ gateway:
     kept_oversize: "↷ Coinnithe (ró-mhór do sheicphointí, níl aon chóip stóráilte le filleadh uirthi): {files}"
     failed_deletes: "⚠️ Níorbh fhéidir a bhaint (fágtha ina áit): {files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "Níl aon seicphointe ann don eolaire seo"
+    err_not_found: "Níor aimsíodh an seicphointe '{hash}'"
+    err_changed_files: "Níorbh fhéidir na comhaid athraithe a ríomh: {err}"
+    err_diff_failed: "Níorbh fhéidir an diff a ghiniúint"
+    err_inspect_checkpoint: "Níorbh fhéidir an seicphointe a iniúchadh: {err}"
+    err_inspect_selection: "Níorbh fhéidir an rogha aischurtha a iniúchadh: {err}"
+    err_selection_empty: "Níor mheaitseáil an rogha aischurtha aon chomhad sa seicphointe: {path}"
+    err_nested_repos: "Tá stórtha git neadaithe sa seicphointe nár gabhadh ({paths}); níor rinneadh an rollback"
+    err_safe_plan_failed: "Theip ar an bplean aischurtha sábháilte"
+    err_restore_failed: "Theip ar an aischur: {err}"
   diff:
     not_enabled: "Níl seicphointí cumasaithe, mar sin níl aon bhonnlíne seisiúin ann.\nCumasaigh in config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nOibríonn /diff simplí fós — úsáideann sé git go díreach."
     no_changes: "Gan athruithe."
@@ -644,6 +661,7 @@ gateway:
     owner_hint_env: "cuir an ID le {env_var} i {home}/.env agus atosaigh an gateway"
     owner_hint_generic: "cuir an ID le liosta úsáideoirí ceadaithe an ardáin seo agus atosaigh an gateway"
     owner_notice: "Caitheadh i dtraipisí teachtaireacht ó úsáideoir {platform} anaithnid {who}. Más tú féin é nó duine a bhfuil muinín agat as, {allowlist}; nó socraigh `unauthorized_dm_behavior: pair` do {platform} i {home}/config.yaml sa chaoi go bhfaighidh seoltóirí anaithnide cód péireála ar féidir leat é a cheadú le `hermes pairing approve {platform} <code>`."
+    decline_default: "Dia duit! Is cúntóir pearsanta mé agus ní féidir liom comhrá a dhéanamh ach le m'úinéir, mar sin ní féidir liom cabhrú leat go díreach. Tá brón orm!"
   picker:
     page_info: " ({start}–{end} as {total})"
   clarify:
@@ -769,6 +787,7 @@ gateway:
     detail_new: "Tosaíonn sé seo seisiún úr agus caitheann sé stair an chomhrá reatha i dtraipisí."
     detail_undo_one: "Baineann sé seo an malartú úsáideora/cúntóra is déanaí den stair."
     detail_undo_many: "Baineann sé seo na {count} seal úsáideora is déanaí den stair."
+    handler_error: "❌ Earráid agus an dearbhú á láimhseáil: {error}"
   hooks:
     command_blocked: "Cuireadh bac ar an ordú `/{command}` le crúca."
   prompt_command:
@@ -801,6 +820,9 @@ gateway:
     info_context: "◆ Comhthéacs: {tokens} comhartha ({source})"
     info_acting_model: "◆ Samhail ghníomhach (billeáilte don rith): {provider}:{model}"
     info_endpoint: "◆ Críochphointe: {url}"
+    context_source_config: "cumraíocht"
+    context_source_default: "réamhshocrú — socraigh model.context_length sa chumraíocht chun é a shárú"
+    context_source_detected: "braite"
   proxy:
     requires_aiohttp: "⚠️ Teastaíonn aiohttp le mód seachfhreastalaí. Rith: {hint}"
     url_missing: "⚠️ Níl URL an tseachfhreastalaí cumraithe (GATEWAY_PROXY_URL nó gateway.proxy_url)"
@@ -827,6 +849,7 @@ gateway:
     task_status_error: "earráid"
     task_line: "- {title} - {status}"
     task_card_title: "Tá Hermes ag obair"
+    stall_notice: "⚠️ Is cosúil go bhfuil mé i bhfostú (gan aon ghníomhaíocht le {minutes} nóim). Seol /stop chun an tasc reatha a chealú, nó /new chun comhrá úr a thosú."
   pairing:
     validity_hour: "{hours} uair an chloig"
     validity_hours: "{hours} uair an chloig"
@@ -965,6 +988,19 @@ gateway:
       stale_code_hint: " Cúis dhóchúil: tá an gateway ag rith cód as dáta (tosaithe ar {boot_rev}, tá an diosca ag {disk_rev}) — rith `hermes gateway restart` chun é a réiteach."
       quota_hold: "\nTá fuinneog úsáide an tsoláthraí dúnta ar feadh thart ar {hours} uair an chloig. Coinnítear an tasc seo siar go dtí {until} agus atosóidh sé ag an gcéad deis shábháilte ina dhiaidh sin; ní sheolfar a thuilleadh rabhadh fad nach bhfuil an soláthraí ar fáil."
     registration_pending: "Sábháladh an tasc cron '{label}', ach níorbh fhéidir é a chlárú leis an sceidealóir seachtrach fós. Coinníodh an tasc — ná cruthaigh arís é; cuir ar sos/atosaigh nó cuir in eagar é (m.sh. trí /cron) chun an clárú a thriail arís."
+    output_truncated: "\n\n... [giorraithe, aschur iomlán sábháilte i {path}]"
+  recovered_reply:
+    restart: "♻️ Freagra aisghafa — atosaíodh an gateway le linn an tseachadta, mar sin d'fhéadfadh gur dúblach é seo:"
+    reconnect: "♻️ Freagra aisghafa — d'athcheangail an t-ardán teachtaireachtaí tar éis don seachadadh bunaidh teip, mar sin d'fhéadfadh gur dúblach é seo:"
+    flood: "♻️ Freagra aisghafa — dhiúltaigh teorainn ráta an ardáin teachtaireachtaí don bhunleagan, mar sin d'fhéadfadh go bhfuil cuid de tagtha thuas cheana féin:"
+  subagent:
+    goal: " — \"{goal}\""
+    after: " tar éis {elapsed}"
+    duration_min: "{n} nóim"
+    duration_sec: "{n} soic"
+    reason: ": {reason}"
+    timed_out: "⚠️ Chuaigh an fo-ghníomhaire thar am{goal}{after} gan críochnú. Leanfaidh mé ar aghaidh gan é; iarr orm é a thriail arís, nó ardaigh delegation.child_timeout_seconds in config.yaml más gá níos mó ama go dlisteanach do na tascanna seo."
+    failed: "⚠️ Theip ar an bhfo-ghníomhaire{goal}{after}{reason}. Sonraí: /agents, nó iarr orm triail eile a bhaint as le tasc níos lú."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Eile"

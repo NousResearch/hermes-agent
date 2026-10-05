@@ -41,6 +41,13 @@ approval:
     minute_other: "{count} 分鐘"
     second_one: "{count} 秒"
     second_other: "{count} 秒"
+  elicitation:
+    mcp_untrusted_command: "不受信任的伺服器 '{server}' 上的 MCP 工具 '{tool}' 要求執行。此工具具備寫入能力（沒有 readOnlyHint=true 註記），可能會修改外部狀態。"
+    mcp_untrusted_description: "伺服器 '{server}' 設定為 'trust: untrusted'。批准即執行 '{tool}' 一次，拒絕則封鎖它。"
+    mcp_untrusted_title: "MCP 伺服器 '{server}' 正在詢問"
+    payment_fill_command: "在 {origin} 上填入付款卡片 '{label}'"
+    payment_fill_description: "代理想將你儲存的卡片資料填入此結帳頁面。卡號和 CVC 絕不會進入對話。只有在你確定要在此付款時才批准。"
+    payment_fill_title: "確認填入付款卡片？"
 gateway:
   approval_expired: "⚠️ 批准已逾期（代理不再等待）。請讓代理重試。"
   draining: "⏳ 正在等待 {count} 個活躍代理結束後重新啟動..."
@@ -364,6 +371,16 @@ gateway:
     kept_oversize: "↷ 已保留（檔案過大無法納入檢查點，沒有可還原的儲存副本）：{files}"
     failed_deletes: "⚠️ 無法移除（保留原檔）：{files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "此目錄沒有任何檢查點"
+    err_not_found: "找不到檢查點 '{hash}'"
+    err_changed_files: "無法計算已變更的檔案：{err}"
+    err_diff_failed: "無法產生差異"
+    err_inspect_checkpoint: "無法讀取檢查點：{err}"
+    err_inspect_selection: "無法解析要還原的內容：{err}"
+    err_selection_empty: "要還原的內容在檢查點中沒有符合任何檔案：{path}"
+    err_nested_repos: "檢查點包含未被擷取的巢狀 git 儲存庫（{paths}）；未執行回復"
+    err_safe_plan_failed: "安全還原計畫失敗"
+    err_restore_failed: "還原失敗：{err}"
   diff:
     not_enabled: "檢查點未啟用，因此沒有工作階段基準線。\n在 config.yaml 中啟用:\n```\ncheckpoints:\n  enabled: true\n```\n一般 /diff 仍然可用 — 它直接使用 git。"
     no_changes: "沒有變更。"
@@ -644,6 +661,7 @@ gateway:
     owner_hint_env: "將該 ID 加入 {home}/.env 中的 {env_var}，然後重新啟動閘道"
     owner_hint_generic: "將該 ID 加入此平台的允許使用者清單，然後重新啟動閘道"
     owner_notice: "已捨棄來自未識別 {platform} 使用者 {who} 的訊息。如果那是你或你信任的人，請{allowlist}；或在 {home}/config.yaml 中為 {platform} 設定 `unauthorized_dm_behavior: pair`，讓未知傳送者收到配對碼，你再以 `hermes pairing approve {platform} <code>` 批准。"
+    decline_default: "嗨！我是私人助理，只能和我的主人聊天，所以沒辦法直接幫你。抱歉！"
   picker:
     page_info: " （第 {start}–{end} 項，共 {total} 項）"
   clarify:
@@ -769,6 +787,7 @@ gateway:
     detail_new: "這會開始新的工作階段，並捨棄目前的對話記錄。"
     detail_undo_one: "這會從記錄中移除最後一組使用者／助理的往返訊息。"
     detail_undo_many: "這會從記錄中移除最後 {count} 輪使用者訊息。"
+    handler_error: "❌ 處理確認時發生錯誤：{error}"
   hooks:
     command_blocked: "指令 `/{command}` 已被 hook 攔截。"
   prompt_command:
@@ -801,6 +820,9 @@ gateway:
     info_context: "◆ 上下文：{tokens} tokens（{source}）"
     info_acting_model: "◆ 實際執行模型（本次執行的計費對象）：{provider}:{model}"
     info_endpoint: "◆ 端點：{url}"
+    context_source_config: "設定"
+    context_source_default: "預設 — 可在設定中指定 model.context_length 加以覆寫"
+    context_source_detected: "自動偵測"
   proxy:
     requires_aiohttp: "⚠️ Proxy 模式需要 aiohttp。請執行：{hint}"
     url_missing: "⚠️ 尚未設定 Proxy URL（GATEWAY_PROXY_URL 或 gateway.proxy_url）"
@@ -827,6 +849,7 @@ gateway:
     task_status_error: "錯誤"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes 正在處理"
+    stall_notice: "⚠️ 我似乎卡住了（已 {minutes} 分鐘沒有活動）。傳送 /stop 取消目前的任務，或用 /new 開始新的對話。"
   pairing:
     validity_hour: "{hours} 小時"
     validity_hours: "{hours} 小時"
@@ -965,6 +988,19 @@ gateway:
       stale_code_hint: " 可能原因：閘道正在執行過時的程式碼（啟動時為 {boot_rev}，磁碟上為 {disk_rev}）— 執行 `hermes gateway restart` 即可修正。"
       quota_hold: "\n提供方的用量時段已關閉，約 {hours} 小時後重新開放。此任務將暫停至 {until}，之後在第一個安全時機恢復；提供方無法使用期間不會再發送警示。"
     registration_pending: "已儲存排程任務 '{label}'，但暫時無法向外部排程器註冊。任務已保留 — 請勿重新建立；可暫停／恢復或編輯它（例如透過 /cron）來重試註冊。"
+    output_truncated: "\n\n...（已截斷，完整輸出已儲存至 {path}）"
+  recovered_reply:
+    restart: "♻️ 已復原的回覆 — 傳送期間閘道重新啟動，因此這則可能重複："
+    reconnect: "♻️ 已復原的回覆 — 原本的傳送失敗後通訊平台已重新連線，因此這則可能重複："
+    flood: "♻️ 已復原的回覆 — 原始訊息被通訊平台的速率限制擋下，因此其中部分內容可能已在上方送達："
+  subagent:
+    goal: " 「{goal}」"
+    after: " 執行 {elapsed}後"
+    duration_min: "{n} 分鐘"
+    duration_sec: "{n} 秒"
+    reason: "：{reason}"
+    timed_out: "⚠️ 子代理{goal}{after}逾時，未能完成。我會在沒有它的情況下繼續；你可以請我重試，若這類任務確實需要更久，請在 config.yaml 中調高 delegation.child_timeout_seconds。"
+    failed: "⚠️ 子代理{goal}{after}失敗{reason}。詳細資訊：/agents，或請我以較小的任務重試。"
 platform:
   whatsapp:
     clarify_other_title: "✏️ 其他"

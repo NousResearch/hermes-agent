@@ -41,6 +41,13 @@ approval:
     minute_other: "{count} dakika"
     second_one: "{count} saniye"
     second_other: "{count} saniye"
+  elicitation:
+    mcp_untrusted_command: "GÜVENİLMEYEN '{server}' sunucusundaki '{tool}' MCP aracı çalışmak istiyor. Bu araç yazma yeteneğine sahip (readOnlyHint=true ek açıklaması yok) ve harici durumu değiştirebilir."
+    mcp_untrusted_description: "'{server}' sunucusu 'trust: untrusted' olarak yapılandırılmış. '{tool}' aracını bir kez çalıştırmak için onaylayın veya engellemek için reddedin."
+    mcp_untrusted_title: "'{server}' MCP sunucusu onay istiyor"
+    payment_fill_command: "{origin} üzerinde '{label}' ödeme kartını doldur"
+    payment_fill_description: "Ajan, kayıtlı kart bilgilerinizi bu ödeme sayfasına girmek istiyor. Kart numarası ve CVC hiçbir zaman konuşmaya girmez. Yalnızca burada ödeme yapmak istiyorsanız onaylayın."
+    payment_fill_title: "Ödeme kartı doldurulsun mu?"
 gateway:
   approval_expired: "⚠️ Onay süresi doldu (ajan artık beklemiyor). Ajanın tekrar denemesini isteyin."
   draining: "⏳ Yeniden başlatmadan önce {count} aktif ajan bekleniyor..."
@@ -364,6 +371,16 @@ gateway:
     kept_oversize: "↷ Korundu (denetim noktaları için çok büyük, geri dönülecek kayıtlı kopya yok): {files}"
     failed_deletes: "⚠️ Kaldırılamadı (yerinde bırakıldı): {files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "Bu dizin için hiç kontrol noktası yok"
+    err_not_found: "'{hash}' kontrol noktası bulunamadı"
+    err_changed_files: "Değişen dosyalar hesaplanamadı: {err}"
+    err_diff_failed: "Fark (diff) oluşturulamadı"
+    err_inspect_checkpoint: "Kontrol noktası incelenemedi: {err}"
+    err_inspect_selection: "Geri yükleme seçimi incelenemedi: {err}"
+    err_selection_empty: "Geri yükleme seçimi kontrol noktasındaki hiçbir dosyayla eşleşmedi: {path}"
+    err_nested_repos: "Kontrol noktası, yakalanmamış iç içe git depoları içeriyor ({paths}); geri alma yapılmadı"
+    err_safe_plan_failed: "Güvenli geri yükleme planı başarısız oldu"
+    err_restore_failed: "Geri yükleme başarısız oldu: {err}"
   diff:
     not_enabled: "Kontrol noktaları etkin değil, bu yüzden oturum temel çizgisi yok.\nconfig.yaml içinde etkinleştirin:\n```\ncheckpoints:\n  enabled: true\n```\nDüz /diff yine de çalışır — doğrudan git kullanır."
     no_changes: "Değişiklik yok."
@@ -644,6 +661,7 @@ gateway:
     owner_hint_env: "kimliği {home}/.env içindeki {env_var} değişkenine ekleyip gateway'i yeniden başlatın"
     owner_hint_generic: "kimliği bu platformun izinli kullanıcılar listesine ekleyip gateway'i yeniden başlatın"
     owner_notice: "Tanınmayan {platform} kullanıcısı {who} tarafından gönderilen bir mesaj yoksayıldı. Bu sizseniz veya güvendiğiniz biriyse {allowlist}; ya da bilinmeyen göndericilerin `hermes pairing approve {platform} <code>` ile onaylayabileceğiniz bir eşleştirme kodu alması için {home}/config.yaml içinde {platform} için `unauthorized_dm_behavior: pair` ayarlayın."
+    decline_default: "Merhaba! Ben kişisel bir asistanım ve yalnızca sahibimle sohbet edebiliyorum, bu yüzden size doğrudan yardımcı olamam. Kusura bakmayın!"
   picker:
     page_info: " ({start}–{end} / {total})"
   clarify:
@@ -769,6 +787,7 @@ gateway:
     detail_new: "Bu, yeni bir oturum başlatır ve geçerli konuşma geçmişini siler."
     detail_undo_one: "Bu, son kullanıcı/asistan alışverişini geçmişten kaldırır."
     detail_undo_many: "Bu, son {count} kullanıcı turunu geçmişten kaldırır."
+    handler_error: "❌ Onay işlenirken hata oluştu: {error}"
   hooks:
     command_blocked: "`/{command}` komutu bir hook tarafından engellendi."
   prompt_command:
@@ -801,6 +820,9 @@ gateway:
     info_context: "◆ Bağlam: {tokens} token ({source})"
     info_acting_model: "◆ Etkin model (çalıştırma için faturalandırılan): {provider}:{model}"
     info_endpoint: "◆ Uç nokta: {url}"
+    context_source_config: "yapılandırma"
+    context_source_default: "varsayılan — geçersiz kılmak için yapılandırmada model.context_length ayarlayın"
+    context_source_detected: "algılandı"
   proxy:
     requires_aiohttp: "⚠️ Proxy modu aiohttp gerektirir. Çalıştırın: {hint}"
     url_missing: "⚠️ Proxy URL'si yapılandırılmamış (GATEWAY_PROXY_URL veya gateway.proxy_url)"
@@ -827,6 +849,7 @@ gateway:
     task_status_error: "hata"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes çalışıyor"
+    stall_notice: "⚠️ Takılmış gibiyim ({minutes} dakikadır etkinlik yok). Geçerli görevi iptal etmek için /stop, yeni bir konuşma başlatmak için /new gönderin."
   pairing:
     validity_hour: "{hours} saat"
     validity_hours: "{hours} saat"
@@ -965,6 +988,19 @@ gateway:
       stale_code_hint: " Olası neden: gateway eski kodu çalıştırıyor ({boot_rev} ile başlatıldı, diskte {disk_rev} var) — düzeltmek için `hermes gateway restart` çalıştırın."
       quota_hold: "\nSağlayıcının kullanım penceresi yaklaşık {hours} saat boyunca kapalı. Bu iş {until} zamanına kadar bekletiliyor ve sonrasındaki ilk güvenli fırsatta devam ediyor; sağlayıcı kullanılamadığı sürece başka uyarı gönderilmez."
     registration_pending: "'{label}' cron işi kaydedildi, ancak henüz harici zamanlayıcıya kaydettirilemedi. İş korunuyor — yeniden oluşturmayın; kaydı yeniden denemek için duraklatıp sürdürün veya düzenleyin (ör. /cron ile)."
+    output_truncated: "\n\n... [kısaltıldı, tam çıktı {path} konumuna kaydedildi]"
+  recovered_reply:
+    restart: "♻️ Kurtarılan yanıt — gateway teslimat sırasında yeniden başladı, bu yüzden bu bir kopya olabilir:"
+    reconnect: "♻️ Kurtarılan yanıt — ilk teslimat başarısız olduktan sonra mesajlaşma platformu yeniden bağlandı, bu yüzden bu bir kopya olabilir:"
+    flood: "♻️ Kurtarılan yanıt — mesajlaşma platformunun hız sınırı orijinal mesajı reddetti, bu yüzden bir kısmı yukarıda zaten gelmiş olabilir:"
+  subagent:
+    goal: " (\"{goal}\")"
+    after: " {elapsed} sonra"
+    duration_min: "{n} dk"
+    duration_sec: "{n} sn"
+    reason: ": {reason}"
+    timed_out: "⚠️ Alt ajan{goal}{after} işini bitiremeden zaman aşımına uğradı. Onsuz devam edeceğim; yeniden denememi isteyin veya bu görevler gerçekten daha uzun sürüyorsa config.yaml içinde delegation.child_timeout_seconds değerini yükseltin."
+    failed: "⚠️ Alt ajan{goal}{after} başarısız oldu{reason}. Ayrıntılar: /agents; ya da daha küçük bir görevle yeniden denememi isteyin."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Diğer"

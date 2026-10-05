@@ -41,6 +41,13 @@ approval:
     minute_other: "{count} minutes"
     second_one: "{count} seconde"
     second_other: "{count} secondes"
+  elicitation:
+    mcp_untrusted_command: "L'outil MCP '{tool}' du serveur NON FIABLE '{server}' demande à s'exécuter. Cet outil peut écrire (pas d'annotation readOnlyHint=true) et risque de modifier un état externe."
+    mcp_untrusted_description: "Le serveur '{server}' est configuré avec 'trust: untrusted'. Approuvez pour exécuter '{tool}' une seule fois, ou refusez pour le bloquer."
+    mcp_untrusted_title: "Le serveur MCP '{server}' demande une autorisation"
+    payment_fill_command: "Remplir la carte de paiement '{label}' sur {origin}"
+    payment_fill_description: "L'agent veut saisir les informations de votre carte enregistrée sur cette page de paiement. Le numéro de carte et le CVC n'entrent jamais dans la conversation. N'approuvez que si vous comptez vraiment payer ici."
+    payment_fill_title: "Confirmer le remplissage de la carte de paiement ?"
 gateway:
   approval_expired: "⚠️ Approbation expirée (l'agent n'attend plus). Demandez à l'agent de réessayer."
   draining: "⏳ Vidage de {count} agent(s) actif(s) avant redémarrage..."
@@ -400,6 +407,16 @@ gateway:
     kept_oversize: "↷ Conservé (trop volumineux pour les checkpoints, aucune copie enregistrée vers laquelle revenir) : {files}"
     failed_deletes: "⚠️ Suppression impossible (laissé en place) : {files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "Aucun point de contrôle n'existe pour ce répertoire"
+    err_not_found: "Point de contrôle '{hash}' introuvable"
+    err_changed_files: "Impossible de déterminer les fichiers modifiés : {err}"
+    err_diff_failed: "Impossible de générer le diff"
+    err_inspect_checkpoint: "Impossible d'inspecter le point de contrôle : {err}"
+    err_inspect_selection: "Impossible d'inspecter la sélection à restaurer : {err}"
+    err_selection_empty: "La sélection à restaurer ne correspond à aucun fichier du point de contrôle : {path}"
+    err_nested_repos: "Le point de contrôle contient des dépôts git imbriqués qui n'ont pas été capturés ({paths}) ; la restauration n'a pas été effectuée"
+    err_safe_plan_failed: "Échec du plan de restauration sécurisée"
+    err_restore_failed: "Échec de la restauration : {err}"
   diff:
     not_enabled: "Les points de contrôle ne sont pas activés, il n'y a donc pas de référence de session.\nActivez-les dans config.yaml :\n```\ncheckpoints:\n  enabled: true\n```\nLe /diff simple fonctionne toujours — il utilise git directement."
     no_changes: "Aucun changement."
@@ -753,6 +770,7 @@ gateway:
     owner_hint_env: "ajoutez l'ID à {env_var} dans {home}/.env et redémarrez le gateway"
     owner_hint_generic: "ajoutez l'ID à la liste des utilisateurs autorisés de cette plateforme et redémarrez le gateway"
     owner_notice: "Message ignoré d'un utilisateur {platform} non reconnu : {who}. Si c'est vous ou une personne de confiance, {allowlist} ; ou définissez `unauthorized_dm_behavior: pair` pour {platform} dans {home}/config.yaml afin que les expéditeurs inconnus reçoivent un code d'appairage que vous pourrez approuver avec `hermes pairing approve {platform} <code>`."
+    decline_default: "Bonjour ! Je suis un assistant personnel et je ne peux discuter qu'avec mon propriétaire, je ne peux donc pas vous aider directement. Désolé !"
   picker:
     page_info: " ({start}–{end} sur {total})"
   clarify:
@@ -911,6 +929,7 @@ gateway:
     detail_new: "Ceci démarre une nouvelle session et supprime l'historique de la conversation actuelle."
     detail_undo_one: "Ceci retire le dernier échange utilisateur/assistant de l'historique."
     detail_undo_many: "Ceci retire les {count} derniers tours utilisateur de l'historique."
+    handler_error: "❌ Erreur lors du traitement de la confirmation : {error}"
   hooks:
     command_blocked: "La commande `/{command}` a été bloquée par un hook."
   prompt_command:
@@ -948,6 +967,9 @@ gateway:
     info_context: "◆ Contexte : {tokens} tokens ({source})"
     info_acting_model: "◆ Modèle actif (facturé pour l'exécution) : {provider}:{model}"
     info_endpoint: "◆ Endpoint : {url}"
+    context_source_config: "configuration"
+    context_source_default: "par défaut — définissez model.context_length dans la configuration pour le remplacer"
+    context_source_detected: "détecté automatiquement"
   proxy:
     requires_aiohttp: "⚠️ Le mode proxy nécessite aiohttp. Exécutez : {hint}"
     url_missing: "⚠️ URL du proxy non configurée (GATEWAY_PROXY_URL ou gateway.proxy_url)"
@@ -978,6 +1000,7 @@ gateway:
     task_status_error: "erreur"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes travaille"
+    stall_notice: "⚠️ Je semble bloqué (aucune activité depuis {minutes} min). Envoyez /stop pour annuler la tâche en cours, ou /new pour démarrer une nouvelle conversation."
   pairing:
     validity_hour: "{hours} heure"
     validity_hours: "{hours} heures"
@@ -1156,6 +1179,19 @@ gateway:
       stale_code_hint: " Cause probable : le gateway exécute du code obsolète (démarré sur {boot_rev}, alors que le disque est à {disk_rev}) — lancez `hermes gateway restart` pour corriger le problème."
       quota_hold: "\nLa fenêtre d'utilisation du fournisseur est fermée pour environ {hours} h. Cette tâche est suspendue jusqu'à {until} et reprendra ensuite à la première occasion sûre ; aucune autre alerte ne sera envoyée tant que le fournisseur est indisponible."
     registration_pending: "Tâche cron '{label}' enregistrée, mais elle n'a pas encore pu être inscrite auprès du planificateur externe. La tâche est conservée — ne la recréez pas ; mettez-la en pause puis reprenez-la, ou modifiez-la (par ex. via /cron) pour relancer l'inscription."
+    output_truncated: "\n\n... [tronqué, sortie complète enregistrée dans {path}]"
+  recovered_reply:
+    restart: "♻️ Réponse récupérée — le gateway a redémarré pendant la livraison, il peut donc s'agir d'un doublon :"
+    reconnect: "♻️ Réponse récupérée — la plateforme de messagerie s'est reconnectée après l'échec de la livraison d'origine, il peut donc s'agir d'un doublon :"
+    flood: "♻️ Réponse récupérée — la limite de débit de la plateforme de messagerie a refusé l'original, une partie en est donc peut-être déjà arrivée plus haut :"
+  subagent:
+    goal: " — « {goal} »"
+    after: " après {elapsed}"
+    duration_min: "{n} min"
+    duration_sec: "{n} s"
+    reason: ": {reason}"
+    timed_out: "⚠️ Le sous-agent a expiré{goal}{after} sans avoir terminé. Je continue sans lui ; demandez-moi de le relancer, ou augmentez delegation.child_timeout_seconds dans config.yaml si ces tâches prennent légitimement plus de temps."
+    failed: "⚠️ Échec du sous-agent{goal}{after}{reason}. Détails : /agents, ou demandez-moi de réessayer avec une tâche plus petite."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Autre"

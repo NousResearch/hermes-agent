@@ -41,6 +41,13 @@ approval:
     minute_other: "{count} minutos"
     second_one: "{count} segundo"
     second_other: "{count} segundos"
+  elicitation:
+    mcp_untrusted_command: "A ferramenta MCP '{tool}' do servidor NÃO CONFIÁVEL '{server}' quer ser executada. Esta ferramenta pode gravar (não tem a anotação readOnlyHint=true) e pode modificar o estado externo."
+    mcp_untrusted_description: "O servidor '{server}' está configurado como 'trust: untrusted'. Aprove para executar '{tool}' uma vez ou negue para bloqueá-la."
+    mcp_untrusted_title: "O servidor MCP '{server}' está pedindo permissão"
+    payment_fill_command: "Preencher o cartão de pagamento '{label}' em {origin}"
+    payment_fill_description: "O agente quer inserir os dados do seu cartão salvo nesta página de pagamento. O número do cartão e o CVC nunca entram na conversa. Aprove apenas se você pretende pagar aqui."
+    payment_fill_title: "Confirmar o preenchimento do cartão de pagamento?"
 gateway:
   approval_expired: "⚠️ A aprovação expirou (o agente já não está à espera). Peça ao agente para tentar novamente."
   draining: "⏳ A aguardar que {count} agente(s) ativo(s) terminem antes de reiniciar..."
@@ -364,6 +371,16 @@ gateway:
     kept_oversize: "↷ Mantido (grande demais para os checkpoints, sem cópia guardada para reverter): {files}"
     failed_deletes: "⚠️ Não foi possível remover (mantido no lugar): {files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "Não existem checkpoints para este diretório"
+    err_not_found: "Checkpoint '{hash}' não encontrado"
+    err_changed_files: "Não foi possível calcular os arquivos alterados: {err}"
+    err_diff_failed: "Não foi possível gerar o diff"
+    err_inspect_checkpoint: "Não foi possível inspecionar o checkpoint: {err}"
+    err_inspect_selection: "Não foi possível inspecionar a seleção de restauração: {err}"
+    err_selection_empty: "A seleção de restauração não correspondeu a nenhum arquivo do checkpoint: {path}"
+    err_nested_repos: "O checkpoint contém repositórios git aninhados que não foram capturados ({paths}); o rollback não foi realizado"
+    err_safe_plan_failed: "O plano de restauração segura falhou"
+    err_restore_failed: "Falha na restauração: {err}"
   diff:
     not_enabled: "Os checkpoints não estão ativados, então não há linha de base da sessão.\nAtive em config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nO /diff simples continua funcionando — ele usa git diretamente."
     no_changes: "Sem alterações."
@@ -644,6 +661,7 @@ gateway:
     owner_hint_env: "adicione o ID a {env_var} em {home}/.env e reinicie o gateway"
     owner_hint_generic: "adicione o ID à lista de usuários permitidos desta plataforma e reinicie o gateway"
     owner_notice: "Mensagem descartada do usuário {platform} não reconhecido {who}. Se for você ou alguém de confiança, {allowlist}; ou defina `unauthorized_dm_behavior: pair` para {platform} em {home}/config.yaml para que remetentes desconhecidos recebam um código de pareamento que você pode aprovar com `hermes pairing approve {platform} <code>`."
+    decline_default: "Olá! Sou um assistente pessoal e só posso conversar com o meu dono, por isso não posso ajudar você diretamente. Desculpe!"
   picker:
     page_info: " ({start}–{end} de {total})"
   clarify:
@@ -769,6 +787,7 @@ gateway:
     detail_new: "Isso inicia uma nova sessão e descarta o histórico da conversa atual."
     detail_undo_one: "Isso remove do histórico a última troca entre usuário e assistente."
     detail_undo_many: "Isso remove do histórico os últimos {count} turnos do usuário."
+    handler_error: "❌ Erro ao processar a confirmação: {error}"
   hooks:
     command_blocked: "O comando `/{command}` foi bloqueado por um hook."
   prompt_command:
@@ -801,6 +820,9 @@ gateway:
     info_context: "◆ Contexto: {tokens} tokens ({source})"
     info_acting_model: "◆ Modelo em ação (cobrado pela execução): {provider}:{model}"
     info_endpoint: "◆ Endpoint: {url}"
+    context_source_config: "configuração"
+    context_source_default: "padrão — defina model.context_length na configuração para substituir"
+    context_source_detected: "detectado"
   proxy:
     requires_aiohttp: "⚠️ O modo proxy requer aiohttp. Execute: {hint}"
     url_missing: "⚠️ URL do proxy não configurada (GATEWAY_PROXY_URL ou gateway.proxy_url)"
@@ -827,6 +849,7 @@ gateway:
     task_status_error: "erro"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes está trabalhando"
+    stall_notice: "⚠️ Parece que estou travado (sem atividade há {minutes} min). Envie /stop para cancelar a tarefa atual ou /new para iniciar uma nova conversa."
   pairing:
     validity_hour: "{hours} hora"
     validity_hours: "{hours} horas"
@@ -965,6 +988,19 @@ gateway:
       stale_code_hint: " Causa provável: o gateway está executando código desatualizado (iniciado em {boot_rev}, o disco está em {disk_rev}) — execute `hermes gateway restart` para corrigir."
       quota_hold: "\nA janela de uso do fornecedor está fechada por cerca de {hours} h. Esta tarefa fica retida até {until} e será retomada na primeira oportunidade segura depois disso; nenhum outro alerta será enviado enquanto o fornecedor estiver indisponível."
     registration_pending: "A tarefa cron '{label}' foi salva, mas ainda não foi possível registrá-la no agendador externo. A tarefa foi mantida — não a recrie; pause/retome ou edite-a (por exemplo, via /cron) para tentar o registro novamente."
+    output_truncated: "\n\n... [truncado, saída completa salva em {path}]"
+  recovered_reply:
+    restart: "♻️ Resposta recuperada — o gateway reiniciou durante a entrega, então esta pode ser uma duplicata:"
+    reconnect: "♻️ Resposta recuperada — a plataforma de mensagens reconectou depois que a entrega original falhou, então esta pode ser uma duplicata:"
+    flood: "♻️ Resposta recuperada — o limite de taxa da plataforma de mensagens recusou o original, então parte dela pode já ter chegado acima:"
+  subagent:
+    goal: " — \"{goal}\""
+    after: " após {elapsed}"
+    duration_min: "{n} min"
+    duration_sec: "{n} s"
+    reason: ": {reason}"
+    timed_out: "⚠️ O subagente esgotou o tempo{goal}{after} sem terminar. Vou continuar sem ele; peça para eu tentar de novo ou aumente delegation.child_timeout_seconds em config.yaml se essas tarefas realmente precisam de mais tempo."
+    failed: "⚠️ O subagente falhou{goal}{after}{reason}. Detalhes: /agents, ou peça para eu tentar de novo com uma tarefa menor."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Outro"

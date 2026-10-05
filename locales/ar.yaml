@@ -41,6 +41,13 @@ approval:
     minute_other: "{count} دقائق"
     second_one: "{count} ثانية"
     second_other: "{count} ثوانٍ"
+  elicitation:
+    mcp_untrusted_command: "تريد أداة MCP '{tool}' على الخادم غير الموثوق '{server}' أن تعمل. هذه الأداة قادرة على الكتابة (لا تحمل التعليق readOnlyHint=true) وقد تعدّل حالة خارجية."
+    mcp_untrusted_description: "الخادم '{server}' مُهيّأ بـ 'trust: untrusted'. وافق لتشغيل '{tool}' مرة واحدة، أو ارفض لحظره."
+    mcp_untrusted_title: "خادم MCP '{server}' يطلب الإذن"
+    payment_fill_command: "تعبئة بطاقة الدفع '{label}' على {origin}"
+    payment_fill_description: "يريد الوكيل إدخال بيانات بطاقتك المحفوظة في صفحة الدفع هذه. لا يدخل رقم البطاقة ولا رمز CVC إلى المحادثة أبدًا. وافق فقط إن كنت تنوي الدفع هنا."
+    payment_fill_title: "تأكيد تعبئة بطاقة الدفع؟"
 gateway:
   approval_expired: "⚠️ انتهت صلاحية الموافقة (لم يعد الوكيل ينتظر). اطلب من الوكيل المحاولة مرة أخرى."
   draining: "⏳ جارٍ إنهاء {count} وكيل نشط قبل إعادة التشغيل..."
@@ -364,6 +371,16 @@ gateway:
     kept_oversize: "↷ احتُفظ به (أكبر من أن يُحفظ في نقاط التفتيش، لا توجد نسخة مخزنة للرجوع إليها): {files}"
     failed_deletes: "⚠️ تعذّرت الإزالة (تُرك الملف في مكانه): {files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "لا توجد نقاط تحقّق لهذا المجلد"
+    err_not_found: "لم يُعثر على نقطة التحقّق '{hash}'"
+    err_changed_files: "تعذّر حساب الملفات المتغيّرة: {err}"
+    err_diff_failed: "تعذّر إنشاء الفرق (diff)"
+    err_inspect_checkpoint: "تعذّر فحص نقطة التحقّق: {err}"
+    err_inspect_selection: "تعذّر فحص تحديد الاستعادة: {err}"
+    err_selection_empty: "لم يطابق تحديد الاستعادة أي ملفات في نقطة التحقّق: {path}"
+    err_nested_repos: "تحتوي نقطة التحقّق على مستودعات git متداخلة لم تُلتقط ({paths})؛ لم يُنفَّذ التراجع"
+    err_safe_plan_failed: "فشلت خطة الاستعادة الآمنة"
+    err_restore_failed: "فشلت الاستعادة: {err}"
   diff:
     not_enabled: "نقاط التحقق غير مفعّلة، لذا لا يوجد خط أساس للجلسة.\nفعّلها في config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nلا يزال /diff العادي يعمل — فهو يستخدم git مباشرة."
     no_changes: "لا توجد تغييرات."
@@ -644,6 +661,7 @@ gateway:
     owner_hint_env: "أضف المعرّف إلى {env_var} في {home}/.env وأعد تشغيل البوّابة"
     owner_hint_generic: "أضف المعرّف إلى قائمة المستخدمين المسموح لهم لهذه المنصة وأعد تشغيل البوّابة"
     owner_notice: "تم تجاهل رسالة من مستخدم {platform} غير معروف {who}. إن كان هذا أنت أو شخصًا تثق به، {allowlist}؛ أو عيّن `unauthorized_dm_behavior: pair` لـ {platform} في {home}/config.yaml ليحصل المرسلون غير المعروفين على رمز اقتران يمكنك الموافقة عليه بـ `hermes pairing approve {platform} <code>`."
+    decline_default: "مرحبًا! أنا مساعد شخصي ولا يمكنني الدردشة إلا مع مالكي، لذا لا أستطيع مساعدتك مباشرةً. عذرًا!"
   picker:
     page_info: " ({start}–{end} من {total})"
   clarify:
@@ -769,6 +787,7 @@ gateway:
     detail_new: "سيبدأ هذا جلسة جديدة ويتجاهل سجل المحادثة الحالي."
     detail_undo_one: "سيحذف هذا آخر تبادل بين المستخدم والمساعد من السجل."
     detail_undo_many: "سيحذف هذا آخر {count} أدوار للمستخدم من السجل."
+    handler_error: "❌ خطأ في معالجة التأكيد: {error}"
   hooks:
     command_blocked: "حُظر الأمر `/{command}` بواسطة hook."
   prompt_command:
@@ -801,6 +820,9 @@ gateway:
     info_context: "◆ السياق: {tokens} رمزًا ({source})"
     info_acting_model: "◆ النموذج الفعلي (المحاسَب عليه في هذا التشغيل): {provider}:{model}"
     info_endpoint: "◆ نقطة النهاية: {url}"
+    context_source_config: "الإعدادات"
+    context_source_default: "افتراضي — اضبط model.context_length في الإعدادات لتجاوزه"
+    context_source_detected: "مُكتشَف"
   proxy:
     requires_aiohttp: "⚠️ يتطلب وضع وكيل الشبكة (proxy) حزمة aiohttp. شغّل: {hint}"
     url_missing: "⚠️ لم يُضبط عنوان وكيل الشبكة (proxy) (GATEWAY_PROXY_URL أو gateway.proxy_url)"
@@ -827,6 +849,7 @@ gateway:
     task_status_error: "خطأ"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes يعمل"
+    stall_notice: "⚠️ يبدو أنني عالق (لا نشاط منذ {minutes} دقيقة). أرسل /stop لإلغاء المهمة الحالية، أو /new لبدء محادثة جديدة."
   pairing:
     validity_hour: "{hours} ساعة"
     validity_hours: "{hours} ساعات"
@@ -965,6 +988,19 @@ gateway:
       stale_code_hint: " السبب المرجّح: البوّابة تشغّل كودًا قديمًا (بدأت على {boot_rev}، والقرص على {disk_rev}) — شغّل `hermes gateway restart` لإصلاح ذلك."
       quota_hold: "\nنافذة الاستخدام لدى المزوّد مغلقة لنحو {hours} ساعة. هذه المهمة معلّقة حتى {until} وتُستأنف عند أول فرصة آمنة بعد ذلك؛ ولن تُرسَل تنبيهات أخرى ما دام المزوّد غير متاح."
     registration_pending: "حُفظت مهمة cron '{label}'، لكن تعذّر تسجيلها لدى المُجدوِل الخارجي حتى الآن. المهمة محفوظة — لا تُعِد إنشاءها؛ أوقفها مؤقتًا ثم استأنفها أو عدّلها (مثلًا عبر /cron) لإعادة محاولة التسجيل."
+    output_truncated: "\n\n... [مقتطع، حُفظت المخرجات كاملة في {path}]"
+  recovered_reply:
+    restart: "♻️ رد مُستعاد — أُعيد تشغيل البوّابة أثناء التسليم، لذا قد يكون هذا مكررًا:"
+    reconnect: "♻️ رد مُستعاد — أعادت منصة المراسلة الاتصال بعد فشل التسليم الأصلي، لذا قد يكون هذا مكررًا:"
+    flood: "♻️ رد مُستعاد — رفض حدّ المعدّل في منصة المراسلة الرد الأصلي، لذا ربما وصل جزء منه بالفعل أعلاه:"
+  subagent:
+    goal: " — «{goal}»"
+    after: " بعد {elapsed}"
+    duration_min: "{n} دقيقة"
+    duration_sec: "{n} ث"
+    reason: ": {reason}"
+    timed_out: "⚠️ انتهت مهلة الوكيل الفرعي{goal}{after} دون أن يُنهي عمله. سأتابع من دونه؛ اطلب مني إعادة المحاولة، أو ارفع delegation.child_timeout_seconds في config.yaml إن كانت هذه المهام تستغرق وقتًا أطول فعلًا."
+    failed: "⚠️ فشل الوكيل الفرعي{goal}{after}{reason}. التفاصيل: /agents، أو اطلب مني إعادة المحاولة بمهمة أصغر."
 platform:
   whatsapp:
     clarify_other_title: "✏️ أخرى"

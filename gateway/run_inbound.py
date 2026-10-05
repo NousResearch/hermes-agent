@@ -132,7 +132,6 @@ class GatewayInboundMixin:
         """``decline`` behavior: one short refusal per sender per DECLINE_DEDUPE_SECONDS, then silence
         (#88028). The stamp is written BEFORE the send so a delivery
         hiccup cannot become a decline storm; without a store there is no dedupe state → stay silent."""
-        from gateway.config import DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
         platform_name = source.platform.value if source.platform else "unknown"
         pairing_store = self._pairing_store_for(source)
         if pairing_store is None or pairing_store.has_recent_decline(platform_name, source.user_id):
@@ -144,7 +143,7 @@ class GatewayInboundMixin:
         config = getattr(self, "config", None)
         text = str(getattr(config, "unauthorized_dm_decline_message", "") or "").strip()
         try:
-            await adapter.send(source.chat_id, text or DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE)
+            await adapter.send(source.chat_id, text or t("gateway.unauthorized.decline_default"))
         except Exception:
             logger.warning("Failed to deliver unauthorized-DM decline on %s", platform_name, exc_info=True)
 

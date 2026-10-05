@@ -12,6 +12,7 @@ from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from agent.i18n import t
 from hermes_platform import declaration
 from tools.registry import invalidate_check_fn_cache, tool_error
 from tools.ansi_strip import strip_unicode_tags
@@ -66,12 +67,11 @@ def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
         return None
     try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
         from tools.approval_prompt import request_elicitation_consent
+        names = {"tool": tool_name, "server": server_name}
         answer = request_elicitation_consent(
-            f"MCP tool '{tool_name}' on UNTRUSTED server '{server_name}' wants to run. This tool is write-capable "
-            f"(no readOnlyHint=true annotation) and may modify external state.",
-            f"Server '{server_name}' is configured 'trust: untrusted'. "
-            f"Approve to run '{tool_name}' once, or deny to block it.",
-            surface=f"mcp-trust/{server_name}", title=f"MCP server '{server_name}' is asking")
+            t("approval.elicitation.mcp_untrusted_command", **names),
+            t("approval.elicitation.mcp_untrusted_description", **names),
+            surface=f"mcp-trust/{server_name}", title=t("approval.elicitation.mcp_untrusted_title", **names))
     except Exception as exc:
         logger.error("MCP trust gate: approval check failed for %s.%s: %s", server_name, tool_name, exc, exc_info=True)
         return tool_error(f"MCP tool '{tool_name}' on untrusted server '{server_name}' was blocked: the approval "

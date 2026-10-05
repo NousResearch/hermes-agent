@@ -41,6 +41,13 @@ approval:
     minute_other: "{count} 分"
     second_one: "{count} 秒"
     second_other: "{count} 秒"
+  elicitation:
+    mcp_untrusted_command: "信頼されていないサーバー '{server}' の MCP ツール '{tool}' が実行を求めています。このツールは書き込みが可能で (readOnlyHint=true アノテーションなし)、外部の状態を変更する可能性があります。"
+    mcp_untrusted_description: "サーバー '{server}' は 'trust: untrusted' に設定されています。承認すると '{tool}' を一度だけ実行し、拒否するとブロックします。"
+    mcp_untrusted_title: "MCP サーバー '{server}' からの確認"
+    payment_fill_command: "{origin} で支払いカード '{label}' を入力"
+    payment_fill_description: "エージェントが、保存済みのカード情報をこの決済ページに入力しようとしています。カード番号と CVC が会話に含まれることはありません。ここで支払うつもりの場合のみ承認してください。"
+    payment_fill_title: "支払いカードを入力しますか？"
 gateway:
   approval_expired: "⚠️ 承認の有効期限が切れました（エージェントはもう待機していません）。エージェントに再試行を依頼してください。"
   draining: "⏳ 再起動前に {count} 個のアクティブエージェントの終了を待っています..."
@@ -364,6 +371,16 @@ gateway:
     kept_oversize: "↷ 保持しました（チェックポイントには大きすぎるため、戻せる保存コピーがありません）: {files}"
     failed_deletes: "⚠️ 削除できませんでした（そのまま残っています）: {files}"
     restore_failed: "❌ {error}"
+    err_no_checkpoints: "このディレクトリにはチェックポイントがありません"
+    err_not_found: "チェックポイント '{hash}' が見つかりません"
+    err_changed_files: "変更されたファイルを算出できませんでした: {err}"
+    err_diff_failed: "差分を生成できませんでした"
+    err_inspect_checkpoint: "チェックポイントを読み取れませんでした: {err}"
+    err_inspect_selection: "復元対象を解析できませんでした: {err}"
+    err_selection_empty: "復元対象に一致するファイルがチェックポイント内にありません: {path}"
+    err_nested_repos: "チェックポイントに記録されていないネストされた git リポジトリが含まれています ({paths})。ロールバックは実行されませんでした"
+    err_safe_plan_failed: "安全な復元計画の作成に失敗しました"
+    err_restore_failed: "復元に失敗しました: {err}"
   diff:
     not_enabled: "チェックポイントが有効になっていないため、セッションのベースラインがありません。\nconfig.yaml で有効にしてください:\n```\ncheckpoints:\n  enabled: true\n```\n通常の /diff は引き続き使えます — git を直接使用します。"
     no_changes: "変更はありません。"
@@ -644,6 +661,7 @@ gateway:
     owner_hint_env: "{home}/.env の {env_var} に ID を追加してゲートウェイを再起動してください"
     owner_hint_generic: "このプラットフォームの許可ユーザーリストに ID を追加してゲートウェイを再起動してください"
     owner_notice: "未承認の {platform} ユーザー {who} からのメッセージを破棄しました。本人または信頼できる相手であれば、{allowlist}。あるいは {home}/config.yaml で {platform} に `unauthorized_dm_behavior: pair` を設定すると、不明な送信者にペアリングコードが発行され、`hermes pairing approve {platform} <code>` で承認できます。"
+    decline_default: "こんにちは！私はパーソナルアシスタントで、オーナーとしか会話できないため、直接お手伝いすることはできません。ごめんなさい！"
   picker:
     page_info: " ({total} 件中 {start}–{end})"
   clarify:
@@ -769,6 +787,7 @@ gateway:
     detail_new: "新しいセッションを開始し、現在の会話履歴を破棄します。"
     detail_undo_one: "履歴から最後のユーザー/アシスタントのやり取りを削除します。"
     detail_undo_many: "履歴から最後の {count} 件のユーザーターンを削除します。"
+    handler_error: "❌ 確認の処理中にエラーが発生しました: {error}"
   hooks:
     command_blocked: "コマンド `/{command}` はフックによってブロックされました。"
   prompt_command:
@@ -801,6 +820,9 @@ gateway:
     info_context: "◆ コンテキスト: {tokens} トークン ({source})"
     info_acting_model: "◆ 実行モデル (この実行の請求対象): {provider}:{model}"
     info_endpoint: "◆ エンドポイント: {url}"
+    context_source_config: "設定"
+    context_source_default: "デフォルト — 上書きするには設定で model.context_length を指定"
+    context_source_detected: "自動検出"
   proxy:
     requires_aiohttp: "⚠️ プロキシモードには aiohttp が必要です。実行してください: {hint}"
     url_missing: "⚠️ プロキシ URL が設定されていません (GATEWAY_PROXY_URL または gateway.proxy_url)"
@@ -827,6 +849,7 @@ gateway:
     task_status_error: "エラー"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes が作業中です"
+    stall_notice: "⚠️ 処理が停止しているようです ({minutes} 分間アクティビティなし)。/stop で現在のタスクをキャンセルするか、/new で新しい会話を始めてください。"
   pairing:
     validity_hour: "{hours} 時間"
     validity_hours: "{hours} 時間"
@@ -965,6 +988,19 @@ gateway:
       stale_code_hint: " 考えられる原因: ゲートウェイが古いコードで動作しています (起動時 {boot_rev}、ディスク上 {disk_rev})。`hermes gateway restart` を実行すると解消します。"
       quota_hold: "\nプロバイダーの利用枠は約 {hours} 時間閉じています。このジョブは {until} まで保留され、その後最初の安全なタイミングで再開します。プロバイダーが利用できない間、追加のアラートは送信されません。"
     registration_pending: "スケジュールジョブ '{label}' を保存しましたが、外部スケジューラーへの登録はまだできていません。ジョブは保持されているので作り直さないでください。登録を再試行するには、一時停止/再開するか編集してください (例: /cron から)。"
+    output_truncated: "\n\n... [省略されました。完全な出力は {path} に保存されています]"
+  recovered_reply:
+    restart: "♻️ 復元された返信 — 配信中にゲートウェイが再起動したため、重複している可能性があります:"
+    reconnect: "♻️ 復元された返信 — 元の配信が失敗した後にメッセージングプラットフォームが再接続したため、重複している可能性があります:"
+    flood: "♻️ 復元された返信 — 元のメッセージがメッセージングプラットフォームのレート制限で拒否されたため、一部はすでに上に届いている可能性があります:"
+  subagent:
+    goal: " 「{goal}」"
+    after: " {elapsed}後に"
+    duration_min: "{n} 分"
+    duration_sec: "{n} 秒"
+    reason: ": {reason}"
+    timed_out: "⚠️ サブエージェント{goal}が{after}タイムアウトし、完了しませんでした。このまま続行します。再試行を依頼するか、この種のタスクに本当に時間がかかる場合は config.yaml の delegation.child_timeout_seconds を引き上げてください。"
+    failed: "⚠️ サブエージェント{goal}が{after}失敗しました{reason}。詳細: /agents。または、より小さなタスクでの再試行を依頼してください。"
 platform:
   whatsapp:
     clarify_other_title: "✏️ その他"

@@ -3,6 +3,8 @@
 import time
 from pathlib import Path
 
+import pytest
+
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
 from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
@@ -127,7 +129,9 @@ def test_peer_recovery_replays_only_indeterminate_generation(tmp_path: Path):
     assert recovered["prompt"] == "Recover the accepted review."
 
 
-def test_uncertain_peer_turn_is_deferred_while_its_peer_stays_unreachable(tmp_path: Path):
+def test_uncertain_peer_turn_keeps_its_generation_while_its_peer_is_unreachable(tmp_path: Path):
+    """Past the deferral window, a peer turn whose same-generation recovery keeps failing stays
+    uncertain. Deferring it would let Retry start it again under a new idempotency key."""
     now = [100.0]
 
     def clock():
@@ -166,12 +170,19 @@ def test_uncertain_peer_turn_is_deferred_while_its_peer_stays_unreachable(tmp_pa
     now[0] = 108.0
     service.runtime._run_room_once(binding)
 
-    deferred = driver.get_task(db, queued["identity"])
-    assert deferred["status"] == "deferred"
-    assert deferred["execution_generation"] == 1
-    assert deferred["result"] == {"reason": "member_unavailable", "retryable": True}
-    assert peer.recoveries
+    waiting = driver.get_task(db, queued["identity"])
+    assert waiting["status"] == "indeterminate"
+    assert waiting["execution_generation"] == 1
+    assert len(peer.recoveries) >= 2
     assert {r["dispatch"]["execution_generation"] for r in peer.recoveries} == {1}
+    assert {d["execution_generation"] for d in peer.dispatches} <= {1}
+
+    # Retry cannot recover generation 1 either, so it starts nothing new.
+    with pytest.raises(PeerRunsHTTPError):
+        service.retry_room_task("room-1", task_id=queued["identity"].task_id)
+    retried = driver.get_task(db, queued["identity"])
+    assert (retried["status"], retried["execution_generation"]) == ("indeterminate", 1)
+    assert {d["execution_generation"] for d in peer.dispatches} <= {1}
 
 
 def _driver_room(tmp_path: Path) -> Path:

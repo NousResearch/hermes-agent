@@ -1267,3 +1267,28 @@ def test_a_refused_lookup_stays_the_plain_permission_result(fake, env):
     fake.route("GET", rf"/api/litspace/matters/{M}/files", (403, {"error": "forbidden"}))
     out = call("litkit_files", action="list")
     assert "not permitted" in out["error"] and not list(_links(out))
+
+
+def test_ingest_reports_a_finished_ingest_as_finished(fake, env):
+    """LKP-1007: the row read ``ingesting`` two months after its ingest job finished."""
+    row = {"id": "p1", "name": "Adobe Foret Vol. 1", "status": "ingesting", "fileCount": 52483,
+           "documentCount": 52483,
+           "latestIngestJob": {"status": "done", "totalDocs": 52483, "doneDocs": 52483,
+                               "finishedAt": "2026-08-05T19:42:01Z"},
+           "orchestration": {"status": "completed", "phase": "completed", "route": "concordance"},
+           "failureSummary": {"failureCode": "archive_password_required", "source": "import_event"}}
+    fake.route("GET", rf"/api/matters/{M}/productions$", lambda r: (200, [row]))
+    fake.route("GET", rf"/api/matters/{M}/productions/p1$", lambda r: (200, {"production": row}))
+    for listed in (call("litkit_ingest", action="productions")[0],
+                   call("litkit_ingest", action="production", productionId="p1")["production"]):
+        assert listed["status"] != "ingesting" and listed["rawStatus"] == "ingesting"
+        assert "failureSummary" not in listed
+
+
+def test_diagnose_wont_render_carries_a_caveat_to_check_the_pdf(fake, env):
+    fake.route("POST", r"/api/agent/actions",
+               lambda r: (200, {"ok": True, "report": "rendered PDF is missing but source bytes exist"}
+                          if r.json()["args"].get("symptom") == "wont_render" else {"ok": True, "report": "fine"}))
+    out = call("litkit_actions", action="diagnose_issue", args={"documentId": "d1", "symptom": "wont_render"})
+    assert "litkit_pdf" in out["caveat"]
+    assert "caveat" not in call("litkit_actions", action="diagnose_issue", args={"documentId": "d1", "symptom": "x"})

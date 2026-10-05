@@ -33,6 +33,7 @@ from litco.litkit.links import document_link, file_link, folder_link
 from litco.litkit.files import (TEXT_SEPARATOR, InputFileMissing, PathOutsideWorkDir, dumps, generate_preview,
                                 input_path, output_dir, output_path, relative, spill, work_dir)
 from litco.litkit import jev as _jev
+from litco.litkit.reconcile import reconcile_productions
 
 TOOLSET = "litkit"
 EXPORT_BATCH = 500
@@ -1218,11 +1219,12 @@ def litkit_ingest(args: Dict[str, Any]) -> Any:
         return value
 
     if action == "productions":
-        return client.get(f"{base}/productions")
+        return reconcile_productions(client.get(f"{base}/productions"))
     if action == "production":
-        return client.get(f"{base}/productions/{need(pid, 'productionId')}")
+        return reconcile_productions(client.get(f"{base}/productions/{need(pid, 'productionId')}"))
     if action == "progress":
-        return client.get(f"{base}/productions/{pid}/progress" if pid else f"{base}/productions/progress")
+        return reconcile_productions(
+            client.get(f"{base}/productions/{pid}/progress" if pid else f"{base}/productions/progress"))
     if action == "exceptions":
         return client.get(f"{base}/productions/{need(pid, 'productionId')}/exceptions")
     if action == "ingests":
@@ -1671,6 +1673,9 @@ def litkit_cross_matter_search(args: Dict[str, Any]) -> Any:
                             "snippets only: this matter's tools cannot open another matter's documents"]})
 
 
+RENDER_MISSING_CAVEAT = ("verify with litkit_pdf before telling the user the render is missing — the server check "
+                         "may predate the render")
+_RENDER_MISSING = re.compile(r"(render(ed)?[ _]?(pdf)?[^\"]{0,40}missing|missing[^\"]{0,40}render)", re.I)
 PASSTHROUGH_ACTIONS = ("term_frequency", "find_redacted", "hot_documents", "refresh_dossier", "diagnose_issue",
                        "diagnose_ingest", "litlex_format_cite")
 
@@ -1689,6 +1694,9 @@ def litkit_actions(args: Dict[str, Any]) -> Any:
     if status == 400:
         return {"error": (body or {}).get("error") if isinstance(body, dict) else body, "status": 400,
                 "action": action}
+    if action == "diagnose_issue" and action_args.get("symptom") == "wont_render" and isinstance(body, dict) \
+            and _RENDER_MISSING.search(json.dumps(body)):
+        body = {**body, "caveat": RENDER_MISSING_CAVEAT}
     return body
 
 
@@ -1826,7 +1834,9 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
     "litkit_jev": _jev.SCHEMA,
     "litkit_ingest": _schema(
         "litkit_ingest", "Production and ingest status (productions, production, progress, exceptions, ingests, "
-        "jobs, job) and recovery (resume, cancel, reingest, retry), which need matter admin rights.",
+        "jobs, job) and recovery (resume, cancel, reingest, retry), which need matter admin rights. A production "
+        "whose latestIngestJob is done and orchestration is completed is FINISHED even if status still reads "
+        "ingesting; say so and report missing viewer PDFs as a per-document gap, not as an ingest in progress.",
         {"action": {"type": "string", "enum": ["productions", "production", "progress", "exceptions", "ingests",
                                                "jobs", "job", "resume", "cancel", "reingest", "retry"]},
          "productionId": _S, "jobId": _S, "status": _S, "skipRowIndex": _I, "exceptionIds": _IDS,

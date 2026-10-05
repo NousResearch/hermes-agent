@@ -122,6 +122,9 @@ _BOARD_SPECS = [
         _SLUG,
         _arg("path", nargs="?", help="Absolute path to use as default workdir. Omit to clear."),
     ], help="Set the default workspace path for tasks on a board"),
+    _cmd("pause", [_SLUG, _arg("--reason", help="Why dispatch is paused (kept in board.json)")],
+         help="Stop spawning new workers on a board; running workers are left alone"),
+    _cmd("resume", [_SLUG], help="Resume dispatch on a paused board"),
     _cmd("export", [
         _arg("slug", nargs="?", help="Board to export (default: the current board)"),
         _arg("-o", "--output", help="Archive path (default: ./<slug>.tar.gz)"),

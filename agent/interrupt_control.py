@@ -46,13 +46,16 @@ def interrupt_skip_wording(agent) -> str:
     """Reason a tool call was skipped/cancelled, in words safe for tool output.
 
     Derived from the RECORDED reason rather than the call site, so a system-initiated
-    abort reads as one instead of asserting a user message that never existed (#130207)."""
+    abort reads as one instead of asserting a user message that never existed (#130207).
+    Braces are escaped: the wording is interpolated into notice templates, and a caller-
+    supplied reason must never become a format field."""
     reason = getattr(agent, "_tool_interrupt_reason", None)
     if not reason:
         return "Turn interrupted"
     if reason in USER_INTERRUPT_REASONS:
         return _USER_STOP_WORDING.get(reason, str(reason))
-    return f"Turn aborted — {str(reason).replace('_', ' ')}"
+    wording = f"Turn aborted — {str(reason).replace('_', ' ')}"
+    return wording.replace("{", "{{").replace("}", "}}")
 
 
 def interrupted_during_api_call_reason(agent) -> str:

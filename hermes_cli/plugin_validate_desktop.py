@@ -1,4 +1,4 @@
-"""Static admission lint for a plugin's Desktop surface (``desktop/plugin.js``).
+"""Static admission lint for a plugin's Desktop surface (``plugin.js`` / ``desktop/plugin.js``).
 
 A ``plugin.js`` is evaluated as ESM in the Electron renderer realm with the app's full authority
 (``apps/desktop/src/contrib/runtime-loader.ts`` says so in its header: error isolation only, no
@@ -91,30 +91,55 @@ def desktop_surface_findings(source: str) -> List[Tuple[str, int]]:
     return sorted(findings, key=lambda f: f[1])
 
 
-def is_desktop_surface(rel_path: str) -> bool:
-    """Whether a file is part of the Desktop surface this lint governs: JS under ``desktop/``.
+# The Desktop installer's entry rules (apps/desktop/electron/desktop-plugin-install.ts
+# ``findDesktopEntry``): a repo-root ``plugin.js`` wins and the whole repo root is published as the
+# plugin folder; otherwise ``desktop/plugin.js`` and its ``desktop/`` tree. Admission must lint every
+# layout the installer accepts, or a root-layout plugin ships to the renderer unlinted.
+_ROOT_ENTRY = "plugin.js"
+_DESKTOP_DIR = "desktop"
 
-    The renderer loads ``desktop/plugin.js`` (and what it imports from beside it). A Node sidecar
+
+def _has_root_entry(plugin_dir: Path) -> bool:
+    return (plugin_dir / _ROOT_ENTRY).exists()
+
+
+def is_desktop_surface(rel_path: str, root_entry: bool = False) -> bool:
+    """Whether a file is part of the Desktop surface this lint governs.
+
+    That is the repo-root ``plugin.js`` (an installer entry on its own), JS under ``desktop/``, and,
+    when the root entry exists (*root_entry*), the root-level JS published beside it. A Node sidecar
     (``sidecar/*.mjs``), a build script or a ``tests/*.test.mjs`` never runs in the renderer, so a
     lazy ``import('jszip')`` there is ordinary Node code — running the rules over every ``*.js`` /
     ``*.mjs`` in a repository reports noise, not a surface violation. Batch tooling should scope
     with this predicate (or call ``desktop_surface_hits``) instead of ``rglob``-ing the tree.
     """
-    parts = Path(rel_path).parts
-    return len(parts) > 1 and parts[0] == "desktop" and Path(rel_path).suffix == ".js"
+    path = Path(rel_path)
+    if path.suffix != ".js":
+        return False
+    parts = path.parts
+    if len(parts) == 1:
+        return parts[0] == _ROOT_ENTRY or root_entry
+    return parts[0] == _DESKTOP_DIR
+
+
+def _desktop_surface_files(plugin_dir: Path) -> List[Path]:
+    root_entry = _has_root_entry(plugin_dir)
+    candidates = list(plugin_dir.glob("*.js"))
+    desktop = plugin_dir / _DESKTOP_DIR
+    if desktop.is_dir():
+        candidates.extend(desktop.rglob("*.js"))
+    return sorted(
+        f for f in candidates
+        if f.is_file() and is_desktop_surface(f.relative_to(plugin_dir).as_posix(), root_entry)
+    )
 
 
 def desktop_surface_hits(plugin_dir: Path) -> List[str]:
     """``["<rule> (<rel>:<line>)", ...]`` over the plugin's Desktop surface files only."""
     plugin_dir = Path(plugin_dir)
-    desktop = plugin_dir / "desktop"
-    if not desktop.is_dir():
-        return []
     hits: List[str] = []
-    for js in sorted(desktop.rglob("*.js")):
+    for js in _desktop_surface_files(plugin_dir):
         rel = js.relative_to(plugin_dir).as_posix()
-        if not is_desktop_surface(rel):
-            continue
         try:
             source = js.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
@@ -124,8 +149,9 @@ def desktop_surface_hits(plugin_dir: Path) -> List[str]:
 
 
 def check_desktop_surface(report, plugin_dir: Path) -> None:
-    """Fail the report when ``desktop/*.js`` steps outside the SDK surface; silent when there is none."""
-    if not (Path(plugin_dir) / "desktop").is_dir():
+    """Fail the report when the Desktop surface steps outside the SDK; silent when there is none."""
+    plugin_dir = Path(plugin_dir)
+    if not ((plugin_dir / _DESKTOP_DIR).is_dir() or _has_root_entry(plugin_dir)):
         return
     hits = desktop_surface_hits(plugin_dir)
     report.add(

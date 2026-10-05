@@ -63,7 +63,7 @@ def _make_fake_popen(spawns, *, stdout="ok\n", returncode=0):
                 spawns.append((cmd, kwargs))
             self.returncode = returncode
 
-        def communicate(self, timeout=None):
+        def communicate(self, input=None, timeout=None):
             return (stdout, "")
 
         def kill(self):  # pragma: no cover - never reached on the fast path

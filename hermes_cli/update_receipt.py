@@ -353,7 +353,9 @@ def record_followup(step: str, reason: str, *, retry: str = "the next launch or 
 
     The code already committed, so the update does not fail; the step's own obligation (the
     source tail, the fleet restart, the launch-time bytecode sweep) stays armed and the next
-    launch or ``hermes update`` retries it. Never raises.
+    launch or ``hermes update`` retries it. Never raises. The printed line is a protocol: the
+    Desktop hand-offs (scripts/desktop-update/posix.sh, windows.ps1) parse ``Update follow-up
+    '<step>' did not finish:`` to report every owed step, so keep it one whole line.
     """
     reason = " ".join(str(reason).split())[:500] or "failed"
     print(f"  ⚠ Update follow-up '{step}' did not finish: {reason} ({retry})", flush=True)

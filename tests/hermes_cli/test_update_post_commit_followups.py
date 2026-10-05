@@ -197,3 +197,24 @@ def test_owed_restart_rearms_a_settled_obligation_and_a_later_run_keeps_owing_it
     # A later verify with nothing live to restart still owes the named gateway (and keeps it armed).
     assert fleet_verify._named_gateways_still_owed()
     assert fleet._fleet_restart_obligation_armed()
+
+
+def test_followup_line_is_the_one_both_desktop_handoffs_parse(tmp_path, monkeypatch, capsys):
+    """The hand-offs read owed follow-ups from this printed line (review regression 1): pin the
+    producer against the exact parsers in posix.sh (sed) and windows.ps1 (.NET regex)."""
+    import re
+    from pathlib import Path
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    update_receipt.record_followup("gateway_restart", "x" * 900)
+    update_receipt.record_followup("windows_resume", "Windows gateway recovery failed: 'quoted' reason")
+    out = capsys.readouterr().out
+    scripts = Path(__file__).resolve().parents[2] / "scripts/desktop-update"
+    posix = (scripts / "posix.sh").read_text(encoding="utf-8")
+    function = re.search(r"^owed_followup_steps\(\) \{.*?^\}", posix, re.S | re.M).group(0)
+    steps = subprocess.run(["bash", "-c", f"{function}\nowed_followup_steps"], env={**os.environ, "OUT": out},
+                           capture_output=True, text=True, encoding="utf-8", check=True).stdout.strip()
+    assert steps == "gateway_restart windows_resume"
+    pattern = re.search(r"\[regex\]::Matches\(\(\$res\.Output -join \"`n\"\), \"([^\"]+)\"\)",
+                        (scripts / "windows.ps1").read_text(encoding="utf-8")).group(1)
+    assert [m.group(1) for m in re.finditer(pattern, out)] == ["gateway_restart", "windows_resume"]

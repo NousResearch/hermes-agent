@@ -1740,6 +1740,18 @@ try {
         Write-HandoffLog $manualMsg
     }
 
+    # Every other owed follow-up of the committed update (a gateway still on the old code, a
+    # Windows resume, a lost completion...) prints one whole "Update follow-up '<step>' did not
+    # finish:" line (hermes_cli/update_receipt.record_followup): never a plain success either.
+    $owedSteps = @([regex]::Matches(($res.Output -join "`n"), "Update follow-up '([A-Za-z0-9_]+)' did not finish: ") |
+        ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+    if ($res.Code -eq 0 -and -not $desktopBuildFailed -and $owedSteps.Count -gt 0) {
+        $manualAction = $true
+        $owedHint = if ($owedSteps -contains 'gateway_restart') { ' Run `hermes gateway restart` to move the messaging gateway onto the new code now.' } else { '' }
+        $manualMsg = ($manualMsg + " Hermes was updated, but some follow-up steps did not finish (" + ($owedSteps -join ', ') + "). The next launch or ``hermes update`` retries them; the update log has the details." + $owedHint).Trim()
+        Write-HandoffLog $manualMsg
+    }
+
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
         $finalCode = 0
         $finalMsg = "Update complete."

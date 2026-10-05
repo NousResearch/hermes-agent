@@ -93,6 +93,12 @@ APP_REBUILD_FAILED=0  # 1 = the code committed but the Desktop app build is an o
 
 log() { echo "$(date +%Y-%m-%dT%H:%M:%S%z) $1" | tee -a "$LOG" 2>/dev/null; }
 
+owed_followup_steps() { # $OUT -> the distinct owed steps, space-separated, in print order
+  # hermes_cli/update_receipt.record_followup prints each as one whole line.
+  printf '%s\n' "$OUT" | sed -n "s/^.*Update follow-up '\([A-Za-z0-9_]*\)' did not finish: .*$/\1/p" \
+    | awk '!seen[$0]++' | tr '\n' ' ' | sed 's/ *$//'
+}
+
 # Keep a durable signal breadcrumb.  A detached hand-off used to leave only the
 # generic FINAL_MSG when it was terminated while the updater child was running,
 # which erased the one fact needed to diagnose the failure.
@@ -898,6 +904,17 @@ if [ "$CODE" -eq 0 ]; then FINAL_CODE=0 FINAL_MSG="Update complete."
     APP_REBUILD_FAILED=1
     DONE_NOTE="Hermes was updated, but the Desktop app could not be rebuilt, so it still runs its old build. Run hermes desktop --force-build in a terminal to rebuild it; the update log has the build error."
     log "desktop app build is an owed follow-up of the committed update"
+  fi
+  # Every other owed follow-up (a gateway still on the old code, a Windows
+  # resume, a lost completion, channel adoption, maintenance...) prints one
+  # whole "Update follow-up '<step>' did not finish:" line. None of them may
+  # end as a plain "Update complete." (review regression 1).
+  OWED_STEPS="$(owed_followup_steps)"
+  if [ -n "$OWED_STEPS" ]; then
+    case " $OWED_STEPS " in *" gateway_restart "*) OWED_HINT=" Run hermes gateway restart to move the messaging gateway onto the new code now." ;; *) OWED_HINT="" ;; esac
+    if [ -n "$DONE_NOTE" ]; then DONE_NOTE="$DONE_NOTE Follow-up steps still owed: $OWED_STEPS.$OWED_HINT"
+    else DONE_NOTE="Hermes was updated, but some follow-up steps did not finish ($OWED_STEPS). The next launch or hermes update retries them; the update log has the details.$OWED_HINT"; fi
+    log "owed follow-ups of the committed update: $OWED_STEPS"
   fi
 else
   FINAL_CODE="$CODE" FINAL_MSG="Update failed (exit $CODE). Run hermes debug share in a terminal to send a report."

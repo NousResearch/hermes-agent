@@ -60,6 +60,8 @@ interface HarnessProps {
   sendGraceFor?: readonly SendGraceReason[]
   /** Mirrors `commitOnPress`: a press during a wait commits it on the spot. */
   commitOnPress?: boolean
+  /** Mirrors `canSteer`: a turn is running and the draft can redirect it. */
+  canSteer?: boolean
   sendOnDoubleTap?: boolean
   sendOnHold?: boolean
   sendOnIdle?: boolean
@@ -72,6 +74,7 @@ interface HarnessProps {
   onCancel: () => void
   onDrain: () => void
   onSendNow?: (id: string) => void
+  onSteer?: () => void
 }
 
 const DEFAULT_TYPING_IDLE_MS = 1000
@@ -87,6 +90,7 @@ function Harness({
   queued = [],
   sendGraceFor = [],
   commitOnPress = true,
+  canSteer = false,
   sendOnDoubleTap = false,
   sendOnHold = false,
   sendOnPause = false,
@@ -96,7 +100,8 @@ function Harness({
   onQueue,
   onCancel,
   onDrain,
-  onSendNow
+  onSendNow,
+  onSteer
 }: HarnessProps) {
   const editorRef = useRef<HTMLDivElement>(null)
   const draftRef = useRef('')
@@ -249,6 +254,15 @@ function Harness({
       }
 
       submitDraft()
+
+      return
+    }
+
+    // Shift+Enter steers a running turn: the multiline-first binding the
+    // shortcuts panel, the settings description and the docs all promise.
+    if (!enterSends && event.key === 'Enter' && event.shiftKey && canSteer) {
+      event.preventDefault()
+      onSteer?.()
 
       return
     }
@@ -1728,5 +1742,79 @@ describe('composer Enter — a press during the grace window', () => {
 
     expect(onSubmit).toHaveBeenCalledTimes(1)
     expect(onSubmit).toHaveBeenCalledWith('a tap after all')
+  })
+})
+
+describe('composer Enter — the multiline-first steer chord', () => {
+  it('steers the running turn on Shift+Enter', async () => {
+    const onSteer = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness
+        canSteer
+        enterSends={false}
+        onCancel={vi.fn()}
+        onDrain={vi.fn()}
+        onQueue={vi.fn()}
+        onSteer={onSteer}
+        onSubmit={vi.fn()}
+      />
+    )
+
+    const editor = getByTestId('editor')
+
+    editor.textContent = 'not that, this'
+    fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true })
+
+    expect(onSteer).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves Shift+Enter to the editor when there is nothing to steer', async () => {
+    const onSteer = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness
+        canSteer={false}
+        enterSends={false}
+        onCancel={vi.fn()}
+        onDrain={vi.fn()}
+        onQueue={vi.fn()}
+        onSteer={onSteer}
+        onSubmit={vi.fn()}
+      />
+    )
+
+    const editor = getByTestId('editor')
+
+    editor.textContent = 'just a newline'
+    // Unprevented: in multiline-first a Shift+Enter that cannot steer is the
+    // line break a bare Enter already is.
+    const reachedTheEditor = fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true }) !== false
+
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(reachedTheEditor).toBe(true)
+  })
+
+  it('never steers on Shift+Enter while a bare Enter still sends', async () => {
+    const onSteer = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness
+        canSteer
+        enterSends
+        onCancel={vi.fn()}
+        onDrain={vi.fn()}
+        onQueue={vi.fn()}
+        onSteer={onSteer}
+        onSubmit={vi.fn()}
+      />
+    )
+
+    const editor = getByTestId('editor')
+
+    editor.textContent = 'the default mode keeps this a newline'
+    fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true })
+
+    expect(onSteer).not.toHaveBeenCalled()
   })
 })

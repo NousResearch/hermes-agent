@@ -1229,9 +1229,25 @@ export function ChatBar({
 
         queueDraft()
 
-        return      }
+        return
+      }
 
       submitDraft()
+
+      return
+    }
+
+    // Shift+Enter steers a running turn: the multiline-first binding the
+    // shortcuts panel, the settings description and the user guide all promise
+    // (Settings → Keyboard Shortcuts → Send behavior). Only while a turn is
+    // actually steerable — otherwise the chord keeps its native meaning and
+    // breaks the line, which is what a bare Enter already does in this mode.
+    if (!enterSends && event.key === 'Enter' && event.shiftKey && canSteer) {
+      event.preventDefault()
+      // Source the just-typed text from the DOM before redirecting, so a fast
+      // keypress cannot steer a stale draft.
+      flushEditorToDraft(event.currentTarget)
+      steerDraft()
 
       return
     }

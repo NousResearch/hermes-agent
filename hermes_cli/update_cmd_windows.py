@@ -919,7 +919,8 @@ def _pause_windows_gateways_for_update() -> dict | None:
         return None
     with _abort_on_error("Could not prepare Windows gateway pause for update"):
         from gateway.status import get_process_start_time, terminate_pid
-        from hermes_cli.gateway import _capture_gateway_argv, _restart_argv_is_host_gateway
+        from hermes_cli.gateway import _capture_gateway_argv
+        from hermes_cli.gateway_restart_identity import restart_argv_is_host_gateway
     profile_processes, service_gateways, service_gateway_pids, running_pids = _discover_windows_gateways()
     if not running_pids:
         token = _windows_cold_start_plan()
@@ -945,7 +946,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
     for pid in unmapped_pids:
         argv = _try_call(lambda p=int(pid): _capture_gateway_argv(p),
                          "Could not capture argv for unmapped gateway %s: %s", int(pid))
-        host = _try_call(lambda a=argv: _restart_argv_is_host_gateway(list(a)),
+        host = _try_call(lambda a=argv: restart_argv_is_host_gateway(list(a)),
                          "Could not classify unmapped gateway %s: %s", int(pid)) if argv else None
         unmapped.append({"pid": int(pid), "argv": argv, "host": host})
     # Tree-kill survivors, unmapped gateways, and pre-drain launchers; a launcher

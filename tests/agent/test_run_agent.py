@@ -2246,7 +2246,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("todo_list", {"todos": []}),
         ("session_search", {"query": "needle"}),
         ("memory", {"action": "view", "target": "memory"}),
-        ("clarify", {"question": "Continue?"}),
+        ("clarify", {"questions": [{"question": "Continue?"}]}),
         ("read_terminal", {}),
         ("desktop_preview", {"action": "read"}),
         ("drive_preview", {"action": "elements"}),
@@ -2361,6 +2361,28 @@ class TestAgentRuntimePostHookOwnershipSync:
             f"{tool_name}-sequential",
         ]
         assert all(call["tool_name"] == tool_name for call in post_calls)
+
+
+@pytest.mark.parametrize("path", ["sequential", "concurrent"])
+def test_native_todo_rejection_preserves_state_through_public_executor(agent, path):
+    from tools.todo_tool import TodoStore
+
+    agent._todo_store = TodoStore()
+    agent._todo_store.write([{"id": "1", "content": "Keep", "status": "pending"}])
+    before = agent._todo_store.snapshot()
+    agent.valid_tool_names = {"todo_list"}
+    messages = []
+    execute = getattr(agent, f"_execute_tool_calls_{path}")
+    execute(_mock_assistant_msg(content="", tool_calls=[
+        _mock_tool_call(name="todo_list", arguments=json.dumps({"todos": [
+            {"id": "1", "status": "completed"}, None,
+        ], "merge": True}), call_id="bad-todo"),
+    ]), messages, "test-todo")
+    results = [m for m in messages if m.get("role") == "tool"]
+    assert len(results) == 1, messages
+    result = json.loads(results[0]["content"])
+    assert "list of objects" in result["error"], result
+    assert agent._todo_store.snapshot() == before
 
 
 class TestRuntimeToolTransformToolResult:
@@ -4482,7 +4504,7 @@ class TestRunConversation:
         agent._print_fn = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
 
         with (
-            patch("run_agent.handle_function_call"),
+            patch("model_tools.handle_function_call"),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -4519,7 +4541,7 @@ class TestRunConversation:
         agent._print_fn = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
 
         with (
-            patch("run_agent.handle_function_call"),
+            patch("model_tools.handle_function_call"),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),

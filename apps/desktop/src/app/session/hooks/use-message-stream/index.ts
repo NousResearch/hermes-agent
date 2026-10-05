@@ -36,7 +36,12 @@ import { broadcastTranscriptChanged } from '@/store/transcript-sync'
 
 import type { ClientSessionState } from '../../../types'
 
-import { collapseDuplicateFinalAfterToolInterim, type DuplicateFinalCollapse } from './collapse-duplicate-final'
+import {
+  collapseDuplicateFinalAfterToolInterim,
+  collapseDuplicateFinalOntoIdenticalInterim,
+  type DuplicateFinalCollapse,
+  identicalInterimSiblingIndex
+} from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
 import { extendInterruptedReply } from './interrupted-reply'
@@ -74,6 +79,61 @@ interface QueuedStreamDelta {
 let streamMessageSeq = 0
 
 const nextStreamMessageId = (prefix: string) => `${prefix}-${Date.now()}-${++streamMessageSeq}`
+
+/**
+ * A sealed stream can lose a few characters while the authoritative final
+ * remains the same reply. Limit the tolerated edit distance so a separate
+ * assistant segment cannot replace a merely similar interim.
+ */
+function hasHighTextOverlap(left: string, right: string): boolean {
+  const maxLength = Math.max(left.length, right.length)
+
+  if (maxLength < 160) {
+    return false
+  }
+
+  const maxEdits = Math.max(1, Math.min(32, Math.floor(maxLength * 0.02)))
+
+  if (Math.abs(left.length - right.length) > maxEdits) {
+    return false
+  }
+
+  const [shorter, longer] = left.length < right.length ? [left, right] : [right, left]
+
+  let previous = Array.from({ length: shorter.length + 1 }, (_, index) =>
+    index <= maxEdits ? index : Number.POSITIVE_INFINITY
+  )
+
+  let current = new Array<number>(shorter.length + 1).fill(Number.POSITIVE_INFINITY)
+
+  for (let longerIndex = 1; longerIndex <= longer.length; longerIndex += 1) {
+    const start = Math.max(1, longerIndex - maxEdits)
+    const end = Math.min(shorter.length, longerIndex + maxEdits)
+    current.fill(Number.POSITIVE_INFINITY, start, end + 1)
+    current[start - 1] = start === 1 ? longerIndex : Number.POSITIVE_INFINITY
+
+    let rowMinimum = Number.POSITIVE_INFINITY
+
+    for (let shorterIndex = start; shorterIndex <= end; shorterIndex += 1) {
+      current[shorterIndex] = Math.min(
+        previous[shorterIndex] + 1,
+        current[shorterIndex - 1] + 1,
+        previous[shorterIndex - 1] + Number(longer[longerIndex - 1] !== shorter[shorterIndex - 1])
+      )
+      rowMinimum = Math.min(rowMinimum, current[shorterIndex])
+    }
+
+    if (rowMinimum > maxEdits) {
+      return false
+    }
+
+    const nextPrevious = current
+    current = previous
+    previous = nextPrevious
+  }
+
+  return previous[shorter.length] <= maxEdits
+}
 
 export function useMessageStream({
   activeGatewayProfile = 'default',
@@ -496,10 +556,12 @@ export function useMessageStream({
       // a tool part can't jump ahead of the text that preceded it.
       flushQueuedDeltas(sessionId)
 
-      if (sessionInterrupted(sessionId)) {
-        return
-      }
-
+      // Status-store projections (todo mirror, delegate subagent upserts)
+      // bypass the interrupted gate below — they retire rows, they don't
+      // repaint the sealed bubble. Only the assistant bubble stays sealed
+      // after a Stop (mutateStream drops late writes on its own). Background
+      // work outlives the turn, so completions must still retire status rows
+      // (#81114).
       // The composer status stack owns todo display now (no inline panel) —
       // mirror every todo state the tool reports into its session store.
       if (payload && isTodoToolName(payload.name)) {
@@ -519,6 +581,10 @@ export function useMessageStream({
             phase === 'complete' ? 'delegate.complete' : 'delegate.running'
           )
         }
+      }
+
+      if (sessionInterrupted(sessionId)) {
+        return
       }
 
       mutateStream(
@@ -590,20 +656,52 @@ export function useMessageStream({
               : m
           )
         } else {
-          // No streaming bubble — create a standalone interim message
-          nextMessages = [
-            ...nextMessages,
-            {
-              id: nextStreamMessageId('assistant-interim'),
-              role: 'assistant' as const,
-              parts: [{ ...assistantTextPart(authoritativeText, occurredAt), completedAt: occurredAt }],
-              timestamp: occurredAt,
-              completedAt: occurredAt,
-              pending: false,
-              interim: true,
-              branchGroupId: state.pendingBranchGroup ?? undefined
-            }
-          ]
+          // No streaming bubble. Usually a duplicate delivery of the interim
+          // that just sealed the stream (two sockets, one backend — #120005
+          // family): the first copy sealed the bubble and cleared streamId,
+          // so the second copy lands here. Appending would paint the same
+          // reply twice (#120104). When this occurrence's newest visible
+          // assistant row already carries the same text — including a skewed
+          // duplicate landing after the turn settled — refresh it in place.
+          const lastUserIndex = nextMessages.findLastIndex(message => message.role === 'user')
+          const normalizedText = authoritativeText.replace(/\s+/g, ' ').trim()
+
+          const prevSameText = nextMessages.findLast(
+            (message, index) =>
+              index > lastUserIndex &&
+              message.role === 'assistant' &&
+              !message.hidden &&
+              chatMessageText(message).replace(/\s+/g, ' ').trim() === normalizedText
+          )
+
+          if (prevSameText) {
+            nextMessages = nextMessages.map(m =>
+              m.id === prevSameText.id
+                ? {
+                    ...m,
+                    parts: completeOpenTimelineParts(replaceTextPart(m.parts), occurredAt),
+                    completedAt: occurredAt,
+                    pending: false,
+                    interim: true
+                  }
+                : m
+            )
+          } else {
+            // No streaming bubble — create a standalone interim message
+            nextMessages = [
+              ...nextMessages,
+              {
+                id: nextStreamMessageId('assistant-interim'),
+                role: 'assistant' as const,
+                parts: [{ ...assistantTextPart(authoritativeText, occurredAt), completedAt: occurredAt }],
+                timestamp: occurredAt,
+                completedAt: occurredAt,
+                pending: false,
+                interim: true,
+                branchGroupId: state.pendingBranchGroup ?? undefined
+              }
+            ]
+          }
         }
 
         return {
@@ -769,13 +867,27 @@ export function useMessageStream({
 
         let collapsed: DuplicateFinalCollapse | null = null
 
+        const hasFailure = Boolean(failure) || Boolean(completionError)
+
+        // #123801 — see identicalInterimSiblingIndex.
+        const identicalInterimIndex = identicalInterimSiblingIndex(prev, lastUserIndex, finalText, {
+          excludeIndex: streamIndex,
+          hasFailure,
+          interimBoundaryPending
+        })
+
         if (streamIndex >= 0) {
-          collapsed = collapseDuplicateFinalAfterToolInterim(prev, streamIndex, {
-            completeMessage,
-            finalText,
-            hasFailure: Boolean(failure) || Boolean(completionError),
-            interimBoundaryPending
-          })
+          collapsed =
+            collapseDuplicateFinalAfterToolInterim(prev, streamIndex, {
+              completeMessage,
+              finalText,
+              hasFailure,
+              interimBoundaryPending
+            }) ??
+            collapseDuplicateFinalOntoIdenticalInterim(prev, streamIndex, identicalInterimIndex, {
+              completeMessage,
+              finalText
+            })
           nextMessages = collapsed?.messages ?? settleAt(streamIndex)
         } else {
           const fallbackIndex = prev.findLastIndex(
@@ -796,15 +908,18 @@ export function useMessageStream({
             // tui_gateway `_load_interim_assistant_messages`). When the final
             // completion is the SAME turn's reply, settle it onto that interim
             // instead of appending a second bubble. Continuity, not exact
-            // equality: streaming can drop characters and the final may add a
-            // trailing delta, so treat prefix-either-way as the same message.
+            // equality: streaming can drop a small number of characters and
+            // the final may add a trailing delta, so accept high overlap.
             // (mergeFinalAssistantText, via completeMessage, does the real
             // text merge — replaces the interim's text with the full final.)
             const finalContinuesInterim = Boolean(
               existing.interim &&
               finalText &&
               existingText &&
-              (finalText === existingText || finalText.startsWith(existingText) || existingText.startsWith(finalText))
+              (finalText === existingText ||
+                finalText.startsWith(existingText) ||
+                existingText.startsWith(finalText) ||
+                hasHighTextOverlap(finalText, existingText))
             )
 
             // A bare `error` event (e.g. the agent build failing) already
@@ -865,13 +980,17 @@ export function useMessageStream({
               //   final after streaming, e.g. pseudonym restore) shares the
               //   same no-continuity shape, so it takes the same boundary gate.
               //
-              // • finalContinuesInterim (prefix-either-way continuity, same
-              //   text or one a prefix of the other) is safe to settle
+              // • finalContinuesInterim (prefix-either-way or high-overlap
+              //   continuity) is safe to settle
               //   flag-free within this user occurrence: a `message.start`
               //   reset between this turn's interim and completion must not
               //   force an append of a duplicate bubble (#74560). This also
               //   closes the non-previewed tool-call gap from #63679.
               nextMessages = settleAt(index)
+            } else if (identicalInterimIndex >= 0) {
+              // The reply is already on screen as the sealed interim: settle it
+              // instead of appending the same text a second time (#123801).
+              nextMessages = settleAt(identicalInterimIndex)
             } else if (finalText) {
               nextMessages = [...prev, newAssistantFromCompletion()]
             }

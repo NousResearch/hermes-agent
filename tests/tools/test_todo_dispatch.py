@@ -44,7 +44,9 @@ def test_valid_calls_preserve_read_replace_merge_clear_and_error_contracts(path)
     store = TodoStore()
     assert _dispatch(path, store, {})["todos"] == []
     item = {"id": "1", "content": "Plan", "status": "pending"}
-    written = _dispatch(path, store, {"todos": json.dumps([item])})
+    # Registry dispatch receives normalized arguments; inline dispatch owns its
+    # coercion wrapper. String recovery is covered at that wrapper's entry point.
+    written = _dispatch(path, store, {"todos": [item]})
     assert written["todos"] == [item]
     assert _dispatch(path, store, {}) == written
     merged = _dispatch(path, store, {"todos": [{"id": "1", "status": "completed"}], "merge": True})

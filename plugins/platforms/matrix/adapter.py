@@ -10,7 +10,7 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_REQUIRE_MENTION (default true), MATRIX_THREAD_REQUIRE_MENTION, MATRIX_FREE_RESPONSE_ROOMS,
   MATRIX_PROCESS_NOTICES, MATRIX_ALLOW_ROOM_MENTIONS, MATRIX_ALLOW_PUBLIC_ROOMS (all default false);
   MATRIX_AUTO_THREAD (default true), MATRIX_DM_AUTO_THREAD, MATRIX_DM_MENTION_THREADS,
-  MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_MAX_MESSAGE_LENGTH (default 16000),
+  MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_MAX_MESSAGE_LENGTH (UTF-8 bytes, default/max 15000),
   MATRIX_MAX_MEDIA_BYTES, MATRIX_ROOM_IDENTITY_TTL_SECONDS; MATRIX_APPROVAL_REQUIRE_SENDER (default
   true), MATRIX_APPROVAL_TIMEOUT_SECONDS (default 300).
 
@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import array
 import inspect
+import json
 from contextlib import suppress
 import logging
 import mimetypes
@@ -45,6 +46,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
+from agent.i18n import t
 from agent.secret_scope import get_secret
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
@@ -69,7 +71,6 @@ except ImportError:
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -370,12 +371,23 @@ class _MatrixPickerPrompt:
 _MatrixModelPickerPrompt = _MatrixChoicePickerPrompt = _MatrixPickerPrompt
 
 
-# Spec allows ~65 KB events; 4000 was too small (split Markdown tables mid-row).
-# Matrix message size limit. The spec allows large events (~65 KB), but very large bodies can render poorly
-# in some clients. The previous 4,000-char default was overly conservative and split Markdown tables mid-row
-# (#53026).
-DEFAULT_MAX_MESSAGE_LENGTH = 16000
-MATRIX_MAX_MESSAGE_LENGTH_CEILING = 65535
+# The homeserver rejects an event whose JSON exceeds 65,536 bytes (M_TOO_LARGE). Event content stays
+# under this budget so the envelope (ids, hashes, signatures) and E2EE's 4/3 base64 inflation still fit.
+_MAX_CONTENT_BYTES = 45_000
+# Outbound text is measured in UTF-8 bytes (``message_len_fn``). A message carries it twice (body +
+# formatted_body, whose HTML runs up to about twice the Markdown), so a chunk gets a third of the
+# budget. The previous 4,000-char default split Markdown tables mid-row (#53026).
+MATRIX_MAX_MESSAGE_LENGTH_CEILING = _MAX_CONTENT_BYTES // 3
+DEFAULT_MAX_MESSAGE_LENGTH = MATRIX_MAX_MESSAGE_LENGTH_CEILING
+
+
+def _utf8_len(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+def _content_bytes(content: Dict[str, Any]) -> int:
+    """Size of event content as the homeserver counts it (canonical JSON is UTF-8, not \\u-escaped)."""
+    return _utf8_len(json.dumps(content, ensure_ascii=False, separators=(",", ":")))
 
 
 def _resolve_max_message_length(config) -> int:
@@ -829,6 +841,11 @@ class MatrixAdapter(BasePlatformAdapter):
     # Class-level defaults keep object.__new__-built test instances working.
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
     _SPLIT_THRESHOLD = DEFAULT_MAX_MESSAGE_LENGTH - 100
+
+    @property
+    def message_len_fn(self):
+        """UTF-8 bytes, the unit of the homeserver's event cap (a CJK character is three)."""
+        return _utf8_len
 
     def _resolve_store_dir(self) -> Path:
         """Pin the crypto-store dir to the active profile (connect() runs inside the profile
@@ -1408,7 +1425,8 @@ class MatrixAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=True)
         last_event_id = None
-        for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
+        for chunk in self.truncate_message(
+                self.format_message(content), self.max_message_length, len_fn=self.message_len_fn):
             msg_content = self._build_text_message_content(chunk)
             self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
             try:
@@ -1443,7 +1461,7 @@ class MatrixAdapter(BasePlatformAdapter):
         handoff watcher and the cron seeder mirror that shape rather than the shared ``thread`` slot."""
         if self._client is None:
             return None
-        result = await self.send(parent_chat_id, (name or "").strip() or "Hermes session")
+        result = await self.send(parent_chat_id, (name or "").strip() or t("platform.matrix.handoff.default_name"))
         root = result.message_id if result.success else None
         if not root:
             return None
@@ -1501,6 +1519,20 @@ class MatrixAdapter(BasePlatformAdapter):
             msg_content["format"] = "org.matrix.custom.html"
             msg_content["formatted_body"] = f'* {new_content["formatted_body"]}'
         msg_content["m.relates_to"] = {"rel_type": "m.replace", "event_id": message_id}
+        if _content_bytes(msg_content) > _MAX_CONTENT_BYTES:
+            # The top-level copy is only the fallback for clients without edit support (edit-aware
+            # clients render m.new_content); shorten it rather than double the event past the cap.
+            msg_content.pop("format", None)
+            msg_content.pop("formatted_body", None)
+            msg_content["body"] = ""
+            if _content_bytes(msg_content) > _MAX_CONTENT_BYTES:
+                # Many distinct mentions: the top-level list only drives this edit's notifications,
+                # while m.new_content keeps the full list, so the duplicate goes rather than the edit.
+                msg_content.pop("m.mentions", None)
+            room = _MAX_CONTENT_BYTES - _content_bytes(msg_content)
+            # JSON escaping grows a character at most sixfold (\u00XX).
+            fallback = formatted.encode("utf-8")[: max(0, room // 6)].decode("utf-8", "ignore")
+            msg_content["body"] = f"* {fallback}…"
         return await self._send_content_event(chat_id, msg_content)
 
     async def send_image(
@@ -1514,8 +1546,7 @@ class MatrixAdapter(BasePlatformAdapter):
             data, ct, fname = await self._download_external_media_with_cap(image_url)
         except Exception as exc:
             logger.warning("Matrix: failed to download image %s: %s", _redact_url_for_log(image_url), exc)
-            fallback = ("I couldn't download and upload the image to Matrix. "
-                        "The source URL was not shown because it may contain private tokens.")
+            fallback = t("platform.matrix.media.image_download_failed")
             return await self.emit_media_warning(chat_id, fallback, caption=caption, reply_to=reply_to, metadata=metadata)
         return await self._upload_and_send(chat_id, data, fname, ct, "m.image", caption, reply_to, metadata)
 
@@ -1647,8 +1678,11 @@ class MatrixAdapter(BasePlatformAdapter):
 
     # Template attrs for the shared _format_exec_approval core (header + fence + reason only;
     # the smart-deny/scope wording lives in the reaction legend below).
-    _EA_HEADER = f"⚠️ **{EA_HEADER_TEXT}**\n"
     _EA_CMD_BUDGET = 2000
+
+    @property
+    def _EA_HEADER(self) -> str:  # noqa: N802 — base class attr name; resolved per call for the active language
+        return f"⚠️ **{t('gateway.exec_approval.header')}**\n"
 
     async def _send_reaction_prompt(
         self, chat_id: str, text: str, metadata: Optional[dict], make_prompt, registry: dict, emojis,
@@ -1672,21 +1706,25 @@ class MatrixAdapter(BasePlatformAdapter):
         return result
 
     _EA_REACTIONS = {"once": "✅", "session": "🌀", "always": "♾️", "deny": "❌"}
-    _EA_LEGEND = {"once": "✅ = approve once", "session": "🌀 = approve for this session",
-                  "always": "♾️ = approve always", "deny": "❎ = deny"}
-    _EA_TYPED_HINT = {"session": "Reply `!approve session` to approve this pattern for the session, ",
-                      "always": "`!approve always` to approve permanently, "}
+    _EA_LEGEND_KEYS = {"once": "platform.matrix.approval.legend_once", "session": "platform.matrix.approval.legend_session",
+                       "always": "platform.matrix.approval.legend_always", "deny": "platform.matrix.approval.legend_deny"}
+    # Whole sentences per offered tier (the highest tier wins) so translations never splice fragments.
+    _EA_TYPED_HINT_KEYS = {"once": "platform.matrix.approval.typed_hint_once",
+                           "session": "platform.matrix.approval.typed_hint_session",
+                           "always": "platform.matrix.approval.typed_hint_always"}
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Reaction-driven approval: the bot seeds one reaction per offered choice."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
         choices = prompt.choices
-        typed_hints = "" if prompt.smart_denied else "".join(self._EA_TYPED_HINT[c] for c in choices if c in self._EA_TYPED_HINT)
+        tier = "once"
+        if not prompt.smart_denied:
+            tier = "always" if "always" in choices else ("session" if "session" in choices else "once")
         text = (
             f"{prompt.text}\n\n"
-            f"{typed_hints}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
-            "You can also click the reaction to approve:\n" + "\n".join(self._EA_LEGEND[c] for c in choices))
+            f"{t(self._EA_TYPED_HINT_KEYS[tier])}\n\n"
+            f"{t('platform.matrix.approval.legend_intro')}\n" + "\n".join(t(self._EA_LEGEND_KEYS[c]) for c in choices))
         reactions = tuple(self._EA_REACTIONS[c] for c in choices)
         session_key, chat_id = prompt.session_key, prompt.chat_id
 
@@ -1711,15 +1749,17 @@ class MatrixAdapter(BasePlatformAdapter):
             for p in providers or [] for model_id in (p.get("models") or [])][:len(_MATRIX_MODEL_PICKER_REACTIONS)]
         if not flat_choices:
             return await self.send(
-                chat_id, "No authenticated models are available for this session.", metadata=metadata)
+                chat_id, t("platform.matrix.picker.no_models"), metadata=metadata)
         try:
             from hermes_cli.providers import get_label
             provider_label = get_label(current_provider)
         except Exception:
             provider_label = current_provider
+        unknown = t("platform.shared.unknown")
         lines = [
-            "⚙ **Model Configuration**", f"Current model: `{current_model or 'unknown'}`",
-            f"Provider: {provider_label or 'unknown'}", "", "React to choose a model:"]
+            t("platform.matrix.picker.title"), t("platform.matrix.picker.current_model", model=current_model or unknown),
+            t("platform.matrix.picker.provider", provider=provider_label or unknown), "",
+            t("platform.matrix.picker.react_model")]
         choices: dict[str, tuple[str, str]] = {}
         for emoji, (model_id, provider_slug, provider_name) in zip(_MATRIX_MODEL_PICKER_REACTIONS, flat_choices):
             choices[emoji] = (model_id, provider_slug)
@@ -1751,12 +1791,12 @@ class MatrixAdapter(BasePlatformAdapter):
             value = str(choice.get("value") or "")
             label = str(choice.get("label") or value)
             if choice.get("is_current"):
-                label = f"{label} ← current"
+                label = t("platform.matrix.picker.current_suffix", label=label)
             emoji_choices[emoji] = value
             lines.append(f"{emoji} {label}")
         if not emoji_choices:
             return SendResult(success=False, error="No choices")
-        lines += ["", "React to choose."]
+        lines += ["", t("platform.matrix.picker.react_choice")]
         return await self._send_picker(
             chat_id, lines, emoji_choices, session_key, on_choice_selected, metadata,
             self._choice_picker_prompts_by_event, "choice picker")
@@ -1835,7 +1875,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if not p.exists():
             # file_path is host-local; never echo it into chat.
             logger.warning("[%s] upload fallback: media file not found for %s", self.name, file_path)
-            text = "⚠️ Couldn't deliver the attachment."
+            text = t("platform.shared.media.attachment_failed")
             return await self.emit_media_warning(room_id, text, caption=caption, reply_to=reply_to, metadata=metadata)
         try:
             file_size = p.stat().st_size
@@ -2286,7 +2326,7 @@ class MatrixAdapter(BasePlatformAdapter):
         is_direct = bool(getattr(getattr(event, "content", None), "is_direct", False))
         inviter = str(getattr(event, "sender", ""))
         # Only authorized inviters — otherwise any federated user could pull the bot into rooms.
-        if not self._is_authorized_user(inviter):
+        if not self._is_authorized_user(inviter, str(room_id)):
             logger.warning("Matrix: rejecting invite to %s from unauthorized user %s", room_id, inviter)
             return
         logger.info("Matrix: invited to %s — joining (is_direct=%s)", room_id, is_direct)
@@ -2353,7 +2393,7 @@ class MatrixAdapter(BasePlatformAdapter):
             # auto-join any invite from an arbitrary federated user on
             # restart. An inviter missing from the stripped invite state
             # fails closed, like an empty sender in _on_invite.
-            if not self._is_authorized_user(inviter):
+            if not self._is_authorized_user(inviter, str(room_id)):
                 logger.warning(
                     "Matrix: rejecting invite to %s from unauthorized user %s",
                     room_id,
@@ -2506,7 +2546,7 @@ class MatrixAdapter(BasePlatformAdapter):
         """Resolve a pending exec-approval prompt from a reaction. True if it was the target."""
         handled, prompt, choice = await self._claim_reaction_prompt(
             self._approval_prompts_by_event, room_id, reacts_to, key, sender, "approval",
-            "That reaction is not valid for this approval prompt.", self._expire_matrix_approval_prompt,
+            t("platform.matrix.approval.invalid_reaction"), self._expire_matrix_approval_prompt,
             choices=self._approval_reaction_map)
         if choice is None:
             return handled
@@ -2529,8 +2569,8 @@ class MatrixAdapter(BasePlatformAdapter):
         """Apply a model-picker reaction. True if the reaction targeted a pending picker."""
         return await self._handle_picker_reaction(
             self._model_picker_prompts_by_event, room_id, reacts_to, key, sender, "model picker",
-            "That reaction is not one of the available model choices.", self._expire_matrix_model_picker_prompt,
-            ("switch model", "switch model"), redact_bot_reactions=True)
+            t("platform.matrix.picker.invalid_model_reaction"), self._expire_matrix_model_picker_prompt,
+            ("switch model", "platform.matrix.picker.verb_switch_model"), redact_bot_reactions=True)
 
     async def _handle_choice_picker_reaction(self, room_id: str, reacts_to: str, key: str, sender: str) -> bool:
         """Apply a choice-picker reaction. True if the reaction targeted a pending picker."""
@@ -2538,13 +2578,14 @@ class MatrixAdapter(BasePlatformAdapter):
             self._choice_picker_prompts_by_event.pop(target_event_id, None)
         return await self._handle_picker_reaction(
             self._choice_picker_prompts_by_event, room_id, reacts_to, key, sender, "choice picker",
-            "That reaction is not one of the available choices.", _expire, ("apply choice", "apply selection"))
+            t("platform.matrix.picker.invalid_choice_reaction"), _expire,
+            ("apply choice", "platform.matrix.picker.verb_apply_selection"))
 
     async def _handle_picker_reaction(
         self, registry: dict, room_id: str, reacts_to: str, key: str, sender: str, label: str, invalid_text: str,
         on_expired, verbs: tuple[str, str], *, redact_bot_reactions: bool = False) -> bool:
         """Claim the picker, fire ``on_selected(room_id, *selection)`` and post its confirmation (or the error).
-        ``verbs`` = (log verb, user-facing verb)."""
+        ``verbs`` = (log verb, catalog key of the user-facing verb)."""
         handled, prompt, selection = await self._claim_reaction_prompt(
             registry, room_id, reacts_to, key, sender, label, invalid_text, on_expired)
         if selection is None:
@@ -2560,33 +2601,36 @@ class MatrixAdapter(BasePlatformAdapter):
                 await self.send(room_id, confirmation, reply_to=reacts_to)
         except Exception as exc:
             logger.error("Failed to %s from Matrix reaction: %s", verbs[0], exc)
-            await self.send(room_id, f"Failed to {verbs[1]}: {exc}", reply_to=reacts_to)
+            await self.send(room_id, t("platform.matrix.picker.failed", action=t(verbs[1]), error=str(exc)),
+                            reply_to=reacts_to)
         return True
 
     def _matrix_prompt_expired(self, prompt: Any) -> bool:
         expires_at = getattr(prompt, "expires_at", None)
         return expires_at is not None and time.monotonic() > float(expires_at)
 
-    def _is_authorized_user(self, user_id: str) -> bool:
-        """GATEWAY_ALLOW_ALL_USERS, or membership in MATRIX_ALLOWED_USERS."""
+    def _is_authorized_user(self, user_id: str, room_id: str | None = None) -> bool:
+        """Resolve live gateway authorization, falling back to the startup snapshot when unwired."""
+        if getattr(self, "_authorization_check", None) is not None:
+            return self._is_sender_authorized(user_id, chat_id=room_id) is True
         # Scoped read — the DEFAULT profile's os.environ opt-in must not authorize on a secondary bot.
         return _get_scoped_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in ("true", "1", "yes") or bool(
             self._allowed_user_ids and user_id in self._allowed_user_ids)
 
     async def _validate_matrix_prompt_reactor(
         self, room_id: str, target_event_id: str, sender: str, prompt: Any, prompt_label: str) -> bool:
-        if not self._is_authorized_user(sender):
+        if not self._is_authorized_user(sender, room_id):
             logger.info(
                 "Matrix: ignoring %s reaction from unauthorized user %s on %s", prompt_label, sender, target_event_id)
             await self._send_invalid_reaction_feedback(
-                room_id, target_event_id, "Only an authorized Matrix user can use these controls.")
+                room_id, target_event_id, t("platform.matrix.reaction.unauthorized"))
             return False
         requester = getattr(prompt, "requester_user_id", None)
         # getattr: object.__new__-built test doubles may lack the attribute.
         if getattr(self, "_approval_require_sender", True) and requester and sender != requester:
             logger.info("Matrix: ignoring %s reaction from %s; requester is %s", prompt_label, sender, requester)
             await self._send_invalid_reaction_feedback(
-                room_id, target_event_id, "Only the user who requested this action can use these controls.")
+                room_id, target_event_id, t("platform.matrix.reaction.not_requester"))
             return False
         return True
 
@@ -2603,14 +2647,14 @@ class MatrixAdapter(BasePlatformAdapter):
         await self._redact_bot_approval_reactions(room_id, prompt)
         await self._send_invalid_reaction_feedback(
             room_id, target_event_id,
-            "This approval prompt has expired. Run the command again if you still want to approve it.")
+            t("platform.matrix.approval.expired"))
 
     async def _expire_matrix_model_picker_prompt(self, room_id: str, target_event_id: str, prompt: Any) -> None:
         prompt.resolved = True
         self._model_picker_prompts_by_event.pop(target_event_id, None)
         await self._redact_bot_model_picker_reactions(room_id, prompt)
         await self._send_invalid_reaction_feedback(
-            room_id, target_event_id, "This model picker has expired. Run `/model` again to choose a model.")
+            room_id, target_event_id, t("platform.shared.model_picker_expired"))
 
     async def _redact_bot_approval_reactions(self, room_id: str, prompt: Any) -> None:
         """Redact the bot's seeded approval reactions (delayed), leaving only the user's reaction."""
@@ -2850,6 +2894,9 @@ class MatrixAdapter(BasePlatformAdapter):
         if html and html != text:
             msg_content["format"] = "org.matrix.custom.html"
             msg_content["formatted_body"] = html
+            if _content_bytes(msg_content) > _MAX_CONTENT_BYTES:
+                # Escape-heavy text can outgrow the budget as HTML; send it as plain text instead.
+                del msg_content["format"], msg_content["formatted_body"]
         return msg_content
 
     def _apply_relation_metadata(
@@ -3084,34 +3131,50 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         token = getattr(pconfig, "token", None) or get_secret("MATRIX_ACCESS_TOKEN", "") or ""
         if not homeserver or not token:
             return send_error("Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)")
-        txn_id = f"hermes_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
         from urllib.parse import quote
-        url = f"{homeserver}/_matrix/client/v3/rooms/{quote(chat_id, safe='')}/send/m.room.message/{txn_id}"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        payload = {"msgtype": "m.text", "body": message}
-        with suppress(ImportError):
-            import markdown as _md
-            tokenized, tex_store = _latex_to_tokens(message)
-            html = _md.markdown(tokenized, extensions=["fenced_code", "tables"])
-            payload["format"] = "org.matrix.custom.html"
-            payload["formatted_body"] = _tokens_to_mx_maths(
-                re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html), tex_store)
         # asyncio.wait_for, not aiohttp.ClientTimeout: cron invokes this via
         # run_coroutine_threadsafe ("Timeout context manager should be used inside a task").
         async with aiohttp.ClientSession() as session:
-            async def _do_send():
+            async def _do_send(payload):
+                txn_id = f"hermes_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
+                url = f"{homeserver}/_matrix/client/v3/rooms/{quote(chat_id, safe='')}/send/m.room.message/{txn_id}"
                 async with session.put(url, headers=headers, json=payload) as resp:
                     if resp.status not in {200, 201}:
                         return send_error(f"Matrix API error ({resp.status}): {await resp.text()}")
                     data = await resp.json()
                     return {"success": True, "platform": "matrix", "chat_id": chat_id,
                             "message_id": data.get("event_id")}
-            try:
-                return await asyncio.wait_for(_do_send(), timeout=30)
-            except asyncio.TimeoutError:
-                return send_error("Matrix API timeout (30s)")
+            for payload in _standalone_payloads(message):
+                try:
+                    result = await asyncio.wait_for(_do_send(payload), timeout=30)
+                except asyncio.TimeoutError:
+                    return send_error("Matrix API timeout (30s)")
+                if not result.get("success"):
+                    return result
+            return result
     except Exception as e:
         return send_error(f"Matrix send failed: {e}")
+
+
+def _standalone_payloads(message: str) -> list[Dict[str, Any]]:
+    """One m.room.message content per chunk. The caller chunks on characters, and a chunk of
+    non-Latin text can still exceed the homeserver's byte cap, so re-chunk on UTF-8 bytes."""
+    _md = None
+    with suppress(ImportError):
+        import markdown as _md
+    payloads = []
+    for chunk in BasePlatformAdapter.truncate_message(message, MATRIX_MAX_MESSAGE_LENGTH_CEILING, _utf8_len):
+        payload = {"msgtype": "m.text", "body": chunk}
+        if _md is not None:
+            tokenized, tex_store = _latex_to_tokens(chunk)
+            html = _md.markdown(tokenized, extensions=["fenced_code", "tables"])
+            formatted = {"format": "org.matrix.custom.html", "formatted_body": _tokens_to_mx_maths(
+                re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html), tex_store)}
+            if _content_bytes({**payload, **formatted}) <= _MAX_CONTENT_BYTES:
+                payload.update(formatted)
+        payloads.append(payload)
+    return payloads
 
 
 def interactive_setup() -> None:
@@ -3213,32 +3276,3 @@ def register(ctx) -> None:
         allow_all_env="MATRIX_ALLOW_ALL_USERS", cron_deliver_env_var="MATRIX_HOME_ROOM",
         standalone_sender_fn=_standalone_send, max_message_length=DEFAULT_MAX_MESSAGE_LENGTH, emoji="🔐",
         allow_update_command=True)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-MAX_MESSAGE_LENGTH = DEFAULT_MAX_MESSAGE_LENGTH
-
-_MATRIX_CAPABILITIES: Dict[str, str] = {
-    "text": "yes",
-    "threads": "yes",
-    "reactions": "yes",
-    "approvals": "yes",
-    "model picker": "yes",
-    "thinking panes": "yes",
-    "images": "yes",
-    "multiple images": "yes",
-    "files": "yes",
-    "voice/audio": "yes",
-    "video": "yes",
-    "E2EE": "off / optional / required",
-    "diagnostics": "yes",
-}
-
-def get_matrix_capabilities() -> Dict[str, str]:
-    """Return Matrix gateway capabilities for docs and release checks."""
-    return dict(_MATRIX_CAPABILITIES)
-# ---- END PLUGIN-COMPAT ----

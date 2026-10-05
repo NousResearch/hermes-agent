@@ -36,6 +36,15 @@ def _is_silence_narration(content: Optional[str]) -> bool:
     return bool(stripped) and len(stripped) <= 64 and bool(_SILENCE_NARRATION.match(stripped))
 
 
+class PartialDeliveryError(RuntimeError):
+    """A split send failed after earlier chunks were delivered (``raw_response["partial_overflow"]``).
+    Callers must not fall back to re-sending the whole payload: the recipient already has the head."""
+
+    def __init__(self, message: str, result: Any):
+        super().__init__(message)
+        self.result = result
+
+
 @dataclass(frozen=True)
 class DeliveryTransport:
     """Resolved live transport for one logical delivery platform."""
@@ -318,5 +327,8 @@ class DeliveryRouter:
             send_metadata["thread_id"] = await _ensure_named_dm_topic(adapter, target.chat_id, named_topic, refresh=True)
             send_metadata["telegram_dm_topic_created_for_send"] = True
         if error is not None:
+            from gateway.platforms.base import BasePlatformAdapter
+            if BasePlatformAdapter._is_partial_delivery(result):
+                raise PartialDeliveryError(error, result)
             raise RuntimeError(error or f"{target.platform.value} delivery failed")
         return result

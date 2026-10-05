@@ -1,4 +1,4 @@
-"""install.sh wires ~/.local/bin into shell startup files without duplicating it (#123424).
+"""install.sh wires ~/.local/bin into the startup file a login bash reads, without duplicating it (#123424).
 
 Distro skeletons put ~/.local/bin on PATH with a bare assignment
 (`PATH="$HOME/.local/bin:$PATH"`), not `export PATH=...`; that must count as
@@ -8,6 +8,7 @@ entry, because Fedora's ~/.bash_profile sources ~/.bashrc in every login shell.
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 
 import pytest
@@ -61,7 +62,8 @@ def _wire(home: Path, runs: int = 1) -> None:
 
 
 def _login_path(home: Path) -> list[str]:
-    result = subprocess.run(["bash", "-lc", 'printf %s "$PATH"'],
+    # Absolute path: the pinned PATH below has no bash on hosts like NixOS.
+    result = subprocess.run([shutil.which("bash"), "-lc", 'printf %s "$PATH"'],
                             env={"HOME": str(home), "PATH": "/usr/local/bin:/usr/bin:/bin"},
                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
@@ -87,3 +89,10 @@ def test_fedora_login_shell_has_local_bin_once(tmp_path):
     _wire(home, runs=2)
     assert (home / ".bash_profile").read_text(encoding="utf-8-sig").count(MARKER) == 1
     assert _login_path(home).count(str(home / ".local" / "bin")) == 1
+
+
+def test_bash_login_only_user_gets_local_bin(tmp_path):
+    # bash reads ~/.bash_login before ~/.profile, so the .profile line alone is hidden.
+    home = _home(tmp_path, **{".bash_login": "# mine\n"})
+    _wire(home)
+    assert str(home / ".local" / "bin") in _login_path(home)

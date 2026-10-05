@@ -40,6 +40,11 @@ SAMPLE_RATE = 16000  # 16 kHz mono int16 — Whisper-native and what every engin
 _FIRE_COOLDOWN_SECONDS = 2.0
 _START_TIMEOUT_SECONDS = 5.0
 _READ_POLL_SECONDS = 0.05  # slice between read_available polls; bounds halt latency
+# Some hostapis (Windows DirectSound) never advance ``read_available`` even while
+# audio flows; after this much starvation the poll guard is abandoned for the
+# blocking read (see ``_Capture.read``).
+_READ_STALL_FALLBACK_SECONDS = 2.0
+_HALT_JOIN_SECONDS = 2.0
 
 # Ambient-speech rejection: N consecutive over-threshold frames before firing
 # (a stray phoneme spikes one frame; a real phrase holds several).
@@ -434,6 +439,9 @@ class _Capture:
     np: Any = None
     rate: int = SAMPLE_RATE
     frame_length: int = 1280  # samples per read at ``rate``
+    # Set once ``read_available`` proves unreliable for this stream: skip the poll
+    # guard and go straight to the blocking read.
+    _skip_available_poll: bool = False
 
     def read(self, stop: Optional[threading.Event] = None):
         """One raw block; None when nothing arrived within ~250 ms (client) or ``stop`` was
@@ -443,13 +451,26 @@ class _Capture:
         PipeWire device, never returns — so the halting thread's ``join`` timed out and
         ``close()`` raced the still-pending read. Poll ``read_available`` in short slices
         against ``stop`` and only call ``read`` once the block is guaranteed to be there.
+
+        A device that never advances ``read_available`` (Windows DirectSound) would spin
+        here forever, so after ``_READ_STALL_FALLBACK_SECONDS`` of starvation the guard is
+        abandoned (with a warning) and the blocking read takes over; a truly wedged
+        blocking read is released by ``_halt_thread`` aborting the stream.
         """
         if self.stream is not None:
             available = getattr(self.stream, "read_available", None)
-            if stop is not None and available is not None:
+            if stop is not None and available is not None and not self._skip_available_poll:
+                stalled = 0.0
                 while self.stream.read_available < self.frame_length:
                     if stop.wait(_READ_POLL_SECONDS):
                         return None
+                    stalled += _READ_POLL_SECONDS
+                    if stalled >= _READ_STALL_FALLBACK_SECONDS:
+                        logger.warning(
+                            "wake word: read_available stuck below frame length for "
+                            "%.1fs — falling back to blocking reads", stalled)
+                        self._skip_available_poll = True
+                        break
             return self.stream.read(self.frame_length)[0]
         with suppress(Exception):
             return self.queue.get(timeout=0.25)
@@ -483,6 +504,9 @@ class WakeWordDetector:
             {"selector": "client", "name": "client capture", "hostapi": "remote"}
             if self.external_audio else {"selector": input_device})
         self._thread: Optional[threading.Thread] = None
+        # Armed capture of the current reader thread; lets _halt_thread abort a
+        # blocking read the poll guard cannot return from. Written by _run.
+        self._cap: Optional[_Capture] = None
         self._stop, self._callback_inflight = threading.Event(), threading.Event()
         self._lock, self._last_fire = threading.Lock(), 0.0
         # Client-capture PCM queue (int16 mono frames). Local mode ignores this.
@@ -561,7 +585,15 @@ class WakeWordDetector:
         # Join OUTSIDE the lock: a reader wedged in PortAudio would otherwise pin the lock
         # for the whole timeout and stall every start()/pause() caller behind it.
         if t is not None and t is not threading.current_thread():
-            t.join(timeout=2.0)
+            t.join(timeout=_HALT_JOIN_SECONDS)
+            if t.is_alive():
+                # The reader is wedged in a blocking read (read_available proved
+                # unreliable, or the device died mid-read). abort() discards pending
+                # buffers and unblocks it; close() is idempotent and the reader's
+                # own finally will close it again.
+                cap = self._cap
+                if cap is not None:
+                    cap.close()
         with self._lock:
             # Keep the handle while the thread is still alive (join timed out) so
             # ``running`` stays truthful and the next start() does not double-arm.
@@ -607,6 +639,7 @@ class WakeWordDetector:
                                         dtype="int16", blocksize=cap.frame_length)
             cap.stream.start()
         except Exception as e:
+            cap.close()
             logger.error("wake word: failed to open microphone: %s", e)
             raise
         return cap
@@ -643,10 +676,31 @@ class WakeWordDetector:
             self._callback_inflight.set()
             threading.Thread(target=self._dispatch_wake, daemon=True, name="wake-word-callback").start()
 
+    def _recover_capture(self, frame_length: int, retries) -> Optional[_Capture]:
+        """Retry only an already-started local capture, keeping its owner and engine."""
+        if self.external_audio:
+            return None
+        for delay in retries:
+            logger.warning("wake word: reopening microphone in %.1fs", delay)
+            if self._stop.wait(delay):
+                return None
+            try:
+                cap = self._open_capture(frame_length)
+            except Exception as e:
+                logger.warning("wake word: microphone reopen failed: %s", e)
+                continue
+            with suppress(Exception):
+                self.engine.reset()
+            self.audio_silent, self._silent_frames = False, 0
+            return cap
+        logger.warning("wake word: microphone recovery exhausted; toggle wake word to retry")
+        return None
+
     def _run(self, ready: threading.Event, startup_errors: list[BaseException]) -> None:
         frame_length = self.engine.frame_length
         try:
             cap = self._open_capture(frame_length)
+            self._cap = cap
         except Exception as e:
             startup_errors.append(e)
             ready.set()
@@ -659,6 +713,9 @@ class WakeWordDetector:
                     frame_length, SAMPLE_RATE, self.external_audio)
         ready.set()
         failed = False
+        # Bound the whole arm, not just consecutive open failures: a device can
+        # reopen successfully and fail its very next read forever.
+        retries = iter((0.5, 1.0, 2.0))
         silent_alert_frames = max(1, int(_SILENCE_ALERT_SECONDS * SAMPLE_RATE / max(1, frame_length)))
         try:
             while not self._stop.is_set():
@@ -666,6 +723,15 @@ class WakeWordDetector:
                     data = cap.read(self._stop)
                 except Exception as e:
                     logger.warning("wake word: stream read error: %s", e)
+                    cap.close()
+                    cap = None
+                    if not self._stop.is_set():
+                        cap = self._recover_capture(frame_length, retries)
+                    if cap is not None:
+                        # Re-arm the halt hook: _halt_thread aborts whatever
+                        # self._cap points at, and recovery replaced the capture.
+                        self._cap = cap
+                        continue
                     failed = not self._stop.is_set()
                     break
                 if data is None:  # no client frames yet — counts as silence for status
@@ -681,7 +747,8 @@ class WakeWordDetector:
                 except Exception as e:
                     logger.debug("wake word: engine error: %s", e)
         finally:
-            cap.close()
+            if cap is not None:
+                cap.close()
             logger.info("wake word: stream closed")
             if failed and self.on_failure is not None:
                 self.on_failure(self)

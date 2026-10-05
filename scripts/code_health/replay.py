@@ -7,7 +7,8 @@ The sample is every PR merged into main inside a closed date window, in PR-numbe
 same window always selects the same PRs (a new comment on an old PR cannot reshuffle it). Each run
 writes ``<dir>/manifest.json`` (number, base, head per PR); ``--manifest`` replays exactly those
 ranges, e.g. to compare two engine versions on identical input. Writes ``<dir>/replay.jsonl`` (one
-row per PR) and prints per-rule totals plus how many PRs had at least one blocking finding. Use it
+row per PR) and prints per-rule totals plus how many measured PRs had at least one blocking finding;
+a PR whose range cannot be resolved or measured is listed and fails the run. Use it
 before promoting a rule to blocking or changing a target: a rule whose hits on merged PRs are
 mostly legitimate code ships as a warning until its checker is fixed.
 """
@@ -119,20 +120,30 @@ def main(argv: list[str] | None = None) -> int:
     per_rule: Counter[str] = Counter()
     prs_per_rule: Counter[str] = Counter()
     blocked = 0
+    # A range that was never measured is no evidence either way: it stays out of the totals and
+    # the denominator, and fails the run, so a "0 of N" verdict always means N measured PRs.
+    unmeasured: list[int] = []
     with (out_dir / "replay.jsonl").open("w", encoding="utf-8") as fh:
         for row in manifest:
             try:
-                findings = replay_one(repo, measurer, row["base"], row["head"]) if row["base"] else []
+                if not row["base"]:
+                    raise RuntimeError(row["head"] or "no base revision")
+                findings = replay_one(repo, measurer, row["base"], row["head"])
             except RuntimeError as exc:
-                findings = [{"error": str(exc)}]
+                unmeasured.append(row["number"])
+                fh.write(json.dumps({**row, "error": str(exc)}) + "\n")
+                continue
             fh.write(json.dumps({**row, "findings": findings}) + "\n")
-            hits = [f for f in findings if "rule" in f]
-            per_rule.update(f["rule"] for f in hits)
-            prs_per_rule.update({f["rule"] for f in hits})
-            blocked += any(f["blocking"] for f in hits)
+            per_rule.update(f["rule"] for f in findings)
+            prs_per_rule.update({f["rule"] for f in findings})
+            blocked += any(f["blocking"] for f in findings)
     for rule, count in per_rule.most_common():
         print(f"{rule:<11} findings {count:>4}  PRs {prs_per_rule[rule]:>4}")
-    print(f"{blocked} of {len(manifest)} PRs had at least one blocking finding")
+    print(f"{blocked} of {len(manifest) - len(unmeasured)} measured PRs had at least one blocking finding")
+    if unmeasured:
+        print(f"{len(unmeasured)} of {len(manifest)} PRs could not be measured: "
+              + ", ".join(f"#{n}" for n in unmeasured) + f" (errors in {out_dir / 'replay.jsonl'})")
+        return 1
     return 0
 
 

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from scripts.code_health import replay
 from scripts.code_health.cli import run
 
 REPO = Path(__file__).resolve().parents[2]
@@ -169,3 +171,34 @@ def test_verdicts_follow_ownership_deadlines_and_import_execution(tmp_path, caps
         base = _commit(repo, extra_base)
     code, out = _verdict(repo, base, files, capsys)
     assert code == (1 if blocks else 0), out
+
+
+# --- replay: a range it could not measure is reported and fails the run, never counted clean ---
+
+
+def test_replay_reports_unmeasured_prs_and_fails(tmp_path, monkeypatch, capsys):
+    repo, base = _repo(tmp_path)
+    head = _commit(repo, {"pkg/b.py": _SWALLOW.replace("other", "fresh")})
+
+    def pr(number: int, oid: str) -> dict:
+        return {"number": number, "title": f"pr {number}", "mergeCommit": {"oid": oid},
+                "commits": {"totalCount": 1, "nodes": [{"commit": {"messageHeadline": "elsewhere"}}]}}
+
+    # #2's merge commit is not in the clone: building the manifest cannot resolve its range
+    monkeypatch.setattr(replay, "merged_prs", lambda *_: [pr(1, head), pr(2, "1" * 40)])
+    monkeypatch.chdir(repo)
+    out_dir = tmp_path / "out"
+    assert replay.main(["--merged", "2026-09-01..2026-09-30", "--out", str(out_dir)]) == 1
+    out = capsys.readouterr().out
+    assert "1 of 1 measured PRs had at least one blocking finding" in out, out
+    assert "1 of 2 PRs could not be measured: #2" in out, out
+
+    # a frozen manifest whose range no longer exists cannot be replayed either
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest.append({"number": 3, "title": "pr 3", "base": "0" * 40, "head": "1" * 40})
+    (tmp_path / "frozen.json").write_text(json.dumps(manifest), encoding="utf-8")
+    assert replay.main(["--manifest", str(tmp_path / "frozen.json"), "--out", str(out_dir)]) == 1
+    out = capsys.readouterr().out
+    assert "1 of 1 measured PRs had at least one blocking finding" in out, out
+    assert "2 of 3 PRs could not be measured: #2, #3" in out, out
+

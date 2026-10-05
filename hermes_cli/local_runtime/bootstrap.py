@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from hermes_cli.local_runtime.binaries import runtimes_root
-from hermes_cli.local_runtime.gguf import SPLIT_PART_RE, model_id_from_stem
+from hermes_cli.local_runtime.gguf import COMPANION_ASSET_RE, SPLIT_PART_RE, model_id_from_stem
 
 logger = logging.getLogger(__name__)
 
@@ -71,18 +71,23 @@ def assets_dir() -> Path:
 def staged_in(models_dir: Path, *, require_complete: bool = True) -> "list[Path]":
     """Servable GGUFs in a directory: single files, plus split GGUFs once by their first part.
     With ``require_complete`` a split counts only when EVERY part is on disk — a mid-download split
-    is not servable and must not surface anywhere as a model."""
+    is not servable and must not surface anywhere as a model. Companion assets (``mmproj-``
+    projectors, audio codecs) never count wherever they are staged: they have no chat surface, and
+    serving one only wastes an autoload slot under --models-max."""
     files = sorted(models_dir.glob("*.gguf"))
     names = {p.name for p in files}
     out = []
     for p in files:
         m = SPLIT_PART_RE.search(p.name)
+        stem = p.name if m is None else p.name[: m.start()]
+        if COMPANION_ASSET_RE.match(stem):
+            continue
         if m is None:
             out.append(p)
             continue
         if m.group(1) != "00001":
             continue
-        stem, total = p.name[: m.start()], int(m.group(2))
+        total = int(m.group(2))
         if not require_complete or all(f"{stem}-{i:05d}-of-{m.group(2)}.gguf" in names
                                        for i in range(2, total + 1)):
             out.append(p)

@@ -302,6 +302,15 @@ def test_run_git_hands_the_lock_fd_to_local_mutators_only(repo, tmp_path, monkey
     assert out.read_text(encoding="utf-8-sig").split() == (["yes"] if holds else ["no"]), args
 
 
+class _Win32Sys:
+    """``sys`` as one module sees it on Windows; everything but ``platform`` is the real module."""
+
+    platform = "win32"
+
+    def __getattr__(self, name):
+        return getattr(sys, name)
+
+
 @pytest.mark.platforms("posix")
 def test_a_timed_out_child_never_waits_on_a_grandchild_holding_its_pipes(monkeypatch):
     """N14: the in-update (Windows) run() killed only the direct child on a timeout, then waited
@@ -309,7 +318,9 @@ def test_a_timed_out_child_never_waits_on_a_grandchild_holding_its_pipes(monkeyp
     Driven here through that branch with a POSIX grandchild the tree kill (taskkill) cannot reach."""
     from hermes_cli import update_custody
 
-    monkeypatch.setattr(update_custody.sys, "platform", "win32")
+    # Only update_custody sees win32: patching sys.platform itself would send every lazy import
+    # in this window (the suite's Popen guard imports gateway.status) down its Windows branch.
+    monkeypatch.setattr(update_custody, "sys", _Win32Sys())
     monkeypatch.setattr(update_custody, "_held", lambda: {"fd": None})
     monkeypatch.setattr(update_custody, "popen", lambda argv, **kw: subprocess.Popen(list(argv), **kw))
     started = time.monotonic()

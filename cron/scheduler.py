@@ -215,11 +215,6 @@ def stale_code_yield_labels(recorded_error: str | None) -> tuple[str, str] | Non
     return (match.group(1), match.group(2)) if match else None
 
 
-# Log the yield at most once per episode (reset when the skew changes) to avoid per-interval spam.
-_YIELD_LOG_INTERVAL_SECONDS = 3600.0
-_last_yield_log: dict[str, object] = {}
-
-
 def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
     """``(boot_rev, disk_rev)`` when THIS profile's tick must yield to a fresher gateway, else None.
 
@@ -256,21 +251,6 @@ def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
     except Exception:
         return None
     return skew
-
-
-def _log_tick_yield_once(reason: str) -> None:
-    """Log the yield at error level once per episode (skew signature)."""
-    global _last_yield_log
-    now = time.monotonic()
-    last_reason = _last_yield_log.get("reason")
-    last_at = _last_yield_log.get("at", 0.0)
-    if last_reason != reason or (now - float(last_at)) >= _YIELD_LOG_INTERVAL_SECONDS:
-        logger.error(
-            "Cron tick yielded: this process is running stale code (%s) and a "
-            "fresher gateway owns the runtime lock — jobs will fire from that "
-            "process. Restart this one to reclaim its ticks.",
-            reason)
-    _last_yield_log = {"reason": reason, "at": now}
 
 
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:

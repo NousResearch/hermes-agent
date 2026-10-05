@@ -12,6 +12,27 @@ _STORE_WARN_INTERVAL_SECONDS = 900.0
 _last_store_warning: dict = {}
 
 
+# Log the yield at most once per episode (reset when the skew changes) to avoid per-interval spam.
+_YIELD_LOG_INTERVAL_SECONDS = 3600.0
+_last_yield_log: dict[str, object] = {}
+
+
+def _log_tick_yield_once(reason: str) -> None:
+    """Log the yield at error level once per episode (skew signature)."""
+    global _last_yield_log
+    now = time.monotonic()
+    last_reason = _last_yield_log.get("reason")
+    last_at = _last_yield_log.get("at", 0.0)
+    if last_reason != reason or (now - float(last_at)) >= _YIELD_LOG_INTERVAL_SECONDS:
+        logger.error(
+            "Cron tick yielded: this process is running stale code (%s) and a "
+            "fresher gateway owns the runtime lock — jobs will fire from that "
+            "process. Restart this one to reclaim its ticks.",
+            reason)
+    _last_yield_log = {"reason": reason, "at": now}
+
+
+
 def warn_store_unwritable(exc: OSError, skipped: str) -> None:
     """Rate-limited WARNING for a cron store write that failed (ENOSPC/EROFS/EACCES). The caller
     skips the dispatch that needed the write: no job runs without a durable advance/fire claim."""
@@ -48,7 +69,7 @@ def _tick_admitted(
     # lock, ITS ticker dispatches. With no fresh holder (desktop-standalone) the tick proceeds.
     _skew = _sched._should_yield_tick_to_fresh_gateway()
     if _skew is not None:
-        _sched._log_tick_yield_once(f"boot={_skew[0]} disk={_skew[1]}")
+        _log_tick_yield_once(f"boot={_skew[0]} disk={_skew[1]}")
         raise _sched.CronTickYielded(_skew[0], _skew[1])
 
     lock_dir, lock_file = _sched._get_lock_paths()

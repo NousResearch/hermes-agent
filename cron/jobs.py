@@ -1313,20 +1313,6 @@ def get_ticker_success_age() -> Optional[float]:
     return _epoch_file_age("ticker_last_success")
 
 
-def get_catch_up_occurrence_count() -> int:
-    """Return the profile-local stale-schedule catch-up count."""
-    path = _current_cron_store().cron_dir / "catch_up_occurrences"
-    try:
-        return max(0, int(path.read_text(encoding="utf-8-sig").strip()))
-    except (OSError, ValueError):
-        return 0
-
-
-def record_catch_up_occurrence() -> None:
-    """Increment the profile-local stale-schedule catch-up counter, best effort."""
-    _write_marker("catch_up_occurrences", str(get_catch_up_occurrence_count() + 1), ".count_")
-
-
 def record_ticker_error(message: str) -> None:
     """Persist the latest tick failure so `cron status` (another process) can show WHY, not just
     staleness."""
@@ -3164,6 +3150,7 @@ def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
         "Job '%s' missed its scheduled time (%s, grace=%ds). "
         "Running now; next run provisionally set to: %s (re-anchored on completion)",
         d.label, d.next_run, grace, new_next)
+    from cron.occurrences import record_catch_up_occurrence
     record_catch_up_occurrence()
     return False
 

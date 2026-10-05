@@ -106,6 +106,10 @@ class RetiredUnknown(OSError):
     """The retired-id list exists but cannot be read: which obligations are complete is unknown."""
 
 
+class RecordUnknown(OSError):
+    """A saved pause or claim exists but cannot be read or parsed: what it still owes is unknown."""
+
+
 @contextmanager
 def _mutex(wait_s: float = _MUTEX_WAIT_S):
     """Exclusive kernel lock on the record directory's sidecar (A7). Re-entrant per thread; each
@@ -326,12 +330,24 @@ def _atomic_write(path: Path, body: dict) -> None:
 
 
 def read(path: Path | None = None) -> dict | None:
+    """The saved body; ``None`` only when the file is absent. One that exists but cannot be read
+    (a Windows sharing violation, an AV scanner) or does not parse raises :class:`RecordUnknown`:
+    it may be the newest copy of an obligation (its partial progress) or the only one, so it never
+    lets an older copy execute nor a new pause replace it. Callers fail closed and retry later."""
     path = path or record_path()
     try:
-        body = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
+        text = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
         return None
-    return body if isinstance(body, dict) and isinstance(body.get("token"), dict) else None
+    except OSError as exc:
+        raise RecordUnknown(f"cannot read the paused-gateway record {path}: {exc}") from exc
+    try:
+        body = json.loads(text)
+    except ValueError:
+        body = None
+    if not isinstance(body, dict) or not isinstance(body.get("token"), dict):
+        raise RecordUnknown(f"the paused-gateway record {path} is malformed; fix or remove it to resume")
+    return body
 
 
 UNOWNED = {"pid": 0, "ct": None}
@@ -494,7 +510,7 @@ def _holder(src: Path, body: dict) -> dict:
 
 
 def _files(path: Path) -> list[tuple[Path, dict]]:
-    """This checkout's record and claims, readable ones only."""
+    """This checkout's record and claims; one that cannot be read raises :class:`RecordUnknown`."""
     found = []
     for src in (path, *_claims(path)):
         body = read(src)
@@ -568,12 +584,10 @@ def retire_redundant(path: Path | None = None) -> None:
 
 
 def _prune_retired(path: Path) -> None:
-    """Forget retired ids no file carries any more — only when every candidate file was readable
-    (one Windows would not let us read may still carry a retired id)."""
+    """Forget retired ids no file carries any more (a carrier that cannot be read raises first)."""
     retired = _retired(path)
-    candidates = [p for p in (path, *_claims(path)) if p.exists()]
-    bodies = [read(p) for p in candidates]
-    if not retired or None in bodies:
+    bodies = [body for body in map(read, (path, *_claims(path))) if body is not None]
+    if not retired:
         return
     carried = {str(b["token"].get("pause_id")) for b in bodies}
     keep = retired & carried

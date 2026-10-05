@@ -599,6 +599,68 @@ def test_an_unreadable_retired_list_claims_nothing_and_forgets_nothing(tmp_path,
 
 
 
+# --- Review A: a carrier that cannot be read is unknown, never absent ---------------------------
+def _unreadable(path: Path, how: str) -> None:
+    if how == "malformed":
+        path.write_text("{trunc", encoding="utf-8")
+    else:
+        path.chmod(0)  # stands in for a Windows read refusal (sharing violation, AV scanner)
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads a mode-000 file")
+@pytest.mark.parametrize("how", ["refused", "malformed"])
+def test_an_unreadable_newer_carrier_never_lets_its_older_copy_execute(tmp_path, monkeypatch, how):
+    """Partial progress left the newer claim owing only beta beside an older alpha+beta copy of the
+    same obligation (its unlink was refused). That claim becoming unreadable must not resurrect alpha."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    src = pause_record.record_path()
+    pause_id = "d" * 32
+    pause_record.write({"pause_id": pause_id, "resume_needed": True, "profiles": {"alpha": 11, "beta": 12}},
+                       owner=pause_record.UNOWNED)
+    newer = src.with_name(f"{src.name}.999.deadbeef.claim")
+    pause_record._atomic_write(newer, {"install_root": str(REPO), "claimer": pause_record.UNOWNED, "rev": 1,
+                                       "token": {"pause_id": pause_id, "resume_needed": True, "profiles": {"beta": 12}}})
+
+    def owed() -> list[dict]:
+        try:
+            return [body["token"]["profiles"] for _src, body in pause_record.orphans()]
+        except OSError:  # unknown: recovery reports it and claims nothing
+            return []
+
+    assert owed() == [{"beta": 12}], "premise: the furthest-progressed copy executes"
+    _unreadable(newer, how)
+    try:
+        assert {"alpha": 11, "beta": 12} not in owed(), "completed alpha would be restarted again"
+        assert pause_record.claim(src) is None, "the older copy was claimed past an unreadable newer one"
+    finally:
+        newer.chmod(0o644)
+    assert src.exists() and newer.exists(), "a carrier was deleted while its state was unknown"
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads a mode-000 file")
+@pytest.mark.parametrize("how", ["refused", "malformed"])
+def test_an_unreadable_orphan_is_never_overwritten_by_a_new_pause(tmp_path, monkeypatch, how):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    src = pause_record.record_path()
+    pause_record.write({"pause_id": "e" * 32, "resume_needed": True, "profiles": {"alpha": 11}}, owner=pause_record.UNOWNED)
+    saved = src.read_bytes()
+    _unreadable(src, how)
+    try:
+        with pytest.raises(OSError):
+            pause_record.write({"pause_id": "f" * 32, "resume_needed": True, "profiles": {"beta": 12}},
+                               owner=pause_record.identity())
+    finally:
+        src.chmod(0o644)
+    if how == "refused":
+        assert src.read_bytes() == saved, "alpha's saved restart obligation was replaced"
+    else:
+        assert src.read_text(encoding="utf-8") == "{trunc", "an unknown record was replaced"
+    src.write_bytes(saved)  # readable control: the new pause folds the orphan in
+    token = {"pause_id": "f" * 32, "resume_needed": True, "profiles": {"beta": 12}}
+    pause_record.write(token, owner=pause_record.identity())
+    assert pause_record.read()["token"]["profiles"] == {"alpha": 11, "beta": 12}
+
+
 # --- Review W3: record hygiene --------------------------------------------------------------------
 def test_a_refused_publish_leaves_no_temp_beside_the_record(tmp_path, monkeypatch):
     target = tmp_path / "records" / "record.json"

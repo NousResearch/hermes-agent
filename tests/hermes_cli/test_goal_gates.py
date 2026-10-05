@@ -110,6 +110,39 @@ def test_run_gate_keeps_diagnostics_when_a_byte_will_not_decode(tmp_path):
     )
 
 
+def _open_descendant(ready):
+    """Open a handle on the descendant named by the ready file, only if its identity checks out.
+
+    The handle is closed (never terminated) when validation fails, so a stale or reused PID is left alone.
+    """
+    import _winapi
+    import psutil
+
+    pid, created = json.loads(ready.read_text(encoding="utf-8-sig"))
+    handle = _winapi.OpenProcess(0x100001, False, pid)  # SYNCHRONIZE | PROCESS_TERMINATE
+    try:
+        assert psutil.Process(pid).create_time() == created
+    except BaseException:
+        _winapi.CloseHandle(handle)
+        raise
+    return handle
+
+
+def _release_descendant(handle):
+    """Stop a validated descendant if it is still running, and always release the handle."""
+    import _winapi
+
+    try:
+        if _winapi.WaitForSingleObject(handle, 0) == _winapi.WAIT_TIMEOUT:
+            try:
+                _winapi.TerminateProcess(handle, 1)
+            except OSError:
+                pass  # it exited between the check and the call
+            _winapi.WaitForSingleObject(handle, 2000)
+    finally:
+        _winapi.CloseHandle(handle)
+
+
 @pytest.mark.platforms("windows")
 def test_run_gate_timeout_terminates_pipe_holding_descendant(tmp_path):
     """Regression for #132325: timeout must release pipes and terminate their owner."""
@@ -147,9 +180,7 @@ def test_run_gate_timeout_terminates_pipe_holding_descendant(tmp_path):
         while not ready.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
         assert ready.exists(), "descendant never became ready"
-        pid, created = json.loads(ready.read_text(encoding="utf-8-sig"))
-        handle = _winapi.OpenProcess(0x100001, False, pid)  # SYNCHRONIZE | PROCESS_TERMINATE
-        assert psutil.Process(pid).create_time() == created
+        handle = _open_descendant(ready)
         worker.join(timeout=7)
         assert not worker.is_alive(), "run_gate did not finish after the finite fixture"
         assert elapsed[0] < 4, f"1s gate took {elapsed[0]:.3f}s waiting for descendant pipes"
@@ -159,12 +190,143 @@ def test_run_gate_timeout_terminates_pipe_holding_descendant(tmp_path):
         assert "AFTER_DEADLINE" not in output
         assert _winapi.WaitForSingleObject(handle, 2000) == _winapi.WAIT_OBJECT_0
     finally:
-        if handle is not None:
-            if _winapi.WaitForSingleObject(handle, 0) == _winapi.WAIT_TIMEOUT:
-                _winapi.TerminateProcess(handle, 1)
-                _winapi.WaitForSingleObject(handle, 2000)
-            _winapi.CloseHandle(handle)
-        worker.join(timeout=2)
+        try:
+            if handle is not None:
+                _release_descendant(handle)
+        finally:
+            worker.join(timeout=2)
+
+
+def _descendant_script(tmp_path):
+    """A descendant that reports its identity, then lives far longer than any permitted cleanup window."""
+    ready = tmp_path / "descendant-ready.json"
+    script = tmp_path / "descendant.py"
+    script.write_text(
+        "import json, os, pathlib, psutil, sys, time\n"
+        "p = psutil.Process()\n"
+        "ready = pathlib.Path(sys.argv[1]); staging = ready.with_suffix('.tmp')\n"
+        "staging.write_text(json.dumps([p.pid, p.create_time()]), encoding='utf-8'); staging.replace(ready)\n"
+        "print('CHILD_BEFORE', flush=True)\n"
+        "time.sleep(60)\n", encoding="utf-8")
+    return script, ready
+
+
+def _run_gate_with_failing_job_close(command, tmp_path, ready, *, no_job_terminate=False):
+    """run_gate whose Windows job fails its first close().
+
+    Returns (verdict, killed pids, seconds, (close attempts, handle released, descendant exited)).
+    The descendant is observed through a process handle, so there is no timing race with its own lifetime.
+    The handle state is captured before the real job is closed here, so a leak by the gate is visible.
+    """
+    import _winapi
+
+    from hermes_cli import _subprocess_compat as compat
+    from hermes_cli.local_runtime import processes
+
+    real_spawn = processes.spawn_server
+    real_kill = compat.kill_process_tree
+    killed, jobs, results, elapsed = [], [], [], []
+    handle = None
+
+    class FailFirstClose:
+        def __init__(self, job):
+            self.real = job
+            self._handle = job._handle
+            self.attempts = 0
+
+        def close(self):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise OSError("CloseHandle failed")
+            self.real.close()
+
+    def spawn(*args, **kwargs):
+        proc, job = real_spawn(*args, **kwargs)
+        jobs.append(FailFirstClose(job))
+        return proc, jobs[-1]
+
+    def kill(proc):
+        killed.append(proc.pid)
+        real_kill(proc)
+
+    def run():
+        start = time.monotonic()
+        results.append(run_gate(GoalGate(command=command, timeout_seconds=1), cwd=str(tmp_path)))
+        elapsed.append(time.monotonic() - start)
+
+    terminate = (lambda job: False) if no_job_terminate else compat._terminate_job
+    try:
+        with patch.object(processes, "spawn_server", spawn), \
+                patch.object(compat, "kill_process_tree", kill), \
+                patch.object(compat, "_terminate_job", terminate):
+            worker = threading.Thread(target=run, daemon=True)
+            worker.start()
+            deadline = time.monotonic() + 8
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert ready.exists(), "descendant never became ready"
+            handle = _open_descendant(ready)
+            worker.join(timeout=30)
+            assert not worker.is_alive(), "run_gate did not finish"
+        # Generous bound that is still far below the descendant's own 60s lifetime.
+        exited = _winapi.WaitForSingleObject(handle, 20000) == _winapi.WAIT_OBJECT_0
+        # Snapshot before the cleanup below, so a handle the gate failed to release is not masked.
+        released = jobs[0].real._handle is None
+        return results[0], killed, elapsed[0], (jobs[0].attempts, released, exited)
+    finally:
+        try:
+            if handle is not None:
+                _release_descendant(handle)
+        finally:
+            for job in jobs:
+                job.real.close()
+
+
+@pytest.mark.platforms("windows")
+def test_run_gate_timeout_survives_a_failed_job_close(tmp_path):
+    """A CloseHandle failure must not replace the timeout verdict, leave the tree running or leak the job."""
+    script, ready = _descendant_script(tmp_path)
+    (passed, code, output), killed, elapsed, job = _run_gate_with_failing_job_close(
+        f'echo BEFORE_CLOSE & "{sys.executable}" "{script}" "{ready}"', tmp_path, ready)
+    assert (passed, code) == (False, -1)
+    assert "BEFORE_CLOSE" in output and "CHILD_BEFORE" in output and "timed out" in output
+    assert "could not run" not in output
+    assert elapsed < 10
+    assert not killed, "job termination should not need the process-tree walk"
+    assert job == (2, True, True), "the failed close was not retried, or the descendant survived"
+
+
+@pytest.mark.platforms("windows")
+def test_run_gate_failed_job_close_falls_back_to_the_process_tree(tmp_path):
+    script, ready = _descendant_script(tmp_path)
+    (passed, code, output), killed, _, job = _run_gate_with_failing_job_close(
+        f'echo BEFORE_CLOSE & "{sys.executable}" "{script}" "{ready}"', tmp_path, ready, no_job_terminate=True)
+    assert (passed, code) == (False, -1)
+    assert "BEFORE_CLOSE" in output and "CHILD_BEFORE" in output and "timed out" in output
+    assert killed
+    assert job == (2, True, True), "the failed close was not retried, or the descendant survived"
+
+
+@pytest.mark.platforms("windows")
+def test_run_gate_failed_job_close_reaches_descendants_of_an_exited_shell(tmp_path):
+    """taskkill /T cannot find orphans of a shell that already exited; the owned job still can."""
+    script, ready = _descendant_script(tmp_path)
+    (passed, code, output), killed, elapsed, job = _run_gate_with_failing_job_close(
+        f'echo BEFORE_EXIT & start "" /b "{sys.executable}" "{script}" "{ready}" & exit /b 0', tmp_path, ready)
+    assert (passed, code) == (False, -1)
+    assert "BEFORE_EXIT" in output and "CHILD_BEFORE" in output and "timed out" in output
+    assert elapsed < 10
+    assert job == (2, True, True), "the failed close was not retried, or the orphan survived"
+
+
+@pytest.mark.platforms("posix")
+def test_run_gate_timeout_keeps_output_on_posix(tmp_path):
+    start = time.monotonic()
+    passed, code, output = run_gate(GoalGate(command="echo BEFORE_TIMEOUT; sleep 6; echo AFTER_DEADLINE", timeout_seconds=1),
+                                    cwd=str(tmp_path))
+    assert (passed, code) == (False, -1)
+    assert "BEFORE_TIMEOUT" in output and "timed out" in output and "AFTER_DEADLINE" not in output
+    assert time.monotonic() - start < 5
 
 
 @pytest.mark.parametrize("mode", ["success", "nonzero", "bytes", "tail", "cwd", "missing-cwd"])

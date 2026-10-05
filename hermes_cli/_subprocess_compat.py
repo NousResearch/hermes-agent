@@ -777,10 +777,12 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
 def bounded_probe_run(
     argv: str | Sequence[str], *, timeout: float, errors: str = "replace",
     env: "Mapping[str, str] | None" = None, cwd: "str | os.PathLike[str] | None" = None,
-    raise_on_spawn_failure: bool = False,
+    raise_on_spawn_failure: bool = False, input: "str | None" = None,
     raise_on_failure: bool = False, shell: bool = False, stdin: int | None = subprocess.DEVNULL,
 ) -> "subprocess.CompletedProcess[str] | None":
     """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=…)`` for fail-open probes.
+
+    ``input`` is written to the child's stdin (closed afterwards); without it stdin is ``DEVNULL``.
 
     Returns a ``CompletedProcess`` when the child finished within *timeout* (any exit code), or
     ``None`` on spawn failure or timeout. With ``raise_on_spawn_failure=True`` the ``Popen``
@@ -790,7 +792,8 @@ def bounded_probe_run(
     ``raise_on_failure`` preserves execution exceptions, including TimeoutExpired with captured
     output, for diagnostic callers. Its Windows cleanup uses the owned job directly rather than
     spending another timeout in taskkill. ``shell`` and ``stdin`` retain Popen's parsing/input
-    semantics for operator-configured shell gates; existing probes keep their defaults.
+    semantics for operator-configured shell gates; ``stdin`` is ignored when ``input`` is given.
+    Existing probes keep their defaults.
 
     Why not ``subprocess.run``: on Windows, ``run()``'s post-timeout cleanup calls an *unbounded*
     ``communicate()`` after killing the direct child. Killing it can leave a descendant (``git.exe`` under a
@@ -810,7 +813,8 @@ def bounded_probe_run(
         from hermes_cli.local_runtime.processes import spawn_server
 
         proc, job = spawn_server(
-            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=stdin, shell=shell,
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdin=stdin if input is None else subprocess.PIPE, shell=shell,
             text=True, encoding="utf-8", errors=errors,
             env=dict(env) if env is not None else None, cwd=cwd, **_popen_kwargs)
     except Exception:
@@ -818,14 +822,22 @@ def bounded_probe_run(
             raise
         return None
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
+        stdout, stderr = proc.communicate(input=input, timeout=timeout)
     except Exception as exc:
         # Timeout OR any other communicate() failure (torn-down pipe, decode error): tree-kill and
         # drain bounded — leaving it running would leak the suspended-descendant class this guards.
         if raise_on_failure and job is not None:
             # Assignment preceded resume: this job contains the entire gate tree, even if the
-            # shell has exited. Do not follow job termination with a 15-second taskkill probe.
-            job.close()
+            # shell has exited. Do not follow job termination with a 15-second taskkill probe,
+            # unless CloseHandle failed and the tree is therefore still alive. Then terminate
+            # through the same owned job (taskkill /T cannot reach orphans of an exited shell),
+            # and only fall back to the process-tree walk if that is unavailable too.
+            try:
+                job.close()
+            except OSError:
+                if not _terminate_job(job):
+                    kill_process_tree(proc)
+                _close_job(job)  # release the handle the failed close left behind
         else:
             _close_job(job)
             kill_process_tree(proc)
@@ -841,6 +853,23 @@ def bounded_probe_run(
     # The probe exited on its own; anything it left behind (`&` jobs) goes with the job.
     _close_job(job)
     return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+
+
+def _terminate_job(job) -> bool:
+    """Best-effort TerminateJobObject on an owned Windows job whose close failed."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        handle = getattr(job, "_handle", None)
+        if not handle:
+            return False
+        api = ctypes.WinDLL("kernel32", use_last_error=True)
+        api.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        api.TerminateJobObject.restype = wintypes.BOOL
+        return bool(api.TerminateJobObject(handle, 1))
+    except Exception:  # health: allow BLE001 -- best-effort cleanup; the caller falls back to the process-tree walk
+        return False
 
 
 def _close_job(job) -> None:

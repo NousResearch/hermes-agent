@@ -1465,8 +1465,6 @@ platform:
   irc:
     quit_message: "Hermes Agent leáll"
     standalone_quit: "kézbesítve"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Jóváhagyás egyszer"
     confirm_always_approve: "Mindig jóváhagy"

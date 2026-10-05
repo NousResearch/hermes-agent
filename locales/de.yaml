@@ -1448,8 +1448,6 @@ platform:
   irc:
     quit_message: "Hermes Agent wird heruntergefahren"
     standalone_quit: "zugestellt"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Einmalig genehmigen"
     confirm_always_approve: "Immer genehmigen"

@@ -53,12 +53,15 @@ def _safe_frontmatter(path: Path | None = None, *, content: str | None = None) -
 
 def _available_skill_files(skill_dir: Path) -> Dict[str, List[str]]:
     """Non-SKILL.md files grouped by support dir (+ "other" for known source extensions
-    elsewhere); empty groups dropped."""
+    elsewhere); empty groups dropped. Excludes files under any dot-directory at any depth."""
     groups: Dict[str, List[str]] = {}
     for f in skill_dir.rglob("*"):
         if not f.is_file() or f.name == "SKILL.md":
             continue
         rel = f.relative_to(skill_dir).as_posix()
+        # Skip files under any dot-directory component
+        if any(part.startswith(".") for part in rel.split("/")):
+            continue
         top = rel.split("/", 1)[0] if "/" in rel else None
         if top in _SUPPORT_DIRS or f.suffix in _SKILL_FILE_EXTS:
             groups.setdefault(top if top in _SUPPORT_DIRS else "other", []).append(rel)

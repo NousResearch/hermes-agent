@@ -1,0 +1,38 @@
+name: pdf-surgeon
+repo: https://github.com/Samuek9/pdf-surgeon
+sha: bf23725b8c040efd431e4260fdc7f7dad4ba45a2
+description: >-
+  Replace a phrase inside an existing PDF so the edit is not visible, by rewriting the page
+  content stream in place — the string operand inside the existing BT/ET block is replaced
+  and the Tm origin of everything after it on the line is retargeted, so font, size, colour,
+  baseline, char/word spacing, horizontal scale and kerning all survive untouched because
+  they are never rewritten. This is the alternative to redact-and-re-stamp, which defaults to
+  Helvetica 8pt and makes you restate font, size and colour by hand; get any of that wrong
+  and the page reads as forged. Every replacement is verified before it is accepted: the
+  edited line must read exactly as the original with the phrase swapped and nothing else,
+  block count must hold, (font, size, colour) must be unchanged page-wide, and the pixel
+  diff must stay within one band over the edited line. The tool refuses — writing no output
+  file — when the phrase is absent, the page is a scan or Type3/XObject text, or the
+  replacement needs a glyph the embedded subset lacks; it never falls back to substituting a
+  typeface. Widths are measured with the embedded font program, not the system font of the
+  same name. action="inspect" lists each line with its baseline and BT/ET block count so a
+  caller can tell whether a document is editable before choosing what to replace. Requires a
+  digital-born PDF whose text is laid out as one block per word/run with an explicit Tm
+  origin (Word, LibreOffice, Excel, Google Docs); scans do not work. Disclosure — the tool's
+  purpose is to edit a PDF so the change is hard to detect, which is inherent to what it does;
+  files read and written are only the source PDF you name and the output path you name (the
+  input is never written back), there is no network access, no telemetry, no credentials and
+  no subprocesses, and the sole dependency is pymupdf (BSD-3-Clause, already a Hermes core
+  dependency). The input file is never modified. Suitable on macOS, Linux and Windows.
+maintainer: Samuek9
+tier: community
+category: tools
+docs_url: https://github.com/Samuek9/pdf-surgeon#readme
+version: "1.0.0"
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - pdf_replace_text
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -503,8 +503,8 @@ def _migrate_to_38(results: Dict[str, Any], quiet: bool) -> None:
     _persist_migration(config)
     message = (
         "Removed legacy Relay plugin from plugins.enabled: "
-        f"{', '.join(removed)}. Configure native Relay plugins with "
-        "HERMES_NEMO_RELAY_PLUGINS_TOML.")
+        f"{', '.join(removed)}. Configure a standard user or system Relay plugins.toml, or use "
+        "HERMES_NEMO_RELAY_PLUGINS_TOML for an explicit user-file override.")
     results["warnings"].append(message)
     if not quiet:
         print(f"  ⚠ {message}")
@@ -631,6 +631,29 @@ def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
         f"  ✓ Turned off MCP servers the profile editor had marked disabled: {names}.")
 
 
+def _migrate_to_48(results: Dict[str, Any], quiet: bool) -> None:
+    # 47 → 48: the container sandbox default gains a display stack (nousresearch/hermes-sandbox:
+    # desktop) so Bot Screen / computer_use / the browser run inside the sandbox. A saved value
+    # still equal to the OLD default is the template copied, not a choice: the key is DROPPED so
+    # the file follows the default. It is not rewritten to the new image, because a written image
+    # is a pin and a pin recreates a persisted Docker container without asking; unpinned, the
+    # runtime keeps an existing sandbox and the CLI / Screen pane ask first. A pinned image stays.
+    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGES
+    for legacy in LEGACY_SANDBOX_IMAGES:
+        for key, old in (
+            ("docker_image", legacy),
+            ("modal_image", legacy),
+            ("daytona_image", legacy),
+            ("singularity_image", f"docker://{legacy}"),
+        ):
+            _rewrite_stale_default(
+                section="terminal", key=key, old=old, new=None,
+                added=f"terminal.{key} unset (follows the default, {DEFAULT_SANDBOX_IMAGE})",
+                message=f"  ✓ terminal.{key}: was the old default; now follows the default sandbox image "
+                        f"({DEFAULT_SANDBOX_IMAGE})",
+            )(results, quiet)
+
+
 #: Registry of (target_version, step), strictly ascending; simple default-flip steps are
 #: declared inline via _rewrite_stale_default / _rewrite_key partials. Later steps observe
 #: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
@@ -638,6 +661,28 @@ def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
 #: floor gate in run_migrations()'s caller. Versions absent here (15, 18-20, 22, 24, 26-28, 30)
 #: only added a schema default that runtime merging supplies without a write. When adding a step,
 #: decide whether it belongs in LEGACY_KEY_STEPS below (the only steps an unversioned file gets).
+
+def _migrate_to_49(results: Dict[str, Any], quiet: bool) -> None:
+    # 48 → 49: Vercel deprecated sandbox runtimes in favour of images; the default moves from the
+    # `node24` runtime to `vercel/sandbox/universal:latest`. A saved runtime still equal to the old
+    # seeded default (config.yaml AND the .env mirror the setup wizard wrote) is the template copied,
+    # not a choice, so both are dropped and fresh sandboxes follow terminal.vercel_image. A runtime
+    # the user chose (node22, python3.13) stays and keeps overriding the image, as before. Persisted
+    # sandboxes are unaffected either way: a snapshot restore never sends a runtime or an image.
+    from hermes_cli.config_defaults import DEFAULT_VERCEL_IMAGE, LEGACY_VERCEL_RUNTIME
+    _rewrite_stale_default(
+        section="terminal", key="vercel_runtime", old=LEGACY_VERCEL_RUNTIME, new=None,
+        added=f"terminal.vercel_runtime unset (fresh sandboxes use terminal.vercel_image, {DEFAULT_VERCEL_IMAGE})",
+        message=f"  ✓ terminal.vercel_runtime: was the old default; fresh sandboxes now use the managed image "
+                f"({DEFAULT_VERCEL_IMAGE})",
+    )(results, quiet)
+    _c = _cfg()
+    if (_c.get_env_value_prefer_dotenv("TERMINAL_VERCEL_RUNTIME") or "").strip() == LEGACY_VERCEL_RUNTIME:
+        _c.remove_env_value("TERMINAL_VERCEL_RUNTIME")
+        if not quiet:
+            print("  ✓ Cleared TERMINAL_VERCEL_RUNTIME from .env (was the old default; the image is used instead)")
+
+
 MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
@@ -754,6 +799,21 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (45, _migrate_to_45),
     # 45 → 46: legacy editor `disabled: true` on MCP servers becomes `enabled: false` (see _migrate_to_46).
     (46, _migrate_to_46),
+    # 46 → 47: compression.threshold_tokens defaults back to null (ratio-only). The briefly shipped
+    # 256000 default was copied into config.yaml by the template seeder and `doctor --fix`, where it
+    # reads as a user choice and keeps capping 1M-window models at 256K. Drop only that exact value;
+    # any other explicit cap, and an explicit null, are preserved.
+    (47, _rewrite_stale_default(
+        section="compression", key="threshold_tokens", old=256000, new=None,
+        added="removed compression.threshold_tokens: 256000 (the old default)",
+        message=(
+            "  ✓ Removed compression.threshold_tokens: 256000 — the old default. Compaction "
+            "follows compression.threshold (50% of the window) again. Set threshold_tokens "
+            "to a token count to cap it on purpose."))),
+    # 47 → 48: a saved old-default sandbox image is dropped so the file follows the new default (see _migrate_to_48).
+    (48, _migrate_to_48),
+    # 48 → 49: the seeded Vercel runtime pin is dropped so fresh sandboxes use the managed image (see _migrate_to_49).
+    (49, _migrate_to_49),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

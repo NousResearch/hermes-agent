@@ -881,13 +881,15 @@ async def get_active_profile_endpoint():
 
     def _run():
         # Both reads touch the filesystem; one hop so sidebar polling costs one round-trip.
-        def _or_default(fn):
+        def _or_default(fn, on_error="default"):
             try:
                 return fn() or "default"
             except Exception:
-                return "default"
+                return on_error
+        # A dashboard that cannot name its own home must not read as the machine
+        # dashboard: "default" is exactly what lets the SPA adopt the sticky profile.
         return {"active": _or_default(profiles_mod.get_active_profile),
-                "current": _or_default(profiles_mod.get_active_profile_name)}
+                "current": _or_default(profiles_mod.get_active_profile_name, on_error="custom")}
 
     return await run_in_threadpool(_run)
 

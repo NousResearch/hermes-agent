@@ -315,12 +315,14 @@ Then activate it; there is no separate setup command to remember:
 | Shell | Enter | Leave |
 |---|---|---|
 | Bash | `source ./activate` | `deactivate` |
+| fish | `source ./activate.fish` | `deactivate` |
 | PowerShell | `. .\activate.ps1` | `deactivate` |
 
 The leading dot and space in PowerShell are required. Executing
 `.\activate.ps1` without dot-sourcing does not provide the same session scope.
-The POSIX script uses Bash syntax. Use Bash for this recipe rather than `sh`,
-fish, or assuming that a Zsh startup file has Bash semantics.
+`activate` uses Bash syntax. Use Bash for this recipe rather than `sh`, or
+assuming that a Zsh startup file has Bash semantics; fish has its own
+`activate.fish`, which behaves the same.
 
 Each activation invokes PM's install/sync path and trusts the recorded tool
 digest instead of re-hashing every entry. PM still installs a missing tool and
@@ -341,6 +343,17 @@ Start in a clean shell rather than nesting this inside another venv.
 `deactivate` restores the environment values captured by the activation script,
 and removes the function and the prompt prefix.
 It does not uninstall packages or stop processes that you started.
+
+To run one command or script in that environment without activating a shell,
+prefix it with `scripts/run-in-hermes-env`. It applies the same environment to
+that command only, syncing first when there is none to inherit or the inherited
+one is stale, and leaves your shell untouched. `scripts/run_tests.sh` re-runs
+itself this way, and the repo's Python scripts hand themselves to it from their
+shebang.
+
+```bash
+scripts/run-in-hermes-env python scripts/release.py --help
+```
 
 Verify the interpreter and source before doing work:
 
@@ -517,8 +530,8 @@ hermes pm install chromium
 
 | Command | Effect |
 |---|---|
-| `pm install [names...]` | Install named packages. With no names, provision required tools plus Python, put those tools on PATH, and then sync the `all` extra. A bare install also installs the default optional tools (`agent-browser` and Chromium); a failed download of these prints a warning and does not fail the install. Naming a package you declined earlier undoes that choice. |
-| `pm install --without NAME` | Do a bare install without the default optional package `NAME` (only `agent-browser`), and record that choice. Later bare installs and `hermes update` also leave it out. The installers' `--skip-browser` / `-SkipBrowser` use this. |
+| `pm install [names...]` | Install named packages. With no names, provision required tools plus Python, put those tools on PATH, and then sync the `all` extra. A bare install also installs the default optional tools (`agent-browser` and Chromium, `cua-driver`); a failed download of these prints a warning and does not fail the install. Naming a package you declined earlier undoes that choice. |
+| `pm install --without NAME` | Do a bare install without the default optional package `NAME` (`agent-browser` or `cua-driver`), and record that choice. Later bare installs and `hermes update` also leave it out. The installers' `--skip-browser` / `-SkipBrowser` and `--skip-computer-use` / `-SkipComputerUse` use this. |
 | `pm install --tools-only` | Install that tool closure and put it on PATH, then stop. The venv sync does not run. |
 | `pm env [names...]` | Print installed packages' PM-contributed environment values as JSON. It does not install missing packages, though a cold Hermes launch may prepare its own Python runtime first. |
 | `pm doctor` | Check installed tool identities, files, and digests against the lock. |

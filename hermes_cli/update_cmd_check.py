@@ -14,8 +14,13 @@ from typing import Any
 
 
 def _git(git_cmd: list[str], root: Path, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    from hermes_cli._subprocess_compat import windows_hide_flags
+    # Callers pass **_no_prompt_git_kwargs() which already carries creationflags;
+    # OR the hide flag into the shared kwargs instead of passing the keyword twice.
+    kwargs["creationflags"] = kwargs.get("creationflags", 0) | windows_hide_flags()
     return subprocess.run(
-        git_cmd + args, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace", **kwargs,
+        git_cmd + args, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        **kwargs,
     )
 
 
@@ -31,14 +36,16 @@ def clear_git_debris(root: Path) -> None:
     A crashed fetch can leave ``.git/shallow.lock`` (or another lock) behind, and every later
     fetch then fails with "File exists". Aborted fetches on flaky lines also strand
     ``tmp_pack_*`` debris: unchecked it reached 6 GB and corrupted the pack dir (#93732).
+    A partial clone also gets its commit-graph-off keys re-applied (#127711).
     """
-    from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
+    from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs, settle_partial_clone_maintenance
 
     for lock_path in clear_stale_git_locks(root):
         print(f"  (removed stale git lock: {lock_path})")
     swept = clear_stale_tmp_packs(root)
     if swept:
         print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
+    settle_partial_clone_maintenance(root)
 
 
 def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path) -> str | None:
@@ -101,7 +108,12 @@ def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args
             fetch_result = _fetch(git_cmd, root, depth_args, "upstream", branch)
             if fetch_result.returncode == 0:
                 return fetch_result, f"upstream/{branch}"
-    return _fetch(git_cmd, root, depth_args, "origin", branch), f"origin/{branch}"
+    from hermes_cli.gitlock import fetch_with_partial_clone_recovery
+    # Marking the unmarked packs clears the git 2.53+ partial-clone pack-objects crash (#124272).
+    print("→ Fetching from origin...")
+    return fetch_with_partial_clone_recovery(
+        lambda gc, a: _git(gc, root, a, **_uc()._no_prompt_git_kwargs()),
+        git_cmd, ["fetch", *depth_args, "origin", tracking_refspec("origin", branch)], root), f"origin/{branch}"
 
 
 def repair_shallow_grafts(root: Path) -> None:

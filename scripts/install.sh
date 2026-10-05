@@ -32,6 +32,7 @@ NON_INTERACTIVE=false
 INCLUDE_DESKTOP=false
 VERBOSE=false
 SKIP_BROWSER=false
+SKIP_COMPUTER_USE=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -54,6 +55,7 @@ while [ $# -gt 0 ]; do
         --non-interactive|-NonInteractive) NON_INTERACTIVE=true; shift ;;
         --skip-setup) NON_INTERACTIVE=true; shift ;;
         --skip-browser|--no-playwright|-SkipBrowser) SKIP_BROWSER=true; shift ;;
+        --skip-computer-use|-SkipComputerUse) SKIP_COMPUTER_USE=true; shift ;;
         --include-desktop|-IncludeDesktop) INCLUDE_DESKTOP=true; shift ;;
         --verbose|-Verbose) VERBOSE=true; shift ;;
         -h|--help)
@@ -61,11 +63,14 @@ while [ $# -gt 0 ]; do
             echo "                  [--hermes-home PATH]"
             echo "                  [--manifest] [--stage NAME] [--json]"
             echo "                  [--non-interactive] [--include-desktop] [--verbose]"
-            echo "                  [--skip-browser]"
+            echo "                  [--skip-browser] [--skip-computer-use]"
             echo
             echo "  --skip-browser  Do not install the browser tools (agent-browser + Chromium)."
-            echo "                  Alias: --no-playwright. Remembered by later installs and"
-            echo "                  'hermes update'; undo with 'hermes pm install agent-browser'."
+            echo "                  Alias: --no-playwright. Remembered by later"
+            echo "                  installs and 'hermes update'; undo with 'hermes pm install agent-browser'."
+            echo "  --skip-computer-use"
+            echo "                  Do not install the computer-use driver (cua-driver). Remembered"
+            echo "                  the same way; undo with 'hermes pm install cua-driver'."
             exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
@@ -250,21 +255,6 @@ uv_bootstrap_target() {
     esac
 }
 
-# version_at_least HAVE WANT: dotted numeric comparison; a pre-release or
-# build suffix on a component is ignored ("0.12.3-rc1" reads as 0.12.3).
-version_at_least() {
-    local have="$1" want="$2" h w
-    while [ -n "$want" ]; do
-        h="${have%%.*}"; h="${h%%[!0-9]*}"
-        w="${want%%.*}"; w="${w%%[!0-9]*}"
-        [ "${h:-0}" -gt "${w:-0}" ] && return 0
-        [ "${h:-0}" -lt "${w:-0}" ] && return 1
-        case "$have" in *.*) have="${have#*.}" ;; *) have="" ;; esac
-        case "$want" in *.*) want="${want#*.}" ;; *) want="" ;; esac
-    done
-    return 0
-}
-
 # Provision uv for this host from the pinned pm/lock.json artifact. Stages
 # the EXACT artifact pm itself uses into the same store slot
 # (<store>/uv-<version>-<target>/, the store pm's store_root() resolves),
@@ -273,24 +263,14 @@ version_at_least() {
 UV_CMD=""
 ensure_uv() {
     [ -n "$UV_CMD" ] && return 0
-    local _path_uv _path_version
-    if _path_uv="$(command -v uv 2>/dev/null)"; then
-        # Developer shortcut: a uv on PATH fetches nothing, but only one at
-        # least as new as the pin -- the bootstrap passes flags older uv
-        # lacks (`python install --no-bin` arrived in 0.7).
-        _path_version="$("$_path_uv" --version 2>/dev/null | awk '{print $2}')"
-        if [ -n "$_path_version" ] && version_at_least "$_path_version" "$UV_PIN_VERSION"; then
-            UV_CMD="$_path_uv"
-            return 0
-        fi
-        log_warn "uv on PATH (${_path_version:-does not run}) is older than the pinned $UV_PIN_VERSION; staging the pin"
-    fi
+    # Always the pinned artifact, never a uv already on PATH: Hermes runs only
+    # its own packaged toolchain.
     local _target
     if ! _target="$(uv_bootstrap_target)"; then
-        fail "no pinned uv build for this platform ($(uname -s) $(uname -m)); install uv manually: https://docs.astral.sh/uv/"
+        fail "no pinned uv build for this platform ($(uname -s) $(uname -m)); Hermes does not support this host"
     fi
     if ! uv_bootstrap_pin "$_target"; then
-        fail "no pinned uv artifact for $_target; install uv manually: https://docs.astral.sh/uv/"
+        fail "no pinned uv artifact for $_target; Hermes does not support this host"
     fi
     local _store="${HERMES_RUNTIME_DIR:-$HERMES_HOME/tools}"
     local _entry="$_store/uv-$UV_PIN_VERSION-$_target"
@@ -452,12 +432,23 @@ stage_prerequisites() {
     command -v curl >/dev/null 2>&1 || fail "curl is required. Install it with your system package manager."
     # PM's Node on musl is the unofficial-builds musl archive, which links the
     # system libstdc++; without it every node/npm stage fails verification.
-    if [[ "$(uv_bootstrap_target 2>/dev/null)" == *-musl ]]; then
+    local _target
+    _target="$(uv_bootstrap_target 2>/dev/null)" || _target=""
+    if [[ "$_target" == *-musl ]]; then
         local _libdir _stdcxx=""
         for _libdir in /lib /usr/lib /usr/local/lib; do
             compgen -G "$_libdir/libstdc++.so.6*" >/dev/null && { _stdcxx=yes; break; }
         done
         [ -n "$_stdcxx" ] || fail "musl host: the Node.js runtime needs the system libstdc++. Install it (Alpine: apk add libstdc++, Void: xbps-install libstdc++) and re-run."
+    fi
+    # glibc Node links libatomic.so.1, absent on minimal Debian/RHEL hosts. PM
+    # installs the distro package with `sudo -n` under its install lock, so
+    # cache sudo credentials now, while the terminal can answer the prompt.
+    if [ "$NON_INTERACTIVE" != true ] && [[ "$_target" == linux-* && "$_target" != *-musl ]] \
+        && [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && has_terminal \
+        && ! { ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null; } | grep -q 'libatomic\.so\.1'; then
+        log "Node.js needs libatomic.so.1; sudo may ask for your password to install it"
+        sudo -v </dev/tty || log_warn "sudo failed; if Node.js fails, install libatomic (Debian/Ubuntu: libatomic1) and re-run"
     fi
     log_success "prerequisites ok (git, curl)"
 }
@@ -483,6 +474,24 @@ stage_repository() {
         # Explicit refspec: a tag-pinned --single-branch checkout from an older
         # installer maps only the tag, so a by-name fetch writes FETCH_HEAD and
         # never the origin/$BRANCH everything below resolves (#125112).
+        # git 2.53+ aborts fetches into a partial clone whose packs lack a .promisor
+        # marker (#124272), and an install stuck there never fetches the updater that
+        # heals it. Marking is idempotent and never rewrites objects.
+        if [ "$(git -C "$INSTALL_DIR" config --bool --get remote.origin.promisor)" = true ]; then
+            local pack
+            for pack in "$INSTALL_DIR"/.git/objects/pack/pack-*.pack; do
+                if [ -f "$pack" ] && [ ! -e "${pack%.pack}.promisor" ]; then
+                    : > "${pack%.pack}.promisor" || log_warn "could not mark $pack as a partial-clone pack"
+                fi
+            done
+            # Existing treeless checkout: same commit-graph lazy-fetch loop guard (#127711).
+            git -C "$INSTALL_DIR" config maintenance.commit-graph.enabled false \
+                || log_warn "could not disable maintenance.commit-graph.enabled in $INSTALL_DIR"
+            git -C "$INSTALL_DIR" config gc.writeCommitGraph false \
+                || log_warn "could not disable gc.writeCommitGraph in $INSTALL_DIR"
+            git -C "$INSTALL_DIR" config fetch.writeCommitGraph false \
+                || log_warn "could not disable fetch.writeCommitGraph in $INSTALL_DIR"
+        fi
         run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
             || fail "git fetch failed"
         local stamp
@@ -598,6 +607,16 @@ stage_repository() {
             fail "cannot publish cloned checkout"
         fi
         rmdir "$staged"
+        # A treeless checkout must never write a commit-graph: over a graph with
+        # changed-path data that lazy-fetches the trees of every unseen commit, in a
+        # loop (#127711). gc.auto stays on: `hermes update` folds lazy-fetch packs with
+        # `gc --auto`.
+        git -C "$INSTALL_DIR" config maintenance.commit-graph.enabled false \
+            || log_warn "could not disable maintenance.commit-graph.enabled in $INSTALL_DIR"
+        git -C "$INSTALL_DIR" config gc.writeCommitGraph false \
+            || log_warn "could not disable gc.writeCommitGraph in $INSTALL_DIR"
+        git -C "$INSTALL_DIR" config fetch.writeCommitGraph false \
+            || log_warn "could not disable fetch.writeCommitGraph in $INSTALL_DIR"
         log_success "Hermes Agent cloned"
     fi
     if [ -n "$INSTALL_COMMIT" ]; then
@@ -650,10 +669,14 @@ bootstrap_python() {
 bootstrap_pm() {
     local boot_py
     local pm_args=(install)
-    # PM records the opt-out, so later installs and `hermes update` keep the
-    # browser tools off until `hermes pm install agent-browser` opts back in.
+    # PM records the opt-outs, so later installs and `hermes update` keep the
+    # tools off until `hermes pm install <name>` opts back in.
     [ "$SKIP_BROWSER" = true ] && pm_args+=(--without agent-browser)
+    [ "$SKIP_COMPUTER_USE" = true ] && pm_args+=(--without cua-driver)
     bootstrap_python
+    # Refresh the sudo ticket cached in prerequisites (never prompts): the
+    # clone and downloads can outlast sudo's timestamp_timeout.
+    if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then sudo -n -v 2>/dev/null || :; fi
     (cd "$INSTALL_DIR" && run_logged "Installing dependencies (hash-verified via uv.lock)" \
         "$boot_py" -m pm.cli "${pm_args[@]}") \
         || fail "pm install failed"
@@ -713,10 +736,14 @@ wire_shell_path() {
         *)
             append_shell_path "$HOME/.bashrc" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
             append_shell_path "$HOME/.profile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
-            # Bash prefers .bash_profile over .profile if both exist.
-            if [ -f "$HOME/.bash_profile" ]; then
-                append_shell_path "$HOME/.bash_profile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
-            fi
+            # A login bash reads only the first of .bash_profile, .bash_login, .profile,
+            # so an existing earlier file hides the .profile line above.
+            local rc
+            for rc in "$HOME/.bash_profile" "$HOME/.bash_login"; do
+                if [ -f "$rc" ]; then
+                    append_shell_path "$rc" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
+                fi
+            done
             ;;
     esac
 }

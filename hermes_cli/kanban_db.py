@@ -3,7 +3,10 @@
 Lives under the shared Hermes root: ``default`` board DB at ``<root>/kanban.db`` (pre-boards
 back-compat), other boards at ``<root>/kanban/boards/<slug>/``; a worker on one board never sees
 another. Board resolution: ``board=`` arg > ``HERMES_KANBAN_BOARD`` > ``HERMES_KANBAN_DB`` (pins the
-file path) > ``<root>/kanban/current`` > ``default``; the dispatcher injects these into workers.
+file path) > ``<root>/kanban/current`` > ``default`` — but only for unfenced callers; the dispatcher
+injects these into workers, and dispatched workers (``HERMES_KANBAN_TASK``), delegated children and
+board-enumerating machine flows (gateway notifier/watcher/dispatcher, ``pin_first_board_resolution``)
+always resolve through the pin, so workers physically cannot see other boards.
 Concurrency: WAL + ``BEGIN IMMEDIATE`` + compare-and-swap on ``tasks.status``/``claim_lock`` —
 SQLite serializes writers so one claimer wins, losers see zero rows (no retries, no distributed
 locks). Schema: tasks, task_links, task_comments, task_events, task_runs, attachments, notify subs.
@@ -355,6 +358,32 @@ DEFAULT_BOARD = "default"
 _CURRENT_BOARD_OVERRIDE: ContextVar[str | None] = ContextVar(
     "hermes_kanban_current_board_override", default=None,
 )
+# Machine flows that enumerate boards (gateway notifier / watcher / dispatcher
+# ticks) resolve board paths env-pin-first — see pin_first_board_resolution().
+_PIN_FIRST_BOARD_RESOLUTION: ContextVar[bool] = ContextVar(
+    "hermes_kanban_pin_first_board_resolution", default=False,
+)
+
+
+@contextlib.contextmanager
+def pin_first_board_resolution():
+    """Resolve board paths env-pin-first for machine flows that enumerate boards.
+
+    The gateway notifier, per-subscription cursor writes and the embedded
+    dispatcher poll every board slug from ``list_boards()`` — the slug is not
+    caller intent, it is an iteration variable. On a box whose environment pins
+    ``HERMES_KANBAN_DB`` (the dispatcher default) every slug must map to that
+    one pinned file: the notifier dedupes resolved DB paths, and per-slug
+    paths read empty boards nobody writes, silently killing wake
+    notifications. Explicit cross-board intent (CLI ``--board``, a model
+    tool's ``board=``) is a USER property and must never run inside this
+    context; with no pin set this context changes nothing.
+    """
+    token = _PIN_FIRST_BOARD_RESOLUTION.set(True)
+    try:
+        yield
+    finally:
+        _PIN_FIRST_BOARD_RESOLUTION.reset(token)
 
 
 @contextlib.contextmanager
@@ -493,16 +522,59 @@ def _dir_holds_board(d: Path) -> bool:
     return (d / "board.json").exists() or (d / "kanban.db").exists()
 
 
+def _explicit_board_slug(board: Optional[str]) -> Optional[str]:
+    """Explicit caller intent: a direct ``board=`` argument, else the scoped
+    ``--board`` context (CLI ``hermes kanban --board``, dashboard plugin_api);
+    ``None`` when the caller expressed neither."""
+    if board is not None:
+        return _normalize_board_slug(board)
+    # A caller-scoped board (CLI `hermes kanban --board B ...`, dashboard
+    # plugin_api) is explicit intent just like a direct board= argument —
+    # without this a worker-pinned HERMES_KANBAN_DB silently outranks --board
+    # (os-reviewer P1 on PR#107195 / t_11c4afd8).
+    ctx = (_CURRENT_BOARD_OVERRIDE.get() or "").strip()
+    if ctx:
+        try:
+            return _normalize_board_slug(ctx)
+        except ValueError:
+            return None
+    return None
+
+
+def _explicit_board_intent_pinned() -> bool:
+    """Whether an explicit ``board=`` (or scoped ``--board``) must still resolve
+    through the ``HERMES_KANBAN_DB``-style env pins instead of its own board dir.
+
+    True for machine flows wrapped in :func:`pin_first_board_resolution` and
+    for every execution the dispatcher fences: its own workers (they carry
+    ``HERMES_KANBAN_TASK``) and delegated children / descendants (the
+    ``HERMES_DELEGATED_CHILD_CONTEXT`` marker). The pins ARE the "workers
+    physically cannot see other boards" isolation (5ec6baa), and
+    ``agent.delegation_context.kanban_path_is_fenced`` checks the pinned path /
+    fenced root — an explicit board that resolved elsewhere would also escape
+    that fence."""
+    if _PIN_FIRST_BOARD_RESOLUTION.get():
+        return True
+    from agent.delegation_context import explicit_board_intent_is_pinned
+    return explicit_board_intent_is_pinned()
+
+
 def _board_path(
     env_var: Optional[str], board: Optional[str], default_parts: tuple[str, ...], leaf: str,
 ) -> Path:
-    """Shared resolver: ``env_var`` override, else legacy ``<root>/<default_parts>``
-    for the ``default`` board, else ``board_dir(slug)/leaf``."""
-    if env_var:
-        override = os.environ.get(env_var, "").strip()
-        if override:
-            return Path(override).expanduser()
-    slug = _normalize_board_slug(board)
+    """Shared resolver. An explicit ``board=`` argument — or the scoped
+    ``--board`` context (:func:`scoped_current_board`) — outranks the ``env_var``
+    pin ONLY where no fence applies (see :func:`_explicit_board_intent_pinned`):
+    user-facing cross-board intent (CLI ``--board``, a model tool's ``board=``)
+    is honored, but machine flows that enumerate boards (gateway notifier /
+    watcher / dispatcher ticks) and dispatched or delegated workers keep
+    resolving through the pin. Without explicit intent the ``env_var`` override
+    pins the file, else legacy ``<root>/<default_parts>`` for the ``default``
+    board, else ``board_dir(slug)/leaf``."""
+    pin = os.environ.get(env_var, "").strip() if env_var else ""
+    slug = _explicit_board_slug(board)
+    if pin and (slug is None or _explicit_board_intent_pinned()):
+        return Path(pin).expanduser()
     if slug is None:
         slug = get_current_board()
     if slug == DEFAULT_BOARD:
@@ -4511,88 +4583,3 @@ from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     _worker_survived_termination,
     _worker_terminal_timeout_env,
 )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Mapping  # noqa: F401,E402
-from dataclasses import field  # noqa: F401,E402
-import hashlib  # noqa: F401,E402
-import random  # noqa: F401,E402
-import shutil  # noqa: F401,E402
-import threading  # noqa: F401,E402
-
-DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
-
-def parent_results(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, Optional[str]]]:
-    """Return ``(parent_id, result)`` for every done parent of ``task_id``."""
-    rows = conn.execute(
-        """
-        SELECT t.id AS id, t.result AS result
-        FROM tasks t
-        JOIN task_links l ON l.parent_id = t.id
-        WHERE l.child_id = ? AND t.status = 'done'
-        ORDER BY t.completed_at ASC
-        """,
-        (task_id,),
-    ).fetchall()
-    return [(r["id"], r["result"]) for r in rows]
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DEFAULT_BUSY_TIMEOUT_MS': ('hermes_cli.kanban_db_connect', 'DEFAULT_BUSY_TIMEOUT_MS'),
-    'DEFAULT_LOG_BACKUP_COUNT': ('hermes_cli.kanban_db_dispatch', 'DEFAULT_LOG_BACKUP_COUNT'),
-    'DEFAULT_LOG_ROTATE_BYTES': ('hermes_cli.kanban_db_dispatch', 'DEFAULT_LOG_ROTATE_BYTES'),
-    'DERIVED_MAX_IN_PROGRESS_CEILING': ('hermes_cli.kanban_db_dispatch', 'DERIVED_MAX_IN_PROGRESS_CEILING'),
-    'DERIVED_MAX_IN_PROGRESS_FLOOR': ('hermes_cli.kanban_db_dispatch', 'DERIVED_MAX_IN_PROGRESS_FLOOR'),
-    'KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS': ('hermes_cli.kanban_db_dispatch', 'KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS'),
-    'KanbanDbCorruptError': ('hermes_cli.kanban_db_connect', 'KanbanDbCorruptError'),
-    'MEMORY_GUARD_MB_PER_WORKER': ('hermes_cli.kanban_db_dispatch', 'MEMORY_GUARD_MB_PER_WORKER'),
-    'RepairResult': ('hermes_cli.kanban_db_connect', 'RepairResult'),
-    'add_notify_sub': ('hermes_cli.kanban_db_notify', 'add_notify_sub'),
-    'advance_notify_cursor': ('hermes_cli.kanban_db_notify', 'advance_notify_cursor'),
-    'check_respawn_guard': ('hermes_cli.kanban_db_dispatch', 'check_respawn_guard'),
-    'claim_unseen_events_for_sub': ('hermes_cli.kanban_db_notify', 'claim_unseen_events_for_sub'),
-    'configured_max_in_progress': ('hermes_cli.kanban_db_dispatch', 'configured_max_in_progress'),
-    'connect': ('hermes_cli.kanban_db_connect', 'connect'),
-    'connect_closing': ('hermes_cli.kanban_db_connect', 'connect_closing'),
-    'count_notify_subs': ('hermes_cli.kanban_db_notify', 'count_notify_subs'),
-    'count_running_tasks': ('hermes_cli.kanban_db_dispatch', 'count_running_tasks'),
-    'count_running_tasks_other_boards': ('hermes_cli.kanban_db_dispatch', 'count_running_tasks_other_boards'),
-    'derive_default_max_in_progress': ('hermes_cli.kanban_db_dispatch', 'derive_default_max_in_progress'),
-    'detect_crashed_workers': ('hermes_cli.kanban_db_dispatch', 'detect_crashed_workers'),
-    'detect_stale_running': ('hermes_cli.kanban_db_dispatch', 'detect_stale_running'),
-    'dispatch_once': ('hermes_cli.kanban_db_dispatch', 'dispatch_once'),
-    'enforce_max_runtime': ('hermes_cli.kanban_db_dispatch', 'enforce_max_runtime'),
-    'has_spawnable_ready': ('hermes_cli.kanban_db_dispatch', 'has_spawnable_ready'),
-    'has_spawnable_review': ('hermes_cli.kanban_db_dispatch', 'has_spawnable_review'),
-    'heartbeat_worker': ('hermes_cli.kanban_db_dispatch', 'heartbeat_worker'),
-    'list_notify_subs': ('hermes_cli.kanban_db_notify', 'list_notify_subs'),
-    'purge_stale_done_notify_subs': ('hermes_cli.kanban_db_notify', 'purge_stale_done_notify_subs'),
-    'reap_worker_zombies': ('hermes_cli.kanban_db_dispatch', 'reap_worker_zombies'),
-    'reconcile_orphaned_running': ('hermes_cli.kanban_db_dispatch', 'reconcile_orphaned_running'),
-    'remove_notify_sub': ('hermes_cli.kanban_db_notify', 'remove_notify_sub'),
-    'repair_db': ('hermes_cli.kanban_db_connect', 'repair_db'),
-    'resolve_max_in_progress': ('hermes_cli.kanban_db_dispatch', 'resolve_max_in_progress'),
-    'resolve_workspace': ('hermes_cli.kanban_db_workspace', 'resolve_workspace'),
-    'review_dispatch_enabled': ('hermes_cli.kanban_db_dispatch', 'review_dispatch_enabled'),
-    'rewind_notify_cursor': ('hermes_cli.kanban_db_notify', 'rewind_notify_cursor'),
-    'run_daemon': ('hermes_cli.kanban_db_dispatch', 'run_daemon'),
-    'set_branch_name': ('hermes_cli.kanban_db_workspace', 'set_branch_name'),
-    'set_workspace_path': ('hermes_cli.kanban_db_workspace', 'set_workspace_path'),
-    'unseen_events_for_sub': ('hermes_cli.kanban_db_notify', 'unseen_events_for_sub'),
-    'worker_log_rotation_config': ('hermes_cli.kanban_db_dispatch', 'worker_log_rotation_config'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

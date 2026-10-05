@@ -160,12 +160,7 @@ export function buildSessionFileTree(paths: Iterable<string>, cwd: string): Sess
       continue
     }
 
-    const segments = path
-      .trim()
-      .replace(/\\/g, '/')
-      .slice(root.replace(/\\/g, '/').length)
-      .split('/')
-      .filter(Boolean)
+    const segments = path.trim().replace(/\\/g, '/').slice(root.replace(/\\/g, '/').length).split('/').filter(Boolean)
 
     if (segments.length === 0) {
       continue

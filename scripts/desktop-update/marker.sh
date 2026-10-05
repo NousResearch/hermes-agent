@@ -83,6 +83,10 @@ ident_state() { # pid recorded-ct -> 0 same process, 1 gone/reused, 2 alive but 
   ct_close "$want" "$have" 2.0
 }
 
+# ident_state 0 is marker-claim.ps1's Test-ProcessIdentityExact: both creation times known and
+# within 2 s. Adopting a run, withdrawing a bridge and reporting `taken` need exactly that; an
+# alive pid whose creation time cannot be read is never proof of who it is (fail closed).
+
 ident_alive() { # pid recorded-ct -> 0 iff that process may still be running (unknown counts)
   ident_state "$1" "${2:-}"; [ $? -ne 1 ]
 }
@@ -353,7 +357,7 @@ marker_claim_locked() {
   fi
   if [ -n "$HANDOFF_RUN" ]; then
     if [ "$verdict" = live ] && [ "$M_PID" = "$DESKTOP_PID" ] && [ "$J_OWNER_STATE" -eq 2 ] \
-        && [ -n "$M_CT" ] && [ "$M_RUN" = "$HANDOFF_RUN" ] && [ "$J_DELEGATE_STATE" -eq 1 ]; then
+        && ident_state "$M_PID" "$M_CT" && [ "$M_RUN" = "$HANDOFF_RUN" ] && [ "$J_DELEGATE_STATE" -eq 1 ]; then
       STARTED_AT="$M_STARTED"  # one acquisition time for the whole chain
       marker_take replace "$M_STARTED" || return 2
       log "adopted the Desktop's update marker (desktop pid $DESKTOP_PID -> $MY_PID, run $HANDOFF_RUN)"
@@ -532,6 +536,11 @@ fcntl.flock(fd, fcntl.LOCK_UN)' "$path"; rc=$? ;;
 }
 
 # ── helper ops for the Desktop (it never mutates the marker itself) ──────────
+marker_remove() { # 0 iff the marker is gone afterwards (rm -f exits 0 when it cannot unlink)
+  rm -f "$MARKER" 2>/dev/null
+  [ ! -e "$MARKER" ] && [ ! -L "$MARKER" ]
+}
+
 marker_op_reclaim_locked() {
   marker_read || { echo absent; return 0; }
   if [ -z "$SEEN" ] && marker_young_empty; then echo busy; return 0; fi
@@ -540,7 +549,7 @@ marker_op_reclaim_locked() {
     live|ours) echo "live $J_OWNER" ;;
     *)
       if checkout_lock_held; then echo held; return 0; fi
-      rm -f "$MARKER" 2>/dev/null
+      marker_remove || { echo busy; return 0; }
       log "reclaimed a dead update marker for the Desktop (pid ${M_PID:-?})"
       echo reclaimed ;;
   esac
@@ -550,9 +559,11 @@ marker_op_withdraw_locked() {
   marker_read || { echo absent; return 0; }
   marker_judge "$SEEN"
   if [ -z "$M_PID" ] || [ "$M_RUN" != "$HANDOFF_RUN" ]; then echo foreign; return 0; fi
-  if [ "$M_PID" != "$DESKTOP_PID" ] && [ "$J_OWNER_STATE" -eq 2 ]; then echo "taken $M_PID"; return 0; fi
-  if [ "$M_PID" = "$DESKTOP_PID" ] && [ "$J_OWNER_STATE" -eq 2 ] && [ -n "$M_CT" ]; then
-    rm -f "$MARKER" 2>/dev/null
+  if [ "$M_PID" != "$DESKTOP_PID" ] && [ "$M_PID" != "$MY_PID" ] && ident_state "$M_PID" "$M_CT"; then
+    echo "taken $M_PID"; return 0
+  fi
+  if [ "$M_PID" = "$DESKTOP_PID" ] && ident_state "$M_PID" "$M_CT"; then
+    marker_remove || { echo busy; return 0; }
     log "withdrew the Desktop's hand-off marker (run $HANDOFF_RUN)"
     echo withdrawn; return 0
   fi

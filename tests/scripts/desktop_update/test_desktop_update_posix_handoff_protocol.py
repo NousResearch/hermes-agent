@@ -231,6 +231,63 @@ def test_withdraw_removes_only_this_desktops_bridge_and_reports_a_taker(tmp_path
     assert not marker.exists()
 
 
+# ── parity with marker-claim.ps1: identity-exact and checked removals ────────
+
+
+def _sourced(marker: Path, desktop: int, run: str, body: str, *, blind_ct: bool) -> str:
+    """marker.sh on its own; blind_ct = every other process's creation time is unreadable
+    (proc_ct prints nothing: a ps/proc read that failed), our own stays known."""
+    blind = 'proc_ct() { [ "$1" = "$MY_PID" ] && printf "%s\\n" "$MY_CT"; }; ' if blind_ct else ""
+    return (f"log() {{ :; }}; MARKER={shlex.quote(str(marker))} INSTALL_ROOT={shlex.quote(str(marker.parent))} "
+            f"DESKTOP_PID={desktop} HANDOFF_RUN={shlex.quote(run)} STARTED_AT=$(date +%s) MARKER_CLAIMED=0; "
+            f". {shlex.quote(str(MARKER_SH))}; MY_CT=\"$(proc_ct $$)\"; {blind}"
+            f"printf %s {shlex.quote(body)} > \"$MARKER\"; ")
+
+
+@pytest.mark.parametrize("blind_ct", [False, True], ids=["ct-readable", "ct-unreadable"])
+def test_adopt_withdraw_and_taken_need_an_exact_identity(tmp_path, procs, blind_ct):
+    """marker-claim.ps1 adopts a run, withdraws a bridge and reports `taken` only for
+    Test-ProcessIdentityExact (both creation times known). posix accepted an alive pid whose
+    creation time it could not read: that pid may be a reuse, so it must fail closed."""
+    home = tmp_path / "home"; home.mkdir()
+    marker = home / ".hermes-update-in-progress"
+    desktop = subprocess.Popen(["sleep", "60"]); procs.append(desktop)
+    other = subprocess.Popen(["sleep", "60"]); procs.append(other)
+    now = int(time.time())
+    bridge = f"{desktop.pid}\n{now}\nct:{_ct(desktop.pid)}\nrun:desk-7\n"
+    taken = f"{other.pid}\n{now}\nct:{_ct(other.pid)}\nrun:desk-7\n"
+
+    def run(body: str, script: str) -> str:
+        code = _sourced(marker, desktop.pid, "desk-7", body, blind_ct=blind_ct) + script
+        return subprocess.run(["bash", "-c", code], capture_output=True, text=True, encoding="utf-8", timeout=30).stdout.strip()
+
+    adopt = run(bridge, 'marker_locked marker_claim_locked; echo "rc=$?"')
+    assert adopt.splitlines()[-1] == ("rc=1" if blind_ct else "rc=0"), adopt
+    assert run(taken, "marker_op withdraw") == ("foreign" if blind_ct else f"taken {other.pid}")
+    assert marker.read_text(encoding="utf-8-sig") == taken
+    assert run(bridge, "marker_op withdraw") == ("foreign" if blind_ct else "withdrawn")
+    assert marker.exists() is blind_ct
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root unlinks inside a read-only directory")
+def test_reclaim_reports_busy_when_the_dead_marker_cannot_be_removed(tmp_path):
+    """marker-claim.ps1 answers `busy` when Remove-MarkerLocked fails; posix printed `reclaimed`
+    after an `rm -f` that could not unlink, so the Desktop went on as if the marker were gone."""
+    home, install = _install(tmp_path)
+    marker = home / ".hermes-update-in-progress"
+    dead = f"99999999\n{int(time.time())}\nct:1.000\n"
+    marker.write_text(dead, encoding="utf-8")
+    Path(str(marker) + ".lock").touch()
+    home.chmod(0o555)
+    try:
+        assert _helper(tmp_path, home, install, "reclaim") == "busy"
+        assert marker.read_text(encoding="utf-8-sig") == dead
+    finally:
+        home.chmod(0o755)
+    assert _helper(tmp_path, home, install, "reclaim") == "reclaimed"
+    assert not marker.exists()
+
+
 # ── R6: a survivor holding the checkout lock keeps the marker ───────────────
 
 

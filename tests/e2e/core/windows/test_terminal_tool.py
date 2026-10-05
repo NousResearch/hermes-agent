@@ -26,7 +26,7 @@ from tests.e2e.core.windows._helpers import (
 )
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 
-pytestmark = [pytest.mark.windows_only, pytest.mark.integration]
+pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration]
 
 # shell -> (command template, exit code, extra marker the output must carry)
 SHELLS: dict[str, tuple[str, int, str]] = {

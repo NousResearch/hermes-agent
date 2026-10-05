@@ -200,6 +200,20 @@ def test_in_place_here_n_stores_the_kept_exchanges(session_db):
     assert _live(session_db.get_messages_as_conversation("sid")) == _live(next_turn)
 
 
+def test_rotated_here_n_publishes_the_kept_exchanges(session_db):
+    """Rotation publishes the child atomically and the gateway no longer rewrites it, so the handoff itself must
+    carry the kept tail: a head-only child loses the exchanges the user asked to keep on the next resume."""
+    history = _exchanges(10)
+    agent, loaded = _stored_agent(session_db, history)
+    agent.compression_in_place = False
+    result = _compress_here(agent, loaded, 2)
+    assert result.status == "compressed" and agent.session_id != "sid"
+
+    durable = session_db.get_messages_as_conversation(agent.session_id)
+    assert _live(durable) == _live(result.after_messages)
+    assert _live(durable[-4:]) == _live(history[-4:])
+
+
 def test_in_place_here_n_folds_the_seam_once(session_db):
     """A head ending on a user turn folds the tail's first message into it; the stored transcript carries the
     same fold, and the tail is not rejoined a second time."""
@@ -286,3 +300,48 @@ def test_in_place_compress_never_clones_a_row_a_merge_already_carried(session_db
 
     contents = [m["content"] for m in session_db.get_messages_as_conversation("sid")]
     assert sum("second half 9931" in c for c in contents) == 1
+
+
+def test_in_place_compress_keeps_a_gap_below_the_newest_held_row(session_db):
+    """A surface can hold rows 1–N, miss another surface's rows, then persist its own later rows.
+    The newest held id is then the lease watermark, so a cap at that id archives the unseen gap.
+    Those rows were never summarized; they must stay live, once each."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    agent, _ = _stored_agent(session_db, _exchanges(10))
+    held = session_db.get_resume_conversations("sid")[0]
+    for role, content in FOREIGN_TURN:
+        session_db.append_message("sid", role, content)
+    own_id = session_db.append_message("sid", "user", "continued on this surface")
+    held.append({
+        "role": "user", "content": "continued on this surface",
+        "_row_id": own_id, _DB_PERSISTED_MARKER: True,
+    })
+
+    assert _compress(agent, held, "").status == "compressed"
+
+    model_history, display_history = session_db.get_resume_conversations("sid")
+    for _role, content in FOREIGN_TURN:
+        assert any(content in (m.get("content") or "") for m in model_history)
+        assert any(content in (m.get("content") or "") for m in display_history)
+        assert _flags(session_db, content) == [(0, 0), (1, 0)]
+    assert session_db.search_messages("vault 7741")
+
+
+def test_in_place_compress_keeps_foreign_rows_above_an_unpersisted_turn(session_db):
+    """Turn preflight appends the current user message before compression and persists it afterward,
+    so the last dict has no row id. That must not fall back to the lease watermark and archive turns
+    another surface appended since this process loaded."""
+    agent, _ = _stored_agent(session_db, _exchanges(10))
+    held = session_db.get_resume_conversations("sid")[0]
+    for role, content in FOREIGN_TURN:
+        session_db.append_message("sid", role, content)
+    held.append({"role": "user", "content": "this turn is not persisted yet"})
+
+    assert _compress(agent, held, "").status == "compressed"
+
+    model_history, _display = session_db.get_resume_conversations("sid")
+    for _role, content in FOREIGN_TURN:
+        assert any(content in (m.get("content") or "") for m in model_history)
+        assert _flags(session_db, content) == [(0, 0), (1, 0)]
+    assert session_db.search_messages("vault 7741")

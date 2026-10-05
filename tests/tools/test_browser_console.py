@@ -9,9 +9,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-
 # ── browser_console ──────────────────────────────────────────────────
-
 
 class TestBrowserConsole:
     """browser_console() returns console messages + JS errors in one call."""
@@ -47,8 +45,6 @@ class TestBrowserConsole:
         assert result["console_messages"][0]["text"] == "hello"
         assert result["console_messages"][1]["text"] == "oops"
         assert result["js_errors"][0]["message"] == "Uncaught TypeError"
-
-
 
     def test_redacts_secrets_from_console_messages_and_errors(self):
         from tools.browser_tool import browser_console
@@ -87,7 +83,6 @@ class TestBrowserConsole:
         assert result["success"] is True
         assert "BROWSEREVALSECRET" not in json.dumps(result)
         assert result["result"].startswith("ghp_")
-
 
     def test_expression_allows_risky_eval_by_default(self):
         """The sensitive-primitive denylist is opt-in — default config runs everything.
@@ -148,7 +143,6 @@ class TestBrowserConsole:
 
         mock_eval.assert_not_called()
 
-
     def test_restrict_evaluate_reads_browser_config(self):
         from tools.browser_tool_eval_policy import _restrict_browser_evaluate
 
@@ -160,18 +154,9 @@ class TestBrowserConsole:
         with patch("hermes_cli.config.read_raw_config", return_value={}):
             assert _restrict_browser_evaluate() is False
 
-
 # ── browser_console schema ───────────────────────────────────────────
 
-
-
-
-
-
 # ── browser_vision annotate ──────────────────────────────────────────
-
-
-
 
 class TestBrowserVisionConfig:
     def _setup_screenshot(self, tmp_path):
@@ -207,7 +192,6 @@ class TestBrowserVisionConfig:
         # No hardcoded output cap — the aux client omits max_tokens so the
         # provider uses its full output budget (max-tokens-knob policy).
         assert "max_tokens" not in mock_llm.call_args.kwargs
-
 
     def test_browser_vision_native_fast_path_returns_multimodal(self, tmp_path):
         """supports_vision override → screenshot attached natively, no aux call."""
@@ -349,12 +333,6 @@ class TestBrowserVisionConfig:
         assert result["analysis"] == "Text-mode screenshot analysis"
         mock_llm.assert_called_once()
 
-
 # ── auto-recording config ────────────────────────────────────────────
 
-
-
-
 # ── dogfood skill files ──────────────────────────────────────────────
-
-

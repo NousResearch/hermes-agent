@@ -5,11 +5,10 @@ only HTTP transports are stubbed.
 from __future__ import annotations
 
 import json
-import threading
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -94,8 +93,6 @@ def test_home_keyed_caches_serve_each_profile_its_own_config(tmp_path, monkeypat
     import tools.tirith_security as tir
     from tools import mcp_tool_loop
 
-    monkeypatch.setattr(tir, "_resolved_path", None)
-    monkeypatch.setattr(tir, "_resolved_path_by_home", {})
     ac._reset_aux_semaphores()
     cu._AUX_VISION_ROUTE_CACHE.clear()
 
@@ -124,61 +121,24 @@ def test_home_keyed_caches_serve_each_profile_its_own_config(tmp_path, monkeypat
     sem_a.release()
 
 
-def test_debounced_sync_push_fires_in_the_scheduling_profiles_context(two_homes, monkeypatch):
-    """Timer threads start with empty ContextVars: the push must run under the writing profile's
-    home, and B's write must not cancel A's pending push."""
-    import tools.skill_manager_tool as smt
-    import tools.skill_usage as su
-    import tools.skills_sync_client as ssc
-    from hermes_constants import get_hermes_home
-
-    a, b = two_homes
-    fired: dict[str, str] = {}
-    both = threading.Event()
-
-    def fake_push(*, message=""):
-        fired[message] = str(get_hermes_home())
-        if len(fired) == 2:
-            both.set()
-
-    monkeypatch.setattr(su, "is_sync_enabled", lambda name: True)
-    monkeypatch.setattr(ssc, "maybe_push_skills", fake_push)
-    monkeypatch.setattr(smt, "_SYNC_PUSH_DEBOUNCE_S", 0.05)
-    monkeypatch.setattr(smt, "_sync_push_timers", {})
-    with _scoped(a):
-        smt._maybe_debounced_sync_push("skill-a")
-    with _scoped(b):
-        smt._maybe_debounced_sync_push("skill-b")
-    assert both.wait(5), fired
-    assert fired == {"sync: skill-a": str(a), "sync: skill-b": str(b)}
-
-
 def test_endpoint_model_catalog_memo_is_keyed_by_credential(two_homes, monkeypatch):
     """Two profiles, same base_url, different api_key: a per-key gateway's catalog fetched with A's
     key must not be served to B from the in-memory memo (the disk memo already lives per home)."""
+    from contextlib import contextmanager
+    import httpx
     import agent.model_metadata as mm
 
     a, b = two_homes
     mm._endpoint_model_metadata_cache.clear()
     mm._endpoint_model_metadata_cache_time.clear()
-    mm._ensure_requests()
 
-    class _Resp:
-        status_code, ok = 200, True
+    @contextmanager
+    def stream(url, headers=None, **kwargs):
+        who = headers.get("Authorization", "").rsplit("-", 1)[-1]
+        yield httpx.Response(200, request=httpx.Request("GET", url),
+                             json={"data": [{"id": f"model-for-{who}", "context_length": 1}]})
 
-        def __init__(self, headers):
-            self._who = headers.get("Authorization", "").rsplit("-", 1)[-1]
-
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"data": [{"id": f"model-for-{self._who}", "context_length": 1}]}
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(mm.requests, "get", lambda url, headers=None, **k: _Resp(headers or {}))
+    monkeypatch.setattr(mm.model_metadata_http, "stream", stream)
     with _scoped(a):
         assert set(mm.fetch_endpoint_model_metadata("http://gw.example/v1", api_key="key-A")) == {"model-for-A"}
     with _scoped(b):

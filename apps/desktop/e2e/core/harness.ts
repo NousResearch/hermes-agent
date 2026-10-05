@@ -144,6 +144,9 @@ export function coreAppEnv(sandbox: CoreSandbox, extra: Record<string, string> =
     HERMES_DESKTOP_USER_DATA_DIR: sandbox.userDataDir,
     HERMES_DESKTOP_IGNORE_EXISTING: '1',
     HERMES_DESKTOP_HERMES_ROOT: REPO_ROOT,
+    // setup-pm exports an install-scoped interpreter, not a checkout .venv.
+    // The Desktop override must be explicit because the sandbox strips HERMES_*.
+    ...(process.env.HERMES_E2E_PYTHON ? { HERMES_DESKTOP_PYTHON: process.env.HERMES_E2E_PYTHON } : {}),
     HERMES_DESKTOP_APP_NAME: `HermesCoreE2E-${path.basename(sandbox.root)}`,
     HERMES_DESKTOP_SKIP_QUIT_CONFIRM: '1',
     HERMES_DESKTOP_CDP_PORT: 'off',
@@ -492,7 +495,7 @@ export async function waitForInteractive(app: ElectronApplication, page: Page, t
           if (cs.position === 'fixed') {
             const r = node.getBoundingClientRect()
 
-            if (r.left <= 0 && r.top <= 0 && r.right >= window.innerWidth && r.bottom >= window.innerHeight) {
+            if (r.left <= 1 && r.top <= 1 && r.right >= window.innerWidth - 1 && r.bottom >= window.innerHeight - 1) {
               return false
             }
           }
@@ -588,6 +591,8 @@ export async function currentSessionId(page: Page): Promise<string> {
 export interface PersistedMessage {
   role: string
   content: string
+  /** Set on synthetic rows (a process notification, a model switch) the renderer draws as notices. */
+  displayKind?: string
 }
 
 /**
@@ -637,7 +642,8 @@ export async function persistedTranscript(
 
   return (result?.messages ?? []).map((m: any) => ({
     role: String(m.role ?? ''),
-    content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '')
+    content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? ''),
+    ...(typeof m.display_kind === 'string' && m.display_kind ? { displayKind: m.display_kind } : {})
   }))
 }
 

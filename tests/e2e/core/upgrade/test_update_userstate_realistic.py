@@ -28,14 +28,14 @@ import os
 import shutil
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
 pytestmark = [
-    pytest.mark.linux_only,
+    pytest.mark.platforms("linux"),
     # The real updater runs against a throwaway install inside the sandbox, never this checkout.
     pytest.mark.live_system_guard_bypass,
     pytest.mark.skipif(H.sandbox_required_reason() is not None, reason=str(H.sandbox_required_reason())),
@@ -64,8 +64,8 @@ def _ok(cp):
 
 
 def _config_versions(sb: I.Sandbox) -> tuple[int, int]:
-    """(latest, support floor) ``_config_version`` of the code in the sandbox checkout's venv."""
-    cp = _ok(sb.run([str(sb.checkout / "venv" / "bin" / "python"), "-c", _VERSIONS_PY]))
+    """(latest, support floor) from the installed PM-selected interpreter."""
+    cp = _ok(sb.run([sb.python, "-c", _VERSIONS_PY]))
     latest, floor = cp.stdout.strip().splitlines()[-1].split()
     return int(latest), int(floor)
 
@@ -128,6 +128,10 @@ def _seed_home(sb: I.Sandbox, provider: FakeLLMServer) -> tuple[dict[str, str], 
         (home / "memories" / "MEMORY.md").write_text(f"- {name}: user prefers tabs\n", encoding="utf-8")
         markers[name] = f"pre-update session in the {name} profile"
         _ok(sb.cli(*_pargs(name), "-z", markers[name]))
+        # A normal CLI turn migrates old configs on launch. Model the user's older
+        # hand-edited config as the state immediately before the update, not before
+        # the turns that seed the sessions.
+        (home / "config.yaml").write_text(I.provider_config(provider.base_url, versions[name], extra), encoding="utf-8")
     hh = sb.hermes_home
     skill = hh / "skills" / "my-own-skill"
     skill.mkdir(parents=True, exist_ok=True)
@@ -161,7 +165,7 @@ def world(tmp_path_factory, provider):
     (sb.checkout / "my_local_notes.txt").write_text("untracked notes in the checkout\n", encoding="utf-8")
     snap = _snapshot(sb)
     target = I.publish_commit(origin, root, "release: e2e bump 1", {"docs/e2e-update-marker.txt": "release 1\n"})
-    update = sb.cli("update", "--yes", timeout=UPDATE_TIMEOUT)
+    update = sb.cli("update", "--yes", "--branch", "main", timeout=UPDATE_TIMEOUT)
     return {"sb": sb, "origin": origin, "root": root, "markers": markers, "versions": versions,
             "snap": snap, "target": target, "update": update}
 
@@ -263,7 +267,7 @@ def conflicting_leg(world):
     before = I.tree_digest(ext)
     target = I.publish_commit(world["origin"], world["root"], "release: e2e bump 2",
                               {"docs/e2e-update-marker.txt": "release 2 rewrote this file\n"})
-    update = sb.cli("update", "--yes", timeout=UPDATE_TIMEOUT)
+    update = sb.cli("update", "--yes", "--branch", "main", timeout=UPDATE_TIMEOUT)
     return {"ext": ext, "before": before, "target": target, "update": update}
 
 

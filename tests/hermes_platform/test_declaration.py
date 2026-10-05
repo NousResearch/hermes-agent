@@ -63,6 +63,7 @@ def test_app_block_parses_into_one_appdef_per_os():
     ({"darwin": {"presence": "bundle", "location": "Relative/Thing.app"}}, None, "must be absolute"),
     ({"darwin": {"presence": "bundle", "location": "https://example.test/Thing.app"}}, None, "must be absolute"),
     ({"win32": {"presence": "executable", "location": "Thing/thing.exe"}}, None, "must be absolute"),
+    (None, {"gpu": "amd"}, "requires.gpu must be one of"),
 ])
 def test_invalid_blocks_name_the_rule(raw_app, raw_requires, message):
     with pytest.raises(DeclarationError, match=message):
@@ -75,6 +76,28 @@ def test_availability_no_requirements_does_no_io():
     assert result.state == "no_requirements" and result.offerable
 
 
+@pytest.mark.parametrize("gpu_class, state", [
+    ("nvidia", "no_requirements"),
+    ("unknown", "no_requirements"),
+    ("intel", "unsupported_gpu"),
+    ("apple_silicon", "unsupported_gpu"),
+    ("none", "unsupported_gpu"),
+])
+def test_requires_gpu_gates_on_the_host_gpu_class(monkeypatch, gpu_class, state):
+    """No `app:` block is needed; an unreadable GPU passes; the OS gate runs first and reads no GPU."""
+    from hermes_platform.host import facts
+
+    monkeypatch.setattr(facts, "gpu_class", lambda: gpu_class)
+    decl = parse_declaration("thing-mcp", None, {"gpu": "nvidia"}, where=WHERE)
+    result = availability(decl, os_family="win32")
+    assert result.state == state and result.offerable == (state == "no_requirements")
+
+    monkeypatch.setattr(facts, "gpu_class", lambda: pytest.fail("the OS gate must not read the GPU"))
+    both = parse_declaration("thing-mcp", {"win32": {"presence": "executable", "location": "C:/x/y.exe"}},
+                             {"app": True, "gpu": "nvidia"}, where=WHERE)
+    assert availability(both, os_family="darwin").state == "unsupported_os"
+
+
 def test_availability_unsupported_os_when_no_block_for_host():
     decl = parse_declaration(
         "thing-mcp",
@@ -85,7 +108,7 @@ def test_availability_unsupported_os_when_no_block_for_host():
     assert availability(decl, os_family="darwin").state == "unsupported_os"
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_availability_missing_then_present_then_version_gate(tmp_path):
     location = tmp_path / "Applications" / "Thing.app"
     decl = parse_declaration(

@@ -273,6 +273,13 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
     if stamps != layer.stamps:
         _scan_home_layer(layer, key)
         layer.stamps = stamps
+        # Publish the completed layer -- stamps AND check time -- before auth
+        # sync: it calls list_providers(), which re-enters this function. An
+        # unpublished stamp rescanned forever; an unpublished check time
+        # re-stats the plugin dirs inside the TTL.
+        layer.stamp_checked_at = now
+        if _discovered and not _discovering:
+            _sync_auth_registry()
     layer.stamp_checked_at = now
     return True
 
@@ -319,7 +326,7 @@ def _declares_model_provider_kind(plugin_dir: Path) -> bool:
 
     Only that kind is imported from the flat install directory — every other
     plugin there belongs to ``PluginManager``, which owns its lifecycle and
-    consent flow. Parsed with PyYAML when available, falling back to a line
+    consent flow. Parsed with ruamel.yaml when available, falling back to a line
     scan so provider discovery never hard-depends on it.
     """
     for filename in ("plugin.yaml", "plugin.yml"):
@@ -376,8 +383,6 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
     finally:
         _REGISTRATION_TARGET.reset(token)
         _discovering = prior_discovering
-    if _discovered and not _discovering:
-        _sync_auth_registry()
 
 
 def _user_module_name(plugin_dir: Path, home_key: str) -> str:
@@ -394,6 +399,20 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
         return
+    if source != "bundled":
+        from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+        if isolation_mode() == ISOLATION_HOST:  # the plugin's code runs in the plugin host
+            from hermes_cli.plugin_host_profiles import load_hosted_profiles
+            _current_source = source
+            try:
+                for profile in load_hosted_profiles(plugin_dir, _user_module_name(plugin_dir, home_key)):
+                    register_provider(profile)
+            except Exception as exc:
+                logger.warning("Failed to load user provider plugin %s in the plugin host: %s",
+                               plugin_dir.name, exc)
+            finally:
+                _current_source = None
+            return
 
     # Give bundled plugins a stable import path (``plugins.model_providers.<name>``)
     # so relative imports within the plugin work. User plugins load via
@@ -493,6 +512,11 @@ def _discover_entry_point_providers() -> None:
             logger.debug(
                 "entry-point provider %r skipped: not enabled in config", ep.name
             )
+            continue
+        from hermes_cli.plugin_isolation import in_process_import_refusal
+        refusal = in_process_import_refusal(f"pip-installed model-provider plugin {ep.name!r}")
+        if refusal:
+            logger.warning("%s", refusal)
             continue
         try:
             loaded = ep.load()
@@ -621,25 +645,3 @@ def _run_discovery_steps() -> None:
     # (Pip entry-point providers are discovered in step 0, before the
     # filesystem plugins, so first-party profiles always win on name
     # collision — see _discover_entry_point_providers.)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'OMIT_TEMPERATURE': ('providers.base', 'OMIT_TEMPERATURE'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

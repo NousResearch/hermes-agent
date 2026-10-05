@@ -1,5 +1,8 @@
+import { paletteToggle } from '@/app/command-palette/contrib'
 import { isPaneVisible, togglePaneVisible } from '@/components/pane-shell/tree/store'
+import { Terminal } from '@/lib/icons'
 import { isFocusWithin } from '@/lib/keybinds/combo'
+import { trackArea } from '@/store/desktop-metrics'
 
 const TERMINAL_FOCUS_SCOPE = '[data-terminal]'
 
@@ -51,8 +54,29 @@ export function toggleTerminalPane(): void {
   const revealed = !isPaneVisible('terminal')
 
   togglePaneVisible('terminal')
+  trackArea('terminal_pane', revealed)
 
   if (revealed) {
     focusRevealedTerminal()
   }
 }
+
+/**
+ * ⌘K door onto the same pane the keybind and statusbar pill flip — was a
+ * one-way "open" row under Go to, so it never showed on/off and couldn't hide.
+ * Reads the TREE like every other pane toggle: `$terminalTakeover` stays true
+ * behind a stacked sibling tab or a minimized zone, which would light the row
+ * "on" for a terminal that isn't on screen.
+ *
+ * Lives here, not inline in the contrib controller, so the reveal-focus test
+ * drives the real row without importing the whole app graph.
+ */
+export const terminalPaletteToggle = paletteToggle({
+  id: 'view.showTerminal',
+  label: 'Toggle terminal',
+  action: 'view.showTerminal',
+  icon: Terminal,
+  keywords: ['terminal', 'shell', 'console', 'pty'],
+  get: () => isPaneVisible('terminal'),
+  set: () => toggleTerminalPane()
+})

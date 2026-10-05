@@ -36,6 +36,9 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
+import { platformDefaultHermesHome } from './data-paths'
+import { type ControlMasterHolders, sharedControlMasterHolders } from './ssh-control-master-holders'
+
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 const DEFAULT_EXEC_TIMEOUT_MS = 20_000
 const DEFAULT_FORWARD_TIMEOUT_MS = 15_000
@@ -55,6 +58,7 @@ const REMOTE_PROBE_TIMEOUT_SECS = 15
 const DEFAULT_TUNNEL_RESTART_LIMIT = 5
 const DEFAULT_TUNNEL_RESTART_DELAY_MS = 1_000
 const CONTROL_PERSIST_SECONDS = 300
+const CONTROL_FORWARD_KEEPALIVE_MS = Math.min(60_000, Math.floor((CONTROL_PERSIST_SECONDS * 1_000) / 2))
 
 // eslint-disable-next-line no-control-regex -- deliberately reject control chars in ssh targets
 const _CONTROL_CHAR_RE = /[\x00-\x1f\x7f]/
@@ -171,12 +175,9 @@ function redactSecrets(text) {
 // across reconnects so ControlMaster reuse works, short so the full path stays
 // under sun_path's 104-byte limit.
 //
-// CRITICAL (macOS): the base dir must be SHORT. os.tmpdir() on macOS is the
-// per-user `/var/folders/xx/yyyy…/T/` (~49 bytes), and OpenSSH binds a
-// TEMPORARY listener at `<ControlPath>.<16 random chars>` while establishing
-// the master — so a path that itself fits 104 still overflows at bind time. We
-// root under a short per-user base (`~/.hermes/desktop-ssh`) so even worst case
-// (~72 bytes on macOS) stays clear. Windows has no AF_UNIX sun_path limit.
+// OpenSSH binds a temporary listener at `<ControlPath>.<16 random chars>`.
+// The home (and macOS's os.tmpdir()) can be too deep even when the socket
+// itself fits sun_path. Windows has no AF_UNIX sun_path limit.
 function controlSocketPath(user, host, port, baseDir?, identity: any = {}) {
   const dir = baseDir || defaultControlDir()
   const keyPathIdentity = path.normalize(String(identity.keyPath || ''))
@@ -196,14 +197,37 @@ function controlSocketPath(user, host, port, baseDir?, identity: any = {}) {
   return path.join(dir, `${id}.sock`)
 }
 
-function defaultControlDir() {
-  // POSIX: a SHORT, PER-USER base stays under the socket limit AND avoids a
-  // world-shared /tmp dir (no symlink-hijack surface). Created 0700 in open().
+function shortControlDir(): string {
+  // no-tmp: ok — AF_UNIX's short path budget rules out a deep HOME/TMPDIR; the parent and child are checked before use.
+  return `/tmp/hermes-ssh-${process.getuid!()}`
+}
+
+function defaultControlDir(): string {
   if (process.platform === 'win32') {
     return path.join(os.tmpdir(), 'hermes-desktop-ssh')
   }
 
-  return path.join(os.homedir(), '.hermes', 'desktop-ssh')
+  const homeDir = path.join(platformDefaultHermesHome(os.homedir()), 'desktop-ssh')
+
+  // Include the filename and OpenSSH's temporary-listener suffix in the byte budget.
+  return Buffer.byteLength(path.join(homeDir, '0123456789abcdef.sock.0123456789abcdef')) <= 104
+    ? homeDir
+    : shortControlDir()
+}
+
+function checkShortControlParent(): void {
+  // /tmp can be a symlink on macOS. Inspect its resolved directory before
+  // creating anything there; the sticky bit protects an owned child from rename.
+  const parent = path.dirname(shortControlDir())
+  const st = fs.statSync(fs.realpathSync(parent))
+
+  if (
+    !st.isDirectory() ||
+    (st.uid !== 0 && st.uid !== process.getuid!()) ||
+    ((st.mode & 0o022) !== 0 && (st.mode & 0o1000) === 0)
+  ) {
+    throw new Error(`Unsafe SSH control parent: ${parent} must be owned by root or this user and sticky if writable.`)
+  }
 }
 
 // Command construction (pure — the unit tests exercise these directly)
@@ -234,7 +258,15 @@ function baseSshOptions(controlPath, connectTimeoutMs?) {
     '-o',
     'ExitOnForwardFailure=yes',
     '-o',
-    `ConnectTimeout=${connectSecs}`
+    `ConnectTimeout=${connectSecs}`,
+    // Keepalive: send a message every 15s, drop after 3 missed replies (45s)
+    // so NAT/firewall timeouts don't silently kill an idle connection.
+    '-o',
+    'ServerAliveInterval=15',
+    '-o',
+    'ServerAliveCountMax=3',
+    '-o',
+    'TCPKeepAlive=yes'
   ]
 }
 
@@ -373,6 +405,7 @@ function forwardSpec(localPort, remotePort, remoteHost = '127.0.0.1') {
 const SSH_ERROR = {
   UNREACHABLE: 'unreachable',
   AUTH_FAILED: 'auth-failed',
+  INTERACTIVE_AUTH: 'interactive-auth',
   HOST_KEY_CHANGED: 'host-key-changed',
   TIMEOUT: 'timeout',
   UNKNOWN: 'unknown'
@@ -389,6 +422,12 @@ function classifySshError(stderr) {
     )
   ) {
     return SSH_ERROR.HOST_KEY_CHANGED
+  }
+
+  if (
+    /Tailscale SSH requires an additional check|To authenticate, visit:\s*https:\/\/login\.tailscale\.com\//i.test(text)
+  ) {
+    return SSH_ERROR.INTERACTIVE_AUTH
   }
 
   if (
@@ -429,6 +468,16 @@ function sshErrorMessage(kind, conn, stderr?) {
         `ssh-agent first (e.g. \`ssh-add ~/.ssh/id_ed25519\`), or set an IdentityFile in ` +
         `~/.ssh/config. Original error: ${String(stderr || '').trim()}`
       )
+    case SSH_ERROR.INTERACTIVE_AUTH: {
+      const portArg = conn.port && conn.port !== 22 ? ` -p ${conn.port}` : ''
+
+      return (
+        `Tailscale SSH requires an interactive browser check for ${host}. ` +
+        `Hermes Desktop runs SSH non-interactively. In Terminal, run ` +
+        `\`ssh${portArg} ${host} true\`, complete the browser check, then retry. ` +
+        `If checks recur, use a key-authenticated OpenSSH route or adjust the tailnet SSH check policy.`
+      )
+    }
 
     case SSH_ERROR.UNREACHABLE:
       return `Could not reach ${host} over SSH. Check the host, port, and your network. Original error: ${String(stderr || '').trim()}`
@@ -445,8 +494,9 @@ function sshErrorMessage(kind, conn, stderr?) {
 
 // Resolves { code, signal, stdout, stderr }. `signal` is Node's close signal
 // (null on a normal exit). On timeout the child is SIGKILLed and the promise
-// rejects with err.kind = TIMEOUT. `spawnFn` is injectable for tests.
-function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData, signal }: any = {}) {
+// rejects with err.kind = TIMEOUT. `spawnFn` is injectable for tests; `command`
+// is the ssh client binary (resolveSshBinary; bare `ssh` by default).
+function runSsh(args, { timeoutMs, spawnFn = spawn, command = 'ssh', stdin = 'ignore', stdinData, signal }: any = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       const error: any = new Error('SSH operation was cancelled.')
@@ -460,7 +510,7 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
     let child
 
     try {
-      child = spawnFn('ssh', args, { stdio: [useStdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'] })
+      child = spawnFn(command, args, { stdio: [useStdinPipe ? 'pipe' : 'ignore', 'pipe', 'pipe'] })
     } catch (error) {
       reject(error)
 
@@ -490,6 +540,10 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
 
       const err: any = new Error(`ssh timed out after ${timeoutMs}ms`)
       err.kind = SSH_ERROR.TIMEOUT
+      // Keep only a safe classification of buffered stderr. Tailscale's
+      // browser-check line carries a one-time URL that must not escape through
+      // Desktop errors or lifecycle logs.
+      err.stderrKind = classifySshError(stderr)
       signal?.removeEventListener('abort', onAbort)
       reject(err)
     }, timeoutMs)
@@ -618,6 +672,8 @@ class SshConnection {
   port: number
   keyPath: string
   controlPath: string
+  /** ssh client binary every spawn uses (resolveSshBinary; bare `ssh` by default). */
+  sshBinary: string
   _spawnFn: any
   _log: (msg: string) => void
   _connectTimeoutMs: number
@@ -628,6 +684,9 @@ class SshConnection {
   _opened: boolean
   _mux: boolean
   _tunnels: Map<string, any>
+  _controlMasters: ControlMasterHolders
+  _forwardedSpecs: Set<string>
+  _controlKeepaliveTimer: ReturnType<typeof setInterval> | null
 
   constructor(cfg, opts: any = {}) {
     if (!cfg || !cfg.host) {
@@ -659,8 +718,11 @@ class SshConnection {
         })
       : ''
     this._tunnels = new Map()
+    this._controlMasters = opts.controlMasterHolders || sharedControlMasterHolders
+    this._forwardedSpecs = new Set()
 
     this._spawnFn = opts.spawnFn || spawn
+    this.sshBinary = opts.sshBinary || 'ssh'
 
     this._log = typeof opts.rememberLog === 'function' ? opts.rememberLog : () => {}
     this._connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
@@ -668,6 +730,7 @@ class SshConnection {
     this._forwardTimeoutMs = opts.forwardTimeoutMs ?? DEFAULT_FORWARD_TIMEOUT_MS
     this._tunnelRestartLimit = opts.tunnelRestartLimit ?? DEFAULT_TUNNEL_RESTART_LIMIT
     this._tunnelRestartDelayMs = opts.tunnelRestartDelayMs ?? DEFAULT_TUNNEL_RESTART_DELAY_MS
+    this._controlKeepaliveTimer = null
     this._opened = false
   }
 
@@ -682,8 +745,11 @@ class SshConnection {
     }
 
     if (stderrOrErr && stderrOrErr.kind === SSH_ERROR.TIMEOUT) {
-      const err: any = new Error(sshErrorMessage(SSH_ERROR.TIMEOUT, this))
-      err.kind = SSH_ERROR.TIMEOUT
+      const kind =
+        stderrOrErr.stderrKind === SSH_ERROR.INTERACTIVE_AUTH ? SSH_ERROR.INTERACTIVE_AUTH : SSH_ERROR.TIMEOUT
+
+      const err: any = new Error(sshErrorMessage(kind, this))
+      err.kind = kind
 
       return err
     }
@@ -714,10 +780,69 @@ class SshConnection {
     return err
   }
 
+  // The classified error only reaches the caller (the renderer shows friendly
+  // copy for its kind), so record what ssh actually did — exit code, close
+  // signal, stderr — in desktop.log. Without it a connect that dies right after
+  // TCP setup leaves nothing to diagnose it by (#80836).
+  _connectFailed(raw) {
+    const err = this._fail(raw, SSH_ERROR.UNREACHABLE)
+
+    if (err?.kind !== 'superseded') {
+      const code = raw && typeof raw === 'object' && 'code' in raw ? String(raw.code) : '?'
+      const stderr = String(sshCloseStderr(raw)).trim().slice(-500) || '(empty)'
+
+      this._logLine(
+        `connect to ${target(this.user, this.host)}:${this.port} failed ` +
+          `(kind=${err.kind}, exit=${code}, signal=${sshCloseSignal(raw) || 'none'}): ${stderr}`
+      )
+    }
+
+    return err
+  }
+
   // Open the connection. Mux: start the persistent ControlMaster (idempotent —
   // a live master is a no-op). No-mux: there is no master; validate auth +
   // reachability with a one-shot `ssh true` so failures classify identically.
   async open({ signal }: any = {}) {
+    if (!this._mux) {
+      return this._open({ signal })
+    }
+
+    // Claim the socket before dialing: a stale connection closing while this
+    // one is still attaching must not exit the master out from under it.
+    this._controlMasters.acquire(this.controlPath, this)
+
+    try {
+      await this._open({ signal })
+    } catch (error) {
+      this._controlMasters.release(this.controlPath, this)
+      throw error
+    }
+  }
+
+  async _open({ signal }: any = {}) {
+    if (this._mux) {
+      const controlDir = path.dirname(this.controlPath)
+
+      if (process.platform !== 'win32' && controlDir === shortControlDir()) {
+        checkShortControlParent()
+      }
+
+      fs.mkdirSync(controlDir, { recursive: true, mode: 0o700 })
+
+      if (process.platform !== 'win32') {
+        const st = fs.lstatSync(controlDir)
+
+        if (st.isSymbolicLink() || !st.isDirectory() || st.uid !== process.getuid!()) {
+          throw new Error(`Unsafe SSH control dir: ${controlDir} is not a directory owned by this user (no symlinks).`)
+        }
+
+        if ((st.mode & 0o777) !== 0o700) {
+          fs.chmodSync(controlDir, 0o700)
+        }
+      }
+    }
+
     if (await this.isAlive({ signal })) {
       // -O check passing is not proof the master works: a ControlPersist master
       // can survive a failed teardown with wedged channels (observed on macOS
@@ -741,14 +866,15 @@ class SshConnection {
         result = await runSsh(buildExecArgs(this, 'exit 0', this._connectTimeoutMs), {
           timeoutMs: this._connectTimeoutMs,
           spawnFn: this._spawnFn,
+          command: this.sshBinary,
           signal
         })
       } catch (error) {
-        throw this._fail(error, SSH_ERROR.UNREACHABLE)
+        throw this._connectFailed(error)
       }
 
       if (!sshCloseOk(result)) {
-        throw this._fail(result, SSH_ERROR.UNREACHABLE)
+        throw this._connectFailed(result)
       }
 
       this._opened = true
@@ -757,46 +883,23 @@ class SshConnection {
       return
     }
 
-    const controlDir = path.dirname(this.controlPath)
-
-    try {
-      fs.mkdirSync(controlDir, { recursive: true, mode: 0o700 })
-    } catch {
-      void 0
-    }
-
-    if (process.platform !== 'win32') {
-      const st = fs.lstatSync(controlDir)
-
-      if (st.isSymbolicLink()) {
-        throw new Error(`Unsafe SSH control dir: ${controlDir} is a symlink.`)
-      }
-
-      if (!st.isDirectory()) {
-        throw new Error(`Unsafe SSH control dir: ${controlDir} is not a directory.`)
-      }
-
-      if (st.uid !== process.getuid!()) {
-        throw new Error(`Unsafe SSH control dir: ${controlDir} is owned by uid ${st.uid}, not ${process.getuid!()}.`)
-      }
-
-      if ((st.mode & 0o777) !== 0o700) {
-        fs.chmodSync(controlDir, 0o700)
-      }
-    }
-
     const args = buildMasterArgs(this, this._connectTimeoutMs)
     this._logLine(`opening control master to ${target(this.user, this.host)}:${this.port}`)
     let result
 
     try {
-      result = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn, signal })
+      result = await runSsh(args, {
+        timeoutMs: this._connectTimeoutMs,
+        spawnFn: this._spawnFn,
+        command: this.sshBinary,
+        signal
+      })
     } catch (error) {
-      throw this._fail(error, SSH_ERROR.UNREACHABLE)
+      throw this._connectFailed(error)
     }
 
     if (!sshCloseOk(result)) {
-      throw this._fail(result, SSH_ERROR.UNREACHABLE)
+      throw this._connectFailed(result)
     }
 
     this._opened = true
@@ -815,7 +918,12 @@ class SshConnection {
       : buildExecArgs(this, 'exit 0', this._connectTimeoutMs)
 
     try {
-      const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn, signal })
+      const result: any = await runSsh(args, {
+        timeoutMs: this._connectTimeoutMs,
+        spawnFn: this._spawnFn,
+        command: this.sshBinary,
+        signal
+      })
 
       return sshCloseOk(result)
     } catch (error: any) {
@@ -827,6 +935,32 @@ class SshConnection {
     }
   }
 
+  // `ssh -O forward` does not keep a ControlPersist master busy by itself.
+  // Refresh the mux while Desktop owns local forwards so the 300s idle timer
+  // cannot silently remove their listener sockets. The finite persist timeout
+  // still cleans up an orphaned master if Desktop crashes.
+  _startControlKeepalive() {
+    if (!this._mux || this._controlKeepaliveTimer || this._forwardedSpecs.size === 0) {
+      return
+    }
+
+    this._controlKeepaliveTimer = setInterval(() => {
+      // Remote liveness owns reconnect/teardown. Keep refreshing through a
+      // transient failed check rather than turning one timeout into expiry.
+      void this.isAlive()
+    }, CONTROL_FORWARD_KEEPALIVE_MS)
+    this._controlKeepaliveTimer.unref?.()
+  }
+
+  _stopControlKeepalive() {
+    if (!this._controlKeepaliveTimer) {
+      return
+    }
+
+    clearInterval(this._controlKeepaliveTimer)
+    this._controlKeepaliveTimer = null
+  }
+
   // A real exec through the master (`exit 0` works under POSIX shells and
   // cmd.exe); a wedged mux hangs to the timeout.
   async _verifyMuxChannel({ signal }: any = {}) {
@@ -834,6 +968,7 @@ class SshConnection {
       const result: any = await runSsh(buildExecArgs(this, 'exit 0', this._connectTimeoutMs), {
         timeoutMs: this._connectTimeoutMs,
         spawnFn: this._spawnFn,
+        command: this.sshBinary,
         signal
       })
 
@@ -855,7 +990,8 @@ class SshConnection {
     try {
       await runSsh(buildControlArgs(this, 'exit', [], this._connectTimeoutMs), {
         timeoutMs: this._connectTimeoutMs,
-        spawnFn: this._spawnFn
+        spawnFn: this._spawnFn,
+        command: this.sshBinary
       })
     } catch {
       void 0
@@ -880,6 +1016,7 @@ class SshConnection {
       result = await runSsh(args, {
         timeoutMs: timeoutMs ?? this._execTimeoutMs,
         spawnFn: this._spawnFn,
+        command: this.sshBinary,
         ...(stdinData != null ? { stdinData } : {})
       })
     } catch (error) {
@@ -903,7 +1040,7 @@ class SshConnection {
   // cascaded into SIGTERM of a healthy backend (#96266).
   _startNoMuxTunnelChild(tunnel: any, spec: string, args: string[], localPort: number | string) {
     return new Promise<void>((resolve, reject) => {
-      const child = this._spawnFn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] })
+      const child = this._spawnFn(this.sshBinary, args, { stdio: ['ignore', 'ignore', 'pipe'] })
       tunnel.child = child
       let stderr = ''
       let readyConfirmed = false
@@ -1075,7 +1212,11 @@ class SshConnection {
     let result
 
     try {
-      result = await runSsh(args, { timeoutMs: this._forwardTimeoutMs, spawnFn: this._spawnFn })
+      result = await runSsh(args, {
+        timeoutMs: this._forwardTimeoutMs,
+        spawnFn: this._spawnFn,
+        command: this.sshBinary
+      })
     } catch (error) {
       throw this._fail(error)
     }
@@ -1083,6 +1224,9 @@ class SshConnection {
     if (!sshCloseOk(result)) {
       throw this._fail(result)
     }
+
+    this._forwardedSpecs.add(spec)
+    this._startControlKeepalive()
   }
 
   // Cancel a previously-established forward. Best-effort: a failure here is
@@ -1113,16 +1257,28 @@ class SshConnection {
     const args = buildControlArgs(this, 'cancel', ['-L', spec], this._connectTimeoutMs)
 
     try {
-      await runSsh(args, { timeoutMs: this._forwardTimeoutMs, spawnFn: this._spawnFn })
+      await runSsh(args, { timeoutMs: this._forwardTimeoutMs, spawnFn: this._spawnFn, command: this.sshBinary })
       this._logLine(`cancelled forward 127.0.0.1:${localPort}`)
     } catch (error: any) {
       this._logLine(`cancelForward failed (ignored): ${error.message}`)
+    } finally {
+      this._forwardedSpecs.delete(spec)
+
+      if (this._forwardedSpecs.size === 0) {
+        this._stopControlKeepalive()
+      }
     }
   }
 
-  // Tear down. Mux: exit the master (drops every forward with it). No-mux:
-  // kill the tunnel children. Best-effort; never throws.
+  // Tear down. Mux: exit the master (drops every forward with it) unless
+  // another connection still holds the same ControlPath — then only release
+  // this connection's claim (#97264). No-mux: kill the tunnel children.
+  // Best-effort; never throws.
   async close() {
+    this._stopControlKeepalive()
+    this._forwardedSpecs.clear()
+    const action = this._mux ? this._controlMasters.release(this.controlPath, this) : 'exit-master'
+
     if (!this._opened) {
       return
     }
@@ -1147,10 +1303,23 @@ class SshConnection {
       return
     }
 
+    if (action === 'release-only') {
+      this._opened = false
+      this._logLine(
+        `control master left running: ${this._controlMasters.count(this.controlPath)} other connection(s) still use it`
+      )
+
+      return
+    }
+
     const args = buildControlArgs(this, 'exit', [], this._connectTimeoutMs)
 
     try {
-      const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn })
+      const result: any = await runSsh(args, {
+        timeoutMs: this._connectTimeoutMs,
+        spawnFn: this._spawnFn,
+        command: this.sshBinary
+      })
 
       if (!sshCloseOk(result)) {
         throw this._fail(result)
@@ -1213,6 +1382,7 @@ export {
   buildInteractiveSshArgs,
   buildMasterArgs,
   classifySshError,
+  CONTROL_FORWARD_KEEPALIVE_MS,
   CONTROL_PERSIST_SECONDS,
   controlSocketPath,
   createSshProbeConnection,

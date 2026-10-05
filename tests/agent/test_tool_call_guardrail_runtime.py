@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -318,7 +319,7 @@ def test_relay_rewrite_precedes_sequential_policy_approval_checkpoint_and_dispat
     assert observed["start"] == expected
     assert observed["dispatch"] == expected
     assert observed["checkpoint"] == [
-        ("/approved/path", "before write_file")
+        (str(Path("/approved/path")), "before write_file")
     ]
 
 
@@ -370,13 +371,15 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
 
 
 def _compressed_args(field: str) -> dict:
-    """Generate the current model-visible prune marker through the real compressor."""
-    from agent.context_compressor import _COMPRESSION_MARKER_PREFIX, _truncate_tool_call_args_json
+    """Generate a legacy compression marker for already-contaminated session coverage."""
+    from agent.compression_marker import _COMPRESSION_MARKER_TEMPLATE
 
-    raw = json.dumps({field: "z" * 2000})
-    parsed = json.loads(_truncate_tool_call_args_json(raw))
-    assert _COMPRESSION_MARKER_PREFIX in parsed[field]
-    return parsed
+    original = "z" * 2000
+    marker = _COMPRESSION_MARKER_TEMPLATE.format(
+        omitted=len(original) - 200,
+        total=len(original),
+    )
+    return {field: original[:200] + marker}
 
 
 def test_context_pruned_effectful_call_blocks_before_dispatch():
@@ -405,6 +408,15 @@ def test_context_pruned_effectful_call_blocks_before_dispatch():
 
     assert _context_pruned_argument_paths("write_file", {"content": "x" * 201 + "...[truncated]"}) == []
     assert _context_pruned_argument_paths("write_file", {"content": f"see {_COMPRESSION_MARKER_PREFIX} docs"}) == []
+    assert _context_pruned_argument_paths(
+        "write_file",
+        {"content": f"template {_COMPRESSION_MARKER_PREFIX} {{omitted:,}} of {{total:,}}"},
+    ) == []
+    # A marker cut before its fixed sentence is still an artifact once a count is rendered.
+    for suffix in (" 1,800", " 1,800 of", " 1,800 of 2,000 chars omitted"):
+        assert _context_pruned_argument_paths(
+            "write_file", {"body": f"prefix {_COMPRESSION_MARKER_PREFIX}{suffix}"}
+        ) == ["$.body"]
 
 
 def test_read_only_tool_may_quote_current_context_prune_marker():

@@ -737,22 +737,3 @@ def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bo
         )
     )
     return True
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def relay_bot_username(platform: str) -> Optional[str]:
-    """The bot's deep-link username/handle for a platform (e.g. Telegram's
-    ``@handle`` for ``t.me/<handle>``), read from the per-platform entry in
-    ``GATEWAY_RELAY_BOT_IDS``. None when absent (most platforms don't need one).
-    """
-    entry = _relay_bot_ids_map().get(platform)
-    if isinstance(entry, dict):
-        username = entry.get("username")
-        if username:
-            return str(username).lstrip("@")
-    return None
-# ---- END PLUGIN-COMPAT ----

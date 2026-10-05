@@ -31,6 +31,17 @@ def home(tmp_path, monkeypatch):
     return hermes_home
 
 
+@pytest.fixture(autouse=True)
+def _commit_plugin_selection_without_building_an_environment(monkeypatch):
+    """These tests cover selection keys; PM's real publication path has its own integration tests."""
+    def admit(enabled, disabled, **_kwargs):
+        cfg = load_config()
+        cfg["plugins"] = {"enabled": sorted(enabled), "disabled": sorted(disabled)}
+        save_config(cfg)
+
+    monkeypatch.setattr("hermes_cli.plugins_admission.admit_plugin_set_change", admit)
+
+
 def _lists():
     plugins = load_config().get("plugins") or {}
     return set(plugins.get("enabled") or []), set(plugins.get("disabled") or [])
@@ -93,3 +104,21 @@ def test_status_reports_bundled_defaults_and_the_live_memory_provider(home):
     # An explicit disable still wins over both defaults.
     assert plugins_cmd._plugin_status("fakemem", enabled, {"fakemem"}, key="fakemem", source="user",
                                       active=active) == "disabled"
+
+
+def test_status_matches_the_loader_for_a_user_installed_model_provider(home):
+    """``gate_manifest`` loads a model provider from any source without a ``plugins.enabled`` entry, so
+    status (and the Desktop Plugins switch) must not report a user-installed one as "not enabled"; a
+    user standalone plugin stays opt-in."""
+    _write_plugin(home / "plugins", "fakeprov", "fakeprov", "kind: model-provider\n")
+    _write_plugin(home / "plugins", "fakestand", "fakestand", "")
+    enabled, disabled = plugins_cmd._get_enabled_set(), plugins_cmd._get_disabled_set()
+    by_key = {e[5]: e for e in plugins_cmd._discover_all_plugins()}
+    status = {}
+    for key in ("fakeprov", "fakestand"):
+        name, _v, _d, source, dir_path, _k = by_key[key]
+        status[key] = plugins_cmd._plugin_status(name, enabled, disabled, key=key, source=source, dir_path=dir_path)
+    assert status == {"fakeprov": "enabled", "fakestand": "not enabled"}
+    name, _v, _d, source, dir_path, _k = by_key["fakeprov"]
+    assert plugins_cmd._plugin_status(name, enabled, {"fakeprov"}, key="fakeprov", source=source,
+                                      dir_path=dir_path) == "disabled"

@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
-from agent.message_metadata import append_message
+from agent.message_metadata import append_message, without_persistence_fields
 from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
 from agent.process_bootstrap import _install_safe_stdio
@@ -34,6 +34,7 @@ from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, runtime_host_value, stage_surface_switch_note,
 )
 from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
+from hermes_cli.observability.shared_metrics_efficiency import record_cache_break, record_prompt_rebuild
 from agent.turn_retry_state import TurnRetryState
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
 # skewed phase mid-turn.
@@ -257,13 +258,49 @@ def _moa_client_consumes_prepared_request(client: Any) -> bool:
     return callable(getattr(completions, "prepare", None))
 
 
-def _join_truncated_parts(parts: List[str]) -> str:
-    """Join continuation fragments, adding a newline where two would glue together (#78577)."""
+_MIN_CONTINUATION_OVERLAP = 32
+
+
+def _continuation_overlap_length(previous: str, continuation: str) -> int:
+    """Return the longest continuation prefix that repeats the previous suffix."""
+    if len(previous) < _MIN_CONTINUATION_OVERLAP or len(continuation) < _MIN_CONTINUATION_OVERLAP:
+        return 0
+
+    prefix_lengths = [0] * len(continuation)
+    matched = 0
+    for index in range(1, len(continuation)):
+        while matched and continuation[index] != continuation[matched]:
+            matched = prefix_lengths[matched - 1]
+        if continuation[index] == continuation[matched]:
+            matched += 1
+            prefix_lengths[index] = matched
+
+    matched = 0
+    last_index = len(previous) - 1
+    for index, char in enumerate(previous):
+        while matched and char != continuation[matched]:
+            matched = prefix_lengths[matched - 1]
+        if char == continuation[matched]:
+            matched += 1
+            if matched == len(continuation):
+                if index == last_index:
+                    return matched
+                matched = prefix_lengths[matched - 1]
+    return matched if matched >= _MIN_CONTINUATION_OVERLAP else 0
+
+
+def _join_truncated_parts(parts: List[tuple[str, bool]]) -> str:
+    """Join continuation fragments, deduping only interrupted-stream seams."""
     joined = ""
-    for part in parts:
+    previous_was_partial_stub = False
+    for part, is_partial_stub in parts:
+        if previous_was_partial_stub and joined and part:
+            # Overlap can't exceed len(part): scan only that tail of ``joined``.
+            part = part[_continuation_overlap_length(joined[-len(part):], part):]
         if joined and not joined[-1].isspace() and part and not part[0].isspace():
             joined += "\n"
         joined += part
+        previous_was_partial_stub = is_partial_stub
     return joined
 
 
@@ -682,6 +719,29 @@ def _restore_pinned_tools(agent, session_row) -> list:
     return built_for_this_surface
 
 
+def _refresh_bot_chat_tools(agent) -> None:
+    """Rebuild ``agent.tools`` for a Bot Chat capability refresh through the builder that
+    created the session, so the refreshed set is what a fresh desktop/TUI session gets
+    (#124211). A canonical Bot Chat never forks, so its tools[] is otherwise a fossil of
+    session creation: ``hermes tools enable/disable`` writes ``platform_toolsets`` and the
+    automatic between-turns refresh reuses the build-time selection. Only the desktop/TUI
+    gateway keeps agents alive across turns; every other surface builds a fresh agent whose
+    tools[] already reflects config. No prefix preservation: a disabled toolset must drop,
+    and the prompt rebuild this rides on already breaks the cache."""
+    platform = getattr(agent, "platform", None)
+    if platform not in ("desktop", "tui"):
+        return
+    try:
+        from tools.mcp_tool_agent import refresh_agent_mcp_tools
+        from tui_gateway.server import _load_disabled_toolsets, _load_enabled_toolsets
+        refresh_agent_mcp_tools(
+            agent, enabled_override=_load_enabled_toolsets(platform),
+            disabled_override=_load_disabled_toolsets(), quiet_mode=True, content_aware=True)
+    except Exception as exc:
+        logger.warning("Bot Chat capability refresh kept the previous tools for session %s: %s",
+                       agent.session_id, exc)
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -721,14 +781,19 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 clear_skills_system_prompt_cache(clear_snapshot=True)
             except Exception:
                 pass
+            _refresh_bot_chat_tools(agent)
             agent._cached_system_prompt = agent._build_system_prompt(system_message)
+            record_cache_break(agent, "toolset_change")
             stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
             # Persist so the NEXT turn restores the new bytes verbatim (cache break is
-            # once per capability change). on_session_start not re-fired: continuation.
+            # once per capability change). Tools re-pin too: without it the next
+            # turn's pin-restore would resurrect the pre-refresh toolset (#124211).
+            # on_session_start not re-fired: continuation.
             _persist_system_prompt(
                 agent,
                 "Session DB update_system_prompt failed after Bot Chat capability refresh "
                 "(session=%s): %s. The refresh will re-fire next turn.",
+                persist_tools=True,
             )
             return
         # Continuing session — reuse the exact system prompt from the
@@ -782,6 +847,8 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # persisted over the pin below. Pinned first, so the prompt describes the tools sent.
     built_for_this_surface = _restore_pinned_tools(agent, session_row)
     agent._cached_system_prompt = agent._build_system_prompt(system_message)
+    if conversation_history:
+        record_prompt_rebuild(agent, stored_prompt, stored_state, agent._cached_system_prompt)
 
     # The rebuilt prompt describes the CURRENT surface, but a surface note left in the
     # transcript by an earlier switch does not — retire it here too, or a rebuild for an
@@ -822,10 +889,13 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     # Model/provider identity, then cwd drift.  A cwd change is a real content change (context
     # files, the workspace snapshot and the coding posture are all resolved from it), so it
     # still rebuilds; the runtime surface does not (agent/surface_switch.py).
+    # The builder omits an empty trailer line, so stored-but-now-empty is a route change too;
+    # the rebuilt prompt then carries no line and matches from the next turn on.  Stored-empty
+    # (pre-trailer prompts) keeps reusing.
     for label, attr in (("Model", "model"), ("Provider", "provider")):
         stored = identity_line_value(prompt, label)
         current = str(getattr(agent, attr, "") or "").strip()
-        if stored and current and stored != current:
+        if stored and stored != current:
             return False
     # A prompt stamped for another session (a /branch child copies its parent's bytes) must not
     # tell the model a foreign Session ID.  Checked only when the trailer is on: with it off, a
@@ -847,11 +917,18 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
 # Named so _is_synthetic_compression_user_turn can recognize a crash-persisted nudge by
 # content (SessionDB projection strips the _length_continuation_nudge tag).
 _LENGTH_CONTINUATION_NETWORK_STUB = (
-    "[System: The previous response was cut off by a network error mid-stream. Continue exactly "
-    "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
+    "[System: The previous response was cut off by a network error mid-stream — a transport "
+    "interruption, NOT a change in your capabilities. Your tools are still fully available; call "
+    "them as normal and ignore any earlier claim that you lack tool access. Continue the task "
+    "from where you left off. Do not restart or repeat prior text.]"
 )
 _LENGTH_CONTINUATION_OUTPUT_LIMIT = (
     "[System: Your previous response was truncated by the output length limit. Continue exactly "
+    "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
+)
+# Pre-#74990 wording; kept so crash-persisted nudges from older sessions are still recognized.
+_LEGACY_LENGTH_CONTINUATION_NETWORK_STUB = (
+    "[System: The previous response was cut off by a network error mid-stream. Continue exactly "
     "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
 )
 # The dropped-tools variant interpolates tool names; matched by prefix.
@@ -866,7 +943,8 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
             "the stream timed out before it could be delivered. Do NOT retry the same tool call "
             "with the same large content. Instead, break the content into multiple smaller tool "
             "calls (e.g. use multiple patch calls or write smaller files). Each tool call's "
-            "arguments must be under ~8K tokens to avoid stream timeouts.]"
+            "arguments must be under ~8K tokens to avoid stream timeouts. The cut was a transport "
+            "interruption, not a capability change — your tools remain fully available.]"
         )
     return _LENGTH_CONTINUATION_NETWORK_STUB if is_partial_stub else _LENGTH_CONTINUATION_OUTPUT_LIMIT
 
@@ -1136,7 +1214,7 @@ def _peel_moa_guidance(messages: List[Dict[str, Any]], guidance: Any) -> List[Di
 def _redecorate_prompt_cache_for_provider(
     agent, api_messages: List[Dict[str, Any]], *, system_message=None,
     moa_prepared: Optional[Dict[str, Any]] = None, tools_for_api: Optional[List[Dict[str, Any]]] = None,
-) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]] | tuple[List[Dict[str, Any]], Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]], List[Dict[str, Any]]]:
     """Strip and re-apply cache_control for the *current* provider policy — failover
     ``continue`` paths reuse ``api_messages`` (#72626). MoA guidance is peeled and rebased."""
     messages: List[Dict[str, Any]] = [dict(m) if isinstance(m, dict) else m for m in (api_messages or [])]
@@ -1182,8 +1260,6 @@ def _redecorate_prompt_cache_for_provider(
         )
         messages, planned_tools = plan.messages, plan.tools
 
-    if tools_for_api is None:
-        return messages, prepared
     return messages, prepared, planned_tools
 
 
@@ -1240,7 +1316,11 @@ def _apply_context_engine_selection(
     # Require a NON-EMPTY list of dicts: ``all([])`` is ``True``, so a ``[]`` from a
     # buggy engine would otherwise replace the request instead of failing open.
     if isinstance(selected, list) and selected and all(isinstance(m, dict) for m in selected):
-        return selected
+        # The engine may hand back the ``conversation_messages`` clones (or its own dicts) that still
+        # carry persistence-only fields; the request copy was stripped BEFORE this hook, so strip the
+        # selection too or those fields reach the provider. Dicts without them pass through as-is.
+        stripped = [without_persistence_fields(m) for m in selected]
+        return selected if all(a is b for a, b in zip(stripped, selected)) else stripped
     logger.warning(
         "Context engine select_context returned an invalid value "
         "(not a non-empty list of dicts); ignoring (session=%s)", session_label,
@@ -1337,14 +1417,14 @@ class _LoopState:
     failed: bool = False
     codex_ack_continuations: int = 0
     length_continue_retries: int = 0
-    # Per-turn backstop for the refunding restarts (redirect / rebuilt-for-fallback).
-    # Unlike ``retry_count`` (rebound to 0 each iteration) this accumulates for the whole
-    # turn so a runaway interrupt/redirect that keeps re-arming a restart flag cannot
-    # refund the iteration budget forever and hold the turn lease indefinitely.
+    # Backstop for the refunding restarts (redirect / rebuilt-for-fallback). Unlike
+    # ``retry_count`` (rebound to 0 each iteration) this survives across iterations until a
+    # response arrives, so a runaway interrupt/redirect that keeps re-arming a restart flag
+    # cannot refund the iteration budget forever and hold the turn lease indefinitely.
     restart_count: int = 0
     _outer_error_count: int = 0  # outer-loop exceptions this turn (#92450), see _MAX_OUTER_LOOP_ERRORS
     truncated_tool_call_retries: int = 0
-    truncated_response_parts: List[str] = field(default_factory=list)
+    truncated_response_parts: List[tuple[str, bool]] = field(default_factory=list)
     compression_attempts: int = 0
     _last_preflight_pressure: Optional[int] = None
     # A provider overflow outweighs the rough-estimate calibration that defers preflight after
@@ -1464,12 +1544,16 @@ def _run_conversation_turn(
     persist_user_platform_id: Optional[str] = None,
     turn_author: Optional[Dict[str, Any]] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    title_user_message: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run a complete conversation with tool calling until completion; returns the result dict.
 
     ``stream_callback``: per-text-delta callback (TTS). ``persist_user_message``: clean text to
     store when ``user_message`` carries API-only synthetic prefixes; timestamp / platform id are
-    stored as metadata (platform id lets restart drain recovery dedup). ``persist_user_display_*``:
+    stored as metadata (platform id lets restart drain recovery dedup).
+    ``title_user_message``: optional pre-injection text for titles only (None uses the
+    model-facing message; an empty string suppresses titling for this turn).
+    ``persist_user_display_*``:
     display-only event rendering; the model still receives the message unchanged."""
     if moa_config is None:
         user_message, moa_config, persist_user_message = _decode_inline_moa_turn(
@@ -1508,6 +1592,7 @@ def _run_conversation_turn(
             # MoA turns append per-call aggregated context to the API copy of the
             # user message, so no byte-stable api_content sidecar can be stamped.
             moa_active=bool(moa_config),
+            title_user_message=title_user_message,
         )
     except PreflightCompressionTimedOut as _preflight_timeout_exc:
         return _preflight_timeout_result(agent, _preflight_timeout_exc, conversation_history)
@@ -1621,6 +1706,7 @@ def run_conversation(
     persist_user_platform_id: Optional[str] = None,
     moa_config: Optional[dict[str, Any]] = None,
     turn_author: Optional[Dict[str, Any]] = None,
+    title_user_message: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run one turn (see ``_run_conversation_turn``) and export the current-turn boundary.
 
@@ -1649,10 +1735,55 @@ def run_conversation(
             persist_user_platform_id=persist_user_platform_id,
             moa_config=moa_config,
             turn_author=turn_author,
+            title_user_message=title_user_message,
         )
     result = export_current_turn_boundary(agent, result, user_message)
     _close_durable_failed_turn(agent, result)
     return result
+
+
+_FAILED_TURN_ERROR_MAX_CHARS = 2000
+
+
+def _failed_turn_display_metadata(agent, result: dict) -> dict:
+    """The error text and ``error_surface`` a client needs to redraw the failed turn's error
+    card from the transcript, after the live ``message.complete`` frame is gone. Every
+    string is redacted with ``force=True``: the error came from a provider/tool, so a
+    secret echoed in it must not reach the durable store (the redaction e2e boundary)."""
+    from agent.error_surface import build_error_surface_from_result
+
+    try:
+        surface = build_error_surface_from_result(
+            result, provider=agent.provider or "", model=agent.model or ""
+        )
+    except Exception:
+        logger.debug("failed-turn error surface unavailable", exc_info=True)
+        surface = None
+    error = str(result.get("error") or "").strip()[:_FAILED_TURN_ERROR_MAX_CHARS]
+    metadata = {k: v for k, v in (("error", error), ("error_surface", surface)) if v}
+    return _redact_display_metadata(metadata)
+
+
+def _redact_display_metadata(metadata: dict) -> dict:
+    """Force-redact every string in a display_metadata payload (dicts and lists included).
+
+    display_metadata is persisted via ``SessionDB.append_message`` and re-delivered to
+    clients, so it sits downstream of the turn's own content redaction: an error string
+    that escaped a provider or tool would otherwise reach the 'store' and 'export' sinks
+    verbatim. ``force=True`` keeps the boundary closed even when ``security.redact_secrets``
+    is off, matching the compressor's persistence boundary."""
+    from agent.redact import redact_sensitive_text
+
+    def _redact(value):
+        if isinstance(value, str):
+            return redact_sensitive_text(value, force=True)
+        if isinstance(value, dict):
+            return {k: _redact(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_redact(v) for v in value]
+        return value
+
+    return {k: _redact(v) for k, v in metadata.items()}
 
 
 def _close_durable_failed_turn(agent, result: Any) -> None:
@@ -1690,74 +1821,15 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
         # hedge over the whole list rather than under-report a possible side effect.
         start = result.get("current_turn_user_idx")
         turn_messages = messages[start:] if isinstance(start, int) and 0 <= start < len(messages) else messages
-        append_message(messages, {
+        boundary = {
             "role": "assistant", "content": failed_turn_notice(turn_messages), "display_kind": FAILED_TURN_DISPLAY_KIND,
-        })
+        }
+        if failure := _failed_turn_display_metadata(agent, result):
+            boundary["display_metadata"] = failure
+        append_message(messages, boundary)
         agent._flush_messages_to_session_db(messages)
     except Exception:
         logger.debug("failed-turn boundary not written", exc_info=True)
 
 
 __all__ = ["run_conversation"]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-import random  # noqa: F401,E402
-import ssl  # noqa: F401,E402
-import sys  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE'),
-    'COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE'),
-    'COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE'),
-    'COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE'),
-    'FailoverReason': ('agent.error_classifier', 'FailoverReason'),
-    'KawaiiSpinner': ('agent.display', 'KawaiiSpinner'),
-    'PARTIAL_STREAM_STUB_ID': ('hermes_constants', 'PARTIAL_STREAM_STUB_ID'),
-    'PRE_API_COMPRESSION_STATUS_TEMPLATE': ('agent.conversation_compression', 'PRE_API_COMPRESSION_STATUS_TEMPLATE'),
-    'adaptive_rate_limit_backoff': ('agent.retry_utils', 'adaptive_rate_limit_backoff'),
-    'anchored_context_tokens': ('agent.usage_anchor', 'anchored_context_tokens'),
-    'automatic_compaction_status_message': ('agent.context_engine', 'automatic_compaction_status_message'),
-    'capture_usage_anchor': ('agent.usage_anchor', 'capture_usage_anchor'),
-    'classify_api_error': ('agent.error_classifier', 'classify_api_error'),
-    'close_interrupted_tool_sequence': ('agent.message_sanitization', 'close_interrupted_tool_sequence'),
-    'coalesce_tool_call_id': ('agent.message_sanitization', 'coalesce_tool_call_id'),
-    'compose_user_api_content': ('agent.turn_context', 'compose_user_api_content'),
-    'compression_blocked_transiently': ('agent.conversation_compression', 'compression_blocked_transiently'),
-    'compression_skipped_due_to_lock': ('agent.conversation_compression', 'compression_skipped_due_to_lock'),
-    'context_compression_timed_out': ('agent.conversation_compression', 'context_compression_timed_out'),
-    'conversation_history_after_compression': ('agent.conversation_compression', 'conversation_history_after_compression'),
-    'env_var_enabled': ('utils', 'env_var_enabled'),
-    'estimate_messages_tokens_rough': ('agent.model_metadata', 'estimate_messages_tokens_rough'),
-    'estimate_request_tokens_rough': ('agent.model_metadata', 'estimate_request_tokens_rough'),
-    'estimate_usage_cost': ('agent.usage_pricing', 'estimate_usage_cost'),
-    'get_context_length_from_provider_error': ('agent.model_metadata', 'get_context_length_from_provider_error'),
-    'has_incomplete_scratchpad': ('agent.trajectory', 'has_incomplete_scratchpad'),
-    'is_output_cap_error': ('agent.model_metadata', 'is_output_cap_error'),
-    'is_repetition_dominated': ('agent.repetition_guard', 'is_repetition_dominated'),
-    'is_zai_coding_overload_error': ('agent.retry_utils', 'is_zai_coding_overload_error'),
-    'jittered_backoff': ('agent.retry_utils', 'jittered_backoff'),
-    'normalize_usage': ('agent.usage_pricing', 'normalize_usage'),
-    'parse_available_output_tokens_from_error': ('agent.model_metadata', 'parse_available_output_tokens_from_error'),
-    'reanchor_current_turn_user_idx': ('agent.turn_context', 'reanchor_current_turn_user_idx'),
-    'save_context_length': ('agent.model_metadata', 'save_context_length'),
-    'serialized_messages_bytes': ('agent.message_sanitization', 'serialized_messages_bytes'),
-    'splice_provider_projection': ('agent.provider_projection', 'splice_provider_projection'),
-    'zai_coding_overload_retry_ceiling': ('agent.retry_utils', 'zai_coding_overload_retry_ceiling'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

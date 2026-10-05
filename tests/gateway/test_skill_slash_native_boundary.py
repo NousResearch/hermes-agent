@@ -1,18 +1,9 @@
-"""Regression tests for review finding B2 on the plugin-skills-menu feature.
+"""The messaging gateway's skill slash path stays filesystem-only: plugin skills
+(``ctx.register_skill``) are offered on interactive surfaces (CLI/TUI/Desktop) only."""
 
-The messaging gateway's skill slash path is native/filesystem-only: the adapter
-must resolve the FIRST token, scan stacked tokens, and load every stacked skill
-against the same filesystem map — a ``/plugin:skill`` token must resolve as
-unknown (never load a plugin skill body), and the per-platform disabled guard
-must see the real names of every skill the stacked loader will load.
-"""
-
-import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
-
-import pytest
 
 from gateway.config import Platform
 from gateway.session import SessionSource
@@ -70,46 +61,18 @@ def _rewrite(event_text: str, tmp_path, monkeypatch, plugin_home):
         plugins_mod._reset_plugin_managers_for_tests()
 
 
-class TestGatewayStackedNativeBoundary:
-    def test_first_token_plugin_skill_is_unknown(self, tmp_path, monkeypatch):
-        """/plugin:guide as the FIRST token resolves filesystem-only: unknown."""
-        from hermes_cli import plugins as plugins_mod
+def test_messaging_stacked_skills_never_load_plugin_skill_bodies(tmp_path, monkeypatch):
+    """Plugin skills are interactive-only: ``/local-skill /plugin:guide do it`` on a messaging
+    platform loads only the local skill, and a leading ``/plugin:guide`` bounces as unknown."""
+    plugin_home = tmp_path / "home"
+    plugin_home.mkdir()
+    _make_local_skill(tmp_path, "local-skill", "Local body.")
+    _make_plugin_skill(plugin_home, "stack-probe", "guide", "Plugin body.")
 
-        plugin_home = tmp_path / "home"
-        plugin_home.mkdir()
-        _make_local_skill(tmp_path, "local-skill", "Local body.")
-        _make_plugin_skill(plugin_home, "stack-probe", "guide", "Plugin body.")
-        plugins_mod._reset_plugin_managers_for_tests()
-        monkeypatch.setenv("HERMES_HOME", str(plugin_home))
-        import agent.skill_commands as sc
-        try:
-            with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
-                assert sc.resolve_skill_command_key("stack-probe:guide") is None
-                assert sc.resolve_skill_command_key("stack-probe:guide", interactive=True) == "/stack-probe:guide"
-        finally:
-            plugins_mod._reset_plugin_managers_for_tests()
-
-    def test_stacked_trailing_plugin_skill_is_not_loaded(self, tmp_path, monkeypatch):
-        """``/local-skill /plugin:guide do it`` must load only the local skill —
-        the plugin token must not reach the stacked loader (B2)."""
-        plugin_home = tmp_path / "home"
-        plugin_home.mkdir()
-        _make_local_skill(tmp_path, "local-skill", "Local body.")
-        _make_plugin_skill(plugin_home, "stack-probe", "guide", "Plugin body.")
-
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
-            reply, event = _rewrite("/local-skill /stack-probe:guide do it", tmp_path, monkeypatch, plugin_home)
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
+        reply, event = _rewrite("/local-skill /stack-probe:guide do it", tmp_path, monkeypatch, plugin_home)
         assert reply is None  # rewrote the event, did not bounce it as unknown
-        assert "Local body." in event.text
+        assert "Local body." in event.text and "do it" in event.text
         assert "Plugin body." not in event.text
-        assert "do it" in event.text
-
-    def test_plugin_only_stacked_token_bounces_unknown(self, tmp_path, monkeypatch):
-        """A leading ``/plugin:guide`` (no filesystem skill) bounces unknown."""
-        plugin_home = tmp_path / "home"
-        plugin_home.mkdir()
-        _make_plugin_skill(plugin_home, "stack-probe", "guide", "Plugin body.")
-
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
-            reply, _event = _rewrite("/stack-probe:guide do it", tmp_path, monkeypatch, plugin_home)
+        reply, _event = _rewrite("/stack-probe:guide do it", tmp_path, monkeypatch, plugin_home)
         assert reply is not None and "Unknown command" in reply

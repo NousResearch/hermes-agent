@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from agent.compaction_display import project_compaction_message_for_display
 from agent.context_compressor import user_originated_turn_view
 from hermes_state_messages import DISPLAY_VISIBLE_SQL
+from hermes_state_identity import _display_row_order_sql, _stable_tool_key, _TOOL_DISPLAY_VERSION_SQL
 
 
 _SYNTHETIC_PROMPT = re.compile(
@@ -54,33 +55,42 @@ def _display_rows_sql(conn, session_id, *, users_only=False):
     """Return only representative ids and their stable first-row order, never bodies.
 
     Legacy stores cannot backfill on a GET. SQL groups their payload identities in
-    SQLite; only user content crosses the Python boundary for carrier normalization.
+    SQLite; only user content and assistant tool-call metadata cross the Python boundary for normalization.
     Current stores use the durable display index, including protected-tail copies.
     """
     filters = (" AND role = 'user'" if users_only else "") + DISPLAY_VISIBLE_SQL
+    # Timeline jumps keep the same original tool output as ordinary display pages.
+    has_uid = any(r[1] == "message_uid" for r in conn.execute("PRAGMA table_info(messages)"))
+    order = _display_row_order_sql("candidate", has_message_uid=has_uid)
     indexed = conn.execute(
         "SELECT 1 FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) "
         f"{filters} AND (display_order IS NULL OR display_identity IS NULL) LIMIT 1",
         (session_id,),
-    ).fetchone() is None
+    ).fetchone() is None and (users_only or not has_uid or conn.execute(_TOOL_DISPLAY_VERSION_SQL).fetchone() is not None)
     if indexed:
         return f"""WITH display_rows AS (
             SELECT (SELECT candidate.id FROM messages candidate
                     WHERE candidate.session_id = :sid
                       AND candidate.display_order = m.display_order
                       AND (candidate.active = 1 OR candidate.compacted = 1){DISPLAY_VISIBLE_SQL}
-                    ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1) AS row_id,
+                    ORDER BY {order} LIMIT 1) AS row_id,
                    m.display_order AS sort_id
             FROM messages m WHERE session_id = :sid AND (active = 1 OR compacted = 1){filters}
             GROUP BY m.display_order
         )"""
+    # Read-only legacy stores cannot backfill; uid-less rows retain the content identity.
+    tool_uid = "CASE WHEN role = 'tool' THEN NULLIF(message_uid, '') END" if has_uid else "NULL"
+    fields = ("CASE WHEN role = 'assistant' AND timeline_tool_call_ids(tool_calls) IS NOT NULL THEN NULL "
+              "WHEN role = 'user' THEN timeline_identity_content(content, display_kind) ELSE content END",
+              "timestamp", "tool_call_id", "CASE WHEN role = 'assistant' THEN "
+              "COALESCE(timeline_tool_call_ids(tool_calls), tool_calls) ELSE tool_calls END", "tool_name")
+    identity = ", ".join(f"CASE WHEN {tool_uid} IS NULL THEN {field} END" for field in fields)
+    legacy_order = _display_row_order_sql(has_message_uid=has_uid)
     return f"""WITH ranked AS (
         SELECT id, MIN(id) OVER identity AS sort_id,
-               ROW_NUMBER() OVER (identity ORDER BY active DESC, id DESC) AS preference
+               ROW_NUMBER() OVER (identity ORDER BY {legacy_order}) AS preference
         FROM messages WHERE session_id = :sid AND (active = 1 OR compacted = 1){filters}
-        WINDOW identity AS (PARTITION BY role,
-            CASE WHEN role = 'user' THEN timeline_identity_content(content, display_kind) ELSE content END,
-            timestamp, tool_call_id, tool_calls, tool_name)
+        WINDOW identity AS (PARTITION BY role, {tool_uid}, {identity})
     ), display_rows AS (SELECT id AS row_id, sort_id FROM ranked WHERE preference = 1)"""
 
 
@@ -92,7 +102,13 @@ def _register_functions(db, conn):
             "role": "user", "content": db._decode_content(content), "display_kind": display_kind})
         return db._encode_content(live.get("content")) if handoff is not None and live is not None else content
 
+    def tool_call_ids(tool_calls):
+        key = _stable_tool_key({"role": "assistant", "tool_calls": tool_calls,
+                                "timestamp": None, "tool_call_id": None, "tool_name": None})
+        return repr(key[4]) if key is not None else None
+
     conn.create_function("timeline_identity_content", 2, identity_content, deterministic=True)
+    conn.create_function("timeline_tool_call_ids", 1, tool_call_ids, deterministic=True)
     conn.create_function("timeline_preview", 3,
                          lambda content, kind, summary: _prompt_preview(db, content, kind, summary),
                          deterministic=True)

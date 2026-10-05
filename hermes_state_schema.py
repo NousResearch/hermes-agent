@@ -31,6 +31,7 @@ from hermes_state_holders import _read_proc_argv
 from hermes_state_search import _delete_meta, _meta_row
 from hermes_state_errors import is_sqlite_lock_error
 from hermes_state_titles import next_title_in_lineage
+from hermes_state_identity import _TOOL_DISPLAY_VERSION_KEY, _TOOL_DISPLAY_VERSION_SQL
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -50,6 +51,7 @@ _MESSAGE_UID_BACKFILL_DONE = "message_uid_backfill"
 _MESSAGE_UID_BACKFILL_CURSOR = "message_uid_backfill_id"
 _MESSAGE_UID_BACKFILL_CHUNK = 2000
 _MESSAGE_UID_BACKFILL_BUDGET_S = 1.0
+_TOOL_DISPLAY_BACKFILL_CURSOR = "tool_display_identity_cursor"
 
 
 def _holder_cmdline(pid: int) -> str:
@@ -1002,7 +1004,48 @@ class SessionSchemaMixin:
         self._ensure_unique_title_index(cursor)
         if fts5_available:
             self._init_fts(cursor)
+        self._migrate_tool_display_identity(cursor)
         self._conn.commit()
+
+    def _migrate_tool_display_identity(self, cursor: sqlite3.Cursor) -> None:
+        """Invalidate legacy tool display keys in bounded slices; sessions backfill after the upgrade.
+
+        Keep payloads and active/compacted flags untouched, and commit the layout marker together
+        with the final slice. Partial stores keep the legacy display path; settled stores only
+        probe indexed metadata on reopen. Share the uid backfill's chunk/time limits.
+        """
+        if cursor.execute(_TOOL_DISPLAY_VERSION_SQL).fetchone() is not None:
+            return
+        high = cursor.execute("SELECT MAX(id) FROM messages").fetchone()[0] or 0
+        deadline = time.monotonic() + _MESSAGE_UID_BACKFILL_BUDGET_S
+        while True:
+            owns_transaction = not cursor.connection.in_transaction
+            if owns_transaction:
+                cursor.execute("BEGIN IMMEDIATE")
+            try:
+                if cursor.execute(_TOOL_DISPLAY_VERSION_SQL).fetchone() is not None:
+                    if owns_transaction:
+                        cursor.execute("COMMIT")
+                    return
+                row = _meta_row(cursor, _TOOL_DISPLAY_BACKFILL_CURSOR)
+                done_through = int(row[0]) if row else 0
+                upper = min(done_through + _MESSAGE_UID_BACKFILL_CHUNK, high)
+                cursor.execute("UPDATE messages SET display_identity = NULL, display_order = NULL "
+                               "WHERE id > ? AND id <= ? AND role = 'tool' AND NULLIF(message_uid, '') IS NOT NULL "
+                               "AND (display_identity IS NOT NULL OR display_order IS NOT NULL)", (done_through, upper))
+                if upper >= high:
+                    self.set_meta(_TOOL_DISPLAY_VERSION_KEY, "1", cursor=cursor)
+                    _delete_meta(cursor, _TOOL_DISPLAY_BACKFILL_CURSOR)
+                else:
+                    self.set_meta(_TOOL_DISPLAY_BACKFILL_CURSOR, str(upper), cursor=cursor)
+                if owns_transaction:
+                    cursor.execute("COMMIT")
+            except BaseException:
+                if owns_transaction:
+                    cursor.execute("ROLLBACK")
+                raise
+            if upper >= high or time.monotonic() >= deadline:
+                return
 
     def _run_data_migrations(self, cursor: sqlite3.Cursor, current_version: int, fts5_available: bool) -> None:
         """Version-gated chain for DATA migrations only (row backfills); column additions never
@@ -1127,7 +1170,9 @@ class SessionSchemaMixin:
         while done_through < high:
             upper = done_through + _MESSAGE_UID_BACKFILL_CHUNK
             cursor.execute(
-                "UPDATE messages SET message_uid = lower(hex(randomblob(16))) "
+                "UPDATE messages SET message_uid = lower(hex(randomblob(16))), "
+                "display_identity = CASE WHEN role = 'tool' THEN NULL ELSE display_identity END, "
+                "display_order = CASE WHEN role = 'tool' THEN NULL ELSE display_order END "
                 "WHERE id > ? AND id <= ? AND message_uid IS NULL", (done_through, upper))
             done_through = upper
             if done_through < high and time.monotonic() >= deadline:

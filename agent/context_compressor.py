@@ -2181,6 +2181,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
 
+    # agent/prepared_compaction.PreparedCompaction when compression.prepare_ahead is on, else None.
+    prepared_compaction: Any = None
+
     @property
     def name(self) -> str:
         return "compressor"
@@ -2376,6 +2379,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     def _reset_session_compaction_state(self) -> None:
         """Shared per-session reset for /new, /reset and session end."""
+        if self.prepared_compaction is not None:
+            self.prepared_compaction.discard("session boundary")
         # A handoff may carry role="user" only for alternation, so role alone can't prove a human turn existed.
         self._previous_summary = self._summary_has_user_turn = self._last_summary_error = None
         self._last_aux_model_failure_error = self._last_aux_model_failure_model = None
@@ -2416,6 +2421,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
         """Bind the current session row so durable cooldowns can round-trip."""
+        if self.prepared_compaction is not None and (session_id or "") != self._session_id:
+            self.prepared_compaction.discard("session rebind")
         self._session_db = session_db
         self._session_id = session_id or ""
         self._summary_failure_cooldown_until = 0.0
@@ -4126,16 +4133,20 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             from agent.conversation_compression import _raise_if_stale_attempt
 
             _raise_if_stale_attempt(self)
-            self._previous_summary = summary
-            self._clear_compression_failure_cooldown()
-            self._summary_model_fallen_back = False
-            self._last_summary_error = None
-            self._clear_terminal_summary_failures()
-            # The provider answered a summary again: the sustained-overload budget restarts (#123167).
-            self._reset_consecutive_overload_aborts()
+            self._record_summary_success(summary)
             return self._with_summary_prefix(summary)
         except Exception as e:
             return self._on_summary_failure(e, turns_to_summarize, focus_topic, memory_context)
+
+    def _record_summary_success(self, summary: str) -> None:
+        """A healthy summary becomes the iterative base and clears the failure state."""
+        self._previous_summary = summary
+        self._clear_compression_failure_cooldown()
+        self._summary_model_fallen_back = False
+        self._last_summary_error = None
+        self._clear_terminal_summary_failures()
+        # The provider answered a summary again: the sustained-overload budget restarts (#123167).
+        self._reset_consecutive_overload_aborts()
 
     def _build_summary_prompt(
         self, content_to_summarize: str, summary_budget: int, focus_topic: Optional[str],
@@ -5400,6 +5411,16 @@ Write only the summary body. Do not include any preamble or prefix."""
                 compress_end = bridge_idx
         return compress_start, compress_end
 
+    def _plan_compaction_window(self, messages: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], int, int, int]:
+        """Phases 1-2 of compress(): ``(working, pruned_count, compress_start, compress_end)``.
+        ``working`` is a pruned copy without blank echoes; the boundaries index into it."""
+        working, pruned_count = self._prune_old_tool_results(
+            messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,
+        )
+        working = self._drop_blank_echoes(working)
+        compress_start, compress_end = self._compress_window(working)
+        return working, pruned_count, compress_start, compress_end
+
     def _log_compression_start(
         self, display_tokens: int, compress_start: int, compress_end: int, n_turns: int, tail_msgs: int,
     ) -> None:
@@ -5689,16 +5710,12 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Unpruned copy for no-op/abort returns (history stays lossless) and finalize; head/tail are
         # assembled and measured from the pruned copy (#61932).
         canonical_messages = self._drop_blank_echoes(messages)
-        # Phase 1: Prune old tool results (cheap, no LLM call)
-        messages, pruned_count = self._prune_old_tool_results(
-            messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,
-        )
+        # Phases 1-2: prune (cheap, no LLM call), drop blank echoes, determine boundaries on the pruned
+        # copy so a pressure-demoted tail can compress (#61932)
+        messages, pruned_count, compress_start, compress_end = self._plan_compaction_window(messages)
         if pruned_count and not self.quiet_mode:
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
-        messages = self._drop_blank_echoes(messages)
         n_messages = len(messages)
-        # Phase 2: Determine boundaries (on the pruned copy so a pressure-demoted tail can compress, #61932)
-        compress_start, compress_end = self._compress_window(messages)
         if compress_start >= compress_end:
             self._record_compression_regions(
                 head_messages=messages[:compress_start], middle_messages=[], tail_messages=messages[compress_end:],
@@ -5708,6 +5725,16 @@ Write only the summary body. Do not include any preamble or prefix."""
                 f"compress_start ({compress_start}) >= compress_end ({compress_end}) - transcript fits within tail budget",
             )
             return canonical_messages
+        # Opt-in: an automatic compaction may splice a summary prepared in the background at ITS
+        # boundary; newer messages (at most one more tail budget) stay outside the summary, in the
+        # tail (agent/prepared_compaction.py).
+        prepared = self.prepared_compaction and self.prepared_compaction.take(
+            messages, self._session_id, compress_start, compress_end,
+            eligible=not (force or focus_topic or bypass_cooldown or memory_context.strip()),
+            max_gap_tokens=self.tail_token_budget,
+        )
+        if prepared:
+            compress_end = prepared.compress_end
         turns_to_summarize = messages[compress_start:compress_end]
         # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
         if getattr(self, "tail_mode", "lean") == "lean":
@@ -5738,9 +5765,15 @@ Write only the summary body. Do not include any preamble or prefix."""
         from agent.conversation_compression import _raise_if_stale_attempt
 
         _raise_if_stale_attempt(self)
-        feasibility_skip = not force and self._feasibility_skip(telemetry, turns_to_summarize, compress_start, compress_end)
+        feasibility_skip = not (force or prepared) and self._feasibility_skip(
+            telemetry, turns_to_summarize, compress_start, compress_end,
+        )
         summary = None  # feasibility skip: no LLM call; Phase 4 inserts the deterministic fallback
-        if not feasibility_skip:
+        if prepared:
+            # The pass ran this window through _generate_summary; adopt its result as an inline call would.
+            self._record_summary_success(prepared.body)
+            summary = prepared.summary
+        elif not feasibility_skip:
             summary = self._summarize_window(
                 messages, turns_to_summarize, scan, focus_topic, memory_context, bypass_cooldown,
             )

@@ -11,6 +11,7 @@ import importlib.util
 import logging
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 
@@ -19,6 +20,34 @@ _log = logging.getLogger(__name__)
 _PLUGINS_ROOT = Path(__file__).parent
 _MODULE_LOAD_LOCKS: dict[str, threading.RLock] = {}
 _MODULE_LOAD_LOCKS_GUARD = threading.Lock()
+# How long a second caller waits for another thread's in-flight load of the same module. Past it
+# the module is marked stalled (a hung import) and later callers refuse at once until it finishes.
+_CONCURRENT_LOAD_WAIT_SECS = 10.0
+_STALLED_LOADS: set[str] = set()
+_LOAD_OWNERS: dict[str, int] = {}  # module -> thread id running its load
+_LOAD_WAITERS: dict[int, str] = {}  # thread id -> module whose load it waits for
+
+
+def _waits_for(tid: int) -> set:
+    """Threads *tid* is blocked on: a loader lock owner, or an importlib module-lock owner."""
+    owners = {_LOAD_OWNERS.get(_LOAD_WAITERS.get(tid, ""))}
+    blocked = getattr(importlib._bootstrap, "_blocking_on", {}).get(tid)  # list on 3.12+, lock on 3.11
+    owners.update(getattr(lk, "owner", None) for lk in (blocked if isinstance(blocked, list) else [blocked]))
+    return owners - {None}
+
+
+def _load_would_deadlock(me: int) -> bool:
+    """Whether the wait graph (loader locks + importlib's module locks) leads back to *me*.
+    importlib cannot see the loader lock in its own deadlock check, so walk both kinds here."""
+    seen, todo = set(), list(_waits_for(me))
+    while todo:
+        tid = todo.pop()
+        if tid == me:
+            return True
+        if tid not in seen:
+            seen.add(tid)
+            todo.extend(_waits_for(tid))
+    return False
 
 
 def _module_load_lock(module_name: str) -> threading.RLock:
@@ -116,41 +145,72 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
     # _new_module publishes a package shell before executing it so sibling relative
     # imports work. Serialize the complete load so another thread cannot observe
     # that half-built shell as a loaded plugin.
-    with _module_load_lock(module_name):
-        # A synthetic package shell has no __file__; only reuse modules loaded from disk.
-        cached = sys.modules.get(module_name)
-        if cached is not None and getattr(cached, "__file__", None):
-            return cached
-        for parent in parents:
-            parent_path = _PLUGINS_ROOT.joinpath(*parent.split(".")[1:])
-            if parent not in sys.modules and (parent_path / "__init__.py").exists():
-                _exec(_new_module(parent, parent_path / "__init__.py", [str(parent_path)]))
-        if synthetic_namespace:
-            register_synthetic_package(synthetic_namespace, [])
-        # Reserve the name before siblings exec so their relative imports resolve.
-        mod = _new_module(module_name, init_file, [str(plugin_dir)])
-        if mod is None:
-            return None
-        loaded_submodules = []
-        for sub_file in plugin_dir.glob("*.py"):
-            full_sub_name = f"{module_name}.{sub_file.stem}"
-            if sub_file.name == "__init__.py" or full_sub_name in sys.modules:
-                continue
-            sub_mod = _new_module(full_sub_name, sub_file)
-            if _exec(sub_mod, logger):
-                loaded_submodules.append((sub_file.stem, sub_mod))
-            else:
-                sys.modules.pop(full_sub_name, None)
-        if not _exec(mod, logger):
-            sys.modules.pop(module_name, None)
-            return None
-        parent_name, child_name = module_name.rsplit(".", 1)
-        parent_mod = sys.modules.get(parent_name)
-        if parent_mod is not None:
-            setattr(parent_mod, child_name, mod)
-        for sub_name, sub_mod in loaded_submodules:
-            setattr(mod, sub_name, sub_mod)
-        return mod
+    # The wait is bounded (a hung import must not block every caller) and polls for a cross-thread
+    # cycle through importlib's module locks; in a cycle, accept the partial module like importlib does.
+    lock, me = _module_load_lock(module_name), threading.get_ident()
+    deadline = time.monotonic() + (0 if module_name in _STALLED_LOADS else _CONCURRENT_LOAD_WAIT_SECS)
+    _LOAD_WAITERS[me] = module_name
+    try:
+        while not lock.acquire(timeout=0.05):
+            if _load_would_deadlock(me):
+                logger.debug("Concurrent circular load of %s; using the partial module", module_name)
+                return sys.modules.get(module_name)
+            if time.monotonic() >= deadline:
+                _STALLED_LOADS.add(module_name)
+                logger.warning("Skipping plugin %s: another thread's load of it has not finished "
+                               "(import still running after %.0fs)", module_name, _CONCURRENT_LOAD_WAIT_SECS)
+                return None
+    finally:
+        _LOAD_WAITERS.pop(me, None)
+    outermost = module_name not in _LOAD_OWNERS  # the RLock re-enters on this thread's recursive loads
+    _LOAD_OWNERS.setdefault(module_name, me)
+    try:
+        return _load_plugin_module_locked(module_name, plugin_dir, init_file, parents, logger,
+                                          synthetic_namespace)
+    finally:
+        if outermost:
+            _LOAD_OWNERS.pop(module_name, None)
+            _STALLED_LOADS.discard(module_name)
+        lock.release()
+
+
+def _load_plugin_module_locked(module_name: str, plugin_dir: Path, init_file: Path,
+                               parents: Tuple[str, ...], logger: logging.Logger,
+                               synthetic_namespace: Optional[str]) -> Optional[Any]:
+    # A synthetic package shell has no __file__; only reuse modules loaded from disk.
+    cached = sys.modules.get(module_name)
+    if cached is not None and getattr(cached, "__file__", None):
+        return cached
+    for parent in parents:
+        parent_path = _PLUGINS_ROOT.joinpath(*parent.split(".")[1:])
+        if parent not in sys.modules and (parent_path / "__init__.py").exists():
+            _exec(_new_module(parent, parent_path / "__init__.py", [str(parent_path)]))
+    if synthetic_namespace:
+        register_synthetic_package(synthetic_namespace, [])
+    # Reserve the name before siblings exec so their relative imports resolve.
+    mod = _new_module(module_name, init_file, [str(plugin_dir)])
+    if mod is None:
+        return None
+    loaded_submodules = []
+    for sub_file in plugin_dir.glob("*.py"):
+        full_sub_name = f"{module_name}.{sub_file.stem}"
+        if sub_file.name == "__init__.py" or full_sub_name in sys.modules:
+            continue
+        sub_mod = _new_module(full_sub_name, sub_file)
+        if _exec(sub_mod, logger):
+            loaded_submodules.append((sub_file.stem, sub_mod))
+        else:
+            sys.modules.pop(full_sub_name, None)
+    if not _exec(mod, logger):
+        sys.modules.pop(module_name, None)
+        return None
+    parent_name, child_name = module_name.rsplit(".", 1)
+    parent_mod = sys.modules.get(parent_name)
+    if parent_mod is not None:
+        setattr(parent_mod, child_name, mod)
+    for sub_name, sub_mod in loaded_submodules:
+        setattr(mod, sub_name, sub_mod)
+    return mod
 
 
 class NoopPluginContext:

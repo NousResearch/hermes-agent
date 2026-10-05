@@ -479,11 +479,15 @@ class SignalAdapter(BasePlatformAdapter):
         if ts_ms:
             with suppress(ValueError, OSError):
                 timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
-        # raw_message keeps sender + timestamp_ms so processing hooks can build sendReaction targets.
+        # raw_message keeps sender + timestamp_ms so processing hooks can build sendReaction targets,
+        # and the signal-cli mention list so pre_gateway_dispatch plugins can tell "@bot …" from
+        # plain group chatter even after _apply_group_mention_rules strips the mention from the text.
         event = MessageEvent(
             source=source, text=text or "", message_type=msg_type, media_urls=media_urls,
             media_types=media_types, timestamp=timestamp,
-            raw_message={"sender": sender, "timestamp_ms": ts_ms, "quote": quote_data if quote_data else None},
+            raw_message={"sender": sender, "timestamp_ms": ts_ms,
+                         "quote": quote_data if quote_data else None,
+                         "mentions": data_message.get("mentions") or []},
             reply_to_message_id=reply_to_id, reply_to_text=quote_data.get("text"),
             reply_to_author_id=reply_to_author,
             reply_to_author_name=quote_data.get("authorName") or quote_data.get("authorProfileName"),

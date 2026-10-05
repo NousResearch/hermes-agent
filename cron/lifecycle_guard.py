@@ -9,6 +9,8 @@ anchored on concrete command identifiers — so they cannot fire on prose. Defen
 
 from __future__ import annotations
 
+import fnmatch
+import ipaddress
 import logging
 import os
 import re
@@ -758,19 +760,516 @@ def _mask_data_sink_arguments(text: str) -> str:
     return "\n".join(lines_out) if changed else text
 
 
-def _lifecycle_command_scan_with_data_exemption(text: str) -> bool:
+# ==== SSH remote-maintenance guard (ported from reviewed v0.21 693641aa) ====
+_MAX_SSH_CONFIG_BYTES = 256 * 1024
+
+_SSH_EXECUTABLES = frozenset({"ssh", "slogin"})
+
+_SSH_OPTIONS_WITH_VALUES = frozenset({
+    "-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l",
+    "-m", "-O", "-o", "-p", "-Q", "-R", "-S", "-W", "-w",
+})
+
+_SSH_DEST_AMBIGUOUS_MARKERS = ("$", "`", "*", "?")
+
+_SSH_HOST_OVERRIDE_O_KEYS = frozenset({"hostname", "proxycommand", "proxyjump"})
+
+_SSH_LOCAL_EXEC_O_KEYS = frozenset({"localcommand", "permitlocalcommand", "knownhostscommand"})
+
+_SSH_FAILCLOSED_O_KEYS = _SSH_HOST_OVERRIDE_O_KEYS | _SSH_LOCAL_EXEC_O_KEYS
+
+_SSH_ARG_OPTION_CHARS = frozenset(option[1] for option in _SSH_OPTIONS_WITH_VALUES)
+
+_SSH_HOST_OVERRIDE_SHORT_CHARS = frozenset({"J", "F", "S", "O", "I"})
+
+
+
+
+
+
+
+
+
+
+
+
+def _probe_local_source_ip(family: int, target: str) -> Optional[str]:
+    """Source address the kernel would use to reach *target*, or ``None``.
+
+    A connected UDP socket only consults the routing table to select a source address — no datagram
+    is sent, so this never blocks or leaks traffic. Probing several representative destinations
+    surfaces per-route source IPs (default route, a second NIC, a VPN/Tailscale interface), so a
+    multi-homed host's OWN addresses are all recognized as local — without any DNS."""
+    try:
+        import socket
+
+        probe = socket.socket(family, socket.SOCK_DGRAM)
+        try:
+            probe.connect((target, 9))
+            return probe.getsockname()[0]
+        finally:
+            probe.close()
+    except Exception:
+        return None
+
+
+
+def _local_host_identities() -> frozenset[str]:
+    """Casefolded names/IPs that mean "this machine". A destination in this set is a loopback back
+    to the calling gateway, so its lifecycle payload keeps full protection.
+
+    Everything here is derived WITHOUT network I/O: ``gethostname`` is a local syscall and the
+    source-IP probes use connected UDP sockets, which only consult the routing table (no packet is
+    sent, nothing blocks). The guard runs on the tool-executor thread; a DNS hang there would wedge
+    every terminal command until the gateway restarts (#77780/#78256), so DNS is never used — an
+    unresolvable name is treated as ambiguous and stays blocked instead.
+    """
+    ids = {"localhost", "localhost.localdomain", "127.0.0.1", "::1", "0.0.0.0"}
+    try:
+        import socket
+
+        hostname = socket.gethostname()
+        if hostname:
+            ids.add(hostname)
+            ids.add(hostname.split(".", 1)[0])
+    except Exception:
+        pass
+    # Primary source of truth: every address on every local interface (getifaddrs, a local syscall —
+    # no DNS, no network). This catches a multi-homed host's secondary NIC / VPN / bridge IPs, not
+    # just the default-route address, so `ssh <any-own-ip> …` is recognized as a self-restart.
+    try:
+        import psutil
+
+        for interface_addrs in psutil.net_if_addrs().values():
+            for addr in interface_addrs:
+                candidate = (addr.address or "").split("%", 1)[0]  # strip IPv6 zone id
+                try:
+                    ipaddress.ip_address(candidate)
+                except ValueError:
+                    continue  # MAC address / non-IP family
+                ids.add(candidate)
+    except Exception:
+        # Fallback when psutil is unavailable: representative per-route source-IP probes (default
+        # route, CGNAT/Tailscale, each RFC1918 block, IPv6) — no-send routing lookups. Less complete
+        # than getifaddrs but still catches the common interfaces.
+        try:
+            import socket
+
+            for target in ("192.0.2.1", "100.64.0.1", "10.0.0.1", "172.16.0.1", "192.168.0.1"):
+                source = _probe_local_source_ip(socket.AF_INET, target)
+                if source:
+                    ids.add(source)
+            source6 = _probe_local_source_ip(socket.AF_INET6, "2001:db8::1")
+            if source6:
+                ids.add(source6.split("%", 1)[0])
+        except Exception:
+            pass
+    return frozenset(identity.casefold() for identity in ids)
+
+
+
+_SSH_SYSTEM_CONFIG = Path("/etc/ssh/ssh_config")
+
+# Only options known not to change the executor/host or load local executable code.
+# Unknown options (including future OpenSSH extensions) retain the original lifecycle block.
+_SSH_INERT_CONFIG_KEYS = frozenset("""
+    user port identityfile identitiesonly identityagent batchmode connecttimeout
+    connectionattempts serveraliveinterval serveralivecountmax tcpkeepalive
+    stricthostkeychecking userknownhostsfile globalknownhostsfile checkhostip
+    hashknownhosts loglevel logverbose compression ciphers macs kexalgorithms
+    hostkeyalgorithms pubkeyacceptedalgorithms preferredauthentications
+    passwordauthentication pubkeyauthentication kbdinteractiveauthentication
+    challengeresponseauthentication numberofpasswordprompts addkeystoagent
+    usekeychain sendenv setenv forwardagent forwardx11 forwardx11trusted
+    requesttty addressfamily visualhostkey verifyhostkeydns updatehostkeys
+    escapechar fingerprinthash rekeylimit ipqos
+    gssapiauthentication gssapidelegatecredentials hostbasedauthentication
+    tunnel tunneldevice permitlocalcommand
+""".lower().split())
+
+
+def _ssh_config_tokens(config: Path, remaining: int) -> Optional[tuple[list[str], int]]:
+    """Read one regular SSH config safely; return lexer-ready lines and remaining budget."""
+    try:
+        metadata = config.stat()
+    except FileNotFoundError:
+        if config.is_symlink():
+            return None
+        return [], remaining
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > remaining:
+        return None
+    with config.open("rb") as stream:
+        data = stream.read(remaining + 1)
+    remaining -= len(data)
+    if remaining < 0:
+        return None
+    return data.decode("utf-8").splitlines(), remaining
+
+
+def _ssh_config_hostname(alias: str, budget: Optional[_LifecycleScanBudget] = None) -> Optional[str]:
+    """Resolve the supported static subset of user AND system SSH configuration.
+
+    OpenSSH uses the FIRST obtained value, matches Host against the original destination
+    (not recursively against HostName), and applies config even to IP literals. Process
+    each file in order, including any included fragments where Include appears; later
+    blocks can still add local execution. Match fails closed: never run ssh -G, which
+    can execute ``Match exec``. Unknown directives fail closed. A missing default file
+    is benign; unreadable/nonregular/large/symlinked files aren't. This intentionally
+    trades support for advanced config for self-protection.
+    """
+    target = alias.casefold()
+    hostname: Optional[str] = None
+    matched = True  # global options before the first Host block apply too
+    remaining = _MAX_SSH_CONFIG_BYTES
+    budget = budget if budget is not None else _LifecycleScanBudget()
+    visiting: set[Path] = set()
+
+    def read_config(config: Path, depth: int) -> bool:
+        nonlocal remaining, matched
+        if depth > 8 or not budget.charge_path():
+            return False
+        resolved = _resolve_lenient(config)
+        if resolved in visiting or _on_cloud_path(config):
+            return False
+        visiting.add(resolved)
+        try:
+            parsed = _ssh_config_tokens(config, min(remaining, budget.bytes_remaining))
+            if parsed is None:
+                return False
+            lines, _ = parsed
+            text = "\n".join(lines)
+            remaining -= len(text.encode("utf-8"))
+            if not budget.charge_text(text):
+                return False
+            return all(handle_line(line, depth) for line in lines)
+        finally:
+            visiting.remove(resolved)
+
+    def handle_line(line: str, depth: int) -> bool:
+        nonlocal hostname, matched, remaining
+        lexer = shlex.shlex(line, posix=True)
+        lexer.whitespace_split = True
+        lexer.whitespace += "="
+        parts = list(lexer)
+        if not parts:
+            return True
+        key, values = parts[0].casefold(), parts[1:]
+        # SSH config quotes are argument-delimiting; a quoted keyword is a keyword.
+        if not values or key == "match":
+            return False
+        if key == "include":
+            # OpenSSH never activates an Include in an inactive block and restores
+            # the containing match state after each included file.
+            if not matched:
+                return True
+            for pattern in values:
+                expanded = Path(os.path.expanduser(pattern))
+                if not expanded.is_absolute():
+                    return False
+                # Support only a literal parent and basename glob, with bounded
+                # scandir work. glob.glob eagerly materializes unbounded results.
+                if any(c in str(expanded.parent) for c in "*?[]") or "**" in expanded.name:
+                    return False
+                if _on_cloud_path(expanded.parent):
+                    return False
+                includes: list[Path] = []
+                if any(c in expanded.name for c in "*?["):
+                    if not budget.charge_path():
+                        return False
+                    try:
+                        with os.scandir(expanded.parent) as entries:
+                            for entry in entries:
+                                if not budget.charge_path():
+                                    return False
+                                if entry.name.startswith(".") and not expanded.name.startswith("."):
+                                    continue
+                                if fnmatch.fnmatchcase(entry.name, expanded.name):
+                                    includes.append(Path(entry.path))
+                    except FileNotFoundError:
+                        pass
+                else:
+                    includes.append(expanded)
+                for include in sorted(includes):
+                    saved_match = matched
+                    try:
+                        if not read_config(include, depth + 1):
+                            return False
+                    finally:
+                        matched = saved_match
+            return True
+        if key == "host":
+            # OpenSSH patterns support * and ?; reject bracket syntax rather than
+            # silently changing its meaning through fnmatch.
+            if any("[" in p or "]" in p or "\\" in p for p in values):
+                return False
+            positives = [p.lower() for p in values if not p.startswith("!")]
+            negatives = [p[1:].lower() for p in values if p.startswith("!")]
+            matched = (any(fnmatch.fnmatchcase(target, p) for p in positives)
+                       and not any(fnmatch.fnmatchcase(target, p) for p in negatives))
+        elif matched:
+            if key == "hostname" and len(values) == 1:
+                if hostname is None:
+                    hostname = values[0]
+            elif key not in _SSH_INERT_CONFIG_KEYS:
+                return False
+        return True
+
+    try:
+        for config in (Path("~/.ssh/config").expanduser(), _SSH_SYSTEM_CONFIG):
+            matched = True
+            if not read_config(config, 0):
+                return None
+        return hostname or alias
+    except (OSError, UnicodeError, ValueError):
+        return None
+
+
+
+def _extract_ssh_host(destination: str) -> Optional[str]:
+    """Bare host from an ssh destination token, or ``None`` when it is ambiguous/unparseable.
+
+    Handles ``user@host``, ``ssh://user@host:port/...`` URIs and ``[ipv6]:port`` brackets. Any
+    shell-expansion marker makes the true host runtime-dependent -> ``None`` (fail closed)."""
+    if not destination or any(marker in destination for marker in _SSH_DEST_AMBIGUOUS_MARKERS):
+        return None
+    host = destination
+    if host.startswith("ssh://"):
+        host = host[len("ssh://"):].split("/", 1)[0]
+    if "@" in host:
+        host = host.rsplit("@", 1)[1]
+    if not host:
+        return None
+    if host.startswith("["):  # bracketed IPv6 literal, optionally with :port
+        end = host.find("]")
+        return host[1:end] or None if end != -1 else None
+    if host.count(":") == 1:  # host:port (URI/scp form); bare IPv6 has >1 colon
+        left, right = host.split(":")
+        if right.isdigit():
+            host = left
+    return host or None
+
+
+
+def _ssh_destination_is_remote(destination: str, *, _depth: int = 0,
+                               budget: Optional[_LifecycleScanBudget] = None) -> bool:
+    """True only when *destination* is PROVABLY a host other than the calling gateway.
+
+    IP literals are classified with ``ipaddress`` (no network): a global/private address that is not
+    loopback/link-local/unspecified/multicast/reserved and not one of this host's own identities is
+    remote. Non-IP names are remote only when an ``ssh_config`` ``HostName`` resolves them to a
+    remote address; a bare name we cannot resolve without DNS is ambiguous and returns False. Every
+    "not sure" path returns False so the lifecycle payload stays scanned/blocked (fail closed)."""
+    host = _extract_ssh_host(destination)
+    if host is None or _depth > 3:
+        return False
+    host = _ssh_config_hostname(host, budget)
+    if host is None:
+        return False
+    host = host.strip().rstrip(".")
+    if not host:
+        return False
+    lowered = host.casefold()
+    local = _local_host_identities()
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None:
+        # Collapse IPv4-mapped IPv6 (`::ffff:192.168.9.9`) to the IPv4 it dials, so an alternate
+        # spelling of this host's own address cannot masquerade as a different host.
+        mapped = getattr(address, "ipv4_mapped", None)
+        if mapped is not None:
+            address = mapped
+        if (address.is_loopback or address.is_link_local or address.is_unspecified
+                or address.is_multicast or address.is_reserved):
+            return False
+        # Compare as parsed addresses so zero-compression / mapped forms of an own-IP collapse
+        # together; fall back to a string compare for any non-IP identities.
+        for identity in local:
+            try:
+                if ipaddress.ip_address(identity) == address:
+                    return False
+            except ValueError:
+                continue
+        return str(address).casefold() not in local
+    if lowered in local or lowered == "localhost" or lowered.endswith(".localhost"):
+        return False
+    # HostName is not an SSH alias lookup: OpenSSH does not reapply Host blocks to it.
+    # A real hostname we can only resolve via DNS: ambiguous by contract -> fail closed.
+    return False
+
+
+
+def _ssh_o_key(value: str) -> str:
+    """Extract the ``-o`` keyword exactly as ssh's config tokenizer sees it, casefolded.
+
+    ssh_config accepts ``Keyword Value``, ``Keyword=Value``, a single leading ``=`` separator that
+    ssh discards (``-o=HostName=x`` sets HostName), and quotes around the keyword
+    (``-o '"HostName" 127.0.0.1'``). Strip a leading ``=``/whitespace run, take the first token, then
+    strip surrounding quotes — so `HostName` is recognized in every spelling (fail-closed: mangled
+    forms ssh would reject over-block harmlessly)."""
+    first = re.split(r"[=\s]", re.sub(r"^[=\s]+", "", value), 1)[0]
+    return first.strip("\"'").casefold()
+
+
+
+def _ssh_short_cluster(token: str, next_token: str) -> tuple[bool, bool, bool]:
+    """Decode a single-dash ssh short-option cluster with getopt bundling semantics.
+
+    Returns ``(is_fail_closed, consumes_next_token, is_option)``. ssh bundles no-arg flags ahead of
+    an arg-taking letter (``-tqoHostName=x`` == ``-t -q -o HostName=x``); the arg is the remainder of
+    the token after that letter, or the next token when nothing is attached. ``is_fail_closed`` is
+    True when the arg-taking letter is ``o`` with a host-redirect OR local-exec keyword, or is
+    ``J``/``F`` — i.e. anything that makes the destination not provably the sole executor."""
+    if not token.startswith("-") or token == "-":
+        return False, False, token.startswith("-")
+    if token.startswith("--"):
+        return True, False, True
+    cluster = token[1:]
+    for position, char in enumerate(cluster):
+        if char not in _SSH_ARG_OPTION_CHARS:
+            # Explicit OpenSSH no-argument whitelist. In particular, -P takes a
+            # tag argument in newer clients; unsupported/future options fail closed.
+            if char not in "1246AaCfGgKkMNnqsTtVvXxYy":
+                return True, False, True
+            continue
+        attached = cluster[position + 1:]
+        value = attached if attached else next_token
+        consumes_next = not attached
+        if char == "o":
+            return _ssh_o_key(value) not in _SSH_INERT_CONFIG_KEYS, consumes_next, True
+        return char in _SSH_HOST_OVERRIDE_SHORT_CHARS, consumes_next, True
+    return False, False, True
+
+
+
+def _ssh_parse_invocation(
+    segment: list[str], ssh_index: int
+) -> tuple[Optional[str], list[int], bool]:
+    """``(destination, remote_command_operand_indices, fail_closed)`` for an ssh *segment*.
+
+    Fully getopt-parses the invocation: options and their consumed values are separated from bare
+    operands. The first operand is the destination; the rest are the remote command — and ONLY those
+    operand indices are returned for masking, so trailing OPTIONS (``-o LocalCommand=…`` runs on the
+    caller; ``-o HostName=…`` redirects the host) are never masked and keep facing the regex.
+    Options are parsed both before and after the destination because a permuting getopt reorders
+    them. ``fail_closed`` is True when any option redirects the host or runs locally (``-o`` host/
+    local-exec key, ``-J``/``-F``). Returns ``(None, [], ...)`` when no destination operand is found.
+    """
+    index = ssh_index + 1
+    operand_indices: list[int] = []
+    fail_closed = False
+    end_of_options = False
+    while index < len(segment):
+        token = segment[index]
+        if not end_of_options and token == "--":
+            end_of_options = True
+            index += 1
+            continue
+        if not end_of_options and token.startswith("-") and token != "-":
+            is_fail_closed, consumes_next, _ = _ssh_short_cluster(
+                token, segment[index + 1] if index + 1 < len(segment) else ""
+            )
+            fail_closed = fail_closed or is_fail_closed
+            index += 2 if (consumes_next and index + 1 < len(segment)) else 1
+            continue
+        operand_indices.append(index)
+        index += 1
+    if not operand_indices:
+        return None, [], fail_closed
+    return segment[operand_indices[0]], operand_indices[1:], fail_closed
+
+
+
+def _mask_remote_ssh_command_payloads(text: str, budget: Optional[_LifecycleScanBudget] = None) -> str:
+    """Replace the remote-command payload of a provably-remote ``ssh`` call with a neutral token.
+
+    Mirrors ``_mask_data_sink_arguments``: masking can only ever REMOVE a would-be match, and it
+    only fires when the destination is provably a different host, so it can only ALLOW what the plain
+    regex would block — never block more. The local component of a compound command, and everything
+    for a loopback/local/ambiguous destination, is left verbatim and stays scanned. Any failure
+    returns the original text unchanged (fail closed)."""
+    budget = budget if budget is not None else _LifecycleScanBudget()
+    try:
+        changed = False
+        lines_out: list[str] = []
+        for line in text.splitlines() or [text]:
+            # shlex loses shell quote provenance. Never erase local substitutions or
+            # text that can be fed back into a local interpreter by a pipeline.
+            if any(marker in line for marker in ("$", "`", "<(", ">(", "|")):
+                lines_out.append(line)
+                continue
+            try:
+                tokens = _shlex_tokens(line)
+            except ValueError:
+                lines_out.append(line)
+                continue
+            rebuilt: list[str] = []
+            for segment in _split_segments(tokens, keep_controls=True):
+                index = _executed_command_index(segment)
+                # Wrappers/assignments can change HOME, UID, network namespace or client.
+                # Their effective SSH config/local identities cannot be proven here.
+                if index is not None and _executable_name(segment[index]) in _SSH_EXECUTABLES:
+                    destination, remote_indices, fail_closed = _ssh_parse_invocation(segment, index)
+                    if index:
+                        # sudo, HOME=..., wrappers or PATH ssh change local identity/config.
+                        if _executable_name(segment[index]) != "env":
+                            fail_closed = True
+                        else:
+                            for argument in segment[1:index]:
+                                if argument == "-i" or argument == "--":
+                                    break
+                                if argument.startswith("-"):
+                                    fail_closed = True
+                                    break
+                                if "=" not in argument:
+                                    fail_closed = True
+                                    break
+                                name, value = argument.split("=", 1)
+                                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) or name == "HOME":
+                                    fail_closed = True
+                                    break
+                    remote = False
+                    if destination and remote_indices and not fail_closed:
+                        try:
+                            remote = _ssh_destination_is_remote(destination, budget=budget)
+                        except Exception:
+                            logger.exception("ssh remote destination check failed; failing closed")
+                    if remote:
+                        # Mask ONLY the remote-command operands — never option tokens/values, so a
+                        # `-o LocalCommand=…` payload (runs on the caller) stays visible and blocked.
+                        remote_set = set(remote_indices)
+                        emitted = False
+                        for position, tok in enumerate(segment):
+                            if position in remote_set:
+                                if not emitted:
+                                    rebuilt.append("arg")
+                                    emitted = True
+                            else:
+                                rebuilt.append(tok)
+                        changed = True
+                        continue
+                rebuilt.extend(segment)
+            lines_out.append(" ".join(rebuilt))
+        return "\n".join(lines_out) if changed else text
+    except Exception:
+        return text
+
+
+def _lifecycle_command_scan_with_data_exemption(text: str, budget: Optional[_LifecycleScanBudget] = None) -> bool:
     """Lifecycle scan exempting matches inside data arguments: cheap regex first (no-match pays
     nothing), then re-scan with data-sink arguments masked; only a surviving match blocks."""
     if not contains_gateway_lifecycle_command(text):
         return False
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
-    return contains_gateway_lifecycle_command(_mask_data_sink_arguments(normalized))
+    masked = _mask_remote_ssh_command_payloads(normalized, budget)
+    return contains_gateway_lifecycle_command(_mask_data_sink_arguments(masked))
 
 
-def _direct_lifecycle_scan(command: str) -> bool:
+def _direct_lifecycle_scan(command: str, budget: Optional[_LifecycleScanBudget] = None) -> bool:
     """Pure-string direct scans: lifecycle regex (data-exempted) + submit."""
     return (
-        _lifecycle_command_scan_with_data_exemption(command)
+        _lifecycle_command_scan_with_data_exemption(command, budget)
         or contains_launchctl_submit_command(command)
     )
 
@@ -1100,7 +1599,7 @@ def _contains_unsafe_gateway_action(
     # Charge BEFORE _direct_lifecycle_scan: every scan in it tokenizes with shlex.
     if not budget.charge_text(command):
         return _budget_exhausted(budget, "text", depth) if executed else False
-    if _direct_lifecycle_scan(command):
+    if _direct_lifecycle_scan(command, budget):
         return True
     if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
         return executed
@@ -1212,7 +1711,7 @@ def scan_gateway_lifecycle(
             exc_info=True,
         )
         try:
-            return _direct_lifecycle_scan(command), None
+            return _direct_lifecycle_scan(command, budget), None
         except Exception:
             # If even the data-argument masker fails, fall to raw regex + submit scan: stay total.
             return (contains_gateway_lifecycle_command(command)
@@ -1272,7 +1771,7 @@ def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None)
             unsafe = _budget_exhausted(budget, "text", 0)
             refusal = budget.refusal
         else:
-            unsafe = _lifecycle_command_scan_with_data_exemption(combined)
+            unsafe = _lifecycle_command_scan_with_data_exemption(combined, budget)
     else:
         unsafe, refusal = scan_gateway_lifecycle(
             combined, cwd=_resolve_script_directory(script) if script else None

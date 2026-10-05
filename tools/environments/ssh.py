@@ -60,8 +60,10 @@ class SSHEnvironment(BaseEnvironment):
         return f"ssh:{self.user}@{self.host}:{self.port}"
 
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
+        from tools.terminal_tool_macos_open import _transform_macos_open_command
         from tools.terminal_tool_sudo import _transform_sudo_command
-        transformed, stdin = _transform_sudo_command(command, sudo_nopasswd_check=self._sudo_nopasswd_works,
+        transformed, stdin = _transform_sudo_command(_transform_macos_open_command(command),
+                                                     sudo_nopasswd_check=self._sudo_nopasswd_works,
                                                      cache_target=self._sudo_cache_target)
         assert transformed is not None
         return transformed, stdin

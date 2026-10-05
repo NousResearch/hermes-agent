@@ -318,7 +318,8 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
     from tools.terminal_tool import (
         _active_environments, _env_lock, _last_activity, _resolve_container_task_id,
     )
-    keys = {_resolve_container_task_id(task_id)}
+    resolved = _resolve_container_task_id(task_id)
+    keys = {resolved, f"remote-ssh-{resolved}"}
     if task_id:
         keys.add(task_id)
     evicted = []

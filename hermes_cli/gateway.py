@@ -596,14 +596,14 @@ def _scan_gateway_pids(
     def _matches_current_profile(pid: int, command: str) -> bool:
         command_lc = command.lower().replace("\\", "/")
         if current_profile_name:
-            # Token equality, not substring: `-p ops` must not claim (or SIGTERM) an `-p ops-2` gateway.
+            # Match whole tokens (`ops` must not claim `ops-2`), then verify the owning home.
             if profile_flag_value(command_lc) == current_profile_name_lc:
-                return True
+                owner_home = _hermes_home_for_pid(pid)
+                if owner_home is not None:
+                    return _normalized_home_for_compare(owner_home) == _normalized_home_for_compare(current_home)
             return command_line_names_hermes_home(command_lc, current_home_lc)
 
-        # Root home: reject argv that advertises another profile in any spelling the CLI pre-parser
-        # accepts (``--profile=ops`` slipped past a substring test, so a default-profile fallback stop
-        # could SIGTERM the named gateway) or a HERMES_HOME= naming another home. An explicit
+        # Reject named flags (including ``--profile=ops``) or an explicit foreign home;
         # ``--profile default`` names this home (#100817).
         if profile_flag_value(command_lc) not in (None, "default"):
             return False

@@ -19,6 +19,7 @@ import threading
 import time
 from typing import Dict, Any, Optional, Union
 from pathlib import Path
+from urllib.parse import urlsplit
 from agent.redact import redact_cdp_url
 from hermes_constants import get_hermes_home, hermes_home_key
 from utils import env_int
@@ -638,6 +639,18 @@ def _secret_url_error(url: str) -> Optional[dict]:
     return None
 
 
+def _is_web_url(url: str) -> bool:
+    """True for http(s) URLs with a host, and for the literal ``about:blank``."""
+    raw = (url or "").strip()
+    if raw.lower() == "about:blank":
+        return True
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return False
+    return parsed.scheme.lower() in ("http", "https") and bool(parsed.hostname)
+
+
 def _url_policy_error(url: str, *, auto_local: bool = False) -> Optional[dict]:
     """Backend-aware URL checks on an already-normalized URL; None if allowed. Ordered floors:
     (1) cloud metadata / IMDS refused UNCONDITIONALLY (a local Chromium on a cloud VM still
@@ -649,6 +662,12 @@ def _url_policy_error(url: str, *, auto_local: bool = False) -> Optional[dict]:
     a cloud browser already sees every cookie and typed password of the session — refusing the
     URL protects nothing. Hermes' own secrets leaking into a URL are caught by ``_secret_url_error``."""
     local = _cloud._is_local_backend()
+    # Scheme floor for EVERY backend. The local-backend relaxation below assumes the
+    # terminal can read and reach everything anyway; with kernel-enforced secret isolation it cannot,
+    # and file:/view-source:/chrome:/javascript: etc. would let the browser read Hermes secrets into
+    # the snapshot (a local HTML file can even iframe file:///…/.env).
+    if not _is_web_url(url):
+        return _err("Blocked: the browser only opens http(s) URLs (and about:blank)")
     # Always-blocked floor: cloud metadata / IMDS endpoints are denied regardless of backend, hybrid
     # routing, or allow_private_urls. There's no legitimate agent use case for navigating to 169.254.169.254
     # / metadata.google.internal / ECS task metadata via a browser, and routing those to a local Chromium

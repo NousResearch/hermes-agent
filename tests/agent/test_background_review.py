@@ -7,6 +7,17 @@ import threading
 import run_agent as run_agent_module
 from run_agent import AIAgent
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _opt_in_to_automatic_review(_isolate_hermes_home):
+    """These tests exercise an enabled fork; consent defaults have their own E2E."""
+    from hermes_constants import get_hermes_home
+    (get_hermes_home() / "config.yaml").write_text(
+        "auxiliary:\n  background_review:\n    enabled: true\n    defer: never\n", encoding="utf-8",
+    )
+
 
 _REAL_THREAD = threading.Thread
 

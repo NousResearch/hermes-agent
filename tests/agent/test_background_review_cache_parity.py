@@ -13,6 +13,17 @@ Sonnet 4.5 per the contributor's measurement).
 
 from unittest.mock import patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _opt_in_to_automatic_review(_isolate_hermes_home):
+    """These tests exercise an enabled fork; consent defaults have their own E2E."""
+    from hermes_constants import get_hermes_home
+    (get_hermes_home() / "config.yaml").write_text(
+        "auxiliary:\n  background_review:\n    enabled: true\n    defer: never\n", encoding="utf-8",
+    )
+
 
 def _make_agent_stub(agent_cls):
     """Create a minimal AIAgent-like object with just enough state for _spawn_background_review."""

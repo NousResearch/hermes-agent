@@ -1,3 +1,4 @@
+import { MODEL_TASK_COPY } from './model-tasks'
 import type { TranslationOverrides } from './define-locale'
 
 export const arSettings = {
@@ -742,52 +743,7 @@ export const arSettings = {
       autoUseMain: 'تلقائي · استخدام النموذج الرئيسي',
       inheritMainEffort: 'وراثة · جهد النموذج الرئيسي',
       providerDefault: '(افتراضي المزوّد)',
-      tasks: {
-        vision: {
-          label: 'الرؤية',
-          hint: 'تحليل الصور'
-        },
-        compression: {
-          label: 'الضغط',
-          hint: 'ضغط السياق'
-        },
-        skills_hub: {
-          label: 'مركز المهارات',
-          hint: 'بحث المهارات'
-        },
-        approval: {
-          label: 'الموافقة',
-          hint: 'موافقة تلقائية ذكية'
-        },
-        mcp: {
-          label: 'MCP',
-          hint: 'توجيه أدوات MCP'
-        },
-        title_generation: {
-          label: 'توليد العناوين',
-          hint: 'عناوين الجلسات'
-        },
-        review: {
-          label: 'المراجعة',
-          hint: 'وكيل المراجعة الفرعي /review'
-        },
-        triage_specifier: {
-          label: 'محدد الفرز',
-          hint: 'توضيح مواصفات كانبان'
-        },
-        kanban_decomposer: {
-          label: 'مفكك كانبان',
-          hint: 'تفكيك المهام'
-        },
-        profile_describer: {
-          label: 'واصف الملف الشخصي',
-          hint: 'أوصاف ملفات شخصية تلقائية'
-        },
-        curator: {
-          label: 'المنسّق',
-          hint: 'مراجعة استخدام المهارات'
-        }
-      }
+      tasks: MODEL_TASK_COPY.ar
     },
     providers: {
       connectAccount: 'ربط حساب',

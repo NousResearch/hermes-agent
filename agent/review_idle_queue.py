@@ -179,7 +179,7 @@ class ReviewIdleQueue:
 
             return load_background_review_settings()[0]
         except Exception:  # noqa: BLE001
-            return True
+            return False
 
 
 def _managed_server_idle() -> bool:

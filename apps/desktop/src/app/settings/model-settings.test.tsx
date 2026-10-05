@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ConfigApi from '@/api/config'
+import { queryClient } from '@/lib/query-client'
 import { I18nProvider, TRANSLATIONS } from '@/i18n'
 import { $notifications, clearNotifications } from '@/store/notifications'
 
@@ -65,6 +66,7 @@ vi.mock('../hooks/use-on-profile-switch', () => ({
 }))
 
 beforeEach(() => {
+  queryClient.clear()
   getGlobalModelInfo.mockResolvedValue({ provider: 'nous', model: 'hermes-4' })
   getGlobalModelOptions.mockResolvedValue({
     providers: [
@@ -96,13 +98,11 @@ afterEach(() => {
 })
 
 function renderModelSettings(scopeProfile?: string) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-
   return render(
     // The aux-task deep-link highlight reads useSearchParams, so the page
     // needs a router context in tests (the app provides HashRouter at root).
     <MemoryRouter>
-      <QueryClientProvider client={client}>
+      <QueryClientProvider client={queryClient}>
         <ModelSettings scopeProfile={scopeProfile} />
       </QueryClientProvider>
     </MemoryRouter>
@@ -316,7 +316,7 @@ describe('ModelSettings', () => {
     )
   })
 
-  it('writes the profile default speed (service_tier) as a sparse patch, never the cached snapshot', async () => {
+  it('writes speed and automatic review defaults as sparse patches, never the cached snapshot', async () => {
     // The cached record is a default-expanded snapshot; a CLI pin made after it
     // loaded is not in it. Echoing the whole record back would reset that
     // auxiliary slot to auto/'' (#95460) — only the edited key may be sent.
@@ -327,10 +327,31 @@ describe('ModelSettings', () => {
     renderModelSettings()
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
 
-    const fastSwitch = await screen.findByRole('switch')
+    const fastSwitch = (await screen.findAllByRole('switch'))[0]
     fireEvent.click(fastSwitch)
 
     await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledWith({ agent: { service_tier: 'fast' } }))
+    saveHermesConfig.mockImplementationOnce(async () => {
+      getHermesConfigRecord.mockResolvedValue({
+        agent: { reasoning_effort: 'medium', service_tier: 'fast' },
+        auxiliary: {
+          curator: { provider: 'auto', model: '', reasoning_effort: 'high' },
+          background_review: { enabled: true }
+        }
+      })
+      return { ok: true }
+    })
+    const reviewSwitch = await screen.findByRole('switch', { name: 'Background review' })
+    expect(reviewSwitch.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(reviewSwitch)
+    await waitFor(() =>
+      expect(saveHermesConfig).toHaveBeenCalledWith({ auxiliary: { background_review: { enabled: true } } })
+    )
+    await waitFor(() => expect(reviewSwitch.getAttribute('aria-checked')).toBe('true'))
+    saveHermesConfig.mockRejectedValueOnce(new Error('cannot save review setting'))
+    fireEvent.click(reviewSwitch)
+    await waitFor(() => expect(reviewSwitch.getAttribute('aria-checked')).toBe('true'))
+    await waitFor(() => expect($notifications.get().some(row => row.kind === 'error')).toBe(true))
   })
 
   it('hides the reasoning/speed defaults when the main model reports no capabilities', async () => {
@@ -349,7 +370,7 @@ describe('ModelSettings', () => {
     renderModelSettings()
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
 
-    expect(screen.queryByRole('switch')).toBeNull()
+    expect(screen.getAllByRole('switch')).toEqual([screen.getByRole('switch', { name: 'Background review' })])
   })
 
   it('edits auxiliary reasoning effort and applies it with the assignment', async () => {
@@ -505,7 +526,7 @@ describe('ModelSettings', () => {
       render(
         <MemoryRouter>
           <I18nProvider configClient={null} initialLocale={locale}>
-            <QueryClientProvider client={client}>
+            <QueryClientProvider client={queryClient}>
               <ModelSettings />
             </QueryClientProvider>
           </I18nProvider>
@@ -637,7 +658,7 @@ describe('ModelSettings MoA preset editor', () => {
       render(
         <MemoryRouter>
           <I18nProvider configClient={null} initialLocale={locale}>
-            <QueryClientProvider client={client}>
+            <QueryClientProvider client={queryClient}>
               <ModelSettings subpage="moa" />
             </QueryClientProvider>
           </I18nProvider>

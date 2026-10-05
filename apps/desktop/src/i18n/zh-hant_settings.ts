@@ -1,3 +1,4 @@
+import { MODEL_TASK_COPY } from './model-tasks'
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import type { TranslationOverrides } from './define-locale'
@@ -1047,19 +1048,7 @@ export const zhHantSettings = {
       moaAggregator: '聚合模型',
       moaAggregatorBilled: '執行模型 · 整個運行在此計費',
       moaReferenceHint: '默認每輪僅建議一次',
-      tasks: {
-        vision: { label: '視覺', hint: '圖片分析' },
-        compression: { label: '壓縮', hint: '上下文壓縮' },
-        skills_hub: { label: '技能中心', hint: '技能搜尋' },
-        approval: { label: '核准', hint: '智慧自動核准' },
-        mcp: { label: 'MCP', hint: 'MCP 工具路由' },
-        title_generation: { label: '標題生成', hint: '工作階段標題' },
-        review: { label: '評審', hint: '/review 評審子代理' },
-        triage_specifier: { label: '分類指定', hint: '看板任務規格補全' },
-        kanban_decomposer: { label: '看板分解', hint: '任務拆解' },
-        profile_describer: { label: '設定檔描述', hint: '自動生成設定檔描述' },
-        curator: { label: '策展器', hint: '技能使用審查' }
-      }
+      tasks: MODEL_TASK_COPY.zhHant
     },
     localModels: {
       connectionChanged: '本地模型連線已變更',

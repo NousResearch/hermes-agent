@@ -1584,6 +1584,7 @@ export interface BackendUpdateCheckResponse {
 }
 
 export interface AuxiliaryTaskAssignment {
+  enabled?: boolean
   base_url: string
   /** Backend verdict (`agent/model_metadata.py::is_local_endpoint`) that `base_url`
    *  is a loopback/LAN/mDNS endpoint. Absent on older backends. */

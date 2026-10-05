@@ -144,11 +144,14 @@ def _run_with_responses(agent, responses):
     return result
 
 
-def test_review_input_budget_stops_tool_loop_before_next_provider_call():
+@pytest.mark.parametrize(("budget", "expected_calls"), [(100_000, 2), (1, 0)])
+def test_review_input_budget_stops_tool_loop_before_next_provider_call(budget, expected_calls):
     """Once a fork's cumulative input crosses its budget, no further provider
     call is made — the crossing request completes, then the loop stops."""
     agent = _make_loop_agent()
-    agent._review_input_token_budget = 100_000
+    agent._review_input_token_budget = budget
+    if budget == 1:
+        agent._turn_origin = "background_review"
 
     responses = [
         _tool_response(50_000),
@@ -159,13 +162,13 @@ def test_review_input_budget_stops_tool_loop_before_next_provider_call():
     result = _run_with_responses(agent, responses)
 
     create = agent.client.chat.completions.create
-    assert create.call_count == 2, (
+    assert create.call_count == expected_calls, (
         f"expected the loop to stop after crossing the input budget, "
         f"but {create.call_count} provider calls were made (budget "
         f"{agent._review_input_token_budget}, "
         f"used {agent.session_input_tokens})"
     )
-    assert agent.session_input_tokens == 100_000
+    assert agent.session_input_tokens == expected_calls * 50_000
     assert result["completed"] is False
 
 
@@ -220,6 +223,19 @@ def test_review_input_budget_exhausted_predicate_edge_cases():
     agent.session_input_tokens = 100_000
     assert _review_input_budget_exhausted(agent) is True
 
+    from agent.background_review_budget import automatic_review_budget_exceeded
+    agent._turn_origin = "background_review"
+    agent.session_input_tokens = 50_000
+    agent.session_cache_read_tokens = 30_000
+    agent.session_cache_write_tokens = 10_000
+    assert automatic_review_budget_exceeded(agent, 10_000) is False
+    assert automatic_review_budget_exceeded(agent, 10_001) is True
+    agent._review_attended = True
+    assert automatic_review_budget_exceeded(agent, 1_000_000) is False
+    agent._review_attended = False
+    agent._turn_origin = "btw"
+    assert automatic_review_budget_exceeded(agent, 1_000_000) is False
+
 
 @pytest.mark.parametrize(
     ("config_value", "expected"),
@@ -239,17 +255,17 @@ def test_review_input_token_budget_resolution(config_value, expected):
 
 def test_review_input_token_budget_default_tracks_forks_context_window():
     """Unset or malformed ``max_input_tokens`` → 75% of the fork's RESOLVED window (a 65k local
-    model gets ~49k, not the cloud-scale 600k), capped at 600k; unknown window → 120k fallback."""
+    model gets 48k), capped at 48k; unknown window → 48k fallback."""
     from agent.background_review import _review_input_token_budget
 
     def fork(window):
         return SimpleNamespace(context_compressor=SimpleNamespace(context_length=window))
 
-    assert _review_input_token_budget({}, fork(65_536)) == 49_152
-    assert _review_input_token_budget({"max_input_tokens": "not-a-number"}, fork(65_536)) == 49_152
-    assert _review_input_token_budget({}, fork(2_000_000)) == 600_000
-    assert _review_input_token_budget({}, fork(None)) == 120_000
-    assert _review_input_token_budget({}, None) == 120_000
+    assert _review_input_token_budget({}, fork(65_536)) == 48_000
+    assert _review_input_token_budget({"max_input_tokens": "not-a-number"}, fork(65_536)) == 48_000
+    assert _review_input_token_budget({}, fork(2_000_000)) == 48_000
+    assert _review_input_token_budget({}, fork(None)) == 48_000
+    assert _review_input_token_budget({}, None) == 48_000
 
 
 def test_background_review_config_does_not_freeze_a_fixed_input_budget():

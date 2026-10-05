@@ -1,3 +1,4 @@
+import type { AuxiliaryModelsResponse } from "./auxiliary-models";
 import {
   buildHermesWebSocketUrl,
   type ModelOptionProvider,
@@ -2596,18 +2597,6 @@ export interface ModelInfoResponse {
 // ── Model options / assignment types ──────────────────────────────────
 
 export type { ModelOptionProvider, ModelOptionsResult };
-
-export interface AuxiliaryTaskAssignment {
-  task: string;
-  provider: string;
-  model: string;
-  base_url: string;
-}
-
-export interface AuxiliaryModelsResponse {
-  tasks: AuxiliaryTaskAssignment[];
-  main: { provider: string; model: string };
-}
 
 export interface MoaModelSlot {
   provider: string;

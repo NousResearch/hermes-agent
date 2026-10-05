@@ -388,39 +388,59 @@ Reasoning settings, the system prompt, the full conversation snapshot, and tool 
 
 To reduce review work without changing the main conversation's effort, adjust `memory.nudge_interval` / `skills.creation_nudge_interval`, disable automatic reviews as described below, or route reviews to a different model. A different-model route uses a digest and does not share the parent's warm prefix; on that route `auxiliary.background_review.reasoning_effort` IS honored (unset = the routed provider's default). A one-time warning is printed when the key is set but the review stays on the main model. These frequency and routing controls do not decouple same-model reasoning.
 
-### Disabling automatic reviews (`enabled`)
+### Enabling automatic reviews (`enabled`)
 
-The review fork can burn a meaningful share of total tokens on busy hosts.
-Operators can disable it without zeroing nudge intervals:
+Automatic post-turn memory/skill reviews are **off by default**. They use model
+tokens and can consume a meaningful share of usage on busy hosts. Enable them
+in **Models → Auxiliary tasks → Background review** in the dashboard or desktop,
+or through configuration:
 
 ```yaml
 auxiliary:
   background_review:
-    enabled: true              # false = skip automatic post-turn forks
+    enabled: true
 ```
 
-With `enabled: false`, automatic post-turn forks do not spawn; manual
-`/refine` still works.
+An absent setting or an unreadable configuration leaves automatic reviews off.
+An explicit existing `enabled: true` continues to opt in. With `enabled: false`,
+automatic post-turn forks do not spawn; manual `/refine` still works. Disabling
+reviews does not remove memories, skills, or pending proposals already created.
 
 ### Capping review cost (`max_input_tokens`)
 
-The review loop replays the conversation on every provider request it makes,
-so a single review can multiply input tokens across its tool iterations.
-`max_input_tokens` caps the SUM of replayed input tokens for one review; the
-loop stops before crossing it. `<= 0` means unlimited.
+The review loop replays its conversation on every provider request. When the
+key is unset or malformed, its input budget is 75% of the review model's resolved
+context window, capped at **48,000 tokens**. An unknown window uses the same
+48,000-token ceiling. Small local models retain their smaller context-derived
+budget. Positive explicit values override it; `<= 0` means unlimited.
 
 ```yaml
 auxiliary:
   background_review:
-    max_input_tokens: 48000  # <= 0 = unlimited
+    max_input_tokens: 48000
 ```
 
-When the key is unset, the budget is derived from the review model's resolved
-context window: 75% of the window, capped at 600,000 tokens — so it also binds
-on small local models (a 65,536-token model gets 49,152), where a fixed
-cloud-scale default would never bite. If the window cannot be resolved, a
-conservative 120,000-token fallback applies. Note the key lives under
+Before each **automatic** review request, Hermes compares the assembled input
+estimate plus previously spent input (including cache reads/writes) against the
+budget. A request estimated to exceed it is skipped, including the initial full
+conversation replay. This preserves the parent's cached prompt rather than
+rewriting it to fit. Route the review to a cheaper model for a compact digest,
+or raise the budget explicitly when a longer review is intended.
+
+The estimate is approximate, so this is not an exact provider billing limit.
+The existing aggregate gate also stops after a response reports input at or
+above the budget. Manual `/refine` retains that post-response check and can
+complete a first request larger than the budget. The key lives under
 `auxiliary:`; a top-level `background_review:` block is not read.
+
+### Keeping the existing skill catalog manageable
+
+Turning reviews off prevents new automatic work; existing skill descriptions
+continue to be included in future session prompts. Inspect unused or redundant
+skills in the Skills panel and retain the useful procedures before removing or
+consolidating any. The separate `curator.consolidate` pass remains opt-in and also
+uses model tokens. This switch never automatically deletes or archives a user's
+existing library. Changes to injected skills take effect in a new session.
 
 Fork usage is persisted in `session_model_usage` with `task='background_review'`
 and a completion line is written to `agent.log`

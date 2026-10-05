@@ -262,6 +262,11 @@ def _print_setup_summary(config: dict, hermes_home):
         print(f"   {_setup.color(f'nano {path}', _setup.Colors.DIM)}")
     print()
 
+    _setup._info("Automatic memory/skill reviews are opt-in and use model tokens.",
+                 "    Enable in Models → Auxiliary tasks, or run:",
+                 "    hermes config set auxiliary.background_review.enabled true",
+                 "    Manual /refine is available without automatic reviews.")
+    print()
     _print_section_header("🚀 Ready to go!")
     _print_cmd_rows(_READY_ROWS)
     print()

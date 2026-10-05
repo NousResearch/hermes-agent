@@ -1,3 +1,4 @@
+import type { AuxiliaryModelsResponse, AuxiliaryTaskAssignment } from "@/lib/auxiliary-models";
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -15,8 +16,6 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
-  AuxiliaryModelsResponse,
-  AuxiliaryTaskAssignment,
   MoaConfigResponse,
   MoaModelSlot,
   ModelsAnalyticsModelEntry,
@@ -41,6 +40,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
+import { BackgroundReviewToggle } from "@/components/BackgroundReviewToggle";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
 import { errorMessage } from "@/lib/api-error";
 import { assignmentToPickerCurrent } from "@/lib/model-picker-current";
@@ -64,6 +64,7 @@ const AUX_TASKS: readonly { key: string; label: string; hint: string }[] = [
   { key: "kanban_decomposer", label: "Kanban Decomposer", hint: "Task decomposition" },
   { key: "profile_describer", label: "Profile Describer", hint: "Auto profile descriptions" },
   { key: "curator", label: "Curator", hint: "Skill-usage review" },
+  { key: "background_review", label: "Background review", hint: "Memory and skill learning" },
 ] as const;
 
 function formatTokens(n: number): string {
@@ -651,6 +652,9 @@ function AuxiliaryTasksModal({
                       : `${cur?.provider} · ${cur?.model || "(provider default)"}`}
                   </div>
                 </div>
+                {t.key === "background_review" && (
+                  <BackgroundReviewToggle enabled={cur?.enabled ?? false} onSaved={onSaved} />
+                )}
                 <Button
                   size="sm"
                   outlined

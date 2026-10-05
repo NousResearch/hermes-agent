@@ -44,6 +44,7 @@ import { PanelEmpty } from '../overlays/panel'
 
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
+import { ModelReviewConsent } from './model-review-consent'
 import { ModelSelect, withActive } from './model-select'
 import { ListRow, ListRowSkeleton, Pill, SectionHeading, SectionHeadingSkeleton } from './primitives'
 import { dismissStaleAux, readStaleAuxDismissal, staleAuxFingerprint } from './stale-aux-dismissal'
@@ -115,7 +116,8 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
   { key: 'triage_specifier' },
   { key: 'kanban_decomposer' },
   { key: 'profile_describer' },
-  { key: 'curator' }
+  { key: 'curator' },
+  { key: 'background_review' }
 ]
 
 const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]
@@ -389,6 +391,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // new profile (bumping the epoch first so any in-flight A request is discarded).
   useOnProfileSwitch(() => {
     profileEpoch.current += 1
+    setApplying(false)
     // The panel stays mounted across profile switches, so clear the previous
     // profile's draft selection before loading the new profile's source of
     // truth. Ordinary same-profile refreshes still preserve in-progress edits.
@@ -640,12 +643,14 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // default-expanded snapshot, and echoing it back rewrites every key another
   // surface changed meanwhile — a CLI-pinned auxiliary slot came back as
   // provider "auto" / model "" (#95460). Optimistic, with rollback on failure.
-  const writeAgentDefault = useCallback(
+  const writeProfileDefault = useCallback(
     async (key: string, value: boolean | string) => {
-      if (!config) {
+      if (!config || applying) {
         return
       }
 
+      const epoch = profileEpoch.current
+      setApplying(true)
       const prev = config
       const next = setNested(config, key, value)
       setConfig(next)
@@ -654,10 +659,12 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         await saveHermesConfig(setNested({}, key, value), writeScope ?? scopeProfile)
       } catch (err) {
         setConfig(prev)
-        notifyError(err, m.defaultsFailed)
+        if (profileEpoch.current === epoch) notifyError(err, m.defaultsFailed)
+      } finally {
+        if (profileEpoch.current === epoch) setApplying(false)
       }
     },
-    [config, m.defaultsFailed, scopeProfile, setConfig, writeScope]
+    [applying, config, m.defaultsFailed, scopeProfile, setConfig, writeScope]
   )
 
   // Paste an API key for the selected `api_key` provider, persist it, then
@@ -1025,7 +1032,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                 <div className="flex items-center gap-2 text-xs">
                   <span className="shrink-0 whitespace-nowrap">{m.reasoning}</span>
                   <Select
-                    onValueChange={value => void writeAgentDefault('agent.reasoning_effort', value)}
+                    onValueChange={value => void writeProfileDefault('agent.reasoning_effort', value)}
                     value={effortValue}
                   >
                     <SelectTrigger className={cn('min-w-28', CONTROL_TEXT)}>
@@ -1045,7 +1052,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                 <div className="flex items-center gap-2 text-xs">
                   <span className="shrink-0 whitespace-nowrap">{m.speed}</span>
                   <Select
-                    onValueChange={value => void writeAgentDefault('agent.service_tier', value)}
+                    onValueChange={value => void writeProfileDefault('agent.service_tier', value)}
                     value={speedValue}
                   >
                     <SelectTrigger aria-label={m.speed} className={cn('min-w-28', CONTROL_TEXT)}>
@@ -1065,7 +1072,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                     <Switch
                       checked={fastOn}
                       onCheckedChange={checked =>
-                        void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')
+                        void writeProfileDefault('agent.service_tier', checked ? 'fast' : 'normal')
                       }
                       size="xs"
                     />
@@ -1131,6 +1138,13 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                     action={
                       !isEditing && (
                         <div className="flex shrink-0 items-center gap-1.5">
+                          <ModelReviewConsent
+                            applying={applying}
+                            config={config}
+                            label={copy.label}
+                            onChange={writeProfileDefault}
+                            task={meta.key}
+                          />
                           <Button
                             disabled={!mainModel || applying}
                             onClick={() => void setAuxiliaryToMain(meta.key)}

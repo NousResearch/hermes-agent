@@ -1,3 +1,4 @@
+import { MODEL_TASK_COPY } from './model-tasks'
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
 import { enModelMenu } from './en_model_menu'
@@ -1807,19 +1808,7 @@ export const en: Translations = {
       moaAggregator: 'Aggregator',
       moaAggregatorBilled: 'acting model · billed for the run',
       moaReferenceHint: 'advises once per turn by default',
-      tasks: {
-        vision: { label: 'Vision', hint: 'Image analysis' },
-        compression: { label: 'Compression', hint: 'Context compaction' },
-        skills_hub: { label: 'Skills hub', hint: 'Skill search' },
-        approval: { label: 'Approval', hint: 'Smart auto-approve' },
-        mcp: { label: 'MCP', hint: 'MCP tool routing' },
-        title_generation: { label: 'Title gen', hint: 'Session titles' },
-        review: { label: 'Review', hint: '/review reviewer subagent' },
-        triage_specifier: { label: 'Triage specifier', hint: 'Kanban spec fleshing' },
-        kanban_decomposer: { label: 'Kanban decomposer', hint: 'Task decomposition' },
-        profile_describer: { label: 'Profile describer', hint: 'Auto profile descriptions' },
-        curator: { label: 'Curator', hint: 'Skill-usage review' }
-      }
+      tasks: MODEL_TASK_COPY.en
     },
     localModels: {
       connectionChanged: 'Local models connection changed',

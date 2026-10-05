@@ -227,11 +227,14 @@ def get_auxiliary_models(profile: Optional[str] = None):
         if not isinstance(aux_cfg, dict):
             aux_cfg = {}
 
+        from utils import is_truthy_value
+
         tasks = []
         for slot in _AUX_TASK_SLOTS:
             slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
             base_url = str(slot_cfg.get("base_url", "") or "")
             tasks.append({
+                **({"enabled": is_truthy_value(slot_cfg.get("enabled"))} if slot == "background_review" else {}),
                 "task": slot, "provider": str(slot_cfg.get("provider", "auto") or "auto"),
                 "model": str(slot_cfg.get("model", "") or ""), "base_url": base_url,
                 "reasoning_effort": str(slot_cfg.get("reasoning_effort") or "") or None,

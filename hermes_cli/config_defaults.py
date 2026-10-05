@@ -801,15 +801,15 @@ DEFAULT_CONFIG = {
         "monitor": _aux(60),   # important-mail 0-10 scorer; high-volume, small model fine
         # Post-turn self-improvement fork (save memory / patch skill). "auto" = main model replaying
         # the full conversation (warm cache); other models replay a compact digest (~3-5x cheaper).
-        # enabled=false skips auto spawns (/refine still works). An explicit max_input_tokens caps
-        # the SUM of replayed input tokens over the review loop (iterations capped at 16); the loop
-        # stops before crossing it. When unset, the runtime derives a budget from the active model
-        # context window. <= 0 = unlimited.
+        # Automatic spawns are opt-in (/refine still works). max_input_tokens limits
+        # aggregate input over the review loop (16 iterations). Automatic requests are admitted
+        # using an estimate before sending; the post-response gate uses reported input. Unset
+        # derives min(48k, 75% of the resolved context). <= 0 = unlimited.
         # reasoning_effort is IGNORED while the review stays on the main model: the fork inherits the
         # conversation's reasoning config verbatim so its request bytes keep the parent's warm
         # prompt-cache prefix (#30532). Set provider/model below to route the review to another model
         # if you want a different effort level; a one-time warning says so when the key is set.
-        "background_review": {"enabled": True, **_aux(120)},
+        "background_review": {"enabled": False, **_aux(120)},
         # No reasoning_effort on MoA blocks by design — configured PER SLOT in the preset
         # (moa.presets.<name>.reference_models[].reasoning_effort / aggregator.reasoning_effort).
         "moa_reference": _aux(900, reasoning_effort=False),

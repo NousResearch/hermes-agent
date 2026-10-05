@@ -1,3 +1,4 @@
+import { MODEL_TASK_COPY } from './model-tasks'
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
@@ -1346,19 +1347,7 @@ export const ja = defineLocale({
       autoUseMain: '自動 · メインモデルを使用',
       inheritMainEffort: '継承 · メインモデルの推論強度',
       providerDefault: '(プロバイダーのデフォルト)',
-      tasks: {
-        vision: { label: 'ビジョン', hint: '画像分析' },
-        compression: { label: '圧縮', hint: 'コンテキストの圧縮' },
-        skills_hub: { label: 'スキルハブ', hint: 'スキル検索' },
-        approval: { label: '承認', hint: 'スマート自動承認' },
-        mcp: { label: 'MCP', hint: 'MCP ツールルーティング' },
-        title_generation: { label: 'タイトル生成', hint: 'セッションタイトル' },
-        review: { label: 'レビュー', hint: '/review レビューサブエージェント' },
-        triage_specifier: { label: 'トリアージ指定', hint: 'カンバン仕様の具体化' },
-        kanban_decomposer: { label: 'カンバン分解', hint: 'タスク分解' },
-        profile_describer: { label: 'プロファイル記述', hint: 'プロファイル概要の自動生成' },
-        curator: { label: 'キュレーター', hint: 'スキル使用レビュー' }
-      }
+      tasks: MODEL_TASK_COPY.ja
     },
     localModels: {
       connectionChanged: 'ローカルモデルの接続が変更されました',

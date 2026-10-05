@@ -173,13 +173,13 @@ def cancel_background_review_for_live_turn(
 _REVIEW_MAX_ITERATIONS = 16
 # Aggregate INPUT-token budget for one review fork (checked in conversation_loop's
 # ``_review_input_budget_exhausted``). Request #1 replays the full snapshot as a warm cache read
-# (both compression gates deferred until the first response); compaction then bounds each
-# request, but nothing else caps the SUM across the tool loop. The default leaves 25% of the
-# review model's context window available and never exceeds the historical cloud-scale ceiling.
+# (both compression gates deferred until the first response). Automatic requests also have
+# an estimated admission check before sending. The default leaves 25% of the
+# review model's context window available and never exceeds the 48k opt-in review ceiling.
 # Override via ``auxiliary.background_review.max_input_tokens``; <= 0 disables.
-_REVIEW_MAX_INPUT_TOKENS_CAP = 600_000
+_REVIEW_MAX_INPUT_TOKENS_CAP = 48_000
 _REVIEW_INPUT_CONTEXT_FRACTION = 0.75
-_REVIEW_MAX_INPUT_TOKENS_FALLBACK = 120_000
+_REVIEW_MAX_INPUT_TOKENS_FALLBACK = 48_000
 
 
 def _task_block(cfg: Any) -> Dict[str, Any]:
@@ -202,10 +202,10 @@ def _background_review_task_config(task_cfg: Optional[Dict[str, Any]] = None) ->
 
 
 def _context_derived_review_input_budget(review_agent: Any = None) -> int:
-    """Default budget: 75% of the review fork's resolved context window, capped at the historical
-    600k ceiling. The fork's ``context_compressor.context_length`` is already resolved by
+    """Default budget: 75% of the review fork's resolved context window, capped at
+    48k tokens. The fork's ``context_compressor.context_length`` is already resolved by
     ``AIAgent.__init__`` (config overrides, catalog, endpoint probe) — no second lookup here.
-    Unknown window → a conservative fixed fallback so unattended review work stays bounded."""
+    Unknown window → the same bounded fallback so unattended review work stays bounded."""
     context_window = getattr(getattr(review_agent, "context_compressor", None), "context_length", None)
     if not isinstance(context_window, int) or isinstance(context_window, bool) or context_window <= 0:
         return _REVIEW_MAX_INPUT_TOKENS_FALLBACK
@@ -226,20 +226,19 @@ def _review_input_token_budget(
 
 
 def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
-    """Single config read -> ``(enabled, task_cfg)``. Fail-open (``enabled=True``) so a broken
-    config never silently disables reviews — but WARN so the cost is visible."""
+    """Single config read -> ``(enabled, task_cfg)``. Automatic paid work requires opt-in;
+    absent or unreadable settings leave it disabled. Manual /refine bypasses this gate."""
     try:
         from hermes_cli.config import load_config_readonly
         from utils import is_truthy_value
         task = _task_block(load_config_readonly())
-        return is_truthy_value(task.get("enabled"), default=True), task
+        return is_truthy_value(task.get("enabled"), default=False), task
     except Exception:
         logger.warning(
-            "Failed to read background_review.enabled; leaving automatic "
-            "review enabled (fail-open)",
+            "Failed to read background_review.enabled; skipping automatic review",
             exc_info=True,
         )
-        return True, {}
+        return False, {}
 
 
 def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

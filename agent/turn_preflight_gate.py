@@ -10,6 +10,7 @@ import logging
 from contextlib import suppress
 from typing import Any
 
+from agent.background_review_budget import automatic_review_budget_exceeded
 from agent.message_metadata import append_message
 from agent.turn_context import _compression_warrants_another_preflight_pass
 from agent.turn_preflight import PreflightGateVerdict, run_preflight_compression
@@ -42,6 +43,15 @@ def run_preflight_gate(
         _provider_overflow_recovery_pending=_provider_overflow_recovery_pending,
         _last_preflight_pressure=None,
     )
+
+    if automatic_review_budget_exceeded(agent, request_pressure_tokens):
+        logger.info("Automatic review stopped before request: estimated input %s exceeds remaining budget", request_pressure_tokens)
+        v._turn_exit_reason = "review_input_budget_exhausted"
+        v.api_call_count -= 1
+        agent._api_call_count = v.api_call_count
+        agent.iteration_budget.refund()
+        v.action = "break"
+        return v
 
     _runtime_context_error = _ollama_context_limit_error(agent, request_pressure_tokens)
     if _runtime_context_error:

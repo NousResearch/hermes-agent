@@ -1,34 +1,43 @@
 name: pdf-surgeon
 repo: https://github.com/Samuek9/pdf-surgeon
-sha: bf23725b8c040efd431e4260fdc7f7dad4ba45a2
+sha: e7da338ceb639dd21f7791926e045a150a1fcb98
 description: >-
-  Replace a phrase inside an existing PDF so the edit is not visible, by rewriting the page
-  content stream in place — the string operand inside the existing BT/ET block is replaced
-  and the Tm origin of everything after it on the line is retargeted, so font, size, colour,
-  baseline, char/word spacing, horizontal scale and kerning all survive untouched because
-  they are never rewritten. This is the alternative to redact-and-re-stamp, which defaults to
-  Helvetica 8pt and makes you restate font, size and colour by hand; get any of that wrong
-  and the page reads as forged. Every replacement is verified before it is accepted: the
-  edited line must read exactly as the original with the phrase swapped and nothing else,
-  block count must hold, (font, size, colour) must be unchanged page-wide, and the pixel
-  diff must stay within one band over the edited line. The tool refuses — writing no output
-  file — when the phrase is absent, the page is a scan or Type3/XObject text, or the
-  replacement needs a glyph the embedded subset lacks; it never falls back to substituting a
-  typeface. Widths are measured with the embedded font program, not the system font of the
-  same name. action="inspect" lists each line with its baseline and BT/ET block count so a
-  caller can tell whether a document is editable before choosing what to replace. Requires a
-  digital-born PDF whose text is laid out as one block per word/run with an explicit Tm
-  origin (Word, LibreOffice, Excel, Google Docs); scans do not work. Disclosure — the tool's
-  purpose is to edit a PDF so the change is hard to detect, which is inherent to what it does;
-  files read and written are only the source PDF you name and the output path you name (the
-  input is never written back), there is no network access, no telemetry, no credentials and
-  no subprocesses, and the sole dependency is pymupdf (BSD-3-Clause, already a Hermes core
-  dependency). The input file is never modified. Suitable on macOS, Linux and Windows.
+  Model-driven editor of PDF text whose result keeps the original typesetting, by rewriting the
+  page content stream in place — the string operand inside the existing BT/ET block is replaced and
+  the Tm origin of everything after it on the line is retargeted, so font, size, colour, baseline,
+  char/word spacing, horizontal scale and kerning survive untouched because they are never
+  rewritten. This is the alternative to redact-and-re-stamp, which defaults to Helvetica 8pt and
+  makes you restate font, size and colour by hand; get any of that wrong and the page reads as
+  forged. The phrase must match exactly (whitespace is ignored); a fuzzy match is refused rather
+  than allowed to edit text the caller never named. Until an edit is accepted the output is
+  written under a temporary name next to the destination and moved into place only after
+  verification passes, so a failed check leaves nothing behind; the destination must end in .pdf,
+  must not already exist, must not resolve to the input, and must have an existing parent
+  directory, because the path arrives from the model. Verification enforces that the edited line
+  reads exactly as the original with the phrase swapped and nothing else, that every other line
+  on the page is unchanged, that block count, baseline, font, size and spacing hold, that the old
+  phrase's occurrence count dropped by exactly one (allowing for copies inside the replacement),
+  and that the page's font/size/colour set is unchanged; a pixel-diff band is reported for
+  information and does not decide the outcome. Refuses, writing nothing, on scans, Type3/XObject
+  text, pages with more than one content stream, an empty replacement, and a replacement needing
+  a glyph the embedded subset lacks — it never falls back to substituting a typeface. Widths are
+  measured from the embedded font program, not the system font of the same name. action="inspect"
+  lists each line with its baseline and BT/ET block count so a caller can tell whether a document
+  is editable before choosing what to replace. Requires a digital-born PDF whose text is laid out
+  as one block per word/run with an explicit Tm origin (Word, LibreOffice, Excel, Google Docs).
+  Disclosure — this can alter documents such as certificates or invoices; use it only on documents
+  you are entitled to change. The edit is not visible on the page and not recorded in the Info
+  dictionary. It is detectable at file level: the PDF is re-saved by PyMuPDF as a single revision,
+  so the file hash and the second trailer /ID change, any earlier incremental-save history is
+  dropped and any digital signature no longer validates. Writes only a new .pdf that does not
+  exist yet and never touches the input. No network, credentials or subprocesses. Depends on
+  PyMuPDF (AGPL-3.0), which Hermes installs for this plugin. Output files inherit the 0600 mode
+  of the temporary file they are moved from.
 maintainer: Samuek9
 tier: community
 category: tools
 docs_url: https://github.com/Samuek9/pdf-surgeon#readme
-version: "1.0.0"
+version: "1.0.1"
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools:

@@ -607,6 +607,24 @@ def _run_plugin_command(handler, arg: str, session=None) -> str:
         _clear_session_context(tokens)
 
 
+def _dispatch_plugin_in_profile_scope(name: str, arg: str, session) -> str | None:
+    """Resolve and run a plugin slash command under the session's profile runtime scope.
+
+    The command table follows ``get_hermes_home()`` and handlers read credentials through the
+    secret scope, so a bare lookup consults the launch profile's registry and the handler runs
+    unscoped: on a multiplexed host a plugin enabled only in the launch profile fires in another
+    profile's chat and every credential read fails closed (``UnscopedSecretError``, #133244) —
+    even in the launch profile's own Desktop chat. Lookup AND run sit inside the scope, mirroring
+    the messaging gateway's dispatch (``gateway/run_inbound.py``); the launch profile binds its
+    own scope through here once multiplexing is active. Returns ``None`` when the command is not
+    registered under that scope (caller falls through)."""
+    with _session_profile_runtime_scope(session or {}):
+        handler = _plugin_command_handler(name)
+        if handler is None:
+            return None
+        return _run_plugin_command(handler, arg, session)
+
+
 @contextlib.contextmanager
 def _session_home_scope(session, cwd: str | None = None, profile: str | None = None):
     """Bind HERMES_HOME and the logical cwd to the session for the block.
@@ -678,9 +696,9 @@ def _is_registry_command(base: str) -> bool:
 
 
 def _dispatch_plugin(rid, params, session, name, arg):
-    if handler := _plugin_command_handler(name):
-        with contextlib.suppress(Exception):
-            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg, session)})
+    with contextlib.suppress(Exception):
+        if (output := _dispatch_plugin_in_profile_scope(name, arg, session)) is not None:
+            return _ok(rid, {"type": "plugin", "output": output})
     return None
 
 
@@ -1152,9 +1170,12 @@ def _(rid, params: dict) -> dict:
         # run it. Anything else might be the skill the scan failed to see.
         if (dispatched.get("result") or {}).get("type") or not _is_registry_command(base):
             return dispatched
-    if plugin_handler := _plugin_command_handler(base) if base else None:
+    if base:
         try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
+            # Scoped like command.dispatch's plugin stage: the lookup must see the session's
+            # profile registry, and the handler must run with that profile's secrets (#133244).
+            if (plugin_output := _dispatch_plugin_in_profile_scope(base, arg, session)) is not None:
+                return _ok(rid, {"output": plugin_output or "(no output)"})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
     worker = session.get("slash_worker")

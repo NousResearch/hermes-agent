@@ -165,8 +165,10 @@ class BlueBubblesInboundMixin:
             return web.json_response({"error": "unauthorized"}, status=401)
         try:
             payload = self._parse_webhook_body(await request.read())
-        except (ValueError, TypeError, OSError) as exc:
-            logger.error("[bluebubbles] webhook parse error: %s", exc)
+        except Exception:
+            # Preserve the bad-payload response for reader/decoder failures;
+            # HTTP libraries can raise their own exception types here.
+            logger.exception("[bluebubbles] webhook parse error")
             return web.json_response({"error": "invalid payload"}, status=400)
         event_type = self._value(payload.get("type"), payload.get("event")) or ""
         if (

@@ -1,6 +1,7 @@
 """BlueBubbles inbound behavior."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -780,3 +781,20 @@ async def test_integer_tapback_policy_acknowledges_without_starting_turn(
         assert adapter._message_dedup.contains("associated-type-guid") is (not filtered)
     finally:
         await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_reader_http_error_preserves_bad_payload_acknowledgement(monkeypatch):
+    from aiohttp import web
+
+    adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+    request = _FakeBlueBubblesRequest({})
+
+    async def failed_read():
+        raise web.HTTPRequestEntityTooLarge(max_size=1024, actual_size=2048)
+
+    monkeypatch.setattr(request, "read", failed_read)
+    response = await adapter._handle_webhook(request)
+    assert response.status == 400
+    assert json.loads(response.body) == {"error": "invalid payload"}
+    assert not adapter._inflight_message_ids

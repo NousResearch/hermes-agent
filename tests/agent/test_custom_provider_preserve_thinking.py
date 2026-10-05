@@ -15,6 +15,10 @@ import pytest
 
 from agent.anthropic_adapter import build_anthropic_kwargs
 from agent.anthropic_message_convert import convert_messages_to_anthropic
+from agent.anthropic_thinking_policy import (
+    anthropic_thinking_route,
+    native_anthropic_preserves_prior_thinking,
+)
 from agent.transports import get_transport
 from hermes_cli.config_providers import (
     _custom_provider_entry_to_provider_config,
@@ -25,6 +29,9 @@ from hermes_cli.config_providers import (
 
 SIG = "sig-proxy"
 RELAY = "https://relay.example.internal/anthropic"  # non-anthropic.com -> third-party
+# Rework tests resolve the opt-in from the provider config (not the kwarg), so they point at
+# their own host and monkeypatch the config lookup for it.
+REWORK_RELAY = "https://trusted-proxy.example.internal/anthropic"
 
 
 def _thinking_turns(base_url, model="claude-sonnet-4", preserve_thinking=None):
@@ -63,6 +70,32 @@ def test_relay_opt_in_keeps_signed_blocks():
     """preserve_thinking keeps the signed block on the latest turn, signature intact."""
     blocks = _thinking_turns(RELAY, preserve_thinking=True)
     assert blocks and blocks[0].get("signature") == SIG
+
+
+def test_opt_in_maps_the_route_to_native():
+    """The opt-in IS the native mapping (#123021 rework): a third-party endpoint with
+    ``preserve_thinking=True`` resolves through ``anthropic_thinking_route`` as ``native`` —
+    the converter, the signature-rejection recovery and every native call site then share one
+    contract. Kimi/DeepSeek keep their own routes (their judgment outranks the opt-in)."""
+    assert anthropic_thinking_route(RELAY, "claude-sonnet-4", preserve_thinking=True) == "native"
+    assert anthropic_thinking_route(RELAY, "claude-sonnet-4", preserve_thinking=False) == "third_party"
+    assert anthropic_thinking_route(RELAY, "claude-sonnet-4", preserve_thinking=None) == "third_party"
+    assert anthropic_thinking_route(None, "claude-sonnet-4", preserve_thinking=True) == "native"
+    assert anthropic_thinking_route(RELAY, "kimi-k2.5", preserve_thinking=True) == "kimi"
+    assert anthropic_thinking_route(RELAY, "deepseek-r2", preserve_thinking=True) == "deepseek"
+
+
+def test_opt_in_benefits_match_the_native_capability_split():
+    """The mapped route must behave EXACTLY like direct Anthropic for the same model
+    (#123021): preserve-prior models (Opus 4.5+/Sonnet 4.6+) keep signed thinking on every
+    assistant turn — the prompt-cache prefix then never diverges from what native computes —
+    while last-turn-only models (older Claude) take the native latest-turn path. No separate
+    trusted-proxy arm exists; the shared classifier decides."""
+    for model, expected in (("claude-opus-4.5", 2), ("claude-sonnet-4.6", 2),
+                            ("claude-sonnet-4", 1), ("claude-haiku-4.5", 1)):
+        _sys, out = convert_messages_to_anthropic(
+            _multi_turn_conversation(2), base_url=REWORK_RELAY, model=model, preserve_thinking=True)
+        assert _signed_block_count(out) == expected, model
 
 
 def test_direct_anthropic_ignores_the_flag():
@@ -178,11 +211,26 @@ def _multi_turn_conversation(turns):
 
 
 @pytest.mark.parametrize("turns", [2, 4, 8])
-def test_opt_in_keeps_only_the_latest_turn(turns):
-    """Native latest-turn invariant: signatures are signed against the full turn and go stale on
-    replay, so ONLY the latest assistant turn keeps signed blocks — the same gate the direct
-    Anthropic path applies. A keep-all would replay a stale signature on every non-latest turn
-    (a verbatim pass-through answers 400) and pay per-turn wire bytes for nothing."""
+def test_opt_in_preserve_prior_model_keeps_every_turn(turns):
+    """Rework invariant (#123021): behind a trusted proxy a preserve-prior model (Opus 4.5+ /
+    Sonnet 4.6+) keeps its signed thinking on EVERY assistant turn, exactly like direct
+    Anthropic — the prompt-cache prefix then never diverges from what native computes
+    (latest-turn-only cache-broke ~84% of requests; keep-all replayed ~18k requests over
+    5 days with zero signature rejections). The old trusted-proxy latest-turn arm keeps 1."""
+    _sys, out = convert_messages_to_anthropic(
+        _multi_turn_conversation(turns), base_url=RELAY, model="claude-opus-4.5",
+        preserve_thinking=True)
+    assert _signed_block_count(out) == turns, [
+        [b.get("type") for b in (m.get("content") or []) if isinstance(b, dict)]
+        for m in out if m.get("role") == "assistant"]
+
+
+@pytest.mark.parametrize("turns", [2, 4, 8])
+def test_opt_in_last_turn_only_model_keeps_only_the_latest_turn(turns):
+    """Rework invariant (#123021): behind a trusted proxy, last-turn-only models (Haiku /
+    Claude 3 / pre-4.5 Opus / pre-4.6 Sonnet) follow the NATIVE latest-turn behavior — their
+    stale historical signatures would answer 400 on a verbatim pass-through. No separate
+    trusted-proxy arm: the shared route classifier decides."""
     _sys, out = convert_messages_to_anthropic(
         _multi_turn_conversation(turns), base_url=RELAY, model="claude-sonnet-4",
         preserve_thinking=True)
@@ -252,4 +300,41 @@ def test_transport_seam_resolves_the_opt_in(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.get_custom_provider_preserve_thinking", lambda base_url: False)
     _sys, out = transport.convert_messages(copy.deepcopy(messages), base_url=RELAY)
+    assert _signed_block_count(out) == 0
+
+
+def test_opt_in_resolved_from_config_matches_the_kwarg(monkeypatch):
+    """The native mapping resolves the provider opt-in at the ROUTE, so the converter, the
+    signature-rejection recovery and the native call sites (context accounting, sanitization,
+    turn assembly) all see the SAME decision as build_anthropic_kwargs — the #123021 benefit
+    that made the rework preferable to a converter-only arm."""
+    monkeypatch.setattr(
+        "hermes_cli.config_providers.get_custom_provider_preserve_thinking",
+        lambda base_url, custom_providers=None, config=None: base_url == REWORK_RELAY)
+    messages = _multi_turn_conversation(2)
+    # Config-resolved opt-in (preserve_thinking=None) == explicit kwarg: keep-all for a
+    # preserve-prior model, and the shared classifier agrees.
+    _sys, out = convert_messages_to_anthropic(
+        copy.deepcopy(messages), base_url=REWORK_RELAY, model="claude-opus-4.5",
+        preserve_thinking=None)
+    assert _signed_block_count(out) == 2
+    _sys, kwarg_out = convert_messages_to_anthropic(
+        copy.deepcopy(messages), base_url=REWORK_RELAY, model="claude-opus-4.5",
+        preserve_thinking=True)
+    assert _signed_block_count(kwarg_out) == 2
+    assert anthropic_thinking_route(REWORK_RELAY, "claude-opus-4.5") == "native"
+    assert native_anthropic_preserves_prior_thinking(REWORK_RELAY, "claude-opus-4.5")
+
+
+def test_kimi_and_deepseek_outrank_the_config_resolved_opt_in(monkeypatch):
+    """The opt-in never rewrites the Kimi / DeepSeek contracts, whichever way it arrives."""
+    assert anthropic_thinking_route(None, "kimi-k2.5", preserve_thinking=True) == "kimi"
+    # Third-party + DeepSeek-thinking model: the deepseek judgment wins even with the opt-in.
+    assert anthropic_thinking_route(RELAY, "deepseek-r2", preserve_thinking=True) == "deepseek"
+    assert anthropic_thinking_route(RELAY, "deepseek-r2") == "deepseek"  # judgment, opt-in irrelevant
+    _sys, out = convert_messages_to_anthropic(
+        _multi_turn_conversation(2), base_url=RELAY, model="kimi-k2.5", preserve_thinking=True)
+    assert _signed_block_count(out) == 2
+    _sys, out = convert_messages_to_anthropic(
+        _multi_turn_conversation(2), base_url=RELAY, model="deepseek-r2", preserve_thinking=True)
     assert _signed_block_count(out) == 0

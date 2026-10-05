@@ -11,10 +11,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_eviction_policy import outbound_image_retire_count
-from agent.anthropic_endpoints import (
-    _is_deepseek_anthropic_endpoint, _is_kimi_family_endpoint, _is_nous_portal_endpoint,
-    _is_third_party_anthropic_endpoint, _model_name_is_deepseek_thinking,
-)
+from agent.anthropic_thinking_policy import anthropic_thinking_route, model_preserves_prior_thinking
 
 logger = logging.getLogger(__name__)
 
@@ -380,6 +377,18 @@ def _replay_ordered_blocks(m: Dict[str, Any], ordered_blocks: List[Any]) -> Opti
     return replayed
 
 
+def assistant_replay_carrier(m: Dict[str, Any]) -> Tuple[bool, List[Dict[str, Any]]]:
+    """``(ordered, blocks)``: the sanitized ordered sidecar when any block survives it (the whole turn
+    then replays from it), else the ``reasoning_details`` thinking blocks. Single owner of carrier
+    precedence for conversion, accounting and rejected-signature mirrors."""
+    ordered_blocks = m.get("anthropic_content_blocks")
+    if isinstance(ordered_blocks, list) and ordered_blocks:
+        replayed = _replay_ordered_blocks(m, ordered_blocks)
+        if replayed:
+            return True, replayed
+    return False, _extract_preserved_thinking_blocks(m)
+
+
 def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     """Assistant message -> Anthropic content blocks (thinking, text, tool_use, Kimi/DeepSeek
     reasoning_content injection)."""
@@ -390,12 +399,9 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     # than relocated. #56195 covered the complementary shape (blank content -> top-level marker); this is
     # the interleaved thinking + preamble-text + tool_use shape.
     content = m.get("content", "")
-    ordered_blocks = m.get("anthropic_content_blocks")
-    if isinstance(ordered_blocks, list) and ordered_blocks:
-        replayed = _replay_ordered_blocks(m, ordered_blocks)
-        if replayed:
-            return {"role": "assistant", "content": replayed}
-    blocks = _extract_preserved_thinking_blocks(m)
+    ordered, blocks = assistant_replay_carrier(m)
+    if ordered:
+        return {"role": "assistant", "content": blocks}
     # Blank text blocks are dropped; a cache marker riding on one is relocated onto the last
     # surviving cacheable block (prompt_caching sets cache_control on content[-1], which may be
     # exactly the blank block).
@@ -546,10 +552,10 @@ def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any
     return fixed
 
 
-def _keep_valid_latest_thinking(content: List[Any], signature_dead: bool) -> List[Any]:
-    """Latest assistant turn on direct Anthropic: keep signed thinking, demote unsigned to text so
-    the reasoning isn't lost. If orphan-stripping mutated THIS turn every signature is dead (and a
-    bare signed block with no tool_use is also invalid), so demote ALL of them."""
+def _keep_valid_thinking(content: List[Any], signature_dead: bool) -> List[Any]:
+    """Keep valid signed Anthropic thinking, demoting readable unsigned/invalidated thinking.
+    Preserved-thinking models apply this to historical turns too; older models apply it only
+    to the latest assistant turn."""
     new_content = []
     for b in content:
         if _block_type(b) not in _THINKING_TYPES:
@@ -569,44 +575,33 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
     """Strip or preserve thinking blocks per endpoint. Mutates ``result`` in place.
 
     Anthropic signs thinking blocks against the full turn; any upstream mutation invalidates them
-    (400 "Invalid signature in thinking block"), so on direct Anthropic only the LATEST assistant
-    turn keeps signed blocks. Signatures are proprietary: third-party endpoints strip all thinking,
-    unless the endpoint's provider entry opts in with ``preserve_thinking: true`` (#120723) — a
-    trusted proxy that re-signs on the way out gets the native latest-turn keep path.
+    (400 "Invalid signature in thinking block"). Native preserved-thinking models keep valid signed
+    blocks on every assistant turn; older Claude models retain the established latest-turn-only
+    policy. Signatures are proprietary: third-party endpoints strip all thinking, unless the
+    endpoint's provider entry opts in with ``preserve_thinking: true`` (#120723) — the opt-in maps
+    the route to ``native`` (see :mod:`agent.anthropic_thinking_policy`), so the model's own
+    capability decides: preserve-prior models keep every turn, others keep the latest turn only.
     Kimi replays as-is; DeepSeek needs unsigned blocks round-tripped but rejects signed ones. Nous
     Portal proxies Claude with sticky sessions and validates the same signatures, so it takes the
     native path despite not being anthropic.com.
     """
-    is_third_party = _is_third_party_anthropic_endpoint(base_url) and not _is_nous_portal_endpoint(base_url)
-    # Trusted-proxy opt-in (#120723): the provider entry relaxes the third-party strip to the
-    # native latest-turn keep path. Kimi/DeepSeek handling keeps precedence over it.
-    trusted_proxy = bool(preserve_thinking) and is_third_party
-    is_kimi = _is_kimi_family_endpoint(base_url, model)
-    is_deepseek = _is_deepseek_anthropic_endpoint(base_url) or (
-        is_third_party and _model_name_is_deepseek_thinking(model)
-    )
+    route = anthropic_thinking_route(base_url, model, preserve_thinking)
     last_assistant_idx = next((i for i in range(len(result) - 1, -1, -1) if result[i].get("role") == "assistant"), None)
+    preserve_prior = model_preserves_prior_thinking(model)
     for idx, m in _assistant_block_lists(result):
-        if is_kimi:
+        if route == "kimi":
             pass  # shared cleanup below still strips cache markers + the flag
-        elif is_deepseek:
+        elif route == "deepseek":
             # Strip signed (or redacted-with-data), keep unsigned.
             new_content = [
                 b for b in m["content"]
                 if _block_type(b) not in _THINKING_TYPES or not (b.get("signature") or b.get("data"))
             ]
             m["content"] = new_content or [_text_block("(empty)")]
-        elif trusted_proxy and idx == last_assistant_idx:
-            # Latest turn only — the same gate the native arm below applies. Older turns fall
-            # through to the strip: their signatures are stale on replay and a verbatim
-            # pass-through answers 400 to them (review #123021: keep-all also paid per-turn
-            # wire bytes for blocks the endpoint cannot validate).
-            new_content = _keep_valid_latest_thinking(m["content"], bool(m.get("_thinking_signature_invalidated")))
-            m["content"] = new_content or [_text_block("(empty)")]
-        elif is_third_party or idx != last_assistant_idx:
+        elif route == "third_party" or (idx != last_assistant_idx and not preserve_prior):
             m["content"] = _strip_thinking(m["content"]) or [_text_block("(thinking elided)")]
         else:
-            new_content = _keep_valid_latest_thinking(m["content"], bool(m.get("_thinking_signature_invalidated")))
+            new_content = _keep_valid_thinking(m["content"], bool(m.get("_thinking_signature_invalidated")))
             m["content"] = new_content or [_text_block("(empty)")]
         # cache_control on thinking blocks interferes with signature validation.
         for b in m["content"]:
@@ -727,10 +722,12 @@ def convert_messages_to_anthropic(
     """Convert OpenAI-format messages to Anthropic format -> ``(system, messages)``. System is
     extracted into its own param (a string, or a block list when cache_control is present).
     ``base_url``/``model`` drive thinking-signature policy — third-party endpoints strip signatures
-    (proprietary, they 400 on them); ``preserve_thinking=True`` relaxes that strip to the native
-    latest-turn keep path for trusted re-signing proxies (#120723, the endpoint's provider entry
-    supplies it) — the latest assistant turn's signed thinking survives, mirroring direct
-    Anthropic; Kimi-family endpoints/models keep unsigned
+    (proprietary, they 400 on them); ``preserve_thinking=True`` maps the route to ``native``
+    (#120723): a trusted re-signing proxy then follows the native contract per the model's own
+    capability — preserve-prior models keep signed thinking on every assistant turn (cache prefix
+    parity with direct Anthropic), last-turn-only models keep the latest turn only. ``None``
+    resolves the provider entry's opt-in best-effort; absent/False keeps the strip. Kimi-family
+    endpoints/models keep unsigned
     reasoning_content-derived blocks, which Kimi requires even when empty."""
     system = None
     result: List[Dict[str, Any]] = []

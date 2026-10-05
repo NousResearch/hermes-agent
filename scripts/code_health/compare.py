@@ -52,6 +52,7 @@ Key = tuple[str, str]  # (path, qualname)
 # reuse a name shares little beyond its `def` line and scores well under 0.3.
 SIMILAR = 0.6
 _ORDINAL = re.compile(r"#\d+$")
+_MAX_PAIRS = 250_000  # ~1 s of similarity checks
 
 
 def _base_name(qual: str) -> str:
@@ -153,11 +154,16 @@ class _Matcher:
         groups: dict[tuple[str, str], list[tuple[str, Unit]]] = defaultdict(list)
         for hpath, qual, unit in pending:
             groups[(hpath, _base_name(qual))].append((qual, unit))
+        by_name: dict[str, dict[str, list[tuple[str, Unit]]]] = {}
         for (hpath, name), heads in sorted(groups.items()):
             bpath, bf = self._base_file(hpath)
             if bpath is None or bf is None:
                 continue
-            olds = [(q, u) for q, u in bf.units.items() if _base_name(q) == name and self._free(bpath, q)]
+            if bpath not in by_name:
+                by_name[bpath] = defaultdict(list)
+                for qual, unit in bf.units.items():
+                    by_name[bpath][_base_name(qual)].append((qual, unit))
+            olds = [(q, u) for q, u in by_name[bpath].get(name, []) if self._free(bpath, q)]
             if len(heads) > 1 or len(olds) > 1:
                 heads, olds = self._pair_similar(hpath, bpath, heads, olds)
             # The one unit left with a name is that name's unit, edited (as for a unique name).
@@ -170,7 +176,9 @@ class _Matcher:
         hf, bf = self.head[hpath], self.base[bpath]
         new_code = [_code(hf, u) for _, u in heads]
         old_code = [_code(bf, u) for _, u in olds]
-        if None in new_code or None in old_code:  # bodies unknown: the ordinal is all there is
+        # Bodies unknown, or a group so large (a codemod over hundreds of callbacks in one scope)
+        # that all-pairs similarity would dominate the run: the ordinal is all there is.
+        if None in new_code or None in old_code or len(heads) * len(olds) > _MAX_PAIRS:
             old_by_qual = dict(olds)
             for qual, _ in heads:
                 if qual in old_by_qual:

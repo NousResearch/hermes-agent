@@ -164,6 +164,7 @@ class _GitHold:
         self.attributes = machine.install_dir / ".git" / "info" / "attributes"
         self._saved_attributes: str | None = None
         self._held_since: float | None = None
+        self._held_looks = 0
 
     @property
     def held(self) -> bool:
@@ -200,9 +201,15 @@ class _GitHold:
         lock = machine.install_dir / ".git" / "index.lock"
         if seen is None or not lock.is_file():
             # Held by a git this cell does not model (or a lock-free write): name it, never
-            # wait out the whole update budget on a kill point that cannot come.
+            # wait out the whole update budget on a kill point that cannot come. While the
+            # filter holds, git, its op and index.lock cannot move: this is a static state the
+            # poll only has to observe, so the verdict needs HOLD_SETTLE_LOOKS complete looks as
+            # well as HOLD_SETTLE_SECONDS. A starved runner whose tree walk takes seconds gets
+            # more time, never fewer looks.
             self._held_since = self._held_since or time.monotonic()
-            if time.monotonic() - self._held_since > HOLD_SETTLE_SECONDS:
+            self._held_looks += 1
+            if (time.monotonic() - self._held_since > HOLD_SETTLE_SECONDS
+                    and self._held_looks >= HOLD_SETTLE_LOOKS):
                 gits = []
                 for child in descendants(proc):
                     with contextlib.suppress(Exception):
@@ -210,13 +217,16 @@ class _GitHold:
                             gits.append(" ".join(child.cmdline()[1:6]))
                 raise AssertionError(fail_with(
                     machine, f"mid_git: the hold filter ran but no {'/'.join(LOCAL_GIT_OPS)} with "
-                             f".git/index.lock held appeared in {HOLD_SETTLE_SECONDS:.0f}s "
+                             f".git/index.lock held appeared in {time.monotonic() - self._held_since:.0f}s "
+                             f"and {self._held_looks} looks "
                              f"(index.lock={lock.is_file()}, git children: {gits or 'none'})"))
             return None
         return f"git {seen[0]} (pid {seen[1]}) held writing {self.path}, .git/index.lock held"
 
 
 HOLD_SETTLE_SECONDS = 30.0
+# A normal runner polls every ~0.1-0.3 s, so 30 s is well past this many looks there.
+HOLD_SETTLE_LOOKS = 60
 
 
 def _head(machine) -> str:

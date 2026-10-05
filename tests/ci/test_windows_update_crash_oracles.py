@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import psutil
 import pytest
@@ -197,3 +198,21 @@ def test_orphan_marker_guard_fires_once_the_fix_lands(monkeypatch):
     monkeypatch.setattr(crash, "orphan_marker_fix_missing", lambda: [])
     with pytest.raises(AssertionError, match="delete ORPHAN_MARKER_GAP"):
         test_orphan_marker_wrapper_expires_once_its_fix_is_in_the_tree()
+
+
+# Review 5411223855 (crash-cell timing): while the hold filter blocks git, the op and index.lock
+# cannot move, so a starved runner must get more wall time, never fewer looks, before the verdict.
+def test_mid_git_hold_verdict_needs_looks_as_well_as_seconds(tmp_path, monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(crash, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(crash, "_git_op", lambda proc, ops: None)  # the op is not visible yet
+    monkeypatch.setattr(crash, "descendants", lambda proc: [])
+    machine = SimpleNamespace(root=tmp_path, install_dir=tmp_path / "install", logs=tmp_path, evidence=lambda: "")
+    hold = crash._GitHold(machine)
+    hold.flags.mkdir(parents=True)
+    (hold.flags / "held").write_text("1", encoding="utf-8")
+    for _ in range(crash.HOLD_SETTLE_LOOKS - 1):  # each look takes 10 s on this runner
+        assert hold.point(None, machine, "t") is None
+        clock[0] += 10.0
+    with pytest.raises(AssertionError, match="the hold filter ran but no merge/reset/checkout"):
+        hold.point(None, machine, "t")

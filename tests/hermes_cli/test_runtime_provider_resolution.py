@@ -1675,6 +1675,26 @@ class TestProviderEntryApiKeyEnvAlias:
         assert normalized is not None
         assert "extra_body" in _VALID_CUSTOM_PROVIDER_FIELDS
         assert normalized["extra_body"] == entry["extra_body"]
+
+    def test_timeout_fields_are_supported_schema_and_survive_normalization(self):
+        from hermes_cli.config import (
+            _VALID_CUSTOM_PROVIDER_FIELDS,
+            _normalize_custom_provider_entry,
+        )
+
+        entry = {
+            "name": "slow-vendor",
+            "base_url": "https://api.vendor.example.com/v1",
+            "request_timeout_seconds": 300,
+            "stale_timeout_seconds": 60,
+        }
+
+        normalized = _normalize_custom_provider_entry(entry)
+
+        assert normalized is not None
+        for field in ("request_timeout_seconds", "stale_timeout_seconds"):
+            assert field in _VALID_CUSTOM_PROVIDER_FIELDS
+            assert normalized[field] == entry[field]
 # =============================================================================
 # Tencent TokenHub — API-key provider runtime resolution
 # =============================================================================

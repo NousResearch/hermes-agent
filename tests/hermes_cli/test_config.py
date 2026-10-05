@@ -1111,6 +1111,8 @@ class TestCustomProviderCompatibility:
                             "models": model_map,
                             "context_length": 262144,
                             "rate_limit_delay": 0.25,
+                            "request_timeout_seconds": 300,
+                            "stale_timeout_seconds": 60,
                             "discover_models": False,
                             "extra_body": {
                                 "chat_template_kwargs": {"enable_thinking": False}
@@ -1141,6 +1143,8 @@ class TestCustomProviderCompatibility:
         assert provider["models"] == model_map
         assert provider["context_length"] == 262144
         assert provider["rate_limit_delay"] == 0.25
+        assert provider["request_timeout_seconds"] == 300
+        assert provider["stale_timeout_seconds"] == 60
         assert provider["discover_models"] is False
         assert provider["extra_body"] == {
             "chat_template_kwargs": {"enable_thinking": False}
@@ -1155,6 +1159,8 @@ class TestCustomProviderCompatibility:
         )
         assert compatible_provider["models"] == model_map
         assert compatible_provider["key_env"] == "KIMI_CODING_API_KEY"
+        assert compatible_provider["request_timeout_seconds"] == 300
+        assert compatible_provider["stale_timeout_seconds"] == 60
 
     def test_providers_dict_resolves_at_runtime(self, tmp_path):
         """After migration deleted custom_providers, get_compatible_custom_providers

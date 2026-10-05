@@ -261,6 +261,8 @@ def _normalize_custom_provider_entry(
     for field, ok in (
         ("context_length", lambda v: isinstance(v, int) and v > 0),
         ("rate_limit_delay", lambda v: isinstance(v, (int, float)) and v >= 0),
+        ("request_timeout_seconds", lambda v: isinstance(v, (int, float)) and v > 0),
+        ("stale_timeout_seconds", lambda v: isinstance(v, (int, float)) and v > 0),
         ("discover_models", lambda v: isinstance(v, (bool, str))),
     ):
         if ok(entry.get(field)):
@@ -292,7 +294,8 @@ def _custom_provider_entry_to_provider_config(
     provider_entry: Dict[str, Any] = {"api": normalized["base_url"]}
     for field in (
         "name", "api_key", "key_env", "key_cmd", "models", "models_discovered", "context_length",
-        "rate_limit_delay", "discover_models", "extra_body", "extra_headers",
+        "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds", "discover_models",
+        "extra_body", "extra_headers",
         "session_affinity_header", "ssl_ca_cert", "ssl_verify", "catalog_provider"):
         if field in normalized:
             provider_entry[field] = normalized[field]

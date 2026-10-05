@@ -820,7 +820,7 @@ def test_archive_unsub_records_notify_unsubscribed_event(tmp_path, monkeypatch):
     asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(RecordingAdapter())))
 
     assert _notify_unsubscribed_payloads(tid) == [
-        {"platform": "telegram", "chat_id": "chat-1", "thread_id": "", "reason": "archived"}]
+        {"platform": "telegram", "reason": "archived"}]
 
 
 def test_send_failure_drop_records_notify_unsubscribed_event(tmp_path, monkeypatch):
@@ -841,5 +841,4 @@ def test_send_failure_drop_records_notify_unsubscribed_event(tmp_path, monkeypat
     finally:
         conn.close()
     assert _notify_unsubscribed_payloads(tid) == [
-        {"platform": "telegram", "chat_id": "chat-1", "thread_id": "",
-         "reason": f"send_failures:{MAX_SEND_FAILURES}"}]
+        {"platform": "telegram", "reason": f"send_failures:{MAX_SEND_FAILURES}"}]

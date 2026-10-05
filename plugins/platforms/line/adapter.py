@@ -932,8 +932,7 @@ async def _standalone_send(
 ) -> Dict[str, Any]:
     """Out-of-process Push delivery for cron jobs detached from the gateway (no inbound event → no
     reply token). ``thread_id`` is ignored (no threads); ``media_files`` need the webhook server."""
-    extra = getattr(pconfig, "extra", {}) or {}
-    token = _get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN") or extra.get("channel_access_token", "")
+    token = _credentials(pconfig)[0]
     if not token or not chat_id:
         return send_error("LINE standalone send: missing token or chat_id")
     messages = _text_messages(message or "") or [_text_message("")]

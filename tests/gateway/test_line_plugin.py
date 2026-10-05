@@ -367,6 +367,8 @@ class TestCheckRequirements:
         monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
         monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
         assert not check_requirements()
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "   ")
+        assert not check_requirements()
 
 
 class TestValidateConfig:
@@ -420,6 +422,8 @@ class TestAdapterInit:
         for blank in ("   ", None):
             assert LineAdapter(PlatformConfig(enabled=True, extra={"channel_access_token": "tok",
                                                                    "channel_secret": blank})).channel_secret == ""
+            assert LineAdapter(PlatformConfig(enabled=True, extra={"channel_access_token": blank,
+                                                                   "channel_secret": "sec"})).channel_access_token == ""
         assert ad.webhook_port == 7777
         assert ad.public_base_url == "https://x.example.com"
         assert ad.allowed_users == {"U1", "U2"}

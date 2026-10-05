@@ -69,7 +69,7 @@ judge() {  # judge TREE-ISH ARGS...: check out TREE-ISH alone and run its own sc
   dir="$tmp"
   if command -v cygpath >/dev/null 2>&1; then dir="$(cygpath -m "$tmp")" || dir="$tmp"; fi
   GIT_INDEX_FILE="$dir/index" git read-tree "$tree" &&
-    GIT_INDEX_FILE="$dir/index" git checkout-index -a --prefix="$dir/tree/" &&
+    GIT_INDEX_FILE="$dir/index" git checkout-index -a -f --prefix="$dir/tree/" &&
     GIT_DIR="$git_dir" "$py" "$dir/tree/scripts/check" "$@" </dev/null
   rc=$?
   rm -rf "$tmp"
@@ -152,7 +152,10 @@ def _tree_snapshot(tree: str) -> Iterator[tuple[Path, dict[str, str]]]:
         env = {**os.environ, "GIT_DIR": git_dir, "GIT_WORK_TREE": str(root),
                "GIT_INDEX_FILE": str(Path(tmp) / "index")}
         _git_in(env, "read-tree", tree)
-        _git_in(env, "checkout-index", "-a")
+        # -f: on a case-insensitive filesystem paths that differ only by case are one file, and
+        # without it the second one aborts the snapshot before the case-collision guard runs
+        # (the guards read the index, which keeps both).
+        _git_in(env, "checkout-index", "-a", "-f")
         yield root, env
 
 

@@ -325,7 +325,7 @@ def resolve_cron_drain_budget(
     drain_timeout: float, cron_drain_timeout: float, *, watchdog_delay: float, elapsed: float = 0.0,
     cleanup_reserve_s: float = CRON_DRAIN_CLEANUP_RESERVE_S,
 ) -> float:
-    """Seconds the stop drain may wait on in-flight cron work.
+    """Seconds the stop drain may wait on in-flight cron and api_server (/v1) work.
 
     Clamped to what this process can honour: the watchdog hard-exits at ``watchdog_delay``,
     so waiting past that leash minus ``cleanup_reserve_s`` swaps a cleanly-interrupted job
@@ -345,7 +345,7 @@ def resolve_systemd_timeout_stop_sec(
     floor_s: float = SYSTEMD_TIMEOUT_STOP_SEC_FLOOR,
 ) -> int:
     """Seconds systemd ``TimeoutStopSec`` must cover: the stop path may first wait
-    ``cron_drain_timeout`` + ``cleanup_reserve_s`` for cron work, so sizing from the chat drain
+    ``cron_drain_timeout`` + ``cleanup_reserve_s`` for cron and api_server work, so sizing from the chat drain
     alone lets systemd SIGKILL an in-budget drain.  A zero cron timeout is an opt-out.
 
     ``restart_drain_timeout`` is only the chat-turn interrupt budget (default 0). See #94759.

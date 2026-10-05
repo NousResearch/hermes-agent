@@ -99,6 +99,7 @@ def test_unstamped_task_home_symlink_cannot_republish(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(task_home))
     assert _launchers.ephemeral_task_store(repo)
+    assert _launchers.stage_launcher("hermes", repo, local) is None
     assert _launchers.expose_cli(repo, create=False) == {"ok": True, "skipped": "ephemeral-store"}
     assert _launchers.ensure_install_launchers(repo, local) == []
     assert {path.name: path.read_bytes() for path in local.iterdir()} == original

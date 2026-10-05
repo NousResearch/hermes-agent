@@ -410,6 +410,8 @@ def _publish_conveniences(root: Path, out_dir: Path, names, *, create: bool = Tr
 
 def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     """Publish one launcher bound to store Python, or refuse missing tools."""
+    if ephemeral_task_store(repo_root):
+        return None
     repo_root = Path(repo_root)
     # A launcher outlives the process that writes it, so the inherited
     # runtime override must not displace the tree's own interpreter.

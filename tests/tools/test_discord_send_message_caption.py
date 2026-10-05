@@ -159,6 +159,25 @@ def test_invalid_reply_anchor_fails_closed_without_posting():
     assert calls == []
 
 
+def test_whitespace_reply_anchor_is_not_normalized():
+    """Malformed identifiers must fail closed instead of being repaired by trimming."""
+    _remember_channel_is_forum("999000888", False)
+    session_ctx, calls = _session_with([_resp(200, {"id": "unexpected"})])
+    with patch("aiohttp.ClientSession", return_value=session_ctx):
+        res = asyncio.run(
+            _standalone_send(
+                _pconfig(),
+                "999000888",
+                "sanitized terminal receipt",
+                thread_id="999000888",
+                reply_to=" 999000999",
+            )
+        )
+    assert res.get("success") is not True
+    assert "numeric snowflakes" in res["error"]
+    assert calls == []
+
+
 def test_no_caption_non_forum_keeps_separate_text():
     """Without a caption, text + media are two separate POSTs (unchanged)."""
     chat_id = "999000222"

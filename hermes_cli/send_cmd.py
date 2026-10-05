@@ -234,7 +234,7 @@ def cmd_send(args: argparse.Namespace) -> None:
     # Routes to the platform adapter (bot-token path for built-ins, live-adapter path for plugin
     # platforms); takes the standard tool-call dict and returns a JSON string.
     tool_args = {"action": "send", "target": target, "message": message}
-    reply_to = (getattr(args, "reply_to", None) or "").strip()
+    reply_to = getattr(args, "reply_to", None)
     if reply_to:
         if target.split(":", 1)[0].strip().lower() != "discord":
             _fail("hermes send: --reply-to is only supported for Discord targets.", _USAGE_EXIT)

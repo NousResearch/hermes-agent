@@ -111,7 +111,7 @@ def _load_allowlist() -> dict:
         # whichever profile happened to be active on first call and cache
         # a partial map. The root config.yaml is shared by all profiles,
         # so the allowlist there is global and stable.
-        import yaml
+        import hermes_yaml as yaml
         from hermes_cli.profiles import _get_default_hermes_home
 
         try:
@@ -200,13 +200,13 @@ def _is_under(child_real: str, root_real: str, *, sep: str = os.sep) -> bool:
 def _uses_container_paths(task_id: str) -> bool:
     """Whether *task_id* runs on a backend whose paths are guest paths.
 
-    Delegates to ``file_tools`` so the guard and the tools it protects agree
+    Delegates to ``file_tools_paths`` so the guard and the tools it protects agree
     on exactly one definition of "container backend". Import is local and
     defensive to avoid a circular import at module load (file_tools imports
     this module).
     """
     try:
-        from tools.file_tools import _uses_container_paths as _impl
+        from tools.file_tools_paths import _uses_container_paths as _impl
 
         return bool(_impl(task_id))
     except Exception:

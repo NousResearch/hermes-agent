@@ -59,10 +59,13 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     role: 'status',
     title: r => r.backgroundRunning
   },
-  // Emerald — the turn finished while the user was looking elsewhere.
+  // Emerald — the turn finished while the user was looking elsewhere. The
+  // color is theme-derived (`--ui-success`, a success green rotated toward the
+  // accent) so eight finished dots can't sit in the sidebar fighting a palette
+  // they don't belong to. Under a green accent it stays emerald.
   unread: {
     ariaLabel: r => r.finishedUnread,
-    className: `${DOT_BASE} bg-emerald-500`,
+    className: `${DOT_BASE} bg-(--ui-success)`,
     role: 'status',
     title: r => r.finishedUnread
   },
@@ -75,11 +78,12 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     className: `${DOT_BASE} border border-(--ui-text-quaternary)`,
     title: r => r.draftSession
   },
-  // Settled: the project color, or nothing at all. An uncolored session used to
-  // get a grey dot, which put a mark of the same weight as a status next to
-  // every resting row and made "no color" look like a state of its own.
+  // Settled: the project color when there is one, else the faintest filled
+  // grey. Every session shows SOME mark — a row with nothing in the lead slot
+  // reads as broken next to its neighbours, so "no color" falls back to the
+  // quietest ink rather than to an invisible dot.
   idle: {
-    className: 'size-1 rounded-full'
+    className: 'size-1 rounded-full bg-(--ui-text-quaternary)'
   }
 }
 

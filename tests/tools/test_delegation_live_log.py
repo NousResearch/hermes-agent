@@ -255,6 +255,174 @@ def test_manifest_goal_is_redacted():
     assert "deploy using" in goal, "redaction must not blank the goal entirely"
 
 
+# ---------------------------------------------------------------------------
+# Explicit profile home (#91996)
+# ---------------------------------------------------------------------------
+
+def test_explicit_home_pins_transcripts_across_raw_thread_boundary(tmp_path, monkeypatch):
+    """Ambient resolve falls through to process HERMES_HOME when the session's
+    ContextVar override is dropped by a raw threading.Thread boundary; an
+    explicit home keeps transcripts + manifest under the originating profile."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    process_home = tmp_path / "process-default"
+    session_home = tmp_path / "session-profile"
+    process_home.mkdir()
+    session_home.mkdir()
+
+    monkeypatch.setenv("HERMES_HOME", str(process_home))
+    token = set_hermes_home_override(session_home)
+    out = {}
+    try:
+        def worker():
+            _id, _writers, paths = create_live_transcripts(
+                [{"goal": "profile-pinned repro"}], home=session_home,
+            )
+            out["paths"] = paths
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+    finally:
+        reset_hermes_home_override(token)
+
+    expected_root = session_home / "cache" / "delegation" / "live"
+    assert out["paths"], "transcripts were created"
+    for p in out["paths"]:
+        assert Path(p).is_relative_to(expected_root), p
+    deleg_dir = Path(out["paths"][0]).parent
+    manifest = json.loads((deleg_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["task_count"] == 1
+
+
+def test_manifest_update_uses_same_explicit_home(tmp_path, monkeypatch):
+    """update_manifest_statuses must resolve the manifest through the same
+    explicit home create used, or the status write is silently lost."""
+    ambient_home = tmp_path / "other-profile"
+    ambient_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(ambient_home))
+
+    home = tmp_path / "own-profile"
+    home.mkdir()
+
+    deleg_id, writers, paths = create_live_transcripts(
+        [{"goal": "pin me"}], home=home,
+    )
+    update_manifest_statuses(
+        deleg_id,
+        [{"task_index": 0, "status": "completed"}],
+        home=home,
+    )
+    manifest = json.loads(
+        (Path(paths[0]).parent / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["tasks"][0]["status"] == "completed"
+
+
+def test_parent_without_session_db_warns_and_skips_pin(caplog):
+    """A parent with no _session_db cannot be pinned; the skip must be
+    observable (ambient fallback is the #91996 failure mode), not silent."""
+    import logging as _logging
+
+    from tools.delegate_tool import _parent_live_home
+
+    parent = MagicMock(spec=[])  # no _session_db attribute at all
+
+    with caplog.at_level(_logging.WARNING, logger="tools.delegate_tool"):
+        assert _parent_live_home(parent) is None
+    assert any("home pinning skipped" in r.getMessage() for r in caplog.records), (
+        "the ambient fallback must leave a warning trace"
+    )
+
+
+def test_parent_session_db_pins_home():
+    from tools.delegate_tool import _parent_live_home
+
+    parent = MagicMock(spec=["_session_db"])
+    parent._session_db.db_path = Path("/prof/state.db")
+
+    assert _parent_live_home(parent) == Path("/prof")
+
+
+def test_mock_parent_db_path_is_not_pinned(caplog):
+    """Regression (PR #131931 side-effect screen): a duck-typed parent whose
+    ``_session_db.db_path`` is auto-created by a Mock is not a real path —
+    pinning to it would send transcripts to ``str(<MagicMock>)`` paths.  The
+    pin must fall back to None (ambient resolve), and the skip must leave a
+    trace.  Note the check is for concrete ``str``/``Path``, NOT the
+    ``os.PathLike`` protocol: MagicMock registers ``__fspath__`` and so IS
+    PathLike, which is exactly how the garbage pin slipped through."""
+    import logging as _logging
+
+    from tools.delegate_tool import _parent_live_home
+
+    parent = MagicMock()  # plain mock: _session_db.db_path auto-creates a Mock
+
+    with caplog.at_level(_logging.DEBUG, logger="tools.delegate_tool"):
+        assert _parent_live_home(parent) is None
+    assert any("home pinning skipped" in r.getMessage() for r in caplog.records), (
+        "the skipped pin must leave a log trace"
+    )
+
+
+def test_parent_db_path_accepts_str_paths():
+    """SessionDB always holds a Path, but a str db_path is a valid path value
+    too — it must pin, not be rejected by the concrete-type guard."""
+    from tools.delegate_tool import _parent_live_home
+
+    parent = MagicMock(spec=["_session_db"])
+    parent._session_db.db_path = "/prof/state.db"
+
+    assert _parent_live_home(parent) == Path("/prof")
+
+
+def test_prune_sweeps_the_pinned_root_not_ambient(tmp_path, monkeypatch):
+    """Retention must clean where the dispatch writes: stale dirs under the
+    pinned home are removed by that home's dispatches; a stale dir under the
+    ambient root is NOT this dispatch's business."""
+    ambient_home = tmp_path / "ambient"
+    pinned_home = tmp_path / "pinned"
+    ambient_home.mkdir()
+    pinned_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(ambient_home))
+
+    stale_age = time.time() - (dll.LIVE_RETENTION_DAYS + 1) * 86400
+    stale_pinned = pinned_home / "cache" / "delegation" / "live" / "old-deleg"
+    stale_pinned.mkdir(parents=True)
+    os.utime(stale_pinned, (stale_age, stale_age))
+    stale_ambient = (
+        ambient_home / "cache" / "delegation" / "live" / "other-profile-deleg"
+    )
+    stale_ambient.mkdir(parents=True)
+    os.utime(stale_ambient, (stale_age, stale_age))
+
+    create_live_transcripts([{"goal": "sweep my own root"}], home=pinned_home)
+
+    assert not stale_pinned.exists(), "pinned home's own stale dir must be pruned"
+    assert stale_ambient.exists(), "ambient root is not this dispatch's root"
+
+
+def test_manifest_includes_model_and_provider():
+    """The manifest.json should record the model and provider used for the delegation."""
+    delegation_id, _writers, _paths = create_live_transcripts(
+        [{"goal": "task 1"}, {"goal": "task 2"}],
+        model="openrouter/gpt-4o",
+        provider="openrouter",
+    )
+
+    manifest = json.loads(
+        (live_transcript_root() / delegation_id / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["model"] == "openrouter/gpt-4o"
+    assert manifest["provider"] == "openrouter"
+    # tasks array should not be affected
+    assert len(manifest["tasks"]) == 2
+
+
+
+
 def test_no_file_in_the_dispatch_directory_carries_the_raw_key():
     """Whole-directory sweep: every artefact dispatch writes is covered."""
     delegation_id, _writers, _paths = create_live_transcripts(

@@ -25,6 +25,8 @@ import { Input } from '@/components/ui/input'
 import { registry } from '@/contrib/registry'
 import { useI18n } from '@/i18n'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
+import { startPointerDrag } from '@/lib/pointer-drag'
+import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 
 import {
@@ -59,6 +61,18 @@ interface SplitPreview {
   zoneIndex: number
   orientation: 'horizontal' | 'vertical'
   position: number
+}
+
+function sameSplitPreview(a: SplitPreview | null, b: SplitPreview | null) {
+  if (a === b) {
+    return true
+  }
+
+  if (!a || !b) {
+    return false
+  }
+
+  return a.zoneIndex === b.zoneIndex && a.orientation === b.orientation && a.position === b.position
 }
 
 interface SelectBox {
@@ -150,30 +164,104 @@ export function ZoneEditor() {
     }
   }, [])
 
-  if (!open) {
-    return null
-  }
+  const modelRef = useRef(model)
+  modelRef.current = model
+  const shiftRef = useRef(shift)
+  shiftRef.current = shift
+  const openRef = useRef(open)
+  openRef.current = open
+  const previewRef = useRef<SplitPreview | null>(null)
+  const insideRef = useRef(false)
+  const lastPointRef = useRef<{ x: number; y: number } | null>(null)
+  const generationRef = useRef(0)
 
-  const zoneAt = (x: number, y: number) =>
-    zones.find(z => x >= z.left && x < z.right && y >= z.top && y < z.bottom) ?? null
-
-  const updateSplitPreview = (clientX: number, clientY: number) => {
-    const p = toModelPoint(clientX, clientY)
-    const zone = zoneAt(p.x, p.y)
-
-    if (!zone) {
-      setSplitPreview(null)
-
+  const publishPreview = useCallback((next: SplitPreview | null) => {
+    if (sameSplitPreview(previewRef.current, next)) {
       return
     }
 
-    const orientation = shift ? 'horizontal' : 'vertical'
-    const raw = orientation === 'horizontal' ? p.y : p.x
-    const position = Math.round(raw / SPLIT_SNAP) * SPLIT_SNAP
+    previewRef.current = next
+    setSplitPreview(next)
+  }, [])
 
-    setSplitPreview(
-      canSplit(model, zone.index, position, orientation) ? { zoneIndex: zone.index, orientation, position } : null
-    )
+  const computePreview = useCallback(
+    (clientX: number, clientY: number) => {
+      if (!openRef.current || !canvasRef.current) {
+        return
+      }
+
+      const p = toModelPoint(clientX, clientY)
+      const zonesNow = modelToZones(modelRef.current) ?? []
+      const zone = zonesNow.find(z => p.x >= z.left && p.x < z.right && p.y >= z.top && p.y < z.bottom) ?? null
+
+      if (!zone) {
+        publishPreview(null)
+
+        return
+      }
+
+      const orientation = shiftRef.current ? 'horizontal' : 'vertical'
+      const raw = orientation === 'horizontal' ? p.y : p.x
+      const position = Math.round(raw / SPLIT_SNAP) * SPLIT_SNAP
+
+      publishPreview(
+        canSplit(modelRef.current, zone.index, position, orientation)
+          ? { zoneIndex: zone.index, orientation, position }
+          : null
+      )
+    },
+    [publishPreview, toModelPoint]
+  )
+
+  const computeRef = useRef(computePreview)
+  computeRef.current = computePreview
+
+  const coalesceRef = useRef<ReturnType<typeof rafCoalesce<{ gen: number; x: number; y: number }>> | null>(null)
+
+  if (coalesceRef.current === null) {
+    // pointermove outruns a frame; keep the latest point and paint once.
+    coalesceRef.current = rafCoalesce(point => {
+      if (point.gen !== generationRef.current) {
+        return
+      }
+
+      computeRef.current(point.x, point.y)
+    })
+  }
+
+  // Shift flips orientation on the next frame while the pointer is still inside,
+  // including while the button is held. Preview only — the grid waits for the click.
+  useEffect(() => {
+    const point = lastPointRef.current
+
+    if (!open || !insideRef.current || !point) {
+      return
+    }
+
+    coalesceRef.current?.push({ gen: generationRef.current, x: point.x, y: point.y })
+  }, [open, shift])
+
+  if (!open) {
+    if (insideRef.current || lastPointRef.current) {
+      generationRef.current += 1
+      insideRef.current = false
+      lastPointRef.current = null
+    }
+
+    return null
+  }
+
+  const onCanvasPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    insideRef.current = true
+    lastPointRef.current = { x: e.clientX, y: e.clientY }
+    coalesceRef.current?.push({ gen: generationRef.current, x: e.clientX, y: e.clientY })
+  }
+
+  const onCanvasPointerLeave = () => {
+    generationRef.current += 1
+    insideRef.current = false
+    lastPointRef.current = null
+    publishPreview(null)
   }
 
   const onCanvasPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -182,6 +270,7 @@ export function ZoneEditor() {
     }
 
     e.preventDefault()
+    coalesceRef.current?.finish()
     setMergeAt(null)
     setSelection([])
 
@@ -214,16 +303,18 @@ export function ZoneEditor() {
       setSelection(mergeClosureIndices(model, picked))
     }
 
-    const onUp = (ev: PointerEvent) => {
-      window.removeEventListener('pointermove', onMove, true)
-      window.removeEventListener('pointerup', onUp, true)
+    startPointerDrag(onMove, ev => {
+      coalesceRef.current?.finish()
       setSelectBox(null)
 
       if (!dragged) {
-        // Plain click: split at the previewed line.
-        if (splitPreview) {
-          setModel(m => splitZone(m, splitPreview.zoneIndex, splitPreview.position, splitPreview.orientation))
-          setSplitPreview(null)
+        // Plain click: split at the previewed line. Read the ref — Shift may
+        // have flipped it while the button was down, after this closure was made.
+        const preview = previewRef.current
+
+        if (preview) {
+          setModel(m => splitZone(m, preview.zoneIndex, preview.position, preview.orientation))
+          publishPreview(null)
         }
 
         setSelection([])
@@ -233,10 +324,7 @@ export function ZoneEditor() {
 
       const rect = canvasRef.current!.getBoundingClientRect()
       setMergeAt({ x: ev.clientX - rect.x, y: ev.clientY - rect.y })
-    }
-
-    window.addEventListener('pointermove', onMove, true)
-    window.addEventListener('pointerup', onUp, true)
+    })
   }
 
   const startResizerDrag = (index: number, e: ReactPointerEvent<HTMLDivElement>) => {
@@ -267,13 +355,7 @@ export function ZoneEditor() {
       }
     }
 
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove, true)
-      window.removeEventListener('pointerup', onUp, true)
-    }
-
-    window.addEventListener('pointermove', onMove, true)
-    window.addEventListener('pointerup', onUp, true)
+    startPointerDrag(onMove)
   }
 
   const merge = () => {
@@ -363,8 +445,8 @@ export function ZoneEditor() {
       <div
         className="relative min-h-0 flex-1 cursor-crosshair overflow-hidden rounded-lg border border-(--ui-stroke-secondary)"
         onPointerDown={onCanvasPointerDown}
-        onPointerLeave={() => setSplitPreview(null)}
-        onPointerMove={e => updateSplitPreview(e.clientX, e.clientY)}
+        onPointerLeave={onCanvasPointerLeave}
+        onPointerMove={onCanvasPointerMove}
         ref={canvasRef}
       >
         {zones.map(zone => {

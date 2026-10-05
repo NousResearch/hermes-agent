@@ -1662,7 +1662,9 @@ def _persist_session_row_override(
         if not row:
             return False
         config = _parse_model_config(row.get("model_config"), quiet=True)
-        config.update(patch)
+        # Merge only what the patch actually knows: a blank provider/reasoning must
+        # not clobber the fuller runtime ``_persist_live_session_runtime`` writes.
+        config.update({k: v for k, v in patch.items() if v})
         config["session_override"] = True
         if hasattr(db, "update_session_meta"):
             db.update_session_meta(session_id, json.dumps(config), model or None)

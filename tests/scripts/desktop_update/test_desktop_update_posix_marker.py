@@ -39,6 +39,17 @@ if completion and sys.argv[1:2] == ['update']:  # a survivor that keeps the chec
         os.environ['HANDOFF_CHECKOUT_LOCK'], completion], start_new_session=True)
     while not Path(completion + '.ready').exists():
         __import__('time').sleep(0.02)
+receipt = os.environ.get('HANDOFF_RECEIPT')  # outcome[,correlation][,unfinished]: this run's receipt
+if receipt and sys.argv[1:2] == ['update']:
+    import json
+    outcome, correlation, finished = (receipt.split(',') + ['', ''])[:3]
+    path = Path(os.environ['HERMES_HOME']) / 'logs' / 'update_receipts' / 'latest.json'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        'stages': [{'name': 'apply', 'outcome': 'failed'}],  # nested keys are never read
+        'correlation_id': correlation or os.environ.get('HERMES_UPDATE_CORRELATION_ID'),
+        'outcome': outcome, 'finished_at': None if finished else '2026-10-05T12:00:00.000001+00:00',
+    }, indent=2) + '\\n', encoding='utf-8')
 hold = os.environ.get('HANDOFF_HOLD')
 if hold:  # an update still running: report the pid, then wait to be released
     Path(hold + '.pid').write_text(str(os.getpid()), encoding='utf-8')
@@ -228,6 +239,66 @@ def test_committed_update_with_failed_followup_is_ok_with_warnings(tmp_path):
     assert "previous version" not in receipt["message"]
     assert isinstance(receipt["started_at"], int)
     assert not (home / ".hermes-update-in-progress").exists()
+
+
+@pytest.mark.parametrize(("outcome", "code"), [("interrupted", "130"), ("partial", "1"), ("success", "1")])
+def test_nonzero_exit_after_the_commit_point_is_installed_with_a_followup(tmp_path, outcome, code):
+    """Contract C3: `hermes update` exits 130 (Ctrl-C after the code moved) or 1 (a parked
+    autostash) AFTER its commit point. Its own receipt says so; the result must report the
+    update installed with an owed follow-up, never ok:false / "still on the previous version"."""
+    home, install = _install(tmp_path)
+
+    result = _run(tmp_path, home, install, HANDOFF_EXIT=code, HANDOFF_RECEIPT=outcome)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    receipt = json.loads((home / ".hermes-update-result.json").read_text(encoding="utf-8-sig"))
+    assert (receipt["ok"], receipt["exit_code"], receipt["manual"]) == (True, 0, True), receipt
+    assert receipt["message"].startswith("Hermes was updated, but"), receipt
+    assert [w.split(":")[0] for w in receipt["warnings"]] == ["update"], receipt
+    assert f"exited {code} after the commit point" in receipt["warnings"][0]
+
+
+def test_handoff_interrupted_while_a_committed_update_finishes_is_still_installed(tmp_path):
+    """Ctrl-C reaches the hand-off too: it waits for the update child, whose receipt says it
+    passed the commit point. The hand-off's own interruption is then an owed follow-up."""
+    home, install = _install(tmp_path)
+    hold = tmp_path / "release-update"
+    env = {**os.environ, "HOME": str(tmp_path), "TMPDIR": str(tmp_path), "HERMES_HOME": str(home),
+           "HANDOFF_CAPTURE": str(tmp_path / "calls.txt"), "HERMES_RUNTIME_DIR": str(tmp_path / "store"),
+           "HERMES_UPDATE_SHIM_GRACE_SECONDS": "0", "HANDOFF_HOLD": str(hold), "HANDOFF_EXIT": "130",
+           "HANDOFF_RECEIPT": "interrupted"}
+    for key in ("PYTHONPATH", "PYTHONHOME", "HERMES_UPDATE_STARTED_AT"):
+        env.pop(key, None)
+    script = subprocess.Popen(["bash", str(POSIX), "--daemonized", "--no-ui", "--install-root", str(install)],
+                              env=env, cwd=tmp_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + 60
+        while not Path(str(hold) + ".pid").exists():
+            assert time.monotonic() < deadline and script.poll() is None, "update child never started"
+            time.sleep(0.01)
+        script.send_signal(2)  # SIGINT, deferred while the update child runs
+        time.sleep(0.3)
+        hold.touch()
+        assert script.wait(timeout=60) == 0
+    finally:
+        hold.touch()
+        if script.poll() is None:
+            script.kill(); script.wait()
+    outcome = json.loads((home / ".hermes-update-result.json").read_text(encoding="utf-8-sig"))
+    assert (outcome["ok"], outcome["exit_code"], outcome["manual"]) == (True, 0, True), outcome
+    assert any(w.startswith("handoff: interrupted by INT") for w in outcome["warnings"]), outcome
+
+
+@pytest.mark.parametrize("receipt", ["", "failed", "interrupted,another-run", "interrupted,,unfinished"],
+                         ids=["no-receipt", "failed", "another-runs-receipt", "reconciled-not-finalized"])
+def test_nonzero_exit_without_this_runs_committed_receipt_still_fails(tmp_path, receipt):
+    home, install = _install(tmp_path)
+
+    result = _run(tmp_path, home, install, HANDOFF_EXIT="130", HANDOFF_RECEIPT=receipt)
+
+    assert result.returncode == 130, result.stdout + result.stderr
+    outcome = json.loads((home / ".hermes-update-result.json").read_text(encoding="utf-8-sig"))
+    assert (outcome["ok"], outcome["exit_code"]) == (False, 130), outcome
 
 
 def test_interrupted_app_swap_is_rolled_back_at_the_next_run(tmp_path):

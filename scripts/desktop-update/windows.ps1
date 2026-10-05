@@ -1180,6 +1180,29 @@ function Resolve-HermesUpdateOutcome($StepResult) {
     return $StepResult
 }
 
+# -- The commit point (contract C3) --------------------------------------------
+# `hermes update` exits 0 once committed, except an interrupt (130) or a parked
+# autostash (1) after the commit point, and a crash of a committed run. Its own
+# receipt says which (same rule as posix.sh::update_committed_after_exit): the
+# run's receipt -- matched by the correlation id handed to it, finalized
+# (finished_at set) -- with outcome success | partial (the user still has to
+# act) | interrupted (Ctrl-C after the code moved). A reconciled "interrupted"
+# record keeps finished_at null, so it never matches.
+function Get-CommittedReceiptOutcome {
+    $root = $HermesHome
+    # hermes_constants.get_default_hermes_root: a <root>\profiles\<name> home files under <root>
+    $parent = Split-Path -Parent $root
+    if ($parent -and (Split-Path -Leaf $parent) -eq 'profiles') { $root = Split-Path -Parent $parent }
+    $path = Join-Path $root 'logs\update_receipts\latest.json'
+    $receipt = $null
+    try { $receipt = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json } catch { return $null }
+    if ($null -eq $receipt -or -not $script:UpdateCorrelation) { return $null }
+    if ([string]$receipt.correlation_id -cne $script:UpdateCorrelation -or -not $receipt.finished_at) { return $null }
+    $outcome = [string]$receipt.outcome
+    if ($outcome -cin @('success', 'partial', 'interrupted')) { return $outcome }
+    return $null
+}
+
 function Set-InstallRootCurrentDirectory([string]$Root) {
     $resolved = [System.IO.Path]::GetFullPath($Root)
     [Environment]::CurrentDirectory = $resolved
@@ -1554,6 +1577,10 @@ try {
     } catch {
         Write-HandoffLog "could not probe update --help; running without --keep-stash"
     }
+    # The update's receipt carries this id (update_receipt._launcher_correlation_id):
+    # Get-CommittedReceiptOutcome finds THIS run's receipt by it.
+    $script:UpdateCorrelation = if ($env:HERMES_UPDATE_CORRELATION_ID) { $env:HERMES_UPDATE_CORRELATION_ID } else { $script:ResultRunId }
+    $env:HERMES_UPDATE_CORRELATION_ID = $script:UpdateCorrelation
     Write-HandoffLog ("running: python " + ($updateArgs -join " "))
     Publish-UiProgress "Updating code and dependencies"
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"
@@ -1575,7 +1602,9 @@ try {
         $res = Resolve-HermesUpdateOutcome $res
     }
 
-    if ($res.Code -ne 0) {
+    $committedAfterExit = $null
+    if ($res.Code -ne 0 -and $res.Code -ne 2) { $committedAfterExit = Get-CommittedReceiptOutcome }
+    if ($res.Code -ne 0 -and -not $committedAfterExit) {
         $finalCode = $res.Code
         $finalMsg = "Update failed (exit $($res.Code)). Run `hermes debug share` in a terminal to send a report."
         exit $finalCode
@@ -1589,6 +1618,15 @@ try {
     $finalMsg = "Update complete."
     if ($script:UpdateInterrupted) {
         Add-Followup "post-update steps (gateway resume) were interrupted; run hermes update again" "its post-update steps (gateway resume) were interrupted. Run 'hermes update' again to finish them." -Manual
+    }
+    if ($committedAfterExit) {
+        # Past the commit point with a nonzero exit: installed, with an owed follow-up.
+        $sentence = switch ($committedAfterExit) {
+            'partial' { "one step is left for you: your local source changes may still be parked in git stash. Run 'hermes update' in a terminal for the exact commands." }
+            'interrupted' { "its post-update steps were interrupted. The next launch or 'hermes update' finishes them." }
+            default { "'hermes update' exited with code $($res.Code) afterwards. Run 'hermes update' in a terminal to finish any remaining steps." }
+        }
+        Add-Followup "update: hermes update exited $($res.Code) after the commit point (receipt outcome: $committedAfterExit)" $sentence -Manual
     }
 
     # Pre-PM updates reported a successful exit with a failed build warning.

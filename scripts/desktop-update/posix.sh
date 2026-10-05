@@ -220,6 +220,14 @@ on_signal() {
     return 0
   fi
   log "SIGNAL: $sig pid=$$ ppid=$PPID pgid=${pgid:-unknown}"
+  if handoff_committed; then
+    # Contract C3: the code is already updated, so the interruption is an owed
+    # follow-up on an ok result, never "the update failed".
+    FINAL_CODE=0
+    DONE_NOTE="Hermes was updated, but the update hand-off was interrupted by $sig before its remaining steps finished. The next launch or hermes update finishes them."
+    add_warning "handoff" "interrupted by $sig after the update was committed"
+    exit 0
+  fi
   FINAL_MSG="Update hand-off was interrupted by $sig (pid $$)."
   case "$sig" in
     HUP) FINAL_CODE=129 ;;
@@ -228,6 +236,36 @@ on_signal() {
     TERM) FINAL_CODE=143 ;;
   esac
   exit "$FINAL_CODE"
+}
+
+# ── the commit point (contract C3) ──────────────────────────────────────────
+# `hermes update` exits 0 once committed, except an interrupt (130) or a parked
+# autostash (1) after the commit point, and a crash of a committed run. Its
+# receipt says which: the run's own receipt -- matched by the correlation id we
+# hand it, finalized (finished_at set) -- with outcome success | partial (the
+# user still has to act) | interrupted (Ctrl-C after the code moved). A
+# reconciled "interrupted" record keeps finished_at null, so it never matches.
+UPDATE_CORRELATION="${HERMES_UPDATE_CORRELATION_ID:-$RESULT_RUN_ID}"
+UPDATE_COMMITTED=0 RECEIPT_OUTCOME=""
+receipt_json_field() { # file key -> the top-level string value (json.dumps indent=2 layout)
+  sed -n "s/^  \"$2\": \"\([A-Za-z0-9._:+-]*\)\",\{0,1\}\$/\1/p" "$1" 2>/dev/null | head -n 1
+}
+update_committed_after_exit() { # -> 0 iff this run's receipt shows the commit point passed
+  local root="$HERMES_HOME" f outcome
+  # hermes_constants.get_default_hermes_root: a <root>/profiles/<name> home files under <root>
+  [ "$(basename "$(dirname "$root")")" != profiles ] || root="$(dirname "$(dirname "$root")")"
+  f="$root/logs/update_receipts/latest.json"
+  [ -f "$f" ] && [ -n "$UPDATE_CORRELATION" ] || return 1
+  [ "$(receipt_json_field "$f" correlation_id)" = "$UPDATE_CORRELATION" ] || return 1
+  [ -n "$(receipt_json_field "$f" finished_at)" ] || return 1
+  outcome="$(receipt_json_field "$f" outcome)"
+  case "$outcome" in success|partial|interrupted) RECEIPT_OUTCOME="$outcome"; return 0 ;; esac
+  return 1
+}
+handoff_committed() { # -> 0 iff the update itself is committed (whatever happens to us now)
+  [ "$UPDATE_COMMITTED" -eq 0 ] || return 0
+  [ -n "${CODE:-}" ] || return 1
+  [ "$CODE" -eq 0 ] || { [ "$CODE" -ne 2 ] && update_committed_after_exit; }
 }
 trap 'on_signal HUP' HUP
 trap 'on_signal INT' INT
@@ -1065,6 +1103,9 @@ export PYTHONUNBUFFERED=1
 export HERMES_UPDATE_STATUS_FILE="$STATUS"
 # `hermes update` runs under OUR marker claim (contract C1 rule 4/6).
 export HERMES_UPDATE_HANDOFF_PID="$$"
+# The update's receipt carries this id (update_receipt._launcher_correlation_id),
+# which is how update_committed_after_exit finds THIS run's receipt.
+export HERMES_UPDATE_CORRELATION_ID="$UPDATE_CORRELATION"
 # --keep-stash: never re-apply local source edits after the update (they stay
 # parked in git stash). Probe --help first: older installed backends don't
 # know the flag and argparse would abort with exit 2, which collides with the
@@ -1156,7 +1197,16 @@ if [ "$LEGACY_INSTALL" -eq 1 ] && [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
 fi
 trap 'on_signal TERM' TERM
 
-if [ "$CODE" -eq 0 ]; then FINAL_CODE=0 FINAL_MSG="Update complete."
+if [ "$CODE" -eq 0 ]; then FINAL_CODE=0 FINAL_MSG="Update complete." UPDATE_COMMITTED=1
+elif [ "$CODE" -ne 2 ] && update_committed_after_exit; then
+  # Past the commit point: installed, with an owed follow-up (contract C3).
+  FINAL_CODE=0 FINAL_MSG="Update complete." UPDATE_COMMITTED=1
+  case "$RECEIPT_OUTCOME" in
+    partial) DONE_NOTE="Hermes was updated, but one step is left for you: your local source changes may still be parked in git stash. Run hermes update in a terminal for the exact commands." ;;
+    interrupted) DONE_NOTE="Hermes was updated, but its post-update steps were interrupted. The next launch or hermes update finishes them." ;;
+    *) DONE_NOTE="Hermes was updated, but hermes update exited with code $CODE afterwards. Run hermes update in a terminal to finish any remaining steps." ;;
+  esac
+  add_warning "update" "hermes update exited $CODE after the commit point (receipt outcome: $RECEIPT_OUTCOME)"
 else
   FINAL_CODE="$CODE" FINAL_MSG="Update failed (exit $CODE). Run hermes debug share in a terminal to send a report."
   # The bricked-venv class is fixable and must not read as a generic exit 1:

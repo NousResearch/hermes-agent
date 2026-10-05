@@ -2607,7 +2607,9 @@ def sanitize_env_file() -> int:
         return 0
     fixes = abs(len(sanitized) - len(original_lines)) or sum(
         1 for a, b in zip(original_lines, sanitized) if a != b)
-    _write_env_lines(env_path, sanitized, preserve_mode=False)
+    # env_path exists here (checked above), so keep its mode like the other writers: a managed
+    # install's .env is 0640 group-readable (gateway and dashboard may run as different UIDs).
+    _write_env_lines(env_path, sanitized, preserve_mode=True)
     invalidate_env_cache()
     return fixes
 

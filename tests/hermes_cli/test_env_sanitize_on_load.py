@@ -4,6 +4,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 def test_load_env_preserves_concatenated_text_as_value_data():
     """Verify load_env() does not infer assignments within a physical line.
@@ -56,5 +58,30 @@ def test_env_loader_does_not_split_concatenated_text():
         assert lines == [corrupted]
         parsed_token = lines[0].strip().split("=", 1)[1]
         assert parsed_token == f"{token}ANTHROPIC_API_KEY=sk-ant-test"
+    finally:
+        env_path.unlink(missing_ok=True)
+
+
+@pytest.mark.platforms("posix")
+def test_sanitize_env_file_preserves_group_readable_mode():
+    """A managed install keeps .env 0640 group-readable (gateway and dashboard may run as
+    different UIDs). The sanitize rewrite must keep that mode like every other
+    ``_write_env_lines`` caller, not drop it to the 0600 of the staging temp file."""
+    import os
+    import stat
+
+    from hermes_cli.config import sanitize_env_file
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".env", delete=False, encoding="utf-8"
+    ) as f:
+        f.write("TELEGRAM_BOT_TOKEN=0123456789:test   \n")  # trailing spaces force a rewrite
+        env_path = Path(f.name)
+    try:
+        os.chmod(env_path, 0o640)
+        with patch("hermes_cli.config.get_env_path", return_value=env_path):
+            changed = sanitize_env_file()
+        assert changed > 0
+        assert stat.S_IMODE(os.stat(env_path).st_mode) == 0o640
     finally:
         env_path.unlink(missing_ok=True)

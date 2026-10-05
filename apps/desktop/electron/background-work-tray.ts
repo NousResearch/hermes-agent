@@ -13,9 +13,19 @@ function trayIcon(busy: boolean) {
 }
 
 function itemLabel(item: BackgroundWorkItem): string {
-  const identity = [item.profile, item.model, item.worker].filter(Boolean).join(' · ')
+  const fields = [`worker=${item.worker}`, `profile=${item.profile}`]
 
-  return `${item.title} — ${item.elapsed}${identity ? `\n${identity}` : ''}`
+  if (item.model) {
+    fields.push(`model=${item.model}`)
+  }
+
+  if (item.provider) {
+    fields.push(`provider=${item.provider}`)
+  }
+
+  fields.push(`state=${item.state}`)
+
+  return `${item.title} — ${item.elapsed}\n${fields.join(' · ')}`
 }
 
 export interface BackgroundWorkTrayController {

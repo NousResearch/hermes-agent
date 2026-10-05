@@ -27,23 +27,45 @@ def render_presence(items: list[dict[str, Any]]) -> str:
     return (prefix + first)[:96]
 
 
+def render_worker_row(item: dict[str, Any], *, now: float | None = None) -> str:
+    """One compact, sanitized row per active worker (never prompts or paths)."""
+    stamp = int(time.time() if now is None else now)
+    fields = [
+        f"worker={item.get('worker') or 'worker'}",
+        f"profile={item.get('profile') or 'default'}",
+    ]
+    model = str(item.get("model") or "")
+    if model:
+        fields.append(f"model={model}")
+    provider = str(item.get("provider") or "")
+    if provider:
+        fields.append(f"provider={provider}")
+    fields.append(f"state={item.get('state') or 'running'}")
+    elapsed = str(item.get("elapsed") or "0s")
+    started = int(float(item.get("started_at") or stamp))
+    title = item.get("title") or "Background worker"
+    return f"• **{title}** — {elapsed}\n  {' · '.join(fields)} · started <t:{started}:T>"
+
+
+def _sorted_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        items,
+        key=lambda item: (float(item.get("started_at") or 0), str(item.get("key") or "")),
+    )
+
+
 def render_dashboard(items: list[dict[str, Any]], *, now: float | None = None) -> str:
     stamp = int(time.time() if now is None else now)
     if not items:
         return f"{_MARKER}\n🟢 **Idle**\nNo background AI workers are active.\n<t:{stamp}:R>"
-    count = len(items)
+    ordered = _sorted_items(items)
+    count = len(ordered)
     lines = [
         _MARKER,
         f"🟠 **{count} active worker{'s' if count != 1 else ''}**",
     ]
-    for item in items[:8]:
-        identity = " · ".join(part for part in (
-            str(item.get("profile") or "default"), str(item.get("model") or ""),
-            str(item.get("worker") or "worker"),
-        ) if part)
-        elapsed = str(item.get("elapsed") or "0s")
-        started = int(float(item.get("started_at") or stamp))
-        lines.append(f"• **{item.get('title') or 'Background worker'}** — {elapsed}\n  {identity} · <t:{started}:T>")
+    for item in ordered[:8]:
+        lines.append(render_worker_row(item, now=stamp))
     if count > 8:
         lines.append(f"• …and {count - 8} more")
     lines.append(f"Updated <t:{stamp}:R>")

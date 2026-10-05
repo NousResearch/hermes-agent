@@ -50,12 +50,20 @@ test('macOS status item changes from idle to busy and is destroyed cleanly', () 
   fs.mkdirSync(directory, { recursive: true })
   fs.writeFileSync(path.join(directory, 'live.json'), JSON.stringify({
     key: 'live', title: 'Build indicator', worker: 'kanban', profile: 'coder', model: 'gpt',
-    pid: process.pid, started_at: Date.now() / 1000, state: 'running'
+    provider: 'openai-codex', pid: process.pid, started_at: Date.now() / 1000, state: 'running'
   }))
   vi.advanceTimersByTime(500)
 
   assert.equal(trayInstances[0].setTitle.mock.calls.at(-1)?.[0], '1')
   assert.match(String(trayInstances[0].setToolTip.mock.calls.at(-1)?.[0]), /1 background worker/)
+
+  // The status item lists each worker separately, with its own identity line.
+  const template = menuBuild.mock.calls.at(-1)?.[0] as Array<{ label?: string }>
+  const workerRow = template
+    .map(entry => entry.label)
+    .find((label): label is string => typeof label === 'string' && label.includes('Build indicator'))
+  assert.ok(workerRow, 'expected a per-worker menu row')
+  assert.match(workerRow, /worker=kanban · profile=coder · model=gpt · provider=openai-codex · state=running/)
 
   controller.stop()
   assert.equal(trayInstances[0].destroy.mock.calls.length, 1)

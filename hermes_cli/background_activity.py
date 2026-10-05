@@ -112,7 +112,7 @@ class ActivityLease:
     @classmethod
     def start(
         cls, *, key: str, title: str, worker: str, profile: str = "default",
-        model: str = "", home: Path | None = None,
+        model: str = "", provider: str = "", home: Path | None = None,
     ) -> "ActivityLease":
         safe_key = sanitize_title(key, max_length=128)
         digest = hashlib.sha256(f"{os.getpid()}:{safe_key}".encode()).hexdigest()[:20]
@@ -123,6 +123,7 @@ class ActivityLease:
             "worker": sanitize_title(worker, max_length=24),
             "profile": sanitize_title(profile or "default", max_length=32),
             "model": sanitize_title(model, max_length=48) if model else "",
+            "provider": sanitize_title(provider, max_length=32) if provider else "",
             "pid": os.getpid(),
             "process_started_at": _process_start_time(os.getpid()),
             "started_at": time.time(),
@@ -197,13 +198,14 @@ def _profile_name() -> str:
     return (os.environ.get("HERMES_PROFILE") or "default").strip() or "default"
 
 
-def _open(key: str, *, title: str, worker: str, model: str = "") -> None:
+def _open(key: str, *, title: str, worker: str, model: str = "", provider: str = "") -> None:
     with _LOCK:
         previous = _ACTIVE.pop(key, None)
         if previous is not None:
             previous.close(state="replaced")
         _ACTIVE[key] = ActivityLease.start(
-            key=key, title=title, worker=worker, profile=_profile_name(), model=model,
+            key=key, title=title, worker=worker, profile=_profile_name(),
+            model=model, provider=provider,
         )
 
 
@@ -226,6 +228,9 @@ def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
             title=os.environ.get("HERMES_BACKGROUND_WORK_TITLE") or "Kanban worker",
             worker="kanban",
             model=str(kwargs.get("model") or os.environ.get("HERMES_BACKGROUND_WORK_MODEL") or ""),
+            provider=str(
+                kwargs.get("provider") or os.environ.get("HERMES_BACKGROUND_WORK_PROVIDER") or ""
+            ),
         )
     elif hook_name in {"on_session_end", "on_session_finalize", "on_session_reset"} and task_id:
         session_id = str(kwargs.get("session_id") or "")
@@ -238,6 +243,7 @@ def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
             _open(
                 f"delegate:{child_id}", title="Delegated worker", worker="delegate",
                 model=str(kwargs.get("model") or ""),
+                provider=str(kwargs.get("provider") or ""),
             )
     elif hook_name == "subagent_stop":
         child_id = str(kwargs.get("child_session_id") or kwargs.get("child_subagent_id") or "")

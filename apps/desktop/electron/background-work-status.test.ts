@@ -21,15 +21,38 @@ test('readBackgroundWork returns live leases and removes dead ones', () => {
   fs.mkdirSync(leases, { recursive: true })
   fs.writeFileSync(path.join(leases, 'live.json'), JSON.stringify({
     key: 'live', title: 'Safe task', worker: 'kanban', profile: 'coder', model: 'gpt',
-    pid: process.pid, started_at: 100, state: 'running'
+    provider: 'openai-codex', pid: process.pid, started_at: 100, state: 'running'
   }))
   fs.writeFileSync(path.join(leases, 'dead.json'), JSON.stringify({
     key: 'dead', title: 'Old task', worker: 'kanban', profile: 'coder', model: 'gpt',
     pid: 99999999, started_at: 100, state: 'running'
   }))
 
-  assert.deepEqual(readBackgroundWork(root, 165).map(item => item.key), ['live'])
+  const items = readBackgroundWork(root, 165)
+
+  assert.deepEqual(items.map(item => item.key), ['live'])
+  assert.equal(items[0].provider, 'openai-codex')
+  assert.equal(items[0].state, 'running')
   assert.equal(fs.existsSync(path.join(leases, 'dead.json')), false)
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('readBackgroundWork orders concurrent workers deterministically', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-work-status-'))
+  const leases = path.join(root, 'cache', 'background-work')
+  fs.mkdirSync(leases, { recursive: true })
+
+  for (const key of ['charlie', 'alpha', 'bravo']) {
+    fs.writeFileSync(path.join(leases, `${key}.json`), JSON.stringify({
+      key, title: `${key} card`, worker: 'kanban', profile: 'coder', model: 'm',
+      pid: process.pid, started_at: 200, state: 'running'
+    }))
+  }
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    assert.deepEqual(readBackgroundWork(root, 300).map(item => item.key), ['alpha', 'bravo', 'charlie'])
+  }
+
   fs.rmSync(root, { recursive: true, force: true })
 })
 

@@ -29,16 +29,40 @@ def test_sanitize_title_removes_sensitive_shape_and_bounds_length():
 
 def test_lease_aggregates_concurrent_workers_and_cleans_up(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    first = ActivityLease.start(key="one", title="First card", worker="kanban", profile="coder", model="m1")
+    first = ActivityLease.start(
+        key="one", title="First card", worker="kanban", profile="coder",
+        model="m1", provider="openai-codex",
+    )
     second = ActivityLease.start(key="two", title="Second card", worker="delegate", profile="default", model="m2")
     try:
         snapshot = list_active_work(tmp_path)
         assert [item["key"] for item in snapshot] == ["one", "two"]
         assert all(item["elapsed_seconds"] >= 0 for item in snapshot)
+        # Each worker carries its own identity row for the live panel.
+        assert snapshot[0]["worker"] == "kanban"
+        assert snapshot[0]["model"] == "m1"
+        assert snapshot[0]["provider"] == "openai-codex"
+        assert snapshot[0]["state"] == "running"
+        assert snapshot[1]["provider"] == ""
     finally:
         first.close(state="completed")
         second.close(state="cancelled")
     assert list_active_work(tmp_path) == []
+
+
+def test_lease_reader_orders_concurrent_workers_deterministically(tmp_path):
+    """Same start instant must not reorder rows between reads (stable panel)."""
+    root = tmp_path / "cache" / "background-work"
+    root.mkdir(parents=True)
+    for index, key in enumerate(["charlie", "alpha", "bravo"]):
+        (root / f"{key}.json").write_text(json.dumps({
+            "key": key, "title": f"{key} card", "worker": "kanban", "profile": "coder",
+            "model": "m", "provider": "p", "pid": os.getpid(),
+            "process_started_at": None, "started_at": 500.0, "state": "running",
+        }))
+    for _ in range(3):
+        ordered = [item["key"] for item in list_active_work(tmp_path)]
+        assert ordered == ["alpha", "bravo", "charlie"]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits are not enforced on Windows")

@@ -2935,6 +2935,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     env["HERMES_BACKGROUND_WORK_TITLE"] = str(task.title or "Kanban worker")
     if task.model_override:
         env["HERMES_BACKGROUND_WORK_MODEL"] = str(task.model_override)
+    if task.provider_override:
+        env["HERMES_BACKGROUND_WORK_PROVIDER"] = str(task.provider_override)
     # This is the grant boundary: the dispatcher assigned this new worker's task.
     from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
     env.pop(DELEGATED_CHILD_ENV_MARKER, None)

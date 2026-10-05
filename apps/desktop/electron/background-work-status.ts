@@ -7,6 +7,7 @@ export interface BackgroundWorkItem {
   worker: string
   profile: string
   model: string
+  provider: string
   pid: number
   started_at: number
   state: 'running'
@@ -99,6 +100,7 @@ export function readBackgroundWork(hermesHome: string, nowSeconds = Date.now() /
           worker: String(raw.worker || 'worker'),
           profile: String(raw.profile || 'default'),
           model: String(raw.model || ''),
+          provider: String(raw.provider || ''),
           pid,
           started_at: startedAt,
           state: 'running',

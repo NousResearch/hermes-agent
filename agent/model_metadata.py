@@ -2330,7 +2330,15 @@ def get_model_context_length(
     # 5. Provider-aware lookups — before the generic OR cache, since the same model has
     # different limits per provider. Generic providers are inferred from the URL.
     effective_provider = provider
-    if base_url and (not effective_provider or effective_provider in {"openrouter", "custom"}):
+    # "custom:<name>" is the spelling Hermes itself writes for a named providers: entry; its
+    # base_url proves the vendor identity exactly like bare "custom", so it gets the same
+    # inference (#133183). _infer_provider_from_url returns None for generic hosts, keeping
+    # third-party relays on today's path.
+    if base_url and (
+        not effective_provider
+        or effective_provider in {"openrouter", "custom"}
+        or effective_provider.startswith("custom:")
+    ):
         effective_provider = _infer_provider_from_url(base_url) or effective_provider
     ctx = _resolve_provider_aware_context_length(model, base_url, api_key, provider, effective_provider)
     if ctx is not None:

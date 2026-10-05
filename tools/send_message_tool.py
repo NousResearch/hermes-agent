@@ -215,6 +215,12 @@ def _handle_send(args):
     platform_name, chat_id, thread_id, resolution_error = _resolve_tool_target(target)
     if resolution_error:
         return tool_error(resolution_error)
+    reply_to = args.get("reply_to")
+    if reply_to is not None:
+        if platform_name != "discord":
+            return tool_error("'reply_to' is only supported for Discord targets")
+        if not isinstance(reply_to, str) or not reply_to.isdigit() or not 6 <= len(reply_to) <= 32:
+            return tool_error("Discord 'reply_to' must be a message snowflake")
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return tool_error("Interrupted")
@@ -269,9 +275,15 @@ def _handle_send(args):
         mentions = args.get("mentions")
         if mentions and platform_name == "whatsapp":
             handler_args["mentions"] = [mentions] if isinstance(mentions, str) else list(mentions)
-        result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
-                                              media_files=media_files, force_document=force_document_attachments,
-                                              **handler_args))
+        send_kwargs = {
+            "thread_id": thread_id,
+            "media_files": media_files,
+            "force_document": force_document_attachments,
+            **handler_args,
+        }
+        if reply_to is not None:
+            send_kwargs["reply_to"] = reply_to
+        result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, **send_kwargs))
         if isinstance(result, dict) and result.get("success"):
             if used_home_channel:
                 result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
@@ -617,7 +629,7 @@ _PLUGIN_STANDALONE_MEDIA = {"discord": ("Discord", False, True, [], False), "fei
 
 
 async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files, *, thread_id,
-                                  max_len, force_document, mentions=None):
+                                  max_len, force_document, mentions=None, reply_to=None):
     """Chunked send through a plugin's standalone_sender_fn; one captionable file + short text
     rides as the media caption. WhatsApp re-pings recipients on every message that carries
     ``mentions``, so only the first payload of a logical send gets them."""
@@ -631,12 +643,19 @@ async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chun
         # Cap on the platform's own message limit so the caption is deliverable.
         caption, _ = _media_caption_split(message, media_files, max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT))
         if caption is not None:
+            reply_kw = {"reply_to": reply_to} if reply_to is not None else {}
             return await sender(pconfig, chat_id, "", thread_id=thread_id, media_files=media_files,
-                                caption=caption, **extra, **first_only)
+                                caption=caption, **extra, **first_only, **reply_kw)
+
+    first_reply = reply_to
 
     def send_one(chunk, is_last):
+        nonlocal first_reply
         kwargs = {**extra, **first_only}
         first_only.clear()
+        if first_reply is not None:
+            kwargs["reply_to"] = first_reply
+            first_reply = None
         return sender(pconfig, chat_id, chunk, thread_id=thread_id,
                       media_files=media_files if is_last else empty_media, **kwargs)
     return await _send_chunks(chunks, send_one)
@@ -675,7 +694,7 @@ _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, fei
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
-                            force_document=False, mentions=None, args=None):
+                            force_document=False, mentions=None, reply_to=None, args=None):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
@@ -696,7 +715,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA)):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
                                              thread_id=thread_id, max_len=max_len, force_document=force_document,
-                                             mentions=mentions)
+                                             mentions=mentions, reply_to=reply_to)
     route = _CHUNKED_ROUTES.get(platform_name)
     if route is not None and (media_files or not route[0]):
         _, empty_media, sender = route
@@ -767,6 +786,10 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
+            },
+            "reply_to": {
+                "type": "string",
+                "description": "Discord only: native message ID to reply to. The target must include the Discord thread/channel where that message exists."
             },
             "emoji": {
                 "type": "string",

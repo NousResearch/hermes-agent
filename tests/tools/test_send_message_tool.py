@@ -144,11 +144,14 @@ class _patch_discord_sender:
         self._entry = None
         self._original = None
 
-    async def _adapter(self, pconfig, chat_id, message, *, thread_id=None, media_files=None, caption=None):
+    async def _adapter(self, pconfig, chat_id, message, *, thread_id=None, media_files=None, caption=None,
+                       reply_to=None):
         token = getattr(pconfig, "token", None)
         # Only forward caption= when set, so mocks written against the
         # pre-caption signature (no caption kwarg) keep working.
         extra = {"caption": caption} if caption is not None else {}
+        if reply_to is not None:
+            extra["reply_to"] = reply_to
         return await self._mock(
             token, chat_id, message,
             thread_id=thread_id, media_files=media_files, **extra,
@@ -1144,6 +1147,27 @@ class TestSendToPlatformDiscordThread:
         send_mock.assert_awaited_once()
         _, call_kwargs = send_mock.await_args
         assert call_kwargs["thread_id"] == "17585"
+
+    def test_discord_reply_anchor_is_passed_to_first_chunk(self):
+        send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
+        long_message = "A" * 1900 + " " + "B" * 1900
+
+        with _patch_discord_sender(send_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "1554216204460101653",
+                    long_message,
+                    thread_id="1554216204460101653",
+                    reply_to="1556367119996813343",
+                )
+            )
+
+        assert result["success"] is True
+        assert send_mock.await_count == 2
+        assert send_mock.await_args_list[0].kwargs["reply_to"] == "1556367119996813343"
+        assert "reply_to" not in send_mock.await_args_list[1].kwargs
 
 # ---------------------------------------------------------------------------
 # Discord media attachment support

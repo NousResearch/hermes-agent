@@ -6894,14 +6894,38 @@ async def _standalone_is_forum(aiohttp, chat_id: str, json_headers: dict, sess_k
     return is_forum
 
 
+def _standalone_message_reference(reply_to: Optional[str], channel_id: str) -> Optional[dict]:
+    """Build a Discord REST reply reference, or reject an invalid explicit anchor.
+
+    Standalone delivery has no ``discord.Message`` object from which to build a
+    reference.  Keep the same numeric-id contract as the live adapter and fail
+    closed instead of silently turning an explicitly anchored reply into a new
+    top-level message.
+    """
+    if reply_to is None:
+        return None
+    message_id = str(reply_to).strip()
+    target_channel_id = str(channel_id).strip()
+    if not message_id or not message_id.isdigit() or not target_channel_id or not target_channel_id.isdigit():
+        raise ValueError("Discord reply_to and channel_id must be numeric snowflakes")
+    return {
+        "message_id": message_id,
+        "channel_id": target_channel_id,
+        "fail_if_not_exists": False,
+    }
+
+
 async def _standalone_send(
     pconfig, chat_id: str, message: str, *, thread_id: Optional[str] = None,
     media_files: Optional[list] = None, force_document: bool = False, caption: Optional[str] = None,
+    reply_to: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Send via Discord REST without a live gateway adapter (token: ``pconfig.token`` then env var).
     Forum channels (type 15) reject ``POST /messages``, so a thread post is created via
     ``POST /channels/{id}/threads`` with media as multipart attachments. Channel type: directory
-    cache → process-local probe cache → memoized GET. ``force_document`` accepted but unused."""
+    cache → process-local probe cache → memoized GET. ``reply_to`` anchors the first
+    message to an existing Discord message; forum targets require an explicit
+    ``thread_id``. ``force_document`` is accepted but unused."""
     try:
         import aiohttp
     except ImportError:
@@ -6920,6 +6944,10 @@ async def _standalone_send(
         auth_headers = {"Authorization": f"Bot {token}"}
         json_headers = {**auth_headers, "Content-Type": "application/json"}
         media_files = media_files or []
+        try:
+            reply_reference = _standalone_message_reference(reply_to, thread_id or chat_id)
+        except ValueError as exc:
+            return send_error(str(exc))
         last_data = None
         warnings = []
         if thread_id:
@@ -6927,6 +6955,8 @@ async def _standalone_send(
         else:
             # Forum channels (type 15) reject POST /messages — create a thread post.
             if await _standalone_is_forum(aiohttp, chat_id, json_headers, _sess_kw, _req_kw):
+                if reply_reference is not None:
+                    return send_error("Discord standalone reply requires an explicit thread_id for forum targets")
                 thread_name = _derive_forum_thread_name(message)
                 thread_url = f"https://discord.com/api/v10/channels/{chat_id}/threads"
                 # Filter readable media first to pick JSON vs multipart before opening a session.
@@ -6981,35 +7011,49 @@ async def _standalone_send(
             url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             if message.strip() or not media_files:
-                async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
+                payload = {"content": message}
+                if reply_reference is not None:
+                    payload["message_reference"] = reply_reference
+                    reply_reference = None
+                async with session.post(url, headers=json_headers, json=payload, **_req_kw) as resp:
                     last_data, err = await _standalone_response_json_or_error(resp, "Discord API error")
                     if err:
                         return err
             # One multipart upload per file; a MEDIA:<path> caption rides as the attachment message's
             # content, and caption_pending makes a missing file fall back to a plain message.
             caption_pending = bool(caption)
+            reply_reference_pending = reply_reference
             for media_path, _is_voice in media_files:
                 if not os.path.exists(media_path):
                     warnings.append(_standalone_warn_missing_media(media_path))
                     if caption_pending:
                         try:
+                            fallback_payload = {"content": caption}
+                            if reply_reference_pending is not None:
+                                fallback_payload["message_reference"] = reply_reference_pending
                             async with session.post(
-                                url, headers=json_headers, json={"content": caption}, **_req_kw,
+                                url, headers=json_headers, json=fallback_payload, **_req_kw,
                             ) as resp:
                                 if resp.status in {200, 201}:
                                     last_data = await _standalone_read_json_limited(
                                         resp, _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES,
                                     )
                                     caption_pending = False
+                                    reply_reference_pending = None
                         except Exception:
                             logger.warning("Discord caption-fallback send failed for missing media")
                     continue
                 try:
                     form = aiohttp.FormData()
                     filename = os.path.basename(media_path)
+                    payload = {}
                     if caption_pending:
+                        payload["content"] = caption
+                    if reply_reference_pending is not None:
+                        payload["message_reference"] = reply_reference_pending
+                    if payload:
                         form.add_field(
-                            "payload_json", json.dumps({"content": caption}),
+                            "payload_json", json.dumps(payload),
                             content_type="application/json",
                         )
                         caption_pending = False
@@ -7023,6 +7067,7 @@ async def _standalone_send(
                                 warnings.append(warning)
                                 continue
                             last_data = data
+                            reply_reference_pending = None
                 except Exception as e:
                     warning = send_error(f"Failed to send media {media_path}: {e}")["error"]
                     logger.error(warning)

@@ -106,6 +106,59 @@ def test_caption_rides_media_non_forum():
         os.unlink(img)
 
 
+def test_reply_to_writes_exact_message_reference():
+    """A standalone Discord send can reply to a specific message in a thread."""
+    chat_id = "999000333"
+    thread_id = "999000444"
+    source_message_id = "999000555"
+    _remember_channel_is_forum(thread_id, False)
+    session_ctx, calls = _session_with([_resp(200, {"id": "reply1"})])
+    with patch("aiohttp.ClientSession", return_value=session_ctx):
+        res = asyncio.run(
+            _standalone_send(
+                _pconfig(),
+                chat_id,
+                "sanitized terminal receipt",
+                thread_id=thread_id,
+                reply_to=source_message_id,
+            )
+        )
+    assert res["success"] is True
+    assert res["message_id"] == "reply1"
+    assert len(calls) == 1
+    url, payload, _data = calls[0]
+    assert url.endswith(f"/channels/{thread_id}/messages")
+    assert payload == {
+        "content": "sanitized terminal receipt",
+        "message_reference": {
+            "message_id": source_message_id,
+            "channel_id": thread_id,
+            "fail_if_not_exists": False,
+        },
+    }
+
+
+def test_invalid_reply_anchor_fails_closed_without_posting():
+    """An explicit but malformed anchor must not degrade into a top-level send."""
+    chat_id = "999000666"
+    thread_id = "999000777"
+    _remember_channel_is_forum(thread_id, False)
+    session_ctx, calls = _session_with([_resp(200, {"id": "unexpected"})])
+    with patch("aiohttp.ClientSession", return_value=session_ctx):
+        res = asyncio.run(
+            _standalone_send(
+                _pconfig(),
+                chat_id,
+                "sanitized terminal receipt",
+                thread_id=thread_id,
+                reply_to="not-a-snowflake",
+            )
+        )
+    assert res.get("success") is not True
+    assert "numeric snowflakes" in res["error"]
+    assert calls == []
+
+
 def test_no_caption_non_forum_keeps_separate_text():
     """Without a caption, text + media are two separate POSTs (unchanged)."""
     chat_id = "999000222"

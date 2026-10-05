@@ -298,6 +298,26 @@ def test_register_send_subparser_is_reusable():
     assert args.message == "hi"
 
 
+def test_reply_to_is_forwarded_for_discord(fake_tool, monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    args = _parse([
+        "--to", "discord:1554216204460101653:1554216204460101653",
+        "--reply-to", "1556367119996813343",
+        "terminal receipt",
+    ])
+
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+
+    assert exc.value.code == 0
+    assert fake_tool.calls == [{
+        "action": "send",
+        "target": "discord:1554216204460101653:1554216204460101653",
+        "message": "terminal receipt",
+        "reply_to": "1556367119996813343",
+    }]
+
+
 # ---------------------------------------------------------------------------
 # Env loader
 # ---------------------------------------------------------------------------

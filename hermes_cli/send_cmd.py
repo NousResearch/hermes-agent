@@ -234,6 +234,13 @@ def cmd_send(args: argparse.Namespace) -> None:
     # Routes to the platform adapter (bot-token path for built-ins, live-adapter path for plugin
     # platforms); takes the standard tool-call dict and returns a JSON string.
     tool_args = {"action": "send", "target": target, "message": message}
+    reply_to = (getattr(args, "reply_to", None) or "").strip()
+    if reply_to:
+        if target.split(":", 1)[0].strip().lower() != "discord":
+            _fail("hermes send: --reply-to is only supported for Discord targets.", _USAGE_EXIT)
+        if not reply_to.isdigit() or not 6 <= len(reply_to) <= 32:
+            _fail("hermes send: --reply-to must be a Discord message snowflake.", _USAGE_EXIT)
+        tool_args["reply_to"] = reply_to
     if mentions:
         tool_args["mentions"] = mentions
     result = send_message_tool(tool_args)
@@ -246,7 +253,9 @@ _SEND_ARGUMENTS = (
         "Delivery target. Format: 'platform' (home channel), "
         "'platform:chat_id', 'platform:chat_id:thread_id', or "
         "'platform:#channel-name'. Examples: telegram, "
-        "telegram:-1001234567890:17585, discord:#ops, slack:C0123ABCD, signal:+15551234567."))),
+        "telegram:-1001234567890:17585, discord:#ops, slack:C0123ABCD, signal:+155****4567."))),
+    (("--reply-to",), dict(dest="reply_to", metavar="MESSAGE_ID", default=None, help=(
+        "Discord only: reply to this message ID, preserving the native Discord message reference."))),
     (("message",), dict(nargs="?", default=None, help="Message text. If omitted, read from --file or stdin.")),
     (("-f", "--file"), dict(metavar="PATH", default=None, help=(
         "Read message body from PATH (text only). Use '-' to force stdin. "

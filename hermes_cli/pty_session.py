@@ -230,6 +230,21 @@ class PtySessionRegistry:
                     await _close_ws(session._ws, WS_CLOSE_SUPERSEDED)
                     await session.close()
 
+    def live_sibling_keys(self, prefix: str, *, keep_key: str) -> list:
+        """Live keys of the same logical client (bare or suffixed), minus ``keep_key``.
+
+        Read-side twin of ``close_other_sessions``'s matching predicate, for
+        callers that must decide between reattaching and closing a sibling
+        (#133052) before they take the attach lock.
+        """
+        return [
+            key
+            for key, s in self._sessions.items()
+            if key != keep_key
+            and s.alive
+            and (key == prefix or key.startswith(prefix + "\0"))
+        ]
+
     def detach(self, key: str, ws) -> None:
         s = self._sessions.get(key)
         if s is not None:

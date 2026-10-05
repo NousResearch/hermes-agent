@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { chmodSync, mkdirSync, renameSync, rmSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { macosSysroot, xcrunClangArgv } from './macos-sysroot.mjs'
+import { assertUniversalMacosSdk, macosSysroot, xcrunClangArgv } from './macos-sysroot.mjs'
 
 const script = fileURLToPath(import.meta.url)
 const root = resolve(dirname(script), '..')
@@ -23,6 +23,7 @@ export function buildCommandScreenshotMonitor({
   mkdirSync(dirname(output), { recursive: true })
   const sdk = sysroot === undefined ? macosSysroot() : sysroot
   try {
+    assertUniversalMacosSdk(sdk)
     execFileSync('xcrun', [
       ...xcrunClangArgv(sdk),
       '-arch', 'arm64', '-arch', 'x86_64', '-mmacosx-version-min=11.0',

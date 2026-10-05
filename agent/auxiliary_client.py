@@ -3534,6 +3534,31 @@ def _is_model_incompatible_error(exc: Exception) -> bool:
     ))
 
 
+def _is_model_access_disabled_error(exc: Exception) -> bool:
+    """Entitlement-shaped rejection: the account may not use this model — a 403 phrased as a
+    generic server error (OpenCode Zen: "Model access is disabled"), with neither credential
+    wording (auth) nor billing wording (payment). Such a body matched no predicate, so the
+    ladder dropped the aux task silently with no fallback and no health mark (#133193)."""
+    status = getattr(exc, "status_code", None)
+    if status not in {400, 403, 404, None}:
+        return False
+    if _is_auth_error(exc) or _is_payment_error(exc):
+        return False
+    err_lower = str(exc).lower()
+    # Billing keywords checked directly: _is_payment_error is status-gated and misses 400/404-coded
+    # billing bodies ("not available" must not swallow free-tier rejections).
+    if _contains_any(err_lower, (
+        "credits", "insufficient funds", "billing", "out of funds", "balance_depleted",
+        "no usable credits", "payment required", "free tier", "free-tier",
+        "not available on the free tier", "model_not_supported_on_free_tier", "quota",
+    )):
+        return False
+    return _contains_any(err_lower, (
+        "access is disabled", "access to this model", "model is not available",
+        "model is unavailable", "not enabled for this account",
+    ))
+
+
 def _is_invalid_aux_response_error(exc: Exception) -> bool:
     """HTTP-200 empty/malformed ChatCompletions — a capability failure routed like model incompatibility."""
     if not isinstance(exc, RuntimeError):
@@ -7567,6 +7592,9 @@ class _LadderStep(NamedTuple):
 _FALLBACK_REASONS: Tuple[Tuple[Callable[[Exception], bool], str], ...] = (
     (_is_auth_error, "auth error"), (_is_payment_error, "payment error"),
     (_is_rate_limit_error, "rate limit"), (_is_model_incompatible_error, "model incompatible with route"),
+    # Entitlement-shaped 403 (model denied on this account, neither auth nor billing wording):
+    # a capacity problem — the route cannot serve the request regardless of user intent (#133193).
+    (_is_model_access_disabled_error, "model access disabled"),
     (_is_invalid_aux_response_error, "invalid provider response"),
     # A status-less in-stream ``error`` event (SSE committed 200) is a route failure (#101538).
     (_is_statusless_structured_provider_error, "structured provider error"),
@@ -7850,10 +7878,11 @@ def _next_fallback_after_quarantine(
 def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     """Last rung: other providers (per-task chain; then auto: main fallback chain + discovery
     chain, explicit: main-agent-model net). Returns the response or None.
-    Capacity errors (payment/quota, connection, exhausted 429, model incompatible, malformed
-    response) bypass the explicit-provider gate — the provider cannot serve this request
-    regardless of user intent. Auth errors from an explicit provider may only use the task's
-    own configured fallback_chain; they never imply an unconfigured provider hop."""
+    Capacity errors (payment/quota, connection, exhausted 429, model incompatible, disabled
+    model access, malformed response) bypass the explicit-provider gate — the provider cannot
+    serve this request regardless of user intent. Auth errors from an explicit provider may
+    only use the task's own configured fallback_chain; they never imply an unconfigured
+    provider hop."""
     task, tag, resolved_provider = route.task, route.tag, route.resolved_provider
     # Respect explicit provider choice for transient errors (auth, request validation, etc.) but allow
     # fallback when the provider clearly cannot serve the request due to capacity: payment/quota exhaustion
@@ -7872,9 +7901,10 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     )
     if reason is None or not (is_auto or is_capacity_error or explicit_auth_with_task_chain):
         return None
-    if reason == "payment error":
+    if reason in ("payment error", "model access disabled"):
         # Mark the concrete backend (not the "auto" label) unhealthy so later aux calls skip
-        # it instead of paying another doomed RTT.
+        # it instead of paying another doomed RTT. An entitlement-shaped denial benches the
+        # endpoint just like a confirmed 402: every retry hits the same wall (#133193).
         _mark_provider_unhealthy(
             _recoverable_pool_provider(resolved_provider, route.client, main_runtime=route.main_runtime)
             or resolved_provider, base_url=route.base_info)

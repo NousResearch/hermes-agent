@@ -32,6 +32,14 @@ class Commentary:
 
 
 @dataclass(frozen=True)
+class Reasoning:
+    """A delta of the model's chain-of-thought.  Opt-in only: emitted to adapters
+    when ``plugins.stream_reasoning_deltas`` is enabled, never persisted — it is
+    transport, and the adapter decides whether/how to render it."""
+    text: str
+
+
+@dataclass(frozen=True)
 class ToolCallChunk:
     """A tool invocation started. Raw facts only; the adapter decides presentation."""
     tool_name: str
@@ -70,11 +78,11 @@ class GatewayNotice:
 # Explicit union (not a marker base class) so a missing ``case`` in an
 # exhaustive match is a visible type error rather than a silent fall-through.
 StreamEvent = Union[
-    MessageChunk, MessageStop, Commentary,
+    MessageChunk, MessageStop, Commentary, Reasoning,
     ToolCallChunk, ToolCallFinished, LongToolHint, GatewayNotice,
 ]
 
 __all__ = [
-    "MessageChunk", "MessageStop", "Commentary", "ToolCallChunk",
+    "MessageChunk", "MessageStop", "Commentary", "Reasoning", "ToolCallChunk",
     "ToolCallFinished", "LongToolHint", "GatewayNotice", "StreamEvent",
 ]

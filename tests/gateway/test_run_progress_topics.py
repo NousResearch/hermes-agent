@@ -1084,7 +1084,7 @@ async def _run_with_agent(
     thread_id="17585",
     adapter_cls=ProgressCaptureAdapter,
     user_id=None,
-    scope_id=None,
+    scope_id=None, initial_progress_msg_id=None,
 ):
     if config_data:
         import hermes_yaml as yaml
@@ -1132,7 +1132,7 @@ async def _run_with_agent(
         history=[],
         source=source,
         session_id=session_id,
-        session_key=session_key,
+        session_key=session_key, initial_progress_msg_id=initial_progress_msg_id,
     )
     return adapter, result
 

@@ -938,9 +938,9 @@ DEFAULT_CONFIG = {
         "turn_summary": True,
         # CLI-only: cumulative turn output tokens on the live spinner ("· ↓ 1.2k tok").
         "spinner_token_flow": True,
-        # Gateway tool-progress grouping where edits are supported: "accumulate" edits one bubble |
-        # "separate" one message per tool (noisier). Needs tool_progress enabled. Per-platform:
-        # display.platforms.<platform>.tool_progress_grouping.
+        # Gateway grouping: "accumulate" edits growing history; "rolling" keeps one bounded activity
+        # bubble; "separate" sends per tool. Needs tool_progress. Per-platform override lives at
+        # display.platforms.<platform>.tool_progress_grouping. Discord remains opt-in like every platform.
         "tool_progress_grouping": "accumulate",
         # Custom long-running status phrases. Defaults: gateway/assets/status_phrases.yaml.
         # `path`/`paths` = HERMES_HOME-relative YAML files/dirs (or conventional status_phrases.yaml

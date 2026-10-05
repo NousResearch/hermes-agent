@@ -28,6 +28,10 @@ class TurnContext:
     tool_progress_enabled: bool = False
     progress_queue: Any = None
     log_queue: Any = None
+    # Graceful terminal-state flush for the one rolling activity bubble.
+    progress_finish_header: list = field(default_factory=lambda: [None])
+    initial_progress_msg_id: Optional[str] = None
+    activity_result: Any = None
     # mutable single-element containers (shared with the outer body)
     last_progress_msg: list = field(default_factory=lambda: [None])
     last_tool: list = field(default_factory=lambda: [None])

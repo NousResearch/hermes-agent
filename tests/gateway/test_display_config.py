@@ -264,3 +264,19 @@ class TestCleanupProgress:
                 }
             }
             assert resolve_display_setting(config, "telegram", "cleanup_progress") is True, val
+
+
+def test_tool_progress_grouping_normalizes_rolling_platform_override():
+    from gateway.display_config import resolve_display_setting
+
+    config = {
+        "display": {
+            "tool_progress_grouping": "separate",
+            "platforms": {
+                "discord": {"tool_progress_grouping": " RoLlInG "},
+            },
+        }
+    }
+    assert resolve_display_setting(
+        config, "discord", "tool_progress_grouping"
+    ) == "rolling"

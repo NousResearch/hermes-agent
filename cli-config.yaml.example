@@ -1866,6 +1866,14 @@ display:
   # edit-in-place "⏳ Working — N min" heartbeat). Override under
   # display.platforms.telegram.
 
+  # How gateway progress is grouped on platforms that support message editing:
+  #   accumulate: Edit a growing history, continuing at the message limit (default)
+  #   rolling:    Keep one bounded activity bubble, then send the final separately
+  #   separate:   Send one message per tool (pre-v0.9 style; noisier)
+  # Only applies where tool_progress is enabled. Per-platform override:
+  # display.platforms.<platform>.tool_progress_grouping.
+  tool_progress_grouping: accumulate
+
   # Auto-cleanup of temporary progress bubbles after the final response lands.
   # On platforms that support message deletion (currently Telegram), this
   # removes the tool-progress bubble, "⏳ Still working..." notices, and

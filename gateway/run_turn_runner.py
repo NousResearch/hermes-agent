@@ -26,6 +26,12 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
+from gateway.rolling_activity import absorb_marker as absorb_activity_marker
+from gateway.rolling_activity import configure_state as configure_activity_state
+from gateway.rolling_activity import fit_tail as fit_activity_tail
+from gateway.rolling_activity import has_renderable_state as has_renderable_activity_state
+from gateway.rolling_activity import render_text as render_activity_text
+from gateway.rolling_activity import is_finish_marker, retry_terminal_edit
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -501,11 +507,7 @@ class TurnRunner:
         return changed
 
     async def _send_native_task_card_progress(self, adapter) -> None:
-        """Drain progress into native cards; supported destinations retain editable fallback.
-        Unsupported destinations and egress refusals suppress publication, never finalization.
-
-        See #29483.
-        """
+        """Drain native cards; unsupported destinations suppress publication, not finalization. See #29483."""
         ctx = self._ctx
         st = self._TaskCardState(adapter)
         try:
@@ -515,6 +517,8 @@ class TurnRunner:
                 except queue.Empty:
                     await asyncio.sleep(0.1)
                     continue
+                if is_finish_marker(raw):
+                    return
                 if not self._agent_interrupted() and st.apply_event(raw):
                     await self._task_card_publish(st)
         except asyncio.CancelledError:
@@ -532,8 +536,6 @@ class TurnRunner:
                     raise
                 except Exception:
                     logger.debug("task-card stop failed during turn cleanup", exc_info=True)
-
-    # ── editable progress bubbles (progress-queue drain) ────────────────────────────────────
 
     @dataclasses.dataclass
     class _ProgressEditState:
@@ -553,22 +555,19 @@ class TurnRunner:
             raw_limit = int(getattr(adapter, "MAX_MESSAGE_LENGTH", 4000) or 4000)
         except Exception:
             raw_limit = 4000
-        # Per-chat resolution (relay adapter fronting N platforms): cap and length unit follow the
-        # chat's underlying platform; native adapters return their scalar/property unchanged.
         if isinstance(adapter, BasePlatformAdapter):
             with suppress(Exception):
                 raw_limit = int(adapter.max_message_length_for_chat(ctx.source.chat_id) or 4000)
                 len_fn = adapter.message_len_fn_for_chat(ctx.source.chat_id)
-        return self._ProgressEditState(
-            adapter=adapter, progress_lines=[], progress_msg_id=None,
-            # "separate" = one message per tool (pre-v0.9 behavior)
+        state = self._ProgressEditState(
+            adapter=adapter, progress_lines=[], progress_msg_id=ctx.initial_progress_msg_id,
             can_edit=ctx.progress_grouping != "separate",
             _progress_len_fn=len_fn,
-            # Leave room for platform quirks / formatting; tiny test adapters keep a usable limit.
             _PROGRESS_TEXT_LIMIT=max(1, raw_limit - (64 if raw_limit > 128 else 0)),
-            # Overflow edits pass metadata (Telegram topic/thread routing) only when edit_message takes it.
             _edit_accepts_metadata=bool(ctx._progress_metadata) and _accepts_keyword(adapter.edit_message, "metadata"),
         )
+        configure_activity_state(state, ctx.progress_grouping, ctx.initial_progress_msg_id)
+        return state
 
     async def _edit_progress_message(self, st, message_id: str, content: str):
         ctx = self._ctx
@@ -580,8 +579,8 @@ class TurnRunner:
         return await st.adapter.edit_message(**kwargs)
 
     @staticmethod
-    def _progress_text(lines: list) -> str:
-        return "\n".join(str(line) for line in lines)
+    def _progress_text(st) -> str:
+        return render_activity_text(st)
 
     def _split_progress_groups(self, st, lines: list) -> list[list]:
         """Partition progress lines into platform-sized editable bubbles."""
@@ -589,7 +588,8 @@ class TurnRunner:
         current: list = []
         for line in lines:
             candidate = current + [line]
-            if current and st._progress_len_fn(self._progress_text(candidate)) > st._PROGRESS_TEXT_LIMIT:
+            probe = dataclasses.replace(st, progress_lines=candidate)
+            if current and st._progress_len_fn(self._progress_text(probe)) > st._PROGRESS_TEXT_LIMIT:
                 groups.append(current)
                 candidate = [line]
             current = candidate
@@ -604,32 +604,29 @@ class TurnRunner:
         return result
 
     async def _roll_progress_overflow_if_needed(self, st) -> bool:
-        """Start fresh editable progress bubbles before a bubble exceeds limit.
-
-        Returns True when it delivered/split the buffer or a transient edit failure left it
-        intact for retry — either way the caller skips the normal send/edit path this tick.
-        """
+        """Split accumulated history, or bound the single rolling bubble."""
         if not st.progress_lines or not st.can_edit:
+            return False
+        if self._ctx.progress_grouping == "rolling":
+            fit_activity_tail(st)
             return False
         groups = self._split_progress_groups(st, st.progress_lines)
         if len(groups) <= 1:
             return False
         if st.progress_msg_id is not None:
-            result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(groups[0]))
+            first = dataclasses.replace(st, progress_lines=groups[0])
+            result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(first))
             if not result.success:
                 if getattr(result, "retryable", False):
                     logger.debug("[%s] Transient overflow edit failure — keeping can_edit=True", st.adapter.name)
                     return True
                 st.can_edit = False
-                # Fall back to the existing non-edit behavior.
                 return False
             groups = groups[1:]
         for group in groups:
-            result = await self._send_progress_text(st, self._progress_text(group))
+            result = await self._send_progress_text(st, "\n".join(str(line) for line in group))
             if result.success and result.message_id:
                 st.progress_msg_id = result.message_id
-        # The newest continuation is the only mutable bubble: keep just its lines so later
-        # edits update it instead of replaying the full transcript into new messages.
         st.progress_lines = groups[-1]
         return True
 
@@ -638,16 +635,19 @@ class TurnRunner:
         return isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__"
 
     def _reset_progress_bubble(self, st) -> None:
-        """Content bubble landed — close the tool-progress bubble so the next tool starts fresh
-        below it; else tool edits hit the ORIGINAL message above (out of order)."""
+        """Close the progress bubble when content lands so later tools stay ordered."""
         st.progress_msg_id, st.progress_lines = None, []
+        st.rolling_omitted_count = 0
         self._ctx.last_progress_msg[0], self._ctx.repeat_count[0] = None, 0
 
     def _progress_absorb(self, st, raw) -> Any:
         """Fold a queue item into the bubble buffer; returns the line to render this tick."""
         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
             _, base_msg, count = raw
-            if not st.progress_lines:
+            if not st.progress_lines or not (
+                st.progress_lines[-1] == base_msg
+                or str(st.progress_lines[-1]).startswith(f"{base_msg} (×")
+            ):
                 return base_msg
             st.progress_lines[-1] = f"{base_msg} (×{count + 1})"
             return st.progress_lines[-1]
@@ -655,9 +655,9 @@ class TurnRunner:
         return raw
 
     async def _flush_progress_edit(self, st) -> None:
-        if st.can_edit and st.progress_lines and st.progress_msg_id:
+        if st.can_edit and has_renderable_activity_state(st) and st.progress_msg_id:
             with suppress(Exception):
-                await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st.progress_lines))
+                await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st))
 
     async def _drain_progress_on_cancel(self, st) -> None:
         ctx = self._ctx
@@ -665,16 +665,17 @@ class TurnRunner:
             while not ctx.progress_queue.empty():
                 raw = ctx.progress_queue.get_nowait()
                 if self._is_reset_marker(raw):
-                    # Content-bubble marker during drain: close the current progress bubble
-                    # and start a fresh one for tool lines that arrived after.
+                    if ctx.progress_grouping == "rolling":
+                        continue
                     await self._roll_progress_overflow_if_needed(st)
                     await self._flush_progress_edit(st)
                     self._reset_progress_bubble(st)
                 else:
-                    self._progress_absorb(st, raw)
+                    handled, _, _ = absorb_activity_marker(st, raw)
+                    if not handled:
+                        self._progress_absorb(st, raw)
                     await self._roll_progress_overflow_if_needed(st)
-        # Final edit with all remaining tools (only if editing works)
-        if st.can_edit and st.progress_lines and st.progress_msg_id:
+        if st.can_edit and has_renderable_activity_state(st) and st.progress_msg_id:
             await self._roll_progress_overflow_if_needed(st)
         await self._flush_progress_edit(st)
 
@@ -685,13 +686,9 @@ class TurnRunner:
             await st.adapter.send_typing(ctx.source.chat_id, metadata=ctx._progress_metadata)
 
     async def _progress_send_or_edit(self, st, msg) -> bool:
-        """Deliver this tick's bubble. Returns False on a transient edit failure (retry next tick).
-
-        Transient network errors (ConnectError, timeouts) must not disable editing; only permanent
-        failures (not found, permissions) set can_edit=False. Flood control backs off but keeps editing.
-        """
+        """Deliver this tick; transient edit failures keep the editable identity for retry."""
         if st.can_edit and st.progress_msg_id is not None:
-            result = await self._edit_progress_message(st, st.progress_msg_id, "\n".join(st.progress_lines))
+            result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st))
             if result.success:
                 return True
             if getattr(result, "retryable", False):
@@ -703,8 +700,7 @@ class TurnRunner:
                 st.can_edit = False
             await self._send_progress_text(st, msg)
             return True
-        # First tool: send all accumulated text as a new message; editing unsupported: just this line.
-        result = await self._send_progress_text(st, "\n".join(st.progress_lines) if st.can_edit else msg)
+        result = await self._send_progress_text(st, self._progress_text(st) if st.can_edit else msg)
         if result.success and result.message_id:
             st.progress_msg_id = result.message_id
         return True
@@ -717,9 +713,6 @@ class TurnRunner:
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
             await self._send_native_task_card_progress(adapter)
             return
-        # Skip tool progress for platforms that can't edit messages (e.g. iMessage/BlueBubbles):
-        # each update would be a separate bubble. getattr, not attribute access: duck-typed
-        # adapters (test fakes, minimal plugins) may lack edit_message — treated as "can't edit".
         adapter_edit = getattr(type(adapter), "edit_message", None)
         if adapter_edit is None or adapter_edit is BasePlatformAdapter.edit_message:
             self._drain_progress_queue()
@@ -733,28 +726,32 @@ class TurnRunner:
                     self._drain_progress_queue()
                     return
                 raw = ctx.progress_queue.get_nowait()
-                # Drain silently when interrupted: events queued in the window between tool parse
-                # and interrupt processing should not render as bubbles.
-                if self._agent_interrupted():
+                finish_after_flush = is_finish_marker(raw)
+                if self._agent_interrupted() and not finish_after_flush:
                     await asyncio.sleep(0)
                     continue
                 if self._is_reset_marker(raw):
+                    if ctx.progress_grouping == "rolling":
+                        continue
                     self._reset_progress_bubble(st)
                     continue
-                msg = self._progress_absorb(st, raw)
+                handled, marker_text, marker_finishes = absorb_activity_marker(st, raw)
+                msg = marker_text if handled else self._progress_absorb(st, raw)
                 if not await self._roll_progress_overflow_if_needed(st):
-                    # Throttle edits: batch rapid tool updates into fewer API calls (grammY pattern:
-                    # proactively rate-limit rather than react to 429s). Loop back to drain further
-                    # queued messages before sending a single batched edit.
                     remaining = EDIT_INTERVAL - (time.monotonic() - last_edit_ts)
-                    if remaining > 0:
+                    if remaining > 0 and not ctx.progress_finish_header[0]:
                         await asyncio.sleep(remaining)
                         continue
                     if not ctx._run_still_current():
                         return
+                    if marker_finishes:
+                        await retry_terminal_edit(self._progress_send_or_edit, st, msg, logger)
+                        return
                     if not await self._progress_send_or_edit(st, msg):
                         continue
                 last_edit_ts = time.monotonic()
+                if marker_finishes:
+                    return
                 await self._progress_restore_typing(st)
             except queue.Empty:
                 await asyncio.sleep(0.3)
@@ -764,8 +761,6 @@ class TurnRunner:
             except Exception as e:
                 logger.error("Progress message error: %s", e)
                 await asyncio.sleep(1)
-
-    # ── ID-bearing lifecycle callbacks (agent thread) ───────────────────────────────────────
 
     def voice_ack_callback(self, call_id, tool_name, args):
         """tool_start_callback: speak a one-time ack in the voice channel."""
@@ -782,10 +777,6 @@ class TurnRunner:
             )
         except Exception as err:
             logger.debug("voice ack schedule failed: %s", err)
-
-    # Slack-native task cards ride agent.tool_start_callback / tool_complete_callback so start and
-    # completion correlate by the REAL tool-call id; name-correlated progress_callback text events
-    # would duplicate cards and mispair concurrent calls.
 
     def _native_card_gate(self) -> bool:
         ctx = self._ctx
@@ -986,6 +977,15 @@ class TurnRunner:
                 if not already_streamed:
                     stts.on_delta(text)
                     stts.on_delta(None)
+            if (
+                ctx.progress_grouping == "rolling"
+                and ctx.tool_progress_enabled
+                and ctx.progress_queue is not None
+                and not already_streamed
+                and str(text or "").strip()
+            ):
+                ctx.progress_queue.put(f"💬 {text}")
+                return
             if stream_consumer is not None:
                 stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():

@@ -1032,11 +1032,17 @@ for _stale in "$INSTALL_ROOT"/venv/bin/*.tcc-heal-old.* "$INSTALL_ROOT"/venv/bin
 done
 
 # Wait out the Desktop (FAIL CLOSED: updating under live backends bricks).
-# Zombie-aware and identity-checked: a reused pid is not the Desktop.
+# Zombie-aware and identity-checked: a reused pid is not the Desktop. Its quit
+# can first join a managed SSH update it is running, which legitimately outlasts
+# a short fixed wait; past the ceiling the hand-off still refuses. Overridable
+# only so tests need not sit it out.
+DESKTOP_EXIT_SECONDS="${HERMES_UPDATE_DESKTOP_EXIT_SECONDS:-150}"
+case "$DESKTOP_EXIT_SECONDS" in ''|*[!0-9]*|0) DESKTOP_EXIT_SECONDS=150 ;; esac
 if [ "$DESKTOP_PID" -gt 0 ] 2>/dev/null; then
-  for _ in $(seq 1 200); do ident_alive "$DESKTOP_PID" "$DESKTOP_CT" || break; sleep 0.3; done
+  _exit_deadline=$(( $(date +%s) + DESKTOP_EXIT_SECONDS ))
+  while ident_alive "$DESKTOP_PID" "$DESKTOP_CT" && [ "$(date +%s)" -lt "$_exit_deadline" ]; do sleep 0.3; done
   if ident_alive "$DESKTOP_PID" "$DESKTOP_CT"; then
-    FINAL_CODE=4 FINAL_MSG="Update aborted: the Hermes window (pid $DESKTOP_PID) did not exit within 60s. Nothing was changed. Close Hermes fully and try again."
+    FINAL_CODE=4 FINAL_MSG="Update aborted: the Hermes window (pid $DESKTOP_PID) did not exit within ${DESKTOP_EXIT_SECONDS}s. Nothing was changed. Close Hermes fully and try again."
     log "$FINAL_MSG"; exit "$FINAL_CODE"
   fi
 fi

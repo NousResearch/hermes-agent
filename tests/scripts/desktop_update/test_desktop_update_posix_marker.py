@@ -376,3 +376,33 @@ def test_script_killed_right_after_spawning_the_update_leaves_a_live_marker(tmp_
         if script.poll() is None:
             script.kill()
             script.wait()
+
+
+def _write_bridge(home: Path, desktop_pid: int) -> None:
+    marker = home / ".hermes-update-in-progress"
+    marker.write_text(f"{desktop_pid}\n{int(time.time())}\nct:{_ct(desktop_pid)}\n", encoding="utf-8")
+
+
+def test_desktop_still_alive_at_the_exit_ceiling_refuses_without_updating(tmp_path, sleeper):
+    home, install = _install(tmp_path, legacy=True)
+    desktop = sleeper()
+    _write_bridge(home, desktop.pid)
+    started = time.monotonic()
+
+    result = _run(tmp_path, home, install, "--desktop-pid", str(desktop.pid), HERMES_UPDATE_DESKTOP_EXIT_SECONDS="2")
+
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert time.monotonic() - started < 30
+    assert not [c for c in _calls(tmp_path) if c.startswith("update")]
+
+
+def test_desktop_that_exits_inside_the_ceiling_lets_the_update_run(tmp_path):
+    home, install = _install(tmp_path, legacy=True)
+    desktop = subprocess.Popen(["sleep", "3"])
+    _write_bridge(home, desktop.pid)
+
+    result = _run(tmp_path, home, install, "--desktop-pid", str(desktop.pid), HERMES_UPDATE_DESKTOP_EXIT_SECONDS="20")
+    desktop.wait()
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert any(c.startswith("update") for c in _calls(tmp_path))

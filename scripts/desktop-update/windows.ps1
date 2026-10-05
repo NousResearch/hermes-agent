@@ -918,6 +918,18 @@ if ($env:HERMES_UPDATE_STEP_IDLE_SECONDS) {
     }
 }
 
+# The Desktop's quit can first join a managed SSH update it is running, which
+# legitimately outlasts a fixed 30 s. Past this ceiling the hand-off still
+# refuses, so nothing is replaced under a live Desktop. Overridable so the
+# self-tests need not sit it out; not documented as a user knob.
+$script:DesktopExitSeconds = 150
+if ($env:HERMES_UPDATE_DESKTOP_EXIT_SECONDS) {
+    $parsedExit = 0
+    if ([int]::TryParse($env:HERMES_UPDATE_DESKTOP_EXIT_SECONDS, [ref]$parsedExit) -and $parsedExit -gt 0) {
+        $script:DesktopExitSeconds = $parsedExit
+    }
+}
+
 # Silence on the pipes is NOT silence in the update. `hermes update` captures
 # the (very loud) Electron/vite build into logs/update.log instead of its own
 # stdout (hermes_cli/update_cmd.py, the update-log tee), so a real update is
@@ -1532,10 +1544,10 @@ try {
     Publish-UiProgress "Waiting for Hermes to close"
     if ($DesktopPid -gt 0) {
         # Identity, not pid: the Desktop's creation time was pinned at start.
-        if (-not (Wait-DesktopExit 30)) {
+        if (-not (Wait-DesktopExit $script:DesktopExitSeconds)) {
             # The running Desktop still owns application outputs being replaced.
             $finalCode = 4
-            $finalMsg = "Update aborted: the Hermes window (pid $DesktopPid) did not exit within 30s. Nothing was changed. Close Hermes fully and try again."
+            $finalMsg = "Update aborted: the Hermes window (pid $DesktopPid) did not exit within $($script:DesktopExitSeconds)s. Nothing was changed. Close Hermes fully and try again."
             Write-HandoffLog $finalMsg
             exit $finalCode
         }

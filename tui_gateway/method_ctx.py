@@ -57,10 +57,18 @@ class HandlerRegistry:
     def names(self) -> set[str]:
         return {name for name, _ in self._pending}
 
-    def profile_scoped(self, fn):
-        """Drop-in for server.py's ``@_profile_scoped`` (applied at install)."""
-        fn._hermes_profile_scoped = True
-        return fn
+    def profile_scoped(self, fn=None, *, require_context: bool = False):
+        """Drop-in for server.py's ``@_profile_scoped`` (applied at install).
+
+        ``require_context`` is for account-backed RPCs that must never guess the launch profile:
+        they need an explicit profile/session owner or one unambiguous transport owner.
+        """
+        def mark(target):
+            target._hermes_profile_scoped = True
+            target._hermes_profile_context_required = require_context
+            return target
+
+        return mark if fn is None else mark(fn)
 
     def install(self, server) -> None:
         """Rebind pending handlers onto ``server``'s globals and register them."""
@@ -68,7 +76,8 @@ class HandlerRegistry:
         for name, fn in self._pending:
             real = rebind(fn, g)
             if getattr(fn, "_hermes_profile_scoped", False):
-                real = server._profile_scoped(real)
+                real = server._profile_scoped(
+                    real, require_context=bool(getattr(fn, "_hermes_profile_context_required", False)))
             server.register_method(name, real)
 
 

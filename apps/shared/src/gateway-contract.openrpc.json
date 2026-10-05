@@ -16104,7 +16104,32 @@
       },
       "ImageGenerateParams": {
         "additionalProperties": false,
+        "description": "``profile`` / ``session_id`` identify the provider-account and cache owner. A client may omit\nboth only when its transport has live sessions from exactly one profile.",
         "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
           "prompt": {
             "anyOf": [
               {

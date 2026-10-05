@@ -800,7 +800,10 @@ export interface ModelPricing {
   was_input?: string | null
   was_output?: string | null
 }
+/** ``profile`` / ``session_id`` identify the provider-account and cache owner. A client may omit both only when its transport has live sessions from exactly one profile. */
 export interface ImageGenerateParams {
+  profile?: string | null
+  session_id?: string | null
   prompt?: string | null
   aspect_ratio?: string | null
   probe?: unknown | null

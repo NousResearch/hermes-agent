@@ -1,6 +1,6 @@
 name: honcho
 repo: https://github.com/plastic-labs/honcho
-sha: f014a64306bac21f233f51a8e5cddf94a704f62d
+sha: 3dd3b7ad17e1d0475d78f0010f9a2b6386dfeaec
 subdir: hermes-plugin-honcho
 version: "1.0.0"
 description: Honcho AI-native memory provider — cross-session user modeling with dialectic Q&A, semantic

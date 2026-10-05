@@ -12,6 +12,7 @@ Used by hermes_cli/skills_hub.py for CLI commands and the /skills slash command.
 """
 
 import json
+import hashlib
 import logging
 import time
 from contextvars import ContextVar
@@ -248,6 +249,38 @@ def _read_index_cache(key: str) -> Optional[Any]:
     return _read_json_if_fresh(_index_cache_dir() / f"{key}.json", INDEX_CACHE_TTL)
 
 
+def tap_index_cache_key(repo: str, path: str = "skills/", bucket: Optional[str] = None) -> str:
+    """Unambiguous disk-cache key for one tap's repo/path/bucket tuple."""
+    payload = json.dumps([repo, path, bucket], separators=(",", ":"), ensure_ascii=True)
+    return "tap-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def invalidate_index_cache_for_tap(
+    repo: str, path: str = "skills/", bucket: Optional[str] = None,
+) -> bool:
+    """Delete index-cache JSON for one tap. Safe if the file is missing.
+
+    GitHubSource and this manager share a hash of the complete tap tuple.
+    Ambiguous legacy filenames are deliberately left for TTL expiry rather
+    than risking deletion of another tap's cache.
+    """
+    cache_dir = _index_cache_dir()
+    keys = {
+        tap_index_cache_key(repo, path, bucket),
+    }
+    deleted = False
+    for key in keys:
+        cache_path = cache_dir / f"{key}.json"
+        try:
+            cache_path.unlink()
+            deleted = True
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            logger.debug("Could not invalidate tap index cache %s: %s", cache_path, e)
+    return deleted
+
+
 def _write_index_cache(key: str, data: Any) -> None:
     index_cache_dir = _index_cache_dir()
     index_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -369,15 +402,54 @@ class TapsManager(_JsonStateFile):
             return False
         taps.append({"repo": repo, "path": path})
         self.save(taps)
+        invalidate_index_cache_for_tap(repo, path)
         return True
 
     def remove(self, repo: str) -> bool:
         """Remove a tap by repo name. Returns False if not found."""
         taps = self.load()
-        new_taps = [t for t in taps if t["repo"] != repo]
-        if len(new_taps) == len(taps):
+        removed = [t for t in taps if t["repo"] == repo]
+        if not removed:
             return False
-        self.save(new_taps)
+        self.save([t for t in taps if t["repo"] != repo])
+        for tap in removed:
+            invalidate_index_cache_for_tap(
+                tap["repo"], tap.get("path", "skills/"), tap.get("bucket"),
+            )
+        return True
+
+    def refresh_tap(self, repo: Optional[str] = None) -> bool:
+        """Invalidate (and best-effort warm) index-cache for configured custom taps.
+
+        ``repo=None`` / ``""`` refreshes every configured custom tap. A repo that
+        is not in taps.json returns False and does not invent a tap. Network
+        errors during warm are fail-open: the cache stays invalidated (miss)
+        rather than writing an empty poison cache.
+        """
+        if repo == "":
+            repo = None
+        taps = self.load()
+        if repo is not None:
+            taps = [t for t in taps if t.get("repo") == repo]
+            if not taps:
+                return False
+        for tap in taps:
+            invalidate_index_cache_for_tap(
+                tap.get("repo", ""), tap.get("path", "skills/"), tap.get("bucket"),
+            )
+        try:
+            from tools.skills_hub_github import GitHubAuth, GitHubSource
+
+            src = GitHubSource(auth=GitHubAuth(), extra_taps=taps)
+            for tap in taps:
+                try:
+                    src._list_skills_in_repo(
+                        tap.get("repo", ""), tap.get("path", "skills/"), tap.get("bucket"),
+                    )
+                except Exception as e:
+                    logger.debug("Tap refresh warm failed for %s: %s", tap.get("repo"), e)
+        except Exception as e:
+            logger.debug("Tap refresh warm setup failed: %s", e)
         return True
 
     list_taps = load

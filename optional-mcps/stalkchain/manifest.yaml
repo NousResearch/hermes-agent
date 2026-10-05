@@ -1,0 +1,43 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: stalkchain
+description: Crypto research on live trader, token and wallet data from StalkChain (read-only).
+source: https://data.stalkchain.com/docs
+
+# StalkChain hosts a remote MCP server over Streamable HTTP with native
+# OAuth 2.1: RFC 9728 protected-resource metadata, RFC 8414 AS metadata with a
+# registration_endpoint (Dynamic Client Registration), PKCE S256 and the RFC
+# 9207 iss parameter. Nothing to install locally. The /mcp/directory endpoint is
+# the read-only server: no trading tools and no purchase links.
+transport:
+  type: http
+  url: https://data.stalkchain.com/mcp/directory
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - stalkchain
+    - smart money
+    - kol wallets
+    - memecoin
+    - stonkfun
+  hosts:
+    - stalkchain.com
+  examples:
+    - Is this Solana token safe to buy, and is the dev selling?
+    - What did several top traders buy in the last hour?
+    - Vet this trader before I copy them
+    - What does this wallet hold, and what looks risky?
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to StalkChain
+  (or run `hermes mcp login stalkchain`). Sign in with email or X and
+  approve access, then restart the session so tools load.
+  Each tool call spends credits from your StalkChain account; plans are at
+  https://data.stalkchain.com. The server is read-only: it never trades,
+  moves funds or signs anything. The only thing it can change is your own
+  price alerts. The companion `stalkchain` plugin adds 18 research skills.

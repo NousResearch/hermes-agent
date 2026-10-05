@@ -69,6 +69,13 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
 class GatewayInboundMixin:
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
+    @staticmethod
+    def _gateway_command_for_event(event: "MessageEvent") -> Optional[str]:
+        """Return a slash command only when the event owns control authority."""
+        if getattr(event, "allow_gateway_control", True) is not True:
+            return None
+        return event.get_command()
+
     async def _hm_pre_gateway_dispatch_hook(
         self, event: "MessageEvent", source: SessionSource
     ) -> Optional["MessageEvent"]:
@@ -108,6 +115,9 @@ class GatewayInboundMixin:
 
     async def _hm_offer_pairing_code(self, source: SessionSource) -> None:
         """DM an unauthorized sender a pairing code (rate-limited; groups never reach here)."""
+        from gateway.delivery import event_bound_delivery_metadata
+        if event_bound_delivery_metadata(source).get("_delivery_route_blocked") is True:
+            return
         platform_name = source.platform.value if source.platform else "unknown"
         pairing_store = self._pairing_store_for(source)
         if pairing_store is None:
@@ -132,6 +142,9 @@ class GatewayInboundMixin:
         """``decline`` behavior: one short refusal per sender per DECLINE_DEDUPE_SECONDS, then silence
         (#88028). The stamp is written BEFORE the send so a delivery
         hiccup cannot become a decline storm; without a store there is no dedupe state → stay silent."""
+        from gateway.delivery import event_bound_delivery_metadata
+        if event_bound_delivery_metadata(source).get("_delivery_route_blocked") is True:
+            return
         from gateway.config import DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
         platform_name = source.platform.value if source.platform else "unknown"
         pairing_store = self._pairing_store_for(source)
@@ -195,6 +208,10 @@ class GatewayInboundMixin:
             )
             return None
 
+        from gateway.delivery import event_bound_delivery_metadata
+        if event_bound_delivery_metadata(source, getattr(event, "metadata", None)).get("_delivery_route_blocked") is True:
+            logger.info("Dropping event without immediate delegated-route authority")
+            return None
         is_internal = bool(getattr(event, "internal", False))  # e.g. background-process notifications
 
         # Ignored-channel guard runs FIRST — before startup-restore queueing, plugin hooks, auth,
@@ -819,7 +836,10 @@ class GatewayInboundMixin:
             _def = _resolve_cmd(cmd) if cmd else None
             return _def, (_def.name if _def else cmd)
 
-        command = event.get_command()
+        # Restricted delegated transports may converse but cannot dispatch
+        # gateway lifecycle/control commands. Their literal slash text remains
+        # an ordinary agent message.
+        command = self._gateway_command_for_event(event)
         _cmd_def, canonical = _canon(command)
 
         # Expand alias quick commands before built-in dispatch so targets like /model openai/gpt-5.5
@@ -1675,7 +1695,8 @@ class GatewayInboundMixin:
         )
 
     async def _expand_inbound_context_references(
-        self, source: SessionSource, session_key: str, message_text: str
+        self: Any, source: SessionSource, session_key: str, message_text: str,
+        event_metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """Expand ``@`` context references; returns None when the injection was refused (user notified)."""
         try:
@@ -1696,6 +1717,7 @@ class GatewayInboundMixin:
                     await _adapter.send(
                         source.chat_id,
                         "\n".join(_ctx_result.warnings) or t("gateway.notify.context_injection_refused"),
+                        metadata=self._thread_metadata_for_source(source, event_metadata=event_metadata),
                     )
                 return None
             if _ctx_result.expanded:
@@ -1731,7 +1753,8 @@ class GatewayInboundMixin:
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
         message_text = self._prepend_inbound_document_notes(event, message_text)
         if "@" in message_text:
-            message_text = await self._expand_inbound_context_references(source, session_key, message_text)
+            message_text = await self._expand_inbound_context_references(
+                source, session_key, message_text, getattr(event, "metadata", None))
             if message_text is None:
                 return None
         # After expansion: the quoted reply is someone else's text and stays literal — an

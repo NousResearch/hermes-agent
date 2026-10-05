@@ -640,6 +640,9 @@ def _with_guidance(result: Dict[str, Any], job: Dict[str, Any], deliver: Optiona
 
 
 def _action_create(a: Dict[str, Any]) -> str:
+    from gateway.session_context import session_requires_event_bound_delivery
+    if session_requires_event_bound_delivery():
+        return tool_error("Scheduled delivery is unavailable for this event-bound account conversation", success=False)
     prompt, script = a["prompt"], a["script"]
     deliver = _normalize_deliver_param(a["deliver"])
     if not a["schedule"]:

@@ -19,7 +19,7 @@ from contextvars import copy_context
 from pathlib import Path
 from agent.i18n import t
 from gateway.config import Platform
-from gateway.delivery import looks_like_telegram_private_chat_id
+from gateway.delivery import event_bound_delivery_metadata, looks_like_telegram_private_chat_id
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
@@ -442,7 +442,7 @@ class GatewayStartupMixin:
         for row in await asyncio.to_thread(pending_retries):
             self._schedule_flood_redelivery(row["platform"], profile=row["profile"])
 
-    async def _redeliver_claimed_obligations(self, claimed: list) -> int:
+    async def _redeliver_claimed_obligations(self: Any, claimed: list) -> int:
         """Redeliver final responses for claimed rows (network half of the split): runs inside the
         bounded boot-send task, so a flood-limited send can be abandoned by the restore gate without
         reopening the turn-replay window. Returns the redelivered count."""
@@ -458,6 +458,11 @@ class GatewayStartupMixin:
             if row.get("adopted"):
                 # Adopted at boot inside its flood wait: its resume flag is cleared with the others, and
                 # the timer armed below sends it once the platform's deadline has passed.
+                continue
+            source = await asyncio.to_thread(self._build_process_event_source, row)
+            if event_bound_delivery_metadata(source).get("_delivery_route_blocked") is True:
+                await asyncio.to_thread(mark_failed, row["obligation_id"], "event_bound_authority_unavailable")
+                logger.info("Skipping recovered final without immediate event authority")
                 continue
             adapter = await self._obligation_adapter(row)
             if adapter is None:
@@ -584,6 +589,9 @@ class GatewayStartupMixin:
         """Validate the session owner against the CURRENT allowlist: a session created before the
         allowlist existed (or whose owner was since removed) must not silently receive a full agent
         response just because it carries a resume marker."""
+        if event_bound_delivery_metadata(source).get("_delivery_route_blocked") is True:
+            logger.info("Skipping auto-resume for %s: immediate event authority required", session_key)
+            return False
         try:
             if self._is_user_authorized_for_source(source):
                 return True
@@ -771,6 +779,10 @@ class GatewayStartupMixin:
                 continue
             text = self._crash_left_reply(await self.async_session_store.load_transcript(session_id),
                                           started, origin)
+            if text and event_bound_delivery_metadata(origin).get("_delivery_route_blocked") is True:
+                # The transcript persists content, never permission to speak as a
+                # delegated account. Clear the crash marker without queuing a bot DM.
+                text = ""
             if text is None or (text and not ledger_on):
                 continue  # no final reply to deliver: the turn resumes
             if text:

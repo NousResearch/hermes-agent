@@ -59,7 +59,7 @@ def _first_fire_within_thread_horizon(
 def _origin_from_env(
     schedule: Union[str, Dict[str, Any], None] = None,
 ) -> Optional[Dict[str, str]]:
-    from gateway.session_context import async_delivery_supported, get_session_env
+    from gateway.session_context import async_delivery_supported, get_session_env, session_requires_event_bound_delivery
     origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
     if not (origin_platform and origin_chat_id):
@@ -67,7 +67,8 @@ def _origin_from_env(
     # A non-push surface (api_server: request/response, ``send()`` is a stub) cannot receive a
     # fire-time report, so an origin stamp would make ``deliver=origin`` fail silently on every
     # fire (#69304). No origin => the home-channel fallback + creation-time notice apply.
-    if not async_delivery_supported():
+    # A known event-bound account must not turn into an origin-less home fallback.
+    if not async_delivery_supported() and not session_requires_event_bound_delivery():
         return None
     thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
     # Slack stamps every TOP-LEVEL message's own id as the session thread (a per-message

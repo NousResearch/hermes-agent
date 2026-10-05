@@ -295,6 +295,112 @@ hermes gateway
 
 The bot should come online within seconds. Send it a message on Telegram to verify.
 
+## Telegram Business delegated inbox (opt-in)
+
+Hermes can answer explicitly triggered customer messages through a connected
+Telegram account. Replies appear on behalf of that account. This is separate
+from chatting directly with the Hermes bot and is **disabled by default**.
+
+### Connect the account
+
+1. Create and configure your bot as above. In [@BotFather](https://t.me/BotFather),
+   enable the account-connection mode for that bot. Telegram's current
+   [Business Bots guide](https://core.telegram.org/bots/features#business-bots)
+   calls this **Secretary Mode** (also referred to as Business Mode).
+2. In the account that will receive customer messages, connect the bot under
+   **Settings → Chat Automation**. Choose which chats it may access and grant
+   permission to reply. Telegram documents this account setup in
+   [Chat Automation in Profiles](https://telegram.org/blog/ai-bot-revolution-11-new-features#chat-automation-in-profiles).
+3. Add the configuration below to the active Hermes profile's `config.yaml`,
+   replacing the example account-owner ID. Restart the gateway after saving.
+
+```yaml
+platforms:
+  telegram:
+    business:
+      enabled: true
+      allow_business_send_as_account: true
+      trigger_words:
+        - Hermes
+      allowed_owner_ids:
+        - "123456789"  # Connected account owner's numeric Telegram user ID
+      # Optional: restrict to particular Telegram Business connections as well.
+      # allowed_connection_ids:
+      #   - "your-business-connection-id"
+      # Optional: restrict which customer private chats can trigger Hermes.
+      # allowed_chats:
+      #   - "987654321"
+```
+
+Both `enabled` and `allow_business_send_as_account` must be `true`, and
+`trigger_words` must contain at least one trigger. Configure at least one
+nonempty `allowed_owner_ids` or `allowed_connection_ids` list; without either,
+all delegated inbox traffic is refused. When both lists are configured, **both
+must match**. Owner IDs identify the connected account, not the customer or bot.
+Connection IDs are Telegram's `BusinessConnection.id`, also carried as
+`business_connection_id` on Business messages; see the
+[Bot API reference](https://core.telegram.org/bots/api#businessconnection).
+
+Omitting `allowed_chats` allows eligible customer private chats within the
+approved connection and Telegram's own chat-access settings. Set it for a narrow
+pilot before opening more chats. Keep the ordinary bot's operator allowlist
+configured separately; customers do not need to be added to
+`TELEGRAM_ALLOWED_USERS` to use this delegated inbox.
+
+### Triggering a reply and sending media
+
+From a different, non-bot customer account in an allowed private chat, send
+`Hermes, can you help with this order?`. Matching is case-insensitive, must begin
+the message or caption, and requires a word boundary such as whitespace or
+punctuation. The trigger and following separator are removed before the prompt
+reaches the agent. Every new request needs its own trigger; replying to a previous
+answer does not keep the inbox automatically active.
+
+- Only new `business_message` updates enter this inbox. Edited Business messages
+  are ignored, including edits that add a trigger. Messages sent by the connected
+  account owner, bots, and Business-bot delivery echoes are also ignored.
+- Photos, videos, audio, voice messages, documents, and stickers use the same
+  authenticated media extraction path as ordinary Telegram messages. A standalone
+  media item needs an explicit caption beginning with a configured trigger;
+  speech inside a voice message is not an intake trigger.
+- Captionless album items can join only an **already pending, triggered album**
+  from the same customer, chat, and Business connection. Captionless standalone
+  uploads, items arriving before the triggered item, and items arriving after the
+  album has been dispatched are ignored. Hermes does not retrospectively recover
+  earlier album pieces. Any captioned item must itself match a trigger.
+
+### Reply identity and supported delivery
+
+Before sending, Hermes checks the original in-process inbound source, destination,
+receiving adapter, current allowlists, and the live Telegram connection. The
+connection must still belong to the same owner, be enabled, and explicitly grant
+`rights.can_reply`. Telegram also limits that right to eligible private chats
+with incoming messages in the last 24 hours; see
+[Business bot rights](https://core.telegram.org/bots/api#businessbotrights).
+If authority is missing, revoked, or cannot be verified, the send fails closed.
+Hermes never retries a Business reply as an ordinary bot-identity message.
+
+Account-identity delivery is limited to the active, authenticated inbound turn.
+Deferred/async replies, background-process notifications, cron delivery, and
+restart-restored delivery to this Business route are intentionally unsupported
+and fail closed. A stored connection ID or session record does not restore send
+authority. Business customers cannot use gateway slash controls, approve tool
+execution, or administer the gateway through this inbox.
+Temporary reply previews and status messages may remain visible, because
+account-bound automatic deletion is not supported.
+
+:::warning Untrusted customer content requires whole-process isolation
+Business sessions are scoped by connection and customer, but this is conversation
+routing, not per-caller tool containment. Hermes remains a single-tenant agent;
+accepted customers reach the tools and resources available to that instance.
+For untrusted customer input, run the **entire Hermes process tree** in an
+OS-level sandbox, with deliberately limited mounts, credentials, and network
+access. A Docker terminal backend alone does not contain Python, plugins, or MCP
+subprocesses. Use separate agent instances and allowlists when callers need
+different capabilities. See the repository's
+[security policy and supported isolation postures](https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md#22-the-boundary-os-level-isolation).
+:::
+
 ## Sending Generated Files from Docker-backed Terminals
 
 If your terminal backend is `docker`, keep in mind that Telegram attachments are
@@ -1447,7 +1553,10 @@ When a user sends a message that triggers an agent turn, the Telegram adapter pi
 ## Security
 
 :::warning
-Always set `TELEGRAM_ALLOWED_USERS` to restrict who can interact with your bot. Without it, the gateway denies all users by default as a safety measure.
+Set `TELEGRAM_ALLOWED_USERS` to restrict who can interact with the ordinary bot.
+The opt-in [Business delegated inbox](#telegram-business-delegated-inbox-opt-in)
+uses its own owner/connection allowlists and optional customer-chat restriction;
+do not add customers to the operator allowlist just to enable Business replies.
 :::
 
 Never share your bot token publicly. If compromised, revoke it immediately via BotFather's `/revoke` command.

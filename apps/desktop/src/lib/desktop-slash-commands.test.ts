@@ -15,6 +15,7 @@ import {
   isDesktopSlashSuggestion,
   isDesktopSlashSuggestionWithOptions,
   isModelPickerCommand,
+  isNoPayloadSlashCommand,
   isPickerCommand,
   rankSkillCommands,
   rememberDesktopCommandsCatalog,
@@ -458,5 +459,39 @@ describe('registry-derived block-list (contract with hermes_cli/commands.py)', (
         expect(isDesktopSlashCommand(name)).toBe(false)
       }
     }
+  })
+})
+
+describe('isNoPayloadSlashCommand (#131233)', () => {
+  it('classifies known client no-payload surfaces as no-payload', () => {
+    expect(isNoPayloadSlashCommand('/stop')).toBe(true) // action
+    expect(isNoPayloadSlashCommand('/compress')).toBe(true) // action
+    expect(isNoPayloadSlashCommand('/resume')).toBe(true) // picker
+    expect(isNoPayloadSlashCommand('/status')).toBe(true) // rpc (session.status)
+    expect(isNoPayloadSlashCommand('/new')).toBe(true) // action
+  })
+
+  it('resolves aliases and tolerates arguments', () => {
+    expect(isNoPayloadSlashCommand('/compact focus on the leak')).toBe(true) // alias → /compress
+    expect(isNoPayloadSlashCommand('/stop now')).toBe(true)
+  })
+
+  it('never blocks exec-routed or unknown backend commands — only dispatch can classify them', () => {
+    expect(isNoPayloadSlashCommand('/usage')).toBe(false) // exec surface
+    expect(isNoPayloadSlashCommand('/goal align with the handoff doc')).toBe(false) // unknown → dispatch
+    expect(isNoPayloadSlashCommand('/gif-search fireworks')).toBe(false) // skill command
+    expect(isNoPayloadSlashCommand('/frobnicate')).toBe(false)
+  })
+
+  it('strips leading composer attachment refs the same way isSlashCommandText detects them', () => {
+    expect(isNoPayloadSlashCommand('@file:`/tmp/notes.md`\n\n/compress')).toBe(true)
+    expect(isNoPayloadSlashCommand('@image:/tmp/shot.png\n@file:`/tmp/notes.md`\n\n/stop')).toBe(true)
+    expect(isNoPayloadSlashCommand('@image:/tmp/shot.png\n\n/usage')).toBe(false)
+  })
+
+  it('treats catalog-seeded exec commands as dispatchable, not no-payload', () => {
+    rememberDesktopCommandsCatalog(registryCatalog({ '/moa': null }))
+    expect(resolveDesktopCommand('/moa')?.surface).toEqual({ kind: 'exec' })
+    expect(isNoPayloadSlashCommand('/moa explain this')).toBe(false)
   })
 })

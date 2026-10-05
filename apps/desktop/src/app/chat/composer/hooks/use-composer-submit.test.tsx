@@ -428,6 +428,29 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(onCancel).not.toHaveBeenCalled()
   })
 
+  it('refuses a no-payload slash command carrying an attachment while busy (#131233)', () => {
+    // A known client-side no-payload surface can never take an attachment, and
+    // nothing has executed yet — warn and keep the draft. Falling through would
+    // either queue a payload the command ignores or dispatch it as plain text.
+    const attachment: ComposerAttachment = { id: 'doc', kind: 'file', label: 'notes.txt' }
+
+    const { clearDraft, hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
+      attachments: [attachment],
+      busy: true,
+      text: '/status'
+    })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+    expect(clearDraft).not.toHaveBeenCalled()
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onCancel).not.toHaveBeenCalled()
+  })
+
   it('stops an active turn only with an empty composer', () => {
     const { hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({ busy: true })
 

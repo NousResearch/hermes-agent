@@ -1,3 +1,4 @@
+import type { ComposerAttachment } from '@/store/composer'
 import { enqueueQueuedPrompt } from '@/store/composer-queue'
 import { $sessions, resolveComposerSessionKey } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
@@ -14,6 +15,9 @@ export interface QueueIfBusyInput {
   foregroundBusy?: boolean
   text: string
   displayText?: string
+  /** Attachments the slash dispatch was invoked with — they ride the queued
+   *  entry and submit on its drain instead of being dropped (#131233). */
+  attachments?: ComposerAttachment[]
 }
 
 /**
@@ -26,6 +30,7 @@ export interface QueueIfBusyInput {
  * busy but nothing could be queued.
  */
 export function queueKickoffIfSessionBusy({
+  attachments = [],
   displayText,
   foregroundBusy = false,
   sessionId,
@@ -41,5 +46,5 @@ export function queueKickoffIfSessionBusy({
   const stored = storedSessionId ?? states[sessionId]?.storedSessionId ?? null
   const queueKey = resolveComposerSessionKey(stored, $sessions.get()) || stored || sessionId
 
-  return enqueueQueuedPrompt(queueKey, { attachments: [], displayText, text }) ? 'queued' : 'busy'
+  return enqueueQueuedPrompt(queueKey, { attachments, displayText, text }) ? 'queued' : 'busy'
 }

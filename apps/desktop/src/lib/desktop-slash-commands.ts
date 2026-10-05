@@ -1,4 +1,5 @@
 import { translateNow } from '@/i18n/runtime'
+import { stripAttachmentRefs } from '@/lib/chat-runtime'
 import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
 
 import desktopSlashRegistry from './desktop-slash-registry.json'
@@ -545,6 +546,26 @@ export function resolveDesktopCommand(command: string): DesktopCommandSpec | nul
   }
 
   return local ?? catalog
+}
+
+/**
+ * Whether a slash submission targets a KNOWN client surface with no message
+ * payload (`action`/`picker`/`rpc`/`unavailable`) — an attachment can never
+ * ride these, so entry guards may warn-and-refuse before dispatch runs (#131233).
+ *
+ * Returns false for exec-routed and unknown/backend-owned commands: only the
+ * dispatch result can tell whether they produce a prompt, so guards must let
+ * them through and apply the post-dispatch check instead. Leading composer
+ * attachment refs are stripped first so a palette-ref-prefixed draft classifies
+ * the same way `isSlashCommandText` detects it.
+ */
+export function isNoPayloadSlashCommand(commandText: string): boolean {
+  const surface = resolveDesktopCommand(stripAttachmentRefs(commandText).trimStart())?.surface
+
+  return (
+    surface != null &&
+    (surface.kind === 'action' || surface.kind === 'picker' || surface.kind === 'rpc' || surface.kind === 'unavailable')
+  )
 }
 
 /** Subcommands the desktop may forward for *command*; null = unrestricted. */

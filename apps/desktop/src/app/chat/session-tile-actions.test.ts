@@ -81,6 +81,45 @@ describe('session tile optimistic owner metadata', () => {
 // withSessionNotFoundResume) — see use-prompt-actions/index.test.tsx's
 // "sleep/wake session recovery" suite for the same regression on the
 // primary chat's own reloadFromMessage.
+describe('useSessionTileActions slash+attachment entry guard (#131233)', () => {
+  afterEach(() => {
+    $sessionTiles.set([])
+    $sessions.set([])
+    vi.restoreAllMocks()
+  })
+
+  it('refuses a no-payload slash command carrying an attachment instead of running it text-only', async () => {
+    // The tile entry guard shares the classifier with the composer paths: a
+    // known no-payload surface can never take an attachment and nothing has
+    // executed yet, so the submit is refused rather than run text-only.
+    const executeSlash = vi.fn(async () => undefined)
+
+    setSessionTileDelegate({
+      archiveSession: vi.fn(async () => undefined),
+      branchSession: vi.fn(async () => undefined),
+      branchSessionAtMessage: vi.fn(async () => true),
+      deleteSession: vi.fn(async () => undefined),
+      executeSlash,
+      interruptSession: vi.fn(async () => undefined),
+      resumeTile: vi.fn(async () => RUNTIME_SESSION_ID),
+      submitToSession: vi.fn(async () => ({ runtimeSessionId: RUNTIME_SESSION_ID, storedSessionId: null })),
+      updateSession: vi.fn()
+    } as never)
+
+    $sessionTiles.set([{ runtimeId: RUNTIME_SESSION_ID, storedSessionId: STORED_SESSION_ID }])
+
+    const { result } = renderTileActions()
+
+    await expect(
+      result.current.submitText('/status', {
+        attachments: [{ id: 'doc', kind: 'file', label: 'notes.txt' } as never]
+      })
+    ).resolves.toBe(false)
+
+    expect(executeSlash).not.toHaveBeenCalled()
+  })
+})
+
 describe('useSessionTileActions sleep/wake session recovery', () => {
   beforeEach(() => {
     $activeSessionId.set('foreground-runtime')

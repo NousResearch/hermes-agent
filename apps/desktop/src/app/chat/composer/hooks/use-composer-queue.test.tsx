@@ -2,6 +2,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { clearComposerTerminalSelections, setComposerTerminalSelection } from '@/store/composer'
+import type { ComposerAttachment } from '@/store/composer'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
@@ -31,7 +32,13 @@ import { useComposerQueue } from './use-composer-queue'
 const SESSION_KEY = 'stored-session-queue-hook'
 
 function renderQueueHook(
-  overrides: { busy?: boolean; draft?: string; onCancel?: () => void; onSteer?: ChatBarProps['onSteer'] } = {}
+  overrides: {
+    attachments?: ComposerAttachment[]
+    busy?: boolean
+    draft?: string
+    onCancel?: () => void
+    onSteer?: ChatBarProps['onSteer']
+  } = {}
 ) {
   const onSubmit = vi.fn<ChatBarProps['onSubmit']>(async () => true)
   const onCancel = overrides.onCancel ?? vi.fn()
@@ -43,7 +50,7 @@ function renderQueueHook(
     ({ busy }: { busy: boolean }) =>
       useComposerQueue({
         activeQueueSessionKey: SESSION_KEY,
-        attachments: [],
+        attachments: overrides.attachments ?? [],
         busy,
         clearDraft: () => {
           draftRef.current = ''
@@ -261,6 +268,74 @@ describe('useComposerQueue park integration', () => {
 
     expect(onSteer).not.toHaveBeenCalled()
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+  })
+
+  it('narrows the slash+attachment enqueue refusal to known no-payload commands (#131233)', () => {
+    const attachment: ComposerAttachment = {
+      id: 'file:handoff.md',
+      kind: 'file',
+      label: 'handoff.md',
+      path: '/Users/alice/handoff.md',
+      refText: '@file:`/Users/alice/handoff.md`'
+    }
+
+    // Known no-payload surface → refused before enqueue: this entry could only
+    // ever return false at drain (the livelock this guard exists to prevent).
+    const blocked = renderQueueHook({ attachments: [attachment], busy: true, draft: '/status' })
+
+    act(() => {
+      expect(blocked.hook.result.current.queueCurrentDraft()).toBe(false)
+    })
+
+    expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
+    expect($notifications.get().some(n => n.kind === 'warning')).toBe(true)
+
+    // Unknown/prompt-taking commands are allowed — drain executes them and the
+    // post-dispatch check re-homes whatever the dispatch did not consume.
+    const allowed = renderQueueHook({ attachments: [attachment], busy: true, draft: '/goal align with the handoff doc' })
+
+    act(() => {
+      expect(allowed.hook.result.current.queueCurrentDraft()).toBe(true)
+    })
+
+    const queued = getQueuedPrompts(SESSION_KEY)
+    expect(queued).toHaveLength(1)
+    expect(queued[0]?.attachments).toHaveLength(1)
+  })
+
+  it('refuses saving a queued-entry edit into a no-payload slash+attachment combo (#131233)', () => {
+    const attachment: ComposerAttachment = {
+      id: 'file:handoff.md',
+      kind: 'file',
+      label: 'handoff.md',
+      path: '/Users/alice/handoff.md',
+      refText: '@file:`/Users/alice/handoff.md`'
+    }
+
+    const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [attachment], text: 'original draft' })!
+
+    // The sibling refusal: editing the queued entry into a known no-payload
+    // command + attachment would leave an entry that can only ever return
+    // false at drain, so the save is refused and the entry stays as it was.
+    const { draftRef, hook } = renderQueueHook({ attachments: [attachment] })
+
+    act(() => {
+      hook.result.current.beginQueuedEdit(entry)
+    })
+
+    // beginQueuedEdit loads the entry's text into the composer; the edit is
+    // then typed over with a no-payload command.
+    draftRef.current = '/status'
+
+    act(() => {
+      expect(hook.result.current.exitQueuedEdit('save')).toBe(false)
+    })
+
+    const queued = getQueuedPrompts(SESSION_KEY)
+
+    expect(queued).toHaveLength(1)
+    expect(queued[0]?.text).toBe('original draft')
+    expect($notifications.get().some(notification => notification.kind === 'warning')).toBe(true)
   })
 
   it('a delivered steer lifts the park so the rest of the queue flows', async () => {

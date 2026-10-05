@@ -10,6 +10,7 @@ import { attachmentPathNeedsUpload } from '@/lib/attachment-upload-policy'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { isSlashCommandText, pathLabel } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
+import { isNoPayloadSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { normalize } from '@/lib/text'
@@ -632,7 +633,14 @@ export function usePromptActions({
       const attachments = options?.attachments ?? $composerAttachments.get()
 
       if (isSlashCommandText(visibleText)) {
-        if (attachments.length) {
+        if (attachments.length && isNoPayloadSlashCommand(visibleText) && !options?.fromQueue) {
+          // Known client-side no-payload surface (/stop, /status, pickers…):
+          // an attachment can never ride it, and nothing has executed yet, so
+          // warn-and-refuse lets the caller's restore path put the draft back (#131233).
+          // Queue drains bypass this: an entry classified at enqueue can flip
+          // no-payload after a catalog sync, and returning false here would
+          // keep the entry forever (the drain livelock this guard prevents) —
+          // letting it dispatch re-homes the attachments instead.
           notify({
             kind: 'warning',
             title: copy.slashCommandIgnoredTitle,
@@ -643,11 +651,19 @@ export function usePromptActions({
         }
 
         triggerHaptic('selection')
+
         // Forward the explicit target (background queue drain, tile) — dropping
         // it ran the command against whatever chat happened to be in front.
-        await executeSlashCommand(visibleText, options?.sessionId ? { sessionId: options.sessionId } : undefined)
-
-        return true
+        // Attachments ride for prompt-taking dispatches; the dispatcher reports
+        // false only when a send dispatch was rejected (restore runs in the caller).
+        // Thread ONLY explicitly-passed attachments: the store fallback above
+        // serves the guard, and forwarding it would let external-origin requests
+        // (quick actions, review pane) hijack whatever the composer has staged.
+        return await executeSlashCommand(visibleText, {
+          ...(options?.sessionId ? { sessionId: options.sessionId } : {}),
+          ...(options?.attachments?.length ? { attachments: options.attachments } : {}),
+          ...(options?.fromQueue ? { fromQueue: true } : {})
+        })
       }
 
       return await submitPromptText(rawText, options)

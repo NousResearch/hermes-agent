@@ -191,11 +191,10 @@ class TestThinkingOnlyTruncation:
 
         calls = loop_agent.client.chat.completions.create.call_args_list
         assert len(calls) == 2
-        # Continuation retry boosts the output cap (2^1 × 4096 base floor).
-        assert calls[1].kwargs.get("max_tokens") == 8192, (
-            "The continuation retry must request a larger output budget than "
-            "the request that truncated."
-        )
+        # A provider-owned or catalog-derived budget must never become the old
+        # invented 8K retry limit. Both calls use the same request policy.
+        initial_cap = loop_agent._requested_output_cap_from_api_kwargs(calls[0].kwargs)
+        assert loop_agent._requested_output_cap_from_api_kwargs(calls[1].kwargs) == initial_cap
         assert loop_agent._ephemeral_reasoning_off is False, (
             "The one-shot reasoning-off override must be consumed by the "
             "continuation call."

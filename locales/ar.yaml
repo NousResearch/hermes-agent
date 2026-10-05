@@ -1448,8 +1448,6 @@ platform:
   irc:
     quit_message: "جارٍ إيقاف تشغيل Hermes Agent"
     standalone_quit: "تم التسليم"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "الموافقة مرة"
     confirm_always_approve: "الموافقة دائمًا"
@@ -2355,6 +2353,7 @@ cli:
     removed: "أُزيل العنصر {index} من قائمة الانتظار: {preview}"
     item_not_found: "العنصر {index} غير موجود في قائمة الانتظار. الحجم الحالي: {size}"
     usage_edit: "الاستخدام: /queue edit <number> <new prompt>"
+    usage_remove: "الاستخدام: /queue rm <number>"
     updated: "حُدّث العنصر {index} في قائمة الانتظار: {preview}"
     usage_move: "الاستخدام: /queue move <from> <to>"
     move_out_of_range: "النقل خارج نطاق قائمة الانتظار. الحجم الحالي: {size}"
@@ -2720,6 +2719,7 @@ cli:
       restored: "تمت استعادة الحالة من: {snapshot_id}"
       restart_recommended: "يُنصح بإعادة تشغيل عمليات البوّابة/لوحة التحكم لاعتماد تغييرات state.db."
       not_found: "اللقطة غير موجودة: {snapshot_id}"
+      restore_incomplete: "لم تتم استعادة اللقطة {snapshot_id} بالكامل؛ تم رفض بعض الملفات (راجع السجلات)"
       usage_prune: "الاستخدام: /snapshot prune [keep-count]"
       pruned: "تم حذف {deleted} لقطة قديمة (مع الاحتفاظ بـ {keep})."
     export:
@@ -3674,7 +3674,7 @@ tips:
   t197: "يسجّل حفظ المسارات (--save-trajectories) آثار استخدام الأدوات كاملةً لتدريب النماذج."
   t198: "ثلاثة أنواع من الإضافات: عامة (أدوات/خطافات)، ومزوّدو الذاكرة، ومحرّكات السياق."
   t199: "يثبّت hermes plugins install owner/repo الإضافات مباشرة من GitHub."
-  t200: "مزوّدو الذاكرة الخارجيون: Honcho وOpenViking وMem0 مضمّنون؛ وHindsight وغيره عبر hermes plugins install."
+  t200: "مزوّدو الذاكرة الخارجيون: OpenViking وMem0 مضمّنون؛ وHoncho وHindsight وغيرهما عبر hermes plugins install."
   t201: "تشمل خطافات الإضافات pre/post_tool_call وpre/post_llm_call وtransform_terminal_output لتوحيد شكل المخرجات."
   t202: "يقلّل تخزين المطالبات مؤقتًا (Anthropic) التكاليف بإعادة استخدام بادئات موجّه النظام المخزّنة."
   t203: "يولّد الوكيل عناوين الجلسات تلقائيًا في خيط خلفي — دون أي تأثير على زمن الاستجابة."

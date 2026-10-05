@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
 import { introJa } from './intro-ja'
+import { jaModelMenu } from './ja_model_menu'
 
 export const ja = defineLocale({
   externalOpenFailed: {
@@ -48,67 +49,6 @@ export const ja = defineLocale({
     stripDetails: '詳細'
   },
   intro: introJa,
-  catalog: {
-    add: '追加',
-    added: '追加済み',
-    discover: '見つける',
-    featured: 'おすすめ',
-    explorePlugins: 'プラグインを探す',
-    exploreSkills: 'スキルを探す',
-    mostStarred: 'スターが多い順',
-    newest: '新着',
-    recentlyUpdated: '最近の更新',
-    alphabetical: '名前',
-    sortBy: '並べ替え',
-    seeAll: 'すべて表示',
-    related: '類似の項目',
-    tags: 'タグ',
-    screenshots: 'スクリーンショット',
-    listView: 'リスト表示',
-    cardView: 'カード表示',
-    installTitle: (name: string) => `「${name}」をインストールしますか？`,
-    installDescription:
-      'このスキルは新しいセッションで利用できます。信頼できる提供元からのみインストールしてください。',
-    installTo: 'インストール先',
-    thisComputer: 'このコンピューター',
-    installing: 'インストール中…',
-    installComplete: (name: string) => `「${name}」をインストールしました`,
-    destinationChanged:
-      'インストール先が変更されました。このダイアログを閉じ、インストールリンクを開き直してください。',
-    installed: 'インストール済み',
-    searchSkills: 'スキルを検索',
-    searchPlugins: 'プラグインを検索',
-    allSources: 'すべての提供元',
-    allCategories: 'すべてのカテゴリ',
-    about: '概要',
-    author: '作者',
-    source: '提供元',
-    category: 'カテゴリ',
-    version: 'バージョン',
-    platforms: '対応プラットフォーム',
-    requires: '必要なもの',
-    tools: 'ツール',
-    hooks: 'フック',
-    middleware: 'ミドルウェア',
-    commands: 'コマンド',
-    license: 'ライセンス',
-    addedDate: '追加日',
-    updatedDate: '更新日',
-    repository: 'リポジトリ',
-    documentation: 'ドキュメント',
-    noResults: '一致する項目がありません',
-    tryAnother: '別の検索を試すか、フィルターをクリアしてください。',
-    clearFilters: 'フィルターをクリア',
-    filters: 'フィルター',
-    loadFailed: 'カタログを読み込めませんでした',
-    retry: '再試行',
-    more: 'さらに表示',
-    pinned: 'レビュー済みコミット',
-    snapshotHint: 'Hermesカタログの情報です。閲覧時に提供元のリポジトリへ接続することはありません。',
-    installHint: 'インストール前にソースを確認してください。変更は新しいセッションに適用されます。',
-    results: (count: number) => `${count.toLocaleString('ja')}件の結果`,
-    back: '結果に戻る'
-  },
   sessionImport: {
     title: '別のアプリから続ける',
     subtitle: '会話をHermesに取り込み、続きを始めましょう。',
@@ -1113,7 +1053,11 @@ export const ja = defineLocale({
       imported: '設定をインポートしました',
       invalidJson: '設定 JSON が無効です',
       keepAwakeTitle: 'コンピューターをスリープさせない',
-      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。',
+      keepAwakeDesc:
+        '本体のスリープを防ぎます。「実行中のみ」はターンの実行中だけ有効になるため、夜通しの実行を継続しつつ、ノートPCを一週間つけたままにはしません。画面は暗転できます。',
+      keepAwakeOff: 'オフ',
+      keepAwakeWhileWorking: '実行中のみ',
+      keepAwakeAlways: '常に',
       voiceShortcutHintTitle: '音声録音ショートカット',
       voiceShortcutHintDesc:
         '「設定 → キーボードショートカット」で音声録音ショートカット（「Start / stop voice conversation」）を設定します。voice.record_key は CLI と TUI 専用です。'
@@ -1684,6 +1628,19 @@ export const ja = defineLocale({
     }
   },
 
+  skillDeepLink: {
+    installTitle: (name: string) => `「${name}」をインストールしますか？`,
+    installDescription:
+      'このスキルは新しいセッションで利用できます。信頼できる提供元からのみインストールしてください。',
+    installTo: 'インストール先',
+    thisComputer: 'このコンピューター',
+    installing: 'インストール中…',
+    installComplete: (name: string) => `「${name}」をインストールしました`,
+    destinationChanged:
+      'インストール先が変更されました。このダイアログを閉じ、インストールリンクを開き直してください。',
+    installed: 'インストール済み',
+    source: '提供元'
+  },
   skills: {
     plugins: {
       pageBlurb:
@@ -2029,6 +1986,9 @@ export const ja = defineLocale({
     replaceValue: '現在の値を置き換え',
     openDocs: 'ドキュメントを開く',
     clearField: key => `${key} をクリア`,
+    addListEntry: '追加',
+    removeListEntry: '削除',
+    listEntryPlaceholder: 'ID を入力',
     enableAria: name => `${name} を有効にする`,
     disableAria: name => `${name} を無効にする`,
     platformEnabled: name => `${name} を有効にしました`,
@@ -2051,7 +2011,7 @@ export const ja = defineLocale({
       },
       TELEGRAM_ALLOWED_USERS: {
         label: '許可する Telegram ユーザー ID',
-        help: '推奨。@userinfobot の数値 ID をカンマ区切りで。設定しないと誰でもボットに DM できます。'
+        help: '推奨。@userinfobot の数値 ID（1 欄に 1 件）。設定しないと誰でもボットに DM できます。'
       },
       TELEGRAM_PROXY: { label: 'プロキシ URL', help: 'Telegram がブロックされているネットワークでのみ必要です。' },
       DISCORD_BOT_TOKEN: {
@@ -2060,7 +2020,7 @@ export const ja = defineLocale({
       },
       DISCORD_ALLOWED_USERS: {
         label: '許可する Discord ユーザー ID',
-        help: '推奨。カンマ区切りの Discord ユーザー ID。'
+        help: '推奨。Discord ユーザー ID（1 欄に 1 件）。'
       },
       DISCORD_REPLY_TO_MODE: { label: '返信スタイル', help: 'first、all、または off。' },
       DISCORD_ALLOW_ALL_USERS: {
@@ -2096,20 +2056,20 @@ export const ja = defineLocale({
       },
       SLACK_ALLOWED_USERS: {
         label: '許可する Slack ユーザー ID',
-        help: '推奨。カンマ区切りの Slack ユーザー ID。'
+        help: '推奨。Slack ユーザー ID（1 欄に 1 件）。'
       },
       MATTERMOST_URL: { label: 'サーバー URL', placeholder: 'https://mattermost.example.com' },
       MATTERMOST_TOKEN: { label: 'ボットトークン' },
       MATTERMOST_ALLOWED_USERS: {
         label: '許可するユーザー ID',
-        help: '推奨。カンマ区切りの Mattermost ユーザー ID。'
+        help: '推奨。Mattermost ユーザー ID（1 欄に 1 件）。'
       },
       MATRIX_HOMESERVER: { label: 'ホームサーバー URL', placeholder: 'https://matrix.org' },
       MATRIX_ACCESS_TOKEN: { label: 'アクセストークン' },
       MATRIX_USER_ID: { label: 'ボットユーザー ID', placeholder: '@hermes:example.org' },
       MATRIX_ALLOWED_USERS: {
         label: '許可する Matrix ユーザー ID',
-        help: '推奨。@user:server 形式のカンマ区切りユーザー ID。'
+        help: '推奨。@user:server 形式のユーザー ID（1 欄に 1 件）。'
       },
       SIGNAL_HTTP_URL: {
         label: 'Signal ブリッジ URL',
@@ -2119,7 +2079,7 @@ export const ja = defineLocale({
       SIGNAL_ACCOUNT: { label: '電話番号', help: 'signal-cli ブリッジに登録した番号。' },
       SIGNAL_ALLOWED_USERS: {
         label: '許可する Signal ユーザー',
-        help: '推奨。カンマ区切りの Signal 識別子。'
+        help: '推奨。Signal 識別子（1 欄に 1 件）。'
       },
       WHATSAPP_ENABLED: {
         label: 'WhatsApp ブリッジを有効にする',
@@ -2128,7 +2088,7 @@ export const ja = defineLocale({
       WHATSAPP_MODE: { label: 'ブリッジモード' },
       WHATSAPP_ALLOWED_USERS: {
         label: '許可する WhatsApp ユーザー',
-        help: '推奨。カンマ区切りの電話番号または WhatsApp ID。'
+        help: '推奨。電話番号または WhatsApp ID（1 欄に 1 件）。'
       }
     },
     platformIntro: {}
@@ -2807,7 +2767,7 @@ export const ja = defineLocale({
       '/init': 'リポジトリを調べて AGENTS.md の指示を作成または更新',
       '/suggestions': '提案された自動化を確認し、採用または却下',
       '/blueprint': 'ブループリントから自動化を設定',
-      '/browser': 'ローカルブラウザー接続を管理',
+      '/browser': 'エージェントのブラウザーを管理 [connect|disconnect|status|use]',
       '/palette': 'コマンドパレットを開く',
       '/usage': 'このセッションのトークン使用量を表示',
       '/subscription': 'Nous のプランを確認し、ブラウザーで変更',
@@ -3391,27 +3351,14 @@ export const ja = defineLocale({
     windowControls: 'ウィンドウコントロール',
     paneControls: 'ペインコントロール',
     appControls: 'アプリコントロール',
-    modelMenu: {
-      search: 'モデルを検索',
-      noModels: 'モデルが見つかりません',
-      editModels: 'モデルを編集…',
-      followDefault: '設定のデフォルトを使用',
-      refreshModels: 'モデルを更新',
-      favorites: 'お気に入り',
-      addFavorite: 'お気に入りに追加',
-      removeFavorite: 'お気に入りから削除',
-      favoriteShortcut: '⇧ クリック',
-      fast: '高速',
-      free: '無料',
-      cacheRead: 'キャッシュ読み取り',
-      priceTitle: (input: string, output: string, cache: string) =>
-        `入力 ${input}/Mtok · 出力 ${output}/Mtok` + (cache ? ` · キャッシュ読み取り ${cache}/Mtok` : '')
-    },
+    modelMenu: jaModelMenu,
     modelOptions: {
       noOptions: 'このモデルにはオプションがありません',
       options: 'オプション',
       thinking: '思考',
       fast: '高速',
+      ultrafast: 'Ultrafast',
+      useStandardSpeed: '標準速度を使用',
       effort: '努力度',
       minimal: '最小',
       low: '低',
@@ -4133,9 +4080,6 @@ export const ja = defineLocale({
     sessionUnavailable: 'セッションが利用できません',
     createSessionFailed: '新しいセッションを作成できませんでした',
     promptFailed: 'プロンプトに失敗しました',
-    staleSessionTitle: 'チャットが最新ではありません',
-    staleSessionBody:
-      'このウィンドウは同じチャットの別ビューより遅れています。最新のメッセージを読み込みました。送信する場合はもう一度送ってください。',
     providerCredentialRequired: '最初のメッセージを送信する前にプロバイダー認証情報を追加してください。',
     emptySlashCommand: '空のスラッシュコマンド',
     slashCommandIgnoredTitle: 'コマンドが送信されませんでした',

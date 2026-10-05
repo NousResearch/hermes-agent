@@ -16,7 +16,10 @@ import pytest
 from scripts.code_health.ts_measure import pinned_typescript, resolve_typescript
 from tests.scripts.test_code_health import _LEGACY, _SWALLOW, REPO, _commit, _git, _repo, _verdict
 
-
+_EDITED = _LEGACY.replace("return 7\n", "return 77\n")  # one constant changed, CC still 22
+# Same name and CC as _LEGACY, unrelated body: a new function reusing a deleted name.
+_UNRELATED = "def legacy(x):\n" + "".join(
+    f"    while x > {i}:\n        x = x // 2 - {i}\n" for i in range(21)) + "    return x\n"
 _MODULE_SWALLOW = "try:\n    import json\nexcept Exception:\n    pass\n"
 
 
@@ -48,6 +51,61 @@ _M1_BASE: dict[str, str | None] = {"pkg/a.py": _LEGACY + "\n\n" + _SWALLOW + "\n
 ])
 def test_module_level_hits_follow_code_moved_to_another_file(tmp_path, capsys, files, blocks):
     repo, base = _base(tmp_path, _M1_BASE)
+    code, out = _verdict(repo, base, files, capsys)
+    assert code == (1 if blocks else 0), out
+
+
+# --- M2: a function moved to another file AND edited keeps its cap ----------------------
+
+_LEGACY_SW = _LEGACY.replace("def legacy(x):\n", "def legacy(x):\n" + _SWALLOW.split("\n", 1)[1])
+
+
+@pytest.mark.parametrize("extra_base, files, blocks", [
+    # P1: moved with one constant changed (CC still 22)
+    ({}, {"pkg/a.py": _SWALLOW, "pkg/a_legacy.py": _EDITED}, False),
+    # P2 (control): the same edit in place
+    ({}, {"pkg/a.py": _EDITED + "\n\n" + _SWALLOW}, False),
+    # moved, edited and grown: the cap is the old value, not a pass
+    ({}, {"pkg/a.py": _SWALLOW, "pkg/a_legacy.py": _EDITED + "    if x == 99:\n        return 99\n"}, True),
+    # a copy (the origin still has it) is new code
+    ({}, {"pkg/a_legacy.py": _EDITED}, True),
+    # an unrelated function that reuses the deleted name is new code
+    ({}, {"pkg/a.py": _SWALLOW, "pkg/a_legacy.py": _UNRELATED}, True),
+    # two arrivals with that name: neither is provably the moved one
+    ({}, {"pkg/a.py": _SWALLOW, "pkg/b.py": _EDITED, "pkg/c.py": _EDITED}, True),
+    # the moved+edited function keeps its existing swallow, but not a second one
+    ({"pkg/a.py": _LEGACY_SW + "\n\n" + _SWALLOW},
+     {"pkg/a.py": _SWALLOW, "pkg/a_legacy.py": _LEGACY_SW.replace("return 7\n", "return 77\n")}, False),
+    ({"pkg/a.py": _LEGACY_SW + "\n\n" + _SWALLOW},
+     {"pkg/a.py": _SWALLOW, "pkg/a_legacy.py": _LEGACY_SW.replace("return 7\n", "return 77\n")
+      + "    try:\n        pass\n    except Exception:\n        pass\n"}, True),
+])
+def test_function_moved_and_edited_keeps_its_cap(tmp_path, capsys, extra_base, files, blocks):
+    repo, base = _base(tmp_path, extra_base) if extra_base else _repo(tmp_path)
+    code, out = _verdict(repo, base, files, capsys)
+    assert code == (1 if blocks else 0), out
+
+
+# --- B3: repeated names pair by body, not by ordinal (banditburai) ------------------------
+
+_DECORATOR = "def method(name):\n    return lambda f: f\n"
+
+
+def _handler(route: str, branches: int, fmt: str = "    if x == {i}:\n        return {i}\n") -> str:
+    return f'\n\n@method("{route}")\ndef _(x):\n' + "".join(fmt.format(i=i) for i in range(branches)) + "    return x\n"
+
+
+@pytest.mark.parametrize("files, blocks", [
+    # a new CC-22 `_` above the old one (trimmed to 20) is new code
+    ({"pkg/h.py": _DECORATOR + _handler("new", 21, '    if x == "s{i}":\n        return "s{i}" * 2\n')
+      + _handler("old", 19)}, True),
+    # a small `_` above the old one, whose CC-22 body only changes a literal, keeps its cap
+    ({"pkg/h.py": _DECORATOR + _handler("new", 0) + _handler("old", 21).replace("return 7\n", "return 77\n")}, False),
+    # control: the old handler grows; its cap is 22 wherever it sits
+    ({"pkg/h.py": _DECORATOR + _handler("new", 0) + _handler("old", 22)}, True),
+])
+def test_repeated_python_names_pair_by_body(tmp_path, capsys, files, blocks):
+    repo, base = _base(tmp_path, {"pkg/h.py": _DECORATOR + _handler("old", 21)})
     code, out = _verdict(repo, base, files, capsys)
     assert code == (1 if blocks else 0), out
 
@@ -123,6 +181,26 @@ _TS_LEGACY = "export function legacy(x: number): number {\n" + _ifs(21, indent="
 ])
 def test_ts_identity_ignores_comments(tmp_path, capsys, files, blocks):
     repo, base = _ts_base(tmp_path, {"web/l.ts": _TS_LEGACY})
+    code, out = _verdict(repo, base, files, capsys)
+    assert code == (1 if blocks else 0), out
+
+
+_RUN_DECL = "declare function run(cb: (x: number) => number): void\n"
+_SMALL_CB = "run((x: number) => {\n  return x + 1\n})\n"
+_BIG_CB = "run((x: number) => {\n" + _ifs(21, indent="  ") + "  return -1\n})\n"
+
+
+@pytest.mark.parametrize("files, blocks", [
+    # a new callback above shifts every `<anon>#n`; the edited CC-22 callback keeps its cap
+    ({"web/c.ts": _RUN_DECL + "run((x: number) => {\n  return x * 2\n})\n" + _SMALL_CB
+      + _BIG_CB.replace("return 7\n", "return 77\n")}, False),
+    # a new CC-22 callback above, the old one trimmed to 20: the new one is new code
+    ({"web/c.ts": _RUN_DECL + "run((x: number) => {\n" + "".join(
+        f"  while (x > {i}) x = x / 2 - {i}\n" for i in range(21)) + "  return x\n})\n"
+      + _SMALL_CB + _BIG_CB.replace(_ifs(2, 19, "  "), "")}, True),
+])
+def test_ts_anonymous_callbacks_pair_by_body(tmp_path, capsys, files, blocks):
+    repo, base = _ts_base(tmp_path, {"web/c.ts": _RUN_DECL + _SMALL_CB + _BIG_CB})
     code, out = _verdict(repo, base, files, capsys)
     assert code == (1 if blocks else 0), out
 

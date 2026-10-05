@@ -596,3 +596,57 @@ def test_an_unreadable_retired_list_claims_nothing_and_forgets_nothing(tmp_path,
         retired.chmod(0o644)
     assert json.loads(retired.read_text(encoding="utf-8-sig"))["ids"] == [done], "the history was rewritten"
     assert done not in owed()
+
+
+
+# --- Review W3: record hygiene --------------------------------------------------------------------
+def test_a_refused_publish_leaves_no_temp_beside_the_record(tmp_path, monkeypatch):
+    target = tmp_path / "records" / "record.json"
+
+    def refuse(src, dst):
+        raise PermissionError(13, "Access is denied", str(dst))  # a reader without FILE_SHARE_DELETE
+
+    monkeypatch.setattr(pause_record.os, "replace", refuse)
+    with pytest.raises(PermissionError):
+        pause_record._atomic_write(target, {"schema": 1})
+    assert sorted(p.name for p in target.parent.iterdir()) == [], "the half-published temp was left behind"
+
+
+def test_the_record_mutex_excludes_other_threads_of_this_process(tmp_path, monkeypatch):
+    import threading
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    held, release = threading.Event(), threading.Event()
+
+    def holder():
+        with pause_record._mutex():
+            held.set()
+            release.wait(30)
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    try:
+        assert held.wait(30)
+        with pytest.raises(pause_record.RecordBusy), pause_record._mutex(wait_s=0.3):
+            pass  # rode on the other thread's hold
+    finally:
+        release.set()
+        thread.join(30)
+    with pause_record._mutex(), pause_record._mutex():  # re-entry on one thread still works
+        pass
+
+
+def test_a_malformed_retired_list_is_set_aside_only_when_nothing_refers_to_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    retired = pause_record._retired_path(pause_record.record_path())
+    retired.write_text("{trunc", encoding="utf-8")
+    assert pause_record.adopt_orphans() == (None, []), "a corrupt history aborted the update"
+    assert not retired.exists() and retired.with_suffix(".corrupt").read_text(encoding="utf-8-sig") == "{trunc"
+
+    # With a record on disk the list may be the only proof it was completed: still unknown.
+    pause_record.write({"pause_id": "c" * 32, "resume_needed": True, "profiles": {"default": 4242}},
+                       owner=pause_record.UNOWNED)
+    retired.write_text("{trunc", encoding="utf-8")
+    with pytest.raises(pause_record.RetiredUnknown):
+        pause_record.orphans()
+    assert retired.read_text(encoding="utf-8-sig") == "{trunc"

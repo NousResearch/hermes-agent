@@ -31,6 +31,8 @@ unlinks its files: an unlink Windows refuses (a reader holding the file without
 FILE_SHARE_DELETE) leaves a copy that is redundant by id, never an obligation that executes again.
 The list is read only under the mutex, and only its absence means "nothing retired": a list that
 cannot be read means unknown, so nothing is claimed and the list is never rewritten from that read.
+A list that reads but does not parse is unknown too while any record or claim exists; with none
+left it guards nothing and is set aside as ``<record stem>.corrupt``.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from contextlib import contextmanager, suppress
@@ -49,7 +52,9 @@ from pathlib import Path
 RECORD_STEM = ".hermes-update-paused-gateways"
 MUTEX_NAME = RECORD_STEM + ".lock"
 _MUTEX_WAIT_S = 10.0
-_mutex_depth = 0
+# Re-entry depth per THREAD: another thread of this process (a gateway's consumer, a watcher)
+# must wait for the kernel lock like any other holder, never ride on this thread's hold.
+_mutex_held = threading.local()
 
 
 def install_root() -> Path:
@@ -102,14 +107,15 @@ class RetiredUnknown(OSError):
 
 @contextmanager
 def _mutex(wait_s: float = _MUTEX_WAIT_S):
-    """Exclusive kernel lock on the record directory's sidecar (A7). Re-entrant in-process."""
-    global _mutex_depth
-    if _mutex_depth:
-        _mutex_depth += 1
+    """Exclusive kernel lock on the record directory's sidecar (A7). Re-entrant per thread; each
+    thread's first entry opens its own descriptor, so threads exclude each other like processes."""
+    depth = getattr(_mutex_held, "depth", 0)
+    if depth:
+        _mutex_held.depth = depth + 1
         try:
             yield
         finally:
-            _mutex_depth -= 1
+            _mutex_held.depth -= 1
         return
     from hermes_cli import update_lock
     path = record_path().with_name(MUTEX_NAME)
@@ -119,13 +125,13 @@ def _mutex(wait_s: float = _MUTEX_WAIT_S):
         deadline = time.monotonic() + wait_s
         while not update_lock._try_lock(fd):
             if time.monotonic() > deadline:
-                raise RecordBusy(f"{path} is held by another process")
+                raise RecordBusy(f"{path} is held by another process or thread")
             time.sleep(0.05)
-        _mutex_depth = 1
+        _mutex_held.depth = 1
         try:
             yield
         finally:
-            _mutex_depth = 0
+            _mutex_held.depth = 0
             update_lock._unlock(fd)
     finally:
         os.close(fd)
@@ -216,11 +222,18 @@ def tree_is_whole(token: dict, root: Path | None = None) -> tuple[bool, str]:
 def _atomic_write(path: Path, body: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(body, fh, indent=1, sort_keys=True)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(body, fh, indent=1, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        # A refused replace (a Windows reader without FILE_SHARE_DELETE) or a failed write must
+        # not leave the half-published temp beside the record; the error itself still propagates.
+        with suppress(OSError):
+            tmp.unlink()
+        raise
 
 
 def read(path: Path | None = None) -> dict | None:
@@ -341,14 +354,34 @@ def _retired(path: Path) -> set[str]:
     claimed again and the list is never rewritten from a read that failed."""
     target = _retired_path(path)
     try:
-        ids = json.loads(target.read_text(encoding="utf-8-sig")).get("ids")
+        text = target.read_text(encoding="utf-8-sig", errors="replace")
     except FileNotFoundError:
         return set()
-    except (OSError, ValueError, AttributeError) as exc:
+    except OSError as exc:  # a refused read (sharing violation, AV scanner): unknown
         raise RetiredUnknown(f"cannot read the retired paused-gateway list {target}: {exc}") from exc
+    try:
+        ids = json.loads(text).get("ids")
+    except (ValueError, AttributeError):  # not JSON / not an object: malformed, like a non-list
+        ids = None
     if not isinstance(ids, list):
-        raise RetiredUnknown(f"the retired paused-gateway list {target} is malformed")
+        return _quarantine_retired(path, target)
     return {str(i) for i in ids}
+
+
+def _quarantine_retired(path: Path, target: Path) -> set[str]:
+    """A retired list that reads but does not parse. While a record or claim of this checkout
+    exists the list may be the only proof it is complete: unknown, fail closed. With none left it
+    guards nothing, and keeping it would abort every Windows update: set it aside and go on."""
+    if path.exists() or _claims(path):
+        raise RetiredUnknown(f"the retired paused-gateway list {target} is malformed")
+    corrupt = target.with_suffix(".corrupt")
+    try:
+        os.replace(target, corrupt)
+    except OSError as exc:
+        raise RetiredUnknown(f"cannot set aside the malformed retired paused-gateway list {target}: {exc}") from exc
+    print(f"  ⚠ Set aside a malformed paused-gateway history (no paused set refers to it): {corrupt}",
+          file=sys.stderr)
+    return set()
 
 
 def _retire(path: Path, carriers: list[tuple[Path, dict]]) -> None:

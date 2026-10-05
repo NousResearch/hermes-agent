@@ -28,11 +28,20 @@ RST = "\x1b[0m"
 
 
 def _colors(text: str) -> list[tuple[str, str]]:
-    """(chunk, SGR) pairs from rendered output, droppings removed."""
-    return [
-        (chunk, sgr)
-        for sgr, chunk in re.findall(r"((?:\x1b\[[0-9;]*m)+)([^\x1b]+)", text)
-    ]
+    """(chunk, SGR in force) pairs from rendered output.
+
+    Every span is emitted as SGR + chunk + reset, so the SGR that applies to a
+    chunk is the last one seen before it — a reset belongs to the span that ended,
+    not to the one that follows.
+    """
+    spans: list[tuple[str, str]] = []
+    sgr = ""
+    for match in re.finditer(r"\x1b\[([0-9;]*)m|([^\x1b]+)", text):
+        if match.group(1) is not None:
+            sgr = match.group(1)
+        else:
+            spans.append((match.group(2), f"\x1b[{sgr}m"))
+    return spans
 
 
 def test_palette_matches_the_requested_truecolor():
@@ -60,8 +69,9 @@ def test_order_mark_is_orange_and_the_lookalikes_stay_green():
 
 
 def test_pr_number_needs_six_digits():
-    assert ("#12345", GREEN) in _colors(render_thinking_text("see #12345"))
-    assert ("#123456", WHITE) in _colors(render_thinking_text("see #123456"))
+    assert _colors(render_thinking_text("see #12345")) == [("see #12345", GREEN)]
+    assert _colors(render_thinking_text("see #123456")) == [
+        ("see ", GREEN), ("#123456", WHITE)]
 
 
 def test_log_mark_is_one_white_span_including_the_pr_inside():
@@ -72,7 +82,8 @@ def test_log_mark_is_one_white_span_including_the_pr_inside():
 
 
 def test_url_is_one_white_span_through_its_fragment():
-    assert ("https://x.com/a#frag", WHITE) in _colors(render_thinking_text("at https://x.com/a#frag ok"))
+    assert _colors(render_thinking_text("at https://x.com/a#frag ok")) == [
+        ("at ", GREEN), ("https://x.com/a#frag", WHITE), (" ok", GREEN)]
 
 
 def test_sentence_punctuation_hugging_a_url_stays_green():
@@ -81,12 +92,17 @@ def test_sentence_punctuation_hugging_a_url_stays_green():
 
 
 def test_adjacent_same_colour_runs_merge_into_one_span():
+    assert _colors(render_thinking_text("§[2026-10-02]§[2026-10-03]")) == [
+        ("§[2026-10-02]§[2026-10-03]", WHITE)]
+    # …but a space between them is prose, so the white run really does break.
     assert _colors(render_thinking_text("§[2026-10-02] §[2026-10-03]")) == [
-        ("§[2026-10-02] §[2026-10-03]", WHITE)]
+        ("§[2026-10-02]", WHITE), (" ", GREEN), ("§[2026-10-03]", WHITE)]
 
 
-@pytest.mark.parametrize("partial", ["§[2026-10-0", "#12345", "1.", "https://x.co", "htt"])
-def test_a_token_that_has_not_finished_arrives_plain(partial):
+@pytest.mark.parametrize("partial", ["§[2026-10-0", "#12345", "1.", "3.14", "#12345x"])
+def test_a_fragment_no_rule_claims_renders_as_prose(partial):
+    """An unfinished stamp / short PR / bare order mark matches no rule, so the
+    renderer leaves it green instead of guessing a class it may have to take back."""
     assert _colors(render_thinking_text(partial)) == [(partial, GREEN)]
 
 
@@ -144,7 +160,7 @@ def test_buffered_preview_colours_its_tokens(reasoning_cli):
     cli._emit_reasoning_preview("1. read §[2026-10-02] then open #123456")
     assert _body(emitted) == "  [thinking] 1. read §[2026-10-02] then open #123456"
     assert (ORANGE, WHITE) not in emitted  # escapes are per-span, not nested
-    colors = [sgr for sgr, _ in _colors("".join(emitted))]
+    colors = [sgr for _, sgr in _colors("".join(emitted))]
     assert colors.count(ORANGE) == 1 and colors.count(WHITE) == 2
 
 
@@ -162,7 +178,7 @@ def test_live_box_line_and_closing_tail_are_coloured(reasoning_cli):
     cli._close_reasoning_box()
     body = _body(emitted)
     assert "1. first step" in body and "open §[2026-10-02]" in body
-    colors = [sgr for sgr, _ in _colors("".join(emitted))]
+    colors = [sgr for _, sgr in _colors("".join(emitted))]
     assert ORANGE in colors and WHITE in colors
 
 
@@ -173,11 +189,9 @@ def test_live_box_never_splits_a_token_across_two_prints(reasoning_cli):
     cli._stream_reasoning_delta("2] tail\n")
     cli._close_reasoning_box()
     painted = "".join(emitted)
-    assert "§[2026-10-02]" in _body(emitted)
-    # The stamp appears exactly once, and as a single white span.
-    assert _body(emitted).count("§[2026-02]") == 0
     assert _body(emitted).count("§[2026-10-02]") == 1
-    assert [chunk for _, chunk in _colors(painted) if "§" in chunk] == ["§[2026-10-02]"]
+    assert [chunk for chunk, _ in _colors(painted) if "§" in chunk] == ["§[2026-10-02]"]
+    assert [sgr for chunk, sgr in _colors(painted) if "§" in chunk] == [WHITE]
 
 
 def test_live_box_flushes_an_unbroken_run_instead_of_going_silent(reasoning_cli):

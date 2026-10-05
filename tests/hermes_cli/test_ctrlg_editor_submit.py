@@ -98,4 +98,3 @@ def test_busy_inline_slash_command_still_dispatched():
 
     assert called == ["/steer keep going"]
     assert c._pending_input.empty()
-

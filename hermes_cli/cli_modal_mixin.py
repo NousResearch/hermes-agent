@@ -159,8 +159,15 @@ class CLIModalMixin:
             _busy_inline = (
                 self._should_handle_model_command_inline(text)
                 or self._should_handle_steer_command_inline(text)
-                or self._should_handle_background_command_inline(text))
+                or self._should_handle_background_command_inline(text)
+                or self._should_handle_goal_control_command_inline(text)
+                or self._should_handle_readonly_dispatch_inline(text))
             if self._agent_running and not _busy_inline:
+                # Busy exec quick commands run off the UI thread like Enter does; anything else
+                # queues for the turn boundary.
+                if self._tui_start_busy_exec(text, has_images=False):
+                    _done()
+                    return
                 self._pending_input.put(text)
                 preview = text[:80] + ("..." if len(text) > 80 else "")
                 _cprint(f"  Queued for the next turn: {preview}")

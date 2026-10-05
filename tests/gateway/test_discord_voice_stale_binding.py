@@ -16,6 +16,7 @@ import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -47,10 +48,10 @@ class _OneBatchReceiver:
 async def test_transcribed_utterance_keeps_its_captured_binding(bound_after: int, dispatched: int) -> None:
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fake"))
     adapter._voice_text_channels = {_GUILD: 700}
-    adapter._voice_receivers[_GUILD] = _OneBatchReceiver()
+    adapter._voice_receivers[_GUILD] = cast(VoiceReceiver, _OneBatchReceiver())
     adapter._voice_input_callback = callback = AsyncMock()
-    adapter._is_allowed_user = lambda *a, **k: True
-    adapter._reset_voice_timeout = lambda *a: None
+    adapter._is_allowed_user = MagicMock(return_value=True)
+    adapter._reset_voice_timeout = MagicMock()
     started, release = threading.Event(), threading.Event()
 
     def transcribe(_path: str) -> dict[str, object]:

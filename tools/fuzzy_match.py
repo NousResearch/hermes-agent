@@ -463,22 +463,32 @@ def _first_meaningful_line(text: str) -> Optional[str]:
     return next((line for line in text.split("\n") if line.strip()), None)
 
 
+def _match_starts_mid_line(content: str, start: int, end: int) -> bool:
+    """Whether text outside the match precedes its first non-blank line.
+
+    Leading newlines and blank lines do not make an anchor partial-line: the first
+    code line can still be captured in full and need indentation adjustment.
+    """
+    first_line_start = start
+    for line in content[start:end].split("\n"):
+        if line.strip():
+            line_start = content.rfind("\n", 0, first_line_start) + 1
+            return bool(content[line_start:first_line_start].strip(" \t\r"))
+        first_line_start += len(line) + 1
+    return False
+
+
 def _reindent_replacement(file_region: str, old_string: str, new_string: str, *,
-                          match_starts_at_line_start: bool) -> str:
+                          match_starts_mid_line: bool) -> str:
     """Re-anchor ``new_string``'s indentation onto the file's actual base indent after a
     non-exact match: swap the LLM base prefix (first non-blank old_string line) for the
     file's, preserving relative nesting; shallower lines anchor to the file base.
 
-    Skips entirely when the match does not begin at column 0 of a line in the file
-    (``match_starts_at_line_start`` False). Anchoring mid-line is normal when the model
-    replaces an expression rather than a whole statement -- old_string never captured
-    whatever precedes it on that line, so its own first-line leading whitespace is not a
-    real "base indent" to re-anchor onto; treating it as one (the old behavior) silently
-    prepends the file's indentation onto lines that already carry their own. A genuine
-    whole-line anchor whose old_string happens to start with no indentation is unaffected:
-    match_starts_at_line_start is still True there, so it re-anchors exactly as before.
+    Preserve the supplied indentation when non-whitespace text precedes the match's
+    first non-blank line: a partial-line expression has no reliable base indent.
+    Leading line breaks and blank lines still allow whole-line re-anchoring.
     """
-    if not new_string or not match_starts_at_line_start:
+    if not new_string or match_starts_mid_line:
         return new_string
     old_first = _first_meaningful_line(old_string)
     file_first = _first_meaningful_line(file_region)
@@ -531,9 +541,10 @@ def _apply_replacements(content: str, matches: list[Span],
     for start, end in sorted(matches, key=lambda x: x[0], reverse=True):
         adjusted = new_string
         if old_string is not None:
-            match_starts_at_line_start = start == 0 or content[start - 1] == "\n"
-            adjusted = _reindent_replacement(content[start:end], old_string, new_string,
-                                             match_starts_at_line_start=match_starts_at_line_start)
+            adjusted = _reindent_replacement(
+                content[start:end], old_string, new_string,
+                match_starts_mid_line=_match_starts_mid_line(content, start, end),
+            )
         result = result[:start] + adjusted + result[end:]
     return result
 

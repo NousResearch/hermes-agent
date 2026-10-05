@@ -1,5 +1,7 @@
 """Tests for the fuzzy matching module."""
 
+import pytest
+
 from tools.fuzzy_match import IDENTICAL_STRINGS_ERROR, fuzzy_find_and_replace
 
 
@@ -142,27 +144,32 @@ class TestIndentationPreservation:
         assert lines[1] == ""
         assert lines[2] == "    b = 99"
 
-    def test_mid_line_anchor_keeps_new_string_indentation(self):
-        # Replacing an expression, not a whole line: old_string's first line has no
-        # indentation because the text before it on that line was never part of it.
+    @pytest.mark.parametrize("anchor_indent", ["", "    ", "\t"])
+    def test_mid_line_anchor_keeps_new_string_indentation(self, anchor_indent):
+        # Whitespace-bearing anchors match the separator after '='. Their indentation
+        # differs from that separator, so the old re-anchoring shifts continuation lines.
         content = "def f():\n        total = compute(a,  b)\n"
-        old = "compute(a, b)"
-        new = "compute(\n            a, b)"
+        old = anchor_indent + "compute(a, b)"
+        new = anchor_indent + "compute(\n            a, b)"
         out, count, strategy, err = fuzzy_find_and_replace(content, old, new)
         assert err is None and count == 1 and strategy != "exact"
-        assert out == "def f():\n        total = compute(\n            a, b)\n"
+        assert out.splitlines()[-1] == new.splitlines()[-1]
+        compile(out, "<patched>", "exec")
 
-    def test_match_starting_with_line_break_is_reindented(self):
+    @pytest.mark.parametrize("leading_breaks", ["\n", "\n\n", "\n \t\n", "\r\n", "\r\n\r\n"])
+    @pytest.mark.parametrize("anchor_indent", ["    ", "\t"])
+    def test_match_starting_with_line_break_is_reindented(self, leading_breaks, anchor_indent):
         # old_string starts with the line break that ends the previous line, so the
         # match starts at the end of a line, but every code line in it is whole.
-        content = "class A:\n    def f(self):\n        x = 1\n        return x\n"
-        old = "\n    return x"
-        new = "\n    return x + 1"
+        line_break = "\r\n" if leading_breaks.startswith("\r\n") else "\n"
+        prefix = line_break.join(("class A:", "    def f(self):", "        x = 1"))
+        content = prefix + leading_breaks + "        return x" + line_break
+        old = leading_breaks + anchor_indent + "return x"
+        new = leading_breaks + anchor_indent + "return x + 1"
         out, count, strategy, err = fuzzy_find_and_replace(content, old, new)
         assert err is None and count == 1 and strategy != "exact"
-        assert "\n        return x + 1\n" in out
-        import ast
-        ast.parse(out)
+        assert out == prefix + leading_breaks + "        return x + 1" + line_break
+        compile(out, "<patched>", "exec")
 
 
 class TestReplaceAll:

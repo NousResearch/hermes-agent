@@ -211,7 +211,8 @@ def _launchd_unsupported_marker_exists() -> bool:
 
 def _gateway_run_command() -> list[str]:
     from hermes_cli._launchers import runtime_command
-    return runtime_command(_gw().PROJECT_ROOT, [*shlex.split(_gw()._profile_arg()), "gateway", "run", "--replace"],
+    return runtime_command(_gw()._service_install_root(_gw().PROJECT_ROOT),
+                           [*shlex.split(_gw()._profile_arg()), "gateway", "run", "--replace"],
                            python=_gw().get_python_path())
 
 
@@ -264,15 +265,18 @@ def _timestamped_stderr_gateway_command(error_log: Path, *, external_supervisor:
     ``generate_systemd_unit``, whose ExecStart also runs ``gateway run`` without ``--replace``.
     """
     from hermes_cli._launchers import installation_command, runtime_command
+    # Persisted launchd commands bind to the install root, never the
+    # generation workspace a venv console script ran from (#131164).
+    root = _gw()._service_install_root(_gw().PROJECT_ROOT)
     inner = _gw()._gateway_run_command()
     if external_supervisor:
-        inner = installation_command(_gw().PROJECT_ROOT, [*shlex.split(_gw()._profile_arg()), "gateway", "run"],
+        inner = installation_command(root, [*shlex.split(_gw()._profile_arg()), "gateway", "run"],
                                      python=_gw().get_python_path())
         inner = [part for part in inner if part != "--replace"]
         if "--external-supervisor" not in inner:
             inner.append("--external-supervisor")
     command = installation_command if external_supervisor else runtime_command
-    return command(_gw().PROJECT_ROOT, ["--error-log", str(error_log), "--", *inner],
+    return command(root, ["--error-log", str(error_log), "--", *inner],
                    module="hermes_cli.stderr_timestamp", python=_gw().get_python_path())
 
 
@@ -550,6 +554,8 @@ def refresh_launchd_plist_if_needed() -> bool:
     new_plist = _gw().generate_launchd_plist()
     if gateway_service_owner.refuse_temp_home_service_write(new_plist, "launchd plist"):
         return False
+    if _gw()._refuse_generation_launcher_service_write(new_plist, "launchd plist"):
+        return False
 
     _gw()._prepare_service_launcher()
     plist_path.write_text(new_plist, encoding="utf-8")
@@ -640,6 +646,8 @@ def launchd_install(force: bool = False, *, start_now: bool = True, force_unit_p
     new_plist = _gw().generate_launchd_plist()
     if gateway_service_owner.refuse_temp_home_service_write(new_plist, "launchd plist"):
         return
+    if _gw()._refuse_generation_launcher_service_write(new_plist, "launchd plist"):
+        return
     print(f"Installing launchd service to: {plist_path}")
     _gw()._prepare_service_launcher()
     plist_path.write_text(new_plist, encoding="utf-8")
@@ -694,6 +702,8 @@ def launchd_start():
     if not plist_path.exists():
         new_plist = _gw().generate_launchd_plist()
         if gateway_service_owner.refuse_temp_home_service_write(new_plist, "launchd plist"):
+            sys.exit(1)
+        if _gw()._refuse_generation_launcher_service_write(new_plist, "launchd plist"):
             sys.exit(1)
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)

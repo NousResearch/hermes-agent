@@ -176,6 +176,39 @@ def _payload_path(root: Path, relative: str, what: str) -> Path:
     return path
 
 
+def owning_install_root(project_root: Path) -> Path | None:
+    """The checkout that owns a dependency-generation tree, or ``None``.
+
+    ``installs/<key>/environments/<gen>/{workspace,venv}`` trees are keyed by
+    their own path, so nothing recorded for the owning install answers for
+    them, and the generation may be collected at any time. The install state
+    beside the generation records the checkout that was activated
+    (``inputs/.project-root``, written by ``record_activation_inputs``): the
+    reverse mapping a caller needs before it may persist a command naming a
+    generation tree.
+    """
+    root = Path(project_root).resolve()
+    tree = root.parent if root.name in ("workspace", "venv") else root
+    environments = tree.parent
+    if environments.name != "environments":
+        return None
+    state = environments.parent
+    if state.parent.name != "installs":
+        return None
+    try:
+        checkout = Path((state / "inputs" / ".project-root")
+                        .read_text(encoding="utf-8-sig").strip()).resolve()
+    except (OSError, ValueError):
+        return None
+    if not checkout.is_dir() or not (checkout / "pyproject.toml").is_file():
+        return None
+    # install_key hashes the checkout path: the state dir must be the one this
+    # checkout actually owns, else a moved or hand-edited stamp is masquerading.
+    if install_state_dir(checkout).resolve() != state.resolve():
+        return None
+    return checkout
+
+
 def payload_venv(project_root: Path) -> Path | None:
     """The environment a sealed payload ships beside its tree, or ``None``."""
     root = Path(project_root).resolve()

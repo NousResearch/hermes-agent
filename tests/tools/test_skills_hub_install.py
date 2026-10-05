@@ -6,7 +6,10 @@ hash-validated under skills/.hub (which skill discovery skips) BEFORE the old co
 aside, and a failed swap restores the prior install instead of losing the skill.
 """
 
+import logging
+import os
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -237,3 +240,62 @@ def test_audit_log_failure_does_not_fail_install(hub_env, monkeypatch):
     recorded = skills_hub.HubLockFile().get_installed("v1-skill")
     assert recorded is not None
     assert recorded["content_hash"] == content_hash(Path(out))
+
+
+def test_stale_staging_reclaimed_when_live_skill_intact(hub_env, monkeypatch):
+    """Abandoned staging dirs are reclaimed on the next install when live skill exists."""
+    from tools import skills_hub, skills_hub_install
+
+    _seed_installed(skills_hub, "v1-skill", "# v1\nOriginal.\n")
+    install_dir = hub_env["skills"] / "v1-skill"
+
+    staging_root = hub_env["hub"] / ".replacement-staging"
+    staging_root.mkdir(parents=True, exist_ok=True)
+    stale = staging_root / "v1-skill-deadbeef"
+    stale.mkdir(parents=True, exist_ok=True)
+    (stale / "SKILL.md").write_text("# stale\n", encoding="utf-8")
+    old = time.time() - 120
+    os.utime(stale, (old, old))
+    fresh = staging_root / "v1-skill-fresh"
+    fresh.mkdir(parents=True, exist_ok=True)
+    (fresh / "SKILL.md").write_text("# fresh\n", encoding="utf-8")
+
+    bundle, scan = _make_bundle("v1-skill", "# v1\nPatched.\n")
+    quarantine = skills_hub_install.quarantine_bundle(bundle)
+
+    out = skills_hub_install.install_from_quarantine(
+        quarantine, "v1-skill", "", bundle, scan)
+    assert Path(out).resolve() == install_dir.resolve()
+    assert not stale.exists()
+    assert fresh.is_dir()
+    assert "Patched." in (install_dir / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_missing_live_skill_preserves_staging_and_warns(hub_env, monkeypatch, caplog):
+    """When the live skill is missing, staging dirs are preserved for manual inspection."""
+    from tools import skills_hub, skills_hub_install
+
+    # Seed an unrelated skill so hub dirs exist; 'new-skill' itself stays a fresh install.
+    _seed_installed(skills_hub, "other-skill", "# other\nHi.\n")
+    staging_root = hub_env["hub"] / ".replacement-staging"
+    staging_root.mkdir(parents=True, exist_ok=True)
+    stale = staging_root / "new-skill-deadbeef"
+    stale.mkdir(parents=True, exist_ok=True)
+    (stale / "SKILL.md").write_text("# stale\n", encoding="utf-8")
+    old = time.time() - 120
+    os.utime(stale, (old, old))
+    fresh = staging_root / "new-skill-fresh"
+    fresh.mkdir(parents=True, exist_ok=True)
+    (fresh / "SKILL.md").write_text("# fresh\n", encoding="utf-8")
+
+    bundle, scan = _make_bundle("new-skill", "# new\nHello.\n")
+    quarantine = skills_hub_install.quarantine_bundle(bundle)
+
+    with caplog.at_level(logging.WARNING, logger="tools.skills_hub"):
+        out = skills_hub_install.install_from_quarantine(
+            quarantine, "new-skill", "", bundle, scan)
+    assert Path(out).exists()
+    assert stale.is_dir()
+    assert fresh.is_dir()
+    assert any("manual inspection" in r.message for r in caplog.records)
+    assert "Hello." in (Path(out) / "SKILL.md").read_text(encoding="utf-8")

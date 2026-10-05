@@ -12,6 +12,7 @@ import logging
 import hashlib
 import shutil
 import tempfile
+import time
 import uuid
 from contextlib import suppress
 from pathlib import Path
@@ -143,6 +144,41 @@ def _check_install_target(install_dir: Path) -> None:
                              f"Use a different --name or install into a subcategory.")
 
 
+def _reclaim_stale_staging(safe_skill_name: str, staging_root: Path, install_dir: Path, grace_seconds: int = 60) -> None:
+    """Remove abandoned per-attempt staging dirs from a prior crashed swap.
+
+    Only removes `{safe_skill_name}-<hex>` dirs under staging_root (the tempfile.mkdtemp
+    prefix) whose mtime is older than grace_seconds. Never touches .recovery-*/.failed-*
+    (different prefix) and never removes anything when the live skill is missing.
+    """
+    with suppress(Exception):
+        if not staging_root.is_dir():
+            return
+        if not install_dir.exists():
+            with suppress(Exception):
+                stale = [p.name for p in staging_root.iterdir() if p.is_dir() and p.name.startswith(f"{safe_skill_name}-")]
+                if stale:
+                    logger.warning("Skill '%s': live install missing; leaving %d stale staging dir(s) for manual inspection: %s", safe_skill_name, len(stale), ", ".join(sorted(stale)))
+            return
+        now = time.time()
+        prefix = f"{safe_skill_name}-"
+        with suppress(Exception):
+            entries = list(staging_root.iterdir())
+        for entry in entries:
+            with suppress(Exception):
+                if not entry.is_dir() or entry.is_symlink():
+                    continue
+                if not entry.name.startswith(prefix):
+                    continue
+                try:
+                    age = now - entry.stat().st_mtime
+                except OSError:
+                    continue
+                if age < grace_seconds:
+                    continue  # in-flight concurrent install; never touch
+                shutil.rmtree(entry, ignore_errors=True)
+
+
 def install_from_quarantine(
     quarantine_path: Path, skill_name: str, category: str, bundle: SkillBundle, scan_result: ScanResult,
     scan_provenance: Optional[dict[str, Any]] = None,
@@ -169,6 +205,9 @@ def install_from_quarantine(
     # symlink-redirected target.
     install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
     _check_install_target(install_dir)
+    # Reclaim abandoned staging dirs from a prior crashed swap before starting a new one.
+    staging_root = _skills_dir().resolve() / ".hub" / ".replacement-staging"
+    _reclaim_stale_staging(safe_skill_name, staging_root, install_dir)
 
     try:
         skill_size = (quarantine_path / "SKILL.md").stat().st_size
@@ -198,7 +237,6 @@ def install_from_quarantine(
     # BEFORE touching the live tree, so a partial copy or read failure cannot destroy the
     # installed skill. A per-attempt unique staging dir keeps concurrent same-skill installs
     # from clobbering each other's staging.
-    staging_root = _skills_dir().resolve() / ".hub" / ".replacement-staging"
     staging_root.mkdir(parents=True, exist_ok=True)
     # mkdtemp guarantees a unique, non-colliding directory name; copytree then populates it.
     # A per-attempt unique staging dir keeps concurrent same-skill installs from clobbering

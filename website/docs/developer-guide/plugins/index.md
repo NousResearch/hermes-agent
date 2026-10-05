@@ -1463,6 +1463,30 @@ def register(ctx):
 
 For running a full `hermes <subcommand>` (e.g. `hermes kanban show`), shell out with the `terminal` tool via `ctx.dispatch_tool("terminal", {"command": "hermes kanban show ..."})` — there is no in-process slash-command bridge for headless worker sessions, and tools are the supported way to drive Hermes from a hook.
 
+### Know which cron run you are in
+
+`ctx.current_cron_execution()` returns the scheduled run the current code executes inside, or `None` outside cron. It works from any hook that fires during the run (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, ...) and from tool handlers. The value is a frozen `CronExecution`:
+
+| Field | Meaning |
+|---|---|
+| `job_id`, `job_name` | The cron job. |
+| `execution_id` | This run's row in the executions ledger (`hermes cron runs`). |
+| `source` | Which path fired the run: `"builtin"` (the built-in scheduler), `"direct"` (a run fired outside it, e.g. `hermes cron run`), or an external scheduler's name. |
+| `scheduled_instant` | The schedule occurrence this run fires. `None` for a manual or other off-schedule run, so check this field to tell a scheduled run from a manual one. |
+| `started_at` | When the run started. |
+| `profile` | The profile that owns the job. |
+
+The scheduler sets it only after the run has won its execution claim, and clears it when the run ends. It is per-run, so two jobs or profiles firing at the same time never see each other's value. The model cannot forge it: hook arguments come from Hermes, and tool subprocesses (terminal, `execute_code`) run in a separate interpreter. Subagents spawned with `delegate_task` get `None` because they are not the scheduled run itself.
+
+```python
+def register(ctx):
+    def guard(*, tool_name, args, **kw):
+        run = ctx.current_cron_execution()
+        if tool_name == "deploy" and (run is None or run.scheduled_instant is None):
+            return {"action": "block", "message": "deploy only runs from its scheduled cron job"}
+    ctx.register_hook("pre_tool_call", guard)
+```
+
 ### Handle Slack Block Kit button clicks
 
 Plugins that post Block Kit messages with interactive elements (buttons, overflow menus, datepickers, etc.) can register the click handlers directly with the Slack adapter — no monkey-patching of `slack_bolt.AsyncApp` required.

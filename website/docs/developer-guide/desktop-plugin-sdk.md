@@ -1203,6 +1203,7 @@ wins (no plugin "owns" the value afterwards, nothing to tear down for `set`).
 ```ts
 type DesktopSettingValues = {
   'backdrop.v1': boolean
+  chatTextScale: 90 | 100 | 110 | 125 | 150 | 175 // percent; Appearance → Chat Text Size
   'composerPopout.gesturesEnabled': boolean
   'intro-splash.v1': boolean
   'reasoning.collapsedByDefault': boolean
@@ -1226,6 +1227,22 @@ register(ctx) {
 }
 ```
 
+`chatTextScale` is the user's chat text size (default `110`). It scales the
+transcript and composer text (and its line height) through the host's
+`--chat-text-scale` CSS variable, so a plugin or theme that wants larger/smaller
+reading text sets the same preset the user would pick; pane geometry, row
+spacing and chrome stay core-owned. Only the
+six presets are accepted: an off-preset number (`112`, `'125'`) throws instead of
+being snapped, so a typo can't silently reset the user's size. Like every key
+here it is the user's preference, not a plugin override: write it from an
+explicit user action in your UI (never at `register`), and read/subscribe to
+adapt your own rendering.
+
+```ts
+const dispose = host.settings.subscribe('chatTextScale', pct => setMyFontScale(pct / 100))
+ctx.onDispose(dispose)
+```
+
 Arbitration: the allowlist above is closed. An unknown key or a value outside
 the key's type throws **synchronously** (`Unsupported desktop setting: …` /
 `Invalid value for desktop setting: …`) and nothing is written — `host.settings`
@@ -1239,6 +1256,7 @@ Deliberately **not** keys, and why:
 | keybind map (`hermes.desktop.keybinds`) | `KEYBINDS_AREA` contribution | a raw map write rebinds every other plugin's shortcuts; the area merges per plugin and is torn down with it |
 | active theme / mode record | `THEMES_AREA` (register a theme; the user selects it) | theme selection is per window/profile and arbitrated by the app, not a flat preference |
 | `pluginDecisions` (desktop plugin on/off) | the app's Plugins tab (a read-only view is a separate SDK hook) | a plugin toggling another plugin's enable state is plugins interfering with each other |
+| chat / composer width, turn spacing, session-row geometry | nothing yet — these become keys only once they exist as core Appearance preferences (chat width: #55287) | layout is host-owned; a plugin-owned geometry contract would make every theme a layout contract |
 | `toolView.technical`, `embed-mode`, `titlebarAppActions`, `translucency.v2`, `user-bubble-transparency.v1`, `hermesDesktop.zoom.*` | follow-up keys after each store is audited | some drive the main process or window chrome; each needs its own guard and ownership review before it becomes plugin-writable |
 
 Migration — `hermes-appearance-hub`, which today does

@@ -28,6 +28,7 @@ from hermes_cli.update_lock import (
     HANDOFF_PID_ENV,
     UPDATE_MARKER_MAX_AGE_SECONDS,
     UpdateLock,
+    _stdlib_parent_pid,
     describe_holder,
     read_live_update,
     update_marker_path,
@@ -69,6 +70,39 @@ def test_marker_path_follows_process_hermes_home(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     assert update_marker_path() == tmp_path / ".hermes-update-in-progress"
+
+
+def test_stdlib_parent_pid_ps_fallback_pins_utf8_decoding(monkeypatch):
+    """Regression for issue #122470: the POSIX ``ps -o ppid=`` fallback (no
+    ``/proc``, e.g. macOS) used ``text=True`` with no ``encoding=``, so
+    ``subprocess``'s reader thread decoded child output with the process
+    locale codec -- a non-UTF-8-compatible locale (e.g. Windows cp936/GBK,
+    though this specific branch is POSIX-only, the same class of bug) could
+    crash on non-ASCII bytes in the child's output rather than the update
+    path degrading gracefully."""
+    real_run = subprocess.run
+    captured_kwargs = {}
+
+    def fake_run(cmd, **kwargs):
+        captured_kwargs.update(kwargs)
+        # Simulate a child emitting a byte a non-UTF-8-compatible locale codec
+        # cannot decode. With the fix's encoding="utf-8", errors="replace"
+        # pinned, this must decode without raising UnicodeDecodeError -- the
+        # malformed trailing byte then fails int() parsing gracefully (caught
+        # by _stdlib_parent_pid's own except clause), not with a crash.
+        return real_run(
+            [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'42\\x94')"],
+            **{**kwargs, "check": False},
+        )
+
+    monkeypatch.setattr(os.path, "isdir", lambda path: False if path == "/proc" else os.path.isdir(path))
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = _stdlib_parent_pid(os.getpid())  # must not raise UnicodeDecodeError
+
+    assert captured_kwargs.get("encoding") == "utf-8"
+    assert captured_kwargs.get("errors") == "replace"
+    assert result is None  # malformed trailing byte fails int() gracefully, not a crash
 
 
 def test_acquire_writes_pid_and_start_time(marker):

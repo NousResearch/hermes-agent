@@ -2267,7 +2267,40 @@ def store_attachment_bytes(
     dest_dir = task_attachments_dir(task_id, board=board)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = _collision_free_path(dest_dir, safe_name)
-    dest_path.write_bytes(data)
+    # R5-01 (review 5, 2026-10-05): the write is now PUBLISHED, not written.
+    # The old ``write_bytes`` could truncate a name a concurrent P3b
+    # preservation had just ``os.link``-published and bound inside a committed
+    # completion — corrupting a ``done`` card's proof while both calls returned
+    # ``ok``. The blob lands on a staging file and is atomically reserved onto
+    # a free name (O_EXCL ``os.link`` against the cooperative writers); a name
+    # won by another writer between precheck and link is NEVER overwritten —
+    # the upload shifts to the next free name instead (the incremental
+    # ``name (n)`` shape from the precheck-only chooser is preserved).
+    staging = dest_dir / f".upload-staging-{secrets.token_hex(12)}"
+    fd: Optional[int] = None
+    try:
+        fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            fd = None
+            handle.write(data)
+        dest_path = _reserve_attachment_name(staging, dest_path)
+        with contextlib.suppress(OSError):
+            staging.unlink(missing_ok=True)  # hard link published; staging may go
+    except BaseException:
+        with contextlib.suppress(OSError):
+            if fd is not None:
+                os.close(fd)
+        with contextlib.suppress(OSError):
+            staging.unlink(missing_ok=True)
+        raise
+    # Identity of the exact file THIS attempt published — the cleanup below
+    # only ever unlinks a file still carrying it (a name reused meanwhile by
+    # another writer is not ours to remove).
+    try:
+        _pub_stat = os.stat(dest_path)
+        _pub_identity = (_pub_stat.st_ino, _pub_stat.st_dev, _pub_stat.st_ctime_ns)
+    except OSError:
+        _pub_identity = None
     try:
         return add_attachment(
             conn, task_id, filename=dest_path.name, stored_path=str(dest_path.resolve()),
@@ -2275,10 +2308,39 @@ def store_attachment_bytes(
         )
     except Exception:
         # Don't leave an orphan blob if the metadata insert fails (most
-        # commonly: the task id doesn't exist).
-        with contextlib.suppress(OSError):
-            dest_path.unlink(missing_ok=True)
+        # commonly: the task id doesn't exist). Identity-guarded (R5-01).
+        ours = False
+        if _pub_identity is not None:
+            try:
+                _cur = os.stat(dest_path)
+                ours = (_cur.st_ino, _cur.st_dev, _cur.st_ctime_ns) == _pub_identity
+            except OSError:
+                ours = False
+        if ours:
+            with contextlib.suppress(OSError):
+                os.unlink(dest_path)
         raise
+
+
+def _reserve_attachment_name(staging: Path, first_candidate: Path) -> Path:
+    """Atomically publish the staging blob onto ``first_candidate`` (or the
+    next free ``stem_Nsuffix`` name) via ``os.link`` — O_EXCL semantics: an
+    existing file is never truncated or replaced (R5-01). The caller removes
+    the staging file. Raises ``OSError`` when no free name is found within
+    the attempt budget."""
+    stem = first_candidate.stem or "attachment"
+    suffix = first_candidate.suffix
+    dest_dir = first_candidate.parent
+    candidate = first_candidate
+    for idx in range(100_000):
+        if idx:
+            candidate = dest_dir / f"{stem}_{idx}{suffix}"
+        try:
+            os.link(staging, candidate)
+            return candidate
+        except FileExistsError:
+            continue
+    raise OSError(f"could not find a free attachment name under {dest_dir}")
 
 
 def add_attachment(
@@ -3436,6 +3498,10 @@ def complete_task(
     # is the specific signal (an armed gate is a human decision in flight,
     # same rule: force does not bypass, and a later matching approval marker
     # is the legitimate exit). Never folded into empty-result/refusal noise.
+    # R5-02 (review 5, 2026-10-05): this pre-lock check alone is RACY — a
+    # marker armed between it and the completion txn used to skip the gate
+    # entirely; the authoritative check now rides INSIDE the txn. This one
+    # stays so an armed gate remains the SPECIFIC pre-lock refusal signal.
     _gate_human_gate_pending(conn, task_id)  # auditable event + raise
     # P4 PARTE 2: an off-board completion must name its serving model. Must
     # run BEFORE the evidence gate too (specific signal first); the on-board
@@ -3551,6 +3617,16 @@ def complete_task(
                 params = (*params, int(expected_run_id))
             if conn.execute(sql, params).rowcount != 1:
                 return False
+            # P2b human gate re-check INSIDE this txn (R5-02, review 5
+            # 2026-10-05): a ``HUMAN_GATE_PENDING`` marker armed between the
+            # pre-lock gate and this write lock must block the close — the
+            # old UPDATE fence covered statuses only, not marker state.
+            # Divergence rolls the whole txn back (the status UPDATE above
+            # un-commits) and the typed refusal is recorded durably below,
+            # exactly like the pre-lock refusal.
+            _armed_now, _gate_ids_now = _latest_armed_human_gate(conn, task_id)
+            if _armed_now:
+                raise _HumanGateArmedInTxn(list(_gate_ids_now))
             # P3b TOCTOU: the artifact gate read the contract BEFORE this
             # write txn (no lock held). Revalidate the contract the fence
             # RODE ON — same rules as creation-time
@@ -3692,6 +3768,17 @@ def complete_task(
                 conn, task_id, "completion_blocked_contract_changed", exc.payload,
             )
         raise ContractSpecError(exc.message) from exc
+    except _HumanGateArmedInTxn as exc:
+        # R5-02: the in-txn human-gate recheck tripped. The completion txn
+        # rolled back (card keeps its prior status); record the durable
+        # refusal in its own txn — same event and payload as the pre-lock
+        # refusal — then raise the typed, recoverable error.
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "completion_blocked_human_gate",
+                {"gate_ids": exc.gate_ids},
+            )
+        raise HumanGatePendingError(task_id, exc.gate_ids) from exc
     except _OffBoardGateChangedInTxn as exc:
         # P4 PARTE 3: the off-board recheck inside the txn diverged (a
         # concurrent origin write / run swap). The rollback already restored
@@ -3819,10 +3906,18 @@ def _gate_human_gate_pending(conn: sqlite3.Connection, task_id: str) -> None:
     to ``done`` erases the decision without the operator seeing it, so it is
     refused with the parked-gate signal BEFORE the evidence/created-cards
     gates can fold it into a less specific refusal. ``force=True`` does NOT
-    bypass this: it covers the live-claim fence only. The refusal is
-    recorded as an auditable ``completion_blocked_human_gate`` event (own
-    txn, task-scoped ``run_id=None`` — a completion may span runs), then
-    raised as :class:`HumanGatePendingError`.
+    bypass this: it covers the live-claim fence only. A refusal with an
+    armed gate is recorded as an auditable
+    ``completion_blocked_human_gate`` event (own txn, task-scoped
+    ``run_id=None`` — a completion may span runs), then raised as
+    :class:`HumanGatePendingError`.
+
+    R5-02 (review 5, 2026-10-05): this gate is ALSO re-evaluated INSIDE the
+    completion write txn — a marker armed between this pre-lock check and
+    the lock used to complete unimpeded (the status UPDATE fence covers
+    statuses only, not marker state). The in-txn trip rolls the completion
+    back and emits the same auditable refusal before raising the same
+    error.
     """
     armed, gate_ids = _latest_armed_human_gate(conn, task_id)
     if not armed:
@@ -4434,6 +4529,26 @@ def _peek_gate_contract(conn: sqlite3.Connection) -> object:
     the gate enforced nothing. Used by ``complete_task`` so P3b capture rides
     the exact contract version the gate validated (round-2 HIGH #2)."""
     return _GATE_CONTRACT_STASH.get(id(conn), _CONTRACT_STASH_MISSING)
+
+
+class _HumanGateArmedInTxn(Exception):
+    """INTERNAL: the in-txn human-gate recheck refused the completion (R5-02,
+    review 5 2026-10-05).
+
+    Raised INSIDE the completion write txn so the enclosing context manager
+    ROLLS BACK the fence flip (card keeps its prior status, no ``completed``
+    event, nothing staged/bound). The caller catches it OUTSIDE the txn,
+    records ``completion_blocked_human_gate`` durably in its own txn (same
+    event + payload shape as the pre-lock refusal), then raises
+    :class:`HumanGatePendingError`.
+    """
+
+    def __init__(self, gate_ids: list):
+        self.gate_ids = list(gate_ids)
+        super().__init__(
+            "completion blocked: a HUMAN_GATE_PENDING marker was armed between "
+            "the pre-lock gate and the completion transaction"
+        )
 
 
 class _OffBoardGateChangedInTxn(Exception):

@@ -58,8 +58,12 @@ RULES: tuple[Rule, ...] = (
     # Swallowed exceptions: the top statically-catchable bug cause in the fix sample.
     Rule("S110", "try/except/pass", "log it or narrow the except; a silent pass hides the"
          " failure the next bug report is about", "ruff"),
+    # ruff (pinned, --ignore-noqa) passes a handler that re-raises or logs the traceback; a
+    # message-only log such as `logger.warning("...: %s", e)` still counts as swallowed.
     Rule("BLE001", "blind `except Exception`", "catch the exceptions this code can actually"
-         " raise; if a boundary truly needs a catch-all, log it with context", "ruff"),
+         " raise; a deliberate catch-all boundary must re-raise or log the traceback"
+         " (`logger.exception(...)` or `exc_info=True`; `logger.warning(..., e)` is not enough)."
+         " `# noqa` is ignored here: waive with `# health: allow BLE001 -- <why>`", "ruff"),
     Rule("E722", "bare `except:`", "catch a named exception (bare except also swallows"
          " KeyboardInterrupt/SystemExit)", "ruff"),
     # Correctness basics.
@@ -89,7 +93,9 @@ RULES: tuple[Rule, ...] = (
          " `gather(return_exceptions=True)` also returns CancelledError", "ast"),
     # Profile scope (one process serves many profiles).
     Rule("HX001", "hardcoded Hermes home", "`get_hermes_home()` for paths,"
-         " `display_hermes_home()` for user-facing text (`hermes_constants`)", "ast",
+         " `display_hermes_home()` for user-facing text (`hermes_constants`); a path that"
+         " deliberately lives under the user's home, not the profile (e.g. the profiles root),"
+         " takes `# health: allow HX001 -- <why>`", "ast",
          exclude=SINGLE_PROFILE + ("hermes_constants.py",)),
     Rule("HX002", "new HERMES_* environment variable", "behavioural settings go in"
          " config.yaml, secrets through the secret scope; `.env` is for credentials only",
@@ -114,8 +120,10 @@ RULES: tuple[Rule, ...] = (
          " `gateway.status.looks_like_gateway_command_line` /"
          " `hermes_cli.update_cmd._hermes_holder_subcommand` and match full cmdlines", "ast"),
     # Config truthiness.
-    Rule("HX010", "bool() of a config/env string", "`bool(\"false\")` is True: parse it"
-         " (`is_truthy_value`) or compare explicitly", "ast"),
+    Rule("HX010", "bool() of a config/env string", "`bool(\"false\")` is True. Is it set?"
+         " `os.getenv(\"X\") is not None` (or `!= \"\"` to treat empty as unset). A boolean"
+         " flag? `is_truthy_value(...)`, which is False for any non-flag string such as a key",
+         "ast"),
     # Structure.
     Rule("HX011", "if/elif ladder on one name", "use a dict/table -> handler (`_SLASH_DISPATCH`"
          " is the shape)", "ast", exclude=()),

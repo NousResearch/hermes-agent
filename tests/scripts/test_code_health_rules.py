@@ -335,3 +335,30 @@ def test_raw_thread_context_from_another_function_is_not_accepted():
     src = ("import contextvars\nimport threading\n\n\ndef g():\n    ctx = contextvars.copy_context()\n"
            "    return ctx\n\n\ndef f(fn, ctx):\n    return threading.Thread(target=ctx.run)\n")
     assert _hits("HX012", src) == [11]
+
+
+# --- fix texts say what the engine actually accepts ---
+
+def test_fix_texts():
+    hx010 = RULES_BY_ID["HX010"].fix
+    assert "is not None" in hx010 and "is_truthy_value" in hx010
+    assert hx010.index("is not None") < hx010.index("is_truthy_value")
+    assert "allow" in RULES_BY_ID["HX001"].fix
+    ble = RULES_BY_ID["BLE001"].fix
+    assert "noqa" in ble and "health: allow BLE001" in ble and "exc_info=True" in ble
+
+
+_HANDLER = "import logging\n\nlogger = logging.getLogger(__name__)\n\n\ndef boundary():\n    try:\n        pass\n{}"
+
+
+@pytest.mark.parametrize("handler, blocks", [
+    ("    except Exception:\n        logger.exception('boundary failed')\n", False),
+    ("    except Exception:\n        logger.warning('boundary failed', exc_info=True)\n", False),
+    ("    except Exception as exc:\n        raise RuntimeError('boundary failed') from exc\n", False),
+    ("    except Exception as exc:\n        logger.warning('boundary failed: %s', exc)\n", True),
+    ("    except Exception:  # noqa: BLE001\n        logger.warning('boundary failed')\n", True),
+    ("    except Exception:  # health: allow BLE001 -- top-level boundary\n        logger.warning('x')\n", False),
+])
+def test_ble001_fix_text_matches_the_engine(tmp_path, capsys, handler, blocks):
+    code, out = _judge(tmp_path, capsys, {}, {"pkg/h.py": _HANDLER.format(handler)})
+    assert code == (1 if blocks else 0), out

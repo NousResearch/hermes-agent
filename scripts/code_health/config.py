@@ -9,8 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fnmatch import fnmatch
 
-# Master switch. Read from the BASE revision, so a PR cannot relax its own check, and honoured
-# everywhere the ratchet runs (CI, `scripts/check`, the git hooks). "blocking": findings fail;
+# Master switch, honoured everywhere the ratchet runs (CI, `scripts/check`, the git hooks). It is
+# read from main, never from the branch under test, so a PR cannot relax its own check: CI reads
+# the merge commit's first parent; local runs read `origin/main` (falling back to the merge-base).
+# A flip reaches an open PR on its next CI run (a re-run reuses the old merge commit). "blocking": findings fail;
 # "advisory": findings print, the run passes; "off": the ratchet is skipped. Flip it with a
 # one-line commit to main; a single rule can instead be demoted with ``blocking=False`` below.
 ENFORCEMENT = "blocking"
@@ -54,6 +56,11 @@ class Rule:
     pattern_id: str = ""  # regex rules: id in scripts/ci/profile_scope_patterns.json
 
 
+# Heuristic rules print as warnings until a frozen replay (`python -m scripts.code_health.replay`)
+# shows most of their hits on merged PRs are real problems; flip a rule to blocking with that
+# evidence in the PR. Reviewers' samples put these between ~12% and ~60% precision.
+WARN_UNTIL_REPLAYED = False
+
 RULES: tuple[Rule, ...] = (
     # Swallowed exceptions: the top statically-catchable bug cause in the fix sample.
     Rule("S110", "try/except/pass", "log it or narrow the except; a silent pass hides the"
@@ -96,6 +103,7 @@ RULES: tuple[Rule, ...] = (
          " `display_hermes_home()` for user-facing text (`hermes_constants`); a path that"
          " deliberately lives under the user's home, not the profile (e.g. the profiles root),"
          " takes `# health: allow HX001 -- <why>`", "ast",
+         blocking=WARN_UNTIL_REPLAYED,
          exclude=SINGLE_PROFILE + ("hermes_constants.py",)),
     Rule("HX002", "new HERMES_* environment variable", "behavioural settings go in"
          " config.yaml, secrets through the secret scope; `.env` is for credentials only",
@@ -109,21 +117,24 @@ RULES: tuple[Rule, ...] = (
          exclude=SINGLE_PROFILE),
     Rule("HX012", "raw threading.Thread", "`spawn_context_thread(...)` so the thread keeps"
          " the caller's profile scope (ContextVars do not cross a bare Thread)", "ast",
+         blocking=WARN_UNTIL_REPLAYED,
          exclude=SINGLE_PROFILE),
     Rule("PS-P05", "child env built from os.environ", "`served_profile_child_env()`; the"
          " child otherwise inherits the launch profile's home and secrets", "regex",
-         exclude=SINGLE_PROFILE, pattern_id="P05"),
+         exclude=SINGLE_PROFILE, blocking=WARN_UNTIL_REPLAYED, pattern_id="P05"),
     Rule("PS-P06", "raw platform credential getenv", "read it through the profile's secret"
-         " scope (`get_secret`)", "regex", exclude=SINGLE_PROFILE, pattern_id="P06"),
+         " scope (`get_secret`)", "regex", exclude=SINGLE_PROFILE,
+         blocking=WARN_UNTIL_REPLAYED, pattern_id="P06"),
     # Process identity.
     Rule("HX003", "process identity from argv substrings", "use"
          " `gateway.status.looks_like_gateway_command_line` /"
-         " `hermes_cli.update_cmd._hermes_holder_subcommand` and match full cmdlines", "ast"),
+         " `hermes_cli.update_cmd._hermes_holder_subcommand` and match full cmdlines", "ast",
+         blocking=WARN_UNTIL_REPLAYED),
     # Config truthiness.
     Rule("HX010", "bool() of a config/env string", "`bool(\"false\")` is True. Is it set?"
          " `os.getenv(\"X\") is not None` (or `!= \"\"` to treat empty as unset). A boolean"
          " flag? `is_truthy_value(...)`, which is False for any non-flag string such as a key",
-         "ast"),
+         "ast", blocking=WARN_UNTIL_REPLAYED),
     # Structure.
     Rule("HX011", "if/elif ladder on one name", "use a dict/table -> handler (`_SLASH_DISPATCH`"
          " is the shape)", "ast", exclude=()),

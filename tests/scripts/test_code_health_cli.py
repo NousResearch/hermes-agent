@@ -31,6 +31,8 @@ _SUPPORT = ("scripts/ci/profile_scope_patterns.json", *_GUARD_SCRIPTS)
 _LEGACY = "def legacy(x):\n" + "".join(f"    if x == {i}:\n        return {i}\n" for i in range(21))
 _GROWN = _LEGACY + "    if x == 99:\n        return 99\n"
 _ENV_COPY = "import os\n\n\ndef child_env():\n    env = os.environ.copy()\n    return env\n"
+# A violation of a rule that always blocks (PS-P05 is warning-only until replayed).
+_SWALLOW = "def swallow():\n    try:\n        pass\n    except Exception:\n        pass\n"
 _SWITCH = "scripts/code_health/config.py"
 
 
@@ -128,8 +130,8 @@ def _ratchet_repo(tmp_path: Path, switch: str | None = None) -> tuple[Path, str]
         '"id": "P05",', '"id": "P05",\n      "path_regex": "^nowhere/",')),
     # the engine itself, edited to exempt pkg/ from PS-P05
     ("scripts/code_health/config.py", lambda t: t.replace(
-        'exclude=SINGLE_PROFILE, pattern_id="P05"',
-        'exclude=SINGLE_PROFILE + ("pkg/*",), pattern_id="P05"')),
+        'exclude=SINGLE_PROFILE, blocking=WARN_UNTIL_REPLAYED, pattern_id="P05"',
+        'exclude=SINGLE_PROFILE + ("pkg/*",), blocking=WARN_UNTIL_REPLAYED, pattern_id="P05"')),
 ])
 def test_staged_health_ignores_unstaged_policy_and_engine(tmp_path, unstaged):
     repo = _engine_repo(tmp_path)
@@ -137,7 +139,7 @@ def test_staged_health_ignores_unstaged_policy_and_engine(tmp_path, unstaged):
     _git(repo, "add", "--", "pkg/c.py")
     tree = _git(repo, "write-tree")
     first = _check(repo, "--staged", "--only", "health", "--base", "HEAD")
-    assert first.returncode == 1 and "PS-P05" in first.stdout, first.stdout + first.stderr
+    assert first.returncode == 0 and "PS-P05" in first.stdout, first.stdout + first.stderr
 
     rel, edit = unstaged
     original = (repo / rel).read_text(encoding="utf-8")
@@ -145,7 +147,7 @@ def test_staged_health_ignores_unstaged_policy_and_engine(tmp_path, unstaged):
     assert edited != original
     (repo / rel).write_text(edited, encoding="utf-8")
     again = _check(repo, "--staged", "--only", "health", "--base", "HEAD")
-    assert again.returncode == 1 and "PS-P05" in again.stdout, again.stdout + again.stderr
+    assert again.stdout == first.stdout, again.stdout + again.stderr
     # the judged artifact and the user's unstaged work are both untouched
     assert _git(repo, "write-tree") == tree
     assert (repo / rel).read_text(encoding="utf-8") == edited
@@ -165,7 +167,7 @@ def test_unknown_or_empty_selector_is_a_usage_error(selector):
 
 def test_valid_selector_runs_its_check_and_keeps_its_status(tmp_path):
     repo = _engine_repo(tmp_path)
-    _write(repo, {"pkg/c.py": _ENV_COPY})
+    _write(repo, {"pkg/c.py": _SWALLOW})
     _git(repo, "add", "--", "pkg/c.py")
     proc = _check(repo, "--staged", "--only", "health,shebangs", "--base", "HEAD")
     assert proc.returncode == 1 and "2 checks, FAILED: health" in proc.stdout, proc.stdout
@@ -224,7 +226,7 @@ def _remote_ref(remote: Path, branch: str) -> str:
 
 def test_pre_push_judges_a_checker_branch_pushed_from_an_older_checkout(tmp_path):
     repo, remote = _pushable(tmp_path)
-    _branch_with_checker(repo, "feature", {"pkg/c.py": _ENV_COPY})
+    _branch_with_checker(repo, "feature", {"pkg/c.py": _SWALLOW})
     good = _branch_with_checker(repo, "clean", {"pkg/d.py": "def d():\n    return 4\n"})
     assert _check(repo, "--install-hook", "pre-push").returncode == 0
     _git(repo, "checkout", "-q", "main")
@@ -232,7 +234,7 @@ def test_pre_push_judges_a_checker_branch_pushed_from_an_older_checkout(tmp_path
 
     push = _sh(repo, "git", "push", "origin", "feature")
     assert push.returncode != 0, push.stdout + push.stderr
-    assert "PS-P05" in push.stdout + push.stderr
+    assert "BLE001" in push.stdout + push.stderr
     assert _remote_ref(remote, "feature") == ""  # destination untouched
 
     # controls: a clean checker branch passes, a branch predating the checker is not judged,
@@ -240,7 +242,7 @@ def test_pre_push_judges_a_checker_branch_pushed_from_an_older_checkout(tmp_path
     push = _sh(repo, "git", "push", "origin", "clean")
     assert push.returncode == 0 and _remote_ref(remote, "clean") == good, push.stderr
     _git(repo, "checkout", "-q", "-b", "old", "main")
-    old = _commit(repo, {"pkg/c.py": _ENV_COPY})
+    old = _commit(repo, {"pkg/c.py": _SWALLOW})
     assert _sh(repo, "git", "push", "origin", "old").returncode == 0
     assert _remote_ref(remote, "old") == old
     assert _sh(repo, "git", "push", "origin", "--delete", "clean").returncode == 0
@@ -359,7 +361,7 @@ def test_ci_only_guards_run_in_scripts_check(tmp_path, job, files):
 _FUNC = "import os\n\n\ndef build(cmd):\n{}    return cmd\n"
 
 
-@pytest.mark.parametrize("body, blocks", [
+@pytest.mark.parametrize("body, flagged", [
     ("    # Avoid env = os.environ.copy(); use the scoped builder.\n", False),
     ('    """Avoid env = os.environ.copy(); use the scoped builder."""\n', False),
     ('    """Builder.\n\n    Never env = os.environ.copy() here.\n    """\n', False),
@@ -371,13 +373,13 @@ _FUNC = "import os\n\n\ndef build(cmd):\n{}    return cmd\n"
     ("    token = os.getenv(\"DISCORD_TOKEN\")\n    cmd = (cmd, token)\n", True),
     ("    env = dict(os.environ)  # copy it\n    cmd = (cmd, env)\n", True),
 ])
-def test_profile_regex_rules_ignore_comments_and_docstrings(tmp_path, capsys, body, blocks):
+def test_profile_regex_rules_ignore_comments_and_docstrings(tmp_path, capsys, body, flagged):
     repo, base = _ratchet_repo(tmp_path)
     head = _commit(repo, {"pkg/c.py": _FUNC.format(body)})
     code = cli.run(repo, base, head)
     out = capsys.readouterr().out
-    assert code == (1 if blocks else 0), out
-    assert ("PS-P05" in out or "PS-P06" in out) == blocks, out
+    assert code == 0, out  # PS-P05/P06 are warnings until replayed
+    assert ("PS-P05" in out or "PS-P06" in out) == flagged, out
 
 
 # --- allow comments may list several rules ----------------------------------------------------

@@ -608,6 +608,42 @@ test.runIf(process.platform !== 'win32')(
 )
 
 test.runIf(process.platform !== 'win32')(
+  'managed observer judges a v2 claim by its owner and delegate, not as malformed',
+  async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-v2-marker-'))
+    const marker = path.join(home, '.hermes-update-in-progress')
+
+    const target = {
+      ssh: { exec: async () => '' },
+      platform: 'Linux',
+      hermesPath: '/opt/hermes/hermes',
+      hermesHome: home
+    }
+
+    const observe = async () =>
+      parseRemoteUpdateObservation(
+        (await exec(buildRemoteUpdateObservationCommand(target as any, CORRELATION), { shell: 'sh' })).stdout,
+        CORRELATION
+      )
+
+    const exited = (await exec(`sh -c 'echo $$'`)).stdout.trim()
+    // The updater's v2 claim: pid, started_at, creation-time line (A2), then tagged lines.
+    const deadClaim = `${exited}\n${Math.floor(Date.now() / 1000)}\nct:1700000000.125\n`
+
+    try {
+      await writeFile(marker, deadClaim)
+      assert.equal((await observe()).marker, 'dead', 'a dead v2 claim is dead, never malformed')
+      await writeFile(marker, `${deadClaim}delegate:${process.pid} ct:1700000001.500\n`)
+      const delegated = await observe()
+      assert.equal(delegated.marker, 'live', 'a live delegate keeps the update live')
+      assert.equal(delegated.markerPid, process.pid)
+    } finally {
+      await rm(home, { force: true, recursive: true })
+    }
+  }
+)
+
+test.runIf(process.platform !== 'win32')(
   'managed observer unwraps a named profile home for the install-wide marker',
   async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-profile-marker-'))

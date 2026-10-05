@@ -320,50 +320,70 @@ async function probeRemoteHermesHome(ssh) {
 }
 
 const REMOTE_UPDATE_MARKER_PROBE = String.raw`
-import errno,os,re,sys
+import errno,fcntl,os,re,sys
 from pathlib import Path
 
 home=Path(os.path.expanduser(sys.argv[1]))
 if home.parent.name=='profiles':home=home.parent.parent
 marker=home/'.hermes-update-in-progress'
+def uncertain():
+    print('UNCERTAIN');raise SystemExit
 def clear():
-    try:marker.unlink()
-    except FileNotFoundError:pass
-    except OSError:pass
+    # Delete only under the updaters' marker mutex and only the bytes judged dead:
+    # a claim published since our read is a fresh claim, never ours to remove.
+    try:
+        try:fd=os.open(str(marker)+'.lock',os.O_RDWR|os.O_CREAT,0o644)
+        except PermissionError:fd=os.open(str(marker)+'.lock',os.O_RDONLY)
+    except OSError:uncertain()
+    try:
+        try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except OSError:uncertain()
+        try:
+            with marker.open('rb') as stream:
+                if stream.read(257)!=raw:uncertain()
+            marker.unlink()
+        except FileNotFoundError:pass
+        except OSError:uncertain()
+    finally:os.close(fd)
     print('CLEAR');raise SystemExit
 try:
     with marker.open('rb') as stream:raw=stream.read(257)
 except FileNotFoundError:
     print('CLEAR');raise SystemExit
 except OSError:
-    print('UNCERTAIN');raise SystemExit
+    uncertain()
 if len(raw)>256:
-    print('UNCERTAIN');raise SystemExit
-match=re.fullmatch(rb'([1-9][0-9]*)\r?\n([0-9]+)(?:\r?\n)?',raw)
-if not match:
-    print('UNCERTAIN');raise SystemExit
-try:
-    owner=int(match.group(1));lease=int(match.group(2))
-    if owner<1 or owner>4294967295 or lease>9007199254740991:raise ValueError()
-except ValueError:
-    print('UNCERTAIN');raise SystemExit
-try:
-    os.kill(owner,0)
-except ProcessLookupError:
-    clear()
-except PermissionError:
-    print('LIVE:'+str(owner));raise SystemExit
-except OSError as error:
-    if error.errno==errno.ESRCH:clear()
-    elif error.errno==errno.EPERM:print('LIVE:'+str(owner));raise SystemExit
-    else:print('UNCERTAIN');raise SystemExit
-try:
-    cmd=open('/proc/%d/cmdline'%owner,'rb').read().replace(b'\0',b' ')
-except OSError:
-    cmd=b''
-if cmd and b'update' not in cmd:
-    clear()
-print('LIVE:'+str(owner))
+    uncertain()
+# v1 is "<pid>\n<started_at>\n"; v2 adds a creation-time line 3 and tagged lines 4+
+# (the first well-formed "delegate:<pid> ct:<ct>" names a second live holder).
+lines=[line[:-1] if line.endswith(b'\r') else line for line in raw.split(b'\n')]
+if lines[-1]==b'':lines.pop()
+if len(lines)<2 or not re.fullmatch(rb'[1-9][0-9]*',lines[0]) or not re.fullmatch(rb'[0-9]+',lines[1]):
+    uncertain()
+delegates=[re.fullmatch(rb'delegate:([1-9][0-9]*) ct:[0-9]+(?:\.[0-9]+)?',line) for line in lines[3:]]
+holders=[int(lines[0])]+[int(match.group(1)) for match in delegates if match][:1]
+if any(pid>4294967295 for pid in holders) or int(lines[1])>9007199254740991:
+    uncertain()
+def live(pid):
+    try:
+        os.kill(pid,0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as error:
+        if error.errno==errno.ESRCH:return False
+        if error.errno==errno.EPERM:return True
+        uncertain()
+    try:
+        cmd=open('/proc/%d/cmdline'%pid,'rb').read().replace(b'\0',b' ')
+    except OSError:
+        cmd=b''
+    return not cmd or b'update' in cmd
+for pid in holders:
+    if live(pid):
+        print('LIVE:'+str(pid));raise SystemExit
+clear()
 `
 
 /**

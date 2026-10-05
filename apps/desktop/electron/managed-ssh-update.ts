@@ -345,7 +345,6 @@ marker_path=install_root/'.hermes-update-in-progress'
 status_path=home/('.update_exit_code.'+correlation)
 ready_path=home/('.update_coordinator_ready.'+correlation)
 intent_path=home/('.update_launch_intent.'+correlation)
-marker_re=re.compile(rb'([1-9][0-9]*)\r?\n([0-9]+)(?:\r?\n)?\Z')
 
 def pid_alive(pid):
     if os.name!='nt':
@@ -408,15 +407,20 @@ def marker_state():
     try:raw=marker_path.read_bytes()
     except FileNotFoundError:return {'state':'absent'}
     except OSError:return {'state':'unavailable'}
-    match=marker_re.fullmatch(raw)
-    if not match:return {'state':'malformed'}
-    try:
-        pid=int(match.group(1));lease=int(match.group(2))
-        if pid<1 or pid>4294967295 or lease>9007199254740991:raise ValueError()
-    except ValueError:return {'state':'malformed'}
-    live=pid_alive(pid)
-    if live is None:return {'state':'unavailable','pid':pid}
-    return {'state':'live' if live else 'dead','pid':pid}
+    # v1 is "<pid>\n<started_at>\n"; v2 adds a creation-time line 3 and tagged lines 4+
+    # (the first well-formed "delegate:<pid> ct:<ct>" names a second live holder).
+    lines=[line[:-1] if line.endswith(b'\r') else line for line in raw.split(b'\n')]
+    if lines[-1]==b'':lines.pop()
+    if len(lines)<2 or not re.fullmatch(rb'[1-9][0-9]*',lines[0]) or not re.fullmatch(rb'[0-9]+',lines[1]):
+        return {'state':'malformed'}
+    delegates=[re.fullmatch(rb'delegate:([1-9][0-9]*) ct:[0-9]+(?:\.[0-9]+)?',line) for line in lines[3:]]
+    holders=[int(lines[0])]+[int(match.group(1)) for match in delegates if match][:1]
+    if any(pid>4294967295 for pid in holders) or int(lines[1])>9007199254740991:return {'state':'malformed'}
+    for pid in holders:
+        live=pid_alive(pid)
+        if live is None:return {'state':'unavailable','pid':pid}
+        if live:return {'state':'live','pid':pid}
+    return {'state':'dead','pid':holders[0]}
 
 def terminal_code():
     try:raw=status_path.read_bytes()

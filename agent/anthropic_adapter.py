@@ -265,6 +265,19 @@ def _claude_code_candidates() -> List[str]:
     return list(seen)
 
 
+def find_claude_code_cli(command: str) -> Optional[str]:
+    """Path of a bare Claude Code command name on PATH, else in an install prefix; None for any other command.
+
+    Core's own presence checks (external-process providers, ``claude setup-token``) ask this so they
+    agree with version detection about whether the CLI is installed under a GUI/service PATH."""
+    if command not in _CLAUDE_CODE_NAMES:
+        return None
+    from hermes_platform.resolver import locate_command
+
+    found = locate_command(command, known_dirs=_CLAUDE_CODE_PREFIXES).command
+    return found[0] if found else None
+
+
 def _detect_claude_code_version() -> str:
     """Installed Claude Code version (``claude --version``), else the static fallback."""
     for cmd in _claude_code_candidates():

@@ -10,11 +10,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "agent/anthropic_credentials.py",
-    "symbol": "run_oauth_setup_token",
-    "kind": "bare_which"
-  },
-  {
     "path": "agent/lsp/cli.py",
     "symbol": "_backend_warnings",
     "kind": "bare_which"

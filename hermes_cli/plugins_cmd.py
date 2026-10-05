@@ -741,8 +741,15 @@ _BUNDLED_DEFAULT_ON_KINDS = frozenset({"backend", "platform", "model-provider"})
 def _default_on(dir_path, source: str) -> bool:
     """True when a plugin is active without a ``plugins.enabled`` entry (portable ``plugin.json``
     packages have no kind, so never). Model providers load through providers/ discovery from any
-    source (``gate_manifest``); the other default-on kinds only when bundled."""
-    manifest_file = _native_manifest_file(Path(dir_path))
+    source (``gate_manifest``); the other default-on kinds only when bundled.
+
+    Entry-point rows store ``module:attr`` in the path slot. That string is not a directory;
+    opening it as one is WinError 123 on Windows and aborts the whole plugin list.
+    """
+    path = Path(dir_path)
+    if not path.is_dir():
+        return False
+    manifest_file = _native_manifest_file(path)
     if manifest_file is None:
         return False
     try:

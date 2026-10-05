@@ -287,13 +287,14 @@ def _merge_smallest_packs(repo_root: Path, pack_dir: Path, deadline: float, resu
                                done.stderr.strip()[-300:])
                 return
             new = outputs[0].with_suffix("")
-            # Marker first, index last: the merged pack is a promisor pack from the moment git sees it.
+            # Payload last: git ignores an index whose .pack is absent, so a kill before the final move
+            # leaves only metadata, which _sweep_remnants removes (a lone .pack would be kept forever).
             (pack_dir / (new.name + ".promisor")).write_bytes(
                 b"".join(p.with_suffix(".promisor").read_bytes() for p in batch))
-            os.replace(new.with_suffix(".pack"), pack_dir / (new.name + ".pack"))
             if new.with_suffix(".rev").exists():
                 os.replace(new.with_suffix(".rev"), pack_dir / (new.name + ".rev"))
             os.replace(new.with_suffix(".idx"), pack_dir / (new.name + ".idx"))
+            os.replace(new.with_suffix(".pack"), pack_dir / (new.name + ".pack"))
             for pack in batch:
                 if pack.stem != new.name:
                     try:
@@ -317,8 +318,18 @@ def _take_lock(git_dir: Path) -> Optional[Path]:
             try:
                 if lock.stat().st_mtime > time.time() - _MIN_PACK_AGE_SECONDS:
                     return None
-                os.replace(lock, git_dir / f"{_LOCK_FILE}.stale-{os.getpid()}")
-                (git_dir / f"{_LOCK_FILE}.stale-{os.getpid()}").unlink()
+                taken = git_dir / f"{_LOCK_FILE}.stale-{os.getpid()}"
+                os.replace(lock, taken)
+                if taken.stat().st_mtime > time.time() - _MIN_PACK_AGE_SECONDS:
+                    # Another taker replaced the stale lock between our check and the rename: this is
+                    # its live lock. Hand it back unless a third run has already locked.
+                    try:
+                        os.link(taken, lock)
+                    except OSError:
+                        pass
+                    taken.unlink()
+                    return None
+                taken.unlink()
             except OSError:
                 return None
     return None

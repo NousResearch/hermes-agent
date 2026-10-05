@@ -280,6 +280,36 @@ def run(argv: Sequence[str], *, inherit_lock: bool = False, **kwargs) -> subproc
     return subprocess.CompletedProcess(proc.args, code, stdout, stderr)
 
 
+def popen_post_commit(argv: Sequence[str], *, label: str, **kwargs) -> subprocess.Popen:
+    """``subprocess.Popen`` for a checkout writer that runs after the update committed (the
+    historical takeover's ``update_finish``). POSIX: the lock fd. Windows inside an update:
+    created suspended and bound to the update's kill-on-close job before it runs. A refused bind
+    must not fail a committed update, so the child still runs, never silently (printed and
+    receipted) and never unfenced: it joins the checkout lock holding its own lease (R5b)."""
+    if not (sys.platform == "win32" and _held() is not None):
+        return subprocess.Popen(list(argv), **_custody_kwargs(True, kwargs))
+    from hermes_cli.update_lock import bind_child_to_update_tree, resume_suspended_child
+
+    kwargs["creationflags"] = kwargs.get("creationflags", 0) | _CREATE_SUSPENDED
+    proc = subprocess.Popen(list(argv), **kwargs)
+    try:
+        refusal = bind_child_to_update_tree(proc)
+        if refusal is not None:
+            detail = (f"the update's job would not take the {label} ({refusal}), so it runs outside "
+                      "the job, holding its own checkout lease")
+            print(f"  ⚠ {detail}", flush=True)
+            with contextlib.suppress(Exception):
+                from hermes_cli.update_receipt import record_step
+
+                record_step("update_custody", False, detail)
+        resume_suspended_child(proc)
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        raise
+    return proc
+
+
 # How long a timed-out child's output may still drain after its tree was killed.
 _DRAIN_SECONDS = 5
 

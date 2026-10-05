@@ -130,14 +130,37 @@ def _run_child(request: dict) -> tuple[int, dict]:
         context = Path(directory) / "request.json"
         result = Path(directory) / "result.json"
         context.write_text(json.dumps(request), encoding="utf-8")
-        child = subprocess.run(
+        code = _run_in_custody(
             [sys.executable, "-I", "-S", "-B", "-X", "utf8", str(root / "hermes_cli/_update_takeover.py"),
-             str(context), str(result)], cwd=root, env=env, **_checkout_custody(root),
+             str(context), str(result)], root, cwd=root, env=env,
         )
         completed = json.loads(result.read_text(encoding="utf-8-sig")) if result.is_file() else {}
         if not isinstance(completed, dict):
             raise ValueError("invalid update takeover acknowledgement")
-        return child.returncode if child.returncode >= 0 else 1, completed
+        return code if code >= 0 else 1, completed
+
+
+def _run_in_custody(argv: list, root: Path, **kwargs) -> int:
+    """Run the takeover (it syncs and builds the checkout) in this updater's checkout custody,
+    from the update_lock module ALREADY loaded here (nothing new is imported). Windows: created
+    suspended, bound to this updater's kill-on-close job, then resumed; a refused bind still runs
+    (the update committed) and the takeover joins the lock holding its own lease. Releases
+    without these helpers hold no checkout lock, and the takeover acquires it itself."""
+    lock = sys.modules.get("hermes_cli.update_lock")
+    bind, resume = (getattr(lock, name, None) for name in ("bind_child_to_update_tree", "resume_suspended_child"))
+    if os.name != "nt" or bind is None or resume is None or getattr(lock, "_HELD", None) is None:
+        return subprocess.run(argv, **kwargs, **_checkout_custody(root)).returncode
+    proc = subprocess.Popen(argv, creationflags=lock.CREATE_SUSPENDED, **kwargs)
+    try:
+        refusal = bind(proc)
+        if refusal is not None:
+            print(f"  ⚠ The update's job would not take the takeover ({refusal}); it runs outside the job, "
+                  "holding its own checkout lease.", flush=True)
+        resume(proc)
+        return proc.wait()
+    except BaseException:
+        proc.kill()
+        raise
 
 
 def _checkout_custody(root: Path) -> dict:

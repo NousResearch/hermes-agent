@@ -472,3 +472,60 @@ def test_a_refusal_the_readers_swallow_is_what_the_update_reports(tmp_path):
     assert out.returncode == 1, text
     assert "`hermes update` stopped: Windows would not put `git` in this update's process job" in text, text
     assert "Nothing was changed" in text and "Run `hermes update` again from a regular terminal" in text, text
+
+
+# --- F03/N11: both historical takeover hops are bound to the job (or leased and receipted) -----
+
+def _refusing_job(monkeypatch):
+    import ctypes
+
+    from hermes_cli import update_lock
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateEventW.restype = ctypes.c_void_p
+    event = kernel32.CreateEventW(None, True, False, None)
+    monkeypatch.setattr(update_lock, "update_tree_job", lambda: event)
+
+
+def test_the_takeover_finish_child_is_never_silently_outside_the_job(tmp_path, monkeypatch):
+    """F03: the takeover's update_finish child builds the checkout. It goes through the job bind;
+    a refused bind still runs it (the update committed) but is receipted."""
+    import json
+
+    from hermes_cli import _update_takeover, update_receipt
+
+    root = tmp_path / "checkout"
+    (root / "hermes_cli").mkdir(parents=True)
+    started = tmp_path / "started"
+    (root / "hermes_cli" / "update_finish.py").write_text(
+        f"import sys\nopen({str(started)!r}, 'w').close()\nopen(sys.argv[2], 'w').write('{{}}')\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(_update_takeover, "prepare", lambda request: (Path(sys.executable), dict(os.environ)))
+    _refusing_job(monkeypatch)
+    context = tmp_path / "request.json"
+    context.write_text(json.dumps({"root": str(root), "receipt": {}}), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["takeover", str(context), str(tmp_path / "result.json")])
+    with update_receipt.update_receipt_scope():
+        code = _update_takeover.main()
+        steps = update_receipt._current.get().data.get("steps", [])
+    assert code == 0 and started.exists()
+    assert any(s["name"] == "update_custody" and s["ok"] is False for s in steps), steps
+
+
+def test_the_old_updater_runs_its_takeover_in_the_job(tmp_path, monkeypatch, capsys):
+    """N11: the old updater's takeover child syncs and builds the checkout. With this updater
+    holding the checkout lock it is bound before it runs; a refused bind is said out loud."""
+    from hermes_cli import _old_updater
+
+    started = tmp_path / "started"
+    lock = UpdateLock(path=tmp_path / "m", install_root=tmp_path)
+    assert lock.acquire()
+    try:
+        _refusing_job(monkeypatch)
+        code = _old_updater._run_in_custody(
+            [sys.executable, "-c", f"open({str(started)!r}, 'w').close()"], tmp_path, cwd=tmp_path)
+    finally:
+        lock.release()
+    assert code == 0 and started.exists()
+    assert "would not take the takeover" in capsys.readouterr().out

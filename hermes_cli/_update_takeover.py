@@ -103,11 +103,15 @@ def main() -> int:
         # update liveness checks while the waiting parent still holds its lock.
         command = [str(python), "-I", "-B", "-X", "utf8", str(Path(request["root"]) / "hermes_cli/update_finish.py"),
                    str(context), str(result)]
-        from hermes_cli.update_lock import checkout_lock_fds
+        from hermes_cli.update_custody import popen_post_commit
 
-        fds = checkout_lock_fds(request["root"])
-        code = subprocess.run(command, cwd=request["root"], env=env,
-                              **({"pass_fds": fds} if fds else {})).returncode
+        # update_finish builds the checkout: POSIX lock fd; Windows bound to the job (or leased).
+        with popen_post_commit(command, label="update finish child", cwd=request["root"], env=env) as child:
+            try:
+                code = child.wait()
+            except BaseException:
+                child.kill()
+                raise
         if code != 0 and not result.is_file():
             _record_failure(request, result, code, f"completion child exited {code} without acknowledgement")
         return code

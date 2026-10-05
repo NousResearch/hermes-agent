@@ -250,8 +250,8 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main.py",
-    "symbol": "_exec_in_container",
+    "path": "hermes_cli/main_container.py",
+    "symbol": "exec_in_container",
     "kind": "bare_which"
   },
   {

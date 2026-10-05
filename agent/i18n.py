@@ -238,7 +238,8 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
         return value
     try:
         return value.format(**format_kwargs)
-    except (KeyError, IndexError, ValueError) as exc:
+    # Overlay/pack text is user-authored: ``{x.attr}`` / ``{x[k]}`` on a str kwarg raise Attribute/TypeError.
+    except (KeyError, IndexError, ValueError, AttributeError, TypeError) as exc:
         logger.warning("i18n format failed for key=%r lang=%r kwargs=%r: %s", key, target, format_kwargs, exc)
         return value
 

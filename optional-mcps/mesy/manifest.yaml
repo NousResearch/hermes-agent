@@ -1,0 +1,31 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: mesy
+description: 'Mesy CRM: search records, pipelines, notes, email and calendar; propose changes for review.'
+source: https://mesy.ai
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (registration_endpoint advertised in /.well-known/oauth-authorization-server;
+# /mcp answers 401 with resource_metadata — verified live). Assistants can
+# read and propose; every CRM write is a proposal a human approves in Mesy.
+transport:
+  type: http
+  url: https://app.mesy.ai/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - mesy
+  hosts:
+    - mesy.ai
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to Mesy and approve
+  access (or run `hermes mcp login mesy`). Restart the session so the tools
+  load.

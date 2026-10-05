@@ -727,6 +727,9 @@ export interface Translations {
     resetConfirm: string
     exportFailed: string
     resetFailed: string
+    pluginPages: Record<'agentSettings' | 'blurb' | 'empty' | 'manage' | 'missing', string> & {
+      pageCount: (n: number) => string
+    }
     nav: {
       providers: string
       providerAccounts: string
@@ -745,21 +748,15 @@ export interface Translations {
       billing: string
       notifications: string
       vault: string
+      plugins: string
     }
     plugins: {
       title: string
-      blurb: string
-      count: (n: number) => string
       openFolder: string
       rescan: string
       reveal: string
-      enable: string
-      disable: string
       failed: string
-      empty: string
       kinds: { bundled: string; disk: string; runtime: string }
-      agentHalfMissing: string
-      agentHalfMissingTip: string
       installModal: {
         installFromGit: string
         reviewRepository: string

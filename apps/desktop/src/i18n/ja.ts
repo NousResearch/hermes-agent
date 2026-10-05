@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaModelMenu } from './ja_model_menu'
+import { jaPluginSettings } from './ja_plugins'
 
 export const ja = defineLocale({
   externalOpenFailed: {
@@ -440,22 +441,7 @@ export const ja = defineLocale({
       billingOverview: '概要',
       billingPlans: 'プラン'
     },
-    plugins: {
-      openFolder: 'デスクトッププラグインフォルダーを開く',
-      installModal: {
-        installUncertain:
-          'Hermes はインストール結果の待機を終了しましたが、プラグインのインストールはまだ進行中の可能性があります。この画面を閉じ、再インストールする前にプラグイン一覧を再スキャンしてください。',
-        installFromGit: 'Git からインストール',
-        reviewRepository: 'リポジトリを確認',
-        repoPlaceholder: 'https://github.com/owner/repo',
-        toolsConnected: n => `${n} 個のツールを接続しました`,
-        skillsReady: names =>
-          names.length === 1 ? `スキル ${names[0]} の準備ができました` : `${names.length} 個のスキルの準備ができました`,
-        nextChat: 'ほかのツールは次のチャットで使えます',
-        serverNotConnected: (server, reason) =>
-          `MCP サーバー ${server} は接続されていません${reason ? `: ${reason}` : '。'}`
-      }
-    },
+    plugins: jaPluginSettings.plugins,
     closeSettings: '設定を閉じる',
     exportConfig: '設定を書き出す',
     importConfig: '設定を読み込む',
@@ -463,6 +449,7 @@ export const ja = defineLocale({
     resetConfirm: 'すべての設定を Hermes のデフォルトに戻しますか？',
     exportFailed: '書き出しに失敗しました',
     resetFailed: 'リセットに失敗しました',
+    pluginPages: jaPluginSettings.pluginPages,
     nav: {
       providers: 'プロバイダー',
       providerAccounts: 'アカウント',
@@ -480,7 +467,8 @@ export const ja = defineLocale({
       about: '情報',
       billing: '請求',
       notifications: '通知',
-      vault: 'パスワードとログイン'
+      vault: 'パスワードとログイン',
+      plugins: 'プラグイン'
     },
     vault: {
       title: 'パスワードとログイン',

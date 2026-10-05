@@ -869,6 +869,15 @@ export const frOverrides = {
     resetConfirm: 'Réinitialiser tous les paramètres aux valeurs par défaut de Hermes ?',
     exportFailed: "Échec de l'export",
     resetFailed: 'Échec de la réinitialisation',
+    pluginPages: {
+      blurb:
+        'Options ajoutées par les plugins installés. Chaque plugin a sa propre page, et certains ajoutent des sous-pages.',
+      empty: "Aucun plugin n'a encore de réglages.",
+      manage: 'Gérer les plugins',
+      agentSettings: "Réglages de l'agent",
+      pageCount: (n: number) => (n === 1 ? '1 page' : `${n} pages`),
+      missing: "Ce plugin n'a pas de page de réglages. Il est peut-être désactivé ou désinstallé."
+    },
     nav: {
       providers: 'Fournisseurs',
       providerAccounts: 'Comptes',
@@ -890,24 +899,15 @@ export const frOverrides = {
     },
     plugins: {
       title: 'Plugins du desktop',
-      blurb:
-        "Étendez cette application, et non un agent : ces plugins sont installés une seule fois pour toute l'application, quel que soit le profil, le gateway ou la machine connectée. Les interrupteurs s'appliquent immédiatement.",
-      count: n => `${n} installés`,
       openFolder: 'Ouvrir le dossier des plugins Desktop',
       rescan: 'Re-analyser',
       reveal: 'Afficher dans le gestionnaire de fichiers',
-      enable: 'Activer',
-      disable: 'Désactiver',
       failed: 'échec',
-      empty: 'Aucun plugin desktop installé pour le moment.',
       kinds: {
         bundled: 'intégré',
         disk: 'sur le disque',
         runtime: "à l'exécution"
       },
-      agentHalfMissing: 'partie agent absente ici',
-      agentHalfMissingTip:
-        "Il s'agit de la partie Desktop d'un plugin groupé, mais sa partie agent n'est pas installée sur le backend ou profil actuellement connecté. Installez-la depuis Capacités → Plugins.",
       installModal: {
         installFromGit: 'Installer depuis Git',
         reviewRepository: 'Examiner le dépôt',

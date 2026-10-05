@@ -86,6 +86,14 @@ export const zhHantSettings = {
     resetConfirm: '要將所有設定恢復為 Hermes 預設值嗎？',
     exportFailed: '匯出失敗',
     resetFailed: '重設失敗',
+    pluginPages: {
+      blurb: '已安裝外掛程式加入的選項。每個外掛程式都有自己的頁面，有些還有子頁面。',
+      empty: '還沒有外掛程式提供設定。',
+      manage: '管理外掛程式',
+      agentSettings: '代理程式設定',
+      pageCount: (n: number) => `${n} 個頁面`,
+      missing: '這個外掛程式沒有設定頁面，可能已停用或解除安裝。'
+    },
     nav: {
       providers: '提供方',
       providerAccounts: '帳號',
@@ -103,7 +111,8 @@ export const zhHantSettings = {
       about: '關於',
       billing: '帳單',
       notifications: '通知',
-      vault: '密碼與登入'
+      vault: '密碼與登入',
+      plugins: '外掛程式'
     },
     vault: {
       title: '密碼與登入',

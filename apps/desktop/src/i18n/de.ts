@@ -869,6 +869,14 @@ export const deOverrides = {
     resetConfirm: 'Alle Einstellungen auf Hermes-Standard zurücksetzen?',
     exportFailed: 'Export fehlgeschlagen',
     resetFailed: 'Zurücksetzen fehlgeschlagen',
+    pluginPages: {
+      blurb: 'Optionen installierter Plugins. Jedes Plugin hat eine eigene Seite, manche mit Unterseiten.',
+      empty: 'Noch kein Plugin hat Einstellungen.',
+      manage: 'Plugins verwalten',
+      agentSettings: 'Agent-Einstellungen',
+      pageCount: (n: number) => (n === 1 ? '1 Seite' : `${n} Seiten`),
+      missing: 'Dieses Plugin hat keine Einstellungsseite. Es ist eventuell deaktiviert oder deinstalliert.'
+    },
     nav: {
       providers: 'Anbieter',
       providerAccounts: 'Konten',
@@ -890,23 +898,15 @@ export const deOverrides = {
     },
     plugins: {
       title: 'Desktop-Plugins',
-      blurb: 'Gebündelt oder im Ordner „Desktop-Plugins“ abgelegt. Deaktivieren, um live zu entladen.',
-      count: n => `${n} installiert`,
       openFolder: 'Ordner für Desktop-Plugins öffnen',
       rescan: 'Erneut scannen',
       reveal: 'Im Dateimanager anzeigen',
-      enable: 'Aktivieren',
-      disable: 'Deaktivieren',
       failed: 'fehlgeschlagen',
-      empty: 'Noch keine Desktop-Plugins installiert.',
       kinds: {
         bundled: 'gebündelt',
         disk: 'auf Datenträger',
         runtime: 'Laufzeit'
       },
-      agentHalfMissing: 'Agent-Hälfte fehlt hier',
-      agentHalfMissingTip:
-        'Das ist die Desktop-Hälfte eines gebündelten Plugins, aber seine Agent-Hälfte ist auf dem aktuell verbundenen Backend/Profil nicht installiert. Installieren Sie sie unter Fähigkeiten → Plugins.',
       installModal: {
         installFromGit: 'Von Git installieren',
         reviewRepository: 'Repository prüfen',

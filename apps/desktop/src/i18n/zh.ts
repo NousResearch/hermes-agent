@@ -562,6 +562,14 @@ export const zh = defineLocale({
     resetConfirm: '将所有设置恢复为 Hermes 默认值？',
     exportFailed: '导出失败',
     resetFailed: '重置失败',
+    pluginPages: {
+      blurb: '已安装插件添加的选项。每个插件都有自己的页面，有些还带子页面。',
+      empty: '还没有插件提供设置。',
+      manage: '管理插件',
+      agentSettings: '智能体设置',
+      pageCount: (n: number) => `${n} 个页面`,
+      missing: '该插件没有设置页面，可能已被禁用或卸载。'
+    },
     nav: {
       providers: '提供方',
       providerAccounts: '账号',
@@ -579,7 +587,8 @@ export const zh = defineLocale({
       about: '关于',
       billing: '账单',
       notifications: '通知',
-      vault: '密码与登录'
+      vault: '密码与登录',
+      plugins: '插件'
     },
     vault: {
       title: '密码与登录',
@@ -655,20 +664,11 @@ export const zh = defineLocale({
     },
     plugins: {
       title: '桌面插件',
-      blurb:
-        '加载到此应用中的界面扩展——随构建捆绑，或放入 desktop-plugins 文件夹（包括 Hermes 编写的插件）。禁用会即时卸载插件并在重启后保持。',
-      count: n => `已安装 ${n} 个`,
       openFolder: '打开桌面插件文件夹',
       rescan: '重新扫描',
       reveal: '在文件管理器中显示',
-      enable: '启用',
-      disable: '禁用',
       failed: '失败',
-      empty: '尚未安装桌面插件。',
       kinds: { bundled: '内置', disk: '磁盘', runtime: '运行时' },
-      agentHalfMissing: '此处缺少 agent 部分',
-      agentHalfMissingTip:
-        '这是捆绑插件的桌面部分，但其 agent 部分未安装在当前连接的后端/配置上。请在 能力 → 插件 中安装。',
       installModal: {
         installFromGit: '从 Git 安装',
         reviewRepository: '检查仓库',

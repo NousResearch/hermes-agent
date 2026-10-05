@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import os
 import stat
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -231,3 +231,38 @@ def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
     backend = OnePasswordLoginBackend({"enabled": True})
 
     assert backend._env(None)["OP_CONFIG_DIR"] == "/tmp/op-config"
+
+
+@pytest.mark.parametrize("raw", [
+    "[ERROR] multiple accounts found. Use the --account flag or set the OP_ACCOUNT "
+    "environment variable to select an account.",
+    '[ERROR] found no accounts for filter "user@example.com"',
+])
+def test_onepassword_account_selection_errors_point_at_the_hermes_setting(raw):
+    """Account-selection failures surface the raw CLI message, which names --account/OP_ACCOUNT;
+    the error a Hermes user sees must name the setting that feeds them (field report: two
+    accounts in the app, no `vault.onepassword.account`, opaque dead end)."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    backend = OnePasswordLoginBackend({"enabled": True})
+    proc = Mock(returncode=1, stdout="", stderr=raw)
+    with patch("agent.vault_backends.onepassword.find_op", return_value="/fake/op"), \
+         patch("agent.vault_backends.onepassword.run_with_stdin_secret", return_value=proc):
+        with pytest.raises(RuntimeError) as excinfo:
+            backend.unlock("dw")
+    assert "vault.onepassword.account" in str(excinfo.value)
+    assert "op account list" in str(excinfo.value)
+
+
+def test_onepassword_unlock_other_errors_keep_the_previous_message():
+    """CONTROL: everything that is not account selection keeps the raw-message shape."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    backend = OnePasswordLoginBackend({"enabled": True})
+    proc = Mock(returncode=1, stdout="", stderr="[ERROR] couldn't connect to the 1Password desktop app.")
+    with patch("agent.vault_backends.onepassword.find_op", return_value="/fake/op"), \
+         patch("agent.vault_backends.onepassword.run_with_stdin_secret", return_value=proc):
+        with pytest.raises(RuntimeError) as excinfo:
+            backend.unlock("dw")
+    assert str(excinfo.value).startswith("1Password unlock failed: [ERROR] couldn't connect")
+    assert "vault.onepassword.account" not in str(excinfo.value)

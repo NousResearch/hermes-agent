@@ -53,7 +53,10 @@ def _cmd_boards_list(args: argparse.Namespace) -> int:
     current = kb.get_current_board()
     for b in boards:
         b["is_current"] = (b["slug"] == current)
-        b["counts"] = _board_task_counts(b["slug"])
+        b["counts"] = (
+            {} if b.get("archived") and b.get("archived_path")
+            else _board_task_counts(b["slug"])
+        )
         b["total"] = sum(b["counts"].values())
     if _json_out(args, boards):
         return 0
@@ -105,6 +108,36 @@ def _cmd_boards_rm(args: argparse.Namespace) -> int:
               "Recover by moving the directory back to <root>/kanban/boards/<slug>/.")
     else:
         print(f"Board {res['slug']!r} deleted.")
+    return 0
+
+
+def _cmd_boards_archive(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "archive", must_exist=True)
+    if rc:
+        return rc
+    if normed == kb.DEFAULT_BOARD:
+        return _err("kanban boards archive: the 'default' board cannot be archived")
+    try:
+        res = kb.remove_board(args.slug, archive=True)
+    except ValueError as exc:
+        return _err(f"kanban boards archive: {exc}")
+    print(f"Board {res['slug']!r} archived → {res['new_path']}\n"
+          "Recover with `hermes kanban boards restore <slug>`.")
+    return 0
+
+
+def _cmd_boards_restore(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "restore", must_exist=False)
+    if rc:
+        return rc
+    if normed == kb.DEFAULT_BOARD:
+        return _err("kanban boards restore: the 'default' board is never archived")
+    try:
+        res = kb.restore_board(args.slug)
+    except ValueError as exc:
+        return _err(f"kanban boards restore: {exc}")
+    print(f"Board {res['slug']!r} restored from the archive → {res['new_path']}\n"
+          f"Switch to it with `hermes kanban boards switch {res['slug']}`.")
     return 0
 
 
@@ -205,6 +238,7 @@ _BOARD_HANDLERS = {
     "list": _cmd_boards_list, "ls": _cmd_boards_list,
     "create": _cmd_boards_create, "new": _cmd_boards_create,
     "rm": _cmd_boards_rm, "remove": _cmd_boards_rm, "delete": _cmd_boards_rm,
+    "archive": _cmd_boards_archive, "restore": _cmd_boards_restore,
     "switch": _cmd_boards_switch, "use": _cmd_boards_switch,
     "show": _cmd_boards_show, "current": _cmd_boards_show,
     "rename": _cmd_boards_rename,

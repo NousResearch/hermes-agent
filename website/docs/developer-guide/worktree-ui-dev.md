@@ -12,9 +12,15 @@ The Python core runs fine from any [git worktree](../user-guide/git-worktrees.md
 
 They're developer conveniences, not shipped commands. Drop them in `~/.zshrc`; adapt paths to taste.
 
+First select an isolated `HERMES_HOME` and `HERMES_RUNTIME_DIR` using the
+[PM developer workflow](../reference/package-management.md#developer-workflow).
+Keep those values when launching either helper. Each helper prepares the current
+worktree's Python environment through PM; JS dependencies can be shared when the
+locks match. Activation does not create a checkout-local `.venv`.
+
 ## The deps-sharing model
 
-One checkout is the **deps checkout** — the one place you actually run `npm install`. Every other worktree links against it, and only re-installs locally when its lockfile diverges (a branch that bumps a dependency must not silently run against stale packages).
+One checkout is the **deps checkout** — the one place you run `npm ci`. Every other worktree links against it, and only re-installs locally when its lockfile diverges (a branch that bumps a dependency must not silently run against stale packages).
 
 ```mermaid
 flowchart TD
@@ -29,7 +35,7 @@ Two env vars name the canonical checkout:
 
 | Variable | Meaning |
 |----------|---------|
-| `HERMES_MAIN_CHECKOUT` | The deps checkout — where `node_modules` really lives, and whose `.venv/bin/python` runs the backend. |
+| `HERMES_MAIN_CHECKOUT` | The deps checkout — where the shared JS `node_modules` trees live. |
 | `HERMES_GUI_DEPS_CHECKOUT` | Where the desktop deps (`apps/desktop/node_modules`) live. Defaults to `HERMES_MAIN_CHECKOUT`; override only if you keep desktop deps elsewhere. |
 
 Neither is read by Hermes itself — they're private to these helpers. The variables Hermes *does* read are covered in [Environment Variables](../reference/environment-variables.md).
@@ -42,12 +48,11 @@ The Ink TUI has a dev path already: `hermes --tui --dev` runs the TypeScript sou
 htui() {
   local root
   root="$(_hermes_root)" || { echo "htui: not in a Hermes checkout" >&2; return 1; }
-  ( cd "$root" && PYTHONPATH="$root" \
-      "$HERMES_MAIN_CHECKOUT/.venv/bin/python" -m hermes_cli.main --tui --dev "$@" )
+  ( cd "$root" && bash scripts/run-in-hermes-env python hermes --tui --dev "$@" )
 }
 ```
 
-`--dev` compiles from source, so it links `ui-tui/node_modules` from `HERMES_MAIN_CHECKOUT` when the root lockfile matches and installs locally otherwise (see [`_hermes_root` / linking helpers](#shared-helpers)).
+`--dev` compiles from source. The TUI launcher restores missing workspace dependencies from the primary checkout when possible, or prepares them locally; see [`_hermes_root` / linking helpers](#shared-helpers) for the explicit desktop dependency-sharing guard.
 
 :::warning `--dev` and `HERMES_TUI_DIR` are mutually exclusive
 `HERMES_TUI_DIR` points Hermes at a *prebuilt* bundle (Nix, system packages), which has no source to hot-reload. If it's set in your shell, `hermes --tui --dev` exits with an error. Run `unset HERMES_TUI_DIR` before `htui`.
@@ -61,7 +66,7 @@ This **zsh** example gives each launch an explicit slot (`HGUI_SLOT`, default `0
 
 ```bash
 hgui() (
-  local root deps desktop slot="${HGUI_SLOT:-0}" vite_port cdp_port port
+  local root deps desktop backend_python slot="${HGUI_SLOT:-0}" vite_port cdp_port port
   [[ "$slot" == [0-9] ]] || { print -u2 'hgui: HGUI_SLOT must be 0-9'; return 1; }
   vite_port=$((5174 + slot))
   cdp_port=$((9222 + slot))
@@ -86,7 +91,10 @@ hgui() (
   cd "$desktop" || return 1
   export PATH="$desktop/node_modules/.bin:$root/node_modules/.bin:$PATH"
   export HERMES_DESKTOP_HERMES_ROOT="$root"
-  export HERMES_DESKTOP_PYTHON="$HERMES_MAIN_CHECKOUT/.venv/bin/python"
+  backend_python="$(bash "$root/scripts/run-in-hermes-env" python -c \
+    'import sys; from pathlib import Path; from pm.environments import project_python; print(project_python(Path(sys.argv[1])))' \
+    "$root")" || return 1
+  export HERMES_DESKTOP_PYTHON="$backend_python"
   export HERMES_DESKTOP_CWD="$root"
   export HERMES_DESKTOP_DEV_SERVER="http://127.0.0.1:$vite_port"
   export HERMES_DESKTOP_CDP_PORT="$cdp_port"
@@ -120,7 +128,7 @@ Slot `0` uses ports `5174`/`9222`; slot `1` uses `5175`/`9223`. Slots are caller
 |----------|----------------|
 | `HGUI_SLOT` | Helper-only slot number, `0`–`9`; not a Hermes setting. |
 | `HERMES_DESKTOP_HERMES_ROOT` | Runs the backend from this worktree, not the packaged/PATH runtime. |
-| `HERMES_DESKTOP_PYTHON` | Reuses the main checkout's Python environment. Adjust for an installation that uses `venv` rather than `.venv`. |
+| `HERMES_DESKTOP_PYTHON` | Uses the current worktree's PM-selected application interpreter; its dependencies match that worktree's Python lock. |
 | `HERMES_DESKTOP_CWD` | Roots new desktop work in the worktree. |
 | `HERMES_DESKTOP_DEV_SERVER` | Points Electron at this instance's Vite server. |
 | `HERMES_DESKTOP_CDP_PORT` | Gives each instance its own renderer debugging port. |

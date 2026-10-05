@@ -284,7 +284,7 @@ def test_missing_child_result_is_an_owed_completion_and_releases_lock(transition
 
     root, git, old, new, request = transition
     die = f"os._exit({code})" if code >= 0 else "os.kill(os.getpid(), 9)"
-    (root / "hermes_cli/update_completion.py").write_text(f"import os\n{die}\n")
+    (root / "hermes_cli/update_completion.py").write_text(f"import os\n{die}\n", encoding="utf-8")
     exit_code, receipt, out = _run_cmd_update(monkeypatch, request, capsys)
     assert exit_code == 0, out
     assert receipt["update_id"] == request["receipt"]["update_id"]
@@ -296,7 +296,7 @@ def test_missing_child_result_is_an_owed_completion_and_releases_lock(transition
     assert "Desktop app build owed: the update completion did not finish" in out
     # This process resumes what the lost child never did, and the gateway watcher hears success.
     assert request["windows_resume"]["resume_needed"] is False
-    assert (Path(request["home"]) / ".update_exit_code").read_text().strip() == "0"
+    assert (Path(request["home"]) / ".update_exit_code").read_text(encoding="utf-8-sig").strip() == "0"
     lock = update_lock.UpdateLock()
     assert lock.acquire()
     lock.release()
@@ -318,7 +318,7 @@ def test_completion_spawn_failure_after_commit_is_owed(transition, monkeypatch, 
     assert receipt["outcome"] == "success"
     assert [row["step"] for row in receipt["followups"]] == ["completion"]
     assert "No usable temporary directory" in receipt["followups"][0]["reason"]
-    assert (Path(request["home"]) / ".update_exit_code").read_text().strip() == "0"
+    assert (Path(request["home"]) / ".update_exit_code").read_text(encoding="utf-8-sig").strip() == "0"
 
 
 def test_lost_completion_with_parked_local_changes_stays_partial(transition, monkeypatch, capsys):
@@ -326,7 +326,7 @@ def test_lost_completion_with_parked_local_changes_stays_partial(transition, mon
     from hermes_cli import update_cmd
 
     root, git, old, new, request = transition
-    (root / "hermes_cli/update_completion.py").write_text("import os\nos._exit(0)\n")
+    (root / "hermes_cli/update_completion.py").write_text("import os\nos._exit(0)\n", encoding="utf-8")
     notice = "⚠ Your local changes are parked in stash@{0}; re-apply them by hand."
     monkeypatch.setattr(update_cmd, "_unrestored_autostash_notice", lambda: notice)
     exit_code, receipt, out = _run_cmd_update(monkeypatch, request, capsys)
@@ -345,21 +345,23 @@ def test_desktop_build_that_never_ran_is_named_for_the_handoff(transition, capsy
     sync failed, the tail refused by the update lock, the prepared child died) must print it too."""
     scripts = Path(update_completion.__file__).parents[1] / "scripts/desktop-update"
     for script in ("posix.sh", "windows.ps1"):  # the exact prefix the hand-off scripts match
-        assert "Desktop app build owed: " in (scripts / script).read_text(encoding="utf-8")
+        assert "Desktop app build owed: " in (scripts / script).read_text(encoding="utf-8-sig")
     assert update_completion.DESKTOP_BUILD_OWED == "Desktop app build owed:"
     root, git, old, new, request = transition
     request["desktop"] = desktop
     shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
     if never_built == "dependencies":
-        (root / "pm/__init__.py").write_text("def sync_venv(**kw): raise RuntimeError('dependency refused')\n")
+        (root / "pm/__init__.py").write_text("def sync_venv(**kw): raise RuntimeError('dependency refused')\n",
+                                            encoding="utf-8")
     elif never_built == "refused":
         (root / "hermes_cli/source_completion.py").write_text(
             "def complete_source_checkout(*args, **kwargs):\n"
-            "    raise RuntimeError('an update is still running (pid 1); wait for it to exit')\n")
+            "    raise RuntimeError('an update is still running (pid 1); wait for it to exit')\n", encoding="utf-8")
     else:
         (root / "hermes_cli/source_completion.py").write_text(
-            "import os, signal\n"
-            "def complete_source_checkout(*args, **kwargs): os.kill(os.getpid(), signal.SIGKILL)\n")
+            "import os\n"
+            "def complete_source_checkout(*args, **kwargs): os.kill(os.getpid(), 9)  # posix-only test\n",
+            encoding="utf-8")
     result = update_completion.run_completion(request)
     out = capsys.readouterr().out
     assert result["exit_code"] == 0, out
@@ -381,7 +383,7 @@ def test_unwritable_gateway_status_never_fails_a_settled_commit(tmp_path, monkey
     request = {"source": str(tmp_path), "receipt": {"update_id": "u1"}, "gateway_mode": True,
                "home": str(home), "pm_receipt": None}
     assert update_completion._settle_after_commit(request, result, "dependencies", "pip failed") == 0
-    answer = json.loads(result.read_text(encoding="utf-8"))
+    answer = json.loads(result.read_text(encoding="utf-8-sig"))
     assert answer["exit_code"] == 0 and answer["receipt"] == receipt
 
 

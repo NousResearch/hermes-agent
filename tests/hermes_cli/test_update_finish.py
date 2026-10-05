@@ -315,12 +315,12 @@ def test_raising_fleet_restart_after_commit_is_a_followup_not_exit_1(completion)
     context.write_text(json.dumps(request), encoding="utf-8")
     child = run("restart")
     assert child.returncode == 0, child.stdout + child.stderr
-    receipt = json.loads((home / "logs/update_receipts/latest.json").read_text())
+    receipt = json.loads((home / "logs/update_receipts/latest.json").read_text(encoding="utf-8-sig"))
     assert receipt["update_id"] == request["update_id"]
     assert receipt["outcome"] == "success"
     owed = {row["step"]: row["reason"] for row in receipt["followups"]}
     assert "systemctl restart timed out" in owed.get("gateway_restart", ""), child.stdout + child.stderr
-    assert (home / ".update_exit_code").read_text().strip() == "0"
+    assert (home / ".update_exit_code").read_text(encoding="utf-8-sig").strip() == "0"
 
 
 @pytest.mark.platforms("posix")

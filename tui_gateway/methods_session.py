@@ -2457,6 +2457,17 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         if verb == "redirect" and agent is None and session.get("running"):
             _enqueue_prompt(session, text, current_transport() or _stdio_transport)
             session["last_active"] = time.time()
+            # #82603: under turn isolation the parent's `agent` is None for the
+            # WHOLE turn (the live agent lives in the compute-host child), so
+            # this branch is not a build window — without an interrupt the
+            # child's turn runs to completion and the correction only drains
+            # after it. Queue AND hard-interrupt the host (the same recover path
+            # prompt.submit's busy handler takes), so the follow-up lands on the
+            # child's settle. The plain in-process build window is untouched:
+            # `_turn_cancel_requested`/`_wait_agent_for_prompt` already stop
+            # that turn, and no host exists to dial.
+            if _session_uses_compute_host(session):
+                _interrupt_busy_session(str(params.get("session_id") or ""), session, None)
             return _ok(rid, {"status": "queued", "text": text})
         # Compression in flight: queue instead of steering/redirecting. A correction that
         # reaches the provider mid-compression aborts the compression (explicit_interrupt)

@@ -830,6 +830,8 @@ export const en: Translations = {
       graceDescription:
         'Sends you pick here wait a moment before they go, so Esc can take them back. A send the composer starts on its own always waits. A modifier chord never does: you cannot hit it by accident.',
       gracePopoverHint: 'Which sends should wait?',
+      gracePressHint: 'While a send is waiting',
+      gracePressCommit: 'Pressing Enter sends it now',
       graceReasonEnter: 'A bare Enter',
       graceReasonDoubleTap: 'A double tap',
       graceReasonPause: 'The pause send',

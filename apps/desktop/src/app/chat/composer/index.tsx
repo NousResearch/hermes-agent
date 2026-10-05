@@ -291,10 +291,11 @@ export function ChatBar({
   // keyup cancels it) so the gesture is decided by a value we control rather
   // than by the operating system's key-repeat delay.
   const enterHoldTimerRef = useRef<number | undefined>(undefined)
-  // A pause send that is waiting for the release, because the hold gesture is
-  // armed and the press in progress can still become one. The release runs it
-  // (it was a tap after all); either gesture that fires first clears it.
-  const pendingPauseRef = useRef(false)
+  // What the release should do, when the press in progress did not become a
+  // gesture: run the pause rule's send, or commit a send already waiting on the
+  // grace window. Either is deferred while the hold is armed, because the press
+  // can still become a hold; whatever fires first clears it.
+  const pendingPressRef = useRef<'pause' | 'commit' | null>(null)
   // The idle-send deadline: armed on every edit, cleared by the next one. There
   // is no key to watch, so the timer IS the whole gesture.
   const idleSendTimerRef = useRef<number | undefined>(undefined)
@@ -515,9 +516,9 @@ export function ChatBar({
    *  and goes through the same grace window every other send uses — the hold is
    *  its own situation, so it is delayed only if the user asked for that one. */
   const commitHeldEnter = useCallback(() => {
-    // The hold decided this press, so the release must not also run the pause
-    // rule it superseded.
-    pendingPauseRef.current = false
+    // The hold decided this press, so the release must not also run whatever
+    // the press deferred.
+    pendingPressRef.current = null
 
     const editor = editorRef.current
     const live = editor ? composerPlainText(editor) : ''
@@ -896,6 +897,7 @@ export function ChatBar({
     const sendPrefsAtHand = $composerSendPrefs.get()
 
     const {
+      commitOnPress,
       doubleEnterMs,
       enterNewline,
       enterSends,
@@ -1339,7 +1341,7 @@ export function ChatBar({
 
         // This press supersedes whatever the previous one decided, including a
         // pause send that is still waiting out its grace window.
-        pendingPauseRef.current = false
+        pendingPressRef.current = null
 
         // Drop the break the first press just inserted, otherwise every
         // double-tap message would ship with a trailing newline. Nothing to drop
@@ -1380,6 +1382,33 @@ export function ChatBar({
         return
       }
 
+      // A press during a wait: the send is already going, so a press that is not
+      // part of a gesture is the user saying "now", not "wait longer". Without
+      // this the window restarts on every press, sliding the send a full grace
+      // period each time. Deferred to the release while the hold is armed,
+      // because this press can still become a hold, and the hold owns its own
+      // decision — the gestures are never touched by this option.
+      if (commitOnPress && sendGrace.holding) {
+        event.preventDefault()
+
+        if (sendOnHold) {
+          pendingPressRef.current = 'commit'
+
+          return
+        }
+
+        sendGrace.cancel()
+
+        const editor = editorRef.current
+        const draftNow = editor ? composerPlainText(editor) : ''
+
+        if (draftNow.trim().length > 0 || attachments.length > 0) {
+          submitDraft()
+        }
+
+        return
+      }
+
       // `pause`: an Enter after you have stopped typing is the send you meant, so
       // it commits — held for the grace window when one is configured, which is
       // the whole reason a guessed send is safe to ship. With the hold armed the
@@ -1389,7 +1418,7 @@ export function ChatBar({
       // send.
       if (owner === 'pauseOnRelease') {
         event.preventDefault()
-        pendingPauseRef.current = true
+        pendingPressRef.current = 'pause'
 
         return
       }
@@ -1467,20 +1496,34 @@ export function ChatBar({
 
   // Releasing Enter before the hold timer fires means it was a tap: whatever the
   // press put in the composer stands, and nothing is sent. The timer is the ONLY
-  // thing that can turn a press into a send — with one exception, the pause send
-  // that waited for this release because the hold was armed and the press could
-  // still have become one. A tap is not a hold, so the pause rule gets its turn
-  // after all, with its own grace window if the user asked for one.
+  // thing that can turn a press into a send — with one exception: a press that
+  // was deferred to this release because the hold was armed and it could still
+  // have become one. A tap is not a hold, so what the press deferred runs now.
   const handleEditorKeyUp = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Enter') {
       cancelEnterHold()
 
-      if (pendingPauseRef.current) {
-        pendingPauseRef.current = false
+      const deferred = pendingPressRef.current
 
+      pendingPressRef.current = null
+
+      if (deferred === 'pause') {
+        // The pause rule gets its turn after all, with its own grace window if
+        // the user asked for one.
         if (composerSendDelays('pause', $composerSendPrefs.get().sendGraceFor) && sendGrace.hold()) {
           triggerHaptic('submit')
         } else {
+          submitDraft()
+        }
+      } else if (deferred === 'commit' && sendGrace.holding) {
+        // Only while the send is still waiting: the window may have fired while
+        // the key was down, in which case it has already committed.
+        sendGrace.cancel()
+
+        const editor = editorRef.current
+        const draftNow = editor ? composerPlainText(editor) : ''
+
+        if (draftNow.trim().length > 0 || attachments.length > 0) {
           submitDraft()
         }
       }

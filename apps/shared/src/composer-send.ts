@@ -126,6 +126,12 @@ export interface ComposerSendPrefs {
   /** Which sends wait for the grace window (see `SEND_GRACE_REASONS`). */
   sendGraceFor: readonly SendGraceReason[]
   sendGraceMs: number
+  /** Commits a send that is already waiting on the grace window when the user
+   *  presses Enter again. The press is the answer to the question the window
+   *  asked; without it the window restarts instead, so the send slides a full
+   *  grace period on every press. Gestures keep their own rules: this covers
+   *  only a press that is not part of a double tap or a hold. */
+  commitOnPress: boolean
 }
 
 const GESTURE_FLAG: Record<ComposerSendGesture, keyof ComposerSendPrefs> = {
@@ -276,7 +282,10 @@ export function normalizeComposerSendPrefs(value: unknown): ComposerSendPrefs {
     holdMs: clampHoldMs(record.holdMs ?? HOLD_DEFAULT_MS),
     typingIdleMs: clampTypingIdleMs(record.typingIdleMs ?? TYPING_IDLE_DEFAULT_MS),
     sendGraceFor: normalizeGraceReasons(record),
-    sendGraceMs: clampSendGraceMs(record.sendGraceMs ?? SEND_GRACE_DEFAULT_MS)
+    sendGraceMs: clampSendGraceMs(record.sendGraceMs ?? SEND_GRACE_DEFAULT_MS),
+    // ON by default: without it, a press during a wait restarts the window and
+    // the send slides a full grace period every time the key is hit.
+    commitOnPress: record.commitOnPress !== false
   }
 }
 
@@ -302,7 +311,8 @@ export function composerPrefsFromConfig(composer: unknown): ComposerSendPrefs {
     holdMs: record.hold_ms,
     typingIdleMs: record.typing_idle_ms,
     sendGraceFor: record.send_grace_for,
-    sendGraceMs: record.send_grace_ms
+    sendGraceMs: record.send_grace_ms,
+    commitOnPress: record.commit_on_press !== false
   })
 }
 
@@ -327,6 +337,7 @@ export function composerConfigFromPrefs(prefs: ComposerSendPrefs): Record<string
     idle_send_ms: prefs.idleSendMs,
     typing_idle_ms: prefs.typingIdleMs,
     send_grace_for: [...prefs.sendGraceFor],
-    send_grace_ms: prefs.sendGraceMs
+    send_grace_ms: prefs.sendGraceMs,
+    commit_on_press: prefs.commitOnPress
   }
 }

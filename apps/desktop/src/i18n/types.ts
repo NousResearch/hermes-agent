@@ -730,6 +730,8 @@ export interface Translations {
       graceTitle: string
       graceDescription: string
       gracePopoverHint: string
+      gracePressHint: string
+      gracePressCommit: string
       graceReasonEnter: string
       graceReasonDoubleTap: string
       graceReasonPause: string

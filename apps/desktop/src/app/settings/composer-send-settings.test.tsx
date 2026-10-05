@@ -65,6 +65,8 @@ const WORDS = {
   graceTitle: 'Wait before sending',
   graceDescription: 'Sends you pick here wait a moment before they go.',
   gracePopoverHint: 'Which sends should wait?',
+  gracePressHint: 'While a send is waiting',
+  gracePressCommit: 'Pressing Enter sends it now',
   graceReasonEnter: 'A bare Enter',
   graceReasonDoubleTap: 'A double tap',
   graceReasonPause: 'The pause send',
@@ -132,6 +134,7 @@ vi.mock('./primitives', () => ({
 }))
 
 const DEFAULTS = {
+  commitOnPress: true,
   doubleEnterMs: DOUBLE_ENTER_DEFAULT_MS,
   enterNewline: true,
   enterSends: true,
@@ -312,6 +315,26 @@ describe('ComposerSendSettings', () => {
     await later()
 
     expect(savedComposerRecord()).toMatchObject({ send_grace_for: ['hold'] })
+  })
+
+  it('persists the press-during-a-wait switch, which is not one of the situations', async () => {
+    setPrefs({ sendGraceFor: ['pause'] })
+
+    const { getByRole, getByText } = open()
+
+    fireEvent.click(getByRole('button', { name: '1 of 4' }))
+    fireEvent.click(getByText('Pressing Enter sends it now'))
+
+    await later()
+
+    // The situation set is untouched: this is a different question.
+    expect(savedComposerRecord()).toMatchObject({ commit_on_press: false, send_grace_for: ['pause'] })
+
+    fireEvent.click(getByText('Pressing Enter sends it now'))
+
+    await later()
+
+    expect(savedComposerRecord()).toMatchObject({ commit_on_press: true })
   })
 
   it('names where it persists to, so the hand-edit path is discoverable', () => {

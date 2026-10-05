@@ -1721,6 +1721,8 @@
     "keybinds.composerSend.graceMsUnit",
     "keybinds.composerSend.graceNone",
     "keybinds.composerSend.gracePopoverHint",
+    "keybinds.composerSend.gracePressCommit",
+    "keybinds.composerSend.gracePressHint",
     "keybinds.composerSend.graceReasonDoubleTap",
     "keybinds.composerSend.graceReasonEnter",
     "keybinds.composerSend.graceReasonHold",

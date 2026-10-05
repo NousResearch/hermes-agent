@@ -2656,6 +2656,10 @@ DEFAULT_CONFIG = {
             # send the app works out on the user's behalf.
             "send_grace_for": ["pause"],
             "send_grace_ms": 900,
+            # A press while a send is waiting commits it on the spot, instead of
+            # restarting its window. Gestures keep their own rules: this covers
+            # only a press that is not part of a double tap or a hold.
+            "commit_on_press": True,
         },
         # Git repo discovery for the Projects sidebar. Empty roots are a safe
         # no-op; users must explicitly configure roots for filesystem scanning.

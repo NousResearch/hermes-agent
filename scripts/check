@@ -42,11 +42,13 @@ from scripts.code_health import gitio  # noqa: E402
 from scripts.code_health.ruff_runner import resolve_ruff  # noqa: E402
 
 _HOOK_MARK = "# hermes-agent scripts/check hook"
+# Hooks are shared by every worktree of the clone, so the checked-out branch decides nothing:
+# each candidate (the index being committed, each commit being pushed) is materialized and judged
+# by its own scripts/check, and a candidate that predates scripts/check is not judged.
 _HOOK_HEAD = f"""#!/usr/bin/env bash
 {_HOOK_MARK} (`scripts/check --install-hook`; skip once with --no-verify)
-repo="$(git rev-parse --show-toplevel)"
-# Hooks are shared by every worktree; a branch that predates scripts/check is not checked.
-[ -f "$repo/scripts/check" ] || exit 0
+""" + r"""repo="$(git rev-parse --show-toplevel)" || exit 1
+git_dir="$(git rev-parse --absolute-git-dir)" || exit 1
 # The repo's virtualenv first (this worktree's, then the main checkout's): a bare python3 on
 # PATH may predate the 3.11 that scripts/check needs.
 common="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"
@@ -56,18 +58,35 @@ for root in "$repo" "$common"; do
     if [ -z "$py" ] && [ -x "$root/$rel" ]; then py="$root/$rel"; fi
   done
 done
-[ -n "$py" ] || py="$(command -v python3 || command -v python)" || {{
-  echo "scripts/check hook: no python3 or python on PATH" >&2; exit 1; }}
+[ -n "$py" ] || py="$(command -v python3 || command -v python)" || {
+  echo "scripts/check hook: no python3 or python on PATH" >&2; exit 1; }
+judge() {  # judge TREE-ISH ARGS...: check out TREE-ISH alone and run its own scripts/check ARGS
+  local tree=$1 tmp rc
+  shift
+  tmp="$(mktemp -d)" || return 1
+  GIT_INDEX_FILE="$tmp/index" git read-tree "$tree" &&
+    GIT_INDEX_FILE="$tmp/index" git checkout-index -a --prefix="$tmp/tree/" &&
+    GIT_DIR="$git_dir" "$py" "$tmp/tree/scripts/check" "$@" </dev/null
+  rc=$?
+  rm -rf "$tmp"
+  return $rc
+}
 """
-# pre-push reads "<local ref> <local sha> <remote ref> <remote sha>" per pushed ref; an all-zero
-# local sha is a branch deletion. Each pushed commit is judged as CI will judge the PR.
 _HOOKS = {
-    "pre-commit": _HOOK_HEAD + 'exec "$py" "$repo/scripts/check" --staged\n',
-    "pre-push": _HOOK_HEAD + """status=0
+    # git may export a relative GIT_INDEX_FILE, and the checker runs from another directory.
+    "pre-commit": _HOOK_HEAD + r"""GIT_INDEX_FILE="$(git rev-parse --path-format=absolute --git-path index)" || exit 1
+export GIT_INDEX_FILE
+tree="$(git write-tree)" || exit 1
+git cat-file -e "$tree:scripts/check" 2>/dev/null || exit 0
+judge "$tree" --staged
+""",
+    # stdin: "<local ref> <local sha> <remote ref> <remote sha>" per pushed ref; an all-zero
+    # local sha is a deletion. Each pushed commit is judged as CI will judge the PR.
+    "pre-push": _HOOK_HEAD + r"""status=0
 while read -r _ local_sha _ _; do
-  case "$local_sha" in
-    *[!0]*) "$py" "$repo/scripts/check" --commit "$local_sha" </dev/null || status=1 ;;
-  esac
+  case "$local_sha" in *[!0]*) ;; *) continue ;; esac
+  git cat-file -e "$local_sha:scripts/check" 2>/dev/null || continue
+  judge "$local_sha" --commit "$local_sha" </dev/null || status=1
 done
 exit $status
 """,

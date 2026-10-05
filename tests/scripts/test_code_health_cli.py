@@ -27,7 +27,7 @@ _GUARD_SCRIPTS = (
     "scripts/ci/check_os_marker_fakes.py", "scripts/check-case-collisions.py",
     "scripts/ci/check_lazy_deps_imports.py", "scripts/ci/check_profile_archive_boundary.py",
 )
-_ENGINE = ("scripts/check", "scripts/ci/profile_scope_patterns.json", *_GUARD_SCRIPTS)
+_SUPPORT = ("scripts/ci/profile_scope_patterns.json", *_GUARD_SCRIPTS)
 _LEGACY = "def legacy(x):\n" + "".join(f"    if x == {i}:\n        return {i}\n" for i in range(21))
 _GROWN = _LEGACY + "    if x == 99:\n        return 99\n"
 _ENV_COPY = "import os\n\n\ndef child_env():\n    env = os.environ.copy()\n    return env\n"
@@ -80,14 +80,17 @@ def _init(path: Path) -> Path:
     return path
 
 
-def _add_engine(repo: Path) -> list[str]:
-    """The checker and everything its jobs read; returns the top-level paths to stage."""
-    for rel in _ENGINE:
+def _add_engine(repo: Path, checker: bool = True) -> list[str]:
+    """What the checker's jobs read (guard scripts, policy, a tests/ dir) and, with ``checker``,
+    scripts/check + scripts/code_health themselves; returns the top-level paths to stage."""
+    for rel in _SUPPORT:
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO / rel, repo / rel)
-    shutil.copytree(REPO / "scripts/code_health", repo / "scripts/code_health",
-                    ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
     _write(repo, {"tests/README.md": "os-marker-fakes scans tests/\n"})
+    if checker:
+        shutil.copy2(REPO / "scripts/check", repo / "scripts/check")
+        shutil.copytree(REPO / "scripts/code_health", repo / "scripts/code_health",
+                        ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
     return ["scripts", "tests"]
 
 
@@ -186,6 +189,62 @@ def test_json_stdout_is_json_on_every_path(tmp_path, capsys, case, switch, files
     assert isinstance(data, list) and len(data) == findings, (case, out)
     if case in ("no measured change", "enforcement off"):
         assert "code health:" in err  # the human explanation moves to stderr
+
+
+# --- pre-push: the pushed candidate decides, never the checked-out branch ----------------------
+
+
+def _pushable(tmp_path: Path) -> tuple[Path, Path]:
+    """`main` has the guards but predates scripts/check, and is published: (repo, bare remote)."""
+    repo = _init(tmp_path / "repo")
+    _write(repo, {"pkg/a.py": "def a():\n    return 1\n"})
+    staged = _add_engine(repo, checker=False)
+    _git(repo, "add", "--all", "--", ".gitignore", "pyproject.toml", "pkg", *staged)
+    _git(repo, "commit", "-q", "-m", "main before scripts/check")
+    (repo / ".venv").symlink_to(Path(sys.prefix), target_is_directory=True)
+    remote = tmp_path / "remote.git"
+    _git(tmp_path, "init", "-q", "--bare", str(remote))
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-q", "origin", "main")
+    _git(repo, "fetch", "-q", "origin")
+    return repo, remote
+
+
+def _branch_with_checker(repo: Path, name: str, extra: dict[str, str]) -> str:
+    _git(repo, "checkout", "-q", "-b", name, "main")
+    _write(repo, extra)
+    _git(repo, "add", "--all", "--", *_add_engine(repo), *extra)
+    _git(repo, "commit", "-q", "-m", name)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _remote_ref(remote: Path, branch: str) -> str:
+    return _git(remote, "for-each-ref", "--format=%(objectname)", f"refs/heads/{branch}")
+
+
+def test_pre_push_judges_a_checker_branch_pushed_from_an_older_checkout(tmp_path):
+    repo, remote = _pushable(tmp_path)
+    _branch_with_checker(repo, "feature", {"pkg/c.py": _ENV_COPY})
+    good = _branch_with_checker(repo, "clean", {"pkg/d.py": "def d():\n    return 4\n"})
+    assert _check(repo, "--install-hook", "pre-push").returncode == 0
+    _git(repo, "checkout", "-q", "main")
+    assert not (repo / "scripts/check").exists()
+
+    push = _sh(repo, "git", "push", "origin", "feature")
+    assert push.returncode != 0, push.stdout + push.stderr
+    assert "PS-P05" in push.stdout + push.stderr
+    assert _remote_ref(remote, "feature") == ""  # destination untouched
+
+    # controls: a clean checker branch passes, a branch predating the checker is not judged,
+    # a deletion is not judged
+    push = _sh(repo, "git", "push", "origin", "clean")
+    assert push.returncode == 0 and _remote_ref(remote, "clean") == good, push.stderr
+    _git(repo, "checkout", "-q", "-b", "old", "main")
+    old = _commit(repo, {"pkg/c.py": _ENV_COPY})
+    assert _sh(repo, "git", "push", "origin", "old").returncode == 0
+    assert _remote_ref(remote, "old") == old
+    assert _sh(repo, "git", "push", "origin", "--delete", "clean").returncode == 0
+    assert _remote_ref(remote, "clean") == ""
 
 
 # --- M5: interpreter choice and the version guard ---------------------------------------------

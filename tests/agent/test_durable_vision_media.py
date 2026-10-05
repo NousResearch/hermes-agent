@@ -476,8 +476,25 @@ def test_existing_database_gains_nullable_media_column(tmp_path, monkeypatch):
     with SessionDB(db_path=path) as store:
         store.create_session("vision", "cli")
         store.append_message("vision", "user", "old text")
+        store._conn.execute("DROP INDEX idx_messages_media")
         store._conn.execute("ALTER TABLE messages DROP COLUMN media_content")
     with SessionDB(db_path=path) as store:
         assert store.get_messages_as_conversation("vision")[0]["content"] == "old text"
         store.set_user_message_content("vision", store.get_messages("vision")[0]["id"], _history("user")[0]["content"])
         assert store.get_messages_as_conversation("vision", repair_alternation=True)[0]["content"] == _history("user")[0]["content"]
+
+
+def test_media_bookkeeping_never_scans_the_messages_table(tmp_path, monkeypatch):
+    """Both per-write statements must hit the partial index: on a 1.4M-row state.db the scan form of
+    each costs ~30 s, inside the write lock for the retired-row clear. The index is created through
+    DEFERRED_INDEX_SQL, so a legacy store that just gained the column must get it too."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = tmp_path / "old.db"
+    with SessionDB(db_path=path) as store:
+        store._conn.execute("DROP INDEX idx_messages_media")
+        store._conn.execute("ALTER TABLE messages DROP COLUMN media_content")
+    with SessionDB(db_path=path) as store:
+        for sql in ("UPDATE messages SET media_content = NULL WHERE active = 0 AND media_content IS NOT NULL",
+                    "SELECT media_content FROM messages WHERE media_content IS NOT NULL"):
+            plan = " ".join(row[3] for row in store._conn.execute("EXPLAIN QUERY PLAN " + sql))
+            assert "idx_messages_media" in plan, plan

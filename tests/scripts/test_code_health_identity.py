@@ -45,12 +45,27 @@ _M1_BASE: dict[str, str | None] = {"pkg/a.py": _LEGACY + "\n\n" + _SWALLOW + "\n
     ({"pkg/a_compat.py": _MODULE_SWALLOW}, True),
     # one departed occurrence pays for one arrival, never two
     ({"pkg/a.py": _LEGACY + "\n\n" + _SWALLOW, "pkg/a_compat.py": _MODULE_SWALLOW + "\n" + _MODULE_SWALLOW}, True),
+    # dropping one guard never pays for a different one elsewhere: a move is the whole statement
+    ({"pkg/a.py": _LEGACY + "\n\n" + _SWALLOW, "pkg/a_compat.py": _MODULE_SWALLOW.replace("json", "yaml")}, True),
     # a module-level hit never pays for one inside a function elsewhere
     ({"pkg/a.py": _LEGACY + "\n\n" + _SWALLOW,
       "pkg/a_compat.py": "def load():\n" + "".join("    " + ln + "\n" for ln in _MODULE_SWALLOW.splitlines())}, True),
 ])
 def test_module_level_hits_follow_code_moved_to_another_file(tmp_path, capsys, files, blocks):
     repo, base = _base(tmp_path, _M1_BASE)
+    code, out = _verdict(repo, base, files, capsys)
+    assert code == (1 if blocks else 0), out
+
+
+_ENV_CONST = "import os\n\nCACHED = os.getenv('PATH')\n"
+
+
+@pytest.mark.parametrize("files, blocks", [
+    ({"pkg/c.py": "import os\n", "pkg/d.py": _ENV_CONST}, False),  # a one-line constant moved
+    ({"pkg/c.py": "import os\n", "pkg/d.py": _ENV_CONST.replace("PATH", "HOME")}, True),  # not a move
+])
+def test_module_level_constant_moved_to_another_file(tmp_path, capsys, files, blocks):
+    repo, base = _base(tmp_path, {"pkg/c.py": _ENV_CONST})
     code, out = _verdict(repo, base, files, capsys)
     assert code == (1 if blocks else 0), out
 

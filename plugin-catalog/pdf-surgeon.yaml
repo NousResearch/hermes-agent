@@ -1,6 +1,6 @@
 name: pdf-surgeon
 repo: https://github.com/Samuek9/pdf-surgeon
-sha: e7da338ceb639dd21f7791926e045a150a1fcb98
+sha: 0d3baf4f45bd00c2730e3f23e2d8981e5c916165
 description: >-
   Model-driven editor of PDF text whose result keeps the original typesetting, by rewriting the
   page content stream in place — the string operand inside the existing BT/ET block is replaced and
@@ -37,7 +37,7 @@ maintainer: Samuek9
 tier: community
 category: tools
 docs_url: https://github.com/Samuek9/pdf-surgeon#readme
-version: "1.0.1"
+version: "1.0.2"
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools:

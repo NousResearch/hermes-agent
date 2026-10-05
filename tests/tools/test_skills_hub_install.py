@@ -299,3 +299,87 @@ def test_missing_live_skill_preserves_staging_and_warns(hub_env, monkeypatch, ca
     assert fresh.is_dir()
     assert any("manual inspection" in r.message for r in caplog.records)
     assert "Hello." in (Path(out) / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_active_sibling_lock_blocks_reclaim_and_no_lock_leaks_into_install(hub_env, monkeypatch):
+    """A staging dir with a live sibling .active.lock is NOT reclaimed; no lock leaks into install."""
+    import fcntl
+
+    from tools import skills_hub, skills_hub_install
+
+    _seed_installed(skills_hub, "v1-skill", "# v1\nOriginal.\n")
+    install_dir = hub_env["skills"] / "v1-skill"
+
+    staging_root = hub_env["hub"] / ".replacement-staging"
+    staging_root.mkdir(parents=True, exist_ok=True)
+    active = staging_root / "v1-skill-active123"
+    active.mkdir(parents=True, exist_ok=True)
+    (active / "SKILL.md").write_text("# active\n", encoding="utf-8")
+    abandoned = staging_root / "v1-skill-abandoned456"
+    abandoned.mkdir(parents=True, exist_ok=True)
+    (abandoned / "SKILL.md").write_text("# abandoned\n", encoding="utf-8")
+    old = time.time() - 120
+    os.utime(active, (old, old))
+    os.utime(abandoned, (old, old))
+
+    # Hold an exclusive flock on the active dir's sibling lock for the whole install.
+    sib = staging_root / "v1-skill-active123.active.lock"
+    sib.touch(exist_ok=True)
+    held_fd = open(sib, "a+b")
+    fcntl.flock(held_fd.fileno(), fcntl.LOCK_EX)
+    try:
+        bundle, scan = _make_bundle("v1-skill", "# v1\nPatched.\n")
+        quarantine = skills_hub_install.quarantine_bundle(bundle)
+
+        out = skills_hub_install.install_from_quarantine(
+            quarantine, "v1-skill", "", bundle, scan)
+        assert Path(out).resolve() == install_dir.resolve()
+        assert "Patched." in (install_dir / "SKILL.md").read_text(encoding="utf-8")
+    finally:
+        try:
+            fcntl.flock(held_fd.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        held_fd.close()
+
+    assert active.is_dir(), "lock-held staging dir must survive reclaim"
+    assert not abandoned.exists(), "unlocked stale staging dir must be reclaimed"
+    # Critical regression assertion: the sibling lock must never leak into install_dir.
+    assert list(install_dir.rglob("*.active.lock")) == [], \
+        f"lock file leaked into install: {list(install_dir.rglob('*.active.lock'))}"
+
+
+def test_quarantine_lifecycle_success_removed_failure_kept(hub_env, monkeypatch):
+    """Success drops the quarantine source; a swap failure keeps it."""
+    from tools import skills_hub, skills_hub_install
+
+    _seed_installed(skills_hub, "v1-skill", "# v1\nOriginal.\n")
+    install_dir = hub_env["skills"] / "v1-skill"
+
+    # Success case: quarantine source is removed.
+    bundle, scan = _make_bundle("v1-skill", "# v1\nPatched.\n")
+    quarantine = skills_hub_install.quarantine_bundle(bundle)
+    quarantine_resolved = quarantine.resolve()
+    assert quarantine_resolved.is_dir()
+    out = skills_hub_install.install_from_quarantine(
+        quarantine, "v1-skill", "", bundle, scan)
+    assert Path(out).resolve() == install_dir.resolve()
+    assert not quarantine_resolved.exists(), "quarantine source must be removed after success"
+
+    # Failure case: force the staging->install publish move to fail; quarantine stays.
+    bundle2, scan2 = _make_bundle("v1-skill", "# v1\nPatched again.\n")
+    quarantine2 = skills_hub_install.quarantine_bundle(bundle2)
+    quarantine2_resolved = quarantine2.resolve()
+
+    real_move = shutil.move
+
+    def _boom_move(src, dst, *a, **k):
+        if Path(dst).resolve() == install_dir.resolve() and Path(src).name.startswith("v1-skill"):
+            raise OSError("simulated swap failure")
+        return real_move(src, dst, *a, **k)
+
+    monkeypatch.setattr(shutil, "move", _boom_move)
+    with pytest.raises(RuntimeError):
+        skills_hub_install.install_from_quarantine(
+            quarantine2, "v1-skill", "", bundle2, scan2)
+    assert quarantine2_resolved.is_dir(), "quarantine source must survive a failed install"

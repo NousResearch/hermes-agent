@@ -1419,6 +1419,81 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
         return "unknown"
 
 
+_TERMINAL_TASK_STATUSES = frozenset({"done", "archived"})
+_ACTIONABLE_BLOCK_KINDS = frozenset({"needs_input", "capability"})
+# Default backstop for the handoff escalator: skip failure events that
+# landed more than this many seconds before the cursor was initialised.
+# Prevents a 100-day-old ``gave_up`` from paging as a current incident
+# when escalation is enabled for the first time on a long-lived board.
+_ESCALATION_LOOKBACK_SECONDS = 7 * 24 * 60 * 60
+
+
+def _escalation_route_for(board: str, routes: Optional[Mapping[str, str]]) -> Optional[str]:
+    """Resolve escalation owner for a board, never inheriting cross-board routes silently."""
+    route_map = {"maiddee-cmo": "smile", "tech-coe": "tech-cto"}
+    if routes:
+        route_map.update({str(k): str(v) for k, v in routes.items() if v})
+    owner = route_map.get(board)
+    return str(owner) if owner else None
+
+
+def _record_escalation_decision(
+    conn: sqlite3.Connection,
+    *,
+    board: str,
+    source_event_id: int,
+    source_task_id: str,
+    source_kind: str,
+    decision: str,
+    escalation_task_id: Optional[str],
+) -> None:
+    """Persistent dedup outbox row. Caller owns the surrounding write_txn.
+
+    PRIMARY KEY (board, source_event_id) makes this safe across restarts,
+    rescans, and duplicate ticks even if the id cursor is reset: a duplicate
+    INSERT fails silently with INSERT OR IGNORE.
+    """
+    conn.execute(
+        "INSERT OR IGNORE INTO escalation_consumed_events "
+        "(board, source_event_id, source_task_id, source_kind, decision, "
+        " escalation_task_id, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            board, int(source_event_id), source_task_id, source_kind, decision,
+            escalation_task_id, int(time.time()),
+        ),
+    )
+
+
+def _append_suppression_audit(
+    conn: sqlite3.Connection,
+    *,
+    source_task_id: str,
+    source_event_id: int,
+    board: str,
+    failure_class: str,
+    state: str,
+    reason: str,
+    owner_profile: Optional[str],
+) -> None:
+    """Sanitized audit event for rows the escalator chose not to escalate.
+
+    The payload carries only the metadata the dispatcher uses; it never
+    includes task title/body/prompt/response/PII/secrets.
+    """
+    payload = {
+        "source_event_id": int(source_event_id),
+        "board": board,
+        "decision": "suppressed",
+        "reason": reason,
+        "state": state,
+        "failure_class": failure_class,
+        "owner_profile": owner_profile,
+        "timestamp": int(time.time()),
+    }
+    _kb._append_event(conn, source_task_id, "handoff_suppressed", payload)
+
+
 def process_handoff_escalations(
     conn: sqlite3.Connection,
     *,
@@ -1428,87 +1503,227 @@ def process_handoff_escalations(
 ) -> list[str]:
     """Route eligible failure events to one privacy-safe escalation card.
 
-    The source event id is the durable outbox cursor.  Repeated dispatcher ticks
-    first observe ``handoff_escalated`` and therefore do not duplicate comments
-    or cards.  One stable key per source task lets later failures monotonically
-    update the same escalation identity.
+    Source-event outbox: ``escalation_consumed_events`` is the durable cursor.
+    A row is written under the same write_txn that emits the escalation card
+    OR the suppression audit event, so a restart, rescan, or duplicate tick
+    can never re-emit the same source event.
+
+    Bootstrap: ``kanban_escalation_cursors`` is initialised lazily to
+    ``initialised_at = now`` (last_event_id = 0) the first time ``enabled``
+    flips on for a board. The first tick therefore starts at "now" and never
+    replays historical backlog; later ticks advance last_event_id to the
+    highest consumed event id so already-decided rows are filtered cheaply.
+    A bounded lookback (``_ESCALATION_LOOKBACK_SECONDS``) catches the rare
+    race where a failure event lands a few seconds before ``enabled`` flips on.
+
+    Current-state suppression: before materialising an escalation card we
+    re-read the source task's status. ``done`` / ``archived`` mean a later
+    success superseded the failure — record a sanitized suppression audit
+    event and move on. ``transient`` / ``dependency`` blocks likewise
+    resolve to a no-route suppression.
+
+    Epoch keying: when the source event itself qualifies (eligible
+    ``blocked(needs_input|capability)`` / ``timed_out`` / ``gave_up``) the
+    escalation card is keyed by
+    ``escalate:<board>:<task_id>:<failure_class>:<failure_epoch>`` so two
+    independent failure epochs (gave_up, retried, gave_up again) update
+    distinct cards instead of collapsing under a single task-ref key.
     """
     if not enabled:
         return []
     board_name = board or "default"
-    route_map = {"maiddee-cmo": "smile", "tech-coe": "tech-cto"}
-    if routes:
-        route_map.update({str(k): str(v) for k, v in routes.items() if v})
-    owner = route_map.get(board_name)
+    owner = _escalation_route_for(board_name, routes)
     if not owner:
         return []
 
-    rows = conn.execute(
-        """
-        SELECT e.id, e.task_id, e.run_id, e.kind, e.payload, e.created_at,
-               t.status, t.tenant, t.idempotency_key, t.consecutive_failures
-          FROM task_events e
-          JOIN tasks t ON t.id = e.task_id
-         WHERE e.kind IN ('blocked', 'timed_out', 'gave_up')
-           AND (t.idempotency_key IS NULL OR t.idempotency_key NOT LIKE 'escalate:%')
-           AND NOT EXISTS (
-               SELECT 1 FROM task_events x
-                WHERE x.task_id = e.task_id AND x.kind = 'handoff_escalated'
-                  AND json_extract(x.payload, '$.source_event_id') = e.id
-           )
-         ORDER BY e.id
-        """
-    ).fetchall()
+    with _kb.write_txn(conn):
+        cursor_row = conn.execute(
+            "SELECT last_event_id, initialised_at FROM kanban_escalation_cursors "
+            "WHERE board = ?",
+            (board_name,),
+        ).fetchone()
+        if cursor_row is None:
+            # First-time bootstrap. We never replay historical backlog:
+            #   * initialised_at = now               → events with
+            #     created_at < initialised_at - lookback are out of scope;
+            #   * last_event_id = 0                  → the query below scans
+            #     the full recency window once and writes the consumed
+            #     outbox row for every visited event, so subsequent ticks
+            #     can advance cheaply by id. The outbox row is the durable
+            #     cursor across process restarts; if a later tick ever
+            #     forgets the id cursor the outbox PK still suppresses
+            #     any re-evaluation.
+            now = int(time.time())
+            conn.execute(
+                "INSERT INTO kanban_escalation_cursors "
+                "(board, last_event_id, initialised_at) VALUES (?, 0, ?)",
+                (board_name, now),
+            )
+            cursor = 0
+            initialised_at = now
+            is_first_consume = True
+        else:
+            cursor = int(cursor_row["last_event_id"])
+            initialised_at = int(cursor_row["initialised_at"])
+            is_first_consume = False
+    lookback_floor = initialised_at - _ESCALATION_LOOKBACK_SECONDS
+    # First-time tick scans the full recency window; subsequent ticks
+    # use the strict id watermark to advance cheaply.
+    if is_first_consume:
+        rows = conn.execute(
+            """
+            SELECT e.id, e.task_id, e.run_id, e.kind, e.payload, e.created_at,
+                   t.status, t.tenant, t.idempotency_key, t.consecutive_failures
+              FROM task_events e
+              JOIN tasks t ON t.id = e.task_id
+             WHERE e.created_at >= ?
+               AND e.kind IN ('blocked', 'timed_out', 'gave_up')
+               AND (t.idempotency_key IS NULL OR t.idempotency_key NOT LIKE 'escalate:%')
+               AND NOT EXISTS (
+                   SELECT 1 FROM escalation_consumed_events c
+                    WHERE c.board = ? AND c.source_event_id = e.id
+               )
+             ORDER BY e.id
+            """,
+            (lookback_floor, board_name),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT e.id, e.task_id, e.run_id, e.kind, e.payload, e.created_at,
+                   t.status, t.tenant, t.idempotency_key, t.consecutive_failures
+              FROM task_events e
+              JOIN tasks t ON t.id = e.task_id
+             WHERE e.id > ?
+               AND e.kind IN ('blocked', 'timed_out', 'gave_up')
+               AND (t.idempotency_key IS NULL OR t.idempotency_key NOT LIKE 'escalate:%')
+               AND NOT EXISTS (
+                   SELECT 1 FROM escalation_consumed_events c
+                    WHERE c.board = ? AND c.source_event_id = e.id
+               )
+             ORDER BY e.id
+            """,
+            (cursor, board_name),
+        ).fetchall()
     escalated: list[str] = []
+    new_cursor = cursor
     for row in rows:
         source = json.loads(row["payload"] or "{}")
-        failure_class = row["kind"]
-        if failure_class == "blocked":
+        source_kind = row["kind"]
+        failure_class = source_kind
+        # Actionable by default; only specific source-side conditions
+        # downgrade the row to a suppressed audit (terminal source state,
+        # non-policy block kind). ``no_route`` is a separate pre-loop guard
+        # above; a row that reaches this loop has a board owner configured.
+        decision = "escalated"
+        if source_kind == "blocked":
             failure_class = source.get("kind")
-            if failure_class not in {"needs_input", "capability"}:
-                continue
-        task_ref = hashlib.sha256(
-            f"{board_name}:{row['task_id']}".encode("utf-8")
-        ).hexdigest()[:20]
-        payload = {
-            "source_event_id": int(row["id"]),
-            "board": board_name,
-            "task_ref": task_ref,
-            "state": row["status"],
-            "failure_class": failure_class,
-            "attempt_count": int(row["consecutive_failures"] or 0),
-            "owner_profile": owner,
-            "timestamp": int(row["created_at"]),
-            "run_id": row["run_id"],
-        }
-        escalation_id = _kb.create_task(
-            conn,
-            title=f"Kanban escalation {task_ref}",
-            body=json.dumps(payload, sort_keys=True),
-            assignee=owner,
-            created_by="kanban-dispatcher",
-            tenant=row["tenant"],
-            idempotency_key=f"escalate:{board_name}:{task_ref}",
-            board=board,
-        )
+            if failure_class not in _ACTIONABLE_BLOCK_KINDS:
+                decision = "suppressed_blocked_kind"
+                failure_class = failure_class or "unknown"
+        # Re-read the current source state inside the loop so a successful
+        # completion that landed after the join's snapshot still suppresses.
+        current = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (row["task_id"],),
+        ).fetchone()
+        current_status = current["status"] if current else row["status"]
+        if current_status in _TERMINAL_TASK_STATUSES:
+            decision = "suppressed_terminal"
+
+        # Mark the consumed outbox row first; the durable cursor always
+        # advances even if materialisation below fails. Idempotent
+        # via PRIMARY KEY (board, source_event_id).
         with _kb.write_txn(conn):
-            # Recheck under the write lock: another dispatcher/process may have
-            # handled this outbox row after our initial read.
-            seen = conn.execute(
-                "SELECT 1 FROM task_events WHERE task_id = ? "
-                "AND kind = 'handoff_escalated' "
-                "AND json_extract(payload, '$.source_event_id') = ?",
-                (row["task_id"], int(row["id"])),
-            ).fetchone()
-            if seen:
+            if decision in {"suppressed_blocked_kind"}:
+                _record_escalation_decision(
+                    conn, board=board_name, source_event_id=int(row["id"]),
+                    source_task_id=row["task_id"], source_kind=source_kind,
+                    decision=decision, escalation_task_id=None,
+                )
+                _append_suppression_audit(
+                    conn, source_task_id=row["task_id"],
+                    source_event_id=int(row["id"]), board=board_name,
+                    failure_class=failure_class, state=current_status,
+                    reason=(
+                        f"blocked.kind={failure_class!r} not in "
+                        f"{sorted(_ACTIONABLE_BLOCK_KINDS)}; not actionable"
+                    ),
+                    owner_profile=owner,
+                )
+                new_cursor = max(new_cursor, int(row["id"]))
                 continue
+            if decision == "suppressed_terminal":
+                _record_escalation_decision(
+                    conn, board=board_name, source_event_id=int(row["id"]),
+                    source_task_id=row["task_id"], source_kind=source_kind,
+                    decision=decision, escalation_task_id=None,
+                )
+                _append_suppression_audit(
+                    conn, source_task_id=row["task_id"],
+                    source_event_id=int(row["id"]), board=board_name,
+                    failure_class=failure_class, state=current_status,
+                    reason=(
+                        f"current_status={current_status!r} supersedes source "
+                        f"failure (terminal success/archive)"
+                    ),
+                    owner_profile=owner,
+                )
+                new_cursor = max(new_cursor, int(row["id"]))
+                continue
+            # Actionable failure epoch: materialise one escalation card.
+            task_id = row["task_id"]
+            idempotency_key = (
+                f"escalate:{board_name}:{task_id}:{failure_class}:{int(row['id'])}"
+            )
+            task_ref = hashlib.sha256(
+                f"{board_name}:{task_id}".encode("utf-8")
+            ).hexdigest()[:20]
+            payload = {
+                "source_event_id": int(row["id"]),
+                "board": board_name,
+                "task_ref": task_ref,
+                "state": current_status,
+                "failure_class": failure_class,
+                "attempt_count": int(row["consecutive_failures"] or 0),
+                "owner_profile": owner,
+                "timestamp": int(row["created_at"]),
+                "run_id": row["run_id"],
+            }
+            # create_task opens its own BEGIN IMMEDIATE; we then reopen a
+            # second write_txn so the consumed-outbox row, comment, and
+            # handoff_escalated event commit atomically with the card.
+            escalation_id = _kb.create_task(
+                conn,
+                title=f"Kanban escalation {task_ref} ({failure_class})",
+                body=json.dumps(payload, sort_keys=True),
+                assignee=owner,
+                created_by="kanban-dispatcher",
+                tenant=row["tenant"],
+                idempotency_key=idempotency_key,
+                board=board,
+            )
+            _record_escalation_decision(
+                conn, board=board_name, source_event_id=int(row["id"]),
+                source_task_id=task_id, source_kind=source_kind,
+                decision="escalated", escalation_task_id=escalation_id,
+            )
             conn.execute(
                 "INSERT INTO task_comments (task_id, author, body, created_at) "
                 "VALUES (?, 'kanban-dispatcher', ?, ?)",
                 (escalation_id, json.dumps(payload, sort_keys=True), int(time.time())),
             )
-            _kb._append_event(conn, row["task_id"], "handoff_escalated", payload)
+            _kb._append_event(conn, task_id, "handoff_escalated", payload)
+            new_cursor = max(new_cursor, int(row["id"]))
         escalated.append(escalation_id)
+
+    if new_cursor != cursor:
+        with _kb.write_txn(conn):
+            conn.execute(
+                "UPDATE kanban_escalation_cursors "
+                "SET last_event_id = ? WHERE board = ?",
+                (int(new_cursor), board_name),
+            )
+
     return escalated
 
 

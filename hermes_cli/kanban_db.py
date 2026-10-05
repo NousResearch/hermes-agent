@@ -1042,6 +1042,37 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+
+-- Persistent dedup outbox for the handoff escalator. A row is written under
+-- the same write_txn that produces the escalation card or the suppression
+-- audit event; the next dispatcher tick observes the row and is a no-op.
+-- Bounded bootstrap: ``kanban_escalation_cursors`` is initialised lazily to
+-- ``initialised_at = now`` (last_event_id = 0) when escalation_enabled flips
+-- on for a board. The first tick therefore starts at "now" and never replays
+-- historical backlog. Subsequent ticks advance last_event_id to the highest
+-- consumed event id so already-decided rows are filtered cheaply by id and
+-- the outbox row is the durable cursor across process restarts.
+CREATE TABLE IF NOT EXISTS escalation_consumed_events (
+    board             TEXT NOT NULL,
+    source_event_id   INTEGER NOT NULL,
+    source_task_id    TEXT NOT NULL,
+    source_kind       TEXT NOT NULL,
+    -- 'escalated' (card created/updated) | 'suppressed_terminal'
+    -- (source is already done/archived) | 'suppressed_blocked_kind'
+    -- (e.g. transient) | 'no_route' (board has no escalation owner).
+    decision          TEXT NOT NULL,
+    escalation_task_id TEXT,
+    created_at        INTEGER NOT NULL,
+    PRIMARY KEY (board, source_event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_escalation_consumed_task
+    ON escalation_consumed_events(board, source_task_id, source_event_id);
+
+CREATE TABLE IF NOT EXISTS kanban_escalation_cursors (
+    board           TEXT PRIMARY KEY,
+    last_event_id   INTEGER NOT NULL,
+    initialised_at  INTEGER NOT NULL
+);
 """
 
 

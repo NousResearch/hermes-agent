@@ -62,23 +62,31 @@ fn hermes_root_from(env_home: Option<&str>, native_home: &Path) -> PathBuf {
 }
 
 fn platform_default_home() -> PathBuf {
+    platform_default_home_with(&std::env::var("HERMES_DATA_DIR_SUFFIX").unwrap_or_default())
+}
+
+/// `suffix` is HERMES_DATA_DIR_SUFFIX, appended literally to the leaf exactly as
+/// `hermes_constants._get_platform_default_hermes_home()` and the desktop's
+/// `platformDefaultHermesHome()` do: channel builds keep their own data dir,
+/// and with it their own update marker.
+fn platform_default_home_with(suffix: &str) -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         // %LOCALAPPDATA%\hermes — matches scripts/install.ps1's $HermesHome.
         if let Some(local_app_data) = dirs::data_local_dir() {
-            return local_app_data.join("hermes");
+            return local_app_data.join(format!("hermes{suffix}"));
         }
     }
 
     // macOS + Linux + fallback: ~/.hermes (matches Python get_hermes_home(),
     // install.sh, and the Electron desktop's resolveHermesHome()).
     if let Some(home) = dirs::home_dir() {
-        return home.join(".hermes");
+        return home.join(format!(".hermes{suffix}"));
     }
 
     // Last resort — current dir, almost certainly wrong but at least
     // doesn't panic.
-    PathBuf::from(".hermes")
+    PathBuf::from(format!(".hermes{suffix}"))
 }
 
 pub fn log_dir() -> PathBuf {
@@ -272,5 +280,21 @@ mod tests {
         );
         assert_eq!(hermes_root_from(None, native), native.to_path_buf());
         assert_eq!(hermes_root_from(Some("  "), native), native.to_path_buf());
+    }
+
+    #[test]
+    fn data_dir_suffix_names_the_default_home_and_its_marker_root() {
+        let plain = platform_default_home_with("");
+        let channel = platform_default_home_with("-channel-build-x");
+        assert_eq!(channel.parent(), plain.parent());
+        assert_eq!(
+            channel.file_name().unwrap().to_string_lossy(),
+            format!(
+                "{}-channel-build-x",
+                plain.file_name().unwrap().to_string_lossy()
+            ),
+            "the suffix is appended to the leaf, as Python and the desktop do"
+        );
+        assert_eq!(hermes_root_from(None, &channel), channel);
     }
 }

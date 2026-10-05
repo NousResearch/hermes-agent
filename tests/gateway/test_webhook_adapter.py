@@ -31,6 +31,7 @@ from gateway.platforms.base import SendResult
 from gateway.platforms.webhook import (
     WebhookAdapter,
     _INSECURE_NO_AUTH,
+    _is_usable_secret,
 )
 
 
@@ -1256,3 +1257,13 @@ class TestBlankRouteSecretFailsClosed:
         adapter = _make_adapter(routes={"hook": {"secret": blank}})
         with pytest.raises(ValueError, match="HMAC secret"):
             asyncio.run(adapter.connect())
+
+
+@pytest.mark.parametrize(
+    "value,usable",
+    [("s3cret", True), ("x", True), (" x ", True),
+     ("", False), ("   ", False), ("\t\n", False),
+     (None, False), (b"bytes", False), (123, False)],
+)
+def test_is_usable_secret_classifies_configured_secrets(value, usable):
+    assert _is_usable_secret(value) is usable

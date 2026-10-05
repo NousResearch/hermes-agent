@@ -136,7 +136,8 @@ The stage-by-stage contract: `website/docs/developer-guide/cli-internals.md` § 
   `_ZIP_PRESERVED_NESTED` build outputs into the swap.
 - Restarts are fleet-wide and drain-first, bounded by the home each unit runs on
   (`update_fleet_scope.py`); another install's runtime is never restarted.
-- A provably-stale gateway fails the update (exit 1); every run writes a receipt under
+- After the commit point nothing fails `hermes update`: a stale gateway or failed post-commit
+  step is a receipt `followup` with its obligation kept armed. Receipts live under the ROOT home's
   `logs/update_receipts/`.
 - Nothing runs pulled code in the pre-pull interpreter. `update_handoff.py` and
   `update_serve_obligations.py` are a FROZEN compat surface (`tests/compat/old_updater_surface.json`):

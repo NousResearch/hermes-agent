@@ -741,6 +741,24 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_fallback is False
 
+    def test_404_structured_rate_limit_code_rotates(self):
+        """Pin the full table-driven contract on 404: the code consultation
+        reclassifies *every* known structured code, not just
+        ``model_not_available``. ``rate_limit_exceeded`` is the sharpest row —
+        it carries ``should_rotate_credential=True`` (rotate a credential key
+        on a 404 status), which is intentional, not a side effect; a future
+        refactor that silently drops it must fail here."""
+        e = MockAPIError(
+            "rate limited",
+            status_code=404,
+            body={"error": {"code": "rate_limit_exceeded", "message": "rate limited"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is False
+
     # ── Provider policy-block (OpenRouter privacy/guardrail) ──
 
 

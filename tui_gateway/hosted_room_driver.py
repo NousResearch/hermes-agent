@@ -801,14 +801,9 @@ class HostedRoomRuntime:
         for task in unresolved:
             attempt_key = (
                 binding.room_id, task["identity"].task_id, int(task["execution_generation"]))
-            try:
-                is_local = self._transport_for(binding, task) is self.rpc
-            except (RuntimeError, ValueError, OSError) as exc:
-                # A missing route or a failed admission replay (PeerRunsHTTPError) must not keep
-                # the turn from reaching its deadline.
-                self._record_error(
-                    f"task {task['identity'].task_id} recovery probe failed: {exc}")
-                is_local = False
+            # A peer whose same-generation recovery fails keeps the room waiting: deferring here
+            # would let Retry start the turn again under a new idempotency key.
+            is_local = self._transport_for(binding, task) is self.rpc
             if is_local and attempt_key not in inspected:
                 inspection = self._inspect_local_recovery_session(task)
                 inspected.add(attempt_key)

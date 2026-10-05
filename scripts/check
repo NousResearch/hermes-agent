@@ -122,13 +122,15 @@ def _jobs(names: list[str], base: str | None, head: str | None,
         if name in _GUARDS:
             jobs[name] = _Job([sys.executable, *_GUARDS[name]], root, env)
         elif name == "ruff":
-            jobs[name] = _Job([*resolve_ruff(REPO), "check", "."], root, env)
+            jobs[name] = _Job([*resolve_ruff(root), "check", "."], root, env)
         else:
-            # The ratchet reads both sides from git: real repo, judged against the head tree.
+            # The ratchet reads both sides from git. It runs from `root` like every other job, so
+            # in a snapshot its engine, rules and policy files (profile_scope_patterns.json, the
+            # ruff pin) are the judged artifact's own, never unstaged working-tree bytes.
             health = [sys.executable, "-m", "scripts.code_health"]
             health += ["--base", base] if base else []
             health += ["--head", head] if head else []
-            jobs[name] = _Job(health)
+            jobs[name] = _Job(health, root, env)
     return jobs
 
 

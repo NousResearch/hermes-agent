@@ -114,6 +114,39 @@ def _ratchet_repo(tmp_path: Path, switch: str | None = None) -> tuple[Path, str]
     return repo, _git(repo, "rev-parse", "HEAD")
 
 
+# --- F20: the staged/commit health verdict comes from the judged artifact only -----------------
+
+
+@pytest.mark.parametrize("unstaged", [
+    # the policy file read by the PS-P05 rule, narrowed so it no longer covers pkg/
+    ("scripts/ci/profile_scope_patterns.json", lambda t: t.replace('"id": "P05",', '"id": "P05",\n'
+                                                                   '      "path_regex": "^nowhere/",')),
+    # the engine itself, edited to exempt pkg/ from PS-P05
+    ("scripts/code_health/config.py", lambda t: t.replace(
+        'exclude=SINGLE_PROFILE, pattern_id="P05"',
+        'exclude=SINGLE_PROFILE + ("pkg/*",), pattern_id="P05"')),
+])
+def test_staged_health_ignores_unstaged_policy_and_engine(tmp_path, unstaged):
+    repo = _engine_repo(tmp_path)
+    _write(repo, {"pkg/c.py": _ENV_COPY})
+    _git(repo, "add", "--", "pkg/c.py")
+    tree = _git(repo, "write-tree")
+    first = _check(repo, "--staged", "--only", "health", "--base", "HEAD")
+    assert first.returncode == 1 and "PS-P05" in first.stdout, first.stdout + first.stderr
+
+    rel, edit = unstaged
+    original = (repo / rel).read_text(encoding="utf-8")
+    edited = edit(original)
+    assert edited != original
+    (repo / rel).write_text(edited, encoding="utf-8")
+    again = _check(repo, "--staged", "--only", "health", "--base", "HEAD")
+    assert again.returncode == 1 and "PS-P05" in again.stdout, again.stdout + again.stderr
+    # the judged artifact and the user's unstaged work are both untouched
+    assert _git(repo, "write-tree") == tree
+    assert (repo / rel).read_text(encoding="utf-8") == edited
+    assert _git(repo, "diff", "--name-only") == rel
+
+
 # --- F22: selectors are validated before anything runs ----------------------------------------
 
 

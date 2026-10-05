@@ -61,12 +61,16 @@ done
 [ -n "$py" ] || py="$(command -v python3 || command -v python)" || {
   echo "scripts/check hook: no python3 or python on PATH" >&2; exit 1; }
 judge() {  # judge TREE-ISH ARGS...: check out TREE-ISH alone and run its own scripts/check ARGS
-  local tree=$1 tmp rc
+  local tree=$1 tmp dir rc
   shift
   tmp="$(mktemp -d)" || return 1
-  GIT_INDEX_FILE="$tmp/index" git read-tree "$tree" &&
-    GIT_INDEX_FILE="$tmp/index" git checkout-index -a --prefix="$tmp/tree/" &&
-    GIT_DIR="$git_dir" "$py" "$tmp/tree/scripts/check" "$@" </dev/null
+  # Git for Windows: native git and python get this path verbatim when MSYS path conversion
+  # is off (MSYS_NO_PATHCONV=1, as Hermes' terminal sets it), so hand them C:/... spelling.
+  dir="$tmp"
+  if command -v cygpath >/dev/null 2>&1; then dir="$(cygpath -m "$tmp")" || dir="$tmp"; fi
+  GIT_INDEX_FILE="$dir/index" git read-tree "$tree" &&
+    GIT_INDEX_FILE="$dir/index" git checkout-index -a --prefix="$dir/tree/" &&
+    GIT_DIR="$git_dir" "$py" "$dir/tree/scripts/check" "$@" </dev/null
   rc=$?
   rm -rf "$tmp"
   return $rc

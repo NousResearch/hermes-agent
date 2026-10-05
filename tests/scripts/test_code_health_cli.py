@@ -337,6 +337,37 @@ def test_a_branch_cannot_relax_its_own_switch(tmp_path, monkeypatch, capsys):
     assert cli.main([]) == 1, capsys.readouterr().out
 
 
+# --- F23: the hooks under Git for Windows with MSYS path conversion disabled -----------------
+
+
+def test_hooks_run_with_msys_path_conversion_disabled(tmp_path):
+    """Hermes' Windows terminal exports both variables, so native git and python see the hook's
+    paths verbatim: a POSIX `/c/...` temp path then reaches them unconverted. Inert elsewhere."""
+    repo, remote = _pushable(tmp_path)
+    _branch_with_checker(repo, "feature", {"pkg/d.py": "def d():\n    return 4\n"})
+    for kind in ("pre-commit", "pre-push"):
+        assert _check(repo, "--install-hook", kind).returncode == 0
+    env = {**_env(), "MSYS_NO_PATHCONV": "1", "MSYS2_ARG_CONV_EXCL": "*"}
+
+    _write(repo, {"pkg/e.py": _SWALLOW})
+    _git(repo, "add", "--", "pkg/e.py")
+    commit = _sh(repo, "git", "commit", "-q", "-m", "swallow", env=env)
+    assert commit.returncode != 0 and "BLE001" in commit.stdout + commit.stderr, commit.stdout + commit.stderr
+    _write(repo, {"pkg/e.py": "def e():\n    return 5\n"})
+    _git(repo, "add", "--", "pkg/e.py")
+    commit = _sh(repo, "git", "commit", "-q", "-m", "clean", env=env)
+    assert commit.returncode == 0, commit.stdout + commit.stderr
+
+    push = _sh(repo, "git", "push", "-q", "origin", "feature", env=env)
+    assert push.returncode == 0, push.stdout + push.stderr
+    assert _remote_ref(remote, "feature") == _git(repo, "rev-parse", "HEAD")
+    _write(repo, {"pkg/f.py": _SWALLOW})
+    _git(repo, "add", "--", "pkg/f.py")
+    _git(repo, "commit", "-q", "--no-verify", "-m", "swallow")
+    push = _sh(repo, "git", "push", "-q", "origin", "feature", env=env)
+    assert push.returncode != 0 and "BLE001" in push.stdout + push.stderr, push.stdout + push.stderr
+
+
 # --- m4: the CI guards that ran outside the lint workflow --------------------------------------
 
 

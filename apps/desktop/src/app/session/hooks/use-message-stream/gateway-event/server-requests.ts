@@ -31,6 +31,7 @@ import {
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
 import { $selectedStoredSessionId, $sessions, lineageAliases, sessionMatchesStoredId } from '@/store/session'
+import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-focus'
 import {
   $sessionStates,
   $sessionTiles,
@@ -166,7 +167,11 @@ export function windowHostsSession(
 ): boolean {
   return (
     requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId }) ||
-    $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
+    $sessionTiles
+      .get()
+      .some(tile =>
+        requestNamesActiveSession({ activeSessionId: tile.runtimeId ?? null, sessionId, storedIdForRuntimeId })
+      )
   )
 }
 
@@ -188,7 +193,7 @@ export function windowHostsSession(
  * No shown conversation — nothing claimed, as before.
  *
  * Scoped to window.read only. preview.act and tour refuse unless
- * isActiveSession (raw id equality), so a tolerated claim there would turn
+ * the request names the focused chat, so a tolerated claim there would turn
  * another window's silence into a false refusal that wins the multi-window
  * race — and a tour refusal latches session["tour_bridge"] = "answered",
  * converting every later tour action in the session into a full 45s wait.
@@ -248,6 +253,23 @@ export function previewSessionRoute({
   }
 
   return replayed && !activeSessionId ? 'retry' : 'ignore'
+}
+
+/** The primary runtime stays active while the user works in a session tile.
+ * For actions that can change the screen, resolve the focused tile through its
+ * live tile entry, not through the primary runtime. A dangling/unbound tile
+ * cannot authorize an action. The identity matcher handles stored ids and
+ * compression rotations without treating branch siblings as one chat. */
+function requestNamesFocusedSession(
+  sessionId: string,
+  primaryActiveSessionId: null | string,
+  storedIdForRuntimeId: (runtimeId: string) => string | undefined
+): boolean {
+  const focusedSessionId = $focusedSessionIsTile.get()
+    ? ($sessionTiles.get().find(tile => tile.storedSessionId === $focusedStoredSessionId.get())?.runtimeId ?? null)
+    : primaryActiveSessionId
+
+  return requestNamesActiveSession({ activeSessionId: focusedSessionId, sessionId, storedIdForRuntimeId })
 }
 
 const markNeedsInput = (ctx: ServerRequestContext) => {
@@ -729,12 +751,22 @@ export function handleServerRequest(
         if (
           previewSessionRoute({
             activeSessionId: deps.activeSessionIdRef.current,
+            method: request.method,
             replayed: false,
             sessionId,
             storedIdForRuntimeId
           }) === 'run'
         ) {
-          handler({ deps, request, sessionId, isActiveSession: true })
+          handler({
+            deps,
+            request,
+            sessionId,
+            isActiveSession: requestNamesFocusedSession(
+              sessionId,
+              deps.activeSessionIdRef.current,
+              storedIdForRuntimeId
+            )
+          })
         } else {
           declineNotShown(request)
         }
@@ -748,7 +780,7 @@ export function handleServerRequest(
     deps,
     request,
     sessionId,
-    isActiveSession: requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId })
+    isActiveSession: requestNamesFocusedSession(sessionId, activeSessionId, storedIdForRuntimeId)
   })
 
   return true

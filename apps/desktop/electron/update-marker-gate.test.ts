@@ -309,15 +309,37 @@ describe.skipIf(process.platform === 'win32')('gate over a dead marker (R6)', ()
     assert.equal(helperCalls(home).length, 0, 'legacy capability absence remains unsupported')
   })
 
-  test('a live owner never reaches the helper; an absent marker neither', async () => {
+  test('a live owner never reaches the helper', async () => {
     const { root, home } = fakeHelperCheckout()
     const hasLiveMarker = gate(root, home)
 
-    assert.equal(await hasLiveMarker(), false)
     const owner = await liveOwner()
     fs.writeFileSync(markerPath(home), `${owner.pid}\n${minutesAgo(1)}\n`)
     assert.equal(await hasLiveMarker(), true)
     assert.deepEqual(helperCalls(home), [])
+  })
+
+  // Review 5411223284: with no marker the gate opened without asking whether
+  // the checkout lock was held (an update before its marker, or after it).
+  test('no marker: only the helper `held` keeps the gate shut; any other answer opens it', async () => {
+    const { root, home } = fakeHelperCheckout()
+    const states: HeldState[] = []
+    fs.writeFileSync(path.join(home, 'helper-verdict'), 'held')
+    const hasLiveMarker = gate(root, home, undefined, { onHeld: s => states.push(s) })
+
+    assert.equal(await hasLiveMarker(), true, 'no marker, checkout lock held: parked')
+    assert.deepEqual(helperCalls(home), [`--marker-op reclaim --install-root ${root}`])
+    assert.deepEqual([states[0]?.verdict, states[0]?.ownerPid, states[0]?.blocking], ['held', null, true])
+    assert.equal(fs.existsSync(markerPath(home)), false, 'Desktop creates nothing')
+
+    requestHoldRecheck()
+    fs.writeFileSync(path.join(home, 'helper-verdict'), 'absent')
+    assert.equal(await hasLiveMarker(), false, 'the lock was let go: the gate opens')
+
+    for (const answer of ['garbage', 'busy']) {
+      fs.writeFileSync(path.join(home, 'helper-verdict'), answer)
+      assert.equal(await gate(root, home)(), false, `a helper that cannot answer (${answer}) never blocks a markerless boot`)
+    }
   })
 })
 

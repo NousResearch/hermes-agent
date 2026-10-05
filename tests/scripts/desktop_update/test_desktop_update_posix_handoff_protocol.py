@@ -322,6 +322,20 @@ def test_marker_outlives_a_survivor_that_still_holds_the_checkout_lock(tmp_path)
     assert not marker.exists()
 
 
+def test_reclaim_without_a_marker_reports_held_while_the_checkout_lock_is_held(tmp_path):
+    """Review 5411223284: `absent` was answered before the checkout lock was looked at, so a
+    Desktop gate opened while an update that had not yet published (or had already retired)
+    its marker still held the checkout."""
+    home, install = _install(tmp_path, legacy=True)
+    lock = install / ".hermes-update.lock"
+    lock.touch()
+    with open(lock, "rb") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+        assert _helper(tmp_path, home, install, "reclaim") == "held"
+        assert not (home / ".hermes-update-in-progress").exists()
+    assert _helper(tmp_path, home, install, "reclaim") == "absent"
+
+
 def test_release_waits_for_the_survivor_then_removes_the_marker(tmp_path):
     home, install = _install(tmp_path, legacy=True)
     completion = tmp_path / "release-completion"

@@ -10,6 +10,9 @@
  *
  * - `held` / `busy` / `live <pid>` => an update still owns the checkout: keep waiting;
  * - `reclaimed` / `absent` => nothing runs: proceed;
+ * - no marker at all => the helper is asked too (it checks the checkout lock
+ *   under the same rule); only its `held` keeps the gate closed, any other
+ *   answer proceeds as before;
  * - `unsupported` (older checkout, no helper) => proceed without deleting
  *   (dead = not running, as before minus the deletion) — unless this process
  *   already saw the same body block: then the script is only missing or
@@ -92,6 +95,13 @@ export interface LiveMarkerProbeOptions {
 }
 
 const STILL_RUNNING = new Set(['held', 'busy', 'live', 'error'])
+
+/**
+ * The hold id of "no marker, but the helper says the checkout lock is held"
+ * (an update that holds the lock before publishing, or after retiring, its
+ * marker). There is no body to scope it to, so one id stands for that state.
+ */
+const ABSENT_HOLD_ID = markerHoldId(Buffer.from('\0no update marker\0'))
 
 // First sighting of each held body, process-wide: a later gate wait (a pool
 // backend, a reconnect) reports the same "since".
@@ -251,7 +261,8 @@ async function refreshVerdict(
   holdId: string,
   reclaim: () => Promise<MarkerHelperVerdict>,
   now: () => number,
-  log: ((line: string) => void) | undefined
+  log: ((line: string) => void) | undefined,
+  subject = 'dead update marker'
 ): Promise<AskedEntry> {
   const generation = recheckGeneration
   let verdict = await reclaim()
@@ -264,7 +275,7 @@ async function refreshVerdict(
 
   if (!previous || STILL_RUNNING.has(previous.verdict.kind) !== STILL_RUNNING.has(verdict.kind)) {
     log?.(
-      `[updates] dead update marker: script helper says ${verdict.kind}${'pid' in verdict ? ` ${verdict.pid}` : ''}`
+      `[updates] ${subject}: script helper says ${verdict.kind}${'pid' in verdict ? ` ${verdict.pid}` : ''}`
     )
   }
 
@@ -358,11 +369,13 @@ export function liveMarkerProbe({
       return true
     }
 
-    if (inspection.state !== 'dead' || !reclaim) {
+    const absent = inspection.state === 'absent'
+
+    if ((inspection.state !== 'dead' && !absent) || !reclaim) {
       return false
     }
 
-    const holdId = markerHoldId(inspection.raw, statMarkerFile(hermesHome))
+    const holdId = absent ? ABSENT_HOLD_ID : markerHoldId(inspection.raw, statMarkerFile(hermesHome))
 
     if (unanswerableHolds.has(holdId)) {
       return false
@@ -372,19 +385,22 @@ export function liveMarkerProbe({
     let entry = previous!
 
     if (verdictDue(previous, now, reprobeMs)) {
-      entry = await refreshVerdict(previous, holdId, reclaim, now, log)
+      entry = await refreshVerdict(previous, holdId, reclaim, now, log, absent ? 'no update marker' : undefined)
       asked.set(holdId, entry)
     }
 
     const { verdict } = entry
 
-    if (!STILL_RUNNING.has(verdict.kind) || helperUnanswerable(entry, holdId, log)) {
+    // No marker: only the helper's positive `held` (a process holds the
+    // checkout lock) closes the gate; a helper that cannot answer keeps the
+    // old "no marker, nothing runs" so a broken script never blocks boot.
+    if (!STILL_RUNNING.has(verdict.kind) || (absent && verdict.kind !== 'held') || helperUnanswerable(entry, holdId, log)) {
       return false
     }
 
     const state: HeldState = {
       verdict: verdict.kind as HeldState['verdict'],
-      ownerPid: inspection.marker?.pid ?? null,
+      ownerPid: absent ? null : (inspection.marker?.pid ?? null),
       livePid: 'pid' in verdict ? verdict.pid : null,
       holdId,
       since: heldSince(holdId, now()),
@@ -401,7 +417,7 @@ export function liveMarkerProbe({
     }
 
     onHeld?.(state)
-    onLiveMarker?.({ startedAt: inspection.marker?.startedAt ?? null, runId: inspection.marker?.run ?? null })
+    onLiveMarker?.(absent ? { startedAt: null, runId: null } : { startedAt: inspection.marker?.startedAt ?? null, runId: inspection.marker?.run ?? null })
 
     return true
   }

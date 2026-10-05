@@ -288,7 +288,12 @@ function Invoke-MarkerOp([string]$Op, [int]$Desktop, [string]$Run) {
     try {
         $ctx = New-MarkerContext
         $read = Read-MarkerLocked $ctx
-        if ($read.State -eq 'absent') { return 'absent' }
+        if ($read.State -eq 'absent') {
+            # No marker is not proof nothing runs: an update can hold the checkout
+            # lock before it publishes, or after it retires, its marker (R6).
+            if ($Op -eq 'reclaim' -and (Test-CheckoutLockHeld)) { return 'held' }
+            return 'absent'
+        }
         if ($read.State -eq 'busy') { return 'busy' }
         $info = $read.Info
         $j = $read.Judgement

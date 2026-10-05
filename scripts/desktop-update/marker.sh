@@ -542,7 +542,12 @@ marker_remove() { # 0 iff the marker is gone afterwards (rm -f exits 0 when it c
 }
 
 marker_op_reclaim_locked() {
-  marker_read || { echo absent; return 0; }
+  # No marker is not proof nothing runs: an update can hold the checkout lock
+  # before it publishes, or after it retires, its marker (R6, same rule).
+  if ! marker_read; then
+    if checkout_lock_held; then echo held; else echo absent; fi
+    return 0
+  fi
   if [ -z "$SEEN" ] && marker_young_empty; then echo busy; return 0; fi
   marker_judge "$SEEN"
   case "$J_VERDICT" in
@@ -571,7 +576,7 @@ marker_op_withdraw_locked() {
 }
 
 marker_op() { # reclaim | withdraw -> one verdict line on stdout (same words as marker.ps1):
-  # reclaim  absent | live <pid> | busy | held (dead, but the checkout lock is held) | reclaimed
+  # reclaim  absent | live <pid> | busy | held (dead or no marker, but the checkout lock is held) | reclaimed
   # withdraw absent | taken <pid> (a live adopter carries the run) | withdrawn (this Desktop's
   #          own bridge, removed) | foreign (anything else, kept -- a dead adopter included)
   local rc

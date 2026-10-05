@@ -204,6 +204,27 @@ def test_marker_op_reclaim_reports_held_while_a_survivor_holds_the_checkout_lock
 
 
 @pytest.mark.platforms('windows')
+def test_marker_op_reclaim_without_a_marker_reports_held_while_the_checkout_lock_is_held(tmp_path: Path) -> None:
+    """Review 5411223284: `absent` was answered before the checkout lock was looked at, so a
+    Desktop gate opened while an update with no marker (yet, or any more) held the checkout."""
+    install = tmp_path / 'hermes-agent'
+    install.mkdir()
+    release = tmp_path / 'release-holder'
+    holder = subprocess.Popen([sys.executable, '-c', _CHECKOUT_HOLDER, str(install / '.hermes-update.lock'), str(release)])
+    try:
+        deadline = time.monotonic() + 30
+        while not Path(str(release) + '.ready').exists():
+            assert time.monotonic() < deadline and holder.poll() is None
+            time.sleep(0.05)
+        assert _op(tmp_path, '-MarkerOp', 'reclaim')[:2] == (0, 'held\n')
+        assert not (tmp_path / MARKER).exists()
+    finally:
+        release.touch()
+        holder.wait(timeout=30)
+    assert _op(tmp_path, '-MarkerOp', 'reclaim')[:2] == (0, 'absent\n')
+
+
+@pytest.mark.platforms('windows')
 @pytest.mark.parametrize('lease', [1, 16])
 def test_marker_op_reclaim_reports_held_while_a_leased_child_outlives_its_owner(tmp_path: Path, lease: int) -> None:
     """R5b: the owner died (its byte at 1 MiB is free) but a completion child the job refused

@@ -776,6 +776,7 @@ def _complete_source_update(request: dict | None) -> None:
     _write_fleet_restart_pending_marker(expected_sha=request.get("expected_sha") or _current_checkout_sha() or "")
     # Pre-swap module (imported with run_completion above): never the replacement tree's.
     from hermes_cli.update_completion import settle_lost_completion
+    lost = False
     try:
         result = run_completion(request)
     except KeyboardInterrupt as interrupt:
@@ -783,12 +784,14 @@ def _complete_source_update(request: dict | None) -> None:
         _completion_receipt.finalize_interrupted_update_receipt("KeyboardInterrupt: interrupted after the code was updated")
         raise SystemExit(130) from interrupt
     except Exception as exc:  # health: allow BLE001 -- after the commit point a lost completion is owed, never a failed update (C3)
-        result = settle_lost_completion(request, f"{type(exc).__name__}: {exc}")
-    if result.get("receipt") is None and result["exit_code"] == 130:
+        result, lost = settle_lost_completion(request, f"{type(exc).__name__}: {exc}"), True
+    if not lost and result.get("receipt") is None and result["exit_code"] == 130:
         _completion_receipt.finalize_interrupted_update_receipt("the completion was interrupted after the code was updated")
-    elif result.get("receipt") is None:
-        # The child crashed (OOM, SIGKILL) or never answered: the same owed tail (review P2).
-        result = settle_lost_completion(request, result.get("error") or f"the completion process exited {result['exit_code']}")
+    elif not lost and result.get("receipt") is None and result["exit_code"]:
+        # The child crashed (OOM, SIGKILL) or never answered (run_completion maps every answer
+        # without a correlated terminal receipt to non-zero): the same owed tail (review P2).
+        result, lost = settle_lost_completion(
+            request, result.get("error") or f"the completion process exited {result['exit_code']}"), True
     _accept_completion_pm_receipt(result.get("pm_receipt"), request["receipt"]["update_id"])
     token = request["windows_resume"]
     if token is not None and result.get("windows_resume") is not None:
@@ -813,6 +816,8 @@ def _complete_source_update(request: dict | None) -> None:
             _completion_receipt._current.reset(current.current_token)
     if result["exit_code"]:
         raise SystemExit(result["exit_code"])
+    if lost:
+        return  # a retired channel is adopted after a verified completion only; the next update adopts it
     try:
         if adopt_retired_channel(request):
             print(f"→ Source subscription moved to {request['channel_retirement']['destination']}")

@@ -984,9 +984,11 @@ def _run_post_update_maintenance(
     """Post-build housekeeping and completion, returning the SQLite runtime verdict.
 
     Ancillary repairs and notices are best-effort. The profile sync and the config migration run
-    after a failed build too and never fail the committed update: a failure is printed as ``⚠``,
-    recorded as a receipt follow-up and appended to ``followups`` so the tail stays owed. An
-    unsafe runtime withholds success (and is reported) but is not tail work.
+    after a failed build too and never fail the committed update. A config-migration failure is
+    printed as ``⚠``, recorded as a receipt follow-up and appended to ``followups`` so the tail
+    stays owed. Profile sync is best-effort per profile (``_sync_profiles_after_update`` prints
+    that profile's error and carries on); only a sync that escapes the step is owed. An unsafe
+    runtime withholds success (and is reported) but is not tail work.
     """
     from hermes_cli.update_receipt import record_followup
 

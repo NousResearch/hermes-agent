@@ -1,4 +1,44 @@
-"""A checkout transition must not finish in the old interpreter's module graph."""
+"""A checkout transition must not finish in the old interpreter's module graph.
+
+Two host facts decide whether this suite is measurable at all on a default install, and
+neither is obvious, so both are recorded here rather than rediscovered per run.
+
+**`HERMES_HOME` isolation does NOT disable `tests/home_io_guard.py` on native Windows.**
+The guard's refusal message says "Use the isolated HERMES_HOME or a temporary fixture
+instead", and on POSIX that advice works: the guarded roots there are `~/.hermes` plus a
+pre-sandbox `HERMES_HOME`, so pointing `HERMES_HOME` at a temp directory moves the guard off
+the state the test touches. On Windows that instruction is false.
+`tests/conftest.py:1381-1389` appends `%LOCALAPPDATA%\\hermes` to
+`_REAL_HERMES_ROOT_CANDIDATES` UNCONDITIONALLY -- outside the `_PRE_SANDBOX_HERMES_HOME`
+branch, with no environment-variable escape -- so no value of `HERMES_HOME` removes that
+root. Measured on `2d778146d4` (`--tb=line`, identical interpreter and flags): an isolated
+`HERMES_HOME` still produces the same 6 refusals (6 FAILED tests, refused path
+`%LOCALAPPDATA%\\hermes\\installs\\<id>\\inputs\\.project-root`). Anyone measuring this suite
+on a default install should expect that red; it is a fixture-completeness gap (below), not a
+host artifact to be explained away.
+
+**The owning-install probe reads guarded real-home state, so the fixture stubs the
+boundary.** Production `hermes_cli/update_owning_install.py:57` resolves a PM generation's
+owning checkout by reading `(state/"inputs"/".project-root")`, where `state` is this
+interpreter's own `<installs>/<key>` -- under `%LOCALAPPDATA%\\hermes` on a default install.
+`main.cmd_update` calls it (`hermes_cli/main.py:2501-2503`) before the behaviour under test,
+so the guard refuses and the test fails while asserting nothing about its own subject. The
+process boundary is stubbed, not the behaviour: the three
+`retarget_to_owning_install` monkeypatches below are what keeps this suite hermetic.
+
+**Read the `hermes_platform` stub below as fixture FIDELITY, not as a fix for a failing
+test.** Removing it entirely still leaves this suite green (measured: 20 passed, 3 skipped,
+identical, `evidence/t_31e10386/33-ABL-B-no-hp-with-utf8.txt`), because nothing here asserts
+on the completion tail's stderr. The converse is measured too and is the claim worth keeping:
+with this stub PRESENT but the `_ensure_utf8` repair REMOVED, the suite goes 8 red
+(`evidence/t_31e10386/32-ABL-A-no-utf8-with-hp.txt`) -- so `assert 1 == 23` at :471 there is
+the cp1252 marker dying, NOT this missing import. What this stub changes is whether the step
+under test RUNS: without it the tail cannot import `locate_command`, swallows the ImportError
+on a bare `except`, and prints a warning instead of taking `expose_pm_git`'s early return
+(`evidence/t_31e10386/probe-step-actually-runs-v2.py` shows the two paths differ in control
+flow). A green suite and a stub that is redundant for pass/fail are both true; do not read
+the stub's presence as evidence that the step is covered.
+"""
 
 import json
 import os
@@ -21,9 +61,64 @@ def transition(tmp_path):
     home.mkdir()
     package = root / "hermes_cli"
     package.mkdir()
-    (package / "__init__.py").write_text("")
+    # The real hermes_cli/__init__.py imports _ensure_utf8(), which forces UTF-8 stdio so a
+    # failure marker like "✗ ..." cannot die on a cp1252 console. The completion child runs
+    # -I -S and prints such markers, so an EMPTY stub removes that repair and the child dies
+    # with UnicodeEncodeError instead of reporting its real exit status.
+    (package / "__init__.py").write_text(
+        "import sys\n"
+        "for _stream in (sys.stdout, sys.stderr):\n"
+        "    try:\n"
+        "        _stream.reconfigure(encoding='utf-8', errors='replace')\n"
+        "    except Exception:\n"
+        "        pass\n"
+    )
+    # The completion tail's first step is expose_pm_git(), whose resolver import
+    # (`_subprocess_compat.py:395`) is a lazy `from hermes_platform.resolver import
+    # locate_command`. A child tree without hermes_platform cannot import it, so the tail
+    # skips the step on a bare `except Exception` and prints
+    # "⚠ Could not provide git for the source completion: No module named 'hermes_platform'".
+    # That is a fixture-completeness gap wearing a behaviour failure's clothes: the step under
+    # test silently does not run while the test asserts on the exit code it feeds.
+    (root / "hermes_platform").mkdir()
+    (root / "hermes_platform/__init__.py").write_text("")
+    # resolver is a real PACKAGE in this tree (hermes_platform/resolver/__init__.py re-exports
+    # locate_command from .core), so the stub must be a package too -- a resolver.py module
+    # would be a different import target and still fail the tail's import.
+    (root / "hermes_platform/resolver").mkdir()
+    # `command` must mirror the real Resolution.command: ONE element when the tool resolves,
+    # EMPTY when it does not (hermes_platform/resolver/core.py:75-78). The branch is
+    # `if found and not Path(found[0]).resolve().is_relative_to(store_root())` -- so an EMPTY
+    # tuple is falsy and FALLS THROUGH to `from pm import ensure`, which this fixture's pm
+    # stub deliberately does not export. That is not a harmless no-op: the tail prints a
+    # different warning and the step still does not run. Resolve the host's own git through
+    # PATH, exactly as the machine would, so the early return is taken for the REAL reason --
+    # a git outside PM's store is one expose_pm_git must leave alone. The suite needs git on
+    # PATH anyway (the fixture's own `git()` helper runs it to build the tree), so this is
+    # the same precondition, not a new one.
+    # Probe: evidence/t_31e10386/probe-stub-semantics.py -- `command = ()` reaches pm.ensure;
+    # a git outside the store returns cleanly without reaching it.
+    (root / "hermes_platform/resolver/__init__.py").write_text(
+        "import shutil\n"
+        "class _Resolution:\n"
+        "    command = (shutil.which('git'),) if shutil.which('git') else ()\n"
+        "locate_command = lambda name: _Resolution()\n"
+    )
     pm_package = root / "pm"
     pm_package.mkdir()
+    # expose_pm_git imports `pm.paths.store_root` before it compares anything, and the REAL one
+    # resolves through pm.environments -> repo_root() into the live install layout. Measured:
+    # dropping this stub costs 11 guarded-root opens inside expose_pm_git itself (audit-hook
+    # probe, evidence/t_31e10386/probe-paths-stub-loadbearing-v2.py). Dropping it does NOT
+    # change this suite's pass/fail -- ablated it still reports 20 passed, 3 skipped
+    # (evidence/t_31e10386/16-ABLATION-no-paths-stub.txt, and 20 passed again with the
+    # hermes_platform stub also removed, 33-ABL-B-no-hp-with-utf8.txt) -- because the tests
+    # assert on exit codes and events, never on stderr. So this stub buys hermeticity for the
+    # READ, not a green tick, and the two are not the same claim.
+    (root / "pm/paths.py").write_text(
+        "from pathlib import Path\n"
+        "store_root = lambda: Path(__file__).parent\n"
+    )
     (pm_package / "__init__.py").write_text("OLD_API = True\n")
 
     def git(*args):
@@ -96,7 +191,11 @@ def transition(tmp_path):
     )
     (package / "source_build.py").write_text(
         "from hermes_cli.probe import event\n"
-        "def build_update_products(root, *, desktop): event('build', desktop=desktop)\n"
+        # Accept desktop_optional although no caller in THIS tree passes it: it belongs to the
+        # --desktop-optional tail contract (97d60d4e06, not an ancestor of main), and a stub
+        # without the keyword TypeErrors the moment that tail lands, masking the behaviour
+        # under test. A defaulted keyword cannot break the current callers.
+        "def build_update_products(root, *, desktop, desktop_optional=False): event('build', desktop=desktop)\n"
     )
     (package / "source_stamp.py").write_text(
         "from hermes_cli.probe import event\n"
@@ -238,6 +337,10 @@ def test_missing_child_result_fails_boundary_receipt_and_releases_lock(transitio
     monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
     monkeypatch.setattr(main, "_install_hangup_protection", lambda **kw: None)
     monkeypatch.setattr(main, "_finalize_update_output", lambda state: None)
+    # See the note in test_missing_child_result_fails_boundary_receipt_and_releases_lock:
+    # the process boundary is stubbed, not the behaviour under test.
+    monkeypatch.setattr(
+        "hermes_cli.update_owning_install.retarget_to_owning_install", lambda *_: None)
 
     def complete(args, gateway_mode):
         update_receipt.begin_update_receipt()
@@ -277,6 +380,10 @@ def test_interrupt_after_child_success_demotes_gateway_marker_at_boundary(transi
     monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
     monkeypatch.setattr(main, "_install_hangup_protection", lambda **kw: None)
     monkeypatch.setattr(main, "_finalize_update_output", lambda state: None)
+    # See the note in test_missing_child_result_fails_boundary_receipt_and_releases_lock:
+    # the process boundary is stubbed, not the behaviour under test.
+    monkeypatch.setattr(
+        "hermes_cli.update_owning_install.retarget_to_owning_install", lambda *_: None)
     interrupted = False
     cleanup_error = (OSError("retained-handle kill failed") if cleanup_failure == "kill"
                      else subprocess.TimeoutExpired("completion", 5))
@@ -396,6 +503,10 @@ def test_prepare_failure_preserves_correlated_pm_receipt(transition, monkeypatch
     monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
     monkeypatch.setattr(main, "_install_hangup_protection", lambda **kw: None)
     monkeypatch.setattr(main, "_finalize_update_output", lambda state: None)
+    # See the note in test_missing_child_result_fails_boundary_receipt_and_releases_lock:
+    # the process boundary is stubbed, not the behaviour under test.
+    monkeypatch.setattr(
+        "hermes_cli.update_owning_install.retarget_to_owning_install", lambda *_: None)
 
     def complete(args, gateway_mode):
         update_receipt.begin_update_receipt()

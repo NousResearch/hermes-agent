@@ -867,6 +867,26 @@ def test_unwritable_lock_file_still_locks_the_checkout(tmp_path):
     assert second.returncode == 3, "a second update ran while the read-only-locked checkout was held"
 
 
+@pytest.mark.platforms("windows")
+def test_read_only_lock_file_is_refused_on_windows(tmp_path):
+    """Windows children cannot inherit the lock; they find their owner by the record in it. An
+    owner that can only open the lock file read-only refuses up front instead of admitting
+    itself and then having its own completion child refused."""
+    root = tmp_path / "install"
+    root.mkdir()
+    lock_file = checkout_lock_path(root)
+    lock_file.write_text("0\n0\n")
+    lock_file.chmod(0o444)  # FILE_ATTRIBUTE_READONLY: O_RDWR is denied, the read-only open works
+    marker = tmp_path / "home" / ".hermes-update-in-progress"
+    try:
+        lock = UpdateLock(path=marker, install_root=root)
+        assert lock.acquire() is False
+        assert lock.holder is not None and lock.holder.reason
+        assert not marker.exists()
+    finally:
+        lock_file.chmod(0o666)
+
+
 @pytest.mark.parametrize("link", [pytest.param("symlink", marks=pytest.mark.platforms("posix")), "link"])
 def test_checkout_lock_never_writes_through_a_link_to_a_file_outside_the_install(tmp_path, link):
     """The holder record is written into the lock file itself: a symlink or hard link planted at

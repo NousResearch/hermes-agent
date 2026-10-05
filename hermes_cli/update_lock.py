@@ -1029,7 +1029,7 @@ def _lock_holder(fd_or_path) -> UpdateHolder:
 def _open_lock_file(path: Path) -> tuple[int | None, object]:
     """``(fd, True)`` read-write; ``(fd, False)`` read-only for an existing lock file we may not
     write (left root-owned by a ``sudo hermes update``: the kernel lock works on a read-only fd,
-    contract A5); ``(None, reason)`` when neither opens."""
+    contract A5; POSIX only — a Windows owner needs its record); ``(None, reason)`` when neither opens."""
     # Never follow a link planted at the name: the holder record is written into this file.
     binary = getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -1082,6 +1082,14 @@ def _acquire_checkout(install_root: Path) -> UpdateHolder | None:
                     _unlock(fd, lease)
             os.close(fd)
             return _lock_holder(path)
+        if writable is not True and sys.platform == "win32":
+            # No fd inheritance on Windows: the update tree's children find their owner by
+            # this record (_held_by_our_windows_ancestor), so an owner that cannot write it
+            # would admit itself and then have its own children refused.
+            _unlock(fd)
+            os.close(fd)
+            return UpdateHolder(pid=0, age_seconds=0.0,
+                                reason=f"{path} is read-only; delete it or fix its permissions")
         if writable is True:
             record = f"{os.getpid()}\n{int(time.time())}\n{_identity_line()}\n".encode()
             os.lseek(fd, 0, os.SEEK_SET)

@@ -680,26 +680,25 @@ class TestMappingGuard:
         set_config_value("model", "gpt-5.6-sol")
         assert "gpt-5.6-sol" in _read_config(_isolated_hermes_home)
 
-    def test_bare_model_mapping_literal_is_refused(self, _isolated_hermes_home):
-        """A JSON/YAML mapping under bare ``model`` must be refused, not redirected (#131435).
+    @pytest.mark.parametrize("start, literal", [
+        ({"model": {"default": "glm-5.3-flash", "provider": "zai"}},
+         '{"provider": "openai-codex", "default": "gpt-6.1-sol"}'),
+        ({}, "[a, b]"),
+        ({"model": "gpt-4o"}, "[a, b]"),
+    ])
+    def test_bare_model_mapping_literal_is_refused(self, _isolated_hermes_home, start, literal):
+        """A JSON/YAML mapping/list under bare ``model`` must be refused, not redirected (#131435).
 
         ``model`` is seeded as a string default, so the generic coerce kept the literal
         verbatim and the shorthand wrote the raw JSON text into ``model.default`` as the
         model id — a route every runtime reader then fails to resolve, while
         ``config get`` echoes it back. Fail closed instead, like #114471 did for
-        container slots."""
-        self._write_config(_isolated_hermes_home, {
-            "model": {
-                "default": "glm-5.3-flash",
-                "provider": "zai",
-            }
-        })
+        container slots. A list has no reader even when no model section exists yet."""
+        self._write_config(_isolated_hermes_home, start)
         with pytest.raises(SystemExit) as exc:
-            set_config_value("model", '{"provider": "openai-codex", "default": "gpt-6.1-sol"}')
+            set_config_value("model", literal)
         assert exc.value.code == 1
-        parsed = yaml.safe_load(_read_config(_isolated_hermes_home))
-        assert parsed["model"]["provider"] == "zai"
-        assert parsed["model"]["default"] == "glm-5.3-flash"
+        assert yaml.safe_load(_read_config(_isolated_hermes_home)) == start
 
     def test_bare_model_mapping_force_replaces_section(self, _isolated_hermes_home):
         """--force keeps its documented meaning for mappings too: replace the whole

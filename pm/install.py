@@ -245,6 +245,31 @@ def _remove_entry(store: Store, entry_name: str, *, attempts: int = 5) -> None:
 _SET_ASIDE_PREFIX = ".reclaim-"
 
 
+def _is_windows_lock_error(exc: OSError) -> bool:
+    """An access/sharing violation: a live process holds a handle inside the
+    tree (its image, a cwd, an open file) so a rename cannot proceed."""
+    return getattr(exc, "winerror", None) in (5, 32) or isinstance(exc, PermissionError)
+
+
+def _rename_with_retry(source: Path, destination: Path, *, attempts: int = 5) -> None:
+    """Rename a store entry, retrying transient Windows holds.
+
+    Defender and search indexers pin a tree for milliseconds; retrying
+    clears those. A hold that survives the window belongs to a live
+    process and is re-raised for the caller's in-use fallback.
+    """
+    import time
+
+    for attempt in range(attempts):
+        try:
+            source.rename(destination)
+            return
+        except OSError as exc:
+            if not _is_windows_lock_error(exc) or attempt == attempts - 1:
+                raise
+            time.sleep(0.2 * (attempt + 1))
+
+
 def _discard_entry(store: Store, entry_name: str) -> None:
     """Drop a tree a finished publish or restore left behind as garbage.
 
@@ -263,7 +288,8 @@ def _discard_entry(store: Store, entry_name: str) -> None:
     except OSError as e:
         error = e
     try:
-        store.entry(entry_name).rename(store.entry(f"{_SET_ASIDE_PREFIX}{uuid.uuid4().hex}"))
+        _rename_with_retry(store.entry(entry_name),
+                           store.entry(f"{_SET_ASIDE_PREFIX}{uuid.uuid4().hex}"))
     except OSError:
         LOG.warning("could not remove or set aside %s: %s", entry_name, error)
         return
@@ -298,14 +324,25 @@ def _entry_verified(package: Package, fact: dict, store: Store, target: str) -> 
         return False
 
 
-def _restore_previous_entry(store: Store, entry, previous) -> None:
-    """Keep both versions recoverable until the restore rename succeeds."""
+def _restore_previous_entry(store: Store, entry, previous, *, defer_on_lock: bool = False) -> bool:
+    """Keep both versions recoverable until the restore rename succeeds.
+
+    With ``defer_on_lock`` a current entry held by a live process (its tree
+    in use) is left in place and False is returned: the caller defers the
+    restore to a later install instead of failing, because the fresh
+    publication below replaces those bytes anyway.
+    """
     import uuid
 
     displaced = store.entry(f".displaced-{uuid.uuid4().hex}")
     had_entry = entry.exists() or entry.is_symlink()
     if had_entry:
-        entry.rename(displaced)
+        try:
+            _rename_with_retry(entry, displaced)
+        except OSError as exc:
+            if defer_on_lock and _is_windows_lock_error(exc):
+                return False
+            raise
     try:
         previous.rename(entry)
     except BaseException:
@@ -314,25 +351,47 @@ def _restore_previous_entry(store: Store, entry, previous) -> None:
         raise
     if had_entry:
         _discard_entry(store, displaced.name)
+    return True
 
 
 @contextmanager
 def _publish_entry(package, store, staged, entry, previous_entry, target):
-    """Keep rollback live through the caller's native facts commit, if any."""
+    """Keep rollback live through the caller's native facts commit, if any.
+
+    Yields the published entry. A live process can hold the canonical name
+    on Windows (a cwd or open handle inside the tree survives image
+    renames), so the aside retry is followed by publishing beside the held
+    tree under a suffixed name; facts move with the new entry and the held
+    tree is reclaimed once its hold is gone.
+    """
+    import uuid
+
+    published = entry
+    aside = (previous_entry if not previous_entry.exists()
+             else store.entry(f"{_SET_ASIDE_PREFIX}{uuid.uuid4().hex}"))
+    displaced = False
     if entry.exists() or entry.is_symlink():
-        entry.rename(previous_entry)
+        try:
+            _rename_with_retry(entry, aside)
+            displaced = True
+        except OSError as exc:
+            if not _is_windows_lock_error(exc):
+                raise
+            published = store.entry(f"{entry.name}~{uuid.uuid4().hex[:8]}")
+            LOG.warning("%s is still in use (%s); publishing beside it as %s",
+                        entry.name, exc, published.name)
     try:
-        store.publish(staged, entry.name)
-        reason = package.verify(entry, target)
+        store.publish(staged, published.name)
+        reason = package.verify(published, target)
         if reason:
             raise InstallError(package.name, f"published entry failed verification: {reason}")
-        yield
+        yield published
     except BaseException:
-        if previous_entry.exists():
-            _restore_previous_entry(store, entry, previous_entry)
+        if displaced and aside.exists():
+            _restore_previous_entry(store, entry, aside)
         raise
-    if previous_entry.exists():
-        _discard_entry(store, previous_entry.name)
+    if displaced:
+        _discard_entry(store, aside.name)
 
 
 def _settle_previous_entry(package, store, entry, previous_entry, previous, target) -> None:
@@ -344,8 +403,32 @@ def _settle_previous_entry(package, store, entry, previous_entry, previous, targ
     if (previous and previous.get("entry") == entry.name
             and _entry_verified(package, previous, store, target)):
         _discard_entry(store, previous_entry.name)
-    else:
-        _restore_previous_entry(store, entry, previous_entry)
+    elif not _restore_previous_entry(store, entry, previous_entry, defer_on_lock=True):
+        # The current entry is in use, so the restore cannot run now. The
+        # fresh publication that follows replaces those bytes; the leftover
+        # stays recoverable and a later install retries this settle.
+        LOG.warning("%s is in use; deferring restore of %s to a later install",
+                    entry.name, previous_entry.name)
+
+
+def _reclaim_superseded_entry(store: Store, entry_name: str, previous) -> None:
+    """Retire a stale canonical tree a held-name publish left behind, once
+    its hold is gone. Facts own a different, published entry, so this name
+    is garbage; the caller holds the store lock."""
+    import uuid
+
+    if not previous or previous.get("entry") in (None, entry_name):
+        return
+    stale = store.entry(entry_name)
+    if not stale.exists() and not stale.is_symlink():
+        return
+    if not store.entry(previous["entry"]).is_dir():
+        return  # never orphan the only published tree
+    try:
+        _rename_with_retry(stale, store.entry(f"{_SET_ASIDE_PREFIX}{uuid.uuid4().hex}"), attempts=1)
+    except OSError as exc:
+        LOG.warning("%s is superseded but still in use (%s); retrying on a later install",
+                    stale.name, exc)
 
 
 def _entry_current(package, lockfile, facts, store, entry, previous, version, pin, target) -> bool:
@@ -424,6 +507,7 @@ def _install(
         previous_entry = store.entry(f".previous-{'stage-' if facts is None else ''}{entry_name}")
         _settle_previous_entry(package, store, entry, previous_entry, previous, target)
         _reclaim_set_aside(store)
+        _reclaim_superseded_entry(store, entry_name, previous)
         if (_entry_current(package, lockfile, facts, store, entry, previous, version, pin, target)
                 and not _fresh_copy):
             _remove_downloads(store, artifacts)
@@ -454,12 +538,12 @@ def _install(
                     raise InstallError(package.name, f"staged entry failed verification: {reason}", remedy)
                 if facts is None:
                     (staged / ".pm-stage-pin.json").write_text(pin, encoding="utf-8")
-                with _publish_entry(package, store, staged, entry, previous_entry, target):
+                with _publish_entry(package, store, staged, entry, previous_entry, target) as published:
                     if facts is not None:
                         facts.record(
-                            package.name, version, entry_name, package.env(entry, target), store.root,
+                            package.name, version, published.name, package.env(published, target), store.root,
                             target=target, artifacts=[a["sha256"] for a in artifacts],
-                            digest=tree_digest(entry),
+                            digest=tree_digest(published),
                         )
                 _remove_downloads(store, artifacts)
             except (InstallError, DownloadPaused):
@@ -468,7 +552,7 @@ def _install(
                 raise InstallError(package.name, f"install failed: {e}") from e
 
         _log_repair(package, previous, version, artifacts)
-    return entry
+    return published
 
 
 def stage_only(

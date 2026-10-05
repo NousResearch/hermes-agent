@@ -488,6 +488,23 @@ def _hold(monkeypatch, *prefixes):
     return held
 
 
+def _hold_rename(monkeypatch, *names):
+    """Model a Windows cwd hold (a live process whose working directory sits
+    inside the tree): renaming these entries aside fails past every retry."""
+    import pm.install as install
+
+    real_rename = install._rename_with_retry
+    held = {"on": True}
+
+    def rename(source, destination, **kw):
+        if held["on"] and source.name in names:
+            raise PermissionError(5, "Access is denied")
+        return real_rename(source, destination, **kw)
+
+    monkeypatch.setattr(install, "_rename_with_retry", rename)
+    return held
+
+
 def test_held_replaced_entry_does_not_fail_reinstall_and_is_reclaimed(pm_env, monkeypatch):
     """#124807: the replaced entry is garbage once the new one is published and
     committed, so a hold on it must not fail the install, must not block the
@@ -571,6 +588,45 @@ def test_held_displacement_does_not_fail_restore_and_gc_spares_interrupted_one(p
     assert not list(runtime.glob(".reclaim-*"))
     assert interrupted.is_dir()
     assert (entry / "bin/faketool").is_file()
+
+
+def test_held_entry_name_publishes_beside_and_converges(pm_env, monkeypatch):
+    """A live process holding the canonical entry name (a cwd inside the tree
+    on Windows) must not fail the install: the fresh tree publishes under a
+    suffixed name, facts and the composed PATH move with it, and the stale
+    tree is reclaimed once its hold is gone."""
+    from pm.cli import cmd_gc
+    from pm.install import ensure
+
+    _, runtime, *_ = pm_env
+    ensure("faketool", base_env={})
+    entry_name = Facts(runtime / "facts.json").get("faketool")["entry"]
+    store = Store(runtime)
+    # A drifted current entry plus an interrupted publish's leftover aside.
+    shutil.copytree(store.entry(entry_name), store.entry(f".previous-{entry_name}"))
+    (store.entry(entry_name) / "corrupt.txt").write_text("drifted", encoding="utf-8")
+
+    held = _hold_rename(monkeypatch, entry_name)
+    runner = ensure("faketool", explicit=True, base_env={})
+    alt_entry = Facts(runtime / "facts.json").get("faketool")["entry"]
+    assert alt_entry.startswith(f"{entry_name}~")
+    assert alt_entry in runner.env["PATH"]
+    assert (runtime / alt_entry / "bin/faketool").read_bytes() == b"#!x"
+    # The held tree and the deferred leftover both survive for a later install.
+    assert (runtime / entry_name / "corrupt.txt").is_file()
+    assert store.entry(f".previous-{entry_name}").is_dir()
+
+    held["on"] = False
+    # A later real install (the drifted alt tree breaks verification) settles
+    # the deferred leftover and recovers the now-free canonical name.
+    (runtime / alt_entry / "bin/faketool").unlink()
+    ensure("faketool", explicit=True, base_env={})
+    assert Facts(runtime / "facts.json").get("faketool")["entry"] == entry_name
+    cmd_gc(None)
+    assert not list(runtime.glob(".reclaim-*"))
+    assert not store.entry(f".previous-{entry_name}").exists()
+    assert not (runtime / entry_name / "corrupt.txt").exists()
+    assert (runtime / entry_name / "bin/faketool").read_bytes() == b"#!x"
 
 
 def test_gc_removes_fetch_cache_archives(pm_env):

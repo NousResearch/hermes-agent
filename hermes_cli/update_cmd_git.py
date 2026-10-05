@@ -189,6 +189,29 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
         return False, "unverifiable"
     if status.stdout.strip():
         return False, "dirty"
+
+    # ``git cherry`` computes patch IDs for every commit since the merge base.
+    # A promisor/partial clone may not have those trees/blobs locally, so the
+    # supposedly local safety check launches lazy network fetches and can leave
+    # gateway ``/update`` stuck at "Fetching updates...".  Reachability-only
+    # counting needs commit objects but no patch contents.  It is conservative:
+    # a patch-equivalent local commit may produce a loud "unmerged" notice, but
+    # the committed work remains safely anchored on ``current_branch``.
+    promisor = _git_run(git_cmd, ["config", "--bool", "remote.origin.promisor"], cwd)
+    if promisor.returncode == 0 and promisor.stdout.strip().lower() == "true":
+        ahead = _git_run(
+            git_cmd,
+            ["rev-list", "--count", f"origin/{target_branch}..{current_branch}"],
+            cwd,
+        )
+        if ahead.returncode != 0:
+            return False, "unverifiable"
+        try:
+            unmerged_count = int(ahead.stdout.strip())
+        except (TypeError, ValueError):
+            return False, "unverifiable"
+        return True, f"unmerged:{unmerged_count}" if unmerged_count else ""
+
     cherry = _git_run(git_cmd, ["cherry", f"origin/{target_branch}"], cwd)
     if cherry.returncode != 0:
         return False, "unverifiable"

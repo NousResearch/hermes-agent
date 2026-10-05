@@ -21,6 +21,7 @@ from pathlib import Path
 
 from agent.i18n import t
 from gateway.config import Platform
+from gateway.delivery import prime_revived_egress
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_busy import approval_input_words
@@ -1903,7 +1904,7 @@ class GatewayInboundMixin:
         if adapter is None:
             return False
 
-        await adapter.handle_message(MessageEvent(
+        event = MessageEvent(
             text=content, message_type=MessageType.TEXT, source=source, internal=True,
             allow_gateway_control=False,
             metadata={
@@ -1911,7 +1912,9 @@ class GatewayInboundMixin:
                 "gateway_session_key": session_key, "gateway_session_id": entry.session_id,
                 "gateway_session_strict": True,
             },
-        ))
+        )
+        prime_revived_egress(adapter, event)
+        await adapter.handle_message(event)
         logger.info(
             "Plugin message injection dispatched: plugin=%s session=%s session_id=%s",
             plugin_id, session_key, entry.session_id,

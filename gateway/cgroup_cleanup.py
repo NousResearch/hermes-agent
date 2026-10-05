@@ -134,7 +134,7 @@ def reap_foreground_scopes() -> bool:
     """
     from tools.environments.local import sweep_dead_foreground_scopes
 
-    return sweep_dead_foreground_scopes(no_block=True) > 0
+    return sweep_dead_foreground_scopes() > 0
 
 
 def main() -> int:

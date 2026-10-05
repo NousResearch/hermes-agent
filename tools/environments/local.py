@@ -1046,7 +1046,7 @@ def foreground_scope_pid(unit_name: str) -> int | None:
     return int(head) if head.isdigit() else None
 
 
-def sweep_dead_foreground_scopes(*, no_block: bool = False) -> int:
+def sweep_dead_foreground_scopes() -> int:
     """Stop every loaded foreground scope whose gateway PID is gone; returns how many.
 
     The ExecStopPost half of #70716. It enumerates the units instead of deriving the PID
@@ -1065,7 +1065,7 @@ def sweep_dead_foreground_scopes(*, no_block: bool = False) -> int:
         pid = foreground_scope_pid(unit)
         if pid is None or _pid_exists(pid):
             continue
-        if _stop_systemd_unit(unit, no_block=no_block):
+        if _stop_systemd_unit(unit, no_block=True):
             swept += 1
     return swept
 

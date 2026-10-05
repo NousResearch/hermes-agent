@@ -512,9 +512,8 @@ def _stop_systemd_unit(unit_name: str, *, no_block: bool = False) -> bool:
     unavailable or the stop failed.
 
     ``no_block`` enqueues the job and returns without waiting for it (``systemctl
-    --no-block``): the ExecStopPost scope sweep runs on the restart path, where
-    waiting out a stop job for an escapee that ignores SIGTERM would spend the
-    unit's ``TimeoutStopSec``.
+    --no-block``), for shutdown and restart paths that must not spend the unit's
+    ``TimeoutStopSec`` on an escapee that ignores SIGTERM.
 
     See #70716.
     """

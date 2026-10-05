@@ -81,6 +81,17 @@ def test_user_overlay_overrides_bundled_and_is_partial(home):
     assert i18n.t(other, lang="de") == bundled_de[other]
 
 
+@pytest.mark.parametrize("template", ["⚠️ {error.detail}", "⚠️ {error[code]}"])
+def test_overlay_compound_placeholder_returns_template_instead_of_raising(home, template):
+    # Overlays and packs are user/third-party text: an attribute or item lookup on a str kwarg raises
+    # AttributeError/TypeError inside str.format, which must degrade like any other format failure.
+    (home / "locales" / "en.yaml").write_text(
+        yaml.safe_dump({"gateway": {"shared": {"warn_passthrough": template}}}, allow_unicode=True),
+        encoding="utf-8")
+    i18n.reset_language_cache()
+    assert i18n.t("gateway.shared.warn_passthrough", lang="en", error="boom") == template
+
+
 def test_overlay_only_language_is_supported_and_falls_back_to_english(home):
     (home / "locales" / "eo.yaml").write_text(yaml.safe_dump({"approval": {"denied": "Esperanto titolo"}}),
                                               encoding="utf-8")

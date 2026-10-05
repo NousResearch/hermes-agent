@@ -14,7 +14,42 @@ from pathlib import Path
 import pytest
 
 from scripts.code_health.ts_measure import pinned_typescript, resolve_typescript
-from tests.scripts.test_code_health import REPO, _commit, _git, _repo, _verdict
+from tests.scripts.test_code_health import _LEGACY, _SWALLOW, REPO, _commit, _git, _repo, _verdict
+
+
+_MODULE_SWALLOW = "try:\n    import json\nexcept Exception:\n    pass\n"
+
+
+def _base(tmp_path: Path, files: dict[str, str | None]) -> tuple[Path, str]:
+    repo, _ = _repo(tmp_path)
+    return repo, _commit(repo, files)
+
+
+# --- M1: module-level code moved to another file keeps its existing hits -----------------
+
+_M1_BASE: dict[str, str | None] = {"pkg/a.py": _LEGACY + "\n\n" + _SWALLOW + "\n\n" + _MODULE_SWALLOW}
+
+
+@pytest.mark.parametrize("files, blocks", [
+    # A0 (control): the block stays, a function is added
+    ({"pkg/a.py": _M1_BASE["pkg/a.py"] + "\n\ndef added():\n    return 1\n"}, False),
+    # A1: the same block moved unchanged to a new module
+    ({"pkg/a.py": _LEGACY + "\n\n" + _SWALLOW, "pkg/a_compat.py": _MODULE_SWALLOW}, False),
+    # moved out of a deleted file
+    ({"pkg/a.py": None, "pkg/a_legacy.py": _LEGACY + "\n\n" + _SWALLOW,
+      "pkg/a_compat.py": "X = 1\n\n" + _MODULE_SWALLOW}, False),
+    # a copy (the origin keeps it) is new
+    ({"pkg/a_compat.py": _MODULE_SWALLOW}, True),
+    # one departed occurrence pays for one arrival, never two
+    ({"pkg/a.py": _LEGACY + "\n\n" + _SWALLOW, "pkg/a_compat.py": _MODULE_SWALLOW + "\n" + _MODULE_SWALLOW}, True),
+    # a module-level hit never pays for one inside a function elsewhere
+    ({"pkg/a.py": _LEGACY + "\n\n" + _SWALLOW,
+      "pkg/a_compat.py": "def load():\n" + "".join("    " + ln + "\n" for ln in _MODULE_SWALLOW.splitlines())}, True),
+])
+def test_module_level_hits_follow_code_moved_to_another_file(tmp_path, capsys, files, blocks):
+    repo, base = _base(tmp_path, _M1_BASE)
+    code, out = _verdict(repo, base, files, capsys)
+    assert code == (1 if blocks else 0), out
 
 
 # --- TypeScript identity ----------------------------------------------------------------

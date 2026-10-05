@@ -20,11 +20,18 @@ An occurrence is old only if it still sits where it was: inside a unit whose bod
 the base file (compared without comments or whitespace, so dropping an allow comment or
 re-indenting is not new debt). An identical violation re-added on a new line is new, even in
 the same function as one that was removed.
+
+Splitting a file moves lines to ANOTHER file, where they cannot survive in place. A base
+occurrence whose line left its file may pay, once, for an identical occurrence (same rule, same
+code) that arrives in another file in the same diff: at module level (an import guard, a
+module constant), or inside the unit its unit was matched to. A copy is never a move: the
+origin line survives, so nothing departed.
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from difflib import SequenceMatcher
 
 from scripts.code_health.config import RULES_BY_ID, TARGETS
@@ -142,46 +149,123 @@ def _detail(value: int, target: int, was: int | None, what: str) -> str:
     return f"{what} {value} > {was}, its value on main (over target {target}: it may only go down)"
 
 
-def _owned_base_hits(base: dict[str, FileMeasure], head_of: dict[str, str | None],
-                     match: dict[Key, tuple[str, Unit]]) -> dict[str, Counter[Hit]]:
-    """Each base hit, re-keyed once to the head (path, scope) that now owns it."""
+def _owners(head_of: dict[str, str | None],
+            match: dict[Key, tuple[str, Unit]]) -> Callable[[str, str], tuple[str | None, str]]:
+    """The head (path, scope) that owns a base (path, scope): its matched unit, else the same
+    scope in the file's head path."""
     owner = {(opath, origin.qualname): key for key, (opath, origin) in match.items()}
+    return lambda bpath, scope: owner.get((bpath, scope), (head_of.get(bpath, bpath), scope))
+
+
+def _owned_base_hits(base: dict[str, FileMeasure],
+                     owner_of: Callable[[str, str], tuple[str | None, str]]) -> dict[str, Counter[Hit]]:
+    """Each base hit, re-keyed once to the head (path, scope) that now owns it."""
     owned: dict[str, Counter[Hit]] = defaultdict(Counter)
     for bpath, bf in base.items():
         for hit, count in bf.hits.items():
-            hpath, scope = owner.get((bpath, hit.scope), (head_of.get(bpath, bpath), hit.scope))
+            hpath, scope = owner_of(bpath, hit.scope)
             if hpath is None:
                 continue
             owned[hpath][Hit(hit.rule, scope, hit.text)] += count
     return owned
 
 
-def _surviving_lines(hf: FileMeasure, bf: FileMeasure | None) -> set[int]:
-    """Head lines that are unchanged base lines (code only: comments and whitespace ignored)."""
-    if bf is None:
-        return set()
+def _line_survival(hf: FileMeasure | None, bf: FileMeasure | None) -> tuple[set[int], set[int]]:
+    """(head lines, base lines) that are the same unchanged lines (code only: comments and
+    whitespace ignored)."""
+    # Line matching only places hits; without any on either side it is pure cost.
+    if hf is None or bf is None or not (hf.hit_lines or bf.hit_lines):
+        return set(), set()
     old = [bf.code_line(n) for n in range(1, len(bf.lines) + 1)]
     new = [hf.code_line(n) for n in range(1, len(hf.lines) + 1)]
     # autojunk off: `except Exception:` and `pass` are frequent lines, never noise here.
     blocks = SequenceMatcher(None, old, new, autojunk=False).get_matching_blocks()
-    return {b.b + i + 1 for b in blocks for i in range(b.size)}
+    kept = {b.b + i + 1 for b in blocks for i in range(b.size)}
+    survived = {b.a + i + 1 for b in blocks for i in range(b.size)}
+    return kept, survived
 
 
-def _hit_findings(path: str, hf: FileMeasure, base_hits: Counter[Hit],
-                  kept: set[int], unchanged_scopes: set[str]) -> list[Finding]:
-    findings: list[Finding] = []
-    for hit, lines in sorted(hf.hit_lines.items(), key=lambda kv: kv[1][0]):
-        if hit.scope in unchanged_scopes:
-            old, fresh = lines, []
+class _Departures:
+    """Base occurrences whose line left its own file, each spendable once by an identical
+    occurrence that arrives in ANOTHER file in the same diff: a split moves code, so moving a
+    module-level guard (or a moved unit's body) carries its existing hits along. A copy is
+    not a move (the origin line survives, so nothing departed), and a re-add in the same file
+    is not one either (that stays new, like any identical violation on a new line)."""
+
+    def __init__(self, base: dict[str, FileMeasure], survived: dict[str, set[int]]) -> None:
+        self.pool: Counter[tuple[str, str, str, str]] = Counter()  # (path, scope, rule, text)
+        self.module_paths: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for bpath, bf in sorted(base.items()):
+            alive = survived.get(bpath, set())
+            for hit, lines in bf.hit_lines.items():
+                gone = sum(1 for n in lines if n not in alive)
+                if not gone:
+                    continue
+                self.pool[(bpath, hit.scope, hit.rule, hit.text)] += gone
+                if hit.scope == MODULE_SCOPE:
+                    self.module_paths[(hit.rule, hit.text)].append(bpath)
+
+    def take(self, hit: Hit, own_base: str | None, origin: tuple[str, Unit] | None) -> tuple[str, str] | None:
+        """Spend one departed occurrence for ``hit``; returns its base (path, scope)."""
+        if origin is not None and origin[0] != own_base:  # a unit matched across files
+            candidates = [(origin[0], origin[1].qualname)]
+        elif hit.scope == MODULE_SCOPE and origin is None:
+            candidates = [(p, MODULE_SCOPE) for p in self.module_paths.get((hit.rule, hit.text), [])
+                          if p != own_base]
         else:
-            old = [n for n in lines if n in kept]
-            fresh = [n for n in lines if n not in kept]
-        extra = max(0, len(old) - base_hits.get(hit, 0))
+            return None
+        for bpath, scope in candidates:
+            key = (bpath, scope, hit.rule, hit.text)
+            if self.pool[key] > 0:
+                self.pool[key] -= 1
+                return bpath, scope
+        return None
+
+
+Split = dict[Hit, tuple[list[int], list[int]]]  # hit -> (old lines, new lines)
+
+
+def _split_hits(hf: FileMeasure, kept: set[int], unchanged_scopes: set[str]) -> Split:
+    split: Split = {}
+    for hit, lines in hf.hit_lines.items():
+        if hit.scope in unchanged_scopes:
+            split[hit] = (list(lines), [])
+        else:
+            split[hit] = ([n for n in lines if n in kept], [n for n in lines if n not in kept])
+    return split
+
+
+def _hit_findings(path: str, split: Split, credit: Counter[Hit]) -> list[Finding]:
+    findings: list[Finding] = []
+    for hit, (old, fresh) in sorted(split.items(), key=lambda kv: min(kv[1][0] + kv[1][1], default=0)):
+        extra = max(0, len(old) - credit.get(hit, 0))
         rule = RULES_BY_ID[hit.rule]
         for line in sorted(fresh + old[len(old) - extra:]):
             findings.append(Finding(path, hit.rule, hit.scope, line, rule.title,
                                     blocking=rule.blocking))
     return findings
+
+
+def _spend_departures(splits: dict[str, Split], base_of: dict[str, str | None],
+                      match: dict[Key, tuple[str, Unit]], departures: _Departures,
+                      owner_of: Callable[[str, str], tuple[str | None, str]],
+                      owned: dict[str, Counter[Hit]]) -> None:
+    """New-looking occurrences that are moves pay with a departed occurrence, which then no
+    longer counts as credit where its origin went (one base occurrence pays once)."""
+    for path in sorted(splits):
+        own_base = base_of.get(path, path)
+        for hit, (old, fresh) in splits[path].items():
+            remaining = []
+            for line in fresh:
+                source = departures.take(hit, own_base, match.get((path, hit.scope)))
+                if source is None:
+                    remaining.append(line)
+                    continue
+                hpath, scope = owner_of(*source)
+                spent = Hit(hit.rule, scope, hit.text)
+                if hpath is not None and owned[hpath][spent] > 0:
+                    owned[hpath][spent] -= 1
+            splits[path][hit] = (old, remaining)
 
 
 def compare(base: dict[str, FileMeasure], head: dict[str, FileMeasure],
@@ -190,15 +274,23 @@ def compare(base: dict[str, FileMeasure], head: dict[str, FileMeasure],
     head_of = {c.old: c.new for c in changes if c.old}
     matcher = _Matcher(base, head, base_of, head_of)
     match = matcher.run()
-    owned = _owned_base_hits(base, head_of, match)
+    owner_of = _owners(head_of, match)
+    owned = _owned_base_hits(base, owner_of)
+    splits: dict[str, Split] = {}
+    survived: dict[str, set[int]] = {}
+    for path, hf in head.items():
+        bpath = base_of.get(path, path)
+        kept, survived_lines = _line_survival(hf, base.get(bpath) if bpath else None)
+        if bpath:
+            survived[bpath] = survived_lines
+        unchanged = {qual for hpath, qual in matcher.same_body if hpath == path}
+        splits[path] = _split_hits(hf, kept, unchanged)
+    _spend_departures(splits, base_of, match, _Departures(base, survived), owner_of, owned)
     findings: list[Finding] = []
     for path in sorted(head):
         hf = head[path]
         bpath = base_of.get(path, path)
-        bf = base.get(bpath) if bpath else None
-        unchanged = {qual for hpath, qual in matcher.same_body if hpath == path}
-        findings += _file_findings(path, hf, bf)
+        findings += _file_findings(path, hf, base.get(bpath) if bpath else None)
         findings += _unit_findings(path, hf, match)
-        findings += _hit_findings(path, hf, owned.get(path, Counter()),
-                                  _surviving_lines(hf, bf), unchanged)
+        findings += _hit_findings(path, splits[path], owned.get(path, Counter()))
     return findings

@@ -148,10 +148,12 @@ jobs:
   lint:
     name: Python lints
     needs: detect
-    if: needs.detect.outputs.python == 'true'
+    # frontend too: the code-health ratchet in lint.yml also covers TypeScript.
+    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true'
     uses: ./.github/workflows/lint.yml
     with:
       event_name: ${{ needs.detect.outputs.event_name }}
+      python: ${{ needs.detect.outputs.python == 'true' }}
 
   js-tests:
     name: JS & TS checks

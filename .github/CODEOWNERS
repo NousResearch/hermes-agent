@@ -11,6 +11,9 @@
 # same review for the same reason.
 /.github/                       @NousResearch/hermes-agent-core
 /scripts/ci/                    @NousResearch/hermes-agent-core
+# The code-health gate decides whether a PR passes; weakening it is a CI change.
+/scripts/check                  @NousResearch/hermes-agent-core
+/scripts/code_health/           @NousResearch/hermes-agent-core
 
 # eslint configs can define custom ``fix`` functions that run arbitrary code.
 eslint.config.*                 @NousResearch/hermes-agent-core

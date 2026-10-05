@@ -533,10 +533,11 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
     replacing existing tags. The fetch never changes the clone's mode: ``--filter`` makes git
     write ``remote.origin.promisor``/``partialclonefilter``, so a full clone fetches unfiltered
     (#122353) and a partial clone repeats its own filter. The one conversion is deliberate: a
-    depth-limited full clone whose history is really missing unshallows as ``tree:0``, because an
-    unfiltered ``--unshallow`` downloads the whole project history; a full clone grafted by a
+    depth-limited full clone whose history is really missing unshallows as a partial clone, because
+    an unfiltered ``--unshallow`` downloads every file version ever committed; a full clone grafted by a
     ``--depth`` fetch already has its history and stays full. The converted clone's existing packs
     are marked as partial-clone packs, or every later fetch crashes on git 2.53+ (#124272).
+    It converts to ``blob:none``, the layout installers make (see ``convert_treeless_checkout``).
     Returns whether the checkout was unshallowed; fetch failures raise subprocess errors.
     """
     shallow_path = _shallow_file_path(repo_root)
@@ -549,7 +550,7 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
     converts = fetch_filter is None and shallow and bool(_batch_missing_parents(
         repo_root, shallow_path.read_text(encoding="utf-8-sig").split()))
     if converts:
-        fetch_filter = "tree:0"
+        fetch_filter = "blob:none"
     try:
         subprocess.run(
             ["git", "fetch", "--quiet", *(["--unshallow"] if shallow else []),
@@ -606,6 +607,34 @@ def fetch_with_partial_clone_recovery(runner: Callable[..., subprocess.Completed
     mark_unmarked_packs_promisor(repo_root)
     logger.info("pack-objects crash on a partial clone; retrying the fetch")
     return runner(git_cmd, fetch_args)
+
+
+def convert_treeless_checkout(repo_root: Path, **run_kwargs) -> bool:
+    """Turn a treeless (``tree:0``) checkout into the blobless layout installers now make (#129712).
+
+    A treeless checkout holds no trees, and git asks for a missing tree without telling the server
+    which ones it already has, so every checkout and path-filtered history walk downloads complete
+    directory snapshots again: hundreds of GB on some installs. One ``--refetch`` of the clone's
+    own refspec brings every commit and tree (about 120 MB for this repo); file contents stay on
+    demand. A
+    failed refetch leaves the checkout treeless, so the next update retries. Returns whether it
+    converted; fetch failures raise subprocess errors.
+    """
+    run_kwargs["creationflags"] = run_kwargs.get("creationflags", 0) | windows_hide_flags()
+    if _partial_clone_filter(repo_root, **run_kwargs) != "tree:0":
+        return False
+    subprocess.run(
+        ["git", "fetch", "--quiet", "--refetch", "--filter=blob:none", "--no-tags", "origin"],
+        cwd=str(repo_root), check=True, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
+    )
+    # A refetch into an existing partial clone leaves its configured filter alone; record the
+    # new one only now, so a failed or interrupted refetch is retried by the next update.
+    subprocess.run(
+        ["git", "config", "remote.origin.partialclonefilter", "blob:none"],
+        cwd=str(repo_root), check=True, capture_output=True, timeout=30, **run_kwargs,
+    )
+    return True
 
 
 def settle_partial_clone_maintenance(repo_root: Path) -> None:

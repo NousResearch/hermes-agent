@@ -10,7 +10,11 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from hermes_cli.gitlock import heal_shallow_history
+import os
+
+import pytest
+
+from hermes_cli.gitlock import convert_treeless_checkout, heal_shallow_history
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -39,8 +43,8 @@ def test_depth1_clone_of_a_tagless_origin_gets_its_commit_graph(tmp_path):
 
     assert _git(clone, "rev-parse", "--is-shallow-repository").stdout.strip() == "false"
     assert _git(clone, "rev-list", "--count", "HEAD").stdout.strip() == "3"
-    # History really was missing: fetched commits-only, as a tree:0 partial clone.
-    assert _git(clone, "config", "remote.origin.partialclonefilter").stdout.strip() == "tree:0"
+    # History really was missing: fetched as the blobless partial clone installers make (#129712).
+    assert _git(clone, "config", "remote.origin.partialclonefilter").stdout.strip() == "blob:none"
     # The clone's own depth-1 pack is a partial-clone pack now too, or git 2.53+ crashes every
     # later fetch in pack-objects (#124272).
     packs = list((clone / ".git" / "objects" / "pack").glob("pack-*.pack"))
@@ -60,3 +64,31 @@ def test_depth_prefetch_on_a_full_clone_restores_ancestry_and_keeps_it_full(tmp_
 
     assert _git(clone, "merge-base", "--is-ancestor", "HEAD", "origin/main").returncode == 0
     assert _git(clone, "config", "--get", "remote.origin.promisor").returncode != 0
+
+
+def test_treeless_checkout_gets_every_tree_once_so_history_walks_stay_offline(tmp_path):
+    origin = _origin(tmp_path, 5)
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", "--filter=tree:0", f"file://{origin}", str(clone))
+    offline = dict(os.environ, GIT_NO_LAZY_FETCH="1")
+    walk = ["git", "log", "--format=%H", "--", "f.txt"]
+    assert subprocess.run(walk, cwd=clone, env=offline, capture_output=True).returncode != 0
+
+    assert convert_treeless_checkout(clone) is True
+
+    assert _git(clone, "config", "remote.origin.partialclonefilter").stdout.strip() == "blob:none"
+    walked = subprocess.run(walk, cwd=clone, env=offline, capture_output=True, text=True)
+    assert walked.returncode == 0 and len(walked.stdout.split()) == 5
+    assert convert_treeless_checkout(clone) is False
+
+
+def test_failed_conversion_keeps_the_checkout_treeless_for_a_retry(tmp_path):
+    origin = _origin(tmp_path, 2)
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", "--filter=tree:0", f"file://{origin}", str(clone))
+    _git(clone, "remote", "set-url", "origin", f"file://{tmp_path / 'gone'}")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        convert_treeless_checkout(clone)
+
+    assert _git(clone, "config", "remote.origin.partialclonefilter").stdout.strip() == "tree:0"

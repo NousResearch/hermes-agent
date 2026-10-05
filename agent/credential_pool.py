@@ -1293,7 +1293,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         return entry
 
     def _sync_entry_from_pool_store(self, entry: PooledCredential) -> PooledCredential:
-        """Adopt a token pair rotated by another pool instance (anthropic, xai-oauth).
+        """Adopt a token pair rotated by another pool instance (anthropic, xai-oauth, openai-codex).
 
         Re-reads the exact persisted row from the credential-pool store while
         the shared cross-process auth-store lock is held. Direct integrations
@@ -1306,12 +1306,18 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         a "rotation" — blanking a usable credential. The singleton file, not
         the pool store, is token authority for those sources; a row with no
         token material at all is refused for the same reason.
+
+        Codex ``manual:device_code`` rows (every ``hermes auth add openai-codex``
+        login, and every row borrowed from the root store) rotate ONLY in the
+        pool row — they never write the ``providers.openai-codex`` singleton
+        (#39236) — so this is the only place a waiter can see a peer's rotation.
         """
-        if self.provider not in ("anthropic", "xai-oauth") and plugin_refresh_hook(self.provider) is None:
+        if (self.provider not in ("anthropic", "xai-oauth", "openai-codex")
+                and plugin_refresh_hook(self.provider) is None):
             return entry
         is_anthropic = self.provider == "anthropic"
         is_xai = self.provider == "xai-oauth"
-        display = {"anthropic": "Anthropic", "xai-oauth": "xAI"}.get(self.provider, self.provider)
+        display = {"anthropic": "Anthropic", "xai-oauth": "xAI", "openai-codex": "Codex"}.get(self.provider, self.provider)
         if is_anthropic and is_borrowed_credential_source(entry.source, self.provider):
             return entry
         try:
@@ -1544,10 +1550,27 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         # there was no recovery path at all). Serialize through the shared
         # cross-process auth-store flock; a waiter's in-lock re-sync picks up
         # the winner's rotated token and skips the POST.
-        with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
+        #
+        # A BORROWED row (profile has no rows of its own; the grant lives in
+        # the global root, #100339) is shared by every profile on the box, so
+        # the lock that serialises its rotation must be ROOT's — the profile's
+        # own auth.lock would let N profiles refresh the one root grant N
+        # times concurrently, exactly the race this block exists to prevent.
+        with _auth_store_lock(
+            timeout_seconds=self._single_use_refresh_lock_timeout(),
+            target_path=self._single_use_refresh_lock_target(entry),
+        ):
             if self.provider == "openai-codex":
                 synced = self._sync_entry_from_auth_store(entry)
+                # The singleton block only tracks ``device_code``-family rows that
+                # follow it; an independent ``manual:device_code`` login (or a
+                # borrowed root row) rotates in the POOL row, so a waiter must also
+                # re-read that row or it replays the pair the winner just spent.
+                synced = self._sync_entry_from_pool_store(synced)
                 if synced is not entry and not force and not self._entry_needs_refresh(synced):
+                    return synced
+                if synced.refresh_token != entry.refresh_token:
+                    # A peer rotated under this lock before us; never POST the spent pair.
                     return synced
                 return self._refresh_entry_impl(synced, force=force)
             synced = self._sync_entry_from_pool_store(entry)
@@ -1640,6 +1663,20 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         env_var = _REFRESH_TIMEOUT_ENV_VARS.get(self.provider, "HERMES_ANTHROPIC_REFRESH_TIMEOUT_SECONDS")
         refresh_timeout_seconds = auth_mod.env_float(env_var, 20)
         return max(float(auth_mod.AUTH_LOCK_TIMEOUT_SECONDS), float(refresh_timeout_seconds) + 5.0)
+
+    def _single_use_refresh_lock_target(self, entry: PooledCredential) -> Optional[Path]:
+        """auth.json whose lock serialises *entry*'s single-use rotation across processes.
+
+        A row the profile owns rotates under its own store's lock (``None`` ->
+        ``_auth_file_path()``). A row BORROWED from the global root (#100339) is
+        one grant shared by every profile, so every borrower must queue on the
+        ROOT store's lock — the same file ``_persist`` writes the rotation to —
+        or N profiles each take their own ``auth.lock`` and all POST the one
+        refresh token. Classic mode (profile == root) has no root to borrow from.
+        """
+        if entry.id not in self._borrowed_root_ids:
+            return None
+        return _borrowed_single_use_pool_root()
 
     def _commit_anthropic_rotation(
         self, entry: PooledCredential, refreshed: Dict[str, Any]
@@ -1821,6 +1858,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         elif self.provider in _TOKENS_SINGLETON_PROVIDERS:
             _, display, _, terminal_fn_name = _TOKENS_SINGLETON_PROVIDERS[self.provider]
             synced = self._sync_entry_from_auth_store(entry)
+            if synced.refresh_token == entry.refresh_token:
+                # The singleton block tracks device_code-family rows only; a peer that rotated
+                # a manual/borrowed Codex row committed it to the POOL row (#39236).
+                synced = self._sync_entry_from_pool_store(entry)
             if synced.refresh_token != entry.refresh_token:
                 logger.debug("%s OAuth refresh failed but auth.json has newer tokens — adopting", display)
                 return self._adopt(synced, **_MARK_OK)

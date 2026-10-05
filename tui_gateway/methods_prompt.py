@@ -733,7 +733,7 @@ def _(rid, params: dict) -> dict:
     if has_truncation and isinstance(text, str):
         # A rewind replays what the transcript shows: re-expand a skill invocation or
         # `/work fix it` sends nine literal chars.
-        text = _expand_skill_invocation_for_replay(text, str(session.get("session_key") or ""))
+        text = _expand_skill_invocation_for_replay(text, session)
     turn_isolation = _session_uses_compute_host(session, _load_dashboard_process_isolation_config())
     if internal_hosted_submit and turn_isolation:
         return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")

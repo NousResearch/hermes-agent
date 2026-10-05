@@ -407,13 +407,7 @@ class SessionMessagesMixin:
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
             self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
-            # Inbound activity re-activates the chat: drop the idle sweep's archive so a resumed
-            # gateway DM shows up in listings again (#133307). The guard keeps the common
-            # never-archived case at one cheap SELECT; manual archives keep hiding because
-            # _unarchive_auto_archived_lineage skips lineages with deliberate-archive provenance.
-            row = conn.execute("SELECT archived FROM sessions WHERE id = ?", (session_id,)).fetchone()
-            if row is not None and row[0]:
-                SessionSessionsMixin._unarchive_auto_archived_lineage(conn, session_id)
+            self._reactivate_on_activity(conn, session_id)
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
@@ -454,6 +448,16 @@ class SessionMessagesMixin:
 
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
+    def _reactivate_on_activity(self, conn, session_id: str) -> None:
+        """Un-hide a lineage the idle sweep archived, on *conn* (caller's write txn). Activity on a
+        chat re-activates it, so a resumed session shows up in listings again (#133307). The guard
+        keeps the common never-archived case at one cheap SELECT; manual archives keep hiding because
+        :meth:`SessionSessionsMixin._unarchive_auto_archived_lineage` skips lineages with
+        deliberate-archive provenance."""
+        row = conn.execute("SELECT archived FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        if row is not None and row[0]:
+            SessionSessionsMixin._unarchive_auto_archived_lineage(conn, session_id)
+
     def append_messages_batch(
         self, session_id: str, messages: List[Dict[str, Any]], compression_lock_holder: Optional[str] = None,
         turn_lease_holder: Optional[str] = None, chunk_rows: Optional[int] = None,
@@ -487,6 +491,7 @@ class SessionMessagesMixin:
             )
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
+            self._reactivate_on_activity(conn, session_id)
             return inserted
         return self._execute_transcript_write(_do, messages, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 

@@ -122,6 +122,19 @@ def test_inbound_message_unhides_auto_archived_but_not_manual(db):
     assert _sidebar_ids(db) == {"dm"}
 
 
+def test_batch_append_unhides_auto_archived_chat(db):
+    """The agent's own turn flush uses append_messages_batch; it must reactivate too (#133324 review)."""
+    db.create_session("dm", "signal")
+    db.append_message("dm", "user", "hello")
+    assert _sweep(db) == 1
+    assert _flags(db, "dm") == {"dm": (1, 1)}
+
+    db.append_messages_batch("dm", [{"role": "assistant", "content": "hi back"}])
+
+    assert _flags(db, "dm") == {"dm": (0, 0)}
+    assert _sidebar_ids(db) == {"dm"}
+
+
 def test_inbound_message_keeps_manual_archive_hidden(db):
     db.create_session("dm", "signal")
     db.append_message("dm", "user", "hello")

@@ -466,12 +466,24 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       }
     }
 
+    const handoffEnv: NodeJS.ProcessEnv = {
+      ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
+      HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
+    }
+
+    // A post-update relaunch must land on a normal backend resolution:
+    // HERMES_DESKTOP_IGNORE_EXISTING skips the installed-runtime rung
+    // (backend-resolution.ts), which sent the relaunched app back to
+    // first-launch bootstrap against the checkout the update just made
+    // healthy — overlapping bootstraps then fought over .git/index.lock
+    // (#124971). The flag is this-launch intent for e2e/recovery shells,
+    // never an attribute of the installation; the script relaunches the
+    // app, and the app resolves the runtime afresh.
+    delete handoffEnv.HERMES_DESKTOP_IGNORE_EXISTING
+
     const child = spawnUpdaterProcess(handoff.command, args, {
       cwd: deps.hermesHome,
-      env: {
-        ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
-        HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
-      },
+      env: handoffEnv,
       detached: true,
       stdio: 'ignore'
     })

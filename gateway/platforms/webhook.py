@@ -236,7 +236,8 @@ class WebhookAdapter(BasePlatformAdapter):
         """Startup validation: secret required; INSECURE_NO_AUTH only on loopback (crash early on a public footgun)."""
         secret = route.get("secret", self._global_secret)
         if not _is_usable_secret(secret):
-            raise ValueError(f"[webhook] Route '{name}' has no HMAC secret. Set 'secret' on the route or globally. "
+            raise ValueError(f"[webhook] Route '{name}' HMAC secret is missing, blank, or not a string. Set 'secret' "
+                             f"on the route or globally. "
                              f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'.")
         if secret == _INSECURE_NO_AUTH and not _is_loopback_host(self._host):
             raise ValueError(f"[webhook] Route '{name}' uses INSECURE_NO_AUTH secret but is bound to non-loopback "
@@ -389,8 +390,9 @@ class WebhookAdapter(BasePlatformAdapter):
         dynamic routes; INSECURE_NO_AUTH is loopback-only."""
         effective_secret = route.get("secret", self._global_secret)
         if not _is_usable_secret(effective_secret):
-            logger.warning("[webhook] Dynamic route '%s' skipped: 'secret' is missing or empty. Set a valid HMAC "
-                           "secret, or use '%s' to explicitly disable auth (testing only).", name, _INSECURE_NO_AUTH)
+            logger.warning("[webhook] Dynamic route '%s' skipped: 'secret' is missing, blank, or not a string. "
+                           "Set a valid HMAC secret, or use '%s' to explicitly disable auth (testing only).",
+                           name, _INSECURE_NO_AUTH)
             return False
         if effective_secret == _INSECURE_NO_AUTH and not _is_loopback_host(self._host):
             logger.warning("[webhook] Dynamic route '%s' skipped: INSECURE_NO_AUTH is only allowed on loopback "
@@ -510,11 +512,12 @@ class WebhookAdapter(BasePlatformAdapter):
             return None, _json_error("Bad request", 400)
         if len(raw_body) > self._max_body_bytes:  # defense in depth if the server-level limit was bypassed
             return None, _json_error("Payload too large", 413)
-        # Missing/empty secrets fail closed here too (not only in connect()), so direct handler reuse
-        # cannot become an unauthenticated dispatch surface.
+        # Missing, blank, or non-string secrets fail closed here too (not only in connect()), so direct
+        # handler reuse cannot become an unauthenticated dispatch surface.
         secret = route_config.get("secret", self._global_secret)
         if not _is_usable_secret(secret):
-            logger.error("[webhook] Route %s has no HMAC secret; refusing request", route_name)
+            logger.error("[webhook] Route %s HMAC secret is missing, blank, or not a string; refusing request",
+                         route_name)
             return None, _json_error("Webhook route is missing an HMAC secret", 403)
         if secret != _INSECURE_NO_AUTH and not self._validate_signature(request, raw_body, secret):
             logger.warning("[webhook] Invalid signature for route %s", route_name)

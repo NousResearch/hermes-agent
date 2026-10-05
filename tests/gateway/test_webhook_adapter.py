@@ -1252,10 +1252,10 @@ def test_route_profile_validation_fails_closed():
 
 
 class TestBlankRouteSecretFailsClosed:
-    @pytest.mark.parametrize("blank", ["   ", "\t", "\n"])
+    @pytest.mark.parametrize("blank", ["   ", "\t", "\n", 123])
     def test_connect_rejects_a_whitespace_only_route_secret(self, blank):
         adapter = _make_adapter(routes={"hook": {"secret": blank}})
-        with pytest.raises(ValueError, match="HMAC secret"):
+        with pytest.raises(ValueError, match="missing, blank, or not a string"):
             asyncio.run(adapter.connect())
 
 

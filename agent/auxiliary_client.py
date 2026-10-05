@@ -2584,12 +2584,16 @@ def _relay_auxiliary_call_async(callback):
     return wrapped
 
 
-def _set_relay_auxiliary_route(provider: str | None, model: str | None, api_mode: str | None) -> None:
+def _set_relay_auxiliary_route(
+    provider: str | None, model: str | None, api_mode: str | None, base_url: str | None = None,
+) -> None:
     context = _RELAY_AUX_CALL_CONTEXT.get()
     if context is None:
         return
     context["provider"] = str(provider or "auxiliary")
     context["model"] = str(model or "unknown")
+    if base_url is not None:
+        context["base_url"] = str(base_url)
     context["response_model"] = None
     context["api_mode"] = str(api_mode or "chat_completions")
 
@@ -6845,11 +6849,17 @@ def _validate_llm_response(
 
     See #7264.
     Recording is best-effort and never affects validation. *provider*/*base_url* are optional accounting
-    hints — fallback-path calls omit them and the row keeps the model (read from the response itself) with
-    an empty route. See #23270.
+    hints and reflect the originally-resolved route: retry/fallback paths that omit them are backfilled
+    from the active relay call context (#78953). See #23270.
     """
     if response is None:
         raise RuntimeError(f"Auxiliary {task or 'call'}: LLM returned None response")
+    context = _RELAY_AUX_CALL_CONTEXT.get()
+    if context is not None:
+        if not provider:
+            provider = context.get("provider")
+        if not base_url:
+            base_url = context.get("base_url")
     from agent.aux_accounting import record_aux_usage
     record_aux_usage(response, task, provider=provider, base_url=base_url)
     # Adapter SimpleNamespace responses are fine — they have .choices[0].message.
@@ -7501,16 +7511,19 @@ def _prepare_aux_request(
             leak_guard_config=compression_config, max_tokens=max_tokens,
             extra_body=effective_extra_body,
         )
-    _set_relay_auxiliary_route(request_provider, final_model, resolved_api_mode)
-    _record_route_info(route_info, _fallback_provider_from_label(request_provider), final_model)
     if async_mode:
         base_info = str(getattr(client, "base_url", "") or "")
     else:
         base_info = str(getattr(client, "base_url", resolved_base_url) or "")
-        if task:
-            logger.info("Auxiliary %s: using %s (%s)%s",
-                         task, request_provider or "auto", final_model or "default",
-                         f" at {base_info}" if base_info and "openrouter" not in base_info else "")
+    _set_relay_auxiliary_route(
+        request_provider, final_model, resolved_api_mode,
+        base_url=base_info or resolved_base_url or None,
+    )
+    _record_route_info(route_info, _fallback_provider_from_label(request_provider), final_model)
+    if not async_mode and task:
+        logger.info("Auxiliary %s: using %s (%s)%s",
+                     task, request_provider or "auto", final_model or "default",
+                     f" at {base_info}" if base_info and "openrouter" not in base_info else "")
     # Client's actual base_url so endpoint-specific temperature overrides work on
     # auto-detected routes (api.moonshot.ai vs api.kimi.com/coding).
     kwargs = _build_call_kwargs(

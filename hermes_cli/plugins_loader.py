@@ -256,7 +256,8 @@ class PluginLoaderMixin:
         from hermes_cli.plugins import LoadedPlugin
         lookup_key = manifest_key(manifest)
         loaded = LoadedPlugin(manifest=manifest, enabled=True, deferred=True)
-        self._plugins[lookup_key] = loaded
+        with self._plugins_lock:
+            self._plugins[lookup_key] = loaded
         if not self._lease_deferred_platform(manifest, lookup_key):
             # Fall back to eager loading so the platform is never silently lost. Runs outside the
             # replacement transaction: the eager load's register() executes on a deadline worker, whose
@@ -449,7 +450,8 @@ class PluginLoaderMixin:
         if reason:
             loaded.error = reason
             logger.warning("Plugin '%s' skipped: %s", plugin_key, reason)
-            self._plugins[plugin_key] = loaded
+            with self._plugins_lock:
+                self._plugins[plugin_key] = loaded
             return
         registration_start = len(self._registration_order)
         module_name = self._policy_module_name(manifest)
@@ -518,7 +520,8 @@ class PluginLoaderMixin:
         # outlive the load attempt (#78050).
         if not loaded.enabled:
             self._predeclared_tools.pop(plugin_key, None)
-        self._plugins[plugin_key] = loaded
+        with self._plugins_lock:
+            self._plugins[plugin_key] = loaded
 
     @staticmethod
     def _is_manifest_only_language_pack(manifest: PluginManifest) -> bool:
@@ -650,7 +653,8 @@ class PluginLoaderMixin:
         except (Exception, SystemExit) as exc:
             loaded.error = _load_error_text(exc)
             logger.warning("Agent Plugin '%s' disabled: %s", lookup_key, loaded.error)
-        self._plugins[lookup_key] = loaded
+        with self._plugins_lock:
+            self._plugins[lookup_key] = loaded
 
     def _directory_module_name(self, manifest: PluginManifest) -> str:
         """Profile-safe import namespace for a directory plugin: the bare ``hermes_plugins.<slug>`` for the

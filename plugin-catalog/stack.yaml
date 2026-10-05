@@ -1,6 +1,6 @@
 name: stack
 repo: https://github.com/Karb-Interactive/hermes-plugin-stack-memory
-sha: 0c90d66d4f5d598fea4468e6e2b66017880ea1bd
+sha: 0492cdf93be8dfe47e334669dc9a0fdb7f29ec6a
 version: "0.1.0"
 description: Git-backed Markdown memory with background curation and model-based recall.
 maintainer: vykhovanets

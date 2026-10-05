@@ -111,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     if args.manifest:
-        manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+        manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8-sig"))
     else:
         manifest = build_manifest(repo, args.merged, args.limit)
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")

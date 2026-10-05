@@ -58,6 +58,8 @@ interface HarnessProps {
    *  window. Empty means every send commits on the keystroke, which is what the
    *  other tests in this file assume. */
   sendGraceFor?: readonly SendGraceReason[]
+  /** Mirrors `commitOnPress`: a press during a wait commits it on the spot. */
+  commitOnPress?: boolean
   sendOnDoubleTap?: boolean
   sendOnHold?: boolean
   sendOnIdle?: boolean
@@ -84,6 +86,7 @@ function Harness({
   holdMs = HOLD_MS,
   queued = [],
   sendGraceFor = [],
+  commitOnPress = true,
   sendOnDoubleTap = false,
   sendOnHold = false,
   sendOnPause = false,
@@ -102,9 +105,9 @@ function Harness({
   const [draft, setDraft] = useState('')
   const lastEnterAtRef = useRef(0)
   const enterHoldTimerRef = useRef<number | undefined>(undefined)
-  // A pause send waiting for the release, because the hold is armed (the
-  // composer's `pendingPauseRef`).
-  const pendingPauseRef = useRef(false)
+  // What the release should do when the press did not become a gesture (the
+  // composer's `pendingPressRef`).
+  const pendingPressRef = useRef<'pause' | 'commit' | null>(null)
   // The grace window's timer (the composer's `useComposerSendGrace`).
   const graceTimerRef = useRef<number | undefined>(undefined)
   const typedAtRef = useRef(Date.now() - typedIdleMsAgo)
@@ -313,7 +316,7 @@ function Harness({
       if (owner === 'doubleTap') {
         event.preventDefault()
 
-        pendingPauseRef.current = false
+        pendingPressRef.current = null
 
         const editor = editorRef.current
         const live = editor ? composerPlainText(editor) : ''
@@ -345,9 +348,32 @@ function Harness({
         return
       }
 
+      // A press during a wait commits it, unless this press can still become a
+      // hold (the composer's `commitOnPress`).
+      if (commitOnPress && graceTimerRef.current !== undefined) {
+        event.preventDefault()
+
+        if (sendOnHold) {
+          pendingPressRef.current = 'commit'
+
+          return
+        }
+
+        cancelGrace()
+
+        const editor = editorRef.current
+        const live = editor ? composerPlainText(editor) : ''
+
+        if (live.trim().length > 0 || attachments.length > 0) {
+          submitDraft()
+        }
+
+        return
+      }
+
       if (owner === 'pauseOnRelease') {
         event.preventDefault()
-        pendingPauseRef.current = true
+        pendingPressRef.current = 'pause'
 
         return
       }
@@ -392,11 +418,24 @@ function Harness({
         if (event.key === 'Enter') {
           cancelHold()
 
-          // The release of a press the pause rule was waiting on: the press was
-          // a tap after all, so the pause send runs now.
-          if (pendingPauseRef.current) {
-            pendingPauseRef.current = false
+          // The release of a press that was deferred because the hold was armed
+          // and it could still have become one: the press was a tap after all,
+          // so what it deferred runs now.
+          const deferred = pendingPressRef.current
+
+          pendingPressRef.current = null
+
+          if (deferred === 'pause') {
             holdOrSubmit('pause', submitDraft)
+          } else if (deferred === 'commit' && graceTimerRef.current !== undefined) {
+            cancelGrace()
+
+            const editor = editorRef.current
+            const live = editor ? composerPlainText(editor) : ''
+
+            if (live.trim().length > 0 || attachments.length > 0) {
+              submitDraft()
+            }
           }
         }
       }}
@@ -1553,5 +1592,141 @@ describe('composer Enter — a deliberate gesture outranks the pause rule', () =
 
     expect(onSubmit).toHaveBeenCalledTimes(1)
     expect(onSubmit).toHaveBeenCalledWith('pause, then hold')
+  })
+})
+
+describe('composer Enter — a press during the grace window', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-14T12:00:00Z'))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('commits the waiting send when a press lands during the wait', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness
+        commitOnPress
+        enterSends={false}
+        onCancel={vi.fn()}
+        onDrain={vi.fn()}
+        onQueue={vi.fn()}
+        onSubmit={onSubmit}
+        sendGraceFor={['pause']}
+        sendOnPause
+        typedIdleMsAgo={5000}
+        typingIdleMs={1000}
+      />
+    )
+
+    const editor = getByTestId('editor')
+
+    editor.textContent = 'still here'
+
+    fireEvent.keyDown(editor, { key: 'Enter' })
+    fireEvent.keyUp(editor, { key: 'Enter' })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    // A second press, slow enough that it is not a double tap: it is the answer
+    // to the question the window asked.
+    act(() => {
+      vi.advanceTimersByTime(DOUBLE_ENTER_MS + 1)
+    })
+
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).toHaveBeenCalledWith('still here')
+  })
+
+  it('restarts the window instead when the option is off, which is what it replaces', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness
+        commitOnPress={false}
+        enterSends={false}
+        onCancel={vi.fn()}
+        onDrain={vi.fn()}
+        onQueue={vi.fn()}
+        onSubmit={onSubmit}
+        sendGraceFor={['pause']}
+        sendOnPause
+        typedIdleMsAgo={5000}
+        typingIdleMs={1000}
+      />
+    )
+
+    const editor = getByTestId('editor')
+
+    editor.textContent = 'slides instead'
+
+    fireEvent.keyDown(editor, { key: 'Enter' })
+    fireEvent.keyUp(editor, { key: 'Enter' })
+
+    act(() => {
+      vi.advanceTimersByTime(DOUBLE_ENTER_MS + 1)
+    })
+
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    // The press moved the deadline rather than meeting it: the original window
+    // has elapsed and nothing has gone.
+    act(() => {
+      vi.advanceTimersByTime(GRACE_MS - DOUBLE_ENTER_MS)
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    act(() => {
+      vi.advanceTimersByTime(DOUBLE_ENTER_MS + 1)
+    })
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+  })
+
+  it('waits for the release when the press could still become a hold', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness
+        commitOnPress
+        enterSends={false}
+        onCancel={vi.fn()}
+        onDrain={vi.fn()}
+        onQueue={vi.fn()}
+        onSubmit={onSubmit}
+        sendGraceFor={['pause']}
+        sendOnHold
+        sendOnPause
+        typedIdleMsAgo={5000}
+        typingIdleMs={1000}
+      />
+    )
+
+    const editor = getByTestId('editor')
+
+    editor.textContent = 'a tap after all'
+
+    fireEvent.keyDown(editor, { key: 'Enter' })
+    fireEvent.keyUp(editor, { key: 'Enter' })
+
+    act(() => {
+      vi.advanceTimersByTime(DOUBLE_ENTER_MS + 1)
+    })
+
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    fireEvent.keyUp(editor, { key: 'Enter' })
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).toHaveBeenCalledWith('a tap after all')
   })
 })

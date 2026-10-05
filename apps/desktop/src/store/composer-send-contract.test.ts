@@ -9,8 +9,6 @@
  * `@hermes/shared` also proves the package surface exports what the app needs,
  * which is what caught `resetClampWarnings` missing from the index.
  */
-import { describe, expect, it, vi } from 'vitest'
-
 import {
   activeSendGestures,
   clampHoldMs,
@@ -33,13 +31,14 @@ import {
   SEND_GRACE_MAX_MS,
   SEND_GRACE_MIN_MS,
   TYPING_IDLE_DEFAULT_MS,
-  TYPING_IDLE_MAX_MS,
   TYPING_IDLE_MIN_MS
 } from '@hermes/shared'
+import { describe, expect, it, vi } from 'vitest'
 
 /** Every field the prefs carry, so a new one cannot be added without a test
  *  noticing that the shape moved. */
 const DEFAULTS = {
+  commitOnPress: true,
   doubleEnterMs: DOUBLE_ENTER_DEFAULT_MS,
   enterNewline: false,
   enterSends: true,

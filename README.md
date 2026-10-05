@@ -158,6 +158,17 @@ Hermes has two entry points: start the terminal UI with `hermes`, or run the gat
 | Interrupt current work         | `Ctrl+C` or send a new message                | `/stop` or send a new message                                                    |
 | Platform-specific status       | `/platforms`                                  | `/status`, `/sethome`                                                            |
 
+### A2A gateway HTTP surfaces
+
+An A2A-enabled gateway port (for example, `9901`) serves both inbound A2A JSON-RPC and an
+outbound REST endpoint. `POST /api/v1/messages/send` is equivalent to
+`hermes send --to TARGET MESSAGE` and accepts `{"target":"telegram:#ops","message":"hello"}`.
+It returns `200 {"ok":true,"platform":"telegram","message_id":"123"}` only after confirmed
+delivery. Delivery or validation failures are non-200 responses such as
+`502 {"ok":false,"error":"Unknown platform: example"}`. The endpoint inherits the A2A security
+configuration: loopback clients are accepted in localhost-only mode; remotely exposed listeners
+require their configured `Authorization: Bearer ...` credential.
+
 For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
 
 ---

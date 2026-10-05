@@ -1238,7 +1238,7 @@ registry.register(
 
 WEB_SEARCH_ADVANCED_SCHEMA = {
     "name": "web_search_advanced",
-    "description": "Advanced web search (Exa backend) with full control over filters, domains, dates, categories, highlights, summaries, and subpage crawling. Best for research needing specific filters (date ranges, domain restrictions, category filters). For simple searches use web_search instead. Returns search results with optional highlights, summaries, and subpage content.",
+    "description": "Advanced web search (Exa backend) with full control over filters, domains, dates, categories, highlights, summaries, and subpage crawling. Best for research needing specific filters (date ranges, domain restrictions, category filters). For simple searches use web_search instead. Returns search results with optional highlights, summaries, and subpage content. When the question is time-sensitive (recency, latest, this year, what changed) set start_published_date; when a date range is given set both start_published_date and end_published_date; when an authoritative or first-party source is required set include_domains; when a source must be excluded set exclude_domains; when scholarly work is wanted set category=\"publication\"; when full page content of a known site is needed set subpages. Note: category=\"company\" and category=\"people\" do not support date or exclude_domains filters, so omit those when using them.",
     "parameters": {
         "type": "object",
         "properties": {

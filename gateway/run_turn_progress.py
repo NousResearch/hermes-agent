@@ -168,6 +168,14 @@ class GatewayTurnProgressMixin:
             ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
         if not ctx.progress_queue or not ctx._run_still_current():
             return
+        # Todo checklist: on tool.completed, render todo results as a compact
+        # checklist in the progress message bubble. Must run BEFORE the
+        # onboarding early-return below so it isn't blocked by that handler's
+        # blanket return for tool.completed events. Imported lazily to avoid an
+        # import cycle (run_turn_runner imports this module at load time).
+        from gateway.run_turn_runner import _dispatch_todo_progress
+        if _dispatch_todo_progress(ctx.progress_queue, event_type, tool_name, kwargs.get("result", ""), logger):
+            return
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
             self._progress_onboarding_hint(kwargs)
             return

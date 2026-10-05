@@ -49,6 +49,64 @@ _CARD_DESTINATION_REFUSALS = {
     "slack task_card requires a thread anchor (Slack streams are thread replies)",
 }
 
+_TODO_STATUS_MAP = {
+    "pending": "[ ]",
+    "in_progress": "[>]",
+    "completed": "[x]",
+    "cancelled": "[-]",
+}
+
+
+def _render_todo_checklist(result_str: Any) -> str:
+    """Parse a todo tool result and render a compact checklist.
+
+    Returns the formatted checklist string, or an empty string on failure.
+    """
+    if not result_str:
+        return ""
+    try:
+        data = json.loads(result_str) if isinstance(result_str, str) else result_str
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    todos = data.get("todos")
+    if not todos or not isinstance(todos, list):
+        return ""
+
+    lines = ["📋 Task List"]
+    for item in todos:
+        if not isinstance(item, dict):
+            continue
+        content = (item.get("content") or "")[:80]
+        status = _TODO_STATUS_MAP.get(str(item.get("status", "pending")).lower(), "[ ]")
+        item_id = item.get("id", "")
+        lines.append(f"{status} {content} ({item_id})" if item_id else f"{status} {content}")
+    return "\n".join(lines)
+
+
+def _dispatch_todo_progress(
+    progress_queue: Any,
+    event_type: str,
+    tool_name: Optional[str],
+    result_str: Any,
+    task_logger: logging.Logger,
+) -> bool:
+    """Handle todo-checklist progress in the progress callback.
+
+    Returns True if the event was consumed (pushed onto progress queue),
+    False if it should fall through to normal progress handling.
+    """
+    if event_type == "tool.completed" and tool_name in {"todo", "todo_list"}:
+        try:
+            checklist = _render_todo_checklist(result_str)
+            if checklist and progress_queue:
+                progress_queue.put(checklist)
+        except Exception:
+            task_logger.debug("Failed to render todo checklist", exc_info=True)
+        return True
+    return False
+
 
 def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     """True when the adapter class renders native approval buttons. BasePlatformAdapter subclasses

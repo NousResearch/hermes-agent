@@ -216,3 +216,83 @@ def test_mid_git_hold_verdict_needs_looks_as_well_as_seconds(tmp_path, monkeypat
         clock[0] += 10.0
     with pytest.raises(AssertionError, match="the hold filter ran but no merge/reset/checkout"):
         hold.point(None, machine, "t")
+
+
+class _SharedMachine:
+    """The crash journey's one machine: a checkout HEAD, a marker and an index.lock on disk."""
+
+    def __init__(self, root: Path) -> None:
+        self.logs, self.hermes_home, self.install_dir = root, root / "home", root / "install"
+        (self.install_dir / ".git").mkdir(parents=True)
+        self.hermes_home.mkdir()
+        self.head, self.timings, self.killed = "pre", [], 0
+
+    def evidence(self) -> str:
+        return ""
+
+    def kill_owned(self) -> None:
+        self.killed += 1
+
+
+def _cell_result(machine, label: str, target: str, rc: int = 0) -> dict:
+    machine.head = target
+    return {"label": label, "target": target, "follow_up": SimpleNamespace(returncode=rc)}
+
+
+def test_a_cell_never_starts_on_the_machine_a_broken_cell_left(tmp_path, monkeypatch):
+    m = _SharedMachine(tmp_path)
+    monkeypatch.setattr(crash, "_tree", lambda machine, label: {
+        "head": machine.head, "dirty": [], "diff_rc": 0, "diff_err": "", "target_file": True})
+    monkeypatch.setattr(crash, "_marker_text", lambda machine: "dead-pid marker")
+
+    def reset(*args, **_):
+        assert args[2:5] == ("reset", "--quiet", "--hard"), args
+        m.head = args[-1] if args[-1] != "HEAD" else m.head
+    monkeypatch.setattr(crash, "harness_git", reset)
+
+    seen = {}
+
+    def sees(name):
+        def run():
+            seen[name] = (m.head, (m.hermes_home / crash.MARKER).exists(),
+                          (m.install_dir / ".git" / "index.lock").exists())
+            return _cell_result(m, name, f"{name}-target")
+        return run
+
+    def breaks():  # follow-up failed: torn tree, marker and lock left behind
+        m.head = "torn"
+        (m.hermes_home / crash.MARKER).write_text("1", encoding="utf-8")
+        (m.install_dir / ".git" / "index.lock").write_text("", encoding="utf-8")
+        return {"label": "b", "target": "b-target", "follow_up": SimpleNamespace(returncode=1)}
+
+    def raises():
+        m.head = "half"
+        (m.hermes_home / crash.MARKER).write_text("1", encoding="utf-8")
+        raise AssertionError("kill point not reached")
+
+    j = crash.Journey(m)
+    crash._run_cells(m, j, (("a", sees("a")), ("b", breaks), ("c", sees("c")), ("d", raises), ("e", sees("e"))))
+    assert seen["a"] == ("pre", False, False)
+    assert seen["c"] == ("b-target", False, False)  # reset to b's target, marker and lock gone
+    assert seen["e"] == ("half", False, False)  # d raised: reset to the HEAD it left, marker gone
+    assert j.ok("c") and j.ok("e") and m.killed == 2
+    notes = [label for label, _ in m.timings]
+    assert notes[0].startswith("(harness reset the checkout to b-target after b: its follow-up update exited rc=1")
+    assert "dead-pid marker" in notes[0] and ".git/index.lock left" in notes[0]
+    assert notes[1].startswith("(harness reset the checkout to HEAD after d: its step raised: kill point not reached")
+
+
+def test_a_machine_the_harness_cannot_restore_fails_the_next_cell_naming_the_culprit(tmp_path, monkeypatch):
+    m = _SharedMachine(tmp_path)
+    monkeypatch.setattr(crash, "_tree", lambda machine, label: {
+        "head": "torn", "dirty": ["M x"], "diff_rc": 1, "diff_err": "", "target_file": False})
+
+    def reset(*args, **_):
+        raise RuntimeError("fatal: index file corrupt")
+    monkeypatch.setattr(crash, "harness_git", reset)
+    j = crash.Journey(m)
+    crash._run_cells(m, j, (("b", lambda: {"label": "b", "target": "t", "follow_up": None}),
+                            ("c", lambda: pytest.fail("ran on an unsound machine"))))
+    with pytest.raises(RuntimeError, match=r"not run: b left the shared machine unsound \(the checkout is not its "
+                                           r"target t.*index file corrupt"):
+        j["c"]

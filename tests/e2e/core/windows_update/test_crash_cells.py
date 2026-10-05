@@ -19,7 +19,9 @@ Each cell kills at one point of the update and then asserts what the user is owe
   (a marker naming a dead process that refuses every later update is the permanent
   marker the hand-off contract forbids).
 
-Cells (one machine; each publishes a fresh commit to update to; the ``mid_git`` cells run last):
+Cells (one machine; each publishes a fresh commit to update to; the ``mid_git`` cells run last;
+a cell that leaves the machine unsound is that cell's verdict, and the harness resets the checkout
+before the next cell starts, noted in the evidence: ``_run_cells``):
 
 * ``mid_fetch``: killed while the update's ``git fetch`` child runs (nothing local moved yet);
 * ``mid_git``: killed while the update's local git write (the fast-forward ``merge``, or a
@@ -661,6 +663,69 @@ def _orphan(machine, srv, label: str) -> dict:
             "tree_final": _tree(machine, label), "marker_final": (machine.hermes_home / MARKER).is_file()}
 
 
+# -- one machine, six cells: a broken cell must not take the later ones down ------------------
+
+def _unsound(machine, cell: str, result) -> str | None:
+    """Why the next cell cannot trust the machine ``cell`` left (``None``: it can).
+
+    A sound cell ends with its follow-up update done: the checkout exactly its target, no
+    marker, no git lock. Anything else is ``cell``'s verdict (its own test says so), and a later
+    cell started on it would report that breakage as its own."""
+    if isinstance(result, BaseException):
+        return f"its step raised: {(str(result).splitlines() or [type(result).__name__])[0]}"
+    reasons = []
+    follow = result.get("follow_up")
+    if follow is not None and follow.returncode != 0:
+        reasons.append(f"its follow-up update exited rc={follow.returncode}")
+    tree = _tree(machine, result["label"])
+    if not _tree_matches(tree, result["target"], result["target"]):
+        reasons.append(f"the checkout is not its target {result['target']}: {_tree_text(tree)}")
+    if (machine.hermes_home / MARKER).is_file():
+        reasons.append(f"{MARKER} left: {_marker_text(machine)}")
+    if (machine.install_dir / ".git" / "index.lock").is_file():
+        reasons.append(".git/index.lock left")
+    return "; ".join(reasons) or None
+
+
+def _restore_after(machine, cell: str, result) -> None:
+    """Hand the next cell a sound checkout when ``cell`` did not, and say so in the evidence.
+
+    Harness plumbing, the way ``_crash`` already clears a stale index.lock: stop the machine's
+    processes, drop the lock and the marker, and reset the checkout (harness git) to ``cell``'s
+    target, else to whatever HEAD it left. Every target only appends statements to modules, so
+    the venv still runs it. The restore is in ``machine.timings``, so a later cell that fails
+    anyway names the cell that broke the machine first."""
+    reason = _unsound(machine, cell, result)
+    if reason is None:
+        return
+    machine.kill_owned()
+    (machine.install_dir / ".git" / "index.lock").unlink(missing_ok=True)
+    (machine.hermes_home / MARKER).unlink(missing_ok=True)
+    errors = []
+    for commit in ((result["target"],) if isinstance(result, dict) else ()) + ("HEAD",):
+        try:
+            harness_git("-C", str(machine.install_dir), "reset", "--quiet", "--hard", commit)
+        except RuntimeError as exc:
+            errors.append(f"reset --hard {commit}: {exc}")
+            continue
+        machine.timings.append((f"(harness reset the checkout to {commit[:12]} after {cell}: {reason})", 0.0))
+        return
+    raise RuntimeError(fail_with(machine, f"not run: {cell} left the shared machine unsound ({reason}) "
+                                          f"and the harness could not restore it ({'; '.join(errors)})"))
+
+
+def _run_cells(machine, j: Journey, cells) -> None:
+    """Run ``cells`` (name, fn) in order on one machine, restoring it after a cell that broke it."""
+    previous = None
+    for name, run in cells:
+        def cell(run=run, previous=previous):
+            if previous is not None:
+                _restore_after(machine, previous, j.results[previous])
+            return run()
+        j.step(name, cell)
+        previous = name
+
+
 @pytest.fixture(scope="module")
 def journey(tmp_path_factory):
     with FakeLLMServer() as srv:
@@ -671,22 +736,24 @@ def journey(tmp_path_factory):
             j.step("installed", lambda: j.require(
                 "install", j["install"].returncode == 0, "install.ps1 failed", j["install"]))
             if j.ok("installed"):
-                j.step("mid_fetch", lambda: _crash(machine, srv, "mid-fetch",
-                                                   _cli_update(machine, "mid-fetch-update"), _git_fetching))
-                j.step("tree_moved", lambda: _crash(machine, srv, "tree-moved",
-                                                    _cli_update(machine, "tree-moved-update"), _tree_moved))
-                j.step("desktop_handoff", lambda: _crash(machine, srv, "handoff",
-                                                         _handoff(machine, "handoff-script"), _update_child))
-                j.step("orphaned_update", lambda: _orphan(machine, srv, "orphan"))
-                # Last: a launch that cannot repair this tree leaves every later cell an
-                # unrunnable install, which is this cell's verdict, not theirs.
                 hold = _GitHold(machine)
-                j.step("mid_git", lambda: _crash(machine, srv, "mid-git",
-                                                 _cli_update(machine, "mid-git-update"), hold.point, hold))
                 boot_hold = _GitHold(machine, "hermes_bootstrap.py")
-                j.step("mid_git_bootstrap", lambda: _crash(
-                    machine, srv, "mid-git-bootstrap", _cli_update(machine, "mid-git-bootstrap-update"),
-                    boot_hold.point, boot_hold, runtime_files=("hermes_bootstrap.py", *RUNTIME_FILES)))
+                _run_cells(machine, j, (
+                    ("mid_fetch", lambda: _crash(machine, srv, "mid-fetch",
+                                                 _cli_update(machine, "mid-fetch-update"), _git_fetching)),
+                    ("tree_moved", lambda: _crash(machine, srv, "tree-moved",
+                                                  _cli_update(machine, "tree-moved-update"), _tree_moved)),
+                    ("desktop_handoff", lambda: _crash(machine, srv, "handoff",
+                                                       _handoff(machine, "handoff-script"), _update_child)),
+                    ("orphaned_update", lambda: _orphan(machine, srv, "orphan")),
+                    # Last: their hold edits the install's git config, and a tree the launch
+                    # cannot repair is the hardest state for the restore to hand on.
+                    ("mid_git", lambda: _crash(machine, srv, "mid-git",
+                                               _cli_update(machine, "mid-git-update"), hold.point, hold)),
+                    ("mid_git_bootstrap", lambda: _crash(
+                        machine, srv, "mid-git-bootstrap", _cli_update(machine, "mid-git-bootstrap-update"),
+                        boot_hold.point, boot_hold, runtime_files=("hermes_bootstrap.py", *RUNTIME_FILES))),
+                ))
             yield j
         finally:
             machine.teardown()

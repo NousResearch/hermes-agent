@@ -54,7 +54,7 @@ def report_pack_tidy(root: Path) -> None:
 
     tidy = tidy_partial_clone_packs(root)
     if tidy.erased or tidy.merged:
-        print(f"  (git cleanup: erased {tidy.erased} on-demand pack(s), {tidy.freed_bytes / 1e6:.0f} MB freed;"
+        print(f"  (git cleanup: erased {tidy.erased} duplicate pack(s), {tidy.freed_bytes / 1e6:.0f} MB freed;"
               f" merged {tidy.merged}; {tidy.packs_left} left)")
     if tidy.out_of_time:
         print(f"  (git cleanup stopped at its {TIDY_BUDGET_SECONDS}s limit; the next update continues it)")

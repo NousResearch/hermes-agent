@@ -163,6 +163,66 @@ export function resetHoldStateForTests(): void {
   recheckGeneration = 0
 }
 
+interface AskedEntry {
+  verdict: MarkerHelperVerdict
+  at: number
+  generation: number
+  overrideLogged?: boolean
+}
+
+function statMarkerFile(hermesHome: string): fs.Stats | null {
+  try {
+    return fs.statSync(markerPath(hermesHome))
+  } catch {
+    // Gone since the read: the body alone names it until the next poll.
+    return null
+  }
+}
+
+function verdictDue(previous: AskedEntry | undefined, now: () => number, reprobeMs: number): boolean {
+  return (
+    !previous ||
+    (STILL_RUNNING.has(previous.verdict.kind) &&
+      (now() - previous.at >= reprobeMs || previous.generation !== recheckGeneration))
+  )
+}
+
+/** Ask the script helper again about one dead marker body and record the answer. */
+async function refreshVerdict(
+  previous: AskedEntry | undefined,
+  holdId: string,
+  reclaim: () => Promise<MarkerHelperVerdict>,
+  now: () => number,
+  log: ((line: string) => void) | undefined
+): Promise<AskedEntry> {
+  const generation = recheckGeneration
+  let verdict = await reclaim()
+
+  // A body that blocked never clears on `unsupported`: the checkout's
+  // script went missing or unreadable after answering for it (R8 M5).
+  if (verdict.kind === 'unsupported' && (STILL_RUNNING.has(previous?.verdict.kind ?? '') || firstHeldAt.has(holdId))) {
+    verdict = { kind: 'error' }
+  }
+
+  if (!previous || STILL_RUNNING.has(previous.verdict.kind) !== STILL_RUNNING.has(verdict.kind)) {
+    log?.(`[updates] dead update marker: script helper says ${verdict.kind}${'pid' in verdict ? ` ${verdict.pid}` : ''}`)
+  }
+
+  return { ...previous, verdict, at: now(), generation }
+}
+
+function logOverrideOnce(entry: AskedEntry, state: HeldState, log: ((line: string) => void) | undefined): void {
+  if (entry.overrideLogged) {
+    return
+  }
+
+  entry.overrideLogged = true
+  log?.(
+    `[updates] update marker still ${state.verdict} (hold ${state.holdId}); not blocking start-up because the user ` +
+      'chose Start anyway. The marker is left in place.'
+  )
+}
+
 /** `hasLiveMarker` for one gate wait (create it per wait, never module-wide). */
 export function liveMarkerProbe({
   hermesHome,
@@ -175,10 +235,7 @@ export function liveMarkerProbe({
   now = Date.now,
   reprobeMs = HELD_REPROBE_MS
 }: LiveMarkerProbeOptions): () => Promise<boolean> {
-  const asked = new Map<
-    string,
-    { verdict: MarkerHelperVerdict; at: number; generation: number; overrideLogged?: boolean }
-  >()
+  const asked = new Map<string, AskedEntry>()
 
   return async () => {
     const inspection = await inspectUpdateMarker(hermesHome, { createTime, now })
@@ -193,47 +250,16 @@ export function liveMarkerProbe({
       return false
     }
 
-    let file: fs.Stats | null = null
-
-    try {
-      file = fs.statSync(markerPath(hermesHome))
-    } catch {
-      // Gone since the read: the body alone names it until the next poll.
-    }
-
-    const holdId = markerHoldId(inspection.raw, file)
+    const holdId = markerHoldId(inspection.raw, statMarkerFile(hermesHome))
     const previous = asked.get(holdId)
-    let entry = previous
+    let entry = previous!
 
-    const due =
-      !previous ||
-      (STILL_RUNNING.has(previous.verdict.kind) &&
-        (now() - previous.at >= reprobeMs || previous.generation !== recheckGeneration))
-
-    if (due) {
-      const generation = recheckGeneration
-      let verdict = await reclaim()
-
-      // A body that blocked never clears on `unsupported`: the checkout's
-      // script went missing or unreadable after answering for it (R8 M5).
-      if (
-        verdict.kind === 'unsupported' &&
-        (STILL_RUNNING.has(previous?.verdict.kind ?? '') || firstHeldAt.has(holdId))
-      ) {
-        verdict = { kind: 'error' }
-      }
-
-      if (!previous || STILL_RUNNING.has(previous.verdict.kind) !== STILL_RUNNING.has(verdict.kind)) {
-        log?.(
-          `[updates] dead update marker: script helper says ${verdict.kind}${'pid' in verdict ? ` ${verdict.pid}` : ''}`
-        )
-      }
-
-      entry = { ...previous, verdict, at: now(), generation }
+    if (verdictDue(previous, now, reprobeMs)) {
+      entry = await refreshVerdict(previous, holdId, reclaim, now, log)
       asked.set(holdId, entry)
     }
 
-    const { verdict } = entry!
+    const { verdict } = entry
 
     if (!STILL_RUNNING.has(verdict.kind)) {
       return false
@@ -245,19 +271,12 @@ export function liveMarkerProbe({
       livePid: 'pid' in verdict ? verdict.pid : null,
       holdId,
       since: heldSince(holdId, now()),
-      checkedAt: entry!.at,
+      checkedAt: entry.at,
       blocking: verdict.kind !== 'live'
     }
 
     if (state.blocking && startAnywayHolds.has(holdId)) {
-      if (!entry!.overrideLogged) {
-        entry!.overrideLogged = true
-        log?.(
-          `[updates] update marker still ${state.verdict} (hold ${holdId}); not blocking start-up because the user ` +
-            'chose Start anyway. The marker is left in place.'
-        )
-      }
-
+      logOverrideOnce(entry, state, log)
       onOverride?.(holdId)
 
       return false

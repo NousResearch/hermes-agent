@@ -235,10 +235,10 @@ def cmd_send(args: argparse.Namespace) -> None:
     # platforms); takes the standard tool-call dict and returns a JSON string.
     tool_args = {"action": "send", "target": target, "message": message}
     reply_to = getattr(args, "reply_to", None)
-    if reply_to:
+    if reply_to is not None:
         if target.split(":", 1)[0].strip().lower() != "discord":
             _fail("hermes send: --reply-to is only supported for Discord targets.", _USAGE_EXIT)
-        if not reply_to.isdigit() or not 6 <= len(reply_to) <= 32:
+        if not isinstance(reply_to, str) or not reply_to.isdigit() or not 6 <= len(reply_to) <= 32:
             _fail("hermes send: --reply-to must be a Discord message snowflake.", _USAGE_EXIT)
         tool_args["reply_to"] = reply_to
     if mentions:

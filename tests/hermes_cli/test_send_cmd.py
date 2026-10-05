@@ -318,7 +318,7 @@ def test_reply_to_is_forwarded_for_discord(fake_tool, monkeypatch):
     }]
 
 
-@pytest.mark.parametrize("reply_to", [" ", "12345", "1" * 33])
+@pytest.mark.parametrize("reply_to", ["", " ", "12345", "1" * 33])
 def test_reply_to_rejects_malformed_discord_identifiers(fake_tool, capsys, monkeypatch, reply_to):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     args = _parse([

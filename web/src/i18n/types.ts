@@ -133,6 +133,7 @@ export interface Translations {
     /** First-run shared-metrics offer — optional, English fallback. */
     sharedMetricsTitle?: string;
     sharedMetricsBody?: string;
+    sharedMetricsReaskBody?: string;
     sharedMetricsShare?: string;
     sharedMetricsLocal?: string;
     sharedMetricsOff?: string;

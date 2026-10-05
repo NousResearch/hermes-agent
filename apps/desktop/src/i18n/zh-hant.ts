@@ -61,6 +61,7 @@ export const zhHant = defineLocale({
     sendDesc: '將每日資料包上傳到 Nous 遙測服務。只傳送同意時段內的資料。需要先開啟收集。',
     unavailable: '請更新 Hermes 後端以變更此設定。',
     stripBody: '僅限有界計數器，絕不包含提示詞或檔案。',
+    stripReaskBody: '再次詢問：舊版本可能在你看到此問題之前就已儲存了「不用了」。',
     stripChoices: { share: '傳送給 Nous', local: '僅限本機', off: '不用了' },
     stripDetails: '詳細資訊'
   },

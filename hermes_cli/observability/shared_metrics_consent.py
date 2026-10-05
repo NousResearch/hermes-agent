@@ -3,6 +3,9 @@
 Every surface reads and writes the same two keys in the profile's config.yaml:
 ``telemetry.shared_metrics.enabled`` (collect locally) and ``.send`` (upload daily). The question
 counts as answered once either key is written explicitly; the shipped defaults are not an answer.
+Every answer also writes ``offer_version``. A "No thanks" without it predates the type-ahead fix
+(an Enter pressed during startup could save it unseen), so that profile is asked once more, with
+the reason, and any response (Esc or dismiss included) settles it for good.
 Desktop paints the offer as a composer strip (``consent-strip.tsx`` over the ``shared_metrics.*``
 RPCs). The terminal asks at the end of every ``hermes setup`` flow and, for a profile that never
 answered, once before an interactive ``hermes`` / ``hermes --tui`` chat (which also covers the
@@ -36,6 +39,7 @@ _OFFER_DESCRIPTION = "\n".join((
     f"Details: {DOCS_URL}",
     "Change it any time: hermes setup telemetry",
 ))
+_REASK_NOTE = "Asking once more: an earlier version could save \"No thanks\" before you saw this question."
 
 
 def _section(cfg: Any) -> dict:
@@ -44,31 +48,42 @@ def _section(cfg: Any) -> dict:
     return section if isinstance(section, dict) else {}
 
 
+# Bumped only when every earlier answer must be asked again; 2 = after the type-ahead fix.
+OFFER_VERSION = 2
+
+
 def consent_state(raw_cfg: Any) -> dict:
-    """``{enabled, send, decided}`` from a RAW config mapping (no defaults merged)."""
+    """``{enabled, send, decided, reask}`` from a RAW config mapping (no defaults merged). ``reask``:
+    an "off" answer from before ``OFFER_VERSION`` that may never have been seen; it reads undecided
+    so every surface offers it once more. An opt-in was always a deliberate pick and stays."""
     section = _section(raw_cfg)
     enabled = section.get("enabled") is True
+    answered = "enabled" in section or "send" in section
+    reask = answered and not enabled and section.get("offer_version") != OFFER_VERSION
     return {
         "enabled": enabled,
         "send": enabled and section.get("send") is True,
-        "decided": "enabled" in section or "send" in section,
+        "decided": answered and not reask,
+        "reask": reask,
     }
 
 
-def consent_decided() -> bool:
+def _current_state() -> dict:
     from hermes_cli.config import read_raw_config
 
-    return consent_state(read_raw_config())["decided"]
+    return consent_state(read_raw_config())
 
 
-def _set_answer(target: dict, enabled: bool, send: bool) -> None:
+def set_answer(target: dict, enabled: bool, send: bool) -> None:
+    """Write one answer into a config mapping: both opt-ins plus the offer version that settles it."""
     telemetry = target.get("telemetry")
     if not isinstance(telemetry, dict):
         telemetry = target["telemetry"] = {}
     section = telemetry.get("shared_metrics")
     if not isinstance(section, dict):
         section = telemetry["shared_metrics"] = {}
-    section["enabled"], section["send"] = enabled, send
+    section["enabled"], section["send"] = enabled, enabled and send
+    section["offer_version"] = OFFER_VERSION
 
 
 def save_consent(enabled: bool, send: bool, config: dict | None = None) -> None:
@@ -87,17 +102,18 @@ def save_consent(enabled: bool, send: bool, config: dict | None = None) -> None:
     send = enabled and send
     config_path = get_config_path()
     user_config = require_readable_config_before_write(config_path)
-    _set_answer(user_config, enabled, send)
+    set_answer(user_config, enabled, send)
     _write_user_config(config_path, user_config)
     if config is not None:
-        _set_answer(config, enabled, send)
+        set_answer(config, enabled, send)
     # Unconditional: a send key already false may still have an open consent window.
     _record_send_consent_change(enabled=send)
 
 
-def offer_consent(config: dict | None = None) -> bool:
+def offer_consent(config: dict | None = None, *, reask: bool = False) -> bool:
     """Ask once, with the Desktop strip's three answers; "No thanks" is the default so Enter never
-    opts anyone in. Esc leaves the question open (asked again next time). True when answered."""
+    opts anyone in. Esc leaves a first question open (asked again next time); on a re-ask it keeps
+    the recorded "No thanks", so nobody is asked a third time. True when answered."""
     from hermes_cli.cli_output import print_info, print_success
     from hermes_cli.curses_ui import curses_radiolist, flush_stdin
 
@@ -106,8 +122,12 @@ def offer_consent(config: dict | None = None) -> bool:
     flush_stdin()
     idx = curses_radiolist(
         "Help improve Hermes?", [label for label, _, _ in OFFER_CHOICES], selected=_NO_THANKS, cancel_returns=-1,
-        description=_OFFER_DESCRIPTION,
+        description=f"{_REASK_NOTE}\n{_OFFER_DESCRIPTION}" if reask else _OFFER_DESCRIPTION,
     )
+    if idx < 0 and reask:
+        save_consent(False, False, config)
+        print_info("Kept \"No thanks\". Change it any time with `hermes setup telemetry`.")
+        return True
     if idx < 0:
         print_info("Not answered; Hermes will ask again. Decide any time with `hermes setup telemetry`.")
         return False
@@ -124,10 +144,13 @@ def offer_consent_if_undecided(config: dict | None = None) -> None:
     from hermes_cli.config import is_managed
     from hermes_cli.setup import is_noninteractive
 
-    if is_managed() or is_noninteractive() or not sys.stdin.isatty() or consent_decided():
+    if is_managed() or is_noninteractive() or not sys.stdin.isatty():
+        return
+    state = _current_state()
+    if state["decided"]:
         return
     try:
-        offer_consent(config)
+        offer_consent(config, reask=state["reask"])
     except (KeyboardInterrupt, EOFError):
         print()
 
@@ -148,9 +171,10 @@ def offer_consent_before_chat(args: Any) -> None:
     if not (sys.stdin.isatty() and sys.stdout.isatty()) or is_managed():
         return
     try:
-        if consent_decided():
+        state = _current_state()
+        if state["decided"]:
             return
-        offer_consent()
+        offer_consent(reask=state["reask"])
     except (KeyboardInterrupt, EOFError):
         print()
     except Exception:

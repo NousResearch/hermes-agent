@@ -40,6 +40,7 @@ export const frOverrides = {
       'Envoyer chaque paquet quotidien au service de télémétrie de Nous. Seules les données d’une fenêtre de consentement sont envoyées. Nécessite la collecte activée.',
     unavailable: 'Mettez à jour le backend Hermes pour modifier ce réglage.',
     stripBody: 'Uniquement des compteurs bornés, jamais de prompts ni de fichiers.',
+    stripReaskBody: 'Nouvelle demande : une version précédente pouvait enregistrer « Non merci » avant que vous ne voyiez cette question.',
     stripChoices: { share: 'Envoyer à Nous', local: 'Local uniquement', off: 'Non merci' },
     stripDetails: 'Détails'
   },

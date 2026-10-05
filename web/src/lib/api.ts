@@ -2001,6 +2001,8 @@ export interface SharedMetricsConsent {
   enabled: boolean;
   send: boolean;
   decided: boolean;
+  /** An "off" from before the type-ahead fix, offered once more with the reason. */
+  reask?: boolean;
   managed: boolean;
 }
 

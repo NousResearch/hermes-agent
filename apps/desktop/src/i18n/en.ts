@@ -47,6 +47,7 @@ export const en: Translations = {
       'Upload each daily package to the Nous telemetry service. Only data from inside a consent window is sent. Needs collection on.',
     unavailable: 'Update the Hermes backend to change this setting.',
     stripBody: 'Bounded counters only, never prompts or files.',
+    stripReaskBody: 'Asking once more: an earlier version could save “No thanks” before you saw this.',
     stripChoices: { share: 'Send to Nous', local: 'Local only', off: 'No thanks' },
     stripDetails: 'Details'
   },

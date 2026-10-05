@@ -618,8 +618,15 @@ Both keys are asked once per profile, with the same three answers everywhere
 "No thanks" is the default in the terminal, so pressing Enter never opts
 anyone in. Esc in the terminal and the dashboard banner's ✕ leave the question
 open, so it is asked again next time. Answering on any surface writes both keys
-to the profile's `config.yaml`, and a profile that already carries either key is
-never asked again. A managed install is never offered. To change the answer
+to the profile's `config.yaml`, plus `offer_version`, and a profile that already
+carries either key is never asked again. A managed install is never offered.
+
+One exception: before the type-ahead fix, an Enter pressed while `hermes chat`
+was starting could save "No thanks" before the question appeared. A "No thanks"
+recorded without `offer_version` is therefore offered once more on every surface,
+with a note saying why. Any response settles it for good, including Esc or the
+banner's ✕, which keep "No thanks". Answers that opted in are never re-asked.
+To change the answer
 later, use `hermes setup telemetry`, `hermes tools`, or Desktop's Settings ›
 Safety › Privacy & network.
 

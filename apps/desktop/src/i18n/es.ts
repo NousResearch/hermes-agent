@@ -40,6 +40,7 @@ export const esOverrides = {
       'Sube cada paquete diario al servicio de telemetría de Nous. Solo se envían datos de una ventana de consentimiento. Requiere la recopilación activada.',
     unavailable: 'Actualiza el backend de Hermes para cambiar este ajuste.',
     stripBody: 'Solo contadores acotados, nunca prompts ni archivos.',
+    stripReaskBody: 'Te lo preguntamos de nuevo: una versión anterior podía guardar «No, gracias» antes de que vieras esta pregunta.',
     stripChoices: { share: 'Enviar a Nous', local: 'Solo local', off: 'No, gracias' },
     stripDetails: 'Detalles'
   },

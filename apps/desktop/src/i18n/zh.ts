@@ -43,6 +43,7 @@ export const zh = defineLocale({
     sendDesc: '将每日数据包上传到 Nous 遥测服务。只发送同意时段内的数据。需要先开启收集。',
     unavailable: '请更新 Hermes 后端以更改此设置。',
     stripBody: '仅限有界计数器，绝不包含提示词或文件。',
+    stripReaskBody: '再次询问：旧版本可能在你看到此问题之前就已保存了“不用了”。',
     stripChoices: { share: '发送给 Nous', local: '仅本地', off: '不用了' },
     stripDetails: '详情'
   },

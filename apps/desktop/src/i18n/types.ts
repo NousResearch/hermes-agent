@@ -91,6 +91,7 @@ export interface Translations {
     sendDesc: string
     unavailable: string
     stripBody: string
+    stripReaskBody: string
     stripChoices: { share: string; local: string; off: string }
     stripDetails: string
   }

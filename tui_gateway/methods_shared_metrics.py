@@ -18,7 +18,7 @@ _profile_scoped = _registry.profile_scoped
 
 
 def _shared_metrics_consent(cfg) -> dict:
-    """The one ``{enabled, send, decided}`` reading every surface shares (CLI offer included)."""
+    """The one ``{enabled, send, decided, reask}`` reading every surface shares (CLI offer included)."""
     from hermes_cli.observability.shared_metrics_consent import consent_state
 
     return consent_state(cfg)
@@ -37,7 +37,7 @@ def _shared_metrics_record_setup_completed(cfg) -> None:
 @method("shared_metrics.status")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    """``{enabled, send, decided}`` for the focused profile. A pure read of config.yaml (no defaults
+    """``{enabled, send, decided, reask}`` for the focused profile. A pure read of config.yaml (no defaults
     merged, so ``decided`` sees only what the user wrote)."""
     try:
         return _ok(rid, _shared_metrics_consent(_load_cfg()))
@@ -51,18 +51,13 @@ def _(rid, params: dict) -> dict:
     """Write both opt-ins at once and reconcile the consent windows. ``send`` is forced off when
     ``enabled`` is off (the wizard's rule: sending cannot outlive collection, and turning collection
     off withdraws send consent). ``first_run`` marks the Desktop first-run answer, which also records
-    the setup-completed metric. Answers the stored ``{enabled, send, decided}``."""
+    the setup-completed metric. Answers the stored ``{enabled, send, decided, reask}``."""
     enabled = params.get("enabled") is True
     send = enabled and params.get("send") is True
+    from hermes_cli.observability.shared_metrics_consent import set_answer
     try:
         cfg = _load_cfg_raw()
-        telemetry = cfg.get("telemetry")
-        if not isinstance(telemetry, dict):
-            telemetry = cfg["telemetry"] = {}
-        section = telemetry.get("shared_metrics")
-        if not isinstance(section, dict):
-            section = telemetry["shared_metrics"] = {}
-        section["enabled"], section["send"] = enabled, send
+        set_answer(cfg, enabled, send)
         _save_cfg(cfg)
     except Exception as e:
         return _err(rid, 5096, str(e))

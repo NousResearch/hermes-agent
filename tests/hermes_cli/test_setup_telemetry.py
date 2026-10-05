@@ -92,7 +92,7 @@ def test_no_answer_survives_the_callers_later_config_save(monkeypatch):
     setup_telemetry(config)
     save_config(config)  # what the wizard and `hermes tools` do afterwards
 
-    assert read_raw_config()["telemetry"]["shared_metrics"] == {"enabled": False, "send": False}
+    assert read_raw_config()["telemetry"]["shared_metrics"] == {"enabled": False, "send": False, "offer_version": 2}
 
 
 def test_chat_offer_asks_an_undecided_profile_once(monkeypatch):
@@ -112,7 +112,7 @@ def test_chat_offer_asks_an_undecided_profile_once(monkeypatch):
     consent.offer_consent_before_chat(argparse.Namespace())
 
     assert len(asked) == 1
-    assert consent.consent_state(read_raw_config()) == {"enabled": True, "send": False, "decided": True}
+    assert consent.consent_state(read_raw_config()) == {"enabled": True, "send": False, "decided": True, "reask": False}
 
 
 def test_offer_drops_keys_typed_before_it_appeared(monkeypatch):
@@ -126,3 +126,28 @@ def test_offer_drops_keys_typed_before_it_appeared(monkeypatch):
     consent.offer_consent()
 
     assert events == ["flush", "ask"]
+
+
+def test_unseen_no_thanks_is_asked_once_more_and_then_settled(monkeypatch):
+    """A pre-fix "No thanks" is re-offered with the reason; Esc on the re-ask keeps it for good,
+    while a pre-fix opt-in was a deliberate pick and is never re-asked."""
+    from hermes_cli.config import read_raw_config, save_config
+    from hermes_cli.observability import shared_metrics_consent as consent
+
+    shown = []
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", lambda *a, **k: shown.append(k["description"]) or -1)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
+
+    save_config({"telemetry": {"shared_metrics": {"enabled": True, "send": False}}}, strip_defaults=False)
+    consent.offer_consent_before_chat(argparse.Namespace())
+    assert shown == []
+
+    save_config({"telemetry": {"shared_metrics": {"enabled": False, "send": False}}}, strip_defaults=False)
+    consent.offer_consent_before_chat(argparse.Namespace())
+    consent.offer_consent_before_chat(argparse.Namespace())
+
+    assert len(shown) == 1 and shown[0].startswith(consent._REASK_NOTE)
+    assert consent.consent_state(read_raw_config()) == {"enabled": False, "send": False, "decided": True, "reask": False}

@@ -39,6 +39,7 @@ export const deOverrides = {
       'Jedes Tagespaket an den Nous-Telemetriedienst hochladen. Nur Daten aus einem Zustimmungsfenster werden gesendet. Erfordert aktive Erfassung.',
     unavailable: 'Aktualisieren Sie das Hermes-Backend, um diese Einstellung zu ändern.',
     stripBody: 'Nur begrenzte Zähler, niemals Prompts oder Dateien.',
+    stripReaskBody: 'Wir fragen noch einmal: Eine frühere Version konnte „Nein danke“ speichern, bevor Sie diese Frage gesehen haben.',
     stripChoices: { share: 'An Nous senden', local: 'Nur lokal', off: 'Nein danke' },
     stripDetails: 'Details'
   },

@@ -43,8 +43,8 @@ from scripts.code_health.ruff_runner import resolve_ruff  # noqa: E402
 
 _HOOK_MARK = "# hermes-agent scripts/check hook"
 # Hooks are shared by every worktree of the clone, so the checked-out branch decides nothing:
-# each candidate (the index being committed, each commit being pushed) is materialized and judged
-# by its own scripts/check, and a candidate that predates scripts/check is not judged.
+# each candidate (the index being committed, the tip of each pushed branch) is materialized and
+# judged by its own scripts/check, and a candidate that predates scripts/check is not judged.
 _HOOK_HEAD = f"""#!/usr/bin/env bash
 {_HOOK_MARK} (`scripts/check --install-hook`; skip once with --no-verify)
 """ + r"""repo="$(git rev-parse --show-toplevel)" || exit 1
@@ -86,7 +86,8 @@ git cat-file -e "$tree:scripts/check" 2>/dev/null || exit 0
 judge "$tree" --staged
 """,
     # stdin: "<local ref> <local sha> <remote ref> <remote sha>" per pushed ref; an all-zero
-    # local sha is a deletion. Each pushed commit is judged as CI will judge the PR.
+    # local sha is a deletion. Each pushed branch tip is judged, as CI judges the PR as a whole;
+    # intermediate commits are not judged one by one.
     "pre-push": _HOOK_HEAD + """status=0
 while read -r _ local_sha _ _; do
   case "$local_sha" in *[!0]*) ;; *) continue ;; esac

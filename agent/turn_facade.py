@@ -164,12 +164,8 @@ class TurnFacadeMixin:
                     if lease is not None:
                         lease.stop_refresher()
             terminal = result if isinstance(result, dict) else {}
-            if lease is not None and isinstance(result, dict):
-                status = ("interrupted" if terminal.get("interrupted") is True else
-                          "error" if terminal.get("failed") is True or terminal.get("error") else
-                          "complete" if terminal.get("completed") is True else None)
-                if status is not None:
-                    lease.finish_observation(status)
+            if lease is not None:
+                lease.finish_observation_result(result)
             relay_outcome = (
                 "cancelled" if terminal.get("interrupted") is True
                 else "failed" if terminal.get("failed") is True

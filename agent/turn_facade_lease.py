@@ -67,7 +67,7 @@ class DurableTurnLease:
                 attention_covered=getattr(self.agent, "platform", None) in {"desktop", "tui"})
             self.agent._observation_turn_id = self.observation_turn_id
         except Exception as exc:
-            logger.warning("Turn observation unavailable (%s)", type(exc).__name__)
+            logger.warning("Turn observation unavailable (%s)", type(exc).__name__, exc_info=True)
 
     def finish_observation(self, status: str) -> None:
         if self.observation_turn_id is None or self.observation_finished:
@@ -76,7 +76,18 @@ class DurableTurnLease:
         try:
             self.db.finish_session_observation(self._current_session_id(), self.holder, self.observation_turn_id, status)
         except Exception as exc:
-            logger.warning("Terminal observation unavailable (%s)", type(exc).__name__)
+            logger.warning("Terminal observation unavailable (%s)", type(exc).__name__, exc_info=True)
+
+    def finish_observation_result(self, result) -> None:
+        """Seal explicit native flags, never an unclassified return or response text."""
+        if not isinstance(result, dict):
+            return
+        if result.get("interrupted") is True:
+            self.finish_observation("interrupted")
+        elif result.get("failed") is True or result.get("error"):
+            self.finish_observation("error")
+        elif result.get("completed") is True:
+            self.finish_observation("complete")
 
     def _current_session_id(self) -> str:
         return getattr(self.agent, "session_id", None) or self.session_id

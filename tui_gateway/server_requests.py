@@ -130,7 +130,7 @@ def _settle_observation(req):
     try:
         db.resolve_session_attention(sid, turn_id, req.id, holder=holder)
     except Exception as exc:
-        logger.warning("Request observation settlement unavailable (%s)", type(exc).__name__)
+        logger.warning("Request observation settlement unavailable (%s)", type(exc).__name__, exc_info=True)
 
 
 # Error code a client answers when none of its windows shows the request's session, and the refusal the
@@ -207,7 +207,7 @@ def _register(req: ServerRequest) -> None:
                     if db.open_session_attention(sid, turn_id, kind, request_id=req.id, holder=holder):
                         req.observation = owner
             except Exception as exc:
-                logger.warning("Request observation unavailable (%s)", type(exc).__name__)
+                logger.warning("Request observation unavailable (%s)", type(exc).__name__, exc_info=True)
     try:
         _write(req.frame())
     except BaseException:

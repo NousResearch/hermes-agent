@@ -249,13 +249,21 @@ def install_from_quarantine(
         if not swapped:
             # Failure in the old-aside move or the staged->install move itself: the old
             # tree is either still live at install_dir or parked at recovery_dir.
+            restored = False
             if recovery_dir.exists() and not install_dir.exists():
                 shutil.move(str(recovery_dir), str(install_dir))  # may raise; surfaced below
+                restored = True
             shutil.rmtree(staging_dir, ignore_errors=True)
             if install_dir.exists():
+                if restored:
+                    raise RuntimeError(
+                        f"skill '{safe_skill_name}' replacement failed before/during swap; "
+                        f"the previous installation is restored at {install_dir}. Swap error: {exc}"
+                    ) from exc
                 raise RuntimeError(
                     f"skill '{safe_skill_name}' replacement failed before/during swap; "
-                    f"the previous installation is restored at {install_dir}. Swap error: {exc}"
+                    f"the previous installation was never moved and is intact at {install_dir}. "
+                    f"Swap error: {exc}"
                 ) from exc
             raise RuntimeError(
                 f"skill '{safe_skill_name}' replacement FAILED before/during swap and the "

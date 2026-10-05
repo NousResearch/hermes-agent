@@ -496,24 +496,39 @@ class SessionSessionsMixin:
             self._bump_conversation_generation(conn, session_id, reason)
         return changed
 
+    @staticmethod
+    def _retire_undrained_queue_rows_conn(conn, session_id: str) -> int:
+        """The still-marked == never-drained accept-row UPDATE (#125577), on a caller's connection."""
+        return conn.execute(
+            "UPDATE messages SET active = 0 "
+            "WHERE session_id = ? AND role = 'user' AND active = 1 "
+            f"AND COALESCE({_sql_json_extract('display_metadata', '$.' + QUEUED_PROMPT_METADATA_KEY)}, 0) = 1",
+            (session_id,),
+        ).rowcount
+
+    def retire_undrained_queue_rows(self, session_id: str) -> int:
+        """Deactivate busy-queue accept rows that never drained (#125577): a restart discarded the
+        in-memory queue, so nothing re-placed/deactivated the row written at accept time and
+        alternation repair would glue the never-run prompt into the previous turn's user message.
+        The drain's replacement row carries no marker, so still-marked == never drained; a
+        dispatched-then-interrupted turn's row is never marked (its discard is handled in-process,
+        #123532). Deactivated, never deleted — the row stays as history.
+
+        Split out of :meth:`reopen_session` so the read-only mount paths (#85303: resume,
+        lazy watch, hydration) can retire stale accept rows WITHOUT clearing ``ended_at`` —
+        after a restart the marked row would otherwise stay active and visible on every
+        mount until the next send. Idempotent; returns the number of rows retired.
+        """
+        return self._execute_write(
+            lambda conn: self._retire_undrained_queue_rows_conn(conn, session_id))
+
     def reopen_session(self, session_id: str) -> None:
         """Clear ended_at/end_reason so a session can be resumed; first freeze markerless legacy reset
         children, skipping explicit fork/delegate provenance and children that predate the parent itself.
         The guard compares against the parent's started_at, not its current ended_at: a parent that was
         reopened and re-ended later still owns reset children from its earlier boundaries."""
         def _do(conn):
-            # Retire busy-queue accept rows that never drained (#125577): a restart discarded the
-            # in-memory queue, so nothing re-placed/deactivated the row written at accept time and
-            # alternation repair would glue the never-run prompt into the previous turn's user
-            # message. The drain's replacement row carries no marker, so still-marked == never
-            # drained; a dispatched-then-interrupted turn's row is never marked (its discard is
-            # handled in-process, #123532). Deactivated, never deleted — the row stays as history.
-            conn.execute(
-                "UPDATE messages SET active = 0 "
-                f"WHERE session_id = ? AND role = 'user' AND active = 1 "
-                f"AND COALESCE({_sql_json_extract('display_metadata', '$.' + QUEUED_PROMPT_METADATA_KEY)}, 0) = 1",
-                (session_id,),
-            )
+            self._retire_undrained_queue_rows_conn(conn, session_id)
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
                 "COALESCE(child.model_config, '{}'), '$._reset_from', child.parent_session_id) "

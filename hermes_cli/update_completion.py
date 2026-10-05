@@ -56,7 +56,7 @@ def run_completion(request: dict) -> dict:
         request = {**request, "stdout_isatty": sys.stdout.isatty()}
         request["bytecode_cache"] = str(Path(directory) / "bytecode")
         _write_json(request_path, request)
-        command = [sys.executable, "-I", "-S", "-u", "-X", f"pycache_prefix={request['bytecode_cache']}",
+        command = [sys.executable, "-I", "-S", "-u", "-X", "utf8", "-X", f"pycache_prefix={request['bytecode_cache']}",
                    str(root / "hermes_cli/update_completion.py"),
                    str(request_path), str(result_path)]
         proc = subprocess.Popen(

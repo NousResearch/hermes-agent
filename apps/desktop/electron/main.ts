@@ -118,7 +118,7 @@ import {
   BROWSER_WINDOW_WIDTH,
   buildBrowserWindowUrl
 } from './browser-windows'
-import { createBundleSkewChecker } from './bundle-skew'
+import { createBundleSkewProbe } from './bundle-skew'
 import { detectBundleSwap, readBundleSwapStamp } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
 import { provisionCliLinks } from './cli-provision'
@@ -278,8 +278,10 @@ import { downloadViaOauthSessionToFile, downloadViaTokenToFile } from './gateway
 import { stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { resolveGatewayVersion } from './gateway-version'
 import { probeGatewayWebSocket, spawnedBackendProbeOptions } from './gateway-ws-probe'
+import { GIT_KILL_GRACE_MS, killChildOnAbort } from './git-abort'
 import { windowsGitCandidates } from './git-binary-candidates'
 import { registerGitIpc } from './git-ipc'
+import { createGitProbeTracker } from './git-probe-tracker'
 import { desktopBackendSpawnEnv, guestOnboardingEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
@@ -401,7 +403,7 @@ import {
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
-import { execGit, killTimedGitChildren, setNoConsoleGitRoots } from './no-console-git'
+import { killTimedGitChildren, planNoConsoleGitSpawn, setNoConsoleGitRoots, windowsGitHost } from './no-console-git'
 import { registerNativeNotifications } from './notification-ipc'
 import { isExpectedOauthNavigationAbort } from './oauth-navigation'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
@@ -590,7 +592,7 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
-import { updateGateReason, waitForUpdateClearance } from './update-gate'
+import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { updateConnectionsBeforeLocal } from './update-order'
 import {
@@ -3736,6 +3738,80 @@ function resolveUpdateRoot() {
   return candidates.find(isGitCheckout) || candidates[0] || ACTIVE_HERMES_ROOT
 }
 
+// The only runGit() caller is the bundle-skew probe (detectRendererSkew), so
+// tracking every runGit child tracks every outstanding probe (#125243). See
+// git-probe-tracker.ts for why killing survives an app restart.
+const gitProbeTracker = createGitProbeTracker({
+  isWindows: IS_WINDOWS,
+  forceKillProcessTree
+})
+
+function runGit(args, options: any = {}): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const gitBinary = resolveGitBinary()
+    const gitArgs = IS_WINDOWS ? ['-c', 'windows.appendAtomically=false', ...args] : args
+    const host = IS_WINDOWS ? windowsGitHost(true) : null
+
+    const plan = planNoConsoleGitSpawn({
+      gitBin: gitBinary,
+      args: gitArgs,
+      isWindows: IS_WINDOWS,
+      pythonBin: host?.pythonBin ?? null,
+      scriptPath: host?.scriptPath ?? null,
+      env: { ...process.env, ...((options.env || {}) as any), GIT_TERMINAL_PROMPT: '0' }
+    })
+
+    const child = spawn(
+      plan.command,
+      plan.args,
+      hiddenWindowsChildOptions({
+        cwd: options.cwd,
+        env: plan.env,
+        stdio: plan.stdio,
+        detached: !IS_WINDOWS
+      })
+    )
+
+    gitProbeTracker.track(child)
+
+    let stdout = ''
+    let stderr = ''
+    // The probe aborts git at its timeout (a treeless partial clone can
+    // lazy-fetch trees for minutes), so a caller-supplied signal kills the
+    // child: SIGTERM, escalating to SIGKILL if it has not closed shortly
+    // after. Without it the spawn outlives the promise that stopped waiting.
+    // The kill is group/tree-wide so git's fetch/index-pack descendants die
+    // with it instead of surviving reparented to PID 1 (#125243).
+    const signal: AbortSignal | undefined = options.signal
+
+    if (signal) {
+      killChildOnAbort(child, signal, GIT_KILL_GRACE_MS, {
+        forceKillProcessTree
+      })
+    }
+
+    child.stdout.on('data', chunk => {
+      const text = chunk.toString()
+      stdout += text
+      options.onLine?.('stdout', text)
+    })
+    child.stderr.on('data', chunk => {
+      const text = chunk.toString()
+      stderr += text
+      options.onLine?.('stderr', text)
+    })
+    child.once('error', reject)
+    // 'close', not 'exit': exit can fire before the stdio pipes drain, and a
+    // resolved-early `remote get-url` came back as "" often enough to route
+    // passive checks down the wrong remote path.
+    child.once('close', (code: number): void => {
+      resolve({ code, stdout, stderr })
+    })
+  })
+
+}
+
+
 function emitUpdateProgress(payload) {
   const merged = { stage: 'idle', message: '', percent: null, error: null, ...payload, at: Date.now() }
   rememberLog(`[updates] ${merged.stage}: ${merged.message || merged.error || ''}`)
@@ -4275,10 +4351,12 @@ function killExternalVenvHolders(updateRoot) {
 // gateway) would survive and keep the venv shim locked. taskkill /T /F reaps
 // the whole tree synchronously. The command is not widened: one owned PID,
 // /T /F, nothing else. Failures propagate — close/stop must not discard them.
-// Windows-only: this is called solely from the Windows shim-unlock and
-// close/stop paths, and the backend is NOT spawned detached (so it's not a
-// process-group leader — a POSIX negative-pgid kill would be meaningless
-// here anyway). POSIX teardown stays with the existing before-quit SIGTERM.
+// Windows-only: called from the Windows shim-unlock and close/stop paths
+// (which propagate failures — the backend is NOT spawned detached, so it's
+// not a process-group leader and a POSIX negative-pgid kill would be
+// meaningless there anyway), and via stopBackendChild() from
+// git-probe-tracker.ts's killAll() at quit, whose own try/catch already
+// swallows failures as best-effort cleanup.
 function forceKillProcessTree(pid) {
   if (!IS_WINDOWS) {
     return
@@ -18271,6 +18349,7 @@ app.on('will-quit', () => {
   destroyKeepaliveAgents()
   nativeNotifications.dispose()
   quitFinalization.arm()
+  gitProbeTracker.killAll()
 })
 
 app.on('quit', () => {
@@ -18769,14 +18848,21 @@ function resolveHermesVersion(scope: { connectionId?: string; profile?: string }
 // apps/desktop/, and warn when the running renderer is provably behind.
 // Fail-quiet: dev runs (no stamp), non-git builds, and shallow-clone gaps all
 // report in-sync rather than risk a false "your install is torn" warning.
-const checkRendererSkew = createBundleSkewChecker(
-  INSTALL_STAMP,
-  (args, options) => execGit(resolveGitBinary(), args, options),
-  { isUpdating: () => updateGateReason(updateGateDeps()) !== null }
-)
+// One probe for the whole process: concurrent callers (window focus, the
+// update poller, checkUpdates, About) share a single in-flight run, and a
+// result is reused while HEAD is unchanged — a probe hit costs one
+// `rev-parse`. Without it each caller spawned its own merge-base/rev-list
+// pair, and a treeless partial clone's lazy fetch could hold a core for
+// minutes. The timeout aborts a hung git so nothing outlives the probe.
+// resolveUpdateRoot is called per probe: dev can retarget the tree at runtime.
+const rendererSkewProbe = createBundleSkewProbe({
+  stamp: INSTALL_STAMP,
+  runGit,
+  repoRoot: resolveUpdateRoot
+})
 
 async function detectRendererSkew() {
-  return checkRendererSkew(resolveUpdateRoot())
+  return rendererSkewProbe()
 }
 
 // Re-resolve the live Hermes version and push it into the native About panel

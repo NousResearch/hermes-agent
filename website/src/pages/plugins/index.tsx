@@ -154,7 +154,7 @@ function PluginCard({
                 {highlightMatch(plugin.name, query)}
               </Link>
             </h3>
-            {typeof plugin.stars === "number" && !(showFeatured && plugin.featured === true) && (
+            {typeof plugin.stars === "number" && (
               <a
                 className={styles.starPill}
                 href={`${repoUrl(plugin)}/stargazers`}
@@ -507,7 +507,8 @@ export default function PluginCatalogPage() {
   // Promotion belongs only to the Memory filter, never the general catalog.
   const showFeatured = categoryFilter === "memory";
   const { featured, remaining } = useMemo(() => showFeatured ? ({
-    featured: filtered.filter((p) => p.featured === true),
+    featured: filtered.filter((p) => p.featured === true)
+      .sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" })),
     remaining: filtered.filter((p) => p.featured !== true),
   }) : ({ featured: [], remaining: filtered }), [filtered, showFeatured]);
 

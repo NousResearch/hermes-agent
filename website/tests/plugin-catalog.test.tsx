@@ -47,7 +47,7 @@ test.each(["memory", "tools", "unknown"])("Explore destination honors kind=%s on
   }
 });
 
-test("Featured only applies in Memory, with independent ownership badges and preserved sorts", async () => {
+test("Featured memory stays alphabetical with stars visible while other cards follow the selected sort", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
   vi.stubGlobal("fetch", async (url: string) => ({ ok: true, json: async () => url.endsWith("plugins.json") ? structuredClone(entries) : {} }));
@@ -80,7 +80,8 @@ test("Featured only applies in Memory, with independent ownership badges and pre
     }
     expect(featured()!.textContent).toContain("They’re now installed as plugins.");
     expect(featured()!.querySelector('h2')).toBeNull();
-    for (const card of cards) expect(card.querySelector('a[title$="GitHub stars"]')).toBeNull();
+    expect(cards[0].querySelector('a[title="80 GitHub stars"]')).not.toBeNull();
+    expect(cards[1].querySelector('a[title="1 GitHub stars"]')).not.toBeNull();
     expect(container.querySelector('a[title="900 GitHub stars"]')).not.toBeNull();
     await select("Category", "all");
     expect(featured()).toBeNull();
@@ -92,7 +93,7 @@ test("Featured only applies in Memory, with independent ownership badges and pre
     await select("Category", "memory");
     expect(titles()).toEqual(["featured-high", "featured-low", "popular", "ordinary"]);
     await select("Sort", "newest");
-    expect(titles()).toEqual(["featured-low", "featured-high", "ordinary", "popular"]);
+    expect(titles()).toEqual(["featured-high", "featured-low", "ordinary", "popular"]);
     await select("Sort", "updated");
     expect(titles()).toEqual(["featured-high", "featured-low", "popular", "ordinary"]);
     await select("Source", "official");

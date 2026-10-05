@@ -54,3 +54,30 @@ def test_catalog_lookup_goes_through_the_renamed_provider_slugs(monkeypatch):
     assert models_dev.lookup_models_dev_context("moonshot", "kimi-k3") == 1_048_576
     # The highspeed SKU keeps its own (smaller) catalog window.
     assert models_dev.lookup_models_dev_context("kimi-coding", "kimi-for-coding-highspeed") == 262_144
+
+
+def test_model_overrides_keyed_by_the_retired_slug_still_resolve(monkeypatch):
+    """``model_overrides`` accepts the Hermes OR the models.dev id (#126224 review): after the
+    rename a section keyed by the retired ``kimi-for-coding`` slug must still be found for the
+    coding-plan providers, or the operator's context_window is dropped in silence."""
+    registry = {
+        "kimi-code-plan-global": {"kimi-for-coding": {"limit": {"context": 1_048_576}}},
+    }
+    monkeypatch.setattr(
+        models_dev, "_load_model_overrides",
+        lambda **k: {"kimi-for-coding": {"kimi-for-coding": {"context_window": 123456}}},
+    )
+    monkeypatch.setattr(models_dev, "_registry_models", lambda mdev_id, **k: registry.get(mdev_id))
+    # Review repro: base resolved the override (123456), the rename swallowed it (1 Mi catalog).
+    assert models_dev.lookup_models_dev_context("kimi-coding", "kimi-for-coding") == 123456
+    for provider in ("kimi", "moonshot", "kimi-coding-cn"):
+        assert models_dev._provider_override_section(provider) == {
+            "kimi-for-coding": {"context_window": 123456}
+        }
+    # A live Hermes id still wins over the retired-slug expansion, and unknown providers are unaffected.
+    monkeypatch.setattr(
+        models_dev, "_load_model_overrides",
+        lambda **k: {"kimi-coding": {"kimi-for-coding": {"context_window": 999}}},
+    )
+    assert models_dev.lookup_models_dev_context("kimi-coding", "kimi-for-coding") == 999
+    assert models_dev._provider_override_section("openai") is None

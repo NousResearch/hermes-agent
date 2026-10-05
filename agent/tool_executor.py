@@ -31,7 +31,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
-from agent.interrupt_control import interrupt_skip_wording
+from agent.interrupt_control import _REASON_USER_INTERRUPT, interrupt_skip_wording
 from agent.message_sanitization import coalesce_tool_call_id
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
@@ -1350,7 +1350,7 @@ class _ConcurrentBatch:
             return None
         except KeyboardInterrupt:
             with contextlib.suppress(Exception):
-                agent.interrupt("keyboard interrupt")
+                agent.interrupt("keyboard interrupt", tool_reason=_REASON_USER_INTERRUPT)
             result = ref.emit_cancelled(agent, start)
             duration = time.time() - start
             logger.info("tool %s cancelled (%.2fs)", ref.name, duration)
@@ -1761,7 +1761,7 @@ def _run_sequential_call(
             raise
         _spinner_result = ref.emit_cancelled(agent, tool_start_time)
         with contextlib.suppress(Exception):
-            agent.interrupt("keyboard interrupt")
+            agent.interrupt("keyboard interrupt", tool_reason=_REASON_USER_INTERRUPT)
         _append_skipped_tool_results(
             agent, messages, remaining_calls, ref.task_id,
             content=f"[Tool execution cancelled — {{name}} was skipped. {interrupt_skip_wording(agent)}]",

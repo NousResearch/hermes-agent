@@ -67,10 +67,13 @@ without spending an attempt. Long form: `website/docs/developer-guide/gateway-in
 
 Background AI workers publish process-identity leases under each owning profile's
 `cache/background-work/` via the existing session/subagent lifecycle hooks
-(`hermes_cli/background_activity.py`). Discord polls those cheap local leases at 500 ms: identity
-transitions update presence and the single pinned `#usage` dashboard immediately, while
-elapsed-only edits are throttled. Lease readers delete dead-PID identities, so crashes and gateway
-restarts cannot strand a busy presence; titles are sanitized before they ever reach disk.
+(`hermes_cli/background_activity.py`). Discord polls those cheap local leases at 500 ms: presence
+always tracks the active workers, and — only when `discord.background_activity_channel_id` is
+configured — a single pinned dashboard message in that channel is updated in place, with
+identity transitions flushed immediately and elapsed-only edits throttled. An unset or unusable
+channel value disables the dashboard entirely and never posts. Lease readers delete dead-PID
+identities, so crashes and gateway restarts cannot strand a busy presence; titles are sanitized
+before they ever reach disk.
 
 ## `/login` (off-turn, paired DM only)
 

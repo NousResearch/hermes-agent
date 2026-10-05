@@ -1,10 +1,18 @@
-"""Discord presence and single-message dashboard for background AI work."""
+"""Discord presence and single-message dashboard for background AI work.
+
+Presence is always published. The pinned dashboard message is strictly opt-in: it is
+created only when an operator configures a channel, so a default install never posts
+anything. Configure with ``discord.background_activity_channel_id`` in ``config.yaml``
+(or the ``DISCORD_BACKGROUND_ACTIVITY_CHANNEL`` env bridge); the value is a channel id
+(``123456789012345678``, ``<#123456789012345678>`` and a bare ID are all accepted).
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,9 +22,52 @@ from hermes_cli.background_activity import list_all_active_work
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
-USAGE_CHANNEL_ID = 1550862255925502072
+_CONFIG_KEY = "background_activity_channel_id"
+_ENV_KEY = "DISCORD_BACKGROUND_ACTIVITY_CHANNEL"
+# Distinguishes "resolve from config" from an explicit ``None`` (presence-only).
+_UNSET = object()
 _MARKER = "`Hermes background work`"
 _STATE_FILE = "discord_background_activity.json"
+
+
+def parse_channel_id(raw: Any) -> int | None:
+    """Return a positive integer channel id, or None for an absent / malformed value.
+
+    Accepts a bare snowflake, a numeric string, or a ``<#id>`` mention. Anything else
+    (empty, ``"usage"``, a channel *name*, a negative number) is treated as unset so a
+    typo disables the dashboard instead of breaking the adapter.
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    if text.startswith("<#") and text.endswith(">"):
+        text = text[2:-1]
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def configured_channel_id(adapter: Any) -> int | None:
+    """Resolve the dashboard channel id from this adapter's ``extra``, then scoped env."""
+    extra = getattr(getattr(adapter, "config", None), "extra", None)
+    if isinstance(extra, dict) and extra.get(_CONFIG_KEY) not in (None, ""):
+        parsed = parse_channel_id(extra.get(_CONFIG_KEY))
+        if parsed is not None:
+            return parsed
+    try:
+        from gateway.platforms._shared import platform_gate_env
+        return parse_channel_id(platform_gate_env(_ENV_KEY, ""))
+    except Exception:
+        return parse_channel_id(os.getenv(_ENV_KEY, ""))
+
+
+def dashboard_channel_id_from_adapter(adapter: Any) -> int | None:
+    """Public alias used by adapters/tests for the resolved dashboard channel id."""
+    return configured_channel_id(adapter)
 
 
 def render_presence(items: list[dict[str, Any]]) -> str:
@@ -98,11 +149,25 @@ class PublishGate:
 
 
 class DiscordActivityPublisher:
-    """Poll cheap local leases, flushing start/stop transitions within 0.5 seconds."""
+    """Poll cheap local leases, flushing start/stop transitions within 0.5 seconds.
 
-    def __init__(self, adapter: Any, *, poll_seconds: float = 0.5) -> None:
+    Presence is unconditional. The dashboard message is published only when
+    ``channel_id`` is configured; an unconfigured or inaccessible channel leaves
+    presence working and never raises out of the adapter's event loop.
+    """
+
+    def __init__(
+        self,
+        adapter: Any,
+        *,
+        poll_seconds: float = 0.5,
+        channel_id: Any = _UNSET,
+    ) -> None:
         self.adapter = adapter
         self.poll_seconds = poll_seconds
+        self.channel_id = (
+            configured_channel_id(adapter) if channel_id is _UNSET else channel_id
+        )
         self.gate = PublishGate()
         self.task: asyncio.Task | None = None
         self._message = None
@@ -146,6 +211,8 @@ class DiscordActivityPublisher:
         import discord
 
         await client.change_presence(activity=discord.Game(name=render_presence(items)))
+        if self.channel_id is None:
+            return
         message = await self._dashboard_message(client)
         if message is None:
             raise RuntimeError("Discord background-work dashboard is unavailable")
@@ -155,27 +222,40 @@ class DiscordActivityPublisher:
         return get_hermes_home() / "gateway" / _STATE_FILE
 
     def _stored_message_id(self) -> int | None:
+        """A stored message id is honored only when it belongs to the configured channel."""
         try:
-            return int(json.loads(self._state_path().read_text(encoding="utf-8"))["message_id"])
-        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            data = json.loads(self._state_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        if self.channel_id is not None and data.get("channel_id") not in (None, self.channel_id):
+            return None
+        try:
+            return int(data["message_id"])
+        except (KeyError, TypeError, ValueError):
             return None
 
     def _store_message_id(self, message_id: int) -> None:
         path = self._state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"message_id": message_id}), encoding="utf-8")
+        payload = {"message_id": message_id, "channel_id": self.channel_id}
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
         tmp.replace(path)
 
     async def _dashboard_message(self, client: Any):
         if self._message is not None:
             return self._message
-        channel = client.get_channel(USAGE_CHANNEL_ID)
+        channel = client.get_channel(self.channel_id)
         if channel is None:
             try:
-                channel = await client.fetch_channel(USAGE_CHANNEL_ID)
+                channel = await client.fetch_channel(self.channel_id)
             except Exception:
-                logger.warning("Discord #usage channel %s is unavailable", USAGE_CHANNEL_ID)
+                logger.warning(
+                    "Discord background-work channel %s is unavailable; presence stays active",
+                    self.channel_id,
+                )
                 return None
         message_id = self._stored_message_id()
         if message_id:
@@ -191,7 +271,7 @@ class DiscordActivityPublisher:
                     self._store_message_id(candidate.id)
                     return candidate
         except Exception:
-            logger.debug("Could not search Discord #usage history", exc_info=True)
+            logger.debug("Could not search Discord background-work channel history", exc_info=True)
         self._message = await channel.send(render_dashboard([]), silent=True)
         self._store_message_id(self._message.id)
         try:

@@ -169,7 +169,11 @@ CLARIFY_SCHEMA = {
                         "question": {"type": "string"},
                         "choices": {
                             "type": "array",
-                            "items": {"type": "string", "maxLength": MAX_CHOICE_CHARS},
+                            # No maxLength here on purpose: leaving it off keeps
+                            # inference local instead of relying on the provider
+                            # (some endpoints enforce it against the wrong field).
+                            # Local enforcement lives in clarify_tool() instead.
+                            "items": {"type": "string"},
                             "maxItems": MAX_CHOICES,
                         },
                         "multi_select": {"type": "boolean"},

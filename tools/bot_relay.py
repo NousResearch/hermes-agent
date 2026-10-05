@@ -500,15 +500,33 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
 
 
 def _hermes_cli() -> str:
-    """Prefer this install's published launcher, then interpreter/PATH fallbacks.
+    """Prefer ``$HERMES_BIN``, then this install's published launcher, then
+    interpreter/PATH fallbacks.
 
-    A long-lived caller can still run in an older dependency generation. Its
-    sibling console script pins that generation, whereas the published launcher
-    selects current dependencies at child start. Keep the historical fallbacks
-    for external/developer installs that have no published launcher (#93590).
+    ``$HERMES_BIN`` outranks the install-layout guesses: the relay may run in a
+    package-manager workspace that has neither a published launcher nor a sibling
+    console script, and any fallback re-bootstraps the child into a phantom
+    install whose environment may lack extras (#133325). Below it, a long-lived
+    caller can still run in an older dependency generation. Its sibling console
+    script pins that generation, whereas the published launcher selects current
+    dependencies at child start. Keep the historical fallbacks for
+    external/developer installs that have no published launcher (#93590).
     """
     # Do not select batch shims: cmd.exe reinterprets otherwise literal argv
     # (for example an ampersand in a query-file path), even with shell=False.
+    env_bin = os.environ.get("HERMES_BIN", "").strip()
+    if env_bin:
+        expanded = os.path.expanduser(env_bin)
+        if not expanded.lower().endswith((".cmd", ".bat")):
+            looks_like_path = (
+                expanded.startswith("~") or os.path.isabs(expanded)
+                or bool(os.path.dirname(expanded)) or "\\" in expanded
+                or bool(re.match(r"^[A-Za-z]:", expanded)))
+            if looks_like_path:
+                return os.path.abspath(expanded)
+            resolved = shutil.which(expanded)
+            if resolved:
+                return resolved
     name = "hermes.exe" if sys.platform == "win32" else "hermes"
     published = Path(__file__).resolve().parents[1] / ".hermes" / "bin" / name
     if published.is_file():

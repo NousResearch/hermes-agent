@@ -19,6 +19,30 @@ export interface HandoffReportHost {
   openUpdates: () => void
 }
 
+/** The run identity a live marker carried when the boot gate saw it. */
+export interface ParkedRun {
+  startedAt: number | null
+  runId: string | null
+}
+
+/**
+ * The run a boot wait parked on: the result reported when the wait ends is
+ * that run's, never an older one's. The run id is stable across the scripts'
+ * line-2 heartbeat, including when the wait first saw the marker mid-update;
+ * line 2 is kept only for older result producers that write no run id.
+ */
+export function parkedRunReport() {
+  let parked: ParkedRun = { startedAt: null, runId: null }
+
+  return {
+    park: (marker: ParkedRun) => {
+      parked = marker
+    },
+    report: (host: Omit<HandoffReportHost, 'expectedStartedAt' | 'expectedRunId'>) =>
+      reportHandoffResult({ ...host, expectedStartedAt: parked.startedAt, expectedRunId: parked.runId })
+  }
+}
+
 /**
  * The detached hand-off script (scripts/desktop-update/windows.ps1) runs hidden;
  * its result file is the ONLY way the user learns a detached update

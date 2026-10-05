@@ -602,7 +602,7 @@ import {
   UPDATE_WAIT_TIMEOUT_MS,
   waitForUpdateClearance
 } from './update-gate'
-import { reportHandoffResult } from './update-handoff-report'
+import { parkedRunReport } from './update-handoff-report'
 import type { UpdateHoldWire } from './update-hold-types'
 import {
   createUpdateHoldScreen,
@@ -3027,9 +3027,7 @@ const showUpdateHold = updateHoldScreen.show
 async function waitForUpdateToFinish() {
   let announced = false
   let longWaitAnnounced = false
-  // Stable across heartbeat refreshes, including when first opened mid-update.
-  // Keep line 2 only for compatibility with older result producers.
-  let parkedRun: { startedAt: number | null; runId: string | null } = { startedAt: null, runId: null }
+  const parkedRun = parkedRunReport()
   // A dead marker whose checkout a leftover process still holds (R6), or whose
   // ownership the helper could not establish (the blocked screen, R8 D3).
   const hold = holdTicker({ show: state => showUpdateHold(state), clear: () => clearUpdateHold() })
@@ -3039,7 +3037,7 @@ async function waitForUpdateToFinish() {
 
   const gateDeps = updateGateDeps({
     onLiveMarker: marker => {
-      parkedRun = marker
+      parkedRun.park(marker)
       overridden = false
     },
     onHeld: hold.onHeld,
@@ -3103,10 +3101,8 @@ async function waitForUpdateToFinish() {
 
   // A detached update's result file is the only way the user learns it
   // failed: consumed once, here, where boot passes the update gate.
-  reportHandoffResult({
+  parkedRun.report({
     hermesHome: HERMES_HOME,
-    expectedStartedAt: parkedRun.startedAt,
-    expectedRunId: parkedRun.runId,
     log: rememberLog,
     dialog,
     shell,

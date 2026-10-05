@@ -1161,6 +1161,12 @@ def _new_task_id() -> str:
     return "t_" + secrets.token_hex(4)
 
 
+# task_events rows whose evidence is board-scoped rather than task-scoped
+# (retention GC evidence, #133284) carry this sentinel task_id: it cannot
+# collide with generated ids, which always start with ``t_``.
+BOARD_TASK_ID = "__board__"
+
+
 def _claimer_id() -> str:
     """Return a ``host:pid`` string that identifies this claimer."""
     import socket
@@ -4372,14 +4378,49 @@ def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3
 
     ``older_than_seconds=0`` means everything older than now; the CLI maps
     ``--event-retention-days 0`` to "disabled" before calling this.
+
+    Every sweep — including a zero-row one — appends one board-level
+    ``gc_pruned`` event (sentinel task_id ``BOARD_TASK_ID``) in the same
+    transaction as the DELETE, so an auditor can tell a recorded retention
+    prune from an unexplained deletion (#133284): deleted event ids must all
+    fall inside a ``gc_pruned`` window whose count and predicate match.
     """
     cutoff = int(time.time()) - _retention_seconds(older_than_seconds)
     with write_txn(conn):
+        window = _pruned_event_window(conn, cutoff)
         cur = conn.execute(
             "DELETE FROM task_events WHERE created_at < ? AND kind != 'decomposed' AND task_id IN "
             "(SELECT id FROM tasks WHERE status IN ('done', 'archived'))", (cutoff,),
         )
-    return int(cur.rowcount or 0)
+        deleted = int(cur.rowcount or 0)
+        _append_event(
+            conn, BOARD_TASK_ID, "gc_pruned",
+            {
+                "run_at": int(time.time()),
+                "cutoff": cutoff,
+                "retention_seconds": _retention_seconds(older_than_seconds),
+                "deleted_count": deleted,
+                "min_event_id": window[0],
+                "max_event_id": window[1],
+            },
+        )
+    return deleted
+
+
+def _pruned_event_window(
+    conn: sqlite3.Connection, cutoff: int,
+) -> tuple[Optional[int], Optional[int]]:
+    """``(min_id, max_id)`` of the events the gc predicate just pruned, so the
+    ``gc_pruned`` evidence row records the id window it covered; ``(None, None)``
+    ``(None, None)`` when the sweep matched nothing. Must run inside the gc
+    transaction BEFORE the DELETE: within one transaction the SELECT sees the
+    same snapshot, so the pruned rows are already invisible after it."""
+    row = conn.execute(
+        "SELECT MIN(id), MAX(id) FROM task_events WHERE created_at < ? AND kind != 'decomposed' "
+        "AND task_id IN (SELECT id FROM tasks WHERE status IN ('done', 'archived'))",
+        (cutoff,),
+    ).fetchone()
+    return (row[0], row[1]) if row is not None else (None, None)
 
 
 def gc_worker_logs(*, older_than_seconds: int = 30 * 24 * 3600, board: Optional[str] = None) -> int:

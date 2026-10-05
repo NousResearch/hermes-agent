@@ -4,6 +4,7 @@ import {
   type ModelOptionsResult,
 } from "@hermes/shared";
 
+import type { AuxiliaryModelsResponse } from "./api-aux";
 import { dashboardServingProfile } from "./profile-bootstrap";
 
 // The dashboard can be served either at the root of its host (e.g.
@@ -2597,27 +2598,7 @@ export interface ModelInfoResponse {
 
 export type { ModelOptionProvider, ModelOptionsResult };
 
-export interface AuxiliaryTaskAssignment {
-  task: string;
-  provider: string;
-  model: string;
-  base_url: string;
-  /** Set only on plugin-registered tasks (PluginContext.register_auxiliary_task):
-   *  the plugin's display name / description / owning plugin id. Built-in tasks
-   *  are labelled client-side. Absent on older backends. */
-  label?: string;
-  hint?: string;
-  plugin?: string;
-  /** Plugin tasks only: the slot this one follows until it is pinned itself. */
-  inherit_from?: string | null;
-  /** Inheriting plugin tasks only: the route the task resolves to right now. */
-  effective?: { provider: string; model: string; base_url: string };
-}
-
-export interface AuxiliaryModelsResponse {
-  tasks: AuxiliaryTaskAssignment[];
-  main: { provider: string; model: string };
-}
+export type { AuxiliaryModelsResponse, AuxiliaryTaskAssignment } from "./api-aux";
 
 export interface MoaModelSlot {
   provider: string;

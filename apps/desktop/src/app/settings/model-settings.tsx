@@ -1,5 +1,5 @@
 import type { ModelOptionProvider } from '@hermes/shared'
-import { DEFAULT_REASONING_EFFORT, isReasoningEffort, REASONING_EFFORT_VALUES } from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -24,6 +24,7 @@ import type {
   AuxiliaryTaskAssignment,
   MoaConfigResponse,
   MoaModelSlot,
+  ModelAssignmentRequest,
   StaleAuxAssignment
 } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -42,12 +43,18 @@ import { hermesConfigCacheWriter, invalidateHermesConfig, useHermesConfigRecord 
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
+import {
+  AUX_FOLLOW_BASE,
+  AuxFollowBaseButton,
+  auxMainRoute,
+  AuxTaskRouteSummary,
+  useAuxTaskRows
+} from './aux-task-rows'
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
 import { ModelSelect, withActive } from './model-select'
 import { ListRow, ListRowSkeleton, Pill, SectionHeading, SectionHeadingSkeleton } from './primitives'
 import { dismissStaleAux, readStaleAuxDismissal, staleAuxFingerprint } from './stale-aux-dismissal'
-import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
 // the provider/model catalog loads, instead of collapsing to a centered
@@ -93,54 +100,6 @@ type SpeedTier = 'fast' | 'normal' | 'ultrafast'
 // and an empty `models` list — those need a setup step before a model exists.
 function isProviderReady(p?: ModelOptionProvider): boolean {
   return !!p && (p.authenticated !== false || (p.models?.length ?? 0) > 0)
-}
-
-// Built-in auxiliary tasks, in the order `_AUX_TASK_SLOTS` (hermes_cli/web_server_config.py)
-// serves them. Friendly labels and hints come from i18n `m.tasks`; raw task keys (vision,
-// mcp, …) are opaque to most users. Plugin-registered tasks are not listed here: the backend
-// appends them to `/api/model/auxiliary` with their own `label`/`hint` (see `auxTaskRows`).
-interface AuxTaskMeta {
-  key: string
-  /** Server-declared copy for a plugin task; built-ins resolve through i18n instead. */
-  label?: string
-  hint?: string
-  /** Plugin task that follows this slot until it is pinned itself. */
-  inheritFrom?: string
-}
-
-const AUX_TASKS: readonly AuxTaskMeta[] = [
-  { key: 'vision' },
-  { key: 'compression' },
-  { key: 'skills_hub' },
-  { key: 'approval' },
-  { key: 'mcp' },
-  { key: 'title_generation' },
-  { key: 'review' },
-  // Same three canonical slots the backend serves but the list below used to
-  // omit (#97297): triage_specifier, kanban_decomposer, profile_describer.
-  { key: 'triage_specifier' },
-  { key: 'kanban_decomposer' },
-  { key: 'profile_describer' },
-  { key: 'curator' }
-]
-
-// Rows to render: the built-ins above, then every task the backend reported that is not a
-// built-in — i.e. plugin-registered auxiliary tasks (PluginContext.register_auxiliary_task),
-// which arrive with the plugin's own label/hint and inherited base. Older backends never send
-// extra rows, so this is a no-op against them. Built-ins stay first so the layout is stable.
-export function auxTaskRows(tasks: readonly AuxiliaryTaskAssignment[] | undefined): AuxTaskMeta[] {
-  const builtin = new Set(AUX_TASKS.map(meta => meta.key))
-
-  const extra = (tasks ?? [])
-    .filter(entry => !builtin.has(entry.task))
-    .map(entry => ({
-      key: entry.task,
-      label: entry.label || entry.task,
-      hint: entry.hint || '',
-      inheritFrom: entry.inherit_from || undefined
-    }))
-
-  return extra.length ? [...AUX_TASKS, ...extra] : [...AUX_TASKS]
 }
 
 const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]
@@ -296,14 +255,6 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // place — mirrors the onboarding ApiKeyForm but scoped to the model picker.
   const [apiKeyDraft, setApiKeyDraft] = useState('')
   const [activating, setActivating] = useState(false)
-
-  // Deep link from the vision Capabilities detail (?tab=config:model&aux=vision):
-  // scroll the auxiliary task row into view and flash it once the list loads.
-  useDeepLinkHighlight({
-    elementId: task => `aux-task-${task}`,
-    param: 'aux',
-    ready: task => showAuxiliary && !loading && auxTaskRows(auxiliary?.tasks).some(meta => meta.key === task)
-  })
 
   // Every profile-scoped async here captures this and bails before writing back,
   // so a request in flight when the user switches profiles can't paint profile
@@ -610,12 +561,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     [m.loadFailed, scopeProfile, setCaughtError]
   )
 
-  const auxRows = useMemo(() => auxTaskRows(auxiliary?.tasks), [auxiliary])
-
-  const auxiliaryTaskLabel = useCallback(
-    (key: string) => m.tasks[key]?.label ?? auxRows.find(meta => meta.key === key)?.label ?? key,
-    [m.tasks, auxRows]
-  )
+  const { auxRows, auxiliaryTaskLabel } = useAuxTaskRows(auxiliary?.tasks, { loading, visible: showAuxiliary })
 
   const persistentStaleAux = useMemo<StaleAuxAssignment[]>(
     () => staleAuxAssignments(auxiliary?.tasks ?? [], mainModel?.provider ?? ''),
@@ -830,48 +776,13 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     [providers]
   )
 
-  const setAuxiliaryToMain = useCallback(
-    async (task: string) => {
-      if (!mainModel) {
-        return
-      }
-
+  const assignAuxiliary = useCallback(
+    async (task: string, route: Omit<ModelAssignmentRequest, 'scope' | 'task'>) => {
       setApplying(true)
       setError('')
 
       try {
-        await setModelAssignment(
-          {
-            model: mainModel.model,
-            provider: mainModel.provider,
-            scope: 'auxiliary',
-            task,
-            ...endpointForProvider(mainModel.provider)
-          },
-          scopeProfile
-        )
-        await refresh()
-      } catch (err) {
-        setCaughtError(err, m.loadFailed)
-      } finally {
-        setApplying(false)
-      }
-    },
-    [endpointForProvider, m.loadFailed, mainModel, refresh, scopeProfile, setCaughtError]
-  )
-
-  // An inheriting plugin slot pinned by the user goes back to following its base: "auto" on such a
-  // slot means "no preference here" (agent/auxiliary_client.py::_layer_over_inherited).
-  const followAuxiliaryBase = useCallback(
-    async (task: string) => {
-      setApplying(true)
-      setError('')
-
-      try {
-        await setModelAssignment(
-          { model: '', provider: 'auto', reasoning_effort: null, scope: 'auxiliary', task },
-          scopeProfile
-        )
+        await setModelAssignment({ ...route, scope: 'auxiliary', task }, scopeProfile)
         await refresh()
       } catch (err) {
         setCaughtError(err, m.loadFailed)
@@ -1176,13 +1087,6 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
               const current = auxiliary?.tasks.find(entry => entry.task === meta.key)
               const isAuto = !current || !current.provider || current.provider === 'auto'
               const isEditing = editingAuxTask === meta.key
-              const effective = current?.effective
-              const followsBase = isAuto && !!meta.inheritFrom
-
-              const effectiveRoute =
-                effective?.provider && effective.provider !== 'auto'
-                  ? `${effective.provider} · ${effective.model || m.providerDefault}`
-                  : m.autoUseMain
 
               return (
                 <div className="scroll-mt-6 rounded-lg" id={`aux-task-${meta.key}`} key={meta.key}>
@@ -1191,18 +1095,17 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                       !isEditing && (
                         <div className="flex shrink-0 items-center gap-1.5">
                           {meta.inheritFrom && !isAuto && (
-                            <Button
+                            <AuxFollowBaseButton
+                              baseLabel={auxiliaryTaskLabel(meta.inheritFrom)}
                               disabled={applying}
-                              onClick={() => void followAuxiliaryBase(meta.key)}
-                              size="sm"
-                              variant="text"
-                            >
-                              {m.followTask(auxiliaryTaskLabel(meta.inheritFrom))}
-                            </Button>
+                              onFollow={() => void assignAuxiliary(meta.key, AUX_FOLLOW_BASE)}
+                            />
                           )}
                           <Button
                             disabled={!mainModel || applying}
-                            onClick={() => void setAuxiliaryToMain(meta.key)}
+                            onClick={() =>
+                              mainModel && void assignAuxiliary(meta.key, auxMainRoute(mainModel, endpointForProvider))
+                            }
                             size="sm"
                             variant="text"
                           >
@@ -1289,26 +1192,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                       )
                     }
                     description={
-                      <span className="font-mono text-[0.68rem]">
-                        {followsBase
-                          ? `${m.inheritsFrom(auxiliaryTaskLabel(meta.inheritFrom ?? ''))} · ${effectiveRoute}`
-                          : isAuto
-                            ? m.autoUseMain
-                            : `${current.provider} · ${current.model || m.providerDefault}`}
-                        {!isAuto && current.base_url && (
-                          <span className="text-muted-foreground"> · {current.base_url}</span>
-                        )}
-                        {current?.reasoning_effort && (
-                          <span className="text-muted-foreground">
-                            {' · '}
-                            {current.reasoning_effort === 'none'
-                              ? `${m.reasoning} ${m.reasoningOff}`
-                              : isReasoningEffort(current.reasoning_effort)
-                                ? t.shell.modelOptions[current.reasoning_effort]
-                                : current.reasoning_effort}
-                          </span>
-                        )}
-                      </span>
+                      <AuxTaskRouteSummary
+                        current={current}
+                        inheritLabel={meta.inheritFrom ? auxiliaryTaskLabel(meta.inheritFrom) : undefined}
+                      />
                     }
                     title={
                       <span className="flex items-baseline gap-2">

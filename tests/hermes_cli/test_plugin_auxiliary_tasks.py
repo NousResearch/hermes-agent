@@ -178,6 +178,6 @@ def test_inheritance_cycle_does_not_recurse(aux_home, patched_manager, caplog):
     _register(patched_manager, "plug_b", inherit_from="plug_a")
     _register(patched_manager, "plug_a", inherit_from="plug_b", defaults={"timeout": 90})
 
-    with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+    with caplog.at_level(logging.WARNING, logger="agent.auxiliary_task_config"):
         assert resolve("plug_a")["timeout"] == 90
     assert "circular inherit_from" in caplog.text

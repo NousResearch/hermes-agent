@@ -864,42 +864,11 @@ class PluginContext:
         ``defaults``, then user config in ``auxiliary.<key>``). An unknown or self-referential
         ``inherit_from`` logs a warning and registers the task without inheritance.
         Raises ``ValueError`` for an empty/invalid key, a built-in key, or another plugin's key."""
-        me = self.manifest.name
-        if not key or not isinstance(key, str):
-            raise ValueError(f"Plugin '{me}' tried to register auxiliary task with invalid key {key!r}")
-        if not all(c.isalnum() or c == "_" for c in key):
-            raise ValueError(f"Plugin '{me}' auxiliary task key {key!r} "
-                             f"must contain only alphanumeric characters and underscores")
-        from hermes_cli.main_provider_setup import _AUX_TASKS as _BUILTIN_AUX_TASKS
-        builtin_aux_keys = {k for k, _name, _desc in _BUILTIN_AUX_TASKS}
-        if key in builtin_aux_keys:
-            raise ValueError(f"Plugin '{me}' cannot register auxiliary task {key!r} — that key is reserved "
-                             f"for a built-in task. Pick a plugin-namespaced key (e.g. '{me}_{key}').")
-        # Owner is the canonical id ``ctx.llm`` is bound to, so agent/plugin_llm.py can match it.
-        owner_id = self.plugin_id
+        from hermes_cli.plugins_aux_tasks import build_auxiliary_task_entry
         existing = self._manager._aux_tasks.get(key)
-        if existing is not None and existing.get("plugin") != owner_id:
-            raise ValueError(f"Plugin '{me}' cannot register auxiliary task {key!r} — already registered "
-                             f"by plugin '{existing.get('plugin')}'")
-        # A bad base degrades to "no inheritance" rather than failing the whole plugin load; a
-        # self-reference would otherwise only surface at read time, as a cycle.
-        if inherit_from is not None and (
-                not isinstance(inherit_from, str) or inherit_from == key
-                or (inherit_from not in builtin_aux_keys and inherit_from not in self._manager._aux_tasks)):
-            logger.warning("Plugin '%s' auxiliary task %r: ignoring inherit_from=%r — not a built-in "
-                           "auxiliary task or one already registered by a plugin", me, key, inherit_from)
-            inherit_from = None
-        # Plugin owns the schema; routing fields are guaranteed present so consumers don't crash.
-        # With inheritance the base supplies the shape, so only the plugin's own overrides go here.
-        task_defaults = (dict(defaults or {}) if inherit_from else
-                         {"provider": "auto", "model": "", "base_url": "", "api_key": "", "timeout": 60,
-                          "extra_body": {}, **(defaults or {})})
-        entry = {
-            "key": key, "display_name": display_name, "description": description,
-            "defaults": task_defaults,
-            "inherit_from": inherit_from,
-            "plugin": owner_id, "plugin_key": owner_id,
-        }
+        entry = build_auxiliary_task_entry(
+            self.manifest.name, self.plugin_id, key, display_name=display_name, description=description,
+            defaults=defaults, inherit_from=inherit_from, registered=self._manager._aux_tasks)
         return self._register_entry("auxiliary_task", key, self._manager._aux_tasks, entry,
                                     "Plugin %s registered auxiliary task: %s (%s)", key, display_name,
                                     previous=existing)

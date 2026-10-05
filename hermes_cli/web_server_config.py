@@ -567,7 +567,7 @@ def _plugin_aux_tasks() -> List[Dict[str, Any]]:
         from hermes_cli.plugins import get_plugin_auxiliary_tasks
         return [dict(entry) for entry in get_plugin_auxiliary_tasks()
                 if entry.get("key") and entry["key"] not in _AUX_TASK_SLOTS]
-    except Exception:
+    except Exception:  # health: allow BLE001 -- plugin discovery must never break the built-in slots
         _log.debug("plugin auxiliary task lookup failed", exc_info=True)
         return []
 

@@ -229,10 +229,14 @@ class RunawayStreamWatch:
 # A fourth shape is symbol-level: one symbol token ("=") gets wedged between phrases until
 # it floods the channel, escalating into pure "= = =" runs (a live session, October 2026:
 # the "=" share climbed 0.45 -> 0.75 over ten minutes, then a 5,338-token paste of nothing
-# but "= "). No character run forms and the word rules skip symbols entirely. The symbol
-# rule below trips only when the "=" share AND its adjacent-pair count rise together —
-# markdown tables ("|" dominated, up to ~48% of tokens), bullet lists ("-"), and equation
-# dumps (never adjacent "=") all stay silent on the same 149k-message corpus.
+# but "= "). An escalated variant drops the runs and wedges "=" between nearly every phrase
+# pair instead — "= the = classic = kwallet = unlock" — so there are NO adjacent "=" pairs
+# at all and only the sandwich rate betrays it (a word directly between two "=" tokens,
+# 65%+ of the "="s while streaming). No character run forms and the word rules skip symbols
+# entirely. The symbol rules below trip only when the "=" share and a repeat signal rise
+# together — markdown tables ("|" dominated, up to ~48% of tokens), bullet lists ("-"),
+# equation dumps (never adjacent "=", never sandwiched), and analysis quoting dense
+# samples all stay silent on the same 165k-message corpus.
 THINKING_LOOP_TRUNCATED = "[thinking truncated: repetition loop detected]"
 
 _BRACKET_RUN_CHARS = frozenset("「」『』")
@@ -295,6 +299,18 @@ _SYM_MIN_TOKENS = 50
 _SYM_RUN_MIN = 30
 _SYM_START_COUNT = 10
 
+# The "= word =" sandwich (the escalated variant): "=" wedged between nearly every phrase pair
+# — "= the = classic = kwallet = unlock" — with NO adjacent "=" pairs at all, so the pair
+# gate above stays silent. What separates it from legitimate "=" text (templates, config
+# dumps, equation chains — none of which place a word directly between two "=" tokens) is the
+# sandwich rate measured AS IT STREAMS: on the full corpus, 69 degenerate rows reach >= 0.65
+# while the highest any healthy row (or an analysis message quoting a dense sample) reaches
+# at the same conditions is 0.625. 245 rows corpus-wide can even reach 10 sandwiches; the
+# ratio gate is what keeps every non-degenerate one silent.
+_SYM_SANDWICH_MIN = 10
+_SYM_SANDWICH_RATIO = 0.65
+_SYM_FRAC_MIN_SANDWICH = 0.10
+
 
 def _sym_token(raw: str):
     """The raw token when it is a short symbol-only token (never a word), else None."""
@@ -308,7 +324,7 @@ class ReasoningLoopGuard:
 
     Detects four shapes as deltas arrive: repeated character runs (「「「…), quote litter
     (openers wedged between tokens), word-level loops ("the the the …"), and symbol loops
-    ("= = =" flooding a channel). Feed each reasoning delta in order (stop once ``tripped``
+    ("= = =" or "= word =" flooding a channel). Feed each reasoning delta in order (stop once ``tripped``
     is True). ``trip_index`` is the offset — in the concatenation of everything fed — where
     the degenerate region starts; callers cut accumulators there so display, storage and
     reasoning echo all stop replaying the loop. O(chars + tokens), no rescans.
@@ -320,7 +336,8 @@ class ReasoningLoopGuard:
         "_word_tail", "_word_last", "_word_run", "_word_run_start", "_word_pairs",
         "_word_count", "_word_max", "_word_counts",
         "_sym_total", "_sym_last", "_sym_run", "_sym_run_start", "_sym_eq",
-        "_sym_eq_pairs", "_sym_eq_first", "_sym_eq_pile",
+        "_sym_eq_pairs", "_sym_eq_first", "_sym_eq_pile", "_sym_sandwich",
+        "_tk_p1", "_tk_p2",
     )
 
     def __init__(self) -> None:
@@ -352,6 +369,9 @@ class ReasoningLoopGuard:
         self._sym_eq_pairs = 0
         self._sym_eq_first = -1
         self._sym_eq_pile = -1
+        self._sym_sandwich = 0
+        self._tk_p1 = ""
+        self._tk_p2 = ""
 
     def feed(self, text: str) -> bool:
         if self.tripped or not isinstance(text, str) or not text:
@@ -420,6 +440,7 @@ class ReasoningLoopGuard:
             word = _word_token(raw)
             if word is not None:
                 self._sym_last, self._sym_run = "", 0
+                self._tk_p2, self._tk_p1 = self._tk_p1, "w"
                 self._word_count += 1
                 seen = self._word_counts.get(word, 0) + 1
                 self._word_counts[word] = seen
@@ -453,6 +474,7 @@ class ReasoningLoopGuard:
             if sym is None:
                 self._word_last, self._word_run = "", 0
                 self._sym_last, self._sym_run = "", 0
+                self._tk_p2, self._tk_p1 = self._tk_p1, "x"
                 continue
             self._word_last, self._word_run = "", 0
             prev_sym = self._sym_last
@@ -463,12 +485,15 @@ class ReasoningLoopGuard:
             self._sym_total += 1
             if sym == _SYM_LITTER_TOKEN:
                 self._sym_eq += 1
+                if self._tk_p1 == "w" and self._tk_p2 == "=":
+                    self._sym_sandwich += 1
                 if self._sym_eq == 1:
                     self._sym_eq_first = base + start
                 if self._sym_eq == _SYM_START_COUNT:
                     self._sym_eq_pile = base + start
                 if prev_sym == _SYM_LITTER_TOKEN:
                     self._sym_eq_pairs += 1
+            self._tk_p2, self._tk_p1 = self._tk_p1, ("=" if sym == _SYM_LITTER_TOKEN else "x")
             if self._sym_run >= _SYM_RUN_MIN:
                 self._trip(self._sym_run_start, sym, self._sym_run)
                 return True
@@ -480,6 +505,15 @@ class ReasoningLoopGuard:
             ):
                 at = self._sym_eq_pile if self._sym_eq_pile >= 0 else self._sym_eq_first
                 self._trip(max(0, at), sym, self._sym_eq)
+                return True
+            if (
+                self._sym_sandwich >= _SYM_SANDWICH_MIN
+                and self._sym_sandwich >= _SYM_SANDWICH_RATIO * self._sym_eq
+                and tokens_seen >= _SYM_MIN_TOKENS
+                and self._sym_eq >= _SYM_FRAC_MIN_SANDWICH * tokens_seen
+            ):
+                at = self._sym_eq_pile if self._sym_eq_pile >= 0 else self._sym_eq_first
+                self._trip(max(0, at), "sandwich", self._sym_sandwich)
                 return True
         return False
 

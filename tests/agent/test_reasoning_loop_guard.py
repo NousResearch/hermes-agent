@@ -253,3 +253,30 @@ def test_symbol_rule_chunked_feeding_matches_single_feed():
             break
     assert tripped is True
     assert chunked.trip_index == single.trip_index
+
+
+
+def test_symbol_sandwich_litter_is_cut():
+    # The escalated variant: "=" wedged between phrase pairs — "= the = classic = kwallet" —
+    # with no adjacent "=" at all, so only the sandwich rate can catch it.
+    text = (
+        "= the = state = the = check = the = run = the = pid = the = window = the = tray "
+        "= the = dock = the = bar = the = tab = the = file = the = path = the = name = the = code "
+    ) * 2
+    guard = ReasoningLoopGuard()
+    assert guard.feed(text) is True
+    cleaned = sanitize_degenerate_reasoning(text)
+    assert cleaned.endswith(THINKING_LOOP_TRUNCATED)
+
+
+def test_symbol_sandwich_ignores_chains_and_templates():
+    # "a = b = c" chains (single-char operands are not words) and "| field = " templates
+    # never build the "= word =" sandwich rate the degenerate shape does.
+    chain = "a = b = c and d = e = f plus g = h = i " * 8
+    template = (
+        "| battle_name = \n| campaign = \n| colour_scheme = background:#ffccaa\n"
+        "| image = \n| caption = \n| conflict = \n"
+    ) * 6
+    for text in (chain, template):
+        guard = ReasoningLoopGuard()
+        assert guard.feed(text) is False

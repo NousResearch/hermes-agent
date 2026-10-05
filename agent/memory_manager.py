@@ -14,6 +14,7 @@ import re
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, wait
+from copy import deepcopy
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
@@ -455,9 +456,10 @@ class MemoryManager:
         clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
         if not clean_user_content or not self._owner_allows("sync_turn"):
             return
-        clean_user_content, assistant_content, redacted_messages = _redact_for_provider(
-            clean_user_content, assistant_content, messages)
-        optional_kwargs = {"messages": redacted_messages, "turn_author": turn_author}
+        clean_user_content, assistant_content, redacted_messages, snapshot_user_content = _redact_for_provider(
+            clean_user_content, assistant_content, messages, user_content)
+        # Capture authors before enqueue; a later turn may reuse the caller dict.
+        optional_kwargs = {"messages": redacted_messages, "turn_author": deepcopy(turn_author)}
 
         snapshot_providers = [p for p in providers
                               if getattr(p, "sync_turn_snapshot_version", 0) == 1]
@@ -465,7 +467,7 @@ class MemoryManager:
         if snapshot_providers:
             from agent.memory_sync_snapshot import snapshot_completed_turn
             snapshot = snapshot_completed_turn(
-                messages, session_id=session_id, user_content=user_content,
+                redacted_messages, session_id=session_id, user_content=snapshot_user_content,
                 assistant_content=assistant_content)
 
         def _sync(provider: MemoryProvider) -> None:
@@ -476,7 +478,8 @@ class MemoryManager:
                 if keyword == "messages" and provider in snapshot_providers:
                     kwargs[keyword] = snapshot
                 else:
-                    kwargs[keyword] = value
+                    # Each provider owns its copy; mutations cannot change other deliveries.
+                    kwargs[keyword] = deepcopy(value) if keyword == "turn_author" else value
             self._call_unless_stalled(
                 provider, lambda: provider.sync_turn(clean_user_content, assistant_content, **kwargs))
 

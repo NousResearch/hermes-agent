@@ -1953,7 +1953,7 @@ class MatrixAdapter(BasePlatformAdapter):
         for room_id, room_data in rooms_join.items():
             if room_id in self._warned_encrypted_drop_rooms:
                 continue
-            events = ((room_data or {}).get("timeline", {}) or {}).get("events", ()) or ()
+            events = room_data.get("timeline", {}).get("events", [])
             if any(isinstance(ev, dict) and ev.get("type") == "m.room.encrypted" for ev in events):
                 self._warned_encrypted_drop_rooms.add(room_id)
                 if self._e2ee_mode == "off":

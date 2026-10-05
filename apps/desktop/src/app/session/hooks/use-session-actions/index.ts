@@ -113,7 +113,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { clearSessionControl } from '@/store/session-control'
-import { $focusedStoredSessionId } from '@/store/session-focus'
+import { $focusedStoredSessionId, TILE_PANE_PREFIX } from '@/store/session-focus'
 import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
 import {
   beginSessionMutation,
@@ -505,6 +505,7 @@ export function useSessionActions({
   const transcriptHydrationByRuntimeRef = useRef(new Map<string, symbol>())
   const coldDisplayReadsRef = useRef(new Map<string, symbol>())
   const branchCreateFlightsRef = useRef(new Map<string, Promise<SessionCreateResponse>>())
+  const tileReplacementFlightsRef = useRef(new Map<string, Promise<boolean>>())
 
   // Stored id we just created/forked and navigated to. creatingSessionRef stays
   // true until routedSessionId + selection both agree on this id — clearing via
@@ -1238,7 +1239,7 @@ export function useSessionActions({
           await closeCreated.catch(() => undefined)
           notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
 
-          return
+          return null
         }
 
         markSessionCreatedThisRun(stored)
@@ -1280,11 +1281,74 @@ export function useSessionActions({
         if (listed) {
           broadcastSessionsChanged()
         }
+
+        return stored
       } catch (error) {
         notifyError(error, copy.createSessionFailed)
+
+        return null
       }
     },
     [copy, requestGateway, updateSessionState]
+  )
+
+  /** Replace the exact session tile that invoked `/new` while leaving the
+   * primary workspace and every sibling tab untouched. The replacement keeps
+   * the old tile's owner/scope and strip position; the old conversation remains
+   * recoverable through the normal closed-tab stack. */
+  const replaceSessionTileWithNew = useCallback(
+    async (runtimeId: string): Promise<boolean | null> => {
+      const tile = $sessionTiles.get().find(candidate => candidate.runtimeId === runtimeId)
+
+      if (!tile) {
+        return null
+      }
+
+      const inFlight = tileReplacementFlightsRef.current.get(tile.storedSessionId)
+
+      if (inFlight) {
+        return await inFlight
+      }
+
+      const replace = async (): Promise<boolean> => {
+        const oldPaneId = `${TILE_PANE_PREFIX}${tile.storedSessionId}`
+        const workspaceScope: SessionTileWorkspaceScope = {
+          ...(tile.ownerProfile ? { ownerProfile: tile.ownerProfile } : {}),
+          ...(tile.ownerRoute ? { ownerRoute: tile.ownerRoute } : {}),
+          workspaceMode: tile.workspaceMode ?? 'sessions',
+          ...(tile.workspaceOwnerKey ? { workspaceOwnerKey: tile.workspaceOwnerKey } : {})
+        }
+
+        const replacementId = await openNewSessionTile('center', {
+          anchor: oldPaneId,
+          before: oldPaneId,
+          listed: false,
+          ...(tile.ownerProfile ? { profile: tile.ownerProfile } : {}),
+          ...(tile.ownerRoute ? { route: tile.ownerRoute } : {}),
+          workspaceScope
+        })
+
+        if (!replacementId) {
+          return false
+        }
+
+        closeSessionTile(tile.storedSessionId)
+
+        return true
+      }
+
+      const flight = replace()
+      tileReplacementFlightsRef.current.set(tile.storedSessionId, flight)
+
+      try {
+        return await flight
+      } finally {
+        if (tileReplacementFlightsRef.current.get(tile.storedSessionId) === flight) {
+          tileReplacementFlightsRef.current.delete(tile.storedSessionId)
+        }
+      }
+    },
+    [openNewSessionTile]
   )
 
   const openSettings = useCallback(() => {
@@ -3536,6 +3600,7 @@ export function useSessionActions({
     openNewSessionTile,
     openSettings,
     removeSession,
+    replaceSessionTileWithNew,
     resumeSession,
     selectSidebarItem,
     startFreshSessionDraft,

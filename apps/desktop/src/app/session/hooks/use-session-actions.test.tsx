@@ -169,6 +169,7 @@ type HarnessHandle = Pick<
   | 'branchStoredSession'
   | 'createBackendSessionForSend'
   | 'openNewSessionTile'
+  | 'replaceSessionTileWithNew'
   | 'removeSession'
   | 'selectSidebarItem'
   | 'startFreshSessionDraft'
@@ -5943,6 +5944,105 @@ describe('openNewSessionTile workspace target', () => {
     setConnection(null)
     setSessions([])
     vi.restoreAllMocks()
+  })
+
+  it('replaces the invoking Bot Mode tile without resetting the primary workspace', async () => {
+    const route = { connectionId: 'local', mode: 'local' as const, profile: 'niki', targetProfile: 'niki' }
+
+    $sessionTiles.set([
+      {
+        anchor: 'workspace',
+        dir: 'center',
+        ownerRoute: route,
+        runtimeId: 'old-runtime',
+        storedSessionId: 'old-stored',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:local::niki'
+      }
+    ])
+
+    vi.mocked(requestGatewayForAgent).mockResolvedValue({
+      info: { cwd: '', model: 'profile-default-model', tools: {}, skills: {} },
+      session_id: 'new-runtime',
+      stored_session_id: 'new-stored'
+    } as never)
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await expect(handle!.replaceSessionTileWithNew('old-runtime')).resolves.toBe(true)
+
+    expect($sessionTiles.get()).toEqual([
+      expect.objectContaining({
+        ownerRoute: route,
+        runtimeId: 'new-runtime',
+        storedSessionId: 'new-stored',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:local::niki'
+      })
+    ])
+    expect(requestGateway).not.toHaveBeenCalledWith('session.create', expect.anything())
+  })
+
+  it('keeps the invoking tile when its replacement cannot be created', async () => {
+    $sessionTiles.set([
+      {
+        runtimeId: 'old-runtime',
+        storedSessionId: 'old-stored',
+        workspaceMode: 'sessions'
+      }
+    ])
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        throw new Error('create failed')
+      }
+
+      return {} as never
+    })
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await expect(handle!.replaceSessionTileWithNew('old-runtime')).resolves.toBe(false)
+    expect($sessionTiles.get()).toEqual([
+      expect.objectContaining({ runtimeId: 'old-runtime', storedSessionId: 'old-stored' })
+    ])
+  })
+
+  it('coalesces concurrent replacements of the same invoking tile', async () => {
+    $sessionTiles.set([
+      {
+        runtimeId: 'old-runtime',
+        storedSessionId: 'old-stored',
+        workspaceMode: 'sessions'
+      }
+    ])
+
+    const createReady = deferred<{ info: Record<string, unknown>; session_id: string; stored_session_id: string }>()
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return createReady.promise as never
+      }
+
+      return {} as never
+    })
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const first = handle!.replaceSessionTileWithNew('old-runtime')
+    const second = handle!.replaceSessionTileWithNew('old-runtime')
+
+    createReady.resolve({ info: {}, session_id: 'new-runtime', stored_session_id: 'new-stored' })
+
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true])
+    expect(requestGateway.mock.calls.filter(([method]) => method === 'session.create')).toHaveLength(1)
+    expect($sessionTiles.get()).toEqual([
+      expect.objectContaining({ runtimeId: 'new-runtime', storedSessionId: 'new-stored' })
+    ])
   })
 
   it('omits cwd for a Home tile even when project scope resolves to a repo', async () => {

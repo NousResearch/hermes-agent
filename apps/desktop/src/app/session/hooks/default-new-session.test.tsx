@@ -77,13 +77,17 @@ function mountActions() {
   return { ...result, navigate, requestGateway }
 }
 
-function mountSlashCommand(startFreshSessionDraft: () => void) {
+function mountSlashCommand(
+  startFreshSessionDraft: () => void,
+  startFreshSessionTile: (runtimeId: string) => Promise<boolean> = vi.fn(async () => false)
+) {
   return renderHook(() =>
     useSlashCommand({
       activeSessionIdRef: { current: 'existing-runtime' },
       busyRef: { current: false },
       selectedStoredSessionIdRef: { current: null },
       startFreshSessionDraft,
+      startFreshSessionTile,
       requestGateway: vi.fn(async () => ({})),
       copy: {},
       getRoutedStoredSessionId: () => null,
@@ -138,6 +142,28 @@ afterEach(() => {
 })
 
 describe('generic new session default routing', () => {
+  it('resets the invoking session tile instead of the primary workspace', async () => {
+    const startFreshSessionDraft = vi.fn()
+    const startFreshSessionTile = vi.fn(async () => true)
+    const slash = mountSlashCommand(startFreshSessionDraft, startFreshSessionTile)
+
+    await act(() => slash.result.current('/new', { sessionId: 'tile-runtime' }))
+
+    expect(startFreshSessionTile).toHaveBeenCalledWith('tile-runtime')
+    expect(startFreshSessionDraft).not.toHaveBeenCalled()
+  })
+
+  it('does not reset the primary workspace when tile replacement fails', async () => {
+    const startFreshSessionDraft = vi.fn()
+    const startFreshSessionTile = vi.fn(async () => false)
+    const slash = mountSlashCommand(startFreshSessionDraft, startFreshSessionTile)
+
+    await act(() => slash.result.current('/new', { sessionId: 'tile-runtime' }))
+
+    expect(startFreshSessionTile).toHaveBeenCalledWith('tile-runtime')
+    expect(startFreshSessionDraft).not.toHaveBeenCalled()
+  })
+
   it.each(
     [
       { name: 'primary window control', query: '/' },

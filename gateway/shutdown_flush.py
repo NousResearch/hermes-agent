@@ -232,7 +232,7 @@ def _store_holds_session(db, session_id: str) -> bool:
         return True
     try:
         return probe(session_id) is not None
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- a probe that raises must not be read as absence
         logger.debug("Cannot probe the store for session %s: %s", session_id, exc)
         return True
 

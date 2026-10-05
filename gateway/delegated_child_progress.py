@@ -36,14 +36,31 @@ def _redact(text: str) -> str:
     return redact_sensitive_text(text)
 
 
+# Model families with an established short spoken name. Any other or missing model is a
+# plain "Worker"; the head line still shows the exact model id beside the label.
+_FAMILY_NAMES = {"opus": "Opus", "sonnet": "Sonnet", "haiku": "Haiku", "fable": "Fable",
+                 "astra": "Astra", "sol": "Sol"}
+
+
+def _model_family(model: str) -> str:
+    """Readable family for a child model id; never invents a role or persona."""
+    for token in re.split(r"[-_.:/\s]+", str(model or "").lower()):
+        if token in _FAMILY_NAMES:
+            return _FAMILY_NAMES[token]
+    return "Worker"
+
+
 class _Child:
     __slots__ = ("key", "batch", "index", "count", "model", "goal", "tools", "tool_count", "status", "reason",
-                 "duration", "started")
+                 "duration", "started", "label")
 
-    def __init__(self, key: Tuple[str, str], batch: str, kw: Dict[str, Any], goal: str) -> None:
+    def __init__(self, key: Tuple[str, str], batch: str, kw: Dict[str, Any], goal: str, ordinal: int = 1) -> None:
         self.key, self.batch, self.goal = key, batch, goal
         self.index, self.count = int(kw.get("task_index") or 0), int(kw.get("task_count") or 1)
         self.model = str(kw.get("model") or "")
+        # Display name only; the raw (delegation_id, subagent_id) key stays the identity.
+        # The ordinal is this lane's start order, so labels stay distinct across batches.
+        self.label = f"{_model_family(self.model)} {ordinal}"
         self.tool_count, self.duration = 0, None
         self.status: Optional[str] = None
         self.started = time.monotonic()
@@ -103,14 +120,14 @@ class DelegatedChildProgress:
                 if key[0] not in self._batches:
                     self._batches.append(key[0])
                 goal = " ".join(str(kw.get("goal") or preview or "").split())
-                child = self._children[key] = _Child(key, key[0], kw, goal)
+                child = self._children[key] = _Child(key, key[0], kw, goal, ordinal=len(self._children) + 1)
                 self._append(self._head_line(child))
             elif child is None:
                 return
             elif event_type == "subagent.tool" and child.status is None and tool_name and tool_name != "_thinking":
                 child.tool_count = max(child.tool_count + 1, int(kw.get("tool_count") or 0))
                 line, block = self._tool_lines(tool_name, preview, args)
-                prefix = f"[{_no_mentions(key[1]) or 'child'}] "
+                prefix = f"[{_no_mentions(child.label)}] "
                 self._append((prefix + block[0], block[1]) if block else prefix + line)
             elif event_type == "subagent.complete" and child.status is None:
                 child.status = str(kw.get("status") or "completed")
@@ -242,8 +259,12 @@ class DelegatedChildProgress:
                         chat_id=self.metadata.get("thread_id") or self.chat_id,
                         message_id=self._msg_id, content=text, metadata=self.metadata)
                 else:
+                    # Every bubble is a standalone post in the progress destination (metadata
+                    # thread_id). Overflow never replies to the previous bubble: chaining made
+                    # the bot answer itself. reply_to is only the turn's routing anchor
+                    # (None on native Discord), identical for the head and continuations.
                     result = await self.adapter.send(chat_id=self.chat_id, content=text,
-                        reply_to=self._chunk_ids[-1] if self._chunk_ids else self.reply_to, metadata=self.metadata)
+                        reply_to=self.reply_to, metadata=self.metadata)
             except asyncio.CancelledError:
                 # Only a known head PATCH is idempotent. An unacknowledged POST
                 # (including the first bubble) must never be replayed at handover.
@@ -289,7 +310,7 @@ class DelegatedChildProgress:
         return max(1, limit - (64 if limit > 128 else 0)), len_fn
 
     def _head_line(self, child: _Child) -> str:
-        """One child's head line: status glyph, model, batch slot, goal, tool count, duration."""
+        """One child's head line: status glyph, label (exact model), batch slot, goal, tool count, duration."""
         from tools.delegate_tool_progress import _format_duration
         tags = []
         if len(self._batches) > 1:
@@ -297,7 +318,10 @@ class DelegatedChildProgress:
         if child.count > 1:
             tags.append(f"{child.index + 1}/{child.count}")
         glyph = _STATUS_GLYPHS.get(child.status, _FAILED) if child.status else _RUNNING
-        head = [f"{glyph} **{_no_mentions(child.model) or 'subagent'}**"]
+        name = f"{glyph} **{_no_mentions(child.label)}**"
+        if child.model:
+            name += f" ({_no_mentions(child.model)})"
+        head = [name]
         if tags:
             head.append(" · ".join(tags))
         if child.goal:

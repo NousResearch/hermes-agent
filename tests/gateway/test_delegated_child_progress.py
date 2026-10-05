@@ -245,3 +245,76 @@ async def test_non_retryable_edit_failure_stops_immediately_without_a_second_car
     await asyncio.sleep(0.5)
     assert owner._dead is True and adapter.calls == 1
     assert len(adapter.sent) == 1  # never a second card
+
+
+@pytest.mark.parametrize("model,family", [
+    ("claude-opus-5-5", "Opus"), ("anthropic/claude-opus-5-5", "Opus"), ("claude-fable-5-1", "Fable"),
+    ("gpt-6-astra-900k", "Astra"), ("gpt-6-sol-900k", "Sol"), ("claude-sonnet-4-5", "Sonnet"),
+    ("gpt-5.5", "Worker"), ("consolidated-model", "Worker"), ("", "Worker"), (None, "Worker"),
+])
+def test_model_family_is_readable_and_never_guesses(model, family):
+    assert dcp._model_family(model) == family
+
+
+@pytest.mark.asyncio
+async def test_labels_are_friendly_deterministic_and_distinct_across_batches():
+    adapter = _Adapter()
+    turn = _turn(adapter, asyncio.get_running_loop())
+    opus_a, legacy = _child(turn, 0, 2), _child(turn, 1, 2, model=None)
+    opus_b = _child(turn, 0, 1, deleg="deleg_b")  # second batch: same subagent_id "sa-0", same model
+    unknown = _child(turn, 1, 1, model="gpt-5.5", deleg="deleg_b")
+
+    def run():
+        for cb in (opus_a, legacy, opus_b, unknown):
+            cb("subagent.start", preview="g")
+        for cb in (opus_a, legacy, opus_b, unknown):
+            cb("tool.started", "read_file", "f.py", {"path": "f.py"})
+
+    await asyncio.to_thread(run)
+    owner = turn._child_progress
+    await _settle(adapter, lambda text: text.count("[") >= 4)
+    labels = {key: c.label for key, c in owner._children.items()}
+    # Raw identity is preserved internally; display labels are start-ordered and unique.
+    assert labels == {("deleg_a", "sa-0"): "Opus 1", ("deleg_a", "sa-1"): "Worker 2",
+                      ("deleg_b", "sa-0"): "Opus 3", ("deleg_b", "sa-1"): "Worker 4"}
+    card = adapter.latest()
+    for label in labels.values():
+        assert f"[{label}] " in card
+    assert "[sa-" not in card and "[child]" not in card
+    assert "**Opus 1** (claude-opus-5-5)" in card and "**Worker 4** (gpt-5.5)" in card
+    assert "**Worker 2** ·" in card  # legacy/missing model: no invented model text
+    # A late event re-uses the same lane's label (stable, not recomputed per event).
+    await asyncio.to_thread(lambda: opus_b("tool.started", "terminal", "ls", {"command": "ls"}))
+    await _settle(adapter, lambda text: text.count("[Opus 3]") == 2)
+
+
+@pytest.mark.asyncio
+async def test_overflow_continuations_never_reply_to_the_previous_bubble():
+    class _Refs(_Adapter):
+        def __init__(self):
+            super().__init__()
+            self.reply_tos, self.n = [], 0
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            self.reply_tos.append(reply_to)
+            self.n += 1
+            self.sent.append((chat_id, content, metadata))
+            return SendResult(success=True, message_id=f"m{self.n}")
+
+    for anchor in (None, "routing-anchor"):
+        adapter = _Refs()
+        turn = _turn(adapter, asyncio.get_running_loop(), mode="verbose")
+        turn._ctx._progress_reply_to = anchor
+        child = _child(turn)
+        command = "python check.py " + " ".join(f"--case=case{i:04d}" for i in range(230))
+        await asyncio.to_thread(lambda: (child("subagent.start", preview="g"),
+                                         child("tool.started", "terminal", "x", {"command": command})))
+        owner = turn._child_progress
+        deadline = asyncio.get_running_loop().time() + 5
+        while owner._cursor < len(owner._parts) and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.02)
+        assert len(adapter.sent) >= 2
+        # Head and every continuation carry only the turn's own anchor, never a prior bubble id.
+        assert adapter.reply_tos == [anchor] * len(adapter.sent)
+        assert all(meta == {"thread_id": "thread-1", "progress": True, "non_conversational": True}
+                   for _, _, meta in adapter.sent)

@@ -298,9 +298,33 @@ async def test_multiple_children_burst_whitespace_and_utf16():
         for cb in callbacks: cb('subagent.complete',status='completed')
     await asyncio.to_thread(burst); await flush(.6)
     assert w.bodies()==''.join(commands)
-    assert '[one]' in w.text() and '[two]' in w.text()
+    # Readable per-lane labels replace raw subagent ids in tool lines.
+    assert '[Opus 1]' in w.text() and '[Opus 2]' in w.text()
+    assert '[one]' not in w.text() and '[two]' not in w.text()
     assert w.text().count('✅')==2
     assert max(len(p['content'].encode('utf-16-le'))//2 for p in w.chat.values())<=2000
+
+
+@pytest.mark.asyncio
+async def test_progress_posts_are_standalone_but_ordinary_replies_still_reference():
+    """Head and every overflow continuation are plain posts in the thread, never replies to
+    the previous bubble; the quiet wire policy is unchanged; ordinary answers still reply."""
+    a,w=adapter(); t=turn(a,verbose=True); cb=relay(t,'sa-0-40fb0793')
+    await event(cb,'subagent.start')
+    await event(cb,'tool.started','terminal','run',{'command':command('ref')})
+    await event(cb,'tool.started','read_file','AFTER.py',{'path':'AFTER.py'})
+    await flush(.5)
+    assert len(w.sends)>=2  # a head plus at least one overflow continuation
+    assert w.bodies()==command('ref') and 'AFTER.py' in w.text()
+    for _,_,p in w.sends:
+        assert 'message_reference' not in p
+        assert p['allowed_mentions']['parse']==[] and p.get('flags',0)&4
+    assert all(chat=='555' for chat,_,_ in w.sends+w.edits)
+    # (The fixture's goal text is "<name> goal"; only the raw id *label* must be gone.)
+    assert '[Opus 1] ' in w.text() and '[sa-0-40fb0793]' not in w.text()
+    # Negative control: a normal (non-progress) reply keeps its reference.
+    await a.send('555','ordinary answer',reply_to='123')
+    assert str(w.sends[-1][2]['message_reference']['message_id'])=='123'
 
 
 @pytest.mark.asyncio

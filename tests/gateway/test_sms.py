@@ -196,6 +196,10 @@ class TestTwilioSignatureValidation:
         params = {"From": "+15551234567", "Body": "hello"}
         sig = _compute_twilio_signature("wrong_token", url, params)
         assert adapter._validate_twilio_signature(url, params, sig) is False
+        # A whitespace-only token reads as unset: signatures forged with the blank or empty key are refused.
+        blank = self._make_adapter(auth_token="   ")
+        assert not any(blank._validate_twilio_signature(url, params, _compute_twilio_signature(k, url, params))
+                       for k in ("   ", ""))
 
 
     def test_port_variant_443_matches_without_port(self):

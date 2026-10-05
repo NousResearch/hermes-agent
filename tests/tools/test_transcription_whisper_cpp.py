@@ -5,6 +5,7 @@ import threading
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -64,6 +65,7 @@ def test_local_resolution_is_passive_and_command_override_wins(tmp_path, monkeyp
     from tools import transcription_local as local
     from tools import transcription_tools as stt
     from tools import transcription_whisper_cpp as cpp
+    import pm
     from pm.packages import WhisperCppCpu
     from pm.store import ALL_TARGETS
 
@@ -71,7 +73,9 @@ def test_local_resolution_is_passive_and_command_override_wins(tmp_path, monkeyp
     assert [t for t in ALL_TARGETS if package.missing_reason(t) is None] == ["win32-arm64"]
     monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile with spaces"))
-    monkeypatch.setattr(cpp, "whisper_cpp_binary", lambda: tmp_path / "program files" / "whisper-cli.exe")
+    binary = tmp_path / "program files" / "whisper-cli.exe"
+    monkeypatch.setattr(pm, "installed_package",
+                        lambda name: SimpleNamespace(binary=binary) if name == "whispercpp-cpu" else None)
     monkeypatch.setattr(stt, "_HAS_FASTER_WHISPER", False)
     calls = []
     monkeypatch.setattr(cpp, "ensure_whisper_cpp_models", lambda model: calls.append(model))

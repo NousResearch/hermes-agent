@@ -7,7 +7,6 @@ import shlex
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-from hermes_platform.resolver.whisper import whisper_cpp_binary
 
 logger = logging.getLogger("tools.transcription_tools")
 
@@ -40,9 +39,13 @@ def _file_signature(path: Path, digest: str) -> tuple | None:
 
 
 def whisper_cpp_command() -> str | None:
-    binary = whisper_cpp_binary()
-    if binary is None:
+    import pm
+
+    # Passive: an engine the install does not carry is absent, never fetched here.
+    installed = pm.installed_package("whispercpp-cpu")
+    if installed is None:
         return None
+    binary = installed.binary
     models = _model_dir()
     # The existing command adapter tokenizes with shlex, including on Windows.
     quote = lambda path: shlex.quote(path.as_posix())

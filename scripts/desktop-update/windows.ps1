@@ -38,6 +38,7 @@
 #     -MarkerOp reclaim|withdraw -InstallRoot <root> [-DesktopPid P] [-HandoffRun R]
 #   prints ONE line (absent | reclaimed | live <pid> | busy | withdrawn |
 #   taken <pid> | foreign) and exits 0; 64 on bad usage.
+#   (-MarkerOp custody -CustodyOf <pid> is internal: Start-MarkerCustodian.)
 #
 # SAFETY POSTURE: both preflight gates FAIL CLOSED. A Desktop that never
 # exits, or a venv shim that never unlocks, aborts the hand-off without
@@ -74,7 +75,8 @@ param(
     [switch]$SelfTestMarker,
     [switch]$SelfTestWorkingDirectory,
     [string]$HandoffRun = "",
-    [string]$MarkerOp = ""
+    [string]$MarkerOp = "",
+    [int]$CustodyOf = 0
 )
 
 if ($MarkerOp -and -not $InstallRoot) {
@@ -120,6 +122,7 @@ try { . (Join-Path $PSScriptRoot 'marker.ps1') } catch {
 }
 
 # Helper op (SPEC 6): one verdict line, before any UI, result or relaunch.
+if ($MarkerOp -ceq 'custody') { Invoke-MarkerCustody $CustodyOf; exit 0 }   # Start-MarkerCustodian's watcher
 if ($MarkerOp) { exit (Invoke-MarkerOpCli $MarkerOp $DesktopPid $HandoffRun) }
 
 # The Desktop's identity is pinned now: a reused pid later is not "still open".
@@ -1490,6 +1493,7 @@ try {
         $finalMsg = "marker self-test complete"
         exit 0
     }
+    Start-MarkerCustodian
 
     # StartAssigned passes a null CreateProcess currentDirectory, so children
     # inherit the hand-off process directory rather than PowerShell's $PWD.

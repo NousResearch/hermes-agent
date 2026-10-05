@@ -35,6 +35,7 @@ $script:MarkerClaim = "none"    # claimed | adopted | refused
 $script:MarkerBlocker = 0
 $script:MarkerOwnCtText = $null
 $script:MarkerLastHeartbeat = $null
+$script:MarkerCustodian = $null     # the watcher process Start-MarkerCustodian started
 $script:MarkerReleaseWaited = $false   # the R6 wait ran (windows.ps1 re-stamps the result after it)
 $script:StartedAt = $null
 $script:MarkerRunPattern = '\A[A-Za-z0-9._-]{1,128}\z'

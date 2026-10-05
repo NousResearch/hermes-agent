@@ -30,6 +30,7 @@ import pytest
 # failing collection on Windows
 fcntl = pytest.importorskip("fcntl")  # windows-footgun: ok
 
+from tests.scripts.desktop_update.legacy_desktop_reader import legacy_read
 from tests.scripts.desktop_update.lineage_rule_cases import ENV_CASES, RULE_CASES
 from tests.scripts.desktop_update.lineage_rule_cases import FACTS as LINEAGE_FACTS
 from tests.scripts.desktop_update.test_desktop_update_posix_marker import POSIX, _calls, _ct, _install
@@ -534,23 +535,6 @@ def test_line_two_is_refreshed_only_while_the_claim_is_still_ours(tmp_path, proc
 
 # ── old packaged Desktop after the orchestrator dies ────────────────────────
 
-LEGACY_READER = Path(__file__).resolve().parents[2] / "fixtures" / "legacy_desktop" / "update-marker-be3fd671.mts"
-
-
-def _legacy_read(home: Path) -> dict:
-    """The exact reader an old packaged Desktop runs at boot: line 1 dead or line 2 past 20
-    minutes => it unlinks the marker and starts its backend."""
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node is needed to run the shipped Desktop reader")
-    code = (f"import fs from 'fs'; import {{ readLiveUpdateMarker }} from {json.dumps(LEGACY_READER.as_uri())}; "
-            f"const live = readLiveUpdateMarker(process.argv[1]); "
-            f"console.log(JSON.stringify({{ live, kept: fs.existsSync(process.argv[1] + '/.hermes-update-in-progress') }}))")
-    out = subprocess.run([node, "--input-type=module", "-e", code, str(home)], capture_output=True, text=True,
-                         encoding="utf-8", timeout=60)
-    assert out.returncode == 0, out.stderr
-    return json.loads(out.stdout.strip().splitlines()[-1])
-
 
 def test_old_desktop_stays_parked_after_the_orchestrator_is_killed_while_the_update_holds_the_lock(tmp_path):
     """SIGKILL the hand-off once its delegate (`hermes update`) runs and a completion survivor holds
@@ -576,7 +560,7 @@ def test_old_desktop_stays_parked_after_the_orchestrator_is_killed_while_the_upd
         for phase in ("delegate", "survivor"):
             for _ in range(3):
                 time.sleep(1.5)
-                seen = _legacy_read(home)
+                seen = legacy_read(home)
                 assert seen["live"] is not None and seen["kept"], (phase, seen)
             if phase == "delegate":
                 hold.touch()
@@ -593,4 +577,4 @@ def test_old_desktop_stays_parked_after_the_orchestrator_is_killed_while_the_upd
     while marker.exists():
         assert time.monotonic() < deadline, marker.read_text(encoding="utf-8-sig")
         time.sleep(0.1)
-    assert _legacy_read(home)["live"] is None
+    assert legacy_read(home)["live"] is None

@@ -4,9 +4,9 @@ A hidden assistant row still reaches the provider as assistant content on replay
 Before the wording change it carried ``[response interrupted]`` — a short
 natural-language phrase in the model's own prior turn, which the model reproduces
 verbatim (clean ``finish_reason=stop`` answering an ordinary instruction with just
-the placeholder). The prep filter must retire rows carrying a pre-change spelling,
-while keeping the row whenever removing it would form ``tool -> user`` — the strict
-provider failure ``close_interrupted_tool_sequence`` exists to prevent (#48879).
+the placeholder). The prep filter neutralises (never drops) hidden rows carrying a
+pre-change spelling on a copy: removal could form ``tool -> user`` (#48879) or a
+``user -> user`` pair that repair merges.
 """
 
 LEGACY = "[response interrupted]"
@@ -41,10 +41,8 @@ def _prepare(tmp_path, monkeypatch, messages):
         agent._session_db.close()
 
 
-def _hidden_row(text, *, content="", api_content=None):
-    row = {"role": "assistant", "content": content, "display_kind": "hidden"}
-    row["api_content"] = api_content if api_content is not None else text
-    return row
+def _hidden_row(text):
+    return {"role": "assistant", "content": "", "display_kind": "hidden", "api_content": text}
 
 
 def test_tool_tail_row_is_kept_and_neutralised(tmp_path, monkeypatch):

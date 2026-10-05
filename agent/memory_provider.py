@@ -153,7 +153,8 @@ class MemoryProvider(ABC):
         enqueue-time provenance; it does not certify persistence. Verify exact DB
         rows and boundaries before using evidence, including delayed historical turns.
         Ordinary user/assistant capture must continue when context is None.
-        ``turn_author`` (``{"id", "name", "is_bot"}``) identifies who wrote the user side;
+        ``turn_author`` (``{"id", "name", "is_bot"}``) is detached before enqueue
+        and copied per provider. It identifies who wrote the user side;
         the manager sends it only to signatures that accept it.
         """
 

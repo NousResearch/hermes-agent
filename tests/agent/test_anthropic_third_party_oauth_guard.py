@@ -182,7 +182,6 @@ class TestOAuthFlagOnRefresh:
             aux.clear_runtime_main()
 
 
-
 class TestOAuthFlagOnCredentialSwap:
     """Site 4 — _swap_credential (credential pool rotation)."""
 

@@ -153,9 +153,13 @@ def _approx_tokens(text: str) -> int:
 
 
 def _head_within_budget(text: str, budget: int) -> str:
-    """Longest prefix of ``text`` whose ``_approx_tokens`` fits ``budget``. A plain ``budget * 4`` char
-    slice would keep ~2x the budget of Cyrillic and ~4x of CJK; ASCII still gets ``budget * 4`` chars."""
-    lo, hi = 0, min(len(text), budget * 4)  # every char costs >= 1/4 token
+    """Longest prefix of ``text`` whose ``_approx_tokens`` fits ``budget``. A plain ``budget * CHARS_PER_TOKEN``
+    char slice would keep ~2x the budget of Cyrillic and ~4x of CJK; ASCII still gets that many chars."""
+    from agent.model_metadata import CHARS_PER_TOKEN
+    head = text[:max(0, budget) * CHARS_PER_TOKEN]  # every char costs >= 1/CHARS_PER_TOKEN token
+    if head.isascii():  # ASCII costs exactly ceil(len / CHARS_PER_TOKEN): the cap already fits
+        return head
+    lo, hi = 0, len(head)
     while lo < hi:
         mid = (lo + hi + 1) // 2
         if _approx_tokens(text[:mid]) <= budget:

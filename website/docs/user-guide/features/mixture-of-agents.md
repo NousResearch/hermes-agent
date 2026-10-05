@@ -63,6 +63,13 @@ For each main model call when provider `moa` is selected, Hermes:
 6. if the aggregator calls tools, Hermes executes those tools normally;
 7. on the next model iteration, the same MoA process runs again over the updated conversation, including tool results.
 
+### Native provider adapters
+
+Reference slots and the aggregator can use native provider clients, including
+Codex/OpenAI Responses. A successful final answer does not by itself confirm that
+MoA ran: check the advisor outcomes and acting provider, because recovery can use
+a standalone fallback model.
+
 Because MoA is selected through the normal model system, it composes automatically with `/goal`, gateway sessions, TUI sessions, and Desktop chat.
 
 ## Configure presets

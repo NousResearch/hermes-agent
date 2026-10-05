@@ -20,6 +20,7 @@ from dataclasses import KW_ONLY, dataclass, replace
 from types import SimpleNamespace
 from typing import Any
 
+from agent.async_stream import coerce_sync_stream
 from agent.auxiliary_client import call_llm
 from agent.message_content import flatten_message_text
 from agent.moa_alternation import destination_key, is_role_alternation_rejection, merge_same_role_messages
@@ -1242,6 +1243,9 @@ class MoAChatCompletions:
             )
             agg_messages = retry_messages
             agg_response = send(messages=agg_messages)
+        if stream:
+            # Codex's auxiliary fast path can bypass the inner stream adapter.
+            agg_response = coerce_sync_stream(agg_response)
         if trace is not None:
             # Trace the exact aggregator INPUT as sent (persisted copy redacted; live input raw).
             trace["aggregator_input_messages"] = (

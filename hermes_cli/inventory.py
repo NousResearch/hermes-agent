@@ -78,13 +78,16 @@ def build_models_payload(
     capabilities: bool = False, featured: bool = False, force_fresh_nous_tier: bool = False,
     refresh: bool = False, probe_custom_providers: bool = True, probe_current_custom_provider: bool = False,
     for_picker: bool = False, max_models: int | None = None, non_blocking_catalogs: bool = False,
+    fast_custom_probe: bool | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer needs. ``explicit_only`` keeps
     only providers the user explicitly configured — hides ambient/auto-seeded credentials from
     desktop chat pickers. ``pricing_cache_only``: with ``pricing``, use only values already resident
     in process caches (normal picker opens, while a background worker warms cold endpoints).
     ``non_blocking_catalogs``: provider catalogs come from the disk cache only — a degraded provider
-    cannot stall the response (GUI picker opens)."""
+    cannot stall the response (GUI picker opens). ``fast_custom_probe`` overrides the
+    custom-endpoint discovery budget ``for_picker`` otherwise implies (1.5s vs 5s) — ``None`` keeps
+    the coupling, ``False`` retains the full 5s budget (#103843)."""
     from hermes_cli.model_switch import list_authenticated_providers
 
     rows = list_authenticated_providers(
@@ -94,7 +97,7 @@ def build_models_payload(
         max_models=max_models, refresh=refresh, probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider, for_picker=for_picker,
         excluded_providers=ctx.excluded_providers or [],
-        non_blocking_catalogs=non_blocking_catalogs,
+        non_blocking_catalogs=non_blocking_catalogs, fast_custom_probe=fast_custom_probe,
     )
 
     # Managed local runtime: staged GGUFs are selectable like any provider's models, but
@@ -228,12 +231,18 @@ def build_model_options_payload(
 
     A normal open (``refresh=False``) is a READ path: provider catalogs come from the disk cache
     only and stale/missing ones warm in the background, so a degraded provider (hanging endpoint,
-    failed auth probe) delays neither the other providers' rows nor the response (#114215)."""
+    failed auth probe) delays neither the other providers' rows nor the response (#114215).
+
+    ``for_picker=True`` keeps providers whose credential pool is entirely rate-limited visible:
+    these are human-facing pickers, and hiding a temporarily exhausted pool makes providers vanish
+    mid-session even though another model under the same provider may still work (same contract
+    as ``/model`` and the aux pickers, #66584 / #66624). Visibility only: ``fast_custom_probe=False``
+    keeps the live probe of the current custom endpoint on its full 5s discovery budget."""
     refresh = bool(refresh)
     payload = build_models_payload(
         ctx, explicit_only=bool(explicit_only), include_unconfigured=bool(include_unconfigured),
         picker_hints=True, canonical_order=True, pricing=True, pricing_cache_only=not refresh,
-        capabilities=True, featured=True,
+        capabilities=True, featured=True, for_picker=True, fast_custom_probe=False,
         refresh=refresh, probe_custom_providers=refresh, probe_current_custom_provider=not refresh,
         non_blocking_catalogs=not refresh,
     )

@@ -2008,12 +2008,19 @@ def _deliver_result(
 
     from gateway.config import load_gateway_config
 
-    # Wrap with header/footer unless cron.wrap_response: false.
+    # Wrap with header/footer unless cron.wrap_response: false; cron.wrap_footer: false keeps
+    # the header but drops the "To stop or manage this job" footer; cron.wrap_style: markdown
+    # renders the header labels as inline code with the job name in bold.
     wrap_response = True
+    wrap_footer = True
+    wrap_style = "plain"
     user_cfg = None
     with contextlib.suppress(Exception):
         user_cfg = _sched.load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+        cron_cfg = user_cfg.get("cron", {}) or {}
+        wrap_response = cron_cfg.get("wrap_response", True)
+        wrap_footer = cron_cfg.get("wrap_footer", True)
+        wrap_style = cron_cfg.get("wrap_style", "plain")
     # Mark live sends FINAL so the platform pushes them (Telegram "important" mode mutes otherwise).
     notify_delivery = _cron_delivery_notify_enabled(user_cfg)
     # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);
@@ -2021,14 +2028,26 @@ def _deliver_result(
     unverified_targets: list = []
     if wrap_response:
         task_name = job.get("name", job["id"])
-        delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job.get('id', '')})\n"
-            f"-------------\n\n"
-            f"{content}\n\n"
-            "To stop or manage this job, send me a new message "
-            f"(e.g. \"stop reminder {task_name}\")."
-        )
+        if wrap_style == "markdown":
+            # Code-styled labels, bold name; adapters render or strip the markdown natively.
+            delivery_content = (
+                f"`Cronjob:` **{task_name}**\n"
+                f"`(job_id: {job.get('id', '')})`\n"
+                f"`-------------`\n\n"
+                f"{content}"
+            )
+        else:
+            delivery_content = (
+                f"Cronjob Response: {task_name}\n"
+                f"(job_id: {job.get('id', '')})\n"
+                f"-------------\n\n"
+                f"{content}"
+            )
+        if wrap_footer:
+            delivery_content += (
+                "\n\nTo stop or manage this job, send me a new message "
+                f"(e.g. \"stop reminder {task_name}\")."
+            )
     else:
         delivery_content = content
 

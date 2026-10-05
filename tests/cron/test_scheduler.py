@@ -471,6 +471,79 @@ class TestDeliverResultWrapping:
         voice_call = adapter.send_voice.call_args
         assert voice_call[1]["audio_path"] == str(media_path)
 
+
+class TestDeliverResultWrapFooter:
+    """cron.wrap_footer controls only the "To stop or manage this job" footer;
+    the header stays governed by cron.wrap_response."""
+
+    _FOOTER = "To stop or manage this job"
+
+    def _sent_text(self, cron_cfg):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        send = AsyncMock(return_value={"success": True})
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": cron_cfg}), \
+             patch("tools.send_message_tool._send_to_platform", new=send):
+            job = {
+                "id": "skin-1",
+                "name": "skincare",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            assert _deliver_result(job, "🔧 marker\nApply SPF.") is None
+        send.assert_called_once()
+        return send.call_args[0][3]
+
+    _HEADER = "Cronjob Response: skincare\n(job_id: skin-1)\n-------------\n\n"
+
+    def test_default_keeps_header_and_footer(self):
+        text = self._sent_text({})
+        assert text.startswith(self._HEADER)
+        assert text.endswith('(e.g. "stop reminder skincare").')
+
+    def test_wrap_footer_false_keeps_header_drops_footer(self):
+        text = self._sent_text({"wrap_footer": False})
+        assert text == self._HEADER + "🔧 marker\nApply SPF."
+        assert self._FOOTER not in text
+
+    def test_wrap_response_false_still_strips_everything(self):
+        text = self._sent_text({"wrap_response": False, "wrap_footer": True})
+        assert text == "🔧 marker\nApply SPF."
+
+    def test_markdown_style_header(self):
+        text = self._sent_text({"wrap_footer": False, "wrap_style": "markdown"})
+        assert text == (
+            "`Cronjob:` **skincare**\n`(job_id: skin-1)`\n`-------------`\n\n"
+            "🔧 marker\nApply SPF."
+        )
+
+    def test_markdown_style_yuanbao_and_compressor(self):
+        from agent.context_compressor import _synthetic_user_row
+        from gateway.platforms.yuanbao import MessageSender
+
+        for cfg in ({"wrap_style": "markdown"}, {"wrap_style": "markdown", "wrap_footer": False}):
+            text = self._sent_text(cfg)
+            assert MessageSender.strip_cron_wrapper(text) == "🔧 marker\nApply SPF."
+            assert _synthetic_user_row(text)
+
+    def test_yuanbao_strips_header_only_wrapper(self):
+        from gateway.platforms.yuanbao import MessageSender
+
+        body = "🔧 marker\nApply SPF."
+        header_only = self._sent_text({"wrap_footer": False})
+        full = self._sent_text({})
+        assert MessageSender.strip_cron_wrapper(header_only) == body
+        assert MessageSender.strip_cron_wrapper(full) == body
+        assert MessageSender.strip_cron_wrapper(body) == body
+        not_cron = "Cronjob Response: x\nno divider here"
+        assert MessageSender.strip_cron_wrapper(not_cron) == not_cron
+
+
 class TestDeliverResultErrorReturns:
     """Verify _deliver_result returns error strings on failure, None on success."""
 

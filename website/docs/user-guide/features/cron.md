@@ -667,6 +667,15 @@ cron:
   wrap_response: false
 ```
 
+To keep the header but drop only the "To stop or manage this job" footer, set `cron.wrap_footer` to `false` (ignored when `wrap_response` is `false`):
+
+```yaml
+cron:
+  wrap_footer: false
+```
+
+`cron.wrap_style: markdown` renders the header as `` `Cronjob:` **<name>** `` / `` `(job_id: …)` `` / `` `-------------` `` (inline code labels, bold job name) on platforms that render markdown. The default `plain` keeps the header shown above.
+
 ### Push notifications (`cron.delivery.notify`)
 
 Cron output is a *final* delivery, not a progress message, so by default it is

@@ -81,20 +81,22 @@ def _init(path: Path) -> Path:
 
 
 def _add_engine(repo: Path) -> list[str]:
+    """The checker and everything its jobs read; returns the top-level paths to stage."""
     for rel in _ENGINE:
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO / rel, repo / rel)
     shutil.copytree(REPO / "scripts/code_health", repo / "scripts/code_health",
                     ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
-    return ["scripts"]
+    _write(repo, {"tests/README.md": "os-marker-fakes scans tests/\n"})
+    return ["scripts", "tests"]
 
 
 def _engine_repo(tmp_path: Path) -> Path:
     """A repo whose first commit already carries the checker, with one clean module."""
     repo = _init(tmp_path / "repo")
     _write(repo, {"pkg/a.py": "def a():\n    return 1\n"})
-    _add_engine(repo)
-    _git(repo, "add", "--all", "--", ".gitignore", "pyproject.toml", "pkg", "scripts")
+    staged = _add_engine(repo)
+    _git(repo, "add", "--all", "--", ".gitignore", "pyproject.toml", "pkg", *staged)
     _git(repo, "commit", "-q", "-m", "base")
     return repo
 
@@ -184,6 +186,43 @@ def test_json_stdout_is_json_on_every_path(tmp_path, capsys, case, switch, files
     assert isinstance(data, list) and len(data) == findings, (case, out)
     if case in ("no measured change", "enforcement off"):
         assert "code health:" in err  # the human explanation moves to stderr
+
+
+# --- M5: interpreter choice and the version guard ---------------------------------------------
+
+
+def test_hooks_prefer_the_repo_virtualenv_over_path_python(tmp_path):
+    repo = _engine_repo(tmp_path)
+    assert _check(repo, "--install-hook", "pre-commit").returncode == 0
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    for name in ("python3", "python"):
+        (fake / name).write_text("#!/bin/sh\necho 'wrong interpreter' >&2\nexit 97\n", encoding="utf-8")
+        (fake / name).chmod(0o755)
+    env = _env()
+    env["PATH"] = f"{fake}{os.pathsep}{env['PATH']}"
+    (repo / ".venv").symlink_to(Path(sys.prefix), target_is_directory=True)
+    _write(repo, {"pkg/b.py": "def b():\n    return 2\n"})
+    _git(repo, "add", "--", "pkg/b.py")
+    proc = _sh(repo, "git", "commit", "-q", "-m", "venv", env=env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    # control: without a virtualenv the hook falls back to PATH's python3
+    (repo / ".venv").unlink()
+    _write(repo, {"pkg/b.py": "def b():\n    return 3\n"})
+    _git(repo, "add", "--", "pkg/b.py")
+    proc = _sh(repo, "git", "commit", "-q", "-m", "path", env=env)
+    assert proc.returncode != 0 and "wrong interpreter" in proc.stderr
+
+
+def test_check_refuses_old_python_before_importing_anything():
+    # The guard reads sys.version_info; a 3.10 interpreter is emulated by overriding it before
+    # scripts/check runs (tomllib, imported via ruff_runner, would otherwise crash it).
+    code = ("import runpy, sys; sys.version_info = (3, 10, 12, 'final', 0); "
+            f"sys.argv = ['scripts/check', '--only', 'shebangs']; "
+            f"runpy.run_path({str(REPO / 'scripts/check')!r}, run_name='__main__')")
+    proc = _sh(REPO, sys.executable, "-c", code)
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "3.11" in proc.stderr and "Traceback" not in proc.stderr
 
 
 # --- m3: the ENFORCEMENT switch ---------------------------------------------------------------

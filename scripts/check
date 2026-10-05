@@ -28,6 +28,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+# Before the engine imports: they need 3.11 (tomllib), and an older python3 first on PATH would
+# otherwise die in a traceback on every hooked commit or push.
+if sys.version_info < (3, 11):
+    print(f"scripts/check needs Python 3.11+, this is {'.'.join(map(str, sys.version_info[:3]))};"
+          " run it with the repo's virtualenv (.venv/bin/python scripts/check)", file=sys.stderr)
+    raise SystemExit(2)
+
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
@@ -40,8 +47,17 @@ _HOOK_HEAD = f"""#!/usr/bin/env bash
 repo="$(git rev-parse --show-toplevel)"
 # Hooks are shared by every worktree; a branch that predates scripts/check is not checked.
 [ -f "$repo/scripts/check" ] || exit 0
-py=python3
-command -v python3 >/dev/null 2>&1 || py=python
+# The repo's virtualenv first (this worktree's, then the main checkout's): a bare python3 on
+# PATH may predate the 3.11 that scripts/check needs.
+common="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"
+py=
+for root in "$repo" "$common"; do
+  for rel in .venv/bin/python venv/bin/python .venv/Scripts/python.exe venv/Scripts/python.exe; do
+    if [ -z "$py" ] && [ -x "$root/$rel" ]; then py="$root/$rel"; fi
+  done
+done
+[ -n "$py" ] || py="$(command -v python3 || command -v python)" || {{
+  echo "scripts/check hook: no python3 or python on PATH" >&2; exit 1; }}
 """
 # pre-push reads "<local ref> <local sha> <remote ref> <remote sha>" per pushed ref; an all-zero
 # local sha is a branch deletion. Each pushed commit is judged as CI will judge the PR.

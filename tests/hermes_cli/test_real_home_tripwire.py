@@ -198,6 +198,53 @@ def test_checkout_inside_a_guarded_root_is_not_hermes_state():
         guard.check(PROJECT_ROOT.parent / "config.yaml")
 
 
+def test_checkout_payload_manifest_may_be_probed_but_never_read():
+    """PM probes ``<checkout>/../manifest.json`` (a sealed payload's descriptor) on every
+    hermes_bootstrap import. With the checkout inside the home that is the real home's
+    ``manifest.json``: an existence probe of exactly that file passes; reading or writing it,
+    and probing anything else in the root, are still refused."""
+    from tests.home_io_guard import HomeIOGuard
+
+    root = PROJECT_ROOT.parent
+    guard = HomeIOGuard(lambda: [root])
+    guard.check(root / "manifest.json", metadata=True)
+    for refused in (lambda: guard.check(root / "manifest.json"),
+                    lambda: guard.check(root / "manifest.json", destructive=True),
+                    lambda: guard.check(root / "manifest.json.bak", metadata=True),
+                    lambda: guard.check(root / "config.yaml", metadata=True),
+                    lambda: guard.check(root / "profiles" / "work" / "manifest.json", metadata=True)):
+        with pytest.raises(AssertionError, match="REAL hermes home"):
+            refused()
+
+
+def test_first_bootstrap_import_under_the_guard_stays_out_of_the_home(tmp_path):
+    """A test's first real OpenAI client imports hermes_bootstrap lazily, after the autouse
+    guard is armed; its import-time dependency selection probed the checkout's sibling
+    manifest.json and tripped the guard whenever the checkout lives inside the guarded home
+    (the default install). Guard the checkout's parent as the real home and import it fresh."""
+    probe = tmp_path / "probe.py"
+    probe.write_text(textwrap.dedent(f"""
+        import sys
+        from pathlib import Path
+        import pytest
+        sys.path.insert(0, {str(PROJECT_ROOT)!r})
+        from tests.home_io_guard import HomeIOGuard
+
+        patcher = pytest.MonkeyPatch()
+        HomeIOGuard(lambda: [Path({str(PROJECT_ROOT.parent)!r})]).install(patcher)
+        assert "hermes_bootstrap" not in sys.modules
+        import hermes_bootstrap  # noqa: F401
+        patcher.undo()
+        print("bootstrap-imported")
+    """), encoding="utf-8")
+    env = {key: value for key, value in os.environ.items() if key not in ("PYTHONPATH", "HERMES_RUNTIME_DIR")}
+    env["HERMES_HOME"] = str(tmp_path / "hermes-home")
+    result = subprocess.run([sys.executable, str(probe)], capture_output=True, text=True,
+                            cwd=str(tmp_path), env=env, timeout=120)
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert result.stdout.strip().endswith("bootstrap-imported")
+
+
 def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):
     """A Hermes-launched shell hands pytest TMPDIR=<home>/cache/scratch (tagged by
     HERMES_SCRATCH_DIR). With that home guarded, honoring it would put the session

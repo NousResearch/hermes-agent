@@ -55,6 +55,8 @@ _has_pytest() { [ -n "$1" ] && [ -x "$1" ] && "$1" -c 'import pytest' 2>/dev/nul
 . "$SCRIPT_DIR/_activation.sh"
 if [ -z "${__HERMES_ACTIVATED:-}" ] && _has_pytest "${HERMES_PYTHON:-}"; then
   PYTHON="$HERMES_PYTHON"
+  # Chosen on purpose, so the conftest's foreign-interpreter guard must not refuse it.
+  FOREIGN_PYTHON_OK=1
   echo "▶ not activated — using HERMES_PYTHON: $PYTHON"
 else
   if ! hermes_activation_current "$REPO_ROOT"; then
@@ -191,6 +193,7 @@ exec env -i \
   ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
   ${HERMES_E2E_BROWSER:+HERMES_E2E_BROWSER="$HERMES_E2E_BROWSER"} \
   ${HERMES_RUN_E2E:+HERMES_RUN_E2E="$HERMES_RUN_E2E"} \
+  ${FOREIGN_PYTHON_OK:+HERMES_ALLOW_FOREIGN_TEST_PYTHON=1} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
   "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"

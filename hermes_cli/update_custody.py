@@ -284,13 +284,6 @@ def run_git(git_cmd: Sequence[str], args: Sequence[str], **kwargs) -> subprocess
     return run(argv, inherit_lock=mutator, **kwargs)
 
 
-def spawn_kwargs(args: Sequence[str]) -> dict:
-    """The Popen kwargs :func:`run_git` would give a git child (``args`` = its argv after the
-    executable, custody config included): the lock fd for a local mutator, else the Linux
-    parent-death signal. For a runner that needs its own Popen (the bounded gc fold)."""
-    return _custody_kwargs(is_local_mutator(args), {})
-
-
 def _partial_clone(git_cmd: Sequence[str], kwargs: dict) -> bool:
     """The repository has a promisor remote (``extensions.partialClone``), read from disk."""
     from pathlib import Path

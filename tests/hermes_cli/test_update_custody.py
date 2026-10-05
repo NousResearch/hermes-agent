@@ -278,29 +278,25 @@ def test_a_partial_clone_move_never_fetches_under_the_lock_fd(repo, tmp_path, mo
     assert "credential.helper=" in moved.args, moved.args
 
 
-def test_the_gc_fold_runs_in_checkout_custody(repo, tmp_path):
-    """m4: the lazy-fetch pack fold (`gc --auto`, which packs refs) ran outside custody: no lock
-    fd, no death signal, so it outlived a killed owner and repacked under the next one. It is a
-    local mutator now and its bounded runner passes run_git's custody (POSIX: the lock fd, which
-    its repack/pack-objects children inherit). `pull` is gone: its network half must not hold it."""
-    from hermes_cli._subprocess_compat import bounded_probe_run
-    from hermes_cli.update_custody import LOCAL_MUTATORS, git_argv, spawn_kwargs
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="needs /proc fd listing")
+@pytest.mark.parametrize(("args", "holds"), [(["gc", "--auto"], True), (["rev-parse", "HEAD"], False)])
+def test_run_git_hands_the_lock_fd_to_local_mutators_only(repo, tmp_path, monkeypatch, args, holds):
+    """Through the production runner: `gc` (packs refs, repacks) is a local mutator and runs
+    holding the checkout lock; a reader does not. `pull` is never one (its network half)."""
+    from hermes_cli.update_custody import LOCAL_MUTATORS, run_git
 
     assert "pull" not in LOCAL_MUTATORS
-    argv = git_argv(["git"], ["-c", "gc.writeCommitGraph=false", "gc", "--auto"])
+    git = tmp_path / "git-recorder.sh"
+    git.write_text(_RECORDER.replace('exec "$@"', 'exec git "$@"'), encoding="utf-8")
+    git.chmod(0o755)
+    out = tmp_path / "git.out"
+    monkeypatch.setenv("HERMES_TEST_LOCK", os.path.realpath(ul.checkout_lock_path(repo)))
+    monkeypatch.setenv("HERMES_TEST_OUT", str(out))
     lock = ul.UpdateLock(path=tmp_path / "marker", install_root=repo)
     assert lock.acquire()
     try:
-        custody = spawn_kwargs(argv[1:])
-        if sys.platform == "win32":
-            return  # the bounded runner's own kill-on-close job: dies with the owner
-        lock_path = os.path.realpath(ul.checkout_lock_path(repo))
-        probe = ("import os, sys\n"
-                 "print(any(os.path.realpath(f'/proc/self/fd/{fd}') == sys.argv[1]\n"
-                 "          for fd in os.listdir('/proc/self/fd')))")
-        held = bounded_probe_run([sys.executable, "-c", probe, lock_path], timeout=30, popen_kwargs=custody)
+        ran = run_git([str(git)], args, cwd=repo, capture_output=True, text=True)
     finally:
         lock.release()
-    assert custody.get("pass_fds"), f"gc gets no lock fd: {custody}"
-    if Path("/proc/self/fd").is_dir():
-        assert held is not None and held.stdout.strip() == "True", held
+    assert ran.returncode == 0, ran.stderr
+    assert out.read_text(encoding="utf-8-sig").split() == (["yes"] if holds else ["no"]), args

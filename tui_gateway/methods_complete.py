@@ -57,8 +57,9 @@ def _(rid, params: dict) -> dict:
 
 def _profile_mention_items(prefix: str) -> list[dict]:
     """`@<profile>` completions (multi-agent UIs route `@<profile>` text to another
-    profile). Bare-word matches only, never `@kind:` directives; the primary profile
-    is also offered as 'hermes' when no real profile claims that name."""
+    profile). Bare-word matches only, never `@kind:` directives. The primary profile
+    completes ONLY as @hermes — 'default' is an internal profile id, not an identity;
+    offering both rows dupes the picker for the same bot."""
     out: list[dict] = []
     try:
         from hermes_cli.profiles import list_profiles
@@ -67,6 +68,8 @@ def _profile_mention_items(prefix: str) -> list[dict]:
         for p in list_profiles(lazy_skill_count=True):
             if not (name := (p.name or "").strip()):
                 continue
+            if name.lower() == "default":
+                continue  # the primary profile completes as @hermes below — never as its raw id
             seen.add(name.lower())
             if name.lower().startswith(prefix.lower()):
                 out.append(_item(f"@{name}", (getattr(p, "description", "") or "").strip() or "agent profile"))

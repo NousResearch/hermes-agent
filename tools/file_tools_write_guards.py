@@ -319,12 +319,8 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
             # No human channel (script, cron, background thread): fail closed —
             # auto-approving here would recreate the persistence vector.
             return blocked.format(why=_NO_HUMAN)
-        # ...but a one-shot ``hermes chat -q`` session — which is exactly how the kanban dispatcher spawns
-        # every worker — registers that callback in ``HermesCLI.__init__`` and never builds a prompt_toolkit
-        # Application, so the modal is pushed into a layout nothing renders and the gate burned the whole
-        # approvals timeout, then reported "timed out" for a prompt no human saw. Detect that context the same
-        # way ``_run_approval_gate`` does (#86878) and fail closed immediately with the honest reason. Single-query
-        # runs are NEVER auto-approved here, whatever ``approvals.single_query_mode`` says.
+        # -q (every kanban worker), cron and unattended platforms can have a callback registered that nobody
+        # answers: fail closed now, and never auto-approve, whatever approvals.<context>_mode says.
         from tools.approval_context import _no_user_can_answer
         if _no_user_can_answer():
             return blocked.format(why=_NO_HUMAN)

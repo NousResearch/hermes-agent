@@ -1,164 +1,65 @@
-"""Protected-instruction approval must be answerable on an interactive CLI
-session, and must NOT pretend a human channel exists in a headless one-shot
-(``hermes chat -q``) session.
+"""Protected-instruction approval fails closed at once, without asking anyone, where nobody can answer.
 
-Defect (kanban t_9691f08d): every write to a protected agent-instruction file
-from a kanban worker failed with
-
-    BLOCKED: ... approval prompt timed out without a user response.
-    Silence is not consent.
-
-which reads as "a human ignored the prompt". In fact those workers are spawned
-as ``hermes chat -q``, which never builds a prompt_toolkit Application — but
-``HermesCLI.__init__`` had already registered ``_approval_callback`` as the
-thread-local CLI approval callback. ``_request_protected_instruction_approval``
-therefore saw a callback, believed a human channel existed, pushed a modal into
-a layout that is never rendered, and blocked on a response queue no key binding
-could ever fill until the approval timeout expired.
-
-``_run_approval_gate`` learned about this context in #86878 via
-``HERMES_SINGLE_QUERY_SESSION``; the protected-instruction gate deliberately
-bypasses that gate (one-operation approval every time, no allowlist, no yolo)
-and so never got the fix. These tests lock three invariants:
-
-1. Interactive CLI: a registered approval callback that answers ``once`` lets
-   the write through, and ``deny`` blocks it. The channel works.
-2. Headless one-shot: even with a callback registered, the gate fails closed
-   *immediately* with the honest "no interactive user or gateway is present"
-   message instead of manufacturing a timeout.
-3. Single-query never auto-approves this gate, whatever
-   ``approvals.single_query_mode`` says — that config governs
-   ``_run_approval_gate``, not this one.
-
-The real CLI modal round trip is covered by tests/hermes_cli/test_cli_approval_ui.py.
+``hermes chat -q`` (how kanban spawns every worker), cron and unattended platforms can have the CLI approval
+callback registered on the agent thread. The gate used to ask it, block for the full approvals timeout, then
+report "timed out" — which reads as a human ignoring a prompt nobody saw. The interactive approve/deny paths
+are covered in test_file_write_safety.py; the real CLI modal in tests/hermes_cli/test_cli_approval_ui.py.
 """
 
 import json
-import time
 
 import pytest
 
 
 @pytest.fixture(autouse=True)
 def _gate_on(monkeypatch):
-    import tools.file_tools_write_guards as ft
-    monkeypatch.setattr(ft, "_protected_instruction_config", lambda: (True, []))
-    yield
-
-
-@pytest.fixture(autouse=True)
-def _clean_callbacks(monkeypatch):
+    import tools.file_tools_write_guards as guards
     from tools.terminal_tool import set_approval_callback
-    # Default every test to a NON single-query context; the headless tests
-    # opt in explicitly.
-    monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+    monkeypatch.setattr(guards, "_protected_instruction_config", lambda: (True, []))
+    for name in ("HERMES_SINGLE_QUERY_SESSION", "HERMES_CRON_SESSION", "HERMES_SESSION_PLATFORM"):
+        monkeypatch.delenv(name, raising=False)
     set_approval_callback(None)
     yield
     set_approval_callback(None)
 
 
-def _write(path, content="content"):
+@pytest.mark.parametrize("env", [
+    {"HERMES_SINGLE_QUERY_SESSION": "1"},
+    {"HERMES_CRON_SESSION": "1"},
+    {"HERMES_SESSION_PLATFORM": "webhook"},
+], ids=["single_query", "cron", "webhook"])
+def test_registered_callback_is_never_asked_without_a_user(tmp_path, monkeypatch, env):
+    from tools.terminal_tool import set_approval_callback
     from tools.file_tools import write_file_tool
-    return json.loads(write_file_tool(str(path), content))
+
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    asked = []
+    set_approval_callback(lambda command, description, **kw: asked.append(command) or "once")
+    target = tmp_path / "SOUL.md"
+    res = json.loads(write_file_tool(str(target), "content"))
+
+    assert asked == []
+    assert "no interactive user or gateway is present" in res["error"]
+    assert "timed out" not in res["error"]
+    assert not target.exists()
 
 
-class TestInteractiveCliChannelDelivers:
-    """An interactive CLI session can actually answer the prompt."""
+@pytest.mark.parametrize("mode", ["approve", "deny"])
+def test_single_query_mode_never_auto_approves_this_gate(tmp_path, monkeypatch, mode):
+    """``approvals.single_query_mode`` governs the dangerous-command gate only: a protected-instruction write
+    always needs a live human."""
+    from tools import approval_context
+    from tools.file_tools import write_file_tool
+    from tools.terminal_tool import set_approval_callback
 
-    def test_interactive_approval_allows_write(self, tmp_path):
-        from tools.terminal_tool import set_approval_callback
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    monkeypatch.setattr(approval_context, "_get_single_query_approval_mode", lambda: mode)
+    asked = []
+    set_approval_callback(lambda command, description, **kw: asked.append(command) or "once")
+    target = tmp_path / "SOUL.md"
+    res = json.loads(write_file_tool(str(target), "content"))
 
-        seen = []
-
-        def cb(command, description, **kwargs):
-            seen.append((command, description, kwargs))
-            return "once"
-
-        set_approval_callback(cb)
-        target = tmp_path / "SOUL.md"
-        res = _write(target, "approved by a live human")
-
-        assert not res.get("error"), res
-        assert target.read_text(encoding="utf-8") == "approved by a live human"
-        assert len(seen) == 1, "the human channel was never used"
-        assert "SOUL.md" in seen[0][0]
-        # One-operation only: no session/permanent scope is offered.
-        assert seen[0][2].get("allow_permanent") is False
-
-    def test_interactive_denial_blocks_write(self, tmp_path):
-        from tools.terminal_tool import set_approval_callback
-        set_approval_callback(lambda c, d, **k: "deny")
-
-        target = tmp_path / "SOUL.md"
-        res = _write(target)
-        assert res.get("error") and "BLOCKED" in res["error"]
-        assert "denied by the user" in res["error"]
-        assert not target.exists()
-
-
-class TestHeadlessOneShotFailsClosedHonestly:
-    """`hermes chat -q` must not claim a human channel it does not have."""
-
-    def test_no_callback_reports_no_human_not_timeout(self, tmp_path):
-        target = tmp_path / "SOUL.md"
-        res = _write(target)
-        assert res.get("error") and "BLOCKED" in res["error"]
-        assert "no interactive user or gateway is present" in res["error"]
-        assert "timed out" not in res["error"], (
-            "headless run reported a timeout, implying a human ignored a "
-            "prompt that was never rendered"
-        )
-        assert not target.exists()
-
-    def test_single_query_ignores_the_unreachable_modal_callback(
-            self, tmp_path, monkeypatch):
-        """The reported defect, verbatim.
-
-        A callback IS registered (HermesCLI.__init__ always registers one),
-        but there is no Application to render it. The gate must not call it
-        and must not report a timeout.
-        """
-        from tools.terminal_tool import set_approval_callback
-
-        called = []
-
-        def never_answers(command, description, **kwargs):
-            called.append(command)
-            time.sleep(30)  # what the unrendered modal effectively did
-            return "timeout"
-
-        set_approval_callback(never_answers)
-        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
-
-        target = tmp_path / "SOUL.md"
-        started = time.time()
-        res = _write(target)
-        elapsed = time.time() - started
-
-        assert not called, (
-            "single-query session dispatched to a modal nothing can render")
-        assert elapsed < 5, f"gate blocked for {elapsed:.1f}s with no human"
-        assert res.get("error") and "BLOCKED" in res["error"]
-        assert "no interactive user or gateway is present" in res["error"]
-        assert "timed out" not in res["error"]
-        assert not target.exists()
-
-    @pytest.mark.parametrize("mode", ["approve", "deny"])
-    def test_single_query_mode_never_auto_approves_this_gate(
-            self, tmp_path, monkeypatch, mode):
-        """``approvals.single_query_mode`` governs _run_approval_gate only.
-
-        Protected-instruction writes always need a live human, so even
-        ``single_query_mode: approve`` must not let one through.
-        """
-        from tools import approval_context
-        from tools.terminal_tool import set_approval_callback
-
-        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
-        monkeypatch.setattr(approval_context, "_get_single_query_approval_mode", lambda: mode)
-        set_approval_callback(lambda c, d, **k: "once")
-
-        target = tmp_path / "SOUL.md"
-        res = _write(target)
-        assert res.get("error") and "BLOCKED" in res["error"]
-        assert not target.exists()
+    assert asked == []
+    assert "BLOCKED" in res["error"]
+    assert not target.exists()

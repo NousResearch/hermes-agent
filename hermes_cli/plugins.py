@@ -861,9 +861,9 @@ class PluginContext:
         ``inherit_from`` names a built-in or already-registered auxiliary task whose effective
         configuration becomes the base for this one; it is resolved at read time, so the task tracks
         the base's current config instead of snapshotting it (precedence: inherited base, then
-        ``defaults``, then user config in ``auxiliary.<key>``).
-        Raises ``ValueError`` for an empty/invalid key, a built-in key, another plugin's key, or an
-        ``inherit_from`` that is empty, self-referential, or not a known auxiliary task."""
+        ``defaults``, then user config in ``auxiliary.<key>``). An unknown or self-referential
+        ``inherit_from`` logs a warning and registers the task without inheritance.
+        Raises ``ValueError`` for an empty/invalid key, a built-in key, or another plugin's key."""
         me = self.manifest.name
         if not key or not isinstance(key, str):
             raise ValueError(f"Plugin '{me}' tried to register auxiliary task with invalid key {key!r}")
@@ -881,18 +881,14 @@ class PluginContext:
         if existing is not None and existing.get("plugin") != owner_id:
             raise ValueError(f"Plugin '{me}' cannot register auxiliary task {key!r} — already registered "
                              f"by plugin '{existing.get('plugin')}'")
-        if inherit_from is not None:
-            if not isinstance(inherit_from, str) or not inherit_from.strip():
-                raise ValueError(f"Plugin '{me}' auxiliary task {key!r} got an invalid inherit_from "
-                                 f"{inherit_from!r} — pass a built-in or plugin auxiliary task key")
-            # Same-owner re-registration is allowed, so a self-referential inherit_from would only be
-            # caught at read time, as infinite recursion.
-            if inherit_from == key:
-                raise ValueError(f"Plugin '{me}' auxiliary task {key!r} cannot inherit from itself")
-            if inherit_from not in builtin_aux_keys and inherit_from not in self._manager._aux_tasks:
-                raise ValueError(f"Plugin '{me}' auxiliary task {key!r} cannot inherit from unknown task "
-                                 f"{inherit_from!r} — use a built-in auxiliary task or one already "
-                                 f"registered by a plugin")
+        # A bad base degrades to "no inheritance" rather than failing the whole plugin load; a
+        # self-reference would otherwise only surface at read time, as a cycle.
+        if inherit_from is not None and (
+                not isinstance(inherit_from, str) or inherit_from == key
+                or (inherit_from not in builtin_aux_keys and inherit_from not in self._manager._aux_tasks)):
+            logger.warning("Plugin '%s' auxiliary task %r: ignoring inherit_from=%r — not a built-in "
+                           "auxiliary task or one already registered by a plugin", me, key, inherit_from)
+            inherit_from = None
         # Plugin owns the schema; routing fields are guaranteed present so consumers don't crash.
         # With inheritance the base supplies the shape, so only the plugin's own overrides go here.
         task_defaults = (dict(defaults or {}) if inherit_from else

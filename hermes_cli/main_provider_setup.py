@@ -133,36 +133,15 @@ def _aux_task_cfg(cfg: dict, task: str) -> dict:
 
 
 def _aux_task_cfg_for_display(cfg: dict, task: str) -> dict:
-    """The routing dict to *display* for *task*, with an inherited base resolved.
-
-    The stored block is authoritative for built-in tasks, but a plugin task registered with
-    ``inherit_from`` may inherit its provider/model from a base task while storing only the fields
-    the operator actually set. Rendering the raw block would then report "auto" while the task
-    actually runs on the base's provider. Falls back to the stored block if the runtime resolver is
-    unavailable, so the menu never depends on importing the agent package.
-    """
-    stored = _aux_task_cfg(cfg, task)
-    if task == _DELEGATION_TASK_KEY:
-        return stored
-    try:
-        from agent.auxiliary_client import _get_auxiliary_task_config
-    except Exception:
-        return stored
-    try:
-        resolved = _get_auxiliary_task_config(task)
-    except Exception:
-        return stored
-    # Only adopt the resolved view when the task really inherits; otherwise keep showing exactly
-    # what is stored, so display behaviour for existing tasks is unchanged.
-    if not resolved:
-        return stored
-    try:
+    """The routing dict to *display* for *task*. A plugin task registered with ``inherit_from``
+    shows its resolved route (base included), so the menu never reports "auto" while the task
+    actually runs on the base's provider; every other task shows exactly what is stored."""
+    with contextlib.suppress(Exception):
         from hermes_cli.plugins import get_plugin_auxiliary_tasks
-        inherits = any(e.get("key") == task and e.get("inherit_from")
-                       for e in get_plugin_auxiliary_tasks())
-    except Exception:
-        return stored
-    return resolved if inherits else stored
+        if any(e.get("key") == task and e.get("inherit_from") for e in get_plugin_auxiliary_tasks()):
+            from agent.auxiliary_client import _get_auxiliary_task_config
+            return _get_auxiliary_task_config(task)
+    return _aux_task_cfg(cfg, task)
 
 
 def _aux_task_display_name(task: str) -> str:

@@ -6269,14 +6269,12 @@ _DEFAULT_AUX_TIMEOUT = 30.0
 _COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
 
 
-def _get_auxiliary_task_config(
-    task: str, _seen: Optional[frozenset] = None,
-) -> Dict[str, Any]:
+def _get_auxiliary_task_config(task: str, _seen: frozenset = frozenset()) -> Dict[str, Any]:
     """Config dict for auxiliary.<task>, or {} when unavailable. Plugin-registered tasks get their
     declared defaults layered under user config (user wins); built-in defaults live in DEFAULT_CONFIG.
-    A task registered with ``inherit_from`` also inherits the base task's effective config, resolved
-    here at read time so it tracks the base's current settings; precedence is base, then plugin
-    defaults, then user config. ``_seen`` is the recursion guard for hand-edited inheritance cycles."""
+    A task registered with ``inherit_from`` is resolved here, at read time, over the base task's
+    effective config, so it follows the base's current settings (and the active profile's config)
+    until the user pins a route on the task itself. ``_seen`` guards re-registration cycles."""
     if not task:
         return {}
     try:
@@ -6288,14 +6286,6 @@ def _get_auxiliary_task_config(
     task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
     if not isinstance(task_config, dict):
         task_config = {}
-    seen = _seen or frozenset()
-    # A cycle here means a hand-edited or otherwise malformed registry; fall back to this task's
-    # own defaults instead of recursing until the stack blows.
-    cyclic = task in seen
-    # Only when we actually inherit does the user layer need pruning below.
-    if cyclic:
-        logger.warning("Auxiliary task %r has a circular inherit_from chain — ignoring inheritance",
-                       task)
     try:
         from hermes_cli.plugins import get_plugin_auxiliary_tasks
         for _entry in get_plugin_auxiliary_tasks():
@@ -6303,30 +6293,46 @@ def _get_auxiliary_task_config(
                 _defaults = _entry.get("defaults") or {}
                 if isinstance(_defaults, dict):
                     _inherit = _entry.get("inherit_from")
-                    if cyclic or not _inherit:
+                    if _inherit and task in _seen:
+                        logger.warning("Auxiliary task %r has a circular inherit_from chain — "
+                                       "ignoring inheritance", task)
+                    if not _inherit or task in _seen:
                         return {**_defaults, **task_config}
-                    base = _get_auxiliary_task_config(_inherit, seen | {task})
-                    return {**base, **_defaults, **_explicit_user_config(task_config)}
+                    base = _get_auxiliary_task_config(_inherit, _seen | {task})
+                    return _layer_over_inherited({**base, **_defaults}, task_config)
                 break
     except Exception:
         pass  # plugin discovery failure must not break aux task config reads
     return task_config
 
 
-def _explicit_user_config(task_config: Dict[str, Any]) -> Dict[str, Any]:
-    """User config with unset values dropped, so an inherited base is not shadowed by write-only
-    placeholders.
+# The fields that together pick WHERE a call goes. They travel as one unit: a provider pinned on an
+# inheriting task must never pick up the base's base_url/api_key (that would send one vendor's key
+# to another's endpoint).
+_AUX_ROUTE_KEYS = frozenset({"provider", "model", "base_url", "api_key", "api_mode", "key_env",
+                             "api_key_env", "reasoning_effort"})
 
-    The aux picker and "reset to auto" persist ``model``, ``base_url``, ``api_key`` and
-    ``reasoning_effort`` as empty strings when the operator expresses no preference for them, and
-    plugin-registered tasks are included in both writers. Merging those empties over the inherited
-    base would discard it for exactly the keys the UI touches, which inverts the whole point of
-    ``inherit_from``.
 
-    Only ``""`` is dropped, never any falsy value: ``provider: "auto"`` is a deliberate choice, and
-    ``reasoning_effort: false`` is an explicit request for no reasoning rather than an unset value.
-    """
-    return {k: v for k, v in task_config.items() if v != ""}
+def _layer_over_inherited(inherited: Dict[str, Any], user: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge a task's own ``auxiliary.<task>`` block over its inherited base.
+
+    The picker, "reset to auto" and the dashboard persist ``provider: auto`` plus ``""`` for
+    model/base_url/api_key/reasoning_effort when the operator expresses no preference, so those
+    placeholders mean "follow the base", not "override it with nothing". Once the operator pins a
+    route (a non-auto provider, a model or a base_url) the whole route comes from the task's own
+    block. Non-route keys (timeout, extra_body, ...) override per key; only ``""`` is dropped,
+    never other falsy values (``reasoning_effort: false`` is an explicit choice)."""
+    provider = str(user.get("provider") or "").strip().lower()
+    pinned = (provider not in ("", "auto") or bool(str(user.get("model") or "").strip())
+              or bool(str(user.get("base_url") or "").strip()))
+    merged = {k: v for k, v in inherited.items() if not (pinned and k in _AUX_ROUTE_KEYS)}
+    for key, value in user.items():
+        if value == "" and not (pinned and key in _AUX_ROUTE_KEYS):
+            continue
+        if key == "provider" and not pinned:
+            continue
+        merged[key] = value
+    return merged
 
 
 class CompressionFastLane(NamedTuple):

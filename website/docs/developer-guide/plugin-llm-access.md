@@ -329,9 +329,12 @@ invocation. `allow_task_override: true` is an explicit operator grant for
 using Hermes built-in auxiliary tasks; it does not permit another plugin's
 tasks. Omit `task=` (or use `"auto"`) to keep the active main provider/model.
 
-`inherit_from` names a built-in or already-registered auxiliary task
-whose effective configuration becomes the base for your task, resolved at
-read time so the task tracks the base's current settings:
+#### Inheriting a built-in slot
+
+`inherit_from` names a built-in auxiliary task (`compression`, `mcp`,
+`vision`, ...) or a task your plugin (or one loaded before it) already
+registered. Your task then uses that slot's model until the operator pins
+one on your task directly:
 
 ```python
 def register(ctx):
@@ -339,13 +342,29 @@ def register(ctx):
         "classifier",
         display_name="Classifier",
         description="Classify input.",
-        inherit_from="mcp",                 # start from the mcp aux block
+        inherit_from="compression",         # use whatever compression uses...
         defaults={"timeout": 90},           # ...but give slow classifiers more room
     )
 ```
 
-Precedence is the inherited base, then the plugin's `defaults`, then
-operator configuration in `auxiliary.<task>`.
+- **Resolved on every read, not copied at registration.** Change
+  `auxiliary.compression` (CLI, dashboard, Desktop, or `config.yaml`) and the
+  classifier follows on its next call, per profile.
+- **Precedence:** the inherited base, then the plugin's `defaults`, then the
+  operator's `auxiliary.<task>` block.
+- **An operator pin wins as a whole route.** Once `auxiliary.classifier` sets a
+  non-`auto` provider, a model or a `base_url`, the provider, model, endpoint,
+  key and reasoning effort all come from that block; nothing from the base's
+  route is mixed in. `provider: auto` with an empty model is "no preference",
+  so the task keeps following its base (that is what "Reset all" and Desktop's
+  *Follow &lt;base&gt;* button write).
+- **A bad base never breaks the plugin.** An unknown or self-referential
+  `inherit_from` logs a warning and the task registers without inheritance.
+
+The Models settings show an unpinned inheriting task as
+*inherits Compression · &lt;provider · model&gt;*, and
+`GET /api/model/auxiliary` returns `inherit_from` plus an `effective`
+`{provider, model, base_url}` on such rows.
 
 ### Result attributes
 

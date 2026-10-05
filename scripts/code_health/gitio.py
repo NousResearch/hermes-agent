@@ -41,6 +41,11 @@ def resolve_tree(repo: Path, rev: str) -> str:
     return git(repo, "rev-parse", "--verify", f"{rev}^{{tree}}").strip()
 
 
+def commit_or_none(repo: Path, rev: str) -> str | None:
+    """``rev`` as a commit sha, or None when it does not name a commit (a tree, a missing ref)."""
+    return git(repo, "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}", check=False).strip() or None
+
+
 def default_base(repo: Path, tip: str = "HEAD") -> str:
     """Merge-base of ``tip`` with origin/main (local runs); CI passes ``--base`` explicitly."""
     for ref in ("origin/main", "main"):

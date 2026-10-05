@@ -153,6 +153,56 @@ def test_json_stdout_is_json_on_every_path(tmp_path, capsys, case, switch, files
         assert "code health:" in err  # the human explanation moves to stderr
 
 
+# --- m3: the ENFORCEMENT switch ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("switch, code", [
+    ('ENFORCEMENT: str = "off"\n', 0),
+    ('ENFORCEMENT: str = "advisory"\n', 0),
+    ('ENFORCEMENT = "warn"\n', 1),  # an unknown value is not a way to relax the check
+    ('ENFORCEMENT = "off"  # until the burn-down lands\n', 0),
+])
+def test_enforcement_switch_parses_annotated_and_unknown_values(tmp_path, capsys, switch, code):
+    repo, base = _ratchet_repo(tmp_path, switch)
+    head = _commit(repo, {"pkg/a.py": _GROWN})
+    assert cli.run(repo, base, head) == code, capsys.readouterr().out
+
+
+def test_enforcement_reads_this_trees_own_switch():
+    assert cli.enforcement(REPO, "HEAD") == ENFORCEMENT
+    text = (REPO / _SWITCH).read_text(encoding="utf-8")
+    assert cli.parse_switch(text) == ENFORCEMENT
+
+
+def _branch_behind_main(tmp_path: Path, main_switch: str, branch_files: dict[str, str]) -> Path:
+    repo, base = _ratchet_repo(tmp_path, 'ENFORCEMENT = "blocking"\n')
+    _git(repo, "checkout", "-q", "-b", "feature")
+    _commit(repo, branch_files)
+    _git(repo, "checkout", "-q", "main")
+    tip = _commit(repo, {_SWITCH: main_switch, "NEWS.md": "main moved on\n"})
+    _git(repo, "update-ref", "refs/remotes/origin/main", tip)
+    _git(repo, "reset", "-q", "--hard", base)  # local main is stale; only origin/main moved
+    _git(repo, "checkout", "-q", "feature")
+    return repo
+
+
+def test_local_runs_take_the_switch_from_the_main_tip(tmp_path, monkeypatch, capsys):
+    repo = _branch_behind_main(tmp_path, 'ENFORCEMENT = "advisory"\n', {"pkg/a.py": _GROWN})
+    monkeypatch.chdir(repo)
+    assert cli.main([]) == 0, capsys.readouterr().out  # the flip on main reaches the branch
+    head = _git(repo, "rev-parse", "HEAD")
+    assert cli.main(["--head", head]) == 0
+    out = capsys.readouterr().out
+    assert "CC 23 > 22" in out and "advisory mode" in out
+
+
+def test_a_branch_cannot_relax_its_own_switch(tmp_path, monkeypatch, capsys):
+    grown_and_off = {"pkg/a.py": _GROWN, _SWITCH: 'ENFORCEMENT = "off"\n'}
+    repo = _branch_behind_main(tmp_path, 'ENFORCEMENT = "blocking"\n', grown_and_off)
+    monkeypatch.chdir(repo)
+    assert cli.main([]) == 1, capsys.readouterr().out
+
+
 # --- F21: profile regex rules see executable code, not prose -----------------------------------
 
 

@@ -133,14 +133,15 @@ def _run_jobs(jobs: dict[str, _Job]) -> dict[str, tuple[int, str]]:
 def _run_all(args: argparse.Namespace) -> dict[str, tuple[int, str]]:
     if not (args.staged or args.commit):
         return _run_jobs(_jobs(args.only, args.base, None))
-    # Hooks judge the bytes being committed or pushed, never the working tree.
+    # Hooks judge the bytes being committed or pushed, never the working tree. Without --base the
+    # ratchet derives the base from the head (a commit's own merge-base) and the switch from main.
     if args.staged:
-        tree, base = gitio.git(REPO, "write-tree").strip(), args.base
+        tree = head = gitio.git(REPO, "write-tree").strip()
     else:
-        commit = gitio.resolve_rev(REPO, args.commit)
-        tree, base = gitio.resolve_tree(REPO, commit), args.base or gitio.default_base(REPO, commit)
+        head = gitio.resolve_rev(REPO, args.commit)
+        tree = gitio.resolve_tree(REPO, head)
     with _tree_snapshot(tree) as (root, env):
-        return _run_jobs(_jobs(args.only, base, tree, root, env))
+        return _run_jobs(_jobs(args.only, args.base, head, root, env))
 
 
 def _hooks_dir() -> Path:

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
-import re
 import subprocess
 import sys
 import time
@@ -32,13 +32,32 @@ Reproduce locally: python scripts/check --only health (every lint check: python 
 on every push: python scripts/check --install-hook pre-push)."""
 
 _SWITCH_FILE = "scripts/code_health/config.py"
-_SWITCH = re.compile(r"^ENFORCEMENT\s*=\s*[\"'](blocking|advisory|off)[\"']", re.MULTILINE)
+_MODES = ("blocking", "advisory", "off")
 
 
-def enforcement(repo: Path, base: str) -> str:
-    """The master switch as committed on the base revision; a base without one is blocking."""
-    found = _SWITCH.search(gitio.read_file(repo, base, _SWITCH_FILE) or "")
-    return found.group(1) if found else "blocking"
+def parse_switch(text: str) -> str:
+    """The module-level ``ENFORCEMENT`` value (plain or annotated assignment, the last one wins,
+    as at runtime). Missing, unparseable or unknown is "blocking": no edit relaxes it by accident."""
+    try:
+        body = ast.parse(text).body
+    except SyntaxError:
+        return "blocking"
+    found = None
+    for node in body:
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id == "ENFORCEMENT" for t in targets):
+            found = node.value.value if isinstance(node.value, ast.Constant) else None
+    return found if found in _MODES else "blocking"
+
+
+def enforcement(repo: Path, rev: str) -> str:
+    """The master switch as committed on ``rev``; a revision without one is blocking."""
+    return parse_switch(gitio.read_file(repo, rev, _SWITCH_FILE) or "")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -66,11 +85,15 @@ def _skipped(why: str, as_json: bool) -> None:
     print(why, file=sys.stderr if as_json else sys.stdout)
 
 
-def run(repo: Path, base: str, head: str | None, as_json: bool = False) -> int:
+def run(repo: Path, base: str, head: str | None, as_json: bool = False,
+        switch_rev: str | None = None) -> int:
+    """Judge ``head`` against ``base``; the ENFORCEMENT switch is read from ``switch_rev``
+    (default: the base), never from the head under test."""
     started = time.monotonic()
-    mode = enforcement(repo, base)
+    switch_rev = switch_rev or base
+    mode = enforcement(repo, switch_rev)
     if mode == "off":
-        _skipped(f"code health: off (ENFORCEMENT in {_SWITCH_FILE} on {base[:12]})", as_json)
+        _skipped(f"code health: off (ENFORCEMENT in {_SWITCH_FILE} on {switch_rev[:12]})", as_json)
         return 0
     changes = gitio.changed_files(repo, base, head)
     head_paths = sorted({c.new for c in changes if c.new and in_scope(c.new)})
@@ -110,12 +133,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.print_pins:
         print(f"ruff=={pinned_version(repo)}")
         return 0
-    head = gitio.resolve_tree(repo, args.head) if args.head else None
     try:
+        head = gitio.resolve_tree(repo, args.head) if args.head else None
         if args.report:
             return _report(repo, head)
-        base = gitio.resolve_rev(repo, args.base) if args.base else gitio.default_base(repo)
-        return run(repo, base, head, as_json=args.json)
+        if args.base:  # CI: the base is the target branch tip, which also holds the switch
+            return run(repo, gitio.resolve_rev(repo, args.base), head, as_json=args.json)
+        # Locally the base is the merge-base, which lags main; the switch comes from the main tip
+        # so a flip on main reaches a branch without a rebase. The head never supplies it.
+        tip = gitio.commit_or_none(repo, args.head) if args.head else None
+        base = gitio.default_base(repo, tip or "HEAD")
+        switch_rev = gitio.commit_or_none(repo, "origin/main") or base
+        return run(repo, base, head, as_json=args.json, switch_rev=switch_rev)
     except RuntimeError as exc:
         print(f"code health: {exc}", file=sys.stderr)
         return 2

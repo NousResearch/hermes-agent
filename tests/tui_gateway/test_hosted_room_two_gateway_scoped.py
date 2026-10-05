@@ -248,3 +248,101 @@ async def test_lost_admission_reply_and_refused_replay_run_the_turn_once(
     assert task["status"] == "settled"
     assert agent.run_conversation.call_count == 1
     assert set(keys) == {f"room:{task['identity'].task_id}:1"}
+
+
+async def _peer_task_in(home, statuses, *, timeout: float = 20.0):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        for status in statuses:
+            for task in driver.list_tasks(home.db_path, room_id="room-1", status=status):
+                if task["payload"].get("target_member_id") == "member-peer":
+                    return task
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"peer turn never reached {statuses}: status={home.runtime.status()}")
+
+
+async def _member_replies(home, *, timeout: float = 20.0):
+    """Wait until the settled turn's reply is published to the room (the next room cycle)."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        replies = [event for event in home._events("room-1") if event["kind"] == "message.member"]
+        if replies:
+            return replies
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"peer reply was not published: events={home._events('room-1')}")
+
+
+async def _retry_past_backoff(home, task_id: str):
+    """Retry once the client's short recovery backoff (at most poll_max_seconds) has passed."""
+    for _ in range(40):
+        try:
+            return await asyncio.to_thread(home.retry_room_task, "room-1", task_id=task_id)
+        except Exception as exc:
+            if "backing off" not in str(exc):
+                raise
+        await asyncio.sleep(0.1)
+    raise AssertionError("recovery stayed in backoff")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_attempt_arrived", [False, True])
+async def test_retry_of_a_deferred_turn_follows_its_running_attempt_to_the_reply(
+    tmp_path: Path, monkeypatch, first_attempt_arrived,
+):
+    """The peer is unreachable past the deferral window, then comes back while the turn's run
+    is going: either the first attempt arrived, or Retry's same-key replay starts it now. Retry
+    must not report failure or leave the turn deferred; it follows that one run to its reply."""
+    target, server, home = await _linked_home(tmp_path)
+    home.runtime.lease_ttl_seconds = 1.0
+    home.runtime.poll_interval_seconds = 0.05
+    home.runtime.indeterminate_defer_seconds = 0.5
+    real_open = urllib_security.open_credentialed_url
+    keys, peer_down = [], threading.Event()
+    peer_down.set()
+
+    def lose_first_reply_then_stay_down(request, timeout):
+        if request.get_method() == "POST" and request.full_url.endswith("/v1/runs"):
+            keys.append(request.get_header("Idempotency-key"))
+            if len(keys) == 1:
+                if first_attempt_arrived:
+                    with real_open(request, timeout=timeout) as response:
+                        response.read()
+                raise urllib.error.URLError(ConnectionResetError(errno.ECONNRESET, "reply lost"))
+            if peer_down.is_set():
+                raise urllib.error.URLError(ConnectionRefusedError(errno.ECONNREFUSED, "refused"))
+        return real_open(request, timeout=timeout)
+
+    monkeypatch.setattr(urllib_security, "open_credentialed_url", lose_first_reply_then_stay_down)
+    agent, release = _agent(), threading.Event()
+    reply = agent.run_conversation.return_value
+
+    def run_until_released(*args, **kwargs):
+        assert release.wait(20)
+        return reply
+
+    agent.run_conversation.side_effect = run_until_released
+    try:
+        with patch.object(target, "_create_agent", return_value=agent):
+            home.start()
+            home.send(
+                room_id="room-1",
+                event_id="user-1",
+                payload={"text": "@reviewer inspect", "thread_id": "thread-1"},
+            )
+            deferred = await _peer_task_in(home, ("deferred",))
+            peer_down.clear()
+            retried = await _retry_past_backoff(home, deferred["identity"].task_id)
+            assert (retried["status"], retried["execution_generation"]) == ("indeterminate", 1)
+            release.set()
+            task = await _settled_peer_turn(home)
+            replies = await _member_replies(home)
+            assert home.stop(timeout=5.0)
+    finally:
+        release.set()
+        await server.close()
+        target._run_idempotency_store.close()
+
+    assert (task["status"], task["execution_generation"]) == ("settled", 1)
+    assert agent.run_conversation.call_count == 1
+    assert set(keys) == {f"room:{task['identity'].task_id}:1"}
+    assert [event["payload"]["text"] for event in replies] == ["Scoped peer response."]

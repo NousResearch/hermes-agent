@@ -59,3 +59,28 @@ def test_missing_engine_produces_a_user_notice_and_a_working_engine_does_not(tmp
     # A configured engine that did not load (_select_context_engine returned None).
     notice = _context_engine_fallback_notice({"context": {"engine": "not_installed"}}, None)
     assert notice and "not_installed" in notice
+
+
+def test_fallback_notice_survives_a_later_compression_warning_write():
+    """Compression code reassigns ``_compression_warning`` before turn 1; the engine notice must
+    not ride on that slot or it is dropped and the fallback goes silent again."""
+    from types import SimpleNamespace
+
+    from agent.agent_init import _emit_compression_summary
+    from agent.status_output import StatusOutputMixin
+
+    class Agent(StatusOutputMixin):
+        platform = "telegram"
+        quiet_mode = True
+        notice_callback = status_callback = None
+        _compression_threshold_autoraised = None
+        _context_engine_fallback_notice = "Context engine 'cmi' failed to load"
+
+    agent = Agent()
+    _emit_compression_summary(agent, SimpleNamespace(enabled=True, autoraise_notice_enabled=True))
+    agent._compression_warning = "unrelated compression warning"  # e.g. conversation_compression
+    agent._compression_warning = None
+    notices = []
+    agent.notice_callback = notices.append  # the gateway wires this per turn, after __init__
+    agent._replay_startup_warnings()
+    assert [n.text for n in notices] == ["Context engine 'cmi' failed to load"]

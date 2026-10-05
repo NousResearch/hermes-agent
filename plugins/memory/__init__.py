@@ -529,27 +529,35 @@ def discover_plugin_cli_commands() -> List[dict]:
     if not plugin_dir or not (plugin_dir / "cli.py").exists():
         return []
 
-    module_name = _module_name(plugin_dir, active_provider) + ".cli"
+    provider_module = _module_name(plugin_dir, active_provider)
+    module_name = provider_module + ".cli"
     if not _is_bundled(plugin_dir):
         from hermes_cli.plugin_isolation import in_process_import_refusal
         if in_process_import_refusal(f"memory provider {active_provider!r} CLI commands"):
             return []
     try:
-        cli_mod = sys.modules.get(module_name)
-        if cli_mod is None:
-            if not _is_bundled(plugin_dir):
-                # cli.py imports as _hermes_user_memory.<name>.cli, usually before the
-                # provider is loaded: register parent packages so its relative imports
-                # resolve without executing the plugin's __init__.py (the shell has no
-                # __file__, so _load_provider_from_dir() still loads the real module).
-                _register_synthetic_package(_USER_NAMESPACE, [])
-                _register_synthetic_package(_module_name(plugin_dir, active_provider), [str(plugin_dir)])
-            spec = importlib.util.spec_from_file_location(module_name, str(plugin_dir / "cli.py"))
-            if not spec or not spec.loader:
-                return []
-            cli_mod = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = cli_mod
-            spec.loader.exec_module(cli_mod)
+        # Same lock as the provider import: both write provider_module(.*) into sys.modules, and an
+        # unlocked cli.py exec raced a half-initialized provider package.
+        with _loader.module_lock(provider_module):
+            cli_mod = sys.modules.get(module_name)
+            if cli_mod is None:
+                if not _is_bundled(plugin_dir):
+                    # cli.py imports as _hermes_user_memory.<name>.cli, usually before the
+                    # provider is loaded: register parent packages so its relative imports
+                    # resolve without executing the plugin's __init__.py (the shell has no
+                    # __file__, so _load_provider_from_dir() still loads the real module).
+                    _register_synthetic_package(_USER_NAMESPACE, [])
+                    _register_synthetic_package(provider_module, [str(plugin_dir)])
+                spec = importlib.util.spec_from_file_location(module_name, str(plugin_dir / "cli.py"))
+                if not spec or not spec.loader:
+                    return []
+                cli_mod = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = cli_mod
+                try:
+                    spec.loader.exec_module(cli_mod)
+                except BaseException:
+                    sys.modules.pop(module_name, None)  # don't cache a broken cli.py: the next call retries
+                    raise
 
         register_cli = getattr(cli_mod, "register_cli", None)
         if not callable(register_cli):

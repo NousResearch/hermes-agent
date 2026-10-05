@@ -12,11 +12,24 @@ import logging
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _log = logging.getLogger(__name__)
 
 _PLUGINS_ROOT = Path(__file__).parent
+
+# One lock per plugin module name, shared by every site that writes ``<name>`` / ``<name>.*`` into
+# sys.modules (this loader, memory CLI discovery, the PluginManager directory loader). A plugin is reserved
+# in sys.modules BEFORE it executes, so an unlocked concurrent writer or reader sees it half-initialized.
+# Keyed per name so unrelated plugins still load in parallel; reentrant for nested plugin imports.
+_MODULE_LOCKS: Dict[str, Any] = {}
+_MODULE_LOCKS_GUARD = threading.Lock()
+
+
+def module_lock(module_name: str) -> Any:
+    """The import lock for plugin *module_name* (an ``RLock``, created on first use)."""
+    with _MODULE_LOCKS_GUARD:
+        return _MODULE_LOCKS.setdefault(module_name, threading.RLock())
 
 
 def register_synthetic_package(name: str, search_locations: List[str]) -> None:
@@ -25,7 +38,7 @@ def register_synthetic_package(name: str, search_locations: List[str]) -> None:
         return
     spec = importlib.machinery.ModuleSpec(name, None, is_package=True)
     spec.submodule_search_locations = search_locations
-    sys.modules[name] = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault(name, importlib.util.module_from_spec(spec))  # never replace a racing writer's
 
 
 def user_plugins_dir() -> Optional[Path]:
@@ -98,16 +111,12 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
     (so ``from ._x import Y`` resolves), then the module. Finally child is bound onto parent and
     siblings onto module — the shape normal imports produce, which monkeypatch relies on.
 
-    Serialized: the module is reserved in sys.modules BEFORE it executes, so a concurrent caller
-    (several agents built at once by the desktop/gateway) took the half-initialized module for a
-    cache hit, found no engine in it, and silently fell back to the built-in compressor."""
-    with _LOAD_LOCK:
+    Serialized per module name (:func:`module_lock`): the module is reserved in sys.modules BEFORE it
+    executes, so a concurrent caller (several agents built at once by the desktop/gateway) took the
+    half-initialized module for a cache hit, found no engine in it, and fell back to the compressor."""
+    with module_lock(module_name):
         return _load_plugin_module_locked(module_name, plugin_dir, parents=parents, logger=logger,
                                           synthetic_namespace=synthetic_namespace)
-
-
-# Reentrant: a plugin's own import may load a sibling plugin through this function.
-_LOAD_LOCK = threading.RLock()
 
 
 def _load_plugin_module_locked(module_name: str, plugin_dir: Path, *, parents: Tuple[str, ...],
@@ -127,8 +136,9 @@ def _load_plugin_module_locked(module_name: str, plugin_dir: Path, *, parents: T
         return cached
     for parent in parents:
         parent_path = _PLUGINS_ROOT.joinpath(*parent.split(".")[1:])
-        if parent not in sys.modules and (parent_path / "__init__.py").exists():
-            _exec(_new_module(parent, parent_path / "__init__.py", [str(parent_path)]))
+        with module_lock(parent):  # shared by every plugin of this kind
+            if parent not in sys.modules and (parent_path / "__init__.py").exists():
+                _exec(_new_module(parent, parent_path / "__init__.py", [str(parent_path)]))
     if synthetic_namespace:
         register_synthetic_package(synthetic_namespace, [])
     # Reserve the name before siblings exec so their relative imports resolve.

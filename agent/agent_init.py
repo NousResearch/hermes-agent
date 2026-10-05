@@ -2296,13 +2296,15 @@ def _emit_compression_summary(agent, cs):
         if _autoraise_notice:
             agent._safe_print(_autoraise_notice, diagnostic=True)
 
+    # Its own queue, not _compression_warning: compression code reassigns that slot before turn 1 and
+    # would drop it. CLI prints now; other drivers get it on the notice rail (replayed on turn 1).
     _engine_notice = getattr(agent, "_context_engine_fallback_notice", None)
-    if _engine_notice and not agent.quiet_mode:
-        agent._safe_print(_engine_notice, diagnostic=True)
+    if _engine_notice:
+        agent._emit_startup_warning(_engine_notice)
 
     # status_callback isn't wired yet: stash for replay on the first turn; mark shown so
     # repeated inits stay silent.
-    agent._compression_warning = "\n".join(n for n in (_engine_notice, _autoraise_notice) if n) or None
+    agent._compression_warning = _autoraise_notice
     if _autoraise_notice:
         _record_codex_gpt55_autoraise_notice(_autoraise)
     # Feasibility check deferred to the first turn near threshold (eager costs ~400ms cold).

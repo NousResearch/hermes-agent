@@ -309,12 +309,124 @@ def test_scoped_wrapper_exit_without_user_bus_names_the_cause_and_invalidates_pr
             return 1
 
     monkeypatch.setattr(scheduler.subprocess, "Popen", lambda *a, **k: DeadWrapper())
-    # Bus gone: systemd_user_bus_env derives nothing.
-    monkeypatch.setattr(pr, "systemd_user_bus_env", lambda base_env=None: dict(base_env or {}))
+    # Bus gone: systemd_user_bus_env derives nothing. Drop any inherited address too —
+    # since #133546 a live configured socket means "bus not lost", and this simulation
+    # must not depend on the test machine exporting one.
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr(
+        pr, "systemd_user_bus_env", lambda base_env=None: dict(base_env or {})
+    )
     monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", True)
     monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", pr.time.monotonic())
 
     with pytest.raises(RuntimeError, match="user D-Bus session .* disappeared"):
+        scheduler._launch_external_cron_worker(job)
+    assert pr._SYSTEMD_SCOPE_AVAILABLE is False
+
+
+def test_scoped_wrapper_pre_ack_exit_with_live_configured_bus_reports_worker_stderr(
+    tmp_path, monkeypatch, request
+):
+    """#133546: a hardened system unit bind-mounts its user bus and exports
+    ``DBUS_SESSION_BUS_ADDRESS`` at a custom path while ``ProtectHome`` hides ``/run/user``.
+    When the worker itself dies before its ack, the error must be the worker exit with its
+    stderr tail — not the D-Bus-disappeared diagnosis — and the cached scope verdict must
+    stay True so dispatch remains scoped."""
+    import socket
+    import tempfile
+
+    import cron.scheduler as scheduler
+    import tools.process_registry as pr
+    from tools.process_registry import GatewayChildDispatch
+
+    runtime_dir = Path(tempfile.mkdtemp(prefix="hbus-live-", dir="/tmp"))
+    runtime_dir.chmod(0o700)
+    bus_path = runtime_dir / "bus"
+    bus_socket = socket.socket(socket.AF_UNIX)
+    bus_socket.bind(str(bus_path))
+
+    def _cleanup():
+        bus_socket.close()
+        bus_path.unlink(missing_ok=True)
+        runtime_dir.rmdir()
+
+    request.addfinalizer(_cleanup)
+
+    job = {"id": "job-live-bus", "execution_id": "exec-1", "prompt": "work"}
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_: GatewayChildDispatch("scoped", ["systemd-run", "--", *command]),
+    )
+    monkeypatch.setattr(scheduler, "mark_execution_handoff_pending",
+                        lambda _eid: {"id": "exec-1", "handoff_pending": 1})
+
+    class DeadWorker:
+        returncode = 1
+
+        def poll(self):
+            return 1
+
+    def _spawn(*_args, **kwargs):
+        os.write(kwargs["stderr"], b"ModuleNotFoundError: No module named 'ruamel'\n")
+        return DeadWorker()
+
+    monkeypatch.setattr(scheduler.subprocess, "Popen", _spawn)
+    # Only the configured address can reach the bus: the derivation finds nothing
+    # (ProtectHome hides /run/user), yet the spawn's socket is alive.
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", f"unix:path={bus_path}")
+    monkeypatch.setattr(
+        pr, "systemd_user_bus_env", lambda base_env=None: dict(base_env or {})
+    )
+    monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", True)
+    monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", pr.time.monotonic())
+
+    with pytest.raises(
+        RuntimeError, match="exited before ownership acknowledgement.*ruamel"
+    ):
+        scheduler._launch_external_cron_worker(job)
+    assert pr._SYSTEMD_SCOPE_AVAILABLE is True
+
+
+def test_scoped_wrapper_lost_bus_diagnosis_keeps_the_worker_stderr_tail(
+    tmp_path, monkeypatch
+):
+    """#133546: even when the lost-bus diagnosis is chosen, the captured worker stderr must not
+    be thrown away — the diagnosis is a heuristic and the real failure may live in the child."""
+    import cron.scheduler as scheduler
+    import tools.process_registry as pr
+    from tools.process_registry import GatewayChildDispatch
+
+    job = {"id": "job-bus-stderr", "execution_id": "exec-1", "prompt": "work"}
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_: GatewayChildDispatch("scoped", ["systemd-run", "--", *command]),
+    )
+    monkeypatch.setattr(scheduler, "mark_execution_handoff_pending",
+                        lambda _eid: {"id": "exec-1", "handoff_pending": 1})
+
+    class DeadWrapper:
+        returncode = 1
+
+        def poll(self):
+            return 1
+
+    def _spawn(*_args, **kwargs):
+        os.write(kwargs["stderr"], b"Failed to connect to bus: No medium found\n")
+        return DeadWrapper()
+
+    monkeypatch.setattr(scheduler.subprocess, "Popen", _spawn)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr(
+        pr, "systemd_user_bus_env", lambda base_env=None: dict(base_env or {})
+    )
+    monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", True)
+    monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", pr.time.monotonic())
+
+    with pytest.raises(
+        RuntimeError, match="user D-Bus session .* disappeared.*Failed to connect to bus"
+    ):
         scheduler._launch_external_cron_worker(job)
     assert pr._SYSTEMD_SCOPE_AVAILABLE is False
 

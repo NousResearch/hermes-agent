@@ -3867,13 +3867,15 @@ def _launch_external_cron_worker(job: dict) -> bool:
             stderr_tail = external_worker_stderr_tail(stderr_path)
             stderr_path.unlink(missing_ok=True)
             if dispatch.mode == "scoped" and scoped_spawn_lost_user_bus(worker_env):
-                # systemd-run itself failed before any worker ran, so the captured stderr
-                # holds nothing useful: name the cause, not the exit code.
+                # The wrapper could not reach the user bus, so the scope was never created:
+                # name that cause, not the exit code. The captured stderr still follows — a
+                # systemd-run connection failure is itself diagnostic, and the bus diagnosis
+                # is a heuristic that must not throw away evidence (#133546).
                 raise RuntimeError(
                     "restart-safe systemd scope could not be created: the user D-Bus session at "
                     f"/run/user/{os.getuid()}/bus disappeared after the gateway started. On a "  # windows-footgun: ok — scoped dispatch exists only on Linux
                     "system-level service install, run `sudo loginctl enable-linger <gateway-user>`; "
-                    "the next fire dispatches without scope isolation."
+                    f"the next fire dispatches without scope isolation.{stderr_tail}"
                 )
             raise RuntimeError(
                 f"cron external worker exited before ownership acknowledgement "

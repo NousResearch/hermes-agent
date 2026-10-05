@@ -395,11 +395,29 @@ def scoped_spawn_lost_user_bus(spawn_env: Dict[str, str]) -> bool:
     cached True verdict is replaced so the next dispatch re-probes and degrades instead of
     consuming another occurrence on the same dead wrapper (#110803).
 
-    *spawn_env* is the environment the wrapper was launched with: re-deriving from it (minus the
-    bus address it carried) honours a configured ``XDG_RUNTIME_DIR`` exactly as the spawn did, so
-    an unrelated wrapper exit on a host whose bus lives outside ``/run/user/<uid>`` is not
-    misread as a lost bus."""
+    *spawn_env* is the environment the wrapper was launched with. The bus address it carries is
+    checked first: a hardened system unit bind-mounts its user bus at a custom path and exports
+    ``DBUS_SESSION_BUS_ADDRESS`` directly, while ``ProtectHome`` hides ``/run/user`` so the
+    derivation below finds nothing — a wrapper exit there is a worker failure, not a lost bus,
+    and must not be misdiagnosed (#133546). When the carried address points nowhere, re-deriving
+    from it (minus that address) honours a configured ``XDG_RUNTIME_DIR`` exactly as the spawn
+    did, so an unrelated wrapper exit on a host whose bus lives outside ``/run/user/<uid>`` is
+    not misread as a lost bus."""
     global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
+    configured = spawn_env.get("DBUS_SESSION_BUS_ADDRESS", "")
+    if configured.startswith("unix:path="):
+        bus_path = Path(configured[len("unix:path=") :].split(",")[0])
+        try:
+            bus_metadata = bus_path.lstat()
+        except OSError:
+            bus_metadata = None
+        # windows-footgun: ok — scoped dispatch exists only on Linux
+        if (
+            bus_metadata is not None
+            and stat.S_ISSOCK(bus_metadata.st_mode)
+            and bus_metadata.st_uid == os.getuid()
+        ):
+            return False
     base_env = dict(spawn_env)
     base_env.pop("DBUS_SESSION_BUS_ADDRESS", None)
     if "DBUS_SESSION_BUS_ADDRESS" in systemd_user_bus_env(base_env):

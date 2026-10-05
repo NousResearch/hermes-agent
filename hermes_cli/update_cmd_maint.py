@@ -929,7 +929,7 @@ def _print_checkpoint_footprint_notice() -> None:
         print(f"\n\033[1;33mℹ  {notice}\033[0m")
 
 
-def _print_post_update_notices_and_self_heals() -> None:
+def _print_post_update_notices_and_self_heals(*, phase: str = "post-update") -> None:
     """Best-effort notices (FTS optimize, curator) and self-heals (FHS PATH, ACP launcher,
     Windows bin launchers, cua-driver refresh) that run after the summary."""
     from hermes_cli.update_cmd import _m, _print_curator_first_run_notice, _print_curator_recent_run_notice
@@ -941,6 +941,8 @@ def _print_post_update_notices_and_self_heals() -> None:
         from hermes_cli._install_repair import migrate_windows_bin_path
         migrate_windows_bin_path(_m().PROJECT_ROOT)
 
+    print(f"\n→ Finishing {phase} maintenance (notices, self-heals; this can take a while)...")
+    had_failures = False
     for message, step in (
         # v23 FTS layout is opt-in (existing indexes untouched); surface the command here.
         ('FTS optimize notice failed: %s', _print_fts_optimize_available_notice),
@@ -956,8 +958,14 @@ def _print_post_update_notices_and_self_heals() -> None:
         # generate each profile's relay-plugins.toml instead of leaving exports silently dead.
         ('Relay exporter migration failed: %s', _migrate_relay_exporter_env),
     ):
-        with _best_effort(message):
+        step_failure = {"failed": False}
+        with _best_effort(message, failure=step_failure):
             step()
+        had_failures |= step_failure["failed"]
+    if had_failures:
+        print(f"⚠ {phase.capitalize()} maintenance finished with warnings.")
+    else:
+        print(f"✓ {phase.capitalize()} maintenance finished.")
 
 
 def _migrate_relay_exporter_env() -> None:
@@ -967,7 +975,7 @@ def _migrate_relay_exporter_env() -> None:
 
 def _run_post_update_maintenance(
     *, assume_yes, gateway_mode, pre_update_snapshot_id, had_desktop_app_before_update,
-    pre_update_version, completion_message=None,
+    pre_update_version, completion_message=None, maintenance_phase="post-update",
 ) -> bool:
     """Post-build housekeeping and completion, returning the SQLite runtime verdict.
 
@@ -1054,5 +1062,5 @@ def _run_post_update_maintenance(
         for line in [*consume_rewritten_notice(), *recorded_standalone_warning_lines()]:
             print(line)
 
-    _print_post_update_notices_and_self_heals()
+    _print_post_update_notices_and_self_heals(phase=maintenance_phase)
     return update_complete

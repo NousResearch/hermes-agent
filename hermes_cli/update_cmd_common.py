@@ -8,7 +8,7 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 
 
 @contextmanager
-def _best_effort(message: str):
+def _best_effort(message: str, *, failure: dict[str, bool] | None = None):
     """Run a non-critical update step; swallow ``Exception`` and log it at debug.
 
     The updater must never die on bookkeeping (receipt, notices, cache seeds):
@@ -17,4 +17,6 @@ def _best_effort(message: str):
     try:
         yield
     except Exception as exc:
+        if failure is not None:
+            failure["failed"] = True
         logger.debug(message, exc)

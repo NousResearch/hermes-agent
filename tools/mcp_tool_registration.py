@@ -573,12 +573,16 @@ def _register_connected_into_current_scope(servers: dict) -> int:
         _record_scope_trust(name, config, scope)
         if registry.get_tool_names_for_toolset(f"mcp-{name}"):
             continue
-        candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout)
+        # The live connection's generation plus this profile's own resolving snapshot.
+        redaction_values = tuple(getattr(server, "_redaction_values", ())) + _mcp_redaction_values(config)
+        candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout,
+                                      redaction_values)
         candidates += _utility_candidates(
             name, _select_utility_schemas(name, server, config), server.tool_timeout)
         names = _register_candidates(
-            name, _resolve_name_collisions(name, candidates),
-            check_fn=_make_check_fn(name), scope=lambda: scope, lazy=False, key=key)
+            name, _resolve_name_collisions(name, candidates, redaction_values),
+            check_fn=_make_check_fn(name), scope=lambda: scope, lazy=False, key=key,
+            redaction_values=redaction_values)
         if names:
             registered_servers += 1
             with _core._lock:

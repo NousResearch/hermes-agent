@@ -164,6 +164,7 @@ class TestControlSocketPath:
         """A deep $TMPDIR + IPv6 host must still produce a control socket
         path that fits once SSH appends its ControlMaster suffix
         (issues #11840, #133436)."""
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
         monkeypatch.setattr("tools.environments.ssh.tempfile.gettempdir",
                             lambda: fake_tmp)
         # Path arithmetic only: never create the control dir on the test host.

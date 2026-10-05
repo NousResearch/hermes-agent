@@ -44,6 +44,29 @@ def _sync_error(reason: str, subject: str, what: str = "the SSH connection") -> 
         reason, retry_hint=f"{subject} failed — verify {what} is healthy, then retry.")
 
 
+def _open_control_dir() -> Path:
+    """Per-user ControlMaster socket dir, short enough for ``sun_path`` (#133436) and proven ours (#80284).
+
+    OpenSSH appends a 17-byte listener suffix to the ControlPath, so a deep profile scratch TMPDIR
+    overflows the 104/108-byte cap; :func:`socket_safe_tmpdir` falls back to the shared ``/tmp``
+    for those. Roots, best first: ``$XDG_RUNTIME_DIR`` (per-user 0700 tmpfs), then the socket-safe
+    root under a per-uid name. A name that is not a real directory we own (pre-created by another
+    user, or a planted symlink) is refused rather than adopted, so it can neither host nor hijack
+    our master; if every predictable name is squatted, a fresh ``mkdtemp`` dir keeps the backend up."""
+    uid_suffix = f"-{os.getuid()}" if hasattr(os, "getuid") else ""
+    shared_root = Path(socket_safe_tmpdir())
+    candidates = [shared_root / f"hermes-ssh{uid_suffix}"]
+    xdg = os.environ.get("XDG_RUNTIME_DIR", "")
+    if os.path.isabs(xdg) and os.path.isdir(xdg):
+        candidates.insert(0, Path(xdg) / "hermes-ssh")
+    for candidate in candidates:
+        try:
+            return Path(ensure_owned_private_dir(candidate))
+        except OSError as exc:
+            logger.warning("SSH: not using control-socket dir %s: %s", candidate, exc)
+    return Path(tempfile.mkdtemp(prefix=f"hermes-ssh{uid_suffix}-", dir=shared_root))
+
+
 class SSHEnvironment(BaseEnvironment):
     """Run commands on a remote machine over SSH.
 
@@ -70,12 +93,7 @@ class SSHEnvironment(BaseEnvironment):
         # idempotent, so callers that already coerced are unaffected.
         super().__init__(cwd=coerce_ssh_remote_cwd(cwd, "ssh"), timeout=timeout, persist_env=persistent)
         self.host, self.user, self.port, self.key_path = host, user, port, key_path
-        # Socket-safe root: a deep profile scratch TMPDIR overflows sun_path once OpenSSH appends
-        # its ControlMaster listener suffix. That root is shared, so the dir is per-user and
-        # verified ours: a pre-created one would otherwise host (or hijack) our master socket.
-        uid_suffix = f"-{os.getuid()}" if hasattr(os, "getuid") else ""
-        self.control_dir = Path(ensure_owned_private_dir(
-            Path(socket_safe_tmpdir()) / f"hermes-ssh{uid_suffix}"))
+        self.control_dir = _open_control_dir()
         # Short, deterministic socket name: the path must stay under macOS's 104-byte sun_path
         # limit (raw user@host:port + SSH's 16-byte suffix under a deep $TMPDIR exceeds it), and
         # stability across reconnects keeps ControlMaster reuse working. A probe gets its own

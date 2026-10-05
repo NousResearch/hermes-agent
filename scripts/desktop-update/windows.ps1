@@ -54,6 +54,7 @@ param(
     [switch]$SelfTestUi,
     [switch]$SelfTestPipeDrain,
     [switch]$SelfTestMarker,
+    [switch]$SelfTestReceipt,
     [switch]$SelfTestWorkingDirectory
 )
 
@@ -62,7 +63,7 @@ if ($PSBoundParameters.ContainsKey("Branch") -and $PSBoundParameters.ContainsKey
 }
 $targetArgs = if ($Channel) { @("--channel", $Channel.ToLowerInvariant()) } else { @("--branch", $Branch) }
 
-if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
+if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $SelfTestReceipt -and -not $InstallRoot) {
     # Mandatory in spirit; relaxed in the signature only so the self-test
     # switches can drive the UI / the pipe drain without a checkout.
     throw "-InstallRoot is required"
@@ -980,15 +981,15 @@ public static class HermesUpdateJob {
         ProcessInformation pi = new ProcessInformation();
         try {
             job = CreateJobObject(IntPtr.Zero, null);
-            if (job == IntPtr.Zero) throw new InvalidOperationException("CreateJobObject failed");
+            if (job == IntPtr.Zero) throw new InvalidOperationException("CreateJobObject failed (error " + Marshal.GetLastWin32Error() + ")");
             SecurityAttributes sa = new SecurityAttributes();
             sa.Length = Marshal.SizeOf(typeof(SecurityAttributes));
             sa.InheritHandle = true;
             if (!CreatePipe(out outRead, out outWrite, ref sa, 0) ||
                 !CreatePipe(out errRead, out errWrite, ref sa, 0))
-                throw new InvalidOperationException("CreatePipe failed");
+                throw new InvalidOperationException("CreatePipe failed (error " + Marshal.GetLastWin32Error() + ")");
             if (!SetHandleInformation(outRead, 1, 0) || !SetHandleInformation(errRead, 1, 0))
-                throw new InvalidOperationException("SetHandleInformation failed");
+                throw new InvalidOperationException("SetHandleInformation failed (error " + Marshal.GetLastWin32Error() + ")");
             // Steps read NUL, never the hand-off console. A step that sees a
             // console asks its question into the captured stdout, where the
             // user cannot see it, and waits for an answer that never comes.
@@ -1005,10 +1006,11 @@ public static class HermesUpdateJob {
             StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
             if (!CreateProcess(executable, commandLine, IntPtr.Zero, IntPtr.Zero, true,
                     0x00000004 | 0x08000000, IntPtr.Zero, null, ref si, out pi))
-                throw new InvalidOperationException("CreateProcess failed");
+                throw new InvalidOperationException("CreateProcess failed (error " + Marshal.GetLastWin32Error() + ")");
             if (!AssignProcessToJobObject(job, pi.Process)) {
+                int assignErr = Marshal.GetLastWin32Error();
                 TerminateProcess(pi.Process, 1);
-                throw new InvalidOperationException("AssignProcessToJobObject failed");
+                throw new InvalidOperationException("AssignProcessToJobObject failed (error " + assignErr + ")");
             }
 
             Process process = Process.GetProcessById(pi.ProcessId);
@@ -1025,7 +1027,7 @@ public static class HermesUpdateJob {
             CloseHandle(outWrite); outWrite = IntPtr.Zero;
             CloseHandle(errWrite); errWrite = IntPtr.Zero;
             if (ResumeThread(pi.Thread) == 0xffffffff)
-                throw new InvalidOperationException("ResumeThread failed");
+                throw new InvalidOperationException("ResumeThread failed (error " + Marshal.GetLastWin32Error() + ")");
             return new StartedProcess { Process = process, StandardOutput = stdout, StandardError = stderr, Job = job };
         } catch {
             if (pi.Process != IntPtr.Zero) TerminateProcess(pi.Process, 1);
@@ -1132,6 +1134,12 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
         $env:PYTHONUTF8 = "1"
         $env:PYTHONUNBUFFERED = "1"
         $started = [HermesUpdateJob]::StartAssigned($Exe, $arguments)
+    } catch {
+        # A terminating launch failure (missing interpreter, Win32 spawn error) must
+        # surface as a structured step result, not escape to the outer try and be
+        # flattened into the opaque "update did not complete" default (#109627).
+        Write-HandoffLog ("{0}!| step launch failed: {1}" -f $Tag, $_.Exception.Message)
+        return @{ Code = 1; Output = $_.Exception.Message; TreeQuiesced = $true; StartedAfterJobAssignment = $false }
     } finally {
         if ($null -eq $savedPythonIoEncoding) { Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue } else { $env:PYTHONIOENCODING = $savedPythonIoEncoding }
         if ($null -eq $savedPythonUtf8) { Remove-Item Env:PYTHONUTF8 -ErrorAction SilentlyContinue } else { $env:PYTHONUTF8 = $savedPythonUtf8 }
@@ -1273,6 +1281,26 @@ function Set-InstallRootCurrentDirectory([string]$Root) {
     $resolved = [System.IO.Path]::GetFullPath($Root)
     [Environment]::CurrentDirectory = $resolved
     return $resolved
+}
+
+# ── Truthful unhandled-exception outcome (#109627) ──────────────────────────
+# The hand-off runs detached with stdio ignored, and the relaunched Desktop
+# consumes .hermes-update-result.json on boot. A terminating exception in the
+# post-update phase used to skip straight to finally, which wrote the script's
+# opaque defaults (exit 1, "update did not complete") — even when the update
+# step itself had exited 0. This mapping derives a truthful verdict instead:
+# the code on disk is the updated one when the step exited 0, so only the
+# post-update phase failed (exit 8, the established "updated but not verified"
+# verdict); otherwise the step's own exit code survives, falling back to 1.
+function Get-HermesUnhandledOutcome($StepResult, $ErrorRecord) {
+    $exMsg = $ErrorRecord.Exception.Message
+    if ($null -ne $StepResult -and $StepResult.Code -eq 0) {
+        return @{ Code = 8
+                  Msg  = "Update completed (exit 0), but a post-update step failed: $exMsg. Check logs\desktop-update-handoff.log." }
+    }
+    $code = if ($null -ne $StepResult -and $StepResult.Code) { $StepResult.Code } else { 1 }
+    return @{ Code = $code
+              Msg  = "Update failed: $exMsg. Check logs\desktop-update-handoff.log." }
 }
 
 $finalCode = 1
@@ -1524,6 +1552,52 @@ exit 3
     exit 0
 }
 
+# -SelfTestReceipt: prove an unhandled post-update exception yields a ------
+# truthful receipt, never the opaque defaults (#109627). Drives
+# Get-HermesUnhandledOutcome with the shapes that matter, then exercises the
+# real Invoke-HermesStep launch-failure path (a nonexistent executable makes
+# StartAssigned's CreateProcess throw; the catch must return a structured
+# failure instead of leaking a terminating exception to the outer try).
+# Exits before any marker/desktop machinery, same as the other self-test arms.
+if ($SelfTestReceipt) {
+    New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
+    $problems = @()
+    $err = $null
+    try { throw [System.InvalidOperationException]::new('simulated post-update crash') } catch { $err = $_ }
+
+    # A completed update (step exit 0) + post-update crash -> exit 8 + the
+    # exception text, never "update did not complete".
+    $o = Get-HermesUnhandledOutcome @{ Code = 0; Output = 'x' } $err
+    if ($o.Code -ne 8) { $problems += "completed-then-crash mapped to exit $($o.Code), expected 8" }
+    if ($o.Msg -notmatch 'simulated post-update crash') { $problems += "completed-then-crash lost the exception text" }
+    if ($o.Msg -eq 'update did not complete') { $problems += "completed-then-crash fell back to the opaque default" }
+
+    # A failed update keeps its own exit code in the receipt.
+    $o = Get-HermesUnhandledOutcome @{ Code = 3; Output = 'x' } $err
+    if ($o.Code -ne 3) { $problems += "failed-step crash mapped to exit $($o.Code), expected the step's 3" }
+    if ($o.Msg -notmatch 'simulated post-update crash') { $problems += "failed-step crash lost the exception text" }
+
+    # No step result at all (crash before the update step) -> exit 1, still truthful.
+    $o = Get-HermesUnhandledOutcome $null $err
+    if ($o.Code -ne 1) { $problems += "pre-step crash mapped to exit $($o.Code), expected 1" }
+    if ($o.Msg -notmatch 'simulated post-update crash') { $problems += "pre-step crash lost the exception text" }
+
+    # The real launch-failure path: a step whose executable cannot spawn must
+    # return a structured Code=1 result carrying the Win32 error, not throw.
+    $badExe = Join-Path ([System.IO.Path]::GetTempPath()) ("hermes-selftest-noexist-" + [guid]::NewGuid().ToString("N") + ".exe")
+    $step = Invoke-HermesStep $badExe @('-c', 'pass') 'selftest-receipt'
+    if ($step.Code -ne 1) { $problems += "unlaunchable step surfaced exit $($step.Code), expected 1" }
+    if ($step.Output -notmatch 'error') { $problems += "unlaunchable step output lacks the failure reason: $($step.Output)" }
+    if ($step.StartedAfterJobAssignment) { $problems += "unlaunchable step claimed a started process" }
+
+    if ($problems.Count -gt 0) {
+        Write-Host "RECEIPT SELF-TEST: FAIL -- $($problems -join '; ')"
+        exit 1
+    }
+    Write-Host "RECEIPT SELF-TEST: PASS"
+    exit 0
+}
+
 $savedConsoleInputMode = if ($script:ConsoleInput) { [HermesHandoff.ConsoleInput]::DisableQuickEdit() } else { $null }
 try {
     New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
@@ -1693,6 +1767,7 @@ try {
         $verifyCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot -Module 'hermes_cli.desktop_update_verify')
         $verifyArgs = @($verifyCommand | Select-Object -Skip 1)
         $verify = Invoke-HermesStep $verifyCommand[0] $verifyArgs 'verify'
+        Write-HandoffLog "verify exit code: $($verify.Code)"
         if ($verify.Code -ne 0) {
             $finalCode = 8
             $finalMsg = "Hermes was updated, but the new Desktop build could not be verified. Nothing was removed. If Hermes does not start normally, run 'hermes desktop --force-build' in a terminal to rebuild it."
@@ -1742,6 +1817,14 @@ try {
         $finalMsg = "Update failed (exit $($res.Code)). Run `hermes debug share` in a terminal to send a report."
     }
     exit $finalCode
+} catch {
+    # #109627: capture the failure with full stack into the hand-off log and
+    # derive a truthful receipt from the step's real exit code.
+    $script:UnhandledException = $_
+    Write-HandoffLog ("CRITICAL: unhandled error in hand-off: {0}`n{1}" -f $_.Exception.Message, $_.ScriptStackTrace)
+    $outcome = Get-HermesUnhandledOutcome $res $_
+    $finalCode = $outcome.Code
+    $finalMsg = $outcome.Msg
 } finally {
     # Truth ordering (sibling contract to posix.sh finish()):
     #   1. durable result + marker removal (the relaunched Desktop consumes
@@ -1762,6 +1845,16 @@ try {
         Show-ErrorFinale $finalMsg
         Close-ProgressWindow
     } else {
+        if ($null -ne $script:UnhandledException -and $finalMsg -eq "update did not complete") {
+            # Belt-and-suspenders: the catch above already set a truthful code/message,
+            # but if any path still reaches the defaults with a captured exception,
+            # never write the opaque fallback into the receipt (#109627).
+            $finalMsg = if ($null -ne $res -and $res.Code -eq 0) {
+                "Update completed (exit 0), but a post-update step failed: $($script:UnhandledException.Exception.Message). Check logs\desktop-update-handoff.log."
+            } else {
+                "Update failed: $($script:UnhandledException.Exception.Message). Check logs\desktop-update-handoff.log."
+            }
+        }
         if ($finalCode -eq 0 -and $manualAction) { $finalMsg = $manualMsg }
         Write-Result ($finalCode -eq 0) $finalCode $finalMsg ($finalCode -eq 0 -and $manualAction)
         Remove-MarkerIfOwned

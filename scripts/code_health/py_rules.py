@@ -346,18 +346,29 @@ def unscoped_secret_fallback(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
                 break
 
 
+def _is_capture(node: ast.AST) -> bool:
+    if isinstance(node, ast.Call):
+        name = _call_name(node)
+        if name.rsplit(".", 1)[-1] in _CAPTURE_CALLS or name.endswith("Path.home"):
+            return True
+    return bool(_env_read_name(node))
+
+
 def _capture_lines(expr: ast.AST) -> Iterator[int]:
-    # Deferred bodies (lambda, def, generator element) read at call time: that is the fix.
-    for node in _eager(expr):
-        if isinstance(node, ast.Call):
-            name = _call_name(node)
-            leaf = name.rsplit(".", 1)[-1]
-            if leaf in _CAPTURE_CALLS or name.endswith("Path.home"):
-                yield node.lineno
-                return
-        if _env_read_name(node):
+    """Every independent capture ``expr`` evaluates: each dict entry or list item is its own
+    occurrence, so one added next to an existing one is new debt. A capture nested inside
+    another (``expanduser(getenv(...))``) is the same occurrence and is not entered.
+    Deferred bodies (lambda, def, generator element) read at call time: that is the fix."""
+    stack = [expr]
+    while stack:
+        node = stack.pop()
+        parts = _deferred_parts(node)
+        if parts is not None:
+            stack.extend(parts)
+        elif _is_capture(node):
             yield getattr(node, "lineno", 0)
-            return
+        else:
+            stack.extend(ast.iter_child_nodes(node))
 
 
 def _main_guard(stmt: ast.stmt) -> str | None:

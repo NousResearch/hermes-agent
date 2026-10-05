@@ -45,6 +45,7 @@ gateway:
     usage_switch_model:     "`/model <name>` — モデルを切り替え"
     usage_switch_provider:  "`/model <name> --provider <slug>` — プロバイダーを切り替え"
     usage_persist:          "`/model <name> --global` — 永続化"
+    usage_list_cap:         "`/model --list-by-provider <n>` — プロバイダーごとのモデル数"
 
   agents:
     header:                "🤖 **アクティブなエージェントとタスク**"

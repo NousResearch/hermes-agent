@@ -49,6 +49,7 @@ gateway:
     usage_switch_model:     "`/model <name>` — athraigh an tsamhail"
     usage_switch_provider:  "`/model <name> --provider <slug>` — athraigh an soláthraí"
     usage_persist:          "`/model <name> --global` — coinnigh"
+    usage_list_cap:         "`/model --list-by-provider <n>` — samhlacha in aghaidh an sholáthraí"
 
   agents:
     header:                "🤖 **Gníomhairí & Tascanna Gníomhacha**"

@@ -45,6 +45,7 @@ gateway:
     usage_switch_model:     "`/model <name>` — змінити модель"
     usage_switch_provider:  "`/model <name> --provider <slug>` — змінити провайдера"
     usage_persist:          "`/model <name> --global` — зберегти назавжди"
+    usage_list_cap:         "`/model --list-by-provider <n>` — моделей на провайдера"
 
   agents:
     header:                "🤖 **Активні агенти та завдання**"

@@ -45,6 +45,7 @@ gateway:
     usage_switch_model:     "`/model <name>` — changer de modèle"
     usage_switch_provider:  "`/model <name> --provider <slug>` — changer de fournisseur"
     usage_persist:          "`/model <name> --global` — conserver"
+    usage_list_cap:         "`/model --list-by-provider <n>` — modèles par fournisseur"
 
   agents:
     header:                "🤖 **Agents et tâches actifs**"

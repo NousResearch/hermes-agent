@@ -45,6 +45,7 @@ gateway:
     usage_switch_model:     "`/model <name>` — modeli değiştir"
     usage_switch_provider:  "`/model <name> --provider <slug>` — sağlayıcıyı değiştir"
     usage_persist:          "`/model <name> --global` — kalıcı kaydet"
+    usage_list_cap:         "`/model --list-by-provider <n>` — sağlayıcı başına model"
 
   agents:
     header:                "🤖 **Aktif Ajanlar ve Görevler**"

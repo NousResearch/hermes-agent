@@ -107,6 +107,14 @@ model:
   # only.
   # streaming: true
 
+  # Models shown per provider in the chat /model list (default: 50). Raise it on a
+  # self-hosted endpoint that serves many ids under one provider; the text list and the
+  # interactive picker are sized by the same number. Discord renders at most 75 per
+  # provider, so a larger value is clipped there.
+  # Per-user instead: /model --list-by-provider <n> (never written here — a chat
+  # command must not change another user's list).
+  # max_models_per_provider: 50
+
   # Azure Foundry keyless auth example:
   # provider: "azure-foundry"
   # base_url: "https://<resource>.openai.azure.com/openai/v1"

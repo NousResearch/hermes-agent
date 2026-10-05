@@ -68,6 +68,7 @@ gateway:
     usage_switch_model:     "`/model <name>` — تبديل النموذج"
     usage_switch_provider:  "`/model <name> --provider <slug>` — تبديل المزوّد"
     usage_persist:          "`/model <name> --global` — حفظ دائم"
+    usage_list_cap:         "`/model --list-by-provider <n>` — النماذج لكل مزوّد"
 
   agents:
     header:                "🤖 **الوكلاء والمهام النشطة**"

@@ -45,6 +45,7 @@ gateway:
     usage_switch_model:     "`/model <name>` — 모델 전환"
     usage_switch_provider:  "`/model <name> --provider <slug>` — 제공자 전환"
     usage_persist:          "`/model <name> --global` — 영구 저장"
+    usage_list_cap:         "`/model --list-by-provider <n>` — 제공자별 모델 수"
 
   agents:
     header:                "🤖 **활성 에이전트 및 작업**"

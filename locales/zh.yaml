@@ -45,6 +45,7 @@ gateway:
     usage_switch_model:     "`/model <name>` — 切换模型"
     usage_switch_provider:  "`/model <name> --provider <slug>` — 切换提供方"
     usage_persist:          "`/model <name> --global` — 永久保存"
+    usage_list_cap:         "`/model --list-by-provider <n>` — 每个供应商的模型数"
 
   agents:
     header:                "🤖 **活跃代理与任务**"

@@ -145,8 +145,9 @@ class GatewayAgentCacheMixin:
 
     def _rehydrate_session_model_override(self, session_key: str) -> None:
         """Lazily restore a persisted /model override after a gateway restart: non-secret parts
-        (model/provider/base_url) are written through on /model and read back on first use; api_key
-        is never persisted and is re-resolved. No-op when an in-memory override or nothing exists."""
+        (model/provider/base_url, plus the per-user ``list_by_provider`` cap) are written through on
+        /model and read back on first use; api_key is never persisted and is re-resolved. No-op when
+        an in-memory override or nothing exists."""
         from gateway.run import _resolve_runtime_agent_kwargs_for_provider
         store = getattr(self, "session_store", None)
         if self._session_model_override(session_key) is not None or store is None:
@@ -159,6 +160,10 @@ class GatewayAgentCacheMixin:
         if not persisted:
             return
         override: Dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
+        # The per-user list cap rides the same persisted dict; reading only the route keys here would
+        # drop it on the first turn after a restart, which is the one thing the flag promises to survive.
+        if persisted.get("list_by_provider") not in (None, ""):
+            override["list_by_provider"] = persisted["list_by_provider"]
         provider = persisted.get("provider")
         from hermes_cli.runtime_provider import is_foreign_provider_endpoint
         if is_foreign_provider_endpoint(provider, override.get("base_url")):

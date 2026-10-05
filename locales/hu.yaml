@@ -45,6 +45,7 @@ gateway:
     usage_switch_model:     "`/model <name>` — modell váltása"
     usage_switch_provider:  "`/model <name> --provider <slug>` — szolgáltató váltása"
     usage_persist:          "`/model <name> --global` — megőrzés"
+    usage_list_cap:         "`/model --list-by-provider <n>` — modell szolgáltatónként"
 
   agents:
     header:                "🤖 **Aktív ügynökök és feladatok**"

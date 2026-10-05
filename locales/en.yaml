@@ -60,6 +60,7 @@ gateway:
     usage_switch_model:     "`/model <name>` — switch model"
     usage_switch_provider:  "`/model <name> --provider <slug>` — switch provider"
     usage_persist:          "`/model <name> --global` — persist"
+    usage_list_cap:         "`/model --list-by-provider <n>` — models per provider"
 
   agents:
     header:                "🤖 **Active Agents & Tasks**"

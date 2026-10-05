@@ -105,11 +105,25 @@ function handoffRunMismatch(
     return runId !== expectedRunId ? `[updates] hand-off result is for run ${runId}, not ${expectedRunId}; discarded` : null
   }
 
-  if (expectedStartedAt !== null && Number.isFinite(startedAt) && startedAt !== expectedStartedAt) {
+  if (expectedStartedAt !== null && Number.isFinite(startedAt) && !lineTwoWithinRun(expectedStartedAt, parsed)) {
     return `[updates] hand-off result is for the run started at ${startedAt}, not ${expectedStartedAt}; discarded`
   }
 
   return null
+}
+
+/**
+ * Whether the marker line 2 this boot saw belongs to the result's run. The
+ * scripts' heartbeat rewrites line 2 with the current time every 5 minutes
+ * while their run lives (old Desktops age-delete a marker 20 minutes after
+ * line 2), so a marker without a `run:` line can show any time from the run's
+ * start to its finish. A finished earlier run ended before this one began.
+ */
+function lineTwoWithinRun(lineTwo: number, parsed: any): boolean {
+  const startedAt = Number(parsed?.started_at)
+  const finishedAt = Number(parsed?.finished_at)
+
+  return lineTwo === startedAt || (lineTwo > startedAt && Number.isFinite(finishedAt) && lineTwo <= finishedAt)
 }
 
 function toHandoffResult(parsed: any, manual: boolean): HandoffResult {
@@ -128,7 +142,8 @@ function toHandoffResult(parsed: any, manual: boolean): HandoffResult {
  * `.corrupt` and logged — never silently dropped — so a torn result stays
  * inspectable. Match the stable marker run ID, not line 2 (a heartbeat that
  * can change before this Desktop even opens). Only older producers without
- * run_id, or boots without an identified marker, use started_at correlation.
+ * run_id, or boots without an identified marker, use line 2, and then as a
+ * time inside the run (started_at..finished_at), never as its exact start.
  */
 export function readAndConsumeHandoffResult(
   hermesHome: string,

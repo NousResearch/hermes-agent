@@ -740,8 +740,8 @@ def test_review_dispatch_skips_unresolvable_injected_skill_and_records_on_card(
     # ...but the harness still tells the worker which names it meant to inject.
     assert advisory_seen == [("sdlc-review",)]
     # ...and the skip is visible on the card, not only in a log line.
-    assert "review_skill_skipped" in events
-    assert any("does not resolve for profile reviewer" in body for body in comments)
+    assert "injected_skill_skipped" in events
+    assert any("do not resolve for profile" in body for body in comments)
 
 
 def test_ready_dispatch_keeps_an_unresolvable_card_skill_and_records_it(

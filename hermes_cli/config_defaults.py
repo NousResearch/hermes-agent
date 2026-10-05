@@ -1900,6 +1900,13 @@ DEFAULT_CONFIG = {
         # card, never handed to the worker (its preload loader raises on an unknown name and the run
         # dies at INIT). [] disables the injection entirely.
         "review_skills": ["sdlc-review"],
+        # Skills injected into EVERY card's worker (not only a review run), resolved per LANE at
+        # claim time under that lane's profile scope. Shape: a lane-id / prefix-glob (``platform-*``)
+        # / ``"*"`` floor -> skill names mapping, UNIONED most-specific-first; a flat list is the
+        # ``"*"`` floor. Same ADVISORY contract as ``review_skills``: a name that does not resolve
+        # for the assignee is SKIPPED, recorded on the card, and never handed to the preload loader.
+        # {} disables the layer.
+        "injected_skills": {},
         # Seconds between dispatcher ticks. Lower = snappier pickup; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,

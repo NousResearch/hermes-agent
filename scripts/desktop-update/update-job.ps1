@@ -4,7 +4,9 @@
 # SUSPENDED inside a private job (kill-on-close until Resume), so windows.ps1
 # can publish the update marker's delegate before the first instruction runs.
 
-if (-not ("HermesUpdateJob" -as [type])) {
+function Initialize-HermesUpdateJob {
+    # Compile the helper once per PowerShell session (Add-Type cannot redefine a type).
+    if ("HermesUpdateJob" -as [type]) { return }
     Add-Type -TypeDefinition @'
 using System;
 using System.Diagnostics;
@@ -300,3 +302,5 @@ public static class HermesUpdateJob {
 }
 '@
 }
+
+Initialize-HermesUpdateJob

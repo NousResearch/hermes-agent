@@ -2,7 +2,6 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
 import { introZh } from './intro-zh'
-import { zhModelMenu } from './zh_model_menu'
 
 export const zh = defineLocale({
   externalOpenFailed: {
@@ -766,7 +765,9 @@ export const zh = defineLocale({
       testUnsupported: '此系统不支持原生通知。',
       completionSoundTitle: '完成提示音',
       completionSoundDesc: '智能体回合结束时播放。可在此选择预设并预览。',
-      completionSoundPreview: '预览'
+      completionSoundPreview: '预览',
+      soundVolumeTitle: '提示音音量',
+      soundVolumeDesc: '调整回合结束与唤醒提示音的音量,与系统音量无关。'
     },
     sections: {
       model: '模型',
@@ -2732,9 +2733,6 @@ export const zh = defineLocale({
     replaceValue: '替换当前值',
     openDocs: '打开文档',
     clearField: key => `清除 ${key}`,
-    addListEntry: '再添加一个',
-    removeListEntry: '移除',
-    listEntryPlaceholder: '输入 ID',
     enableAria: name => `启用 ${name}`,
     disableAria: name => `禁用 ${name}`,
     platformEnabled: name => `${name} 已启用`,
@@ -2806,11 +2804,11 @@ export const zh = defineLocale({
       },
       TELEGRAM_ALLOWED_USERS: {
         label: '允许的 Telegram 用户 ID',
-        help: '推荐。来自 @userinfobot 的数字 ID（每格一个）。不设置则任何人都能私信你的机器人。'
+        help: '推荐。来自 @userinfobot 的逗号分隔数字 ID。不设置则任何人都能私信你的机器人。'
       },
       TELEGRAM_PROXY: { label: '代理 URL', help: '仅在 Telegram 被屏蔽的网络中需要。' },
       DISCORD_BOT_TOKEN: { label: 'Bot 令牌', help: '在 Discord 开发者门户创建应用，添加机器人，然后粘贴其令牌。' },
-      DISCORD_ALLOWED_USERS: { label: '允许的 Discord 用户 ID', help: '推荐。Discord 用户 ID（每格一个）。' },
+      DISCORD_ALLOWED_USERS: { label: '允许的 Discord 用户 ID', help: '推荐。逗号分隔的 Discord 用户 ID。' },
       DISCORD_REPLY_TO_MODE: { label: '回复方式', help: 'first、all 或 off。' },
       DISCORD_ALLOW_ALL_USERS: {
         label: '允许所有 Discord 用户',
@@ -2834,24 +2832,24 @@ export const zh = defineLocale({
         help: 'Socket Mode 需要 app 级令牌。',
         placeholder: '粘贴 Slack app 令牌'
       },
-      SLACK_ALLOWED_USERS: { label: '允许的 Slack 用户 ID', help: '推荐。Slack 用户 ID（每格一个）。' },
+      SLACK_ALLOWED_USERS: { label: '允许的 Slack 用户 ID', help: '推荐。逗号分隔的 Slack 用户 ID。' },
       MATTERMOST_URL: { label: '服务器 URL', placeholder: 'https://mattermost.example.com' },
       MATTERMOST_TOKEN: { label: 'Bot 令牌' },
-      MATTERMOST_ALLOWED_USERS: { label: '允许的用户 ID', help: '推荐。Mattermost 用户 ID（每格一个）。' },
+      MATTERMOST_ALLOWED_USERS: { label: '允许的用户 ID', help: '推荐。逗号分隔的 Mattermost 用户 ID。' },
       MATRIX_HOMESERVER: { label: 'Homeserver URL', placeholder: 'https://matrix.org' },
       MATRIX_ACCESS_TOKEN: { label: '访问令牌' },
       MATRIX_USER_ID: { label: 'Bot 用户 ID', placeholder: '@hermes:example.org' },
-      MATRIX_ALLOWED_USERS: { label: '允许的 Matrix 用户 ID', help: '推荐。@user:server 格式的用户 ID（每格一个）。' },
+      MATRIX_ALLOWED_USERS: { label: '允许的 Matrix 用户 ID', help: '推荐。@user:server 格式的逗号分隔用户 ID。' },
       SIGNAL_HTTP_URL: {
         label: 'Signal 桥接 URL',
         placeholder: 'http://127.0.0.1:8080',
         help: '运行中的 signal-cli REST 桥接的 URL。'
       },
       SIGNAL_ACCOUNT: { label: '电话号码', help: '在 signal-cli 桥接中注册的号码。' },
-      SIGNAL_ALLOWED_USERS: { label: '允许的 Signal 用户', help: '推荐。Signal 标识符（每格一个）。' },
+      SIGNAL_ALLOWED_USERS: { label: '允许的 Signal 用户', help: '推荐。逗号分隔的 Signal 标识符。' },
       WHATSAPP_ENABLED: { label: '启用 WhatsApp 桥接', help: '由下方开关自动设置。除非确知需要，否则请勿改动。' },
       WHATSAPP_MODE: { label: '桥接模式' },
-      WHATSAPP_ALLOWED_USERS: { label: '允许的 WhatsApp 用户', help: '推荐。电话号码或 WhatsApp ID（每格一个）。' }
+      WHATSAPP_ALLOWED_USERS: { label: '允许的 WhatsApp 用户', help: '推荐。逗号分隔的电话号码或 WhatsApp ID。' }
     },
     platformIntro: {
       telegram:
@@ -4306,7 +4304,22 @@ export const zh = defineLocale({
     windowControls: '窗口控件',
     paneControls: '面板控件',
     appControls: '应用控件',
-    modelMenu: zhModelMenu,
+    modelMenu: {
+      search: '搜索模型',
+      noModels: '未找到模型',
+      editModels: '编辑模型…',
+      followDefault: '使用设置中的默认模型',
+      refreshModels: '刷新模型',
+      favorites: '收藏',
+      addFavorite: '添加到收藏',
+      removeFavorite: '从收藏中移除',
+      favoriteShortcut: '⇧ 单击',
+      fast: '快速',
+      free: '免费',
+      cacheRead: '缓存读取',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `输入 ${input}/Mtok · 输出 ${output}/Mtok` + (cache ? ` · 缓存读取 ${cache}/Mtok` : '')
+    },
     modelOptions: {
       noOptions: '此模型没有可用选项',
       options: '选项',
@@ -5035,6 +5048,8 @@ export const zh = defineLocale({
     sessionUnavailable: '会话不可用',
     createSessionFailed: '无法创建新会话',
     promptFailed: '提示词发送失败',
+    staleSessionTitle: '对话已过期',
+    staleSessionBody: '此窗口落后于同一对话的其他窗口。已加载最新消息。若仍要发送请再试一次。',
     providerCredentialRequired: '发送第一条消息前请先添加提供方凭据。',
     emptySlashCommand: '空 slash 命令',
     slashCommandIgnoredTitle: '命令未发送',

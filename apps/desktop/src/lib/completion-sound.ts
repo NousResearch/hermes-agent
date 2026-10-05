@@ -5,6 +5,7 @@ import { getAudioContext } from '@/lib/audio-context'
 import { ownsAmbientCue } from '@/store/ambient'
 import { $completionSoundVariantId, resolveCompletionSoundVariantId } from '@/store/completion-sound'
 import { $hapticsMuted } from '@/store/haptics'
+import { $soundCueVolume } from '@/store/sound-cue-volume'
 
 type OscType = OscillatorType
 
@@ -393,26 +394,41 @@ function playVariant(variantId: number) {
     return
   }
 
-  // Signal path: voices → master → low-pass → (dry + reverb send) → out.
+  // Signal path: voices → master → low-pass → (dry + reverb send) → limiter
+  // → out. Base loudness is 0.48 at the default 1x user volume;
+  // $soundCueVolume (Settings → Notifications → Sound Volume, 0-6x) scales
+  // it from there, independent of the OS system/alert volume. The per-voice
+  // envelope peaks above are deliberately tiny (0.01-0.07) so the limiter
+  // on the shared bus is what makes the high end of the slider actually
+  // loud instead of just less quiet: it lets the raw gain run well past
+  // digital unity while clamping the output so it never distorts.
+  const limiter = ac.createDynamicsCompressor()
+  limiter.threshold.setValueAtTime(-24, ac.currentTime)
+  limiter.knee.setValueAtTime(6, ac.currentTime)
+  limiter.ratio.setValueAtTime(20, ac.currentTime)
+  limiter.attack.setValueAtTime(0.002, ac.currentTime)
+  limiter.release.setValueAtTime(0.12, ac.currentTime)
+  limiter.connect(ac.destination)
+
   const master = ac.createGain()
   const tone = ac.createBiquadFilter()
   tone.type = 'lowpass'
   tone.frequency.setValueAtTime(3800, ac.currentTime)
   tone.Q.setValueAtTime(0.32, ac.currentTime)
-  master.gain.setValueAtTime(0.48, ac.currentTime)
+  master.gain.setValueAtTime(0.48 * $soundCueVolume.get(), ac.currentTime)
   master.connect(tone)
 
   const dry = ac.createGain()
   dry.gain.setValueAtTime(0.88, ac.currentTime)
   tone.connect(dry)
-  dry.connect(ac.destination)
+  dry.connect(limiter)
 
   const reverb = makeReverb(ac)
   const wet = ac.createGain()
   wet.gain.setValueAtTime(0.34, ac.currentTime)
   tone.connect(reverb)
   reverb.connect(wet)
-  wet.connect(ac.destination)
+  wet.connect(limiter)
 
   variant.play(ac, master, ac.currentTime + 0.01)
 }

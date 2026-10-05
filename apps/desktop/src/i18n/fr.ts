@@ -1,7 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
-import { frModelMenu } from './fr_model_menu'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
@@ -1100,7 +1099,10 @@ export const frOverrides = {
       testUnsupported: 'Ce système ne prend pas en charge les notifications natives.',
       completionSoundTitle: 'Son de fin',
       completionSoundDesc: "Se joue à la fin d'un tour d'agent. Choisissez un préréglage et prévisualisez-le ici.",
-      completionSoundPreview: 'Aperçu'
+      completionSoundPreview: 'Aperçu',
+      soundVolumeTitle: 'Volume des sons',
+      soundVolumeDesc:
+        "Règle le volume des bips de fin de tour et de réveil, indépendamment du volume système."
     },
     sections: {
       model: 'Modèle',
@@ -3325,9 +3327,6 @@ export const frOverrides = {
     replaceValue: 'Remplacer la valeur actuelle',
     openDocs: 'Ouvrir la documentation',
     clearField: key => `Effacer ${key}`,
-    addListEntry: 'Ajouter',
-    removeListEntry: 'Retirer',
-    listEntryPlaceholder: 'Saisir un identifiant',
     enableAria: name => `Activer ${name}`,
     disableAria: name => `Désactiver ${name}`,
     platformEnabled: name => `${name} activé`,
@@ -3408,7 +3407,7 @@ export const frOverrides = {
       },
       TELEGRAM_ALLOWED_USERS: {
         label: "IDs d'utilisateurs Telegram autorisés",
-        help: "Recommandé. IDs numériques (un par case) depuis @userinfobot. Sans cela, n'importe qui peut envoyer un message privé à votre bot."
+        help: "Recommandé. IDs numériques séparés par des virgules depuis @userinfobot. Sans cela, n'importe qui peut envoyer un message privé à votre bot."
       },
       TELEGRAM_PROXY: {
         label: 'URL du proxy',
@@ -3420,7 +3419,7 @@ export const frOverrides = {
       },
       DISCORD_ALLOWED_USERS: {
         label: "IDs d'utilisateurs Discord autorisés",
-        help: "Recommandé. IDs d'utilisateurs Discord (un par case)."
+        help: "Recommandé. IDs d'utilisateurs Discord séparés par des virgules."
       },
       DISCORD_REPLY_TO_MODE: {
         label: 'Style de réponse',
@@ -3470,7 +3469,7 @@ export const frOverrides = {
       },
       SLACK_ALLOWED_USERS: {
         label: "IDs d'utilisateurs Slack autorisés",
-        help: "Recommandé. IDs d'utilisateurs Slack (un par case)."
+        help: "Recommandé. IDs d'utilisateurs Slack séparés par des virgules."
       },
       MATTERMOST_URL: {
         label: 'URL du serveur',
@@ -3481,7 +3480,7 @@ export const frOverrides = {
       },
       MATTERMOST_ALLOWED_USERS: {
         label: "IDs d'utilisateurs autorisés",
-        help: "Recommandé. IDs d'utilisateurs Mattermost (un par case)."
+        help: "Recommandé. IDs d'utilisateurs Mattermost séparés par des virgules."
       },
       MATRIX_HOMESERVER: {
         label: 'URL du homeserver',
@@ -3496,7 +3495,7 @@ export const frOverrides = {
       },
       MATRIX_ALLOWED_USERS: {
         label: "IDs d'utilisateurs Matrix autorisés",
-        help: "Recommandé. IDs d'utilisateurs (un par case) au format @utilisateur:serveur."
+        help: "Recommandé. IDs d'utilisateurs séparés par des virgules au format @utilisateur:serveur."
       },
       SIGNAL_HTTP_URL: {
         label: 'URL du pont Signal',
@@ -3509,7 +3508,7 @@ export const frOverrides = {
       },
       SIGNAL_ALLOWED_USERS: {
         label: 'Utilisateurs Signal autorisés',
-        help: 'Recommandé. Identifiants Signal (un par case).'
+        help: 'Recommandé. Identifiants Signal séparés par des virgules.'
       },
       WHATSAPP_ENABLED: {
         label: 'Activer le pont WhatsApp',
@@ -3520,7 +3519,7 @@ export const frOverrides = {
       },
       WHATSAPP_ALLOWED_USERS: {
         label: 'Utilisateurs WhatsApp autorisés',
-        help: 'Recommandé. Numéros de téléphone ou IDs WhatsApp (un par case).'
+        help: 'Recommandé. Numéros de téléphone ou IDs WhatsApp séparés par des virgules.'
       }
     },
     platformIntro: {}
@@ -5064,7 +5063,22 @@ export const frOverrides = {
     windowControls: 'Contrôles de fenêtre',
     paneControls: 'Contrôles de panneau',
     appControls: "Contrôles d'application",
-    modelMenu: frModelMenu,
+    modelMenu: {
+      search: 'Rechercher des modèles',
+      noModels: 'Aucun modèle trouvé',
+      editModels: 'Modifier les modèles…',
+      followDefault: 'Utiliser le modèle par défaut des Réglages',
+      refreshModels: 'Actualiser les modèles',
+      favorites: 'Favoris',
+      addFavorite: 'Ajouter aux favoris',
+      removeFavorite: 'Retirer des favoris',
+      favoriteShortcut: '⇧ Clic',
+      fast: 'Rapide',
+      free: 'gratuit',
+      cacheRead: 'lecture en cache',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `Entrée ${input}/Mtok · Sortie ${output}/Mtok` + (cache ? ` · Lecture en cache ${cache}/Mtok` : '')
+    },
     modelOptions: {
       noOptions: 'Aucune option pour ce modèle',
       options: 'Options',
@@ -6026,6 +6040,9 @@ export const frOverrides = {
     sessionUnavailable: 'Session indisponible',
     createSessionFailed: 'Impossible de créer une nouvelle session',
     promptFailed: "Échec de l'invite",
+    staleSessionTitle: 'Conversation obsolète',
+    staleSessionBody:
+      'Cette fenêtre était en retard sur une autre vue du même chat. Les derniers messages ont été chargés. Renvoyez si vous le souhaitez encore.',
     providerCredentialRequired: "Ajoutez un identifiant de fournisseur avant d'envoyer votre premier message.",
     emptySlashCommand: 'commande slash vide',
     desktopCommands: 'Commandes Desktop',

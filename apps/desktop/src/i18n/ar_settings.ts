@@ -217,7 +217,9 @@ export const arSettings = {
       testUnsupported: 'هذا النظام لا يدعم الإشعارات الأصلية.',
       completionSoundTitle: 'صوت الاكتمال',
       completionSoundDesc: 'يُشغّل عند انتهاء دور الوكيل. اختر إعدادا مسبقا وعاينه هنا.',
-      completionSoundPreview: 'معاينة'
+      completionSoundPreview: 'معاينة',
+      soundVolumeTitle: 'مستوى صوت التنبيهات',
+      soundVolumeDesc: 'ضبط مستوى صوت نغمات انتهاء الدور والتنبيه، بشكل مستقل عن مستوى صوت النظام.'
     },
     sections: {
       model: 'النموذج',

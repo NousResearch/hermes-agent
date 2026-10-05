@@ -1,6 +1,5 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
-import { enModelMenu } from './en_model_menu'
 import type { Translations } from './types'
 
 export const en: Translations = {
@@ -1081,7 +1080,9 @@ export const en: Translations = {
       testUnsupported: 'This system does not support native notifications.',
       completionSoundTitle: 'Completion Sound',
       completionSoundDesc: 'Plays when an agent turn finishes. Pick a preset and preview it here.',
-      completionSoundPreview: 'Preview'
+      completionSoundPreview: 'Preview',
+      soundVolumeTitle: 'Sound Volume',
+      soundVolumeDesc: 'Adjust how loud turn-end and wake chimes play, independent of your system volume.'
     },
     sections: {
       model: 'Model',
@@ -2934,9 +2935,6 @@ export const en: Translations = {
     replaceValue: 'Replace current value',
     openDocs: 'Open docs',
     clearField: key => `Clear ${key}`,
-    addListEntry: 'Add another',
-    removeListEntry: 'Remove',
-    listEntryPlaceholder: 'Enter an ID',
     enableAria: name => `Enable ${name}`,
     disableAria: name => `Disable ${name}`,
     platformEnabled: name => `${name} enabled`,
@@ -3013,7 +3011,7 @@ export const en: Translations = {
       },
       TELEGRAM_ALLOWED_USERS: {
         label: 'Allowed Telegram user IDs',
-        help: 'Recommended. Numeric IDs from @userinfobot, one per box. Without this, anyone can DM your bot.'
+        help: 'Recommended. Comma-separated numeric IDs from @userinfobot. Without this, anyone can DM your bot.'
       },
       TELEGRAM_PROXY: { label: 'Proxy URL', help: 'Only needed on networks where Telegram is blocked.' },
       DISCORD_BOT_TOKEN: {
@@ -3022,7 +3020,7 @@ export const en: Translations = {
       },
       DISCORD_ALLOWED_USERS: {
         label: 'Allowed Discord user IDs',
-        help: 'Recommended. Discord user IDs, one per box.'
+        help: 'Recommended. Comma-separated Discord user IDs.'
       },
       DISCORD_REPLY_TO_MODE: { label: 'Reply style', help: 'first, all, or off.' },
       DISCORD_ALLOW_ALL_USERS: {
@@ -3056,19 +3054,19 @@ export const en: Translations = {
         help: 'Use the app-level token required for Socket Mode.',
         placeholder: 'Paste Slack app token'
       },
-      SLACK_ALLOWED_USERS: { label: 'Allowed Slack user IDs', help: 'Recommended. Slack user IDs, one per box.' },
+      SLACK_ALLOWED_USERS: { label: 'Allowed Slack user IDs', help: 'Recommended. Comma-separated Slack user IDs.' },
       MATTERMOST_URL: { label: 'Server URL', placeholder: 'https://mattermost.example.com' },
       MATTERMOST_TOKEN: { label: 'Bot token' },
       MATTERMOST_ALLOWED_USERS: {
         label: 'Allowed user IDs',
-        help: 'Recommended. Mattermost user IDs, one per box.'
+        help: 'Recommended. Comma-separated Mattermost user IDs.'
       },
       MATRIX_HOMESERVER: { label: 'Homeserver URL', placeholder: 'https://matrix.org' },
       MATRIX_ACCESS_TOKEN: { label: 'Access token' },
       MATRIX_USER_ID: { label: 'Bot user ID', placeholder: '@hermes:example.org' },
       MATRIX_ALLOWED_USERS: {
         label: 'Allowed Matrix user IDs',
-        help: 'Recommended. User IDs in @user:server format, one per box.'
+        help: 'Recommended. Comma-separated user IDs in @user:server format.'
       },
       SIGNAL_HTTP_URL: {
         label: 'Signal bridge URL',
@@ -3076,7 +3074,7 @@ export const en: Translations = {
         help: 'URL of a running signal-cli REST bridge.'
       },
       SIGNAL_ACCOUNT: { label: 'Phone number', help: 'The number registered with your signal-cli bridge.' },
-      SIGNAL_ALLOWED_USERS: { label: 'Allowed Signal users', help: 'Recommended. Signal identifiers, one per box.' },
+      SIGNAL_ALLOWED_USERS: { label: 'Allowed Signal users', help: 'Recommended. Comma-separated Signal identifiers.' },
       WHATSAPP_ENABLED: {
         label: 'Enable WhatsApp bridge',
         help: 'Set automatically by the toggle below. Leave alone unless you know you need it.'
@@ -3084,7 +3082,7 @@ export const en: Translations = {
       WHATSAPP_MODE: { label: 'Bridge mode' },
       WHATSAPP_ALLOWED_USERS: {
         label: 'Allowed WhatsApp users',
-        help: 'Recommended. Phone numbers or WhatsApp IDs, one per box.'
+        help: 'Recommended. Comma-separated phone numbers or WhatsApp IDs.'
       }
     },
     platformIntro: {}
@@ -4612,7 +4610,22 @@ export const en: Translations = {
     windowControls: 'Window controls',
     paneControls: 'Pane controls',
     appControls: 'App controls',
-    modelMenu: enModelMenu,
+    modelMenu: {
+      search: 'Search models',
+      noModels: 'No models found',
+      editModels: 'Edit models…',
+      followDefault: 'Use Settings default',
+      refreshModels: 'Refresh models',
+      favorites: 'Favorites',
+      addFavorite: 'Add to favorites',
+      removeFavorite: 'Remove from favorites',
+      favoriteShortcut: '⇧ Click',
+      fast: 'Fast',
+      free: 'free',
+      cacheRead: 'cached read',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `Input ${input}/Mtok · Output ${output}/Mtok` + (cache ? ` · Cached read ${cache}/Mtok` : '')
+    },
     modelOptions: {
       noOptions: 'No options for this model',
       options: 'Options',
@@ -5490,6 +5503,9 @@ export const en: Translations = {
     sessionUnavailable: 'Session unavailable',
     createSessionFailed: 'Could not create a new session',
     promptFailed: 'Prompt failed',
+    staleSessionTitle: 'Chat out of date',
+    staleSessionBody:
+      'This window was behind another view of the same chat. Latest messages were loaded. Send again if you still want to.',
     providerCredentialRequired: 'Add a provider credential before sending your first message.',
     emptySlashCommand: 'empty slash command',
     slashCommandIgnoredTitle: 'Command not sent',

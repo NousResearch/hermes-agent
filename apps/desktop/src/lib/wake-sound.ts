@@ -7,6 +7,7 @@
 
 import { getAudioContext } from '@/lib/audio-context'
 import { $hapticsMuted } from '@/store/haptics'
+import { $soundCueVolume } from '@/store/sound-cue-volume'
 
 // One enveloped sine voice → master. Linear-ish attack into an exponential
 // decay keeps the tail smooth and avoids the click you get ramping to zero.
@@ -43,9 +44,20 @@ export function playWakeSound(): void {
   }
 
   try {
+    const limiter = ac.createDynamicsCompressor()
+    limiter.threshold.setValueAtTime(-24, ac.currentTime)
+    limiter.knee.setValueAtTime(6, ac.currentTime)
+    limiter.ratio.setValueAtTime(20, ac.currentTime)
+    limiter.attack.setValueAtTime(0.002, ac.currentTime)
+    limiter.release.setValueAtTime(0.12, ac.currentTime)
+    limiter.connect(ac.destination)
+
     const master = ac.createGain()
-    master.gain.setValueAtTime(0.5, ac.currentTime)
-    master.connect(ac.destination)
+    // Same 0-6x user scale as the turn-end cue (store/sound-cue-volume.ts).
+    // Goes through the same limiter so the top of the range is genuinely
+    // loud instead of just less quiet.
+    master.gain.setValueAtTime(0.5 * $soundCueVolume.get(), ac.currentTime)
+    master.connect(limiter)
 
     const t0 = ac.currentTime + 0.01
     // Rising perfect-fourth: G5 -> C6. Short and bright — "listening".

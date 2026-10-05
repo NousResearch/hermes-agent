@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Slider } from '@/components/ui/slider'
 import { useI18n } from '@/i18n'
 import { COMPLETION_SOUND_VARIANTS, previewCompletionSound } from '@/lib/completion-sound'
 import { triggerHaptic } from '@/lib/haptics'
@@ -17,6 +18,7 @@ import {
   setNativeNotifyKind
 } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
+import { $soundCueVolume, setSoundCueVolume, SOUND_CUE_VOLUME_MAX, SOUND_CUE_VOLUME_MIN } from '@/store/sound-cue-volume'
 
 import { CONTROL_TEXT } from './constants'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
@@ -37,6 +39,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
   const { t } = useI18n()
   const prefs = useStore($nativeNotifyPrefs)
   const completionSoundVariantId = useStore($completionSoundVariantId)
+  const soundCueVolume = useStore($soundCueVolume)
   const copy = t.settings.notifications
   const showAlerts = subpage === undefined || subpage === 'alerts'
   const showSounds = subpage === undefined || subpage === 'sounds'
@@ -123,6 +126,35 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
           description={copy.completionSoundDesc}
           id={settingElementId(SETTING_IDS.notifications.completionSound)}
           title={copy.completionSoundTitle}
+        />
+      )}
+
+      {showSounds && (
+        <ListRow
+          action={
+            <div className="flex items-center gap-3">
+              <Slider
+                aria-label={copy.soundVolumeTitle}
+                max={SOUND_CUE_VOLUME_MAX}
+                min={SOUND_CUE_VOLUME_MIN}
+                onChange={event => {
+                  setSoundCueVolume(Number(event.target.value))
+                }}
+                onPointerUp={() => {
+                  previewCompletionSound()
+                  triggerHaptic('selection')
+                }}
+                step={0.05}
+                value={soundCueVolume}
+              />
+              <span className="w-10 text-right text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)">
+                {`${Math.round(soundCueVolume * 100)}%`}
+              </span>
+            </div>
+          }
+          description={copy.soundVolumeDesc}
+          id={settingElementId(SETTING_IDS.notifications.soundVolume)}
+          title={copy.soundVolumeTitle}
         />
       )}
 

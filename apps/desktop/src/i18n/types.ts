@@ -8,8 +8,6 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
-import type { ModelMenuTranslations } from './types_model_menu'
-
 /** The locales compiled into the app (`TRANSLATIONS`). */
 export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
 
@@ -900,6 +898,8 @@ export interface Translations {
       completionSoundTitle: string
       completionSoundDesc: string
       completionSoundPreview: string
+      soundVolumeTitle: string
+      soundVolumeDesc: string
     }
     sections: Record<string, string>
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
@@ -2502,9 +2502,6 @@ export interface Translations {
     replaceValue: string
     openDocs: string
     clearField: (key: string) => string
-    addListEntry: string
-    removeListEntry: string
-    listEntryPlaceholder: string
     enableAria: (name: string) => string
     disableAria: (name: string) => string
     platformEnabled: (name: string) => string
@@ -3861,7 +3858,21 @@ export interface Translations {
     windowControls: string
     paneControls: string
     appControls: string
-    modelMenu: ModelMenuTranslations
+    modelMenu: {
+      search: string
+      noModels: string
+      editModels: string
+      followDefault: string
+      refreshModels: string
+      favorites: string
+      addFavorite: string
+      removeFavorite: string
+      favoriteShortcut: string
+      fast: string
+      free: string
+      cacheRead: string
+      priceTitle: (input: string, output: string, cache: string) => string
+    }
     modelOptions: {
       noOptions: string
       options: string
@@ -4550,6 +4561,8 @@ export interface Translations {
     sessionUnavailable: string
     createSessionFailed: string
     promptFailed: string
+    staleSessionTitle: string
+    staleSessionBody: string
     providerCredentialRequired: string
     emptySlashCommand: string
     slashCommandIgnoredTitle: string

@@ -225,6 +225,14 @@ export const SETTINGS_MANIFEST = {
         label: t.settings.notifications.completionSoundTitle,
         description: t.settings.notifications.completionSoundDesc
       })
+    },
+    soundVolume: {
+      subpage: 'sounds',
+      keywords: ['sound', 'volume', 'loud', 'quiet', 'louder', 'chime', 'wake'],
+      copy: t => ({
+        label: t.settings.notifications.soundVolumeTitle,
+        description: t.settings.notifications.soundVolumeDesc
+      })
     }
   },
   sessions: {

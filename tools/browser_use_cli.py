@@ -83,9 +83,10 @@ _STDERR_CAP_CHARS = 4000
 _TASK_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")  # filesystem-safe task ids
 # Screenshot paths printed by capture_screenshot(): POSIX or Windows drive-letter absolute.
 _IMAGE_PATH_RE = re.compile(
-    r"((?:[A-Za-z]:[\\/]|/)[^\s\"']{1,512}?\.(?:png|jpe?g|webp))", re.IGNORECASE
+    r"((?:[A-Za-z]:[\\/]|/)[^\s\"']+?\.(?:png|jpe?g|webp))", re.IGNORECASE
 )
-_BASE64_BLOB_RE = re.compile(r"[A-Za-z0-9+/=]{2049,}")
+_IMAGE_TOKEN_RE = re.compile(r"[^\s\"']+")
+_IMAGE_PATH_START_RE = re.compile(r"(?:[A-Za-z]:[\\/]|/)")
 # http(s) URL literals in exec code checked against browser_navigate's policy
 _URL_RE = re.compile(r"https?://[^\s'\"\\)]+", re.IGNORECASE)
 _FHS_BIN_DIRS = ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
@@ -286,14 +287,21 @@ def _workspace_dir(task_id: Optional[str]) -> Optional[str]:
 
 
 def _find_screenshot(stdout: str, since: float) -> Optional[str]:
-    """Last screenshot path printed during this exec that exists and was written after
-    the exec started, or None."""
-    # A long base64 token contains many slash characters.  The unbounded path regex
-    # then attempts a scan-to-end from each slash while holding the GIL.  Remove only
-    # runs far longer than any plausible path before searching; ordinary paths and
-    # compact JSON containing them remain unchanged.
-    search_text = _BASE64_BLOB_RE.sub("", stdout or "")
-    for path in reversed(_IMAGE_PATH_RE.findall(search_text)):
+    """Last fresh screenshot path without retrying failed suffix scans."""
+    text = stdout or ""
+    paths = []
+    for token in _IMAGE_TOKEN_RE.finditer(text):
+        cursor = token.start()
+        while (start := _IMAGE_PATH_START_RE.search(text, cursor, token.end())) is not None:
+            match = _IMAGE_PATH_RE.match(text, start.start(), token.end())
+            if match is None:
+                # Later starts cannot rescue this match: everything between
+                # starts is allowed by the path character class. Retrying at
+                # every slash would rescan the suffix quadratically.
+                break
+            paths.append(match.group(1))
+            cursor = match.end()
+    for path in reversed(paths):
         try:
             if os.path.isfile(path) and os.path.getmtime(path) >= since - 1:
                 return path

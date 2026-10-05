@@ -1813,7 +1813,7 @@ class TestDeliverResultTimeoutCancelsFuture:
             result = _deliver_result(job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop)
         return result, standalone_send
 
-    @pytest.mark.parametrize("late_error", [None, RuntimeError("late boom")])
+    @pytest.mark.parametrize("late_error", [None, RuntimeError("late boom"), "unconfirmed"])
     def test_in_flight_send_outlasting_the_wait_keeps_running_and_is_not_duplicated(
             self, monkeypatch, caplog, late_error):
         import asyncio
@@ -1833,8 +1833,10 @@ class TestDeliverResultTimeoutCancelsFuture:
             started.set()
             await release.wait()  # held until the confirmation wait has timed out
             events.append("finished")
-            if late_error:
+            if isinstance(late_error, Exception):
                 raise late_error
+            if late_error == "unconfirmed":
+                return None  # passes the router, rejected by _confirm_adapter_delivery
             return MagicMock(success=True, message_id="m1", raw_response=None)
 
         real_schedule = asyncio.run_coroutine_threadsafe
@@ -1865,8 +1867,9 @@ class TestDeliverResultTimeoutCancelsFuture:
             thread.join(timeout=5)
             loop.close()
         assert result is None, f"expected the in-flight send to count as delivered, got {result!r}"
-        # The late outcome is still observed: a send that fails after the wait is logged.
-        assert ("failed after confirmation timeout" in caplog.text) == bool(late_error)
+        # The late outcome is still observed: a send that fails or comes back unconfirmed is logged.
+        assert ("failed after confirmation timeout" in caplog.text) == isinstance(late_error, Exception)
+        assert ("returned an unconfirmed result" in caplog.text) == (late_error == "unconfirmed")
         standalone_send.assert_not_awaited()
         assert events == ["started", "finished"], "the in-flight send must not be cancelled mid-way"
         update_job.assert_called_once_with("timeout-job", {"last_delivery_unverified": ["telegram:123"]})

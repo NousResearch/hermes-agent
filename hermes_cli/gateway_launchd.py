@@ -837,17 +837,25 @@ def stop_launchd_gateway_runtime(pid: int) -> bool:
         return False
 
 
-def restart_launchd_gateway_runtime(label: str, domain: str, old_pid: int | None, drain_budget: float) -> bool:
-    """Drain/replace one sibling job, never orphan its actual gateway child."""
+def drain_launchd_gateway_runtime(pid: int, label: str, drain_budget: float) -> bool:
+    """A frozen event loop cannot honor SIGUSR1; use bounded child-stop instead."""
     from hermes_cli.update_cmd_fleet import _gateway_home_for_pid
     from hermes_cli.update_cmd_drain_report import drain_progress_reporter
 
+    if _gw().probe_gateway_loop_liveness(pid) == _gw().GATEWAY_LOOP_WEDGED:
+        print(f"  ⚠ {label}: gateway event loop is unresponsive — skipping drain, forcing a bounded stop...")
+        return False
+    print(f"  → {label}: draining (up to {drain_budget:.0f}s)...")
+    return _gw()._graceful_restart_via_sigusr1(
+        pid, drain_timeout=drain_budget,
+        on_progress=drain_progress_reporter(_gateway_home_for_pid(pid), budget_s=drain_budget))
+
+
+def restart_launchd_gateway_runtime(label: str, domain: str, old_pid: int | None, drain_budget: float) -> bool:
+    """Drain/replace one sibling job, never orphan its actual gateway child."""
     signal_pid = launchd_gateway_signal_pid(old_pid) if old_pid is not None and old_pid > 0 else None
     if signal_pid is not None:
-        print(f"  → {label}: draining (up to {drain_budget:.0f}s)...")
-        graceful_ok = _gw()._graceful_restart_via_sigusr1(
-            signal_pid, drain_timeout=drain_budget,
-            on_progress=drain_progress_reporter(_gateway_home_for_pid(signal_pid), budget_s=drain_budget))
+        graceful_ok = drain_launchd_gateway_runtime(signal_pid, label, drain_budget)
         if graceful_ok and _gw()._wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=10.0, domain=domain):
             return True  # KeepAlive already respawned; do not kill the replacement.
         if not graceful_ok and not stop_launchd_gateway_runtime(signal_pid):

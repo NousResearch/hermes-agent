@@ -13,7 +13,7 @@
 
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
-import { isEditableTarget } from '@/lib/keybinds/combo'
+import { eventTarget, isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusBlockedBySurface } from '@/lib/keybinds/composer-focus-keys'
 
 import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from './focus'
@@ -57,7 +57,7 @@ export function handleWindowPaste(event: ClipboardEvent) {
   if (
     event.defaultPrevented ||
     !event.clipboardData ||
-    isEditableTarget(event.target) ||
+    isEditableTarget(eventTarget(event)) ||
     composerFocusBlockedBySurface()
   ) {
     return

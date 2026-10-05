@@ -11,7 +11,7 @@ import { queryAllVisible } from '@/components/pane-shell/pane-visibility'
 import { $activeTreeGroup, $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { switcherActive } from '@/store/session-switcher'
 
-import { isEditableTarget, isFocusWithin, OVERLAY_SURFACE } from './combo'
+import { eventTarget, isEditableTarget, isFocusWithin, OVERLAY_SURFACE } from './combo'
 
 /** `composer.focus` defaults that need the surface/target gate. */
 export const isComposerFocusSoftCombo = (combo: string) => combo === '/' || combo === 'enter'
@@ -174,10 +174,12 @@ export function composerFocusKeysAllowed(event: KeyboardEvent, combo: string): b
     return true
   }
 
+  const target = eventTarget(event)
+
   if (
     event.defaultPrevented ||
     event.isComposing ||
-    isEditableTarget(event.target) ||
+    isEditableTarget(target) ||
     composerFocusBlockedBySurface() ||
     clarifyCardOwnsKey(event)
   ) {
@@ -185,5 +187,5 @@ export function composerFocusKeysAllowed(event: KeyboardEvent, combo: string): b
   }
 
   // Space activates focused buttons too; it must not become a composer draft.
-  return !((combo === 'enter' || event.key === ' ') && isActivateOnEnterTarget(event.target))
+  return !((combo === 'enter' || event.key === ' ') && isActivateOnEnterTarget(target))
 }

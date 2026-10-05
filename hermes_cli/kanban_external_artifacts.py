@@ -96,6 +96,16 @@ class CapturedExternalArtifact:
     size: int
     board: Optional[str] = None
     published_path: Optional[Path] = None
+    # Round-3 HIGH #1: the identity (device + inode + ctime) of the exact file
+    # THIS attempt published. ``discard_published_artifacts`` only unlinks a
+    # pathname whose current identity still matches — a name reused by a
+    # concurrent attempt (A publishes, fails, deletes; B publishes onto the
+    # freed name) is NOT ours to delete. ``st_ctime_ns`` disambiguates a
+    # filesystem that recycles the very same device+inode for a newly created
+    # file on the just-freed name.
+    published_ino: Optional[int] = None
+    published_dev: Optional[int] = None
+    published_ctime_ns: Optional[int] = None
 
 
 def _requirements_from_text(text: Optional[str]) -> list[str]:
@@ -193,6 +203,48 @@ def uncaptured_external_requirements(
         req for req in required_external_artifacts(conn, task_id, contract_snapshot)
         if req not in covered
     ]
+
+
+def required_scratch_artifacts(
+    conn: sqlite3.Connection, task_id: str, contract_snapshot: object = _NO_SNAPSHOT,
+) -> list[str]:
+    """Managed-scratch requirements of the contract IN FORCE (the gate snapshot
+    when given, else the stored value), deduped and in declaration order.
+
+    Round-3 HIGH #3: these are the requirements the IN-TXN scratch staging owns
+    — strictly inside the task's own managed workspace root, so the coverage
+    check mirrors EXACTLY what ``_persist_scratch_completion_artifacts`` copies
+    (the same workspace-root containment predicate). Used to validate in-txn that
+    the staging (which must ride the SAME gate snapshot) covers every scratch
+    requirement the closing transaction validates.
+    """
+    if contract_snapshot is _NO_SNAPSHOT:
+        items = _required_artifacts(conn, task_id)
+    else:
+        items = _requirements_from_text(contract_snapshot)  # type: ignore[arg-type]
+    workspace = _kb._scratch_workspace(conn, task_id)
+    if workspace is None:
+        return []
+    is_managed, _board = _kb._managed_scratch_path_info(workspace)
+    if not is_managed:
+        return []
+    try:
+        workspace_root = workspace.resolve()
+    except OSError:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        try:
+            resolved = Path(item).expanduser().resolve()
+        except OSError:
+            continue
+        if resolved.is_relative_to(workspace_root):
+            out.append(str(resolved))
+    return out
 
 
 def capture_external_artifacts(
@@ -340,9 +392,18 @@ def publish_external_artifacts(
             except ValueError:
                 safe_name = "artifact"
             final = _link_publish(cap.data, dest_dir, safe_name, used)
-            # Set ownership BEFORE the directory fsync: if the fsync raises the
-            # enclosing handler must discard THIS copy too (never an orphan).
+            # Record the EXACT file identity (device + inode) THIS attempt
+            # linked, so a later discard can prove ownership: a pathname whose
+            # current identity differs belongs to another attempt and must not
+            # be unlinked (round-3 HIGH #1). Set ownership BEFORE the directory
+            # fsync: if the fsync raises the enclosing handler must discard THIS
+            # copy too (never an orphan), and the identity must be on the record.
             cap.published_path = final
+            (
+                cap.published_ino,
+                cap.published_dev,
+                cap.published_ctime_ns,
+            ) = _stat_identity(final)
             published.append(cap)
             _fsync_dir(dest_dir)
             used.add(final)
@@ -356,15 +417,27 @@ def _link_publish(
     data: bytes, dest_dir: Path, safe_name: str, used: set[Path],
 ) -> Path:
     """Write *data* to a staging file then atomically link it onto a free final
-    name under *dest_dir*. Never overwrites; raises the typed refusal on an
-    unlinkable/O_EXCL-unsupported destination."""
+    name under *dest_dir*. Never overwrites; any raw OSError from the staging
+    open/write/flush/fsync or the link is raised as the typed, recoverable
+    refusal (round-3 LOW #5) — no untagged ``OSError`` escapes publication."""
     staging = dest_dir / (_STAGING_PREFIX + secrets.token_hex(12))
-    fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError as exc:
+        raise ExternalArtifactPreservationError(
+            f"could not create staging file for external artifact "
+            f"({safe_name}): {exc}"
+        ) from exc
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+    except OSError as exc:
+        _unlink_quietly(staging)
+        raise ExternalArtifactPreservationError(
+            f"could not write external artifact staging file ({safe_name}): {exc}"
+        ) from exc
     except BaseException:
         _unlink_quietly(staging)
         raise
@@ -404,19 +477,49 @@ def _unlink_quietly(path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
+def _stat_identity(path: Path) -> tuple[Optional[int], Optional[int], Optional[int]]:
+    """``(st_ino, st_dev, st_ctime_ns)`` of *path*, or ``(None, None, None)``
+    when it cannot be stat'd (round-3 HIGH #1). Callers treat a missing identity
+    as ``not provably ours``."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None, None, None
+    return st.st_ino, st.st_dev, st.st_ctime_ns
+
+
 def _ensure_dir_durable(directory: Path) -> None:
-    """Create *directory* (and missing parents) then fsync the new entries so a
-    crash cannot lose the directory itself or the rename that follows."""
+    """Create *directory* (and missing parents) then fsync the directory AND its
+    entry in the parent, so a crash cannot lose the directory itself or the
+    rename that follows.
+
+    Round-3 MEDIUM #4: the parent link is fsync'd UNCONDITIONALLY (idempotent),
+    not only for directories this call found absent. If a prior attempt created
+    the tree but a parent fsync then failed (the typed refusal), the tree
+    survives; on retry ``to_create`` is empty, yet the directory<->parent entry
+    that never got persisted must still be re-synced before a COMMIT may claim
+    durability."""
     to_create: list[Path] = []
     probe = directory
     while not probe.exists() and probe != probe.parent:
         to_create.append(probe)
         probe = probe.parent
-    directory.mkdir(parents=True, exist_ok=True)
-    # Persist each newly created directory's entry in its own parent, then the
-    # directory itself. Raises the typed refusal if the OS cannot guarantee it.
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # Round-3 LOW #5: a raw mkdir failure is the typed refusal, never a
+        # bare OSError escaping the preservation contract.
+        raise ExternalArtifactPreservationError(
+            f"cannot create attachments directory: {directory}: {exc}"
+        ) from exc
+    # Persist each newly created directory's entry in its own parent...
     for created in reversed(to_create):
         _fsync_dir(created.parent)
+    # ...AND always the directory's own link in its parent (idempotent): the
+    # retry-after-error path above has an empty ``to_create`` but still needs
+    # this entry to have been fsync'd before COMMIT.
+    if directory.parent != directory:
+        _fsync_dir(directory.parent)
     _fsync_dir(directory)
 
 
@@ -457,6 +560,12 @@ def discard_published_artifacts(
     post-commit failure must never delete a bound proof. Without *conn* every
     listed copy is removed (used only where the rollback is certain); an
     unreadable DB with *conn* keeps everything rather than risk a bound copy.
+
+    Round-3 HIGH #1 (identity): a pathname is only unlinked when the CURRENT
+    file at it still has the device+inode THIS attempt published. A concurrent
+    attempt that reused a freed name (A published ``proof.md``, failed, deleted
+    it; B then published its own copy onto that name) owns that file — the
+    stale record must not delete it. A missing/absent file is a silent no-op.
     """
     committed: set[str] = set()
     if conn is not None:
@@ -482,6 +591,14 @@ def discard_published_artifacts(
         path = Path(cap.published_path)
         if str(path.resolve()) in committed:
             continue
+        # Identity guard: never unlink a file another attempt now owns.
+        ino, dev, ctime_ns = _stat_identity(path)
+        if ino is None or dev is None:
+            continue  # already gone (or unstat-able): nothing of ours to remove
+        if (ino, dev, ctime_ns) != (
+            cap.published_ino, cap.published_dev, cap.published_ctime_ns,
+        ):
+            continue  # name reused by another attempt: not our file
         _unlink_quietly(path)
         with contextlib.suppress(OSError):
             path.parent.rmdir()
@@ -498,14 +615,33 @@ def bind_external_artifacts(
     run's ``metadata['external_artifacts_preserved']`` plus the managed path to
     ``metadata['artifacts']`` (so the ``completed`` payload names the durable
     copy, not only the origin). Returns the binding dicts.
+
+    Round-3 HIGH #1: a copy whose destination has DISAPPEARED (e.g. a concurrent
+    attempt's stale discard removed it between publish and this txn) is a typed
+    refusal — NEVER bind a broken reference. Raises
+    :data:`ExternalArtifactPreservationError`, which rolls the completion txn
+    back (no ``completed`` event, no attachment row).
     """
     bindings: list[dict] = []
     for cap in published:
         if cap.published_path is None:
             continue
-        stored = str(Path(cap.published_path).resolve())
+        dest = Path(cap.published_path)
+        try:
+            present = dest.is_file()
+        except OSError as exc:
+            raise ExternalArtifactPreservationError(
+                f"preserved external artifact could not be examined before "
+                f"binding: {dest}: {exc}"
+            ) from exc
+        if not present:
+            raise ExternalArtifactPreservationError(
+                f"preserved external artifact disappeared before binding "
+                f"(refusing to bind a broken reference): {dest}"
+            )
+        stored = str(dest.resolve())
         _kb._insert_completion_attachment(
-            conn, task_id, filename=Path(cap.published_path).name, stored_path=stored,
+            conn, task_id, filename=dest.name, stored_path=stored,
             size=cap.size, created_at=now, uploaded_by="kanban_complete",
         )
         _kb._append_event(

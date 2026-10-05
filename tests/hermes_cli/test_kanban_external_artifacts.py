@@ -16,10 +16,12 @@ no extra attachment.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import sqlite3
+import stat
 from pathlib import Path
 
 import pytest
@@ -772,3 +774,393 @@ def test_publish_dir_fsync_failure_is_typed_and_no_orphans(kanban_home, monkeypa
             kea.publish_external_artifacts(caps, tid)
         monkeypatch.setattr(kea, "_fsync_dir", real_fsync_dir)
         assert not _leftovers(tid), f"dir fsync failure left orphans: {_leftovers(tid)}"
+
+
+# ===========================================================================
+# ROUND 3 (adversarial re-review 376bd9cffc, GPT-6.1 Sol) — regression guards
+# for the 3 HIGH + 1 MEDIUM + 1 LOW defects closed by this round (2 of which
+# were regressions the round-2 fix introduced).
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# HIGH #1 — ONE discard per attempt, ownership by device+inode, bind verifies
+# ---------------------------------------------------------------------------
+
+
+def test_discard_runs_once_on_refusal_path(kanban_home, monkeypatch):
+    """Round-3 HIGH #1: a refusal that rolls the completion back must discard the
+    published copies EXACTLY once — the round-2 ``except`` + ``finally`` pair ran
+    the cleanup twice, letting the second pass delete a copy a concurrent
+    attempt had since republished onto the freed name."""
+    with kbc.connect() as conn:
+        tid, _ws = _scratch_task(conn, kanban_home, "single discard")
+        origin = Path(kanban_home) / "one.bin"
+        origin.write_bytes(b"proof")
+        _set_contract(conn, tid, {"required_artifacts": [str(origin)]})
+
+        real_gate = kb._gate_contract_completion
+        swapped = {"done": False}
+
+        def gate_then_swap(c, task_id):
+            real_gate(c, task_id)
+            if not swapped["done"]:
+                swapped["done"] = True
+                with kbc.connect() as c2:
+                    c2.execute(
+                        "UPDATE tasks SET completion_contract = 'local-only' "
+                        "WHERE id = ?",
+                        (task_id,),
+                    )
+                    c2.commit()
+
+        monkeypatch.setattr(kb, "_gate_contract_completion", gate_then_swap)
+
+        calls = {"n": 0}
+        real_discard = kea.discard_published_artifacts
+
+        def counting_discard(*a, **k):
+            calls["n"] += 1
+            return real_discard(*a, **k)
+
+        monkeypatch.setattr(kea, "discard_published_artifacts", counting_discard)
+        with pytest.raises(kb.ContractSpecError):
+            kb.complete_task(conn, tid, result="swap refusal")
+        assert calls["n"] == 1, (
+            f"published copies discarded {calls['n']} times on one refusal"
+        )
+        assert not _leftovers(tid), f"refusal left orphans: {_leftovers(tid)}"
+
+
+def test_stale_discard_never_deletes_another_attempts_republished_copy(
+    kanban_home,
+):
+    """Round-3 HIGH #1 (identity): attempt A publishes ``proof.md``, its rollback
+    deletes it; attempt B republishes onto the now-free name. A stale/second
+    discard of A's record must NOT delete B's file (its device+inode differs)."""
+    with kbc.connect() as conn:
+        tid, _ws = _scratch_task(conn, kanban_home, "identity discard")
+        origin = Path(kanban_home) / "proof.md"
+        origin.write_bytes(b"attempt bytes")
+        _set_contract(conn, tid, {"required_artifacts": [str(origin)]})
+
+        published_a = kea.publish_external_artifacts(
+            kea.capture_external_artifacts(conn, tid), tid
+        )
+        a_path = Path(published_a[0].published_path)
+        assert a_path.name == "proof.md"
+        a_identity = (
+            published_a[0].published_ino,
+            published_a[0].published_dev,
+            published_a[0].published_ctime_ns,
+        )
+
+        # Attempt A's own rollback removes its copy (single discard).
+        kea.discard_published_artifacts(published_a)
+        assert not a_path.exists()
+
+        # Attempt B publishes onto the freed name — a DIFFERENT file identity.
+        published_b = kea.publish_external_artifacts(
+            kea.capture_external_artifacts(conn, tid), tid
+        )
+        b_path = Path(published_b[0].published_path)
+        assert b_path == a_path, "fixture expects B to reuse the freed name"
+        b_identity = (
+            published_b[0].published_ino,
+            published_b[0].published_dev,
+            published_b[0].published_ctime_ns,
+        )
+        assert b_identity != a_identity, (
+            "B's republished copy must carry a distinct ownership identity"
+        )
+
+        # A stale discard of A's record: identity guard must spare B's copy.
+        kea.discard_published_artifacts(published_a)
+        assert b_path.is_file(), "stale discard deleted another attempt's proof"
+        assert b_path.read_bytes() == b"attempt bytes"
+
+
+def test_bind_refuses_when_published_destination_disappeared(
+    kanban_home, monkeypatch
+):
+    """Round-3 HIGH #1 (bind): if a concurrent attempt's stale cleanup removed the
+    published copy before binding, ``bind_external_artifacts`` must REFUSE with
+    the typed error — never bind a broken reference onto the closing run."""
+    with kbc.connect() as conn:
+        tid, _ws = _scratch_task(conn, kanban_home, "bind gone")
+        origin = Path(kanban_home) / "gone.bin"
+        origin.write_bytes(b"proof")
+        _set_contract(conn, tid, {"required_artifacts": [str(origin)]})
+
+        published = kea.publish_external_artifacts(
+            kea.capture_external_artifacts(conn, tid), tid
+        )
+        dest = Path(published[0].published_path)
+        assert dest.is_file()
+        dest.unlink()  # the destination vanished before the txn binds it
+
+        with pytest.raises(kea.ExternalArtifactPreservationError):
+            with kbc.write_txn(conn):
+                kea.bind_external_artifacts(conn, tid, published, {}, 0)
+        assert not _attachment_rows(conn, tid), "must not bind a broken reference"
+
+
+def test_bind_missing_destination_refuses_completion_typed(kanban_home, monkeypatch):
+    """End-to-end: a published copy that disappears before the closing txn makes
+    ``complete_task`` refuse (typed) with the card NOT done and no dangling row."""
+    with kbc.connect() as conn:
+        tid, _ws = _scratch_task(conn, kanban_home, "bind gone e2e")
+        origin = Path(kanban_home) / "vanish2.bin"
+        origin.write_bytes(b"proof")
+        _set_contract(conn, tid, {"required_artifacts": [str(origin)]})
+
+        real_bind = kea.bind_external_artifacts
+
+        def bind_after_delete(c, task_id, published, metadata, now):
+            for cap in published:
+                if cap.published_path is not None:
+                    with contextlib.suppress(OSError):
+                        Path(cap.published_path).unlink()
+            return real_bind(c, task_id, published, metadata, now)
+
+        monkeypatch.setattr(kea, "bind_external_artifacts", bind_after_delete)
+
+        with pytest.raises(kea.ExternalArtifactPreservationError):
+            kb.complete_task(conn, tid, result="bind after delete")
+        assert _status(conn, tid) != "done"
+        assert not _attachment_rows(conn, tid)
+        assert "completed" not in _event_kinds(conn, tid)
+
+
+# ---------------------------------------------------------------------------
+# HIGH #2 — caller metadata cannot forge external_artifacts_preserved
+# ---------------------------------------------------------------------------
+
+
+def test_forged_external_artifacts_preserved_does_not_skip_scratch(kanban_home):
+    """Round-3 HIGH #2: a caller-forged ``external_artifacts_preserved`` naming
+    the resolved scratch requirement must NOT make staging skip it. The scratch
+    artifact is still copied to managed storage, and the forged key is stripped
+    from the caller metadata (never reaches the closing run)."""
+    with kbc.connect() as conn:
+        tid, ws = _scratch_task(conn, kanban_home, "forged metadata")
+        scratch = ws / "req.md"
+        scratch.write_text("scratch requirement", encoding="utf-8")
+        _set_contract(conn, tid, {"required_artifacts": [str(scratch)]})
+
+        forged = {
+            "external_artifacts_preserved": [
+                {"stored_path": str(scratch.resolve())}
+            ]
+        }
+        assert kb.complete_task(conn, tid, result="forged", metadata=forged) is True
+
+        rows = _attachment_rows(conn, tid)
+        assert rows, "scratch requirement was NOT preserved (forged key skipped it)"
+        copies = [Path(r["stored_path"]) for r in rows]
+        assert any(
+            c.is_file() and c.read_bytes() == b"scratch requirement" for c in copies
+        ), f"scratch requirement not copied to managed storage: {copies}"
+
+        run = kb.latest_run(conn, tid)
+        bound = (run.metadata or {}).get("external_artifacts_preserved")
+        assert not bound, f"forged key leaked into the closing run metadata: {bound}"
+
+
+# ---------------------------------------------------------------------------
+# HIGH #3 — A→B→A on a MIXED contract must not lose a scratch requirement
+# ---------------------------------------------------------------------------
+
+
+def test_mixed_contract_aba_swap_preserves_gate_scratch_requirement(
+    kanban_home, monkeypatch
+):
+    """Round-3 HIGH #3: gate enforces A (external ``a`` + scratch ``s``); a
+    concurrent writer swaps to B (scratch ``t``) AFTER the gate and back to A
+    only during capture (before the txn). The scratch requirement of the GATE
+    contract (``s``) must still be staged — the merge must ride the gate
+    snapshot, not an autonomous re-read — so the card never closes losing ``s``
+    to the post-commit cleanup."""
+    with kbc.connect() as conn:
+        tid, ws = _scratch_task(conn, kanban_home, "mixed A->B->A")
+        a_ext = Path(kanban_home) / "a.md"
+        a_ext.write_bytes(b"external A evidence")
+        s = ws / "s.md"
+        s.write_text("scratch S", encoding="utf-8")
+        t = ws / "t.md"
+        t.write_text("scratch T", encoding="utf-8")
+        contract_a = json.dumps(
+            {"required_artifacts": [str(a_ext), str(s)]}, separators=(",", ":")
+        )
+        contract_b = json.dumps(
+            {"required_artifacts": [str(t)]}, separators=(",", ":")
+        )
+        # Contract A is in force when the gate runs.
+        _set_contract(conn, tid, contract_a)
+
+        real_gate = kb._gate_contract_completion
+
+        def gate_then_swap_to_b(c, task_id):
+            real_gate(c, task_id)
+            # B is now in force for the merge window (A is only the gate snapshot).
+            with kbc.connect() as c2:
+                c2.execute(
+                    "UPDATE tasks SET completion_contract = ? WHERE id = ?",
+                    (contract_b, task_id),
+                )
+                c2.commit()
+
+        monkeypatch.setattr(kb, "_gate_contract_completion", gate_then_swap_to_b)
+
+        real_capture = kea.capture_external_artifacts
+
+        def capture_then_restore_a(c, task_id, **kw):
+            caps = real_capture(c, task_id, **kw)
+            # Restore A before the txn: the fence validates A, so A's scratch
+            # requirement must be the one preserved.
+            with kbc.connect() as c2:
+                c2.execute(
+                    "UPDATE tasks SET completion_contract = ? WHERE id = ?",
+                    (contract_a, task_id),
+                )
+                c2.commit()
+            return caps
+
+        monkeypatch.setattr(kea, "capture_external_artifacts", capture_then_restore_a)
+
+        result = None
+        try:
+            result = kb.complete_task(conn, tid, result="mixed A->B->A")
+        except kb.ContractSpecError:
+            result = None  # an audible refusal is also acceptable
+
+        # In-force contract is A (external a + scratch s); the gate accepted it,
+        # so the completion MUST close — never silently done with a lost `s`.
+        assert result is True, "the in-force contract A was satisfied; must close"
+        # Post-commit cleanup deletes the scratch workspace: `s` is gone on disk.
+        assert not s.exists(), "fixture expects workspace cleanup to remove s"
+        atts = [Path(r["stored_path"]) for r in _attachment_rows(conn, tid)]
+        assert any(
+            p.is_file() and p.read_bytes() == b"scratch S" for p in atts
+        ), f"gate scratch requirement s was lost to cleanup: {atts}"
+        for p in atts:
+            assert p.is_file()
+        bound = (kb.latest_run(conn, tid).metadata or {}).get(
+            "external_artifacts_preserved"
+        )
+        assert bound, "the external requirement of the in-force contract"
+        for x in bound:
+            assert Path(x["stored_path"]).is_file()
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM #4 — _ensure_dir_durable re-syncs the parent on a retry
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_dir_durable_resyncs_parent_on_retry(kanban_home, monkeypatch):
+    """Round-3 MEDIUM #4: the first attempt creates the tree but a parent fsync
+    then fails (typed refusal leaves the tree in place). On the retry
+    ``to_create`` is empty; the directory<->parent link that never got persisted
+    must STILL be re-synced before a COMMIT may claim durability."""
+    base = kanban_home / "att-root"
+    base.mkdir()
+    target = base / "sub" / "task"
+
+    synced: list[Path] = []
+    fail_once = {"done": False}
+
+    def recording_fsync_dir(directory):
+        synced.append(Path(directory))
+        if not fail_once["done"] and Path(directory) == target.parent:
+            fail_once["done"] = True
+            raise kea.ExternalArtifactPreservationError(
+                "simulated parent fsync failure"
+            )
+
+    monkeypatch.setattr(kea, "_fsync_dir", recording_fsync_dir)
+
+    with pytest.raises(kea.ExternalArtifactPreservationError):
+        kea._ensure_dir_durable(target)
+    assert target.is_dir(), "mkdir must have created the tree before the fsync failed"
+
+    synced.clear()
+    kea._ensure_dir_durable(target)  # retry: to_create is now empty
+    assert Path(target.parent) in synced, (
+        "retry must re-sync the directory's link to its parent, not only itself"
+    )
+    assert Path(target) in synced
+
+
+# ---------------------------------------------------------------------------
+# LOW #5 — publication OSErrors are typed
+# ---------------------------------------------------------------------------
+
+
+def test_publish_staging_open_oserror_is_typed(kanban_home, monkeypatch):
+    """Round-3 LOW #5: a raw OSError from the staging ``os.open`` is wrapped in
+    the typed, recoverable refusal (no bare OSError escapes publication)."""
+    with kbc.connect() as conn:
+        tid, _ws = _scratch_task(conn, kanban_home, "staging open oserror")
+        origin = Path(kanban_home) / "so.bin"
+        origin.write_bytes(b"proof")
+        _set_contract(conn, tid, {"required_artifacts": [str(origin)]})
+
+        att_dir = _att_dir(tid)
+        real_open = os.open
+
+        def flaky_open(path, flags, *a, **k):
+            p = str(path)
+            if p.startswith(str(att_dir)) and ".p3b-staging-" in p:
+                raise OSError("EIO: simulated staging open failure")
+            return real_open(path, flags, *a, **k)
+
+        monkeypatch.setattr(os, "open", flaky_open)
+        caps = kea.capture_external_artifacts(conn, tid)
+        with pytest.raises(kea.ExternalArtifactPreservationError):
+            kea.publish_external_artifacts(caps, tid)
+        monkeypatch.setattr(os, "open", real_open)
+        assert not _leftovers(tid), f"staging failure left orphans: {_leftovers(tid)}"
+
+
+def test_publish_staging_write_oserror_is_typed(kanban_home, monkeypatch):
+    """Round-3 LOW #5: a raw OSError from the staging write/flush/fsync path is
+    wrapped in the typed refusal."""
+    with kbc.connect() as conn:
+        tid, _ws = _scratch_task(conn, kanban_home, "staging write oserror")
+        origin = Path(kanban_home) / "sw.bin"
+        origin.write_bytes(b"proof")
+        _set_contract(conn, tid, {"required_artifacts": [str(origin)]})
+
+        real_fsync = os.fsync
+
+        def flaky_fsync(fd):
+            # Fail ONLY on a regular-file fd (the staging file's fsync) — a
+            # directory fsync already routes through the typed ``_fsync_dir``.
+            st = os.fstat(fd)
+            if stat.S_ISREG(st.st_mode):
+                raise OSError("EIO: simulated staging fsync failure")
+            return real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", flaky_fsync)
+        caps = kea.capture_external_artifacts(conn, tid)
+        with pytest.raises(kea.ExternalArtifactPreservationError):
+            kea.publish_external_artifacts(caps, tid)
+        monkeypatch.setattr(os, "fsync", real_fsync)
+        assert not _leftovers(tid), f"staging failure left orphans: {_leftovers(tid)}"
+
+
+def test_mkdir_oserror_is_typed(kanban_home, monkeypatch):
+    """Round-3 LOW #5: a raw OSError from ``mkdir`` in ``_ensure_dir_durable`` is
+    the typed refusal, not a bare OSError."""
+    target = kanban_home / "cannot" / "create"
+    real_mkdir = Path.mkdir
+
+    def flaky_mkdir(self, *a, **k):
+        if str(self) == str(target):
+            raise OSError("EACCES: simulated mkdir failure")
+        return real_mkdir(self, *a, **k)
+
+    monkeypatch.setattr(Path, "mkdir", flaky_mkdir)
+    with pytest.raises(kea.ExternalArtifactPreservationError):
+        kea._ensure_dir_durable(target)

@@ -3474,7 +3474,25 @@ def complete_task(
     # copies them to attachments (external paths are handled in the gate).
     if metadata is None:
         metadata = {}
-    _merge_contract_artifacts_into_metadata(conn, task_id, metadata)
+    # P3b (round-2 HIGH #2): the contract version the gate enforced, taken ONCE
+    # here so BOTH the external capture and the scratch-requirement merge ride
+    # the SAME snapshot. ``_peek_gate_contract`` does NOT pop (the in-txn
+    # recheck owns the pop), so peeking early is safe.
+    _gate_snapshot = _peek_gate_contract(conn)
+    _capture_snapshot = (
+        _kea._NO_SNAPSHOT if _gate_snapshot is _CONTRACT_STASH_MISSING
+        else _gate_snapshot
+    )
+    # Round-3 HIGH #3: scratch requirements of the GATE's snapshot (NOT an
+    # autonomous re-read of the stored contract). These are both what the merge
+    # must stage and what the in-txn coverage check validates, so an A→B→A
+    # mixed swap can never drop the gate contract's scratch requirement.
+    _required_scratch = _kea.required_scratch_artifacts(
+        conn, task_id, _capture_snapshot,
+    )
+    _merge_contract_artifacts_into_metadata(
+        conn, task_id, metadata, required_artifacts=_required_scratch,
+    )
     handoff_summary = summary if summary is not None else result
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
@@ -3484,15 +3502,10 @@ def complete_task(
     # capture + publish a managed copy NOW — before the write lock and before
     # the in-txn recheck — so the closing txn binds the EXACT bytes the contract
     # validated. Capture rides the SAME contract version the gate enforced
-    # (``_peek_gate_contract``), so a concurrent A→B→A swap can never make it
+    # (``_gate_snapshot``), so a concurrent A→B→A swap can never make it
     # preserve a version the transaction will not validate. This is what closes
     # the delete-after-recheck race: the durable copy, not the external
     # pathname, is the proof; the original may vanish at any moment.
-    _gate_snapshot = _peek_gate_contract(conn)
-    _capture_snapshot = (
-        _kea._NO_SNAPSHOT if _gate_snapshot is _CONTRACT_STASH_MISSING
-        else _gate_snapshot
-    )
     captured_external = _kea.capture_external_artifacts(
         conn, task_id, contract_snapshot=_capture_snapshot,
     )
@@ -3581,12 +3594,45 @@ def complete_task(
             # row + auditable event + run-metadata binding — so the fence and the
             # proof commit together. The bytes were captured before the lock;
             # this only records them (no large I/O under the write lock).
+            _external_bindings: list[dict] = []
             if isinstance(metadata, dict):
-                _kea.bind_external_artifacts(
+                _external_bindings = _kea.bind_external_artifacts(
                     conn, task_id, published_external, metadata, now,
                 )
+            # Round-3 HIGH #2: the staging may only treat THIS invocation's
+            # actual bindings as already-preserved — never caller metadata.
+            _bound_external = {
+                str(b.get("stored_path")) for b in _external_bindings
+                if b.get("stored_path")
+            }
+            _covered_scratch: set[str] = set()
             if isinstance(metadata, dict):
-                _stage_completion_artifacts(conn, task_id, metadata, now)
+                _staged, _covered_scratch = _stage_completion_artifacts(
+                    conn, task_id, metadata, now,
+                    bound_external=_bound_external,
+                )
+            # Round-3 HIGH #3: the scratch staging must COVER every scratch
+            # requirement of the gate's snapshot — the analogue of the external
+            # coverage check above. An A→B→A mixed swap that staged only B's
+            # requirement while the txn validates A's would otherwise let the
+            # cleanup delete A's artifact. Roll back with the divergence
+            # mechanism so the card is NOT closed with a lost requirement.
+            _scratch_uncovered = [
+                req for req in _required_scratch
+                if str(req).strip() not in _covered_scratch
+            ]
+            if _scratch_uncovered:
+                raise _ContractSwappedInTxn(
+                    {
+                        "missing_artifacts": _scratch_uncovered,
+                        "gate_contract": str(_gate_snapshot or "")[:200],
+                        "in_txn_contract": str(_gate_snapshot or "")[:200],
+                        "reason": "scratch_artifact_not_preserved",
+                    },
+                    f"completion blocked: {task_id} scratch contract artifacts "
+                    f"were not preserved in this transaction: "
+                    f"{', '.join(_scratch_uncovered)}",
+                )
             run_id = _end_run(
                 conn, task_id, outcome="completed", status="done", summary=handoff_summary,
                 metadata=metadata,
@@ -3629,10 +3675,9 @@ def complete_task(
         # The completion txn rolled back (card keeps its prior status). The
         # divergence marker must SURVIVE the rollback: separate txn, like the
         # other auditable refusal paths (+ then raise ContractSpecError). The
-        # published copies never got bound — discard only copies WITHOUT a
-        # committed binding (recoverable orphan).
-        if not committed:
-            _kea.discard_published_artifacts(published_external, conn)
+        # published copies never got bound — the uniform ``finally`` below
+        # discards copies WITHOUT a committed binding (recoverable orphan),
+        # ONCE (round-3 HIGH #1: no double-discard from this handler too).
         with write_txn(conn):
             _append_event(
                 conn, task_id, "completion_blocked_contract_changed", exc.payload,
@@ -3642,28 +3687,27 @@ def complete_task(
         # P4 PARTE 3: the off-board recheck inside the txn diverged (a
         # concurrent origin write / run swap). The rollback already restored
         # the card; record the durable refusal in its own txn, then raise the
-        # typed, recoverable OffBoardOriginError.
-        if not committed:
-            _kea.discard_published_artifacts(published_external, conn)
+        # typed, recoverable OffBoardOriginError. Cleanup is the ``finally``.
         with write_txn(conn):
             _append_event(
                 conn, task_id, "completion_blocked_off_board_origin", exc.payload,
             )
         raise OffBoardOriginError(task_id) from exc
     except BaseException:
-        # Any other failure: if the fence did NOT commit, the published external
-        # copies have no binding — discard them so a retry does not stage a
-        # duplicate next to an orphan. ``discard`` also cross-checks the DB
+        # Any other failure: the uniform ``finally`` below discards copies whose
+        # binding did not commit. ``discard`` also cross-checks the DB
         # (round-2 HIGH #3): a copy already bound by a COMMITTED txn is KEPT, so
         # a post-commit failure can never delete a durable proof.
-        if not committed:
-            _kea.discard_published_artifacts(published_external, conn)
         raise
     finally:
-        # MEDIUM #4: uniform cleanup on EVERY exit that did not commit — the
-        # ``return False`` refusals (parents reopened / acceptance CAS lost /
-        # status CAS lost) exit through no ``except`` and used to leave orphan
-        # copies. ``committed`` is False on all those paths.
+        # MEDIUM #4 + round-3 HIGH #1: the SINGLE discard site, on EVERY exit
+        # that did not commit — the ``except`` handlers above no longer discard
+        # separately (a second pass could delete a copy a concurrent attempt
+        # republished onto a freed name; the per-attempt identity guard in
+        # ``discard_published_artifacts`` is the backstop, but one pass is the
+        # fix). Covers the ``return False`` refusals (parents reopened /
+        # acceptance CAS lost / status CAS lost), exceptions, and the typed
+        # refusal paths alike. ``committed`` is False on all non-commit exits.
         if not committed:
             _kea.discard_published_artifacts(published_external, conn)
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
@@ -3862,12 +3906,23 @@ def record_off_board_run(
     return run_id
 
 
-_PROTECTED_RUN_METADATA_KEYS = ("off_board_run", "resolved_route_provenance")
+_PROTECTED_RUN_METADATA_KEYS = (
+    "off_board_run", "resolved_route_provenance", "external_artifacts_preserved",
+)
 """Run-metadata keys owned by TRUSTED writers (the dispatcher's route
 provenance and :func:`record_off_board_run`'s launch origin). A caller-supplied
 ``metadata`` dict must never overwrite them at completion (review 2026-10-05
 MEDIUM #5): otherwise a caller could erase an origin (downgrading to on-board)
-or forge one whose launch was never recorded."""
+or forge one whose launch was never recorded.
+
+``external_artifacts_preserved`` is stripped from caller metadata too (P3b
+round 3 HIGH #2): it is written ONLY by ``bind_external_artifacts`` for the
+copies produced in the CURRENT invocation. A caller that forged it (e.g. with a
+``stored_path`` naming an un-preserved scratch requirement) could otherwise make
+``_persist_scratch_completion_artifacts`` skip that requirement's copy, close the
+card, and let cleanup delete the file — a broken reference. The staging no
+longer trusts stored metadata for this key either (it uses only this
+invocation's explicit bindings)."""
 
 
 _LAUNCH_KEY = ("off_board_run",)
@@ -4625,7 +4680,8 @@ def _gate_contract_completion(
 
 
 def _merge_contract_artifacts_into_metadata(
-    conn: sqlite3.Connection, task_id: str, metadata: dict,
+    conn: sqlite3.Connection, task_id: str, metadata: dict, *,
+    required_artifacts: Optional[list[str]] = None,
 ) -> None:
     """Stage contract-required artifacts (4th opinion, 2026-10-04).
 
@@ -4634,16 +4690,29 @@ def _merge_contract_artifacts_into_metadata(
     ``metadata['artifacts']`` (dedup) so the in-txn staging copies them to the
     attachments dir before workspace cleanup runs post-commit. External paths
     (outside managed scratch) are skipped: they are not ours to copy and the
-    gate already recorded ``external_artifact_recorded``."""
-    try:
-        contract = _parse_contract_requirements(conn, task_id)
-    except Exception:
-        return
-    if not contract:
-        return
-    raw = contract.get("required_artifacts")
-    if not isinstance(raw, (list, tuple)):
-        return
+    gate already recorded ``external_artifact_recorded``.
+
+    Round-3 HIGH #3: the SCRATCH requirement set must ride the SAME contract
+    snapshot the gate enforced (``required_artifacts``, from
+    ``kea.required_scratch_artifacts``), NOT a fresh autonomous re-read — an
+    A→B→A mixed-contract swap between the gate and this merge used to let a
+    scratch requirement of the gate's contract (A) be silently dropped (only
+    B's ``t`` staged), so cleanup deleted ``s``. When ``required_artifacts`` is
+    ``None`` (a caller with no gate snapshot) the stored contract is read as
+    before.
+    """
+    if required_artifacts is None:
+        try:
+            contract = _parse_contract_requirements(conn, task_id)
+        except Exception:
+            return
+        if not contract:
+            return
+        raw = contract.get("required_artifacts")
+        if not isinstance(raw, (list, tuple)):
+            return
+    else:
+        raw = required_artifacts
     if not isinstance(metadata, dict):
         return
     workspace = _scratch_workspace(conn, task_id)
@@ -4690,18 +4759,31 @@ def _gate_blocked_completion(conn: sqlite3.Connection, task_id: str) -> None:
 def _stage_completion_artifacts(
     conn: sqlite3.Connection, task_id: str, metadata: dict, now: int, *,
     uploaded_by: str = "kanban_complete",
-) -> list[Path]:
+    bound_external: Optional[set[str]] = None,
+) -> tuple[list[Path], set[str]]:
     """Copy scratch artifacts to the attachments dir and record each as an
-    attachment row; returns the copies so the caller can discard them if its
-    transaction rolls back."""
-    _persist_scratch_completion_artifacts(conn, task_id, metadata)
+    attachment row; returns ``(staged_copies, covered_scratch)``.
+
+    ``bound_external`` is the set of ``stored_path`` values THIS invocation's
+    ``bind_external_artifacts`` actually produced (round-3 HIGH #2) — the ONLY
+    trusted source for "this path is already bound". It is passed explicitly so
+    a forged ``metadata['external_artifacts_preserved']`` can never make staging
+    skip a scratch requirement's copy.
+
+    ``covered_scratch`` is the set of resolved SOURCE paths this call actually
+    copied (round-3 HIGH #3), so the caller can validate in-txn that every
+    scratch requirement of the gate's snapshot was preserved.
+    """
+    covered = _persist_scratch_completion_artifacts(
+        conn, task_id, metadata, bound_external=bound_external,
+    )
     staged = [Path(stored_path) for stored_path in metadata.pop("_staged_artifacts", [])]
     for path in staged:
         _insert_completion_attachment(
             conn, task_id, filename=path.name, stored_path=str(path),
             size=path.stat().st_size, created_at=now, uploaded_by=uploaded_by,
         )
-    return staged
+    return staged, covered
 
 
 def _cleaned_artifact_paths(metadata: Any) -> list[str]:
@@ -4795,24 +4877,38 @@ def _merge_completion_prose_artifacts(
 
 
 def _persist_scratch_completion_artifacts(
-    conn: sqlite3.Connection, task_id: str, metadata: dict,
-) -> None:
-    """Copy scratch-workspace completion artifacts before cleanup removes them."""
+    conn: sqlite3.Connection, task_id: str, metadata: dict, *,
+    bound_external: Optional[set[str]] = None,
+) -> set[str]:
+    """Copy scratch-workspace completion artifacts before cleanup removes them.
+
+    Round-3 HIGH #2: ``bound_external`` is the set of ``stored_path`` values
+    THIS invocation's ``bind_external_artifacts`` produced — passed in
+    explicitly. The staging NEVER reads ``metadata['external_artifacts_preserved']``
+    (which a caller could forge to make a scratch requirement be skipped, letting
+    cleanup delete it). When ``bound_external`` is ``None`` no path is treated as
+    already-bound (the pre-round-2 behaviour for scratch-only callers such as
+    ``request_review``).
+
+    Returns the set of resolved SOURCE paths THIS call actually copied
+    (round-3 HIGH #3), so ``complete_task`` can validate in-txn that every
+    scratch requirement of the gate's snapshot was preserved.
+    """
     raw_artifacts = metadata.get("artifacts")
     if not isinstance(raw_artifacts, (list, tuple)):
-        return
+        return set()
 
     workspace = _scratch_workspace(conn, task_id)
     if workspace is None:
-        return
+        return set()
     is_managed, board = _managed_scratch_path_info(workspace)
     if not is_managed:
-        return
+        return set()
 
     try:
         workspace_root = workspace.resolve()
     except OSError:
-        return
+        return set()
 
     attachment_dir = task_attachments_dir(task_id, board=board)
     persisted: list[str] = []
@@ -4823,14 +4919,13 @@ def _persist_scratch_completion_artifacts(
     # staging every path under the attachments dir would insert a SECOND row
     # and a SECOND ``attached`` event for the same file.
     scratch_copies: list[str] = []
-    # Stored paths already bound as preserved external copies (present only for
-    # mixed contracts): re-processing one would emit a spurious
-    # ``external_artifact_recorded`` for our own managed copy.
-    bound_external: set[str] = {
-        str(b.get("stored_path"))
-        for b in (metadata.get("external_artifacts_preserved") or [])
-        if isinstance(b, dict) and b.get("stored_path")
-    }
+    # Resolved SOURCE paths copied by this call — the scratch coverage result.
+    covered_scratch: set[str] = set()
+    # Stored paths already bound as preserved external copies, taken from THIS
+    # invocation's explicit bindings only (round-3 HIGH #2): re-processing one
+    # would emit a spurious ``external_artifact_recorded`` for our own managed
+    # copy. Caller metadata is NEVER trusted for this decision.
+    bound_external = set(bound_external or ())
     used_destinations: set[Path] = set()
     changed = False
 
@@ -4900,11 +4995,13 @@ def _persist_scratch_completion_artifacts(
         used_destinations.add(dest)
         persisted.append(str(dest.resolve()))
         scratch_copies.append(str(dest.resolve()))
+        covered_scratch.add(str(resolved_src))
         changed = True
 
     if changed:
         metadata["artifacts"] = persisted
         metadata["_staged_artifacts"] = scratch_copies
+    return covered_scratch
 
 
 def _discard_staged_copies(copies: Iterable[Path], attachment_dir: Path) -> None:
@@ -5309,7 +5406,7 @@ def request_review(
                     False, "task is not in running/ready (or expected_run_id did not match the current run)",
                 )
             if isinstance(metadata, dict):
-                staged_copies = _stage_completion_artifacts(
+                staged_copies, _covered = _stage_completion_artifacts(
                     conn, task_id, metadata, now, uploaded_by="kanban_request_review",
                 )
             run_id = _end_or_synthesize_run(

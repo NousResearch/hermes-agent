@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import platform
+import select
 import shlex
 import signal
 import stat
@@ -57,6 +58,7 @@ MAX_OUTPUT_CHARS = 200_000      # rolling output buffer
 COMPLETION_OUTPUT_CHARS = 2000
 FINISHED_TTL_SECONDS = 1800     # keep finished processes 30 minutes
 MAX_PROCESSES = 64              # max tracked processes (LRU pruning)
+_PTY_READER_POLL_SECONDS = 0.5  # bounded PTY read poll (#132358)
 
 # Watch-pattern rate limiting, PER SESSION: one watch-match notification per
 # WATCH_MIN_INTERVAL_SECONDS; a match inside the cooldown is dropped and counts as one
@@ -1565,6 +1567,17 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         try:
             while pty.isalive():
                 try:
+                    fd = None if _IS_WINDOWS else getattr(pty, "fd", None)
+                    if fd is not None and fd >= 0:
+                        # A descendant that setsid()s past the kill keeps the slave open, so a
+                        # blocking read below would never return while it holds the file
+                        # object's buffer lock — the reader (and the master fd it closes)
+                        # would stay leaked for the escapee's whole lifetime (#132358). Poll
+                        # with a timeout so the loop re-checks isalive() once the child is dead.
+                        ready, _, _ = select.select(
+                            [fd], [], [], _PTY_READER_POLL_SECONDS)
+                        if not ready:
+                            continue
                     chunk = pty.read(4096)
                     if chunk:
                         # ptyprocess returns bytes; pywinpty returns str

@@ -675,8 +675,8 @@ def _sweep_dead_tmp_siblings(path: Path) -> None:
             name = entry.name
             if not (name.startswith(prefix) and name.endswith(".tmp")):
                 continue
-            owner = name[len(prefix):].split(".", 1)[0]
-            if owner.isdigit() and int(owner) != os.getpid() and not _pid_alive(int(owner)):
+            owner = _bounded_int(name[len(prefix):].split(".", 1)[0], _U32_MAX)
+            if owner is not None and owner != os.getpid() and not _pid_alive(owner):
                 with suppress(OSError):
                     entry.unlink()
 

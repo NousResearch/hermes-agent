@@ -328,6 +328,19 @@ def test_claim_publishes_whole_and_reclaims_dead_writers_tmp_files(marker):
     lock.release()
 
 
+@pytest.mark.parametrize("owner", ["\u00b2", "\u2460"], ids=["superscript-two", "circled-one"])
+def test_tmp_litter_with_a_digit_lookalike_pid_never_breaks_admission(marker, owner):
+    """A sibling whose pid field is a Unicode digit lookalike is not a pid we can judge: it is
+    left alone and the claim still lands (``str.isdigit`` accepts it, ``int`` refuses it)."""
+    odd = marker.with_name(f"{marker.name}.{owner}.tmp")
+    odd.write_text("x")
+
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True
+    assert marker.read_text(encoding="utf-8").startswith(f"{os.getpid()}\n")
+    lock.release()
+
+
 def test_unreadable_creation_time_gets_the_v1_ceiling(marker, other_pid, monkeypatch):
     """Contract A1: a live pid whose creation time cannot be read (Windows denies it for
     elevated/other-user pids) is live only within the legacy ceiling: it may be a reused pid."""

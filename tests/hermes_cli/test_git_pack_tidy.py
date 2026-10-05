@@ -158,9 +158,13 @@ def test_a_refused_or_killed_erase_leaves_git_reading_and_is_finished_later(
     assert _objects(clone) == held
     assert _git("cat-file", "-p", "local:f3", cwd=clone, env=_OFFLINE) == "v3"
 
-    lock = clone / ".git" / tidy._LOCK_FILE
-    assert lock.exists(), "the killed run's lock"
-    os.utime(lock, (time.time() - 2 * 3600,) * 2)  # an hour on: the next update takes it over
+    # The killed run's lock died with it. A live holder still excludes every other run.
+    holder = tidy._take_lock(clone / ".git")
+    assert holder is not None, "a killed tidy left its lock held"
+    try:
+        assert tidy.tidy_partial_clone_packs(clone) == tidy.TidyResult(), "ran beside a live lock holder"
+    finally:
+        os.close(holder)
     tidy.tidy_partial_clone_packs(clone)
     assert all(p.with_suffix(".pack").exists() for p in pack_dir.glob("pack-*.*")), \
         "leftovers of an interrupted erase survived the next run"

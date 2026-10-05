@@ -306,32 +306,19 @@ def _merge_smallest_packs(repo_root: Path, pack_dir: Path, deadline: float, resu
             shutil.rmtree(staging, ignore_errors=True)
 
 
-def _take_lock(git_dir: Path) -> Optional[Path]:
-    """The tidy lock, or None while another tidy holds it. A lock older than an hour is a killed run's
-    (a run lasts about ``TIDY_BUDGET_SECONDS``); renaming it away first means one taker wins."""
-    lock = git_dir / _LOCK_FILE
-    for _attempt in range(2):
-        try:
-            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-            return lock
-        except FileExistsError:
-            try:
-                if lock.stat().st_mtime > time.time() - _MIN_PACK_AGE_SECONDS:
-                    return None
-                taken = git_dir / f"{_LOCK_FILE}.stale-{os.getpid()}"
-                os.replace(lock, taken)
-                if taken.stat().st_mtime > time.time() - _MIN_PACK_AGE_SECONDS:
-                    # Another taker replaced the stale lock between our check and the rename: this is
-                    # its live lock. Hand it back unless a third run has already locked.
-                    try:
-                        os.link(taken, lock)
-                    except OSError:
-                        pass
-                    taken.unlink()
-                    return None
-                taken.unlink()
-            except OSError:
-                return None
+def _take_lock(git_dir: Path) -> Optional[int]:
+    """A kernel lock on the tidy lock file, or None while another tidy holds it. The OS drops it
+    when the holder exits, killed or not, so there is no stale lock to judge or take over; the file
+    itself is never removed (a removed path lets a later run lock a fresh file beside a live one)."""
+    from pm.filesystem import lock_fd
+
+    fd = os.open(git_dir / _LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if lock_fd(fd, wait=False):
+            return fd
+    except OSError:  # a filesystem that cannot lock: skip the tidy rather than run unguarded
+        logger.debug("pack tidy lock unavailable in %s", git_dir, exc_info=True)
+    os.close(fd)
     return None
 
 
@@ -358,7 +345,7 @@ def tidy_partial_clone_packs(repo_root: Path, *, budget_seconds: float = TIDY_BU
             finally:
                 _save_state(pack_dir, state)
         finally:
-            lock.unlink(missing_ok=True)
+            os.close(lock)
         result.packs_left = len(list(pack_dir.glob("pack-*.pack")))
     except Exception:
         logger.warning("partial-clone pack tidy failed in %s", repo_root, exc_info=True)

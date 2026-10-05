@@ -822,7 +822,8 @@ class GatewayAdapterLifecycleMixin:
                     self._drop_from_reconnect_queue(platform, "adapter creation returned None")
                     return
                 # Unregistered plugin: keep it queued and re-arm a failed load for the next tick.
-                self._rearm_failed_platform_load(platform)
+                from hermes_cli.plugins import get_plugin_manager
+                get_plugin_manager().rearm_failed_platform(platform.value)
                 backoff = self._bump_reconnect_backoff(
                     platform, info, attempt, "adapter_unavailable", _adapter_unavailable_message(platform),
                 )

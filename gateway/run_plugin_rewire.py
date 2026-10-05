@@ -77,12 +77,6 @@ class GatewayPluginRewireMixin:
                     f" for profile '{profile_name}'" if profile_name else "")
         return count
 
-    def _rearm_failed_platform_load(self, platform) -> bool:
-        """Reconnect-watcher hook (once per backoff tick): re-arm the current profile's failed platform
-        plugin load so the next ``_create_adapter`` retries it instead of waiting for reload-plugins."""
-        from hermes_cli.plugins import get_plugin_manager
-        return get_plugin_manager().rearm_failed_platform(platform.value)
-
 
 def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callable[..., dict]:
     """Control-socket ``reload-plugins``: force re-discovery under the requested home's scope so a plugin

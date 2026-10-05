@@ -2283,3 +2283,40 @@ def test_openai_alias_without_base_url_pairs_openai_key_with_openai_base_url(mon
     runtime = rp.resolve_runtime_provider(requested="openai", target_model="gpt-x")
 
     assert (runtime["provider"], runtime["base_url"], runtime["api_key"]) == ("custom", "https://llm-proxy.corp.example/v1", "sk-proxy-issued")
+
+
+# ── #133137: disabling a provider must fail soft, like deleting its block does ────────────────
+
+def test_disabled_provider_raises_the_typed_error_fallback_walkers_catch(monkeypatch):
+    """``providers.<name>.enabled: false`` must raise ``AuthError`` — the typed error every
+    fallback walker catches — not a bare ``ValueError``, so a session pinned to the disabled
+    provider degrades onto the chain instead of hard-failing the agent build."""
+    monkeypatch.setattr(rp._config_mod, "load_config",
+                        lambda: {"providers": {"bai": {"enabled": False}}})
+
+    with pytest.raises(rp.AuthError, match="is disabled in config") as exc:
+        rp.resolve_runtime_provider(requested="bai")
+
+    assert exc.value.provider == "bai"
+    assert not isinstance(exc.value, ValueError)
+
+
+def test_disabled_provider_walks_the_fallback_chain(monkeypatch):
+    """End-to-end through the shared walker: the disabled guard's error is consumed by
+    ``resolve_runtime_with_fallback`` and the configured chain resolves, matching the
+    fail-soft semantics a deleted block already has (#133137)."""
+    monkeypatch.setattr(rp._config_mod, "load_config",
+                        lambda: {"providers": {"bai": {"enabled": False}}})
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+
+    def _fake_ladder(requested, explicit_api_key, explicit_base_url, target_model):
+        yield {"provider": "deepseek", "api_key": explicit_api_key or "sk-fb",
+               "base_url": "https://api.deepseek.com/v1", "api_mode": "openai"}
+
+    monkeypatch.setattr(rp, "_ladder_rungs", _fake_ladder)
+    runtime, entry = rp.resolve_runtime_with_fallback(
+        {"fallback_providers": [{"provider": "deepseek", "model": "deepseek-v4-pro", "api_key": "sk-fb"}]},
+        requested="bai")
+
+    assert runtime["provider"] == "deepseek"
+    assert entry["model"] == "deepseek-v4-pro"

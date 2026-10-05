@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
-from hermes_cli._subprocess_compat import pid_exists_stdlib
 from utils import atomic_json_write
 
 if sys.platform == "win32":
@@ -589,66 +588,37 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
-# Hermes' own inline bootstraps hand control to a Hermes entry point IN this process, so the argv
-# they run with is this process's own identity; every other ``-c`` program keeps its trailing argv
-# as data (#107002). Each pattern is one emitted source shape, anchored at both ends so a program
-# merely CARRYING a bootstrap command line (the restart watcher's respawn argv) never matches.
-_Q = r"""['"]?"""
-_MAIN = rf"{_Q}__main__{_Q}"
-_RUN_MODULE = rf"runpy\.run_module\(\s*{_Q}(?P<target>[\w.]+){_Q}\s*,\s*run_name\s*=\s*{_MAIN}\s*,\s*alter_sys\s*=\s*True\s*\)"
-_BOOTSTRAPS = (
-    # hermes_cli._launchers.runtime_command (store launcher, the Windows updater's relaunch)
-    ("module", re.compile(rf"import os, sys, runpy;.*\b{_RUN_MODULE}", re.S)),
-    # hermes_cli.venv_sync.relaunch_command: argv is assigned inside the source
-    ("module", re.compile(rf"import sys, runpy; sys\.path\.insert\(.*\b{_RUN_MODULE}", re.S)),
-    ("path", re.compile(
-        rf"import sys, runpy; sys\.path\.insert\(.*\brunpy\.run_path\(\s*{_Q}(?P<target>[^'\"]+?){_Q}\s*,\s*run_name\s*=\s*{_MAIN}\s*\)",
-        re.S)),
-    # hermes_cli._launchers._launcher_script (the published POSIX shell / Windows .cmd launcher)
-    ("entry", re.compile(r"import os, re, sys\s.*\bfrom\s+(?P<target>[\w.]+)\s+import\s+(?P<func>\w+)\b.*\bsys\.exit\(\s*(?P=func)\(\)\s*\)", re.S)),
-    # hermes_cli._launchers._write_cmd_launcher: the launcher script, base64-encoded
-    ("base64", re.compile(rf"import base64; exec\(base64\.b64decode\({_Q}(?P<target>[A-Za-z0-9+/=]+){_Q}\)\)")),
-)
-_ASSIGNED_ARGV = re.compile(r"\bsys\.argv\s*=\s*\[(.*?)\]\s*;")
+def _canonical_bootstrap_subcommand(cased_tokens: list[str]) -> str | None:
+    """Gateway subcommand when the inline source is Hermes' own published launcher bootstrap.
 
-
-def _bootstrap_entry(source: str, argv: list[str]) -> list[str] | None:
-    """``[-m, <module>, *argv]`` (or ``[<path>, *argv]``) the inline *source* runs in-process, else None."""
-    source = source.strip()
-    kind, match = next(((k, m) for k, p in _BOOTSTRAPS if (m := p.fullmatch(source))), (None, None))
-    if match is None:
-        return None
-    target = match["target"]
-    if kind == "base64":
-        import base64
-        import binascii
-        try:
-            return _bootstrap_entry(base64.b64decode(target, validate=True).decode("utf-8"), argv)
-        except (binascii.Error, UnicodeDecodeError):
-            return None
-    if kind == "entry":  # the launcher script's own ``--run-module <module>`` switch
-        return ["-m", argv[1], *argv[2:]] if argv[:1] == ["--run-module"] and len(argv) > 1 else ["-m", target, *argv]
-    if assigned := _ASSIGNED_ARGV.search(source):
-        argv = [item.strip().strip("'\"") for item in assigned.group(1).split(",")][1:]
-    return [target, *argv] if kind == "path" else ["-m", target, *argv]
-
-
-def inline_bootstrap_argv(tokens: list[str]) -> list[str] | None:
-    """*tokens* as the equivalent ``python -m <module> <argv…>`` when this interpreter's ``-c`` source
-    is a Hermes bootstrap running an entry point in-process; None for any other inline source.
-
-    Command lines usually arrive space-joined (``/proc``, psutil, ``ps``), which splits the source
-    across tokens; the shortest token run that ends in a recognised tail is the source, whatever
-    joined it, and the tokens after it are the entry point's argv.
+    pm-runtime installs launch through ``hermes_cli._launchers.runtime_command``
+    (``python -I -c <bootstrap> gateway run``). The bootstrap is deterministic — it
+    always carries ``import hermes_bootstrap`` and ``runpy.run_module('hermes_cli.main',
+    ...)`` — so only that canonical source confers identity, and the trailing argv after
+    the source literal names the subcommand. Arbitrary ``python -c`` stays spawn-intent,
+    never identity (#107002, #124029).
     """
-    index = inline_source_flag_index(tokens)
-    if index is None:
+    flag_index = inline_source_flag_index(cased_tokens)
+    if flag_index is None or flag_index + 1 >= len(cased_tokens):
         return None
-    for end in range(index + 1, len(tokens)):
-        if tokens[end].rstrip().endswith(")"):
-            entry = _bootstrap_entry(" ".join(tokens[index + 1 : end + 1]), tokens[end + 1 :])
-            if entry is not None:
-                return [tokens[0], *entry]
+    source = cased_tokens[flag_index + 1].lower()
+    if "hermes_bootstrap" not in source or "hermes_cli.main" not in source:
+        return None
+    # Trailing argv after the source literal belongs to the bootstrapped entry point.
+    # Drop --profile X / -p X / --profile=X / -p=X (same rule as the main matcher).
+    filtered: list[str] = []
+    skip_next = False
+    for token in (t.lower() for t in cased_tokens[flag_index + 2:]):
+        if skip_next:
+            skip_next = False
+        elif token in ("--profile", "-p"):
+            skip_next = True
+        elif not token.startswith(("--profile=", "-p=")):
+            filtered.append(token)
+    for i, token in enumerate(filtered):
+        if token == "gateway":
+            # Bare `gateway` defaults to `run`.
+            return filtered[i + 1] if i + 1 < len(filtered) else "run"
     return None
 
 
@@ -673,16 +643,12 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
     # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
     # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
+    # EXCEPTION: Hermes' own published launcher bootstrap (pm-runtime installs) confers identity
+    # when its deterministic source markers are present (#124029).
     if command_line_runs_inline_source(cased_tokens):
-        # …unless the source is a Hermes bootstrap running the entry point in THIS process (store
-        # launcher, launcher script, venv_sync re-entry): then its argv is this process's (#124318).
-        cased_tokens = inline_bootstrap_argv(cased_tokens)
-        if cased_tokens is None:
-            return None
-        tokens = [t.lower() for t in cased_tokens]
-        basenames = [t.rsplit("/", 1)[-1] for t in tokens]
+        return _canonical_bootstrap_subcommand(cased_tokens)
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
-    # inside one JXA script string; the gateway itself is its child and is matched on its own command line.
+    # inside one AppleScript string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":
         return None
     # Gateway-dedicated entrypoints carry no subcommand to inspect.
@@ -775,7 +741,17 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
     argv = record.get("argv")
     if record.get("kind") != _GATEWAY_KIND or not isinstance(argv, list) or not argv:
         return False
-    return looks_like_gateway_runtime_command_line(" ".join(str(part) for part in argv))
+    parts = [str(part) for part in argv]
+    # pm-runtime installs launch through ``hermes_cli._launchers.runtime_command``; runpy
+    # leaves sys.argv as ``['-c', 'gateway', 'run']``. That shape can only arise from a
+    # ``-c`` launch whose trailing argv names the gateway — and this record is our own
+    # persisted metadata (kind-checked above), not another process's cmdline (#124029).
+    # #107002's spawn-intent rule still governs live command lines.
+    if len(parts) > 1 and parts[0] == "-c":
+        parts = parts[1:]
+    if looks_like_gateway_runtime_command_line(" ".join(parts)):
+        return True
+    return len(parts) >= 2 and parts[0] == "gateway" and parts[1] in {"run", "restart"}
 
 
 def _profile_name_for_home(profile_home: Path) -> Optional[str]:
@@ -834,13 +810,11 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
         if profile_flag_value(command_lc) == profile_name.lower():
             return True
         return command_line_names_hermes_home(command_lc, home_lc)
-    # Default profile: accept unless argv names ANOTHER profile (any spelling the CLI pre-parser
+    # Default profile: accept unless argv names another profile (any spelling the CLI pre-parser
     # accepts, ``--profile=ops`` included -- a substring test let that gateway pass as the default's)
     # or a conflicting explicit HERMES_HOME= (its absence is not disqualifying -- HERMES_HOME usually
-    # arrives via the env). ``--profile default`` names this profile: a hand-written launchd plist
-    # mirrors the named-profile service shape, and rejecting it reported a live default gateway
-    # as stopped (#100817).
-    if profile_flag_value(command_lc) not in (None, "default"):
+    # arrives via the env).
+    if profile_flag_value(command_lc) is not None:
         return False
     return not hermes_home_assignments(command_lc) or command_line_names_hermes_home(command_lc, home_lc)
 
@@ -879,25 +853,9 @@ def _record_matches_live_gateway_pid(
     return expected_home is None or _command_line_belongs_to_profile(live_cmdline, expected_home)
 
 
-def _record_argv() -> list[str]:
-    """``sys.argv`` with the inline-source placeholder replaced by the entry point this process runs.
-
-    The published launcher script (``_launchers._launcher_script``: the POSIX ``bin/hermes`` shell
-    launcher and the Windows ``.cmd``) imports ``hermes_cli.main`` inside ``python -I -c <script>``,
-    so ``sys.argv`` is ``["-c", "gateway", "run"]`` — a record the argv matcher can never accept
-    once the live command line is unreadable (Windows/EACCES fallback in
-    ``_record_matches_live_gateway_pid``). Recording the module path follows runpy's ``alter_sys``
-    convention, which is what the ``--run-module`` and store-launcher forms already persist."""
-    argv = list(sys.argv)
-    entry = sys.modules.get("hermes_cli.main")
-    if argv[:1] == ["-c"] and getattr(entry, "__file__", None):
-        argv[0] = entry.__file__
-    return argv
-
-
 def _build_pid_record() -> dict:
     return {
-        "pid": os.getpid(), "kind": _GATEWAY_KIND, "argv": _record_argv(),
+        "pid": os.getpid(), "kind": _GATEWAY_KIND, "argv": list(sys.argv),
         "start_time": _get_process_start_time(os.getpid()),
         # Scoped locks are machine-global; the owner's home lets a cross-profile
         # --replace place its takeover marker where the target will read it.
@@ -1017,15 +975,12 @@ def _file_cache_signature(path: Path) -> tuple[bool, Optional[int], Optional[int
     return (True, st.st_mtime_ns, st.st_size)
 
 
-def _cleanup_invalid_pid_path(
-    pid_path: Path, *, cleanup_stale: bool, unlink_lock: bool = True
-) -> None:
-    """Force-unlink a stale PID file + sibling lock (lock confirmed inactive, so no pid check).
-    ``unlink_lock=False`` drops only the PID file: the caller saw the lock HELD."""
+def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
+    """Force-unlink a stale PID file + sibling lock (lock confirmed inactive, so no pid check)."""
     if not cleanup_stale:
         return
     _clear_running_pid_cache()
-    for path in (pid_path, _get_gateway_lock_path(pid_path)) if unlink_lock else (pid_path,):
+    for path in (pid_path, _get_gateway_lock_path(pid_path)):
         with contextlib.suppress(Exception):
             path.unlink(missing_ok=True)
 
@@ -1077,7 +1032,59 @@ def _pid_exists(pid: int) -> bool:
         return bool(psutil.pid_exists(pid))
     except ImportError:
         pass  # Fall through to stdlib fallback.
-    return pid_exists_stdlib(pid)
+    if _IS_WINDOWS:
+        return _pid_exists_win32_ctypes(pid)
+    if _posix_is_zombie(pid):  # a zombie still answers os.kill(pid, 0)
+        return False
+    try:
+        os.kill(pid, 0)  # windows-footgun: ok — POSIX-only branch (the whole point of _pid_exists)
+    except PermissionError:
+        return True  # Exists but we can't signal it.
+    except OSError:  # ProcessLookupError included
+        return False
+    return True
+
+
+def _posix_is_zombie(pid: int) -> bool:
+    """Zombie via ``/proc/<pid>/stat`` field 3, or ``ps -o state=`` without /proc (macOS/BSD)."""
+    try:
+        stat_fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()
+        return len(stat_fields) > 2 and stat_fields[2] == "Z"
+    except FileNotFoundError:
+        with contextlib.suppress(Exception):
+            r = subprocess.run(
+                ["ps", "-o", "state=", "-p", str(pid)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+            )
+            return r.returncode == 0 and r.stdout.strip().startswith("Z")
+    except (IndexError, PermissionError, OSError):
+        pass
+    return False
+
+
+def _pid_exists_win32_ctypes(pid: int) -> bool:
+    """psutil-free Windows liveness probe via OpenProcess/WaitForSingleObject."""
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        # Pin restypes: default c_int mangles WAIT_* DWORDs into negatives.
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint
+        kernel32.GetLastError.restype = ctypes.c_uint
+        PROCESS_QUERY_LIMITED_INFORMATION, SYNCHRONIZE = 0x1000, 0x100000  # SYNCHRONIZE: for Wait*
+        WAIT_TIMEOUT, ERROR_ACCESS_DENIED = 0x00000102, 5
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, pid)
+        if not handle:
+            # ERROR_INVALID_PARAMETER (87): PID definitely gone. ACCESS_DENIED: exists
+            # but owned by another user/session. Any other error: conservative False.
+            return kernel32.GetLastError() == ERROR_ACCESS_DENIED
+        try:
+            # WAIT_TIMEOUT = still running; anything else = gone.
+            return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+        finally:
+            kernel32.CloseHandle(handle)
+    except (OSError, AttributeError):
+        return False
 
 
 def _release_file_lock(handle) -> None:
@@ -1449,12 +1456,8 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
     if name != "default" and not _same_hermes_home(profile_dir, get_default_hermes_root() / "profiles" / name):
         return None
     topology = host_gateway_topology()
-    # The multiplexer's record lives in the home that LAUNCHED it; a named-hosted multiplexer leaves
-    # a possibly stale standalone record at the default root, which must not be projected.
-    launch_home = get_default_hermes_root()
     if topology is not None and topology.serves(name):
         pid: Optional[int] = topology.pid
-        launch_home = topology.home or launch_home
     elif name != "default" and named_profile_served_by_running_multiplexer(name):
         # Config-derived fallback for a record that predates ``served_profiles``.
         pid = live_default_gateway_pid()
@@ -1462,7 +1465,7 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
         return None
     if pid is None:
         return None
-    return pid, read_runtime_status(launch_home / "gateway_state.json") or {}
+    return pid, read_runtime_status(get_default_hermes_root() / "gateway_state.json") or {}
 
 
 def shared_listener_mirror_platforms(runtime: Optional[dict[str, Any]], profile: str) -> dict[str, Any]:
@@ -1501,13 +1504,6 @@ def profile_platforms_from_multiplexer(runtime: Optional[dict[str, Any]], profil
     prefix = f"{profile}:"
     own = {key[len(prefix):]: value for key, value in plats.items()
            if isinstance(key, str) and key.startswith(prefix) and isinstance(value, dict)}
-    if profile == "default":
-        # The flat keys ARE the default's own adapters (a multiplex host's primary map is always
-        # ``default``, whoever launched it; a standalone gateway writes only flat keys). Dropping
-        # them projected ``{}`` for the one profile the record never prefixes → "Restart needed"
-        # forever on /api/status and the Messaging card (#123088, #123869).
-        own.update({key: value for key, value in plats.items()
-                    if isinstance(key, str) and ":" not in key and isinstance(value, dict)})
     return {**shared_listener_mirror_platforms(runtime, profile), **own}
 
 
@@ -2089,13 +2085,10 @@ def get_running_pid(
 ) -> Optional[int]:
     """PID of a running gateway (lock + PID file verified against the live process), or None.
     An explicit ``pid_path`` is a scoped query into that home's identity files: records are
-    validated against the probed home (not the serve process's) (#106406). While the runtime lock
-    is HELD, a live SAME-home record the identity matcher rejects is never cleanup-unlinked, scoped
-    or not: the holder is a gateway whatever its command line reads as, and unlinking a held
-    ``gateway.lock`` leaves it locking a deleted inode so the next starter double-runs (#125610,
-    #123109). Unscoped, a live ``gateway.pid`` that truthfully names ANOTHER home's gateway is
-    poison inside this home and is unlinked on refusal — the held lock stays (#89315). Dead
-    records and inactive-lock metadata still take the full poison-file cleanup."""
+    validated against the probed home (not the serve process's), and a live record is never
+    cleanup-unlinked, so polling another profile must not delete its gateway.pid/gateway.lock
+    (#106406). The unscoped path keeps main's poison-file housekeeping: a live record owned by
+    another home inside this home's gateway.pid is unlinked on refusal (#89315)."""
     resolved_pid_path = pid_path or _get_pid_path()
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
     if is_gateway_runtime_lock_active(resolved_lock_path):
@@ -2104,7 +2097,6 @@ def get_running_pid(
         )
         expected_home = pid_path.parent if pid_path is not None else None
         saw_live_pid = False
-        foreign_live_pid = False
         for record in records:
             pid = _live_pid_from_record(record)
             if pid is None:
@@ -2117,18 +2109,12 @@ def get_running_pid(
                 record, pid, expected_home=expected_home
             ):
                 return pid
-            # A same-home record the matcher could not adopt may still be a real gateway (an
-            # identity matcher that lags a new launcher shape, a record written by an older
-            # version): that rejection is not stale-file authority while the PID is alive and the
-            # lock held. A scoped poll never unlinks the other home's files either (#106406).
-            if home_ok or expected_home is not None:
-                saw_live_pid = True
-            else:
-                foreign_live_pid = True
-        if not saw_live_pid:
-            _cleanup_invalid_pid_path(
-                resolved_pid_path, cleanup_stale=cleanup_stale, unlink_lock=not foreign_live_pid
-            )
+            # Scoped only: a live record we could not adopt may still be a real gateway;
+            # unlinking its identity files would break that home's double-run protection
+            # while the PID is alive. Unscoped keeps the #89315 poison-file cleanup.
+            saw_live_pid = True
+        if expected_home is None or not saw_live_pid:
+            _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return get_runtime_status_running_pid() if pid_path is None else None
     # Lock inactive: the runtime-status fallback runs BEFORE cleanup here.
     runtime_pid = get_runtime_status_running_pid() if pid_path is None else None
@@ -2148,16 +2134,13 @@ def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float
         return None
     if not _is_gateway_runtime_lock_active_strict(resolved_lock_path):
         return None
-    lock_record = _read_gateway_lock_record(resolved_lock_path)
-    # The PID file is advisory beside a HELD lock: a launch-service gateway keeps serving after its
-    # gateway.pid was unlinked (#110166) and --replace force-unlinks the old one (#123430). The
-    # holder wrote its own identity into the lock at acquisition, so that record validated against
-    # the live process below is the same proof — raising here blocked every following update.
-    records = (_read_pid_record(resolved_pid_path), lock_record) if pid_exists else (lock_record,)
+    if not pid_exists:
+        raise RuntimeError("active gateway lock has no PID metadata")
+    records = (_read_pid_record(resolved_pid_path), _read_gateway_lock_record(resolved_lock_path))
     if not all(records):
         raise RuntimeError("gateway PID or lock metadata is malformed")
     pid = _pid_from_record(records[0])
-    if pid is None or pid <= 0 or any(_pid_from_record(record) != pid for record in records[1:]):
+    if pid is None or pid <= 0 or _pid_from_record(records[1]) != pid:
         raise RuntimeError("gateway PID and lock identities disagree")
     if not _pid_exists(pid):
         raise RuntimeError("gateway identity is not live")
@@ -2214,3 +2197,25 @@ def get_running_pid_cached(
     with _gateway_running_pid_cache_lock:
         _gateway_running_pid_cache[key] = (time.monotonic(), refreshed_signature, pid)
     return pid
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+
+def clear_planned_stop_marker() -> None:
+    """Remove the planned-stop marker unconditionally."""
+    try:
+        _get_planned_stop_marker_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+def is_gateway_running(
+    pid_path: Optional[Path] = None,
+    *,
+    cleanup_stale: bool = True,
+) -> bool:
+    """Check if the gateway daemon is currently running."""
+    return get_running_pid(pid_path, cleanup_stale=cleanup_stale) is not None
+# ---- END PLUGIN-COMPAT ----

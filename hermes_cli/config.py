@@ -3385,7 +3385,7 @@ def _coerce_config_set_value(key: str, value: str) -> Any:
     literal there is parsed for the section guard to gate instead of riding into model.default
     as a bogus id (#131435)."""
     if isinstance(_default_value_for_key(key), str) and not (
-            key.strip().lower() == "model" and _looks_structured_value(value)):
+            key == "model" and _looks_structured_value(value)):
         return value
     stripped = value.strip()
     lower = stripped.lower()

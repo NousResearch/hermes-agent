@@ -355,12 +355,17 @@ _ACCOUNT_POLICY_BLOCK_PATTERNS = ("blocked for a previous policy violation",)
 # flags #18028, OpenAI moderation, Anthropic safety, Azure token, MiniMax
 # #32421, CommandCode gateway moderation #115218) — never a generic word like
 # "policy" that collides with billing/auth.
-# "content_filter" deliberately excludes the space variant seen in echoed config.
+# Both spellings of the OpenRouter refusal are matched: the body reads "Request
+# blocked by content filter: Content filter redaction would produce invalid tool
+# call arguments", so matching only the underscore form left it to the WAF
+# blocklist in ``_status_403`` and surfaced as ``upstream_blocked`` with the
+# wrong (User-Agent) guidance. "content filter" is specific enough not to collide
+# with billing/auth.
 _CONTENT_POLICY_BLOCKED_PATTERNS = (
     "flagged for possible cybersecurity risk", "trusted access for cyber",
     "violates our usage policies", "violates openai's usage policies", "your request was flagged by",
     "prompt was flagged by our safety", "responses cannot be generated due to safety",
-    "content_filter", "responsibleaipolicyviolation", "new_sensitive",
+    "content_filter", "content filter", "responsibleaipolicyviolation", "new_sensitive",
     "content exists risk",
 )
 

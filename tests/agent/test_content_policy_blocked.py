@@ -86,3 +86,56 @@ class TestContentPolicyPatternsAreNarrow:
         result = classify_api_error(e, provider="openrouter", model="anthropic/claude-opus")
         assert result.reason == FailoverReason.provider_policy_blocked
         assert result.reason != FailoverReason.content_policy_blocked
+
+
+class TestOpenRouterContentFilterRefusal:
+    """OpenRouter answers a per-prompt safety refusal with 403 and the body
+    ``Request blocked by content filter: Content filter redaction would produce
+    invalid tool call arguments``.
+
+    The body contains the WAF marker ``request blocked``, and only the
+    underscore spelling of the filter name was listed, so the refusal matched
+    the CDN/WAF blocklist instead: it classified as ``upstream_blocked`` and
+    recovered with the (wrong) custom-User-Agent advice. It must classify as a
+    content-policy block, not a WAF block — while a genuine WAF/relay 403 keeps
+    classifying as ``upstream_blocked``.
+    """
+
+    _REFUSAL_BODY = (
+        "Request blocked by content filter: Content filter redaction would "
+        "produce invalid tool call arguments"
+    )
+
+    def test_openrouter_403_content_filter_is_content_policy_not_upstream_blocked(self):
+        from agent.error_classifier import classify_api_error, FailoverReason
+
+        class _Err(Exception):
+            def __init__(self, msg, status_code):
+                super().__init__(msg)
+                self.status_code = status_code
+
+        result = classify_api_error(
+            _Err(self._REFUSAL_BODY, 403), provider="openrouter", model="openai/gpt-4o"
+        )
+        assert result.reason == FailoverReason.content_policy_blocked
+        assert result.reason != FailoverReason.upstream_blocked
+        # Deterministic for the unchanged request: fall back, do not burn retries
+        # and do not rotate a healthy credential.
+        assert result.retryable is False
+        assert result.should_fallback is True
+        assert result.should_rotate_credential is False
+
+    def test_genuine_waf_403_still_upstream_blocked(self):
+        """The content-filter pattern must not swallow real WAF/CDN blocks that
+        share the generic ``request blocked`` wording (#53099)."""
+        from agent.error_classifier import classify_api_error, FailoverReason
+
+        class _Err(Exception):
+            def __init__(self, msg, status_code):
+                super().__init__(msg)
+                self.status_code = status_code
+
+        result = classify_api_error(
+            _Err("Error code: 403 - Your request was blocked.", 403), provider="openai-api"
+        )
+        assert result.reason == FailoverReason.upstream_blocked

@@ -287,8 +287,8 @@ _R6_CASES = {
     "apps/desktop/electron/update-marker-gate.ts": ("desktop_updater", "e2e_desktop_update"),
     # Stops the backend before a remote update: typecheck/vitest and the hand-off script tests.
     "apps/desktop/electron/remote-lifecycle.ts": ("frontend", "desktop_updater"),
-    # The Tauri updater's marker claim: cargo and the real-update suites it gates.
-    "apps/bootstrap-installer/src-tauri/src/marker.rs": ("rust", "e2e_upgrade", "e2e_desktop_update"),
+    # The Tauri updater's marker claim: cargo, the only CI that builds it (review CI3).
+    "apps/bootstrap-installer/src-tauri/src/marker.rs": ("rust",),
     # The launchers reach the launch repair: the Desktop update relaunches through them too.
     "hermes_cli/_launchers.py": ("e2e_upgrade", "e2e_desktop_update"),
 }
@@ -305,6 +305,40 @@ def test_update_path_change_selects_every_suite_that_exercises_it(path, lanes):
             assert all(reached.values()), f"{path}: {lane}=true never reaches {reached}"
         if lane == "desktop_updater":
             assert _windows_desktop_updater_tests_selected(run), f"{path}: desktop_updater never reaches its tests"
+
+
+# Review CI2/CI3: update-path files the classifier sent to the wrong suites.
+_CI3_CASES = {
+    # /api/health `commit`: host-backend-attach compares it before attaching after an update.
+    "hermes_cli/web_routers/status.py": ("python", "e2e_desktop_update"),
+    # The SSH remote's marker judge/gate: typecheck/vitest and the marker contract's script tests.
+    "apps/desktop/electron/remote-update-marker-programs.ts": ("frontend", "desktop_updater"),
+    "apps/desktop/electron/remote-update-marker-programs.test.ts": ("frontend", "desktop_updater"),
+}
+
+
+@pytest.mark.parametrize("path,lanes", list(_CI3_CASES.items()))
+def test_update_path_change_reaches_the_suites_that_consume_it(path, lanes):
+    test_update_path_change_selects_every_suite_that_exercises_it(path, lanes)
+
+
+_TAURI_UPDATER = tuple(f"apps/bootstrap-installer/src-tauri/src/{name}.rs" for name in ("marker", "update", "paths"))
+
+
+@pytest.mark.parametrize("path", _TAURI_UPDATER)
+def test_tauri_updater_routes_as_one_unit_to_the_lane_that_builds_it(path):
+    """No slow lane builds the bootstrap installer: starting one for its updater runs nothing of it."""
+    assert (_REPO / path).is_file(), f"{path} moved: update this table"
+    classified = _real_classifier([path])
+    assert classified["rust"], f"{path}: cargo test never runs"
+    started = [lane for lane in ("e2e", "e2e_upgrade", "e2e_desktop_update", "e2e_desktop_core") if classified[lane]]
+    assert not started, f"{path}: starts {started}, which never build the Tauri installer"
+
+
+def test_gateway_status_routing_names_the_stamp_not_its_prefix_siblings():
+    assert _real_classifier(["gateway/status.py"])["e2e_upgrade"]
+    assert not _real_classifier(["gateway/status_phrases.py"])["e2e_upgrade"], \
+        "status_phrases.py (turn-status wording) is not on the update path"
 
 
 def test_every_detect_output_a_lane_sets_is_consumed_by_some_job():

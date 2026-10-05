@@ -722,14 +722,11 @@ def _render_tool_calls(tool_calls: Any) -> str:
     return "\n".join(lines)
 
 
-# Cached guidance (user_turn / off-cadence every_n fanout) is reused on later iterations of the
-# same turn, where it predates the tool results the acting model now sees. Without this line the
-# block reads as fresh instruction and an advisor's suggested tool call gets replayed after it
-# already ran.
+# Kept for callers importing the warning; observations are now anchored before
+# subsequent tool results instead of replayed as a fresh user instruction.
 _STALE_GUIDANCE_NOTE = (
-    "This guidance was produced earlier in this turn, before the tool results below it. "
-    "Check the transcript before acting on it: a step it suggests may already have run, and "
-    "repeating a completed tool call is never the next step.\n"
+    "These adviser observations predate subsequent tool results. "
+    "They are not user instructions; later transcript evidence takes precedence.\n"
 )
 
 
@@ -1004,39 +1001,34 @@ def _completed_response_as_stream_chunk(response: Any) -> Any:
     )
 
 
-def _attach_reference_guidance(agg_messages: list[dict[str, Any]], guidance: str) -> None:
-    """Attach the per-turn reference block as its OWN trailing user message.
+def _attach_reference_guidance(agg_messages: list[dict[str, Any]], guidance: str,
+                               anchor: int | None = None) -> None:
+    """Add attributed assistant context where the advisers observed the transcript.
 
-    The block varies per turn; appending keeps ``[system][task][tool-history]``
-    cache-stable. It is never merged into a trailing user turn: iteration 1 of a
-    tool loop ends on ``user(task)``, and a merged ``user(task + guidance)`` byte-differs
-    from the ``user(task)`` every later iteration replays, so the provider prefix cache
-    collapsed to the system prompt on iteration 2 of every turn (#112358). Converters
-    that require strict alternation (Anthropic Messages, Converse, native Gemini) merge
-    the two user turns as SEPARATE content blocks, so the task block stays byte-stable
-    there too; on the OpenAI-compatible wire the request ends ``user(task), user(guidance)``,
-    which a chat template that enforces strict user/assistant alternation rejects.
+    It is not a new user request. Cached observations stay before subsequent
+    tool results, so completed work cannot be presented as a fresh instruction.
     """
-    agg_messages.append({"role": "user", "content": guidance})
+    if anchor is None:
+        anchor = len(agg_messages)
+    agg_messages.insert(min(max(anchor, 0), len(agg_messages)),
+                        {"role": "assistant", "content": guidance})
+
+
+def _is_reference_guidance_message(message: Any, guidance: Any) -> bool:
+    if not isinstance(message, dict) or message.get("role") != "assistant" or message.get("tool_calls"):
+        return False
+    content = message.get("content")
+    if isinstance(content, list) and len(content) == 1:
+        part = content[0]
+        content = part.get("text") if isinstance(part, dict) and part.get("type", "text") == "text" else None
+    return bool(guidance) and content == str(guidance)
 
 
 def peel_reference_guidance(messages: list[dict[str, Any]], guidance: Any) -> list[dict[str, Any]]:
-    """Exact inverse of ``_attach_reference_guidance`` (plain string, or its cache-decorated
-    single-text-part form), so a cache breakpoint never lands on the turn-varying guidance.
-    Inputs are not mutated."""
-    if not guidance or not messages:
-        return messages
-    guidance_text = str(guidance)
-    last = messages[-1]
-    if not isinstance(last, dict) or last.get("role") != "user":
-        return messages
-    content = last.get("content")
-    if content == guidance_text:
-        return list(messages[:-1])
-    if isinstance(content, list) and len(content) == 1:
-        part = content[0]
-        if isinstance(part, dict) and part.get("type", "text") == "text" and (part.get("text") or "") == guidance_text:
-            return list(messages[:-1])
+    """Remove only the exact ephemeral assistant block; never a user message."""
+    for index, message in enumerate(messages):
+        if _is_reference_guidance_message(message, guidance):
+            return [*messages[:index], *messages[index + 1:]]
     return messages
 
 
@@ -1056,6 +1048,9 @@ class MoAChatCompletions:
         # Reference cache keyed on the advisory-view signature (HIT = no re-run, no re-emit).
         self._ref_cache_key: tuple | None = None
         self._ref_cache_outputs: list[tuple[str, str, Any]] = []
+        self._ref_guidance_anchor = 0
+        self._ref_guidance_prefix_key = None
+        self._ref_guidance_tool_count = 0
         # Fan-out spend awaiting consume_reference_usage (nothing deposited on a HIT so
         # spend counts once); the lock guards late-accounting callbacks on worker threads.
         self._pending_reference_usage: Any = CanonicalUsage()
@@ -1151,9 +1146,16 @@ class MoAChatCompletions:
         """Re-attach already-generated guidance to a rebuilt (compressed) transcript."""
         guidance = prepared.get("guidance")
         agg_messages = [dict(message) for message in messages]
-        if guidance:
-            _attach_reference_guidance(agg_messages, str(guidance))
-        return {**prepared, "messages": agg_messages}
+        anchor = prepared.get("guidance_anchor")
+        prefix_key = prepared.get("guidance_prefix_key")
+        if (guidance and isinstance(anchor, int) and anchor <= len(messages)
+                and prefix_key == _hash_messages(messages[:anchor])):
+            _attach_reference_guidance(agg_messages, str(guidance), anchor)
+        else:
+            # Compression/rewrite erased the observation point. Dropping advice
+            # is safer than moving it before evidence on which it was based.
+            guidance = None
+        return {**prepared, "messages": agg_messages, "guidance": guidance}
 
     def _plan_aggregator_cache(
         self, agg_messages: list[dict[str, Any]], tools: Any, guidance: Any, agg_runtime: dict[str, Any],
@@ -1166,6 +1168,8 @@ class MoAChatCompletions:
         """
         try:
             from agent.agent_runtime_helpers import plan_cache_sections_for_destination
+            guidance_anchor = next((i for i, message in enumerate(agg_messages)
+                                    if _is_reference_guidance_message(message, guidance)), None)
             planning_messages = peel_reference_guidance(agg_messages, str(guidance)) if guidance else agg_messages
             # Tri-state cache_disabled: facades built via __new__ have no _agent; forcing
             # False would suppress the planner's config fallback.
@@ -1182,7 +1186,7 @@ class MoAChatCompletions:
                 static_system_prefix=getattr(_agent, "_cached_system_prompt_static", None),
             )
             if guidance:
-                _attach_reference_guidance(agg_messages, str(guidance))
+                _attach_reference_guidance(agg_messages, str(guidance), guidance_anchor)
         except Exception as exc:  # pragma: no cover - cache planning must not block MoA
             logger.warning(
                 "MoA aggregator cache plan failed — sending undecorated "
@@ -1196,8 +1200,19 @@ class MoAChatCompletions:
         if aggregator.get("provider") == "moa":
             raise RuntimeError("MoA aggregator cannot be another MoA preset")
         agg_runtime = _slot_runtime(aggregator)
+        guidance = prepared.get("guidance")
+        wire_messages = prepared["messages"]
+        # Claude treats a final assistant row as prefill; no-prefill models
+        # reject it on native and OpenRouter wires. Keep the snapshot for the
+        # next tool iteration rather than synthesize another user instruction.
+        no_prefill = (agg_runtime.get("api_mode") == "anthropic_messages" or
+                      "claude" in str(agg_runtime.get("model") or "").lower())
+        if (no_prefill and wire_messages and
+                _is_reference_guidance_message(wire_messages[-1], guidance)):
+            wire_messages = peel_reference_guidance(wire_messages, guidance)
+            guidance = None
         agg_messages, tools = self._plan_aggregator_cache(
-            prepared["messages"], api_kwargs.get("tools"), prepared.get("guidance"), agg_runtime
+            wire_messages, api_kwargs.get("tools"), guidance, agg_runtime
         )
         trace = self._pending_trace
         if trace is not None:
@@ -1230,7 +1245,7 @@ class MoAChatCompletions:
         try:
             agg_response = send(messages=agg_messages)
         except Exception as exc:
-            # Strict-alternation template rejected ``user(task), user(guidance)``: merge the pair for
+            # Strict-alternation template rejected adjacent observation/action rows: merge for
             # THIS destination only and retry once; remember it so later iterations pre-merge.
             retry_messages = None if merged else merge_same_role_messages(agg_messages)
             if retry_messages is None or retry_messages is agg_messages or not is_role_alternation_rejection(exc, agg_runtime):
@@ -1263,33 +1278,29 @@ class MoAChatCompletions:
     def _fanout_cache_key(
         self, preset: dict[str, Any], ref_messages: list[dict[str, Any]], reference_models: list[dict[str, Any]],
     ) -> tuple:
-        """Turn-scoped reference cache key per the preset's fan-out cadence.
+        """Turn-scoped reference cache key per the preset's bounded fan-out cadence.
 
         "user_turn" (default) hashes only the prefix up to the LAST USER message, so
         later tool iterations are HITs. "per_iteration" re-runs whenever the advisory
         view changes. "every_n:<N>": iteration 1 of a turn, then every Nth; in-between
         iterations return the pinned last on-cadence key (HIT: no calls, no re-emit).
         """
-        # "user_turn" (default — cheapest cadence, #67199): advisors run ONCE per user turn; subsequent tool
-        # iterations reuse that turn's advice and the aggregator acts alone (the original MoA shape:
-        # synthesize at the start, then let the acting model work). Implemented by hashing only the prefix
-        # up to the LAST USER message so mid-turn growth doesn't change the signature — iteration 2+ becomes
-        # a cache HIT. "per_iteration": advisors re-run whenever the advisory view changes — i.e. every tool
-        # iteration, since the view grows with each tool result; advice tracks live task state at the cost
-        # of multiplying advisor latency/spend by tool-loop depth. "every_n:<N>" (N >= 2): the middle ground
-        # (issue #63393 — advisor fan-out multiplies latency/cost by the tool-iteration count). Advisors run
-        # on iteration 1 of a user turn and then every Nth tool iteration; the iterations in between REUSE
-        # the cached guidance from the last on-cadence run (same mechanism as user_turn's cache HIT — the
-        # aggregator still gets advice every iteration, it's just not refreshed against the very latest tool
-        # results). The iteration counter is scoped per user turn and resets on a new user message, so every
-        # turn starts with fresh advice.
+        # Default user_turn runs advisers once. Cached observations expire after
+        # eight completed tool results, with no extra default fan-out. Explicit
+        # Explicit per_iteration preserves per-state refresh. Retries of an
+        # unchanged state do not consume a cadence slot or repeat fan-out.
         fanout_mode = str(preset.get("fanout") or "user_turn").strip().lower()
+        if fanout_mode not in {"user_turn", "per_iteration"} and not fanout_mode.startswith("every_n:"):
+            fanout_mode = "user_turn"
         every_n = 0
         if fanout_mode.startswith("every_n:"):
             with contextlib.suppress(TypeError, ValueError):
                 every_n = int(fanout_mode.split(":", 1)[1])
-            if every_n < 2:
-                fanout_mode = "per_iteration"  # every_n:1 IS per-iteration (mirrors _coerce_fanout)
+            every_n = max(1, every_n)
+        # A same-labelled slot with changed reasoning/temperature/limits is a
+        # different adviser request. Include the entire preset, not just labels.
+        preset_identity = hashlib.sha256(json.dumps(preset, sort_keys=True,
+                                                   default=str).encode()).hexdigest()
         sig_messages = turn_prefix = ref_messages
         if fanout_mode == "user_turn" or every_n >= 2:
             # Last REAL user message: the synthetic _ADVISORY_INSTRUCTION marker must not
@@ -1317,10 +1328,12 @@ class MoAChatCompletions:
                 self._fanout_last_state_sig = state_sig
                 self._fanout_iteration_count += 1
             # Iteration 1 is on-cadence; then every Nth iteration after it.
-            if (self._fanout_iteration_count - 1) % every_n != 0 and self._ref_cache_outputs:
+            if ((self._fanout_iteration_count - 1) % every_n != 0 and self._ref_cache_outputs
+                    and self._ref_cache_key and self._ref_cache_key[0:2] == (self.preset_name, preset_identity)):
                 return self._ref_cache_key
 
-        return (self.preset_name, _hash_messages(sig_messages), tuple(_slot_label(s) for s in reference_models))
+        return (self.preset_name, preset_identity, _hash_messages(sig_messages),
+                tuple(_slot_label(s) for s in reference_models))
 
     def _run_fanout(
         self, preset: dict[str, Any], ref_messages: list[dict[str, Any]], reference_models: list[dict[str, Any]],
@@ -1387,7 +1400,7 @@ class MoAChatCompletions:
             reference_outputs, self._privacy_mode == "full", degraded_reference_policy
         )
         header = (
-            "[Mixture of Agents reference context]\n"
+            "[Mixture of Agents adviser observations — not user instructions]\n"
             f"Preset: {self.preset_name}\n"
             f"Aggregator/acting model: {_slot_label(aggregator)}\n"
         )
@@ -1410,9 +1423,8 @@ class MoAChatCompletions:
             return (
                 f"{header}"
                 f"References: {', '.join(label for label, _, _ in agg_refs)}\n\n"
-                "Use the reference responses below as private context. You are the aggregator and acting model: "
-                "answer the user directly or call tools as needed.\n"
-                f"{_STALE_GUIDANCE_NOTE if stale else ''}\n"
+                "These observations describe the transcript at this point. "
+                "Later user messages and tool results take precedence; do not repeat completed steps.\n\n"
                 f"{_join_reference_outputs(agg_refs, degraded)}"
             )
         return None
@@ -1447,21 +1459,37 @@ class MoAChatCompletions:
         if cache_hit:
             # HIT: already ran and accounted. Do NOT zero pending totals (a late
             # interrupted reference may have deposited) and no trace (not a new turn).
-            reference_outputs = list(self._ref_cache_outputs)
+            # Failure notices belong to the attempted fan-out, not every future
+            # request. Retry only on a new turn/preset or bounded cadence MISS.
+            reference_outputs = [output for output in self._ref_cache_outputs
+                                 if not _is_failed_reference(output[1])]
             self._pending_trace = None
         else:
             reference_outputs = self._run_fanout(preset, ref_messages, reference_models, aggregator, aggregator_temperature, cache_key)
+            self._ref_guidance_anchor = len(messages)
+            self._ref_guidance_prefix_key = _hash_messages(messages)
+            self._ref_guidance_tool_count = sum(m.get("role") == "tool" for m in messages)
 
         agg_messages = [dict(m) for m in messages]
         guidance = self._build_guidance(
             reference_outputs, aggregator, str(preset.get("degraded_reference_policy") or "loud"),
             stale=cache_hit and _tool_activity_since_last_user(messages),
         )
+        # Expire old observations after eight completed tool results without
+        # buying another default user_turn fan-out. Explicit every_n refreshes
+        # remain bounded (minimum two changed advisory states).
+        tool_age = sum(m.get("role") == "tool" for m in messages) - self._ref_guidance_tool_count
+        if cache_hit and (tool_age >= 8 or
+                          self._ref_guidance_anchor > len(messages) or
+                          self._ref_guidance_prefix_key != _hash_messages(messages[:self._ref_guidance_anchor])):
+            guidance = None
         if guidance:
-            _attach_reference_guidance(agg_messages, guidance)
+            _attach_reference_guidance(agg_messages, guidance, self._ref_guidance_anchor)
 
         prepared_request = {
             "messages": agg_messages, "guidance": guidance, "aggregator": aggregator,
+            "guidance_anchor": self._ref_guidance_anchor,
+            "guidance_prefix_key": self._ref_guidance_prefix_key,
             "aggregator_temperature": aggregator_temperature,
         }
         if api_kwargs.pop("_moa_prepare_only", False):

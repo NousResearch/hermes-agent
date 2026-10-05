@@ -119,11 +119,13 @@ def test_every_n_off_cadence_iterations_reuse_cached_guidance(monkeypatch, tmp_p
     from agent.moa_loop import _STALE_GUIDANCE_NOTE
 
     assert "advice #1" in prepared[0]["guidance"]
-    assert _STALE_GUIDANCE_NOTE not in prepared[0]["guidance"]
+    assert "Later user messages and tool results take precedence" in prepared[0]["guidance"]
     for reused in prepared[1:]:
         assert "advice #1" in reused["guidance"]
-        assert _STALE_GUIDANCE_NOTE in reused["guidance"]
-        assert reused["guidance"].replace(_STALE_GUIDANCE_NOTE, "") == prepared[0]["guidance"]
+        assert "Later user messages and tool results take precedence" in reused["guidance"]
+        assert reused["guidance"] == prepared[0]["guidance"]
+        assert reused["messages"][len(base)]["content"] == prepared[0]["guidance"]
+        assert reused["messages"][-1]["role"] == "tool"
 
 
 

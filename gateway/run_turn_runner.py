@@ -1294,6 +1294,11 @@ class TurnRunner:
             mem_notif = "on" if mem_notif else "off"
         agent.memory_notifications = str(mem_notif).lower() if mem_notif else "on"
         agent.clarify_callback = self._clarify_callback_sync
+        # Vault tools ask the user for secrets through the same bridge (gateway/vault_prompts.py).
+        # Without this the callbacks stay unregistered on every chat platform, can_prompt_here()
+        # is False, and each vault tool can only answer prompt_unavailable.
+        from gateway.vault_prompts import install_vault_prompt_callbacks
+        install_vault_prompt_callbacks(self._vault_ask_sync)
         # Thinking between tool calls is independent of tool_progress mode (Mattermost opts in
         # per platform so global scratch-text doesn't leak into threads).
         agent.thinking_progress = ctx._thinking_enabled
@@ -1371,9 +1376,37 @@ class TurnRunner:
             answers[entry["qid"]] = None if raw == SKIPPED else raw
         return reply
 
-    def _ask_clarify_question(self, question, choices, multi_select, rearm: bool = True) -> tuple[str, bool]:
+    def _vault_ask_sync(self, question: str, secret: bool = False, last: bool = True) -> str:
+        """Blocking secret prompt for the vault tools (see gateway/vault_prompts.py).
+
+        Rides the same clarify primitive as ``_clarify_callback_sync``, and that is the
+        point: the reply is intercepted on the inbound path and handed straight to the
+        caller, so a password typed to the agent never becomes a conversation message,
+        a memory, or part of the next request. ``secret`` additionally asks the adapter
+        to delete the user's own message once the value has been read. ``last`` holds the
+        stream/typing re-arm for the final question of a sequence, exactly as the clarify
+        callback does — a mid-sequence re-arm opens a bubble the next boundary closes.
+
+        Both ends are logged: this prompt is the ONLY way a vault tool can get a secret on
+        a messaging surface, and a card that never posted is otherwise indistinguishable
+        from a user who never answered — the caller just sits in ``wait_for_response``
+        until the clarify timeout, which reads to the user as a hung agent.
+
+        Returns "" when no answer arrived, which every vault callback reads as a decline.
+        """
+        logger.info("Vault prompt dispatched (secret=%s, last=%s)", secret, last)
+        response, answered = self._ask_clarify_question(
+            question, None, False, rearm=last, secret=secret)
+        logger.info("Vault prompt %s (secret=%s)", "answered" if answered else "unanswered", secret)
+        return response if answered else ""
+
+    def _ask_clarify_question(self, question, choices, multi_select, rearm: bool = True,
+                              secret: bool = False) -> tuple[str, bool]:
         """One card: register, send, wait, then retire it (no answer) or re-arm (answer).
-        Returns ``(response, answered)``; the caller decides what "no answer" means."""
+        Returns ``(response, answered)``; the caller decides what "no answer" means.
+
+        ``secret`` marks an answer the adapter deletes from the chat once it has been consumed,
+        so a password typed to the agent does not stay in the scrollback."""
         from gateway.run_turn_runner_clarify_delivery import (
             UNDELIVERED_NO_SURFACE, _clarify_send_then_wait, text_fallback_coro)
         from tools import clarify_gateway as clarify_mod
@@ -1397,7 +1430,7 @@ class TurnRunner:
             return None if coro is None else self._schedule(coro, "Clarify text fallback failed to schedule")
         clarify_mod.register(
             clarify_id=clarify_id, session_key=session_key, question=question, choices=choices,
-            multi_select=bool(multi_select),
+            multi_select=bool(multi_select), secret=bool(secret),
         )
         # Unlike approval, clarify passes reopen=True so the continuation re-opens a native stream
         # below the question; if the re-seed fails the consumer degrades to send() automatically.
@@ -1730,6 +1763,12 @@ class TurnRunner:
             with suppress(Exception):
                 from tools.clarify_gateway import clear_session
                 clear_session(session_key)
+            # Drop the vault secret prompts with the turn. They live in a thread-local, and an
+            # executor thread is reused across sessions; leaving them installed would let a later
+            # turn on this thread inherit a prompt bound to a session that has already ended.
+            with suppress(Exception):
+                from gateway.vault_prompts import clear_vault_prompt_callbacks
+                clear_vault_prompt_callbacks()
             reset_current_session_key(token)
 
     def _finish_stream_consumer(self, result, agent_history, stream_consumer):

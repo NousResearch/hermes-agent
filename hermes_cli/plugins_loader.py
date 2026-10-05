@@ -281,6 +281,9 @@ class PluginLoaderMixin:
             if failed is None or requires_hermes_error(failed) or gate_manifest(
                     failed, _get_disabled_plugins(), _get_enabled_plugins()).action not in ("defer", "load"):
                 return False
+            with _ABANDONED_LOADERS_LOCK:  # its hung import is still running: another retry only leaks a thread
+                if any(t.is_alive() and t.name == f"plugin-load:{manifest_key(failed)}" for t in _ABANDONED_LOADERS):
+                    return False
             logger.info("Re-arming failed platform plugin load: %s", platform_name)
             self._register_deferred_platform(failed)
             return True

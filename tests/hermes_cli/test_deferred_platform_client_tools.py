@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -457,6 +458,11 @@ class TestDeferredPlatformToolPreregistration:
             mgr._gate_manifest(manifest, {"probeplat-platform"}, None)
             assert mgr.rearm_failed_platform("probeplat") is False
 
+        hung = threading.Thread(target=threading.Event().wait, name="plugin-load:probeplat-platform", daemon=True)
+        hung.start()
+        monkeypatch.setattr("hermes_cli.plugins_loader._ABANDONED_LOADERS", [hung])
+        assert mgr.rearm_failed_platform("probeplat") is False  # its hung load is still running
+        monkeypatch.setattr("hermes_cli.plugins_loader._ABANDONED_LOADERS", [])
         assert mgr.rearm_failed_platform("probeplat") is True
         assert platform_registry.get("probeplat") is not None
         assert probe.adapter_imports == 2

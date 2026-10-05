@@ -48,6 +48,28 @@ class _Scope:
     kind: str = "function"  # "module" | "class" | "function" | "comprehension"
     imports: dict[str, str] = field(default_factory=dict)
     others: set[str] = field(default_factory=set)
+    # Names a `global` / `nonlocal` statement hands to an outer scope: they bind nothing here.
+    declared: dict[str, str] = field(default_factory=dict)
+
+    def owner(self, name: str) -> _Scope:
+        """The scope that binds ``name`` for code in this one, following `global`/`nonlocal`."""
+        scope = self
+        while name in scope.declared:
+            if scope.declared[name] == "global":
+                while scope.parent is not None:
+                    scope = scope.parent
+                return scope
+            outer = scope.parent  # nonlocal: the nearest enclosing function that has it
+            while outer is not None and outer.parent is not None and (
+                    outer.kind == "class" or not outer.binds(name)):
+                outer = outer.parent
+            if outer is None or outer.parent is None:
+                return scope
+            scope = outer
+        return scope
+
+    def binds(self, name: str) -> bool:
+        return name in self.others or name in self.imports or name in self.declared
 
     def resolve(self, name: str) -> str | None:
         """Import target ``name`` means here: the innermost scope binding it decides, and a
@@ -56,6 +78,11 @@ class _Scope:
         scope: _Scope | None = self
         while scope is not None:
             if scope is self or scope.kind != "class":
+                if name in scope.declared:
+                    if name in scope.others:  # rebound before its outer binding was seen
+                        return None
+                    scope = scope.owner(name)
+                    return scope.imports.get(name) if name not in scope.others else None
                 if name in scope.others:
                     return None
                 if name in scope.imports:
@@ -71,13 +98,14 @@ class _Binder(ast.NodeVisitor):
         self.module = self.scope = _Scope(kind="module")
         self.loads: dict[int, _Scope] = {}
 
-    def _bind(self, name: str) -> None:
-        self.scope.others.add(name)
+    def _bind(self, name: str, scope: _Scope | None = None) -> None:
+        (scope or self.scope).owner(name).others.add(name)
 
     def _import(self, name: str, target: str) -> None:
-        if self.scope.imports.get(name, target) != target:
+        scope = self.scope.owner(name)
+        if scope.imports.get(name, target) != target:
             self._bind(name)
-        self.scope.imports[name] = target
+        scope.imports[name] = target
 
     def _enter(self, kind: str, nodes: Iterable[ast.AST]) -> None:
         outer, self.scope = self.scope, _Scope(self.scope, kind)
@@ -103,15 +131,12 @@ class _Binder(ast.NodeVisitor):
         else:
             self._bind(node.id)
 
+    # A declaration selects the outer binding; only an assignment through it rebinds that.
     def visit_Global(self, node: ast.Global) -> None:
-        self.scope.others.update(node.names)
-        self.module.others.update(node.names)
+        self.scope.declared.update(dict.fromkeys(node.names, "global"))
 
     def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
-        scope: _Scope | None = self.scope
-        while scope is not None and scope.kind != "module":
-            scope.others.update(node.names)
-            scope = scope.parent
+        self.scope.declared.update(dict.fromkeys(node.names, "nonlocal"))
 
     def generic_visit(self, node: ast.AST) -> None:
         # except-as, match captures and **rest bind a plain string attribute.
@@ -162,7 +187,7 @@ class _Binder(ast.NodeVisitor):
         scope = self.scope
         while scope.kind == "comprehension" and scope.parent is not None:
             scope = scope.parent
-        scope.others.add(node.target.id)
+        self._bind(node.target.id, scope)
         self.visit(node.value)
 
 

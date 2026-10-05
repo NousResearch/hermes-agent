@@ -55,6 +55,17 @@ def test_import_alias_with_unrelated_parameter_blocks_through_the_verdict(tmp_pa
     assert code == 1 and "HX006" in out, out
 
 
+# `global` / `nonlocal` select the outer binding; only an assignment through them rebinds it.
+@pytest.mark.parametrize("src, flagged", [
+    (_ALIAS.format("", "    global execute\n"), True),
+    ("def outer(cmd):\n    from subprocess import run as execute\n\n    def launch():\n"
+     "        nonlocal execute\n        return execute(cmd)\n    return launch\n", True),
+    (_ALIAS.format("def setup():\n    global execute\n    execute = print", ""), False),
+])
+def test_global_and_nonlocal_select_the_outer_binding(src, flagged):
+    assert bool(_hits("HX006", src)) is flagged, src
+
+
 # --- F19: every independent eager capture is its own occurrence ---
 
 _DICT = 'import os\n\nCACHE = {{\n{}    "old": os.getenv("PATH"),\n}}\n'

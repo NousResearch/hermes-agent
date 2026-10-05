@@ -260,13 +260,28 @@ export const zhHantChrome = {
       free: '免費',
       cacheRead: '快取讀取',
       priceTitle: (input: string, output: string, cache: string) =>
-        `輸入 ${input}/Mtok · 輸出 ${output}/Mtok` + (cache ? ` · 快取讀取 ${cache}/Mtok` : '')
+        `輸入 ${input}/Mtok · 輸出 ${output}/Mtok` + (cache ? ` · 快取讀取 ${cache}/Mtok` : ''),
+      limited: '已限額',
+      limitedUntil: (time: string) => `限額至 ${time}`,
+      limitedTip: (provider: string, time: null | string) =>
+        time
+          ? `${provider} 已達到用量上限，將於 ${time} 重設；現在就可以先選好之後要用的模型。`
+          : `${provider} 已達到用量上限；現在就可以先選好重設後要用的模型。`,
+      modelResets: (time: string) => `${time} 恢復`,
+      modelLimitedTip: (time: string) => `此模型已達到自身上限，將於 ${time} 恢復。這裡的其他模型仍可使用。`,
+      usageLeft: (percent: number, time: null | string) =>
+        time ? `剩餘 ${percent}% · ${time} 重設` : `剩餘 ${percent}%`,
+      usageTip: (provider: string) => `${provider} 即將達到用量上限。`,
+      usageWindow: (label: string, percent: number, time: null | string) =>
+        time ? `${label}：剩餘 ${percent}%，${time} 重設` : `${label}：剩餘 ${percent}%`
     },
     modelOptions: {
       noOptions: '此模型沒有可用選項',
       options: '選項',
       thinking: '思考',
       fast: '快速',
+      ultrafast: '極速',
+      useStandardSpeed: '使用標準速度',
       effort: '推理強度',
       minimal: '最小',
       low: '低',

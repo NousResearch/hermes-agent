@@ -54,21 +54,84 @@ def nesting_depth(stmts: list[ast.stmt], depth: int = 0) -> int:
     return deepest
 
 
+_SCOPES = (*_FUNCS, ast.Lambda, ast.ClassDef, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+
+def _own_scope(node: ast.AST):
+    """Nodes in ``node``'s own scope: a nested def/lambda/class/comprehension is yielded but not
+    entered (its parameters and targets bind inside it, not here)."""
+    stack = list(ast.iter_child_nodes(node))
+    while stack:
+        child = stack.pop()
+        yield child
+        if not isinstance(child, _SCOPES):
+            stack.extend(ast.iter_child_nodes(child))
+
+
+def _bound_names(node: ast.AST) -> tuple[str, ...]:
+    if isinstance(node, ast.Name):
+        return () if isinstance(node.ctx, ast.Load) else (node.id,)
+    if isinstance(node, ast.arg):
+        return (node.arg,)
+    if isinstance(node, ast.alias):
+        return ((node.asname or node.name).split(".")[0],)
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return tuple(node.names)
+    # def/class names, `except ... as name`, match captures and `**rest`
+    found = (getattr(node, "name", None), getattr(node, "rest", None))
+    return tuple(n for n in found if isinstance(n, str))
+
+
+def _binds(scope: ast.AST, name: str) -> bool:
+    return any(name in _bound_names(child) for child in _own_scope(scope))
+
+
+def _self_references(node: ast.AST, name: str) -> list[ast.Name | ast.Attribute]:
+    """References in ``node`` to its own ``name``: ``name`` loads that no nested scope rebinds,
+    and ``self.name`` / ``cls.name``."""
+    refs: list[ast.Name | ast.Attribute] = []
+    todo = [node]
+    while todo:
+        for child in _own_scope(todo.pop()):
+            if isinstance(child, _SCOPES):
+                if not _binds(child, name):
+                    todo.append(child)
+            elif isinstance(child, ast.Name) and child.id == name and isinstance(child.ctx, ast.Load):
+                refs.append(child)
+            elif (isinstance(child, ast.Attribute) and child.attr == name
+                  and isinstance(child.ctx, ast.Load)
+                  and isinstance(child.value, ast.Name) and child.value.id in ("self", "cls")):
+                refs.append(child)
+    return refs
+
+
 def body_hash(node: ast.AST) -> str:
     """Name-independent hash, so a function moved or renamed unchanged keeps its cap.
 
     The declared name is dropped, and so are the body's references to it (``name(...)``,
-    ``self.name(...)``, ``cls.name(...)``), unless the body rebinds that name itself: a
-    recursive function renamed together with its self-call is still the same code.
+    ``self.name(...)``, ``cls.name(...)``), unless the function's own scope rebinds that name:
+    a recursive function renamed together with its self-call is still the same code. A nested
+    scope that binds the name (``def identity(legacy)``) only keeps its own reads.
     """
     name = getattr(node, "name", "")
-    dumped = ast.dump(node, annotate_fields=False).replace(repr(name), "''", 1)
-    if name and f"Name({name!r}, Store())" not in dumped and f"arg({name!r}" not in dumped:
-        dumped = dumped.replace(f"Name({name!r}, Load())", "Name('', Load())")
-        for receiver in ("self", "cls"):
-            dumped = dumped.replace(f"Attribute(Name({receiver!r}, Load()), {name!r}, Load())",
-                                    f"Attribute(Name({receiver!r}, Load()), '', Load())")
+    refs = _self_references(node, name) if name and not _binds(node, name) else []
+    # Blank the references in place for the dump, then put them back: the tree is shared.
+    saved = [(ref, ref.id if isinstance(ref, ast.Name) else ref.attr) for ref in refs]
+    for ref, _ in saved:
+        _rename(ref, "")
+    try:
+        dumped = ast.dump(node, annotate_fields=False).replace(repr(name), "''", 1)
+    finally:
+        for ref, original in saved:
+            _rename(ref, original)
     return hashlib.sha1(dumped.encode("utf-8")).hexdigest()[:16]
+
+
+def _rename(ref: ast.Name | ast.Attribute, value: str) -> None:
+    if isinstance(ref, ast.Name):
+        ref.id = value
+    else:
+        ref.attr = value
 
 
 def _first_line(node: ast.AST) -> int:

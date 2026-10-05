@@ -209,3 +209,37 @@ _FUTURE = "from __future__ import annotations\n\n"
 ])
 def test_annotation_evaluation_time(src, flagged):
     assert bool(_hits("HX005", src)) is flagged, src
+
+
+# --- F15: only the function's own bindings stop the recursive-rename normalization ---
+
+def _recursive(name: str, inner: str = "legacy") -> str:
+    return (f"def {name}(n):\n def identity({inner}):\n  return {inner}\n" + " pass\n" * 300
+            + f" return {name}(n-1) if n else identity(0)\n")
+
+
+def _hash(src: str) -> str:
+    return body_hash(ast.parse(src).body[0])
+
+
+@pytest.mark.parametrize("inner", ["legacy", "value"])
+def test_recursive_rename_ignores_nested_bindings(inner):
+    assert _hash(_recursive("legacy", inner)) == _hash(_recursive("renamed", inner))
+
+
+def test_recursive_rename_with_nested_parameter_keeps_its_cap(tmp_path, capsys):
+    code, out = _judge(tmp_path, capsys, {"pkg/r.py": _recursive("legacy")},
+                       {"pkg/r.py": _recursive("renamed")})
+    assert code == 0, out
+
+
+def test_recursive_rename_controls():
+    # a rename that leaves the old self-call behind is different code
+    stale = _recursive("renamed").replace("return renamed(", "return legacy(")
+    assert _hash(_recursive("legacy")) != _hash(stale)
+    # a body that rebinds the name in its own scope refers to that local, not to itself
+    own = "def {0}(n):\n    {0} = n\n    return {0}\n"
+    assert _hash(own.format("legacy")) != _hash(own.format("renamed"))
+    # a closure's reference to the enclosing function is still a self-reference
+    closure = "def {0}(n):\n    def helper():\n        return {0}(n - 1)\n    return helper()\n"
+    assert _hash(closure.format("legacy")) == _hash(closure.format("renamed"))

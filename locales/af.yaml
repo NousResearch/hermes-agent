@@ -2103,6 +2103,7 @@ cli:
     images_attached_preview_one: "[{count} beeld aangeheg]"
     images_attached_preview_other: "[{count} beelde aangeheg]"
     queued_next_turn: "In tou geplaas vir die volgende beurt: {preview}"
+    queued_skill_next_turn: "In tou geplaas vir die volgende beurt (vaardigheid): {preview}"
     redirected_turn: "↪ Huidige beurt herlei: '{preview}'"
     model_selection_failed: "✗ Modelkeuse het misluk: {error}"
     auto_attached_image: "📎 Beeld outomaties aangeheg: {name}"

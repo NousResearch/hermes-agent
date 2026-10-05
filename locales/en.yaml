@@ -2199,6 +2199,7 @@ cli:
     images_attached_preview_one: "[{count} image attached]"
     images_attached_preview_other: "[{count} images attached]"
     queued_next_turn: "Queued for the next turn: {preview}"
+    queued_skill_next_turn: "Queued for the next turn (skill): {preview}"
     redirected_turn: "↪ Redirected current turn: '{preview}'"
     model_selection_failed: "✗ Model selection failed: {error}"
     auto_attached_image: "📎 Auto-attached image: {name}"

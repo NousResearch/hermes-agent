@@ -725,6 +725,19 @@ def _looks_like_slash_command(text: str) -> bool:
     return "/" not in text.split()[0][1:]
 
 
+def _command_base(text: str) -> str:
+    """Return the lowercased command name of a slash command, slash stripped.
+
+    ``/My-Skill foo`` -> ``my-skill``. Shared by the busy-time inline-command
+    detectors and skill-command detection; each used to re-parse this verbatim,
+    which drifted (one stripped the slash before checking the slash-keyed skill
+    map, silently disabling its branch).
+    """
+    if not text:
+        return ""
+    return text.split(None, 1)[0].lower().lstrip("/")
+
+
 _skill_commands = None
 _skill_bundles = None
 
@@ -746,6 +759,39 @@ def _ensure_skill_commands() -> dict:
 
 def get_skill_commands() -> dict:
     return _ensure_skill_commands()
+
+
+def _skill_command_instruction(text: str) -> str:
+    """Return the user payload of a skill invocation, or "" if not one.
+
+    A skill command is a slash command whose base name resolves to an
+    installed skill (not a built-in). When it carries a payload (e.g.
+    ``/my-skill review this PR``), the payload is a real user instruction
+    that deserves feedback instead of silent queueing while the agent is
+    busy (#83209). Returns just the instruction text so callers can preview it.
+    """
+    if not text or not _looks_like_slash_command(text):
+        return ""
+    base = _command_base(text)
+    if not base:
+        return ""
+    try:
+        from hermes_cli.commands import resolve_command
+        if resolve_command(base):
+            return ""  # built-in command, not a skill
+    except Exception:
+        return ""
+    try:
+        skills = _ensure_skill_commands()
+    except Exception:
+        return ""
+    # scan_skill_commands() keys are slash-prefixed lowercased slugs ("/my-skill"),
+    # the same form production dispatch checks (cli.py `base_cmd in skill_commands`).
+    # Compare case-insensitively so a case-preserving name can never silently
+    # disable this branch the way the slash-less compare once did.
+    if f"/{base}" not in {k.lower() for k in skills}:
+        return ""
+    return _slash_args(text)
 
 
 build_skill_invocation_message = _lazy_shim("agent.skill_commands", "build_skill_invocation_message")

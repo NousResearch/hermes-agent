@@ -2103,6 +2103,7 @@ cli:
     images_attached_preview_one: "[{count} íomhá ceangailte]"
     images_attached_preview_other: "[{count} íomhá ceangailte]"
     queued_next_turn: "Curtha i scuaine don chéad seal eile: {preview}"
+    queued_skill_next_turn: "Curtha i scuaine don chéad seal eile (scil): {preview}"
     redirected_turn: "↪ Atreoraíodh an seal reatha: '{preview}'"
     model_selection_failed: "✗ Theip ar roghnú samhla: {error}"
     auto_attached_image: "📎 Íomhá ceangailte go huathoibríoch: {name}"

@@ -2103,6 +2103,7 @@ cli:
     images_attached_preview_one: "[{count} görsel eklendi]"
     images_attached_preview_other: "[{count} görsel eklendi]"
     queued_next_turn: "Sonraki tur için sıraya alındı: {preview}"
+    queued_skill_next_turn: "Sonraki tur için sıraya alındı (yetenek): {preview}"
     redirected_turn: "↪ Geçerli tur yönlendirildi: '{preview}'"
     model_selection_failed: "✗ Model seçimi başarısız oldu: {error}"
     auto_attached_image: "📎 Görsel otomatik eklendi: {name}"

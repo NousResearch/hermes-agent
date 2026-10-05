@@ -2103,6 +2103,7 @@ cli:
     images_attached_preview_one: "[{count} Bild angehängt]"
     images_attached_preview_other: "[{count} Bilder angehängt]"
     queued_next_turn: "Für den nächsten Zug eingereiht: {preview}"
+    queued_skill_next_turn: "Für den nächsten Zug eingereiht (Skill): {preview}"
     redirected_turn: "↪ Aktueller Zug umgelenkt: '{preview}'"
     model_selection_failed: "✗ Modellauswahl fehlgeschlagen: {error}"
     auto_attached_image: "📎 Bild automatisch angehängt: {name}"

@@ -2103,6 +2103,7 @@ cli:
     images_attached_preview_one: "[已附加 {count} 張圖片]"
     images_attached_preview_other: "[已附加 {count} 張圖片]"
     queued_next_turn: "已排入下一輪：{preview}"
+    queued_skill_next_turn: "已排入下一輪（技能）：{preview}"
     redirected_turn: "↪ 已重新導向目前這一輪：「{preview}」"
     model_selection_failed: "✗ 模型選擇失敗：{error}"
     auto_attached_image: "📎 已自動附加圖片：{name}"

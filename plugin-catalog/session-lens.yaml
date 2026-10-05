@@ -1,22 +1,22 @@
 name: session-lens
 title: Hermes Session Lens
 repo: https://github.com/abualnassr/hermes-session-lens
-sha: c529490dfab3fe3e8c02481e95590832dd1a781f
-version: "0.53.1"
-description: "Read-only observability for Hermes Desktop: what each session cost and why, its full trace, recurring tool failures, every profile at a glance, provider quotas and service balances, model comparison with cheaper-route evidence, and instruction-rule grading. Disclosure — reads every profile's state.db read-only, the Hermes agent logs, config.yaml and .env key names; calls only the usage or balance endpoints of the providers and services you have configured, with the credential Hermes already holds (each host listed in the README); runs the local monid CLI when it is installed; an Anthropic usage probe (one one-token Claude message) is off by default. Writes nothing, refreshes no login, and sends no session content anywhere."
+sha: 69bc2b183fd376acf27256cd9b43f578a16388ae
+version: "0.53.2"
+description: "Read-only observability for Hermes Desktop: what each session cost and why, its full trace, recurring tool failures, every profile at a glance, provider quotas and service balances, model comparison with cheaper-route evidence, and instruction-rule grading. Disclosure — reads every profile's state.db read-only, the Hermes agent logs, config.yaml and .env key names; calls only the usage or balance endpoints of the providers and services you have configured, with the credential Hermes already holds (each host listed in the README); runs the local monid CLI when it is installed; an Anthropic usage probe (one one-token Claude message) is off by default; Grok, Codex and Nous Portal readings go through Hermes' own login code, which may renew Hermes' own logins. Writes nothing and sends no session content anywhere."
 maintainer: abualnassr
 tier: community
 category: desktop
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/abualnassr/hermes-session-lens/blob/c529490dfab3fe3e8c02481e95590832dd1a781f/README.md
-image: https://raw.githubusercontent.com/abualnassr/hermes-session-lens/c529490dfab3fe3e8c02481e95590832dd1a781f/docs/catalog-banner.png
+docs_url: https://github.com/abualnassr/hermes-session-lens/blob/69bc2b183fd376acf27256cd9b43f578a16388ae/README.md
+image: https://raw.githubusercontent.com/abualnassr/hermes-session-lens/69bc2b183fd376acf27256cd9b43f578a16388ae/docs/catalog-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/c529490dfab3fe3e8c02481e95590832dd1a781f/docs/screenshots/why-it-cost.png
-  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/c529490dfab3fe3e8c02481e95590832dd1a781f/docs/screenshots/compare.png
-  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/c529490dfab3fe3e8c02481e95590832dd1a781f/docs/screenshots/fleet.png
-  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/c529490dfab3fe3e8c02481e95590832dd1a781f/docs/screenshots/recurring-failures.png
-  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/c529490dfab3fe3e8c02481e95590832dd1a781f/docs/screenshots/ai-usage.png
-  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/c529490dfab3fe3e8c02481e95590832dd1a781f/docs/screenshots/sessions.png
+  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/69bc2b183fd376acf27256cd9b43f578a16388ae/docs/screenshots/why-it-cost.png
+  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/69bc2b183fd376acf27256cd9b43f578a16388ae/docs/screenshots/compare.png
+  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/69bc2b183fd376acf27256cd9b43f578a16388ae/docs/screenshots/fleet.png
+  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/69bc2b183fd376acf27256cd9b43f578a16388ae/docs/screenshots/recurring-failures.png
+  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/69bc2b183fd376acf27256cd9b43f578a16388ae/docs/screenshots/ai-usage.png
+  - https://raw.githubusercontent.com/abualnassr/hermes-session-lens/69bc2b183fd376acf27256cd9b43f578a16388ae/docs/screenshots/sessions.png
 readme: true
 platforms: []
 capabilities:

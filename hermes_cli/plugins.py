@@ -136,17 +136,7 @@ VALID_HOOKS: Set[str] = {
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
-    "pre_gateway_dispatch",
-    # post_gateway_admission: once per admitted idle business message, AFTER auth/bot-admission,
-    # pause/drain, pending-reply intercepts, running-session routing and idle slash-command dispatch
-    # (commands, approvals, clarification and steering never reach it), inside the claimed session
-    # slot after FIFO orphan rescue. Kwargs: event, gateway, session_store, source, session_key,
-    # context (versioned immutable snapshot). Return None/{"action": "pass"} -> ordinary agent flow;
-    # {"action": "consumed", "receipt": <id>, "reply": <optional>} -> suppress agent, deliver reply
-    # via the normal route; {"action": "failed", "reply": <optional>} -> suppress agent with a short
-    # failure notice. Unknown/malformed/exception/timeout fail closed (suppress). No callbacks ->
-    # ordinary flow. See gateway/run_inbound_consumer.py.
-    "post_gateway_admission",
+    "pre_gateway_dispatch", "post_gateway_admission",  # post_*: fail-open consume, gateway/run_inbound_consumer.py
     # agent_loop_stopped: an agent turn was interrupted mid-run (/stop, or the running-agent
     # fast-path of /new; see gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key,
     # platform, reason, invalidation_reason. Return values are ignored.

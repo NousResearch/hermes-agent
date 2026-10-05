@@ -1397,25 +1397,9 @@ class GatewayInboundMixin:
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
-            # Post-admission consuming extension (#129958): only idle, non-internal
-            # business messages reach it. All admission, pause/drain, pending-reply,
-            # running-session and slash-command lanes were selected above; the FIFO
-            # orphan rescue already chose the event (with its own anchor) for this
-            # turn, and the session slot + sentinel are held so a concurrent arrival
-            # queues on the busy path instead of invoking the consumer twice.
-            if not is_internal:
-                try:
-                    from gateway.run_inbound_consumer import invoke_post_admission_hook as _invoke_post
-                    _consumed, _consumer_reply, event, source = await _invoke_post(
-                        self, event, source, _quick_key
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as _consumer_exc:
-                    logger.warning("post_gateway_admission failed closed: %s", _consumer_exc)
-                    return (
-                        "⚠️ A gateway plugin failed to handle this message, so it was not processed."
-                    )
+            if not is_internal:  # fail-open plugin consume, inside the claimed slot (#129958)
+                from gateway.run_inbound_consumer import run_post_admission_hook
+                _consumed, _consumer_reply = await run_post_admission_hook(self, event, source, _quick_key)
                 if _consumed:
                     return _consumer_reply
             try:

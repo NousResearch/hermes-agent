@@ -493,6 +493,35 @@ class CLIInfoMixin:
         except Exception:
             return False
 
+    def _should_handle_readonly_dispatch_inline(
+        self, text: str, has_images: bool = False) -> bool:
+        """Return True when a read-only ``busy_policy="dispatch"`` command should run inline.
+
+        Commands with ``busy_policy="dispatch"`` are meant to run without queuing behind the active
+        turn. The gateway honours this; the classic CLI derives eligibility from the ``CommandDef``
+        instead of a hard-coded name list, so new dispatch-policy commands pick up the behavior.
+        Commands with their own inline handler (/model, /steer, /background) and ``gateway_only``
+        commands are excluded. Only fires while the agent is running — idle commands follow the
+        normal ``process_loop`` path.
+        """
+        from cli import _looks_like_slash_command
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        if not getattr(self, "_agent_running", False):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            cmd = resolve_command(text.split(None, 1)[0].lower().lstrip('/'))
+            if not cmd or cmd.busy_policy != "dispatch" or cmd.gateway_only:
+                return False
+            if cmd.name in {"model", "steer", "background"}:
+                return False
+            if cmd.execute is not None:
+                return True
+            return cmd.name in {"status", "agents", "context"}
+        except Exception:
+            return False
+
     def handle_bang_shell(self, text: str) -> bool:
         """Run a ``!<command>`` submission. Returns True when it was handled.
 

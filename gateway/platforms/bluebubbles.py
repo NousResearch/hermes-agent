@@ -1047,7 +1047,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if record.get("isFromMe") or record.get("fromMe") or record.get("is_from_me"):
             return _ok()
         assoc_type = record.get("associatedMessageType")
-        if isinstance(assoc_type, int) and assoc_type in _TAPBACK_CODES:  # tapback reactions delivered as messages
+        if isinstance(assoc_type, int) and (
+            assoc_type in _TAPBACK_ADDED or assoc_type in _TAPBACK_REMOVED
+        ):  # tapback additions/removals delivered as messages
             return _ok()
         message_id = self._value(
             record.get("guid"),

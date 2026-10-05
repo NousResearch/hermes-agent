@@ -2360,3 +2360,44 @@ async def test_unseen_updated_attachment_is_acknowledged_without_dispatch(monkey
     download.assert_not_awaited()
     assert not adapter._inflight_message_ids
     assert not adapter._message_dedup.contains("unseen-update-guid")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("associated_type, filtered", [
+    *[(code, True) for code in range(2000, 2006)],
+    *[(code, True) for code in range(3000, 3006)],
+    (0, False), (1999, False), (2006, False), (3006, False),
+    ("2001", False), (None, False),
+])
+async def test_integer_tapback_policy_acknowledges_without_starting_turn(
+    monkeypatch, associated_type, filtered,
+):
+    """Known additions/removals are filtered; other message types still dispatch."""
+    adapter = _make_adapter(
+        monkeypatch, send_read_receipts=False, typing_indicators=False, auto_react=False,
+    )
+    handled = []
+    dispatched = asyncio.Event()
+
+    async def handler(event):
+        handled.append(event.message_id)
+        dispatched.set()
+        return None
+
+    adapter.set_message_handler(handler)
+    payload = {"type": "new-message", "data": {
+        "guid": "associated-type-guid", "text": "message content",
+        "associatedMessageType": associated_type,
+        "chatIdentifier": "user@example.com",
+        "handle": {"address": "user@example.com"}, "isFromMe": False,
+    }}
+    try:
+        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))).status == 200
+        if not filtered:
+            await asyncio.wait_for(dispatched.wait(), timeout=5)
+        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))).status == 200
+        assert handled == ([] if filtered else ["associated-type-guid"])
+        assert not adapter._inflight_message_ids
+        assert adapter._message_dedup.contains("associated-type-guid") is (not filtered)
+    finally:
+        await adapter.disconnect()

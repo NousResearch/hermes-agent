@@ -87,6 +87,23 @@ def test_durable_external_store_still_publishes(tmp_path, monkeypatch):
     assert _launchers.expose_cli(repo, create=False)["ok"] is True
 
 
+def test_unstamped_task_home_symlink_cannot_republish(tmp_path, monkeypatch):
+    repo, home, _ = fixture_tree(tmp_path, monkeypatch)
+    local = repo / ".hermes" / "bin"
+    assert len(_launchers.ensure_install_launchers(repo, local)) == 2
+    original = {path.name: path.read_bytes() for path in local.iterdir()}
+
+    task_home = tmp_path.parent / "multica_workspaces_fixture" / "task-abcdef123456" / "hermes-home"
+    task_home.mkdir(parents=True)
+    (task_home / "tools").symlink_to(home / "tools", target_is_directory=True)
+    monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(task_home))
+    assert _launchers.ephemeral_task_store(repo)
+    assert _launchers.expose_cli(repo, create=False) == {"ok": True, "skipped": "ephemeral-store"}
+    assert _launchers.ensure_install_launchers(repo, local) == []
+    assert {path.name: path.read_bytes() for path in local.iterdir()} == original
+
+
 def select_generation(repo, name, value):
     selected = install_state_dir(repo) / 'environments' / str(name) / 'venv'
     site = site_packages(selected)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -110,6 +111,11 @@ def _check(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return _sh(repo, sys.executable, str(repo / "scripts/check"), *args)
 
 
+def _timeless(report: str) -> str:
+    """A report minus its elapsed time (`(0.1s)`), the one part two identical runs may differ in."""
+    return re.sub(r"\(\d+\.\ds\)", "", report)
+
+
 def _ratchet_repo(tmp_path: Path, switch: str | None = None) -> tuple[Path, str]:
     repo = _init(tmp_path / "repo")
     (repo / "scripts/ci").mkdir(parents=True)
@@ -147,7 +153,7 @@ def test_staged_health_ignores_unstaged_policy_and_engine(tmp_path, unstaged):
     assert edited != original
     (repo / rel).write_text(edited, encoding="utf-8")
     again = _check(repo, "--staged", "--only", "health", "--base", "HEAD")
-    assert again.stdout == first.stdout, again.stdout + again.stderr
+    assert _timeless(again.stdout) == _timeless(first.stdout), again.stdout + again.stderr
     # the judged artifact and the user's unstaged work are both untouched
     assert _git(repo, "write-tree") == tree
     assert (repo / rel).read_text(encoding="utf-8") == edited

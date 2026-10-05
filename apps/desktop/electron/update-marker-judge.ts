@@ -127,7 +127,7 @@ export interface JudgeEnv {
   /** Our own creation time (unix seconds); null when unreadable. */
   ourCt: () => number | null | Promise<number | null>
   /** Alive and not a zombie. Never called for our own pid. */
-  isAlive: (pid: number) => boolean
+  isAlive: (pid: number) => boolean | Promise<boolean>
   /** Creation time of a live pid; null when unreadable. Only called when the marker recorded one. */
   createTime: (pid: number) => number | null | Promise<number | null>
   /** Unix seconds. */

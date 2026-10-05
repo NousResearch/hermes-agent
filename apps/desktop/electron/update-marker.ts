@@ -119,19 +119,57 @@ export function posixProcessState(pid: number): string | null {
   return null
 }
 
+/**
+ * `posixProcessState` for the update gate's async judgement: macOS asks `ps`
+ * without blocking the main thread (Linux reads /proc, no spawn).
+ */
+export async function posixProcessStateAsync(pid: number): Promise<string | null> {
+  if (process.platform !== 'darwin') {
+    return posixProcessState(pid)
+  }
+
+  const out = await execFileText('ps', ['-o', 'stat=', '-p', String(pid)], { timeout: 5000 })
+
+  return out?.trim().charAt(0) || null
+}
+
+/** Async `execFile` stdout, or null on any failure (spawn, exit, timeout). */
+function execFileText(
+  file: string,
+  args: string[],
+  options: { env?: NodeJS.ProcessEnv; timeout: number }
+): Promise<string | null> {
+  return new Promise(resolve => {
+    execFile(file, args, { encoding: 'utf8', windowsHide: true, ...options }, (error, stdout) =>
+      resolve(error ? null : String(stdout))
+    ).stdin?.end()
+  })
+}
+
 function isZombieState(state: string | null | undefined): boolean {
   return Boolean(state && state.toUpperCase().startsWith('Z'))
 }
 
 let linuxClockTicks: number | null = null
 
+/** The async path's CLK_TCK: `getconf` once, off the main thread. */
+async function linuxClockTicksAsync(): Promise<number> {
+  if (linuxClockTicks === null) {
+    linuxClockTicks = Number((await execFileText('getconf', ['CLK_TCK'], { timeout: 2000 }))?.trim()) || 100
+  }
+
+  return linuxClockTicks
+}
+
 function linuxCreateTime(pid: number): number | null {
   try {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8')
+
     const fields = stat
       .slice(stat.lastIndexOf(')') + 1)
       .trim()
       .split(/\s+/)
+
     // Field 22 of /proc/<pid>/stat (starttime, clock ticks since boot) is index
     // 19 once pid and comm are stripped.
     const ticks = Number(fields[19])
@@ -163,18 +201,30 @@ function linuxCreateTime(pid: number): number | null {
  */
 export function psCreateTime(pid: number): number | null {
   try {
-    const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
-      encoding: 'utf8',
-      env: { ...process.env, LC_ALL: 'C', LANG: 'C', TZ: 'UTC0' },
-      timeout: 5000
-    }).trim()
-
-    const ms = out ? Date.parse(`${out.replace(/\s+/g, ' ')} GMT`) : NaN
-
-    return Number.isFinite(ms) ? ms / 1000 : null
+    return parsePsLstart(execFileSync('ps', psLstartArgs(pid), { encoding: 'utf8', env: psLstartEnv(), timeout: 5000 }))
   } catch {
     return null
   }
+}
+
+/** {@link psCreateTime} without blocking the main thread (the update gate's probe). */
+async function psCreateTimeAsync(pid: number): Promise<number | null> {
+  return parsePsLstart(await execFileText('ps', psLstartArgs(pid), { env: psLstartEnv(), timeout: 5000 }))
+}
+
+function psLstartArgs(pid: number): string[] {
+  return ['-o', 'lstart=', '-p', String(pid)]
+}
+
+function psLstartEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, LC_ALL: 'C', LANG: 'C', TZ: 'UTC0' }
+}
+
+function parsePsLstart(stdout: string | null): number | null {
+  const out = String(stdout ?? '').trim()
+  const ms = out ? Date.parse(`${out.replace(/\s+/g, ' ')} GMT`) : NaN
+
+  return Number.isFinite(ms) ? ms / 1000 : null
 }
 
 /**
@@ -216,18 +266,27 @@ export async function processCreateTime(pid: number): Promise<number | null> {
     return null
   }
 
-  if (process.platform !== 'win32' || (pid === process.pid && ownCreateTime() !== null)) {
-    return processCreateTimeSync(pid)
+  // Never a synchronous spawn here (it runs on the main thread while a marker
+  // exists): Linux reads /proc, macOS and Windows ask ps / CIM asynchronously.
+  if (process.platform === 'linux') {
+    await linuxClockTicksAsync()
+
+    return linuxCreateTime(pid)
   }
 
-  return new Promise(resolve => {
-    execFile(
-      'powershell.exe',
-      windowsCreateTimeCommand(pid),
-      { encoding: 'utf8', timeout: 15_000, windowsHide: true },
-      (error, stdout) => resolve(error ? null : dotnetTicksToUnix(stdout))
-    ).stdin?.end()
-  })
+  if (process.platform === 'darwin') {
+    return psCreateTimeAsync(pid)
+  }
+
+  if (process.platform !== 'win32') {
+    return null
+  }
+
+  const own = pid === process.pid ? ownCreateTime() : null
+
+  return (
+    own ?? dotnetTicksToUnix(await execFileText('powershell.exe', windowsCreateTimeCommand(pid), { timeout: 15_000 }))
+  )
 }
 
 /**
@@ -323,7 +382,7 @@ export interface MarkerProbeDeps {
   kill?: typeof process.kill
   /** Milliseconds since the epoch. */
   now?: () => number
-  processState?: (pid: number) => string | null
+  processState?: (pid: number) => string | null | Promise<string | null>
   createTime?: CreateTimeProbe
   /** The pid judged as "us" (A7 rule 4); default this process. */
   ownPid?: number
@@ -337,7 +396,8 @@ export function hostJudgeEnv(deps: MarkerProbeDeps = {}): JudgeEnv {
   return {
     ourPid,
     ourCt: () => createTime(ourPid),
-    isAlive: pid => isPidAlive(pid, deps.kill) && !isZombieState((deps.processState || posixProcessState)(pid)),
+    isAlive: async pid =>
+      isPidAlive(pid, deps.kill) && !isZombieState(await (deps.processState || posixProcessStateAsync)(pid)),
     createTime,
     nowS: (deps.now || Date.now)() / 1000
   }

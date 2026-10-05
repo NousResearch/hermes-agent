@@ -457,6 +457,10 @@ def update_task(
     fields = payload.model_fields_set
     if not fields:
         raise HTTPException(status_code=400, detail="at least one field is required")
+    # ``None`` means "unchanged" to the storage layer, so a null here would answer 200 for nothing.
+    nulls = sorted(name for name in ("priority", "title") if name in fields and getattr(payload, name) is None)
+    if nulls:
+        raise HTTPException(status_code=422, detail=f"{', '.join(nulls)} cannot be null")
     slug = _resolve_board_slug(board)
     with _connection(slug) as conn:
         # One storage-layer transaction for the whole patch: a transition landing

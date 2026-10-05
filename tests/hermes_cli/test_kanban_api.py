@@ -838,3 +838,13 @@ def test_patch_never_echoes_an_unrecognised_storage_error(
     rejected = client.patch(f"/api/plugins/kanban/v1/tasks/{task_id}", json={"priority": 1})
     assert rejected.status_code == 409
     assert rejected.json()["detail"] == "task could not be updated"
+
+
+def test_patch_refuses_null_for_fields_that_cannot_be_cleared(client: TestClient) -> None:
+    task_id = _create(client, idempotency_key="patch-null")["task"]["id"]
+    url = f"/api/plugins/kanban/v1/tasks/{task_id}"
+
+    assert client.patch(url, json={"title": None}).status_code == 422
+    assert client.patch(url, json={"priority": None}).status_code == 422
+    # body and assignee do have an empty state, so null clears them.
+    assert client.patch(url, json={"body": None, "assignee": None}).status_code == 200

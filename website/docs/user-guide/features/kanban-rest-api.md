@@ -108,7 +108,9 @@ creating a duplicate. Archiving a task frees its key for reuse.
 `PATCH /tasks/{id}` rejects edits to a task's `title` or `body` once the task
 is completed (`done`) or `archived` with **HTTP 409** — the finished card text
 is a historical record. `priority` and `assignee` may still be adjusted (the
-latter subject to its own "not while running" rule).
+latter subject to its own "not while running" rule). An explicit `null`
+clears `body` and unassigns `assignee`; `title` and `priority` cannot be
+cleared, so `null` for either is refused with **HTTP 422**.
 
 `POST /tasks/{id}/complete` needs completion evidence: send a non-empty
 `summary` (unless the task already carries a stored result), otherwise the

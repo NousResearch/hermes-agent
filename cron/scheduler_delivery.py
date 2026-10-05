@@ -1474,20 +1474,6 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
 _LIVE_SEND_CONFIRM_TIMEOUT_SECS = 60
 
 
-def _observe_late_live_send(future: Any, job_id: str, where: str) -> None:
-    try:
-        result = future.result()
-    except Exception as exc:
-        logger.warning(
-            "Job '%s': live adapter send to %s failed after confirmation timeout: %r",
-            job_id, where, exc)
-        return
-    if not _confirm_adapter_delivery(result, job_id):
-        logger.warning(
-            "Job '%s': live adapter send to %s returned an unconfirmed result "
-            "after confirmation timeout", job_id, where)
-
-
 def _live_send_text(
     t: _TargetDelivery, text_to_send: str, route_thread_id: Optional[str], route_metadata: dict, *,
     target_errors: list, delivery_errors: list, unverified_targets: list,
@@ -1536,6 +1522,7 @@ def _live_send_text(
             logger.warning("Job '%s': %s, falling back to standalone", job["id"], msg)
             target_errors.append(msg)
             return False, False, None
+        from cron.scheduler_delivery_live import _observe_late_live_send
         unverified_targets.append(t.where)
         future.add_done_callback(
             lambda done: _observe_late_live_send(done, job["id"], t.where))

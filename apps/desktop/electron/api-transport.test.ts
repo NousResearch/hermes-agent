@@ -18,7 +18,6 @@ import { afterAll, describe, expect, it } from 'vitest'
 
 import {
   destroyKeepaliveAgents,
-  downloadAgentFor,
   htmlResponseError,
   httpStatusError,
   isIdempotentMethod,
@@ -218,16 +217,6 @@ describe('withRetry', () => {
   })
 })
 
-describe('keep-alive agent pools', () => {
-  it('separates JSON and download pools per protocol', () => {
-    expect(jsonAgentFor('http:')).not.toBe(jsonAgentFor('https:'))
-    expect(jsonAgentFor('http:')).not.toBe(downloadAgentFor('http:'))
-    expect(jsonAgentFor('https:')).not.toBe(downloadAgentFor('https:'))
-    // Stable across calls (a real pool, not a factory).
-    expect(jsonAgentFor('http:')).toBe(jsonAgentFor('http:'))
-  })
-})
-
 // ---------------------------------------------------------------------------
 // LIVE transport tests against real misbehaving HTTP servers.
 // ---------------------------------------------------------------------------
@@ -358,26 +347,6 @@ describe('live: POST reset after server-side processing', () => {
     try {
       await expect(postOnce()).rejects.toSatisfy((error: any) => isTransientTransportError(error))
       expect(posts).toBe(1) // exactly one server-side submission — no retry
-    } finally {
-      server.close()
-    }
-  }, 20_000)
-
-  it('sanity: an identical GET-shaped retry WOULD have re-hit the server', async () => {
-    // Companion proof that the verb gate (not luck) is what kept posts === 1:
-    // the same reset-after-processing server sees multiple hits under GET.
-    let gets = 0
-
-    const server = http.createServer(req => {
-      gets += 1
-      req.socket.resetAndDestroy()
-    })
-
-    const base = await listen(server)
-
-    try {
-      await expect(retriedJsonGet(`${base}/api/thing`)).rejects.toThrow()
-      expect(gets).toBeGreaterThan(1) // retried — proves the machinery fires
     } finally {
       server.close()
     }

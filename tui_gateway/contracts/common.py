@@ -128,6 +128,9 @@ class StoredSessionRow(OpenModel):
     handoff_state: str | None = None
     lineage_root_id: str | None = Field(default=None, alias="_lineage_root_id")
     lineage_ids: list[str] | None = Field(default=None, alias="_lineage_ids")
+    # #121148: provenance of a projected continuation tip — 'compression' when the row
+    # continues a sealed segment (automatic rotation), None for plain rows and branches.
+    continuation_kind: str | None = None
 
 
 class ToolLabelKind(WireEnum):
@@ -154,12 +157,14 @@ class ToolLabel(Payload):
 
 class TranscriptMessage(OpenModel):
     """One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``):
-    ``text`` (never ``content``), display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the
-    durable ``row_id`` rewind targets, and for tool rows ``name`` + ``context`` preview + full ``args``.
+    ``text``, display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id``
+    rewind targets, and for tool rows raw ``content``, ``tool_call_id``, ``name``, ``context`` and ``args``.
     Assistant detail sidecars (``reasoning``, …) ride as extra keys."""
 
     role: str
     text: str | None = None
+    content: JsonValue | None = None
+    tool_call_id: str | None = None
     timestamp: float | None = None
     row_id: int | None = None
     display_kind: str | None = None

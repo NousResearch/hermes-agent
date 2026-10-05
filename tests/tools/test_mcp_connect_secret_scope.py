@@ -5,6 +5,7 @@ Discovery at gateway startup runs outside any per-turn scope. Under multiplexing
 server registered zero tools (#113746).
 """
 import asyncio
+from contextlib import contextmanager
 
 import pytest
 
@@ -47,6 +48,7 @@ def spawn_env(monkeypatch):
             self.name = name
 
         async def start(self, config):
+            captured["config"] = config
             captured["env"] = _build_safe_env(config.get("env"))
 
         async def shutdown(self):
@@ -121,3 +123,127 @@ def test_connect_scope_install_failure_releases_the_discovery_claim(monkeypatch,
             discovery._core._connect_server_claim.reset(token)
 
     asyncio.run(_run())
+
+
+REMOTE = {"url": "https://example.invalid/mcp", "headers": {"Authorization": f"Bearer ${{{TOKEN_NAME}}}"}}
+
+
+@contextmanager
+def _boot_scope(home):
+    """The gateway's boot-time ``_profile_runtime_scope`` shape: home override plus a secret scope
+    SNAPSHOT built now — before the profile's secret source may have answered."""
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    home_token = set_hermes_home_override(str(home))
+    token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+    try:
+        yield
+    finally:
+        reset_secret_scope(token)
+        reset_hermes_home_override(home_token)
+
+
+def _connect_under_boot_scope(home, config):
+    async def _run():
+        with _boot_scope(home):
+            await discovery._connect_server("demo", dict(config, headers=dict(config["headers"])))
+    asyncio.run(_run())
+
+
+def test_connect_renders_remote_headers_under_the_owners_fresh_scope(tmp_path, spawn_env, monkeypatch):
+    """Red on base (#119092): a caller-bound scope was trusted as-is, so a header rendered under the
+    boot-time snapshot — taken before B's secret source answered — went out as the literal
+    ``Bearer ${VAR}`` (401) instead of failing closed, and never healed. A→B→A: each home's own
+    value, never the other's."""
+    monkeypatch.setitem(env_loader._SECRET_SOURCES, TOKEN_NAME, "command")
+    monkeypatch.setenv(TOKEN_NAME, "launch-env-value")
+    home_a, home_b = tmp_path / "s6probe-a", tmp_path / "s6probe-b"
+    for home in (home_a, home_b):
+        home.mkdir()
+    (home_a / ".env").write_text(f"{TOKEN_NAME}=value-a\n", encoding="utf-8")
+    set_multiplex_active(True)
+    try:
+        _connect_under_boot_scope(home_a, REMOTE)
+        assert spawn_env["config"]["headers"]["Authorization"] == "Bearer value-a"
+
+        with pytest.raises(ValueError, match=f"'demo'.*{TOKEN_NAME}"):  # B: source not hydrated yet
+            _connect_under_boot_scope(home_b, REMOTE)
+        (home_b / ".env").write_text(f"{TOKEN_NAME}=value-b\n", encoding="utf-8")  # the source answers
+        _connect_under_boot_scope(home_b, REMOTE)
+        assert spawn_env["config"]["headers"]["Authorization"] == "Bearer value-b"
+
+        _connect_under_boot_scope(home_a, REMOTE)
+        assert spawn_env["config"]["headers"]["Authorization"] == "Bearer value-a"
+        assert current_secret_scope() is None
+    finally:
+        set_multiplex_active(False)
+
+
+def test_launch_profile_env_only_credential_survives_the_owner_rebuild(spawn_env, monkeypatch):
+    """Red on the salvage: the owner rebuild used ``build_profile_secret_scope`` (files only) for the
+    LAUNCH profile too, so a credential that lives only in the launch env (systemd ``Environment=``,
+    ``op run``, Compose) — present in the ``launch_secret_scope`` mapping the caller bound — vanished,
+    the header stayed the literal ``${VAR}`` and the fail-closed check parked a server that worked."""
+    import os
+    from pathlib import Path
+    from tools import mcp_tool_config as _config
+    from tui_gateway import launch_profile_policy
+    launch_home = Path(os.environ["HERMES_HOME"])  # conftest's per-test process home
+    (launch_home / ".env").write_text("", encoding="utf-8")
+    monkeypatch.setenv(TOKEN_NAME, "tok-from-systemd")
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    launch_profile_policy.activate_multi_profile_hosting()  # freeze the launch env, fail closed, pin the home
+
+    async def _run():
+        with launch_profile_policy.launch_profile_runtime_scope(launch_home):
+            await discovery._connect_server("demo", dict(REMOTE, headers=dict(REMOTE["headers"])))
+            with discovery._owner_secret_scope():  # a later rebuild (reconnect / reconcile) under the same door
+                return _config._interpolate_env_vars(dict(REMOTE["headers"]))
+
+    try:
+        rebuilt = asyncio.run(_run())
+    finally:
+        set_multiplex_active(False)
+    assert spawn_env["config"]["headers"]["Authorization"] == "Bearer tok-from-systemd"
+    assert rebuilt["Authorization"] == "Bearer tok-from-systemd"
+
+
+def test_reconnect_rerenders_remote_headers_under_the_owners_fresh_scope(tmp_path, monkeypatch):
+    """Red on base (#119092): the run task re-read config.yaml on every rebuild but rendered it under
+    its copied connect-time scope snapshot, so a parked server retried the literal ``${VAR}`` header
+    forever after the owner's secret source came up."""
+    from tools.mcp_tool import MCPServerTask
+    monkeypatch.setitem(env_loader._SECRET_SOURCES, TOKEN_NAME, "command")
+    home_b = tmp_path / "s6probe-b"
+    home_b.mkdir()
+    (home_b / "config.yaml").write_text(
+        "mcp_servers:\n  demo:\n    url: https://example.invalid/mcp\n"
+        f"    headers:\n      Authorization: 'Bearer ${{{TOKEN_NAME}}}'\n", encoding="utf-8")
+    seen: list = []
+
+    class _Task(MCPServerTask):
+        async def _prepare_run(self, config):
+            self._config = config
+            self._auth_type = ""
+            return True
+
+        async def _run_http(self, config):
+            seen.append(config["headers"]["Authorization"])
+            self._ready.set()
+            self.session = object()
+            self._session_proven = True
+            if len(seen) == 1:
+                (home_b / ".env").write_text(f"{TOKEN_NAME}=value-b\n", encoding="utf-8")  # the source answers
+                return "reconnect"
+            self._shutdown_event.set()
+            return "shutdown"
+
+    async def _scenario():
+        with _boot_scope(home_b):  # snapshot taken before B's source answered
+            await asyncio.wait_for(_Task("demo").run(dict(REMOTE, headers=dict(REMOTE["headers"]))), timeout=10)
+
+    set_multiplex_active(True)
+    try:
+        asyncio.run(_scenario())
+    finally:
+        set_multiplex_active(False)
+    assert seen == [f"Bearer ${{{TOKEN_NAME}}}", "Bearer value-b"]

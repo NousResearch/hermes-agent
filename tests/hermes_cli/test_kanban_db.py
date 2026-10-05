@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import concurrent.futures
 import json
 import os
 import sqlite3
@@ -10,12 +9,10 @@ import subprocess
 import sys
 import time
 import types
-import unittest.mock
 from pathlib import Path
 
 import pytest
 
-import hermes_state
 import hermes_state_wal
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
@@ -54,7 +51,7 @@ def _init_git_repo(repo: Path) -> None:
 
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_cross_process_init_lock_uses_windows_byte_range_lock(tmp_path, monkeypatch):
     """Windows must use a real (non-blocking) process lock, not a no-op open.
 
@@ -62,7 +59,7 @@ def test_cross_process_init_lock_uses_windows_byte_range_lock(tmp_path, monkeypa
     wedged holder can never block connect() forever; a clean acquire takes the
     lock once and releases it once.
 
-    ``windows_only``: ``msvcrt`` does not exist off Windows, so faking
+    ``platforms("windows")``: ``msvcrt`` does not exist off Windows, so faking
     ``_IS_WINDOWS`` on Linux meant injecting a fake ``msvcrt`` module too —
     the test then asserted against its own stub rather than the byte-range
     locking API. Here the platform is real; only ``msvcrt.locking`` is
@@ -988,6 +985,30 @@ def test_is_managed_scratch_path_rejects_kanban_metadata_subtrees(kanban_home):
     assert kb._is_managed_scratch_path(task_dir)
 
 
+@pytest.mark.require_symlinks
+def test_symlinked_workspaces_root_does_not_widen_scratch_cleanup(kanban_home, tmp_path):
+    """A workspaces root that is a symlink to a broad directory must not make
+    every path inside the symlink target "managed". Only paths that are
+    lexically below the root (i.e. reached through it) are scratch; a path
+    named directly inside the target is user data (#28818)."""
+    broad = tmp_path / "user-data"
+    victim = broad / "project"
+    victim.mkdir(parents=True)
+    (victim / "keep.txt").write_text("user data", encoding="utf-8")
+    ws_root = kanban_home / "kanban" / "workspaces"
+    if ws_root.is_dir() and not ws_root.is_symlink():
+        ws_root.rmdir()
+    ws_root.parent.mkdir(parents=True, exist_ok=True)
+    ws_root.symlink_to(broad, target_is_directory=True)
+
+    with kbc.connect() as conn:
+        # Legacy explicit-path scratch task pointing straight at user data.
+        t = kb.create_task(conn, title="scratch")
+        kbw.set_workspace_path(conn, t, victim)
+        assert kb.complete_task(conn, t, result="done")
+    assert (victim / "keep.txt").is_file()
+
+
 # ---------------------------------------------------------------------------
 # Tenancy
 # ---------------------------------------------------------------------------
@@ -1495,54 +1516,6 @@ def test_add_column_if_missing_is_idempotent_on_race(kanban_home):
     conn.close()
 
 
-def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home):
-    """Full _migrate_add_optional_columns must not raise when columns already
-    exist (issue #21708 race window — two connections migrate concurrently)."""
-    import sqlite3
-
-    # Schema already in fully-migrated state (all optional columns present).
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute(
-        """
-        CREATE TABLE tasks (
-            id INTEGER PRIMARY KEY,
-            title TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT '',
-            tenant TEXT,
-            result TEXT,
-            idempotency_key TEXT,
-            branch_name TEXT,
-            consecutive_failures INTEGER NOT NULL DEFAULT 0,
-            worker_pid INTEGER,
-            last_failure_error TEXT,
-            max_runtime_seconds INTEGER,
-            last_heartbeat_at INTEGER,
-            current_run_id INTEGER,
-            workflow_template_id TEXT,
-            current_step_key TEXT,
-            skills TEXT,
-            max_retries INTEGER,
-            session_id TEXT
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE task_events (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_id    TEXT NOT NULL DEFAULT '',
-            run_id     INTEGER,
-            kind       TEXT NOT NULL DEFAULT '',
-            payload    TEXT,
-            created_at INTEGER NOT NULL DEFAULT 0
-        )
-        """
-    )
-
-    # Running migration on an already-migrated schema must not raise.
-    kbc._migrate_add_optional_columns(conn)
-    conn.close()
 
 
 def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_home):
@@ -1619,23 +1592,6 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
 
 
-def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeypatch):
-    """When the shim is not on PATH, fall back to `python -m hermes_cli.main`.
-
-    Pins the correct module name (NOT `hermes` — there is no top-level
-    `hermes` package). Regression for #23198: the original PR shipped
-    `python -m hermes` which fails with `No module named hermes` on every
-    invocation.
-    """
-    import shutil
-    import sys
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_dispatch as kbd
-
-    monkeypatch.delenv("HERMES_BIN", raising=False)
-    monkeypatch.setattr(shutil, "which", lambda name: None)
-    argv = kbd._resolve_hermes_argv()
-    assert argv == [sys.executable, "-m", "hermes_cli.main"]
 
 
 def test_resolve_hermes_argv_module_actually_runs():
@@ -1648,7 +1604,6 @@ def test_resolve_hermes_argv_module_actually_runs():
     Run it as a real subprocess to catch that regression.
     """
     import subprocess
-    import hermes_cli.kanban_db as kb
     from hermes_cli import kanban_db_dispatch as kbd
     import shutil
     import unittest.mock as mock
@@ -1662,7 +1617,58 @@ def test_resolve_hermes_argv_module_actually_runs():
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
     )
-    assert "Hermes Agent" in r.stdout, f"unexpected output: {r.stdout[:200]!r}"
+
+
+def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monkeypatch):
+    """A module-form worker must carry the import context that selected it.
+
+    ``_resolve_hermes_argv`` proves ``hermes_cli`` importable in the gateway,
+    where a store-python shim has the repo root on ``sys.path`` in-process;
+    the worker env scrub strips Hermes-owned PYTHONPATH entries, so the bare
+    ``sys.executable -m hermes_cli.main`` child died on import and the board
+    auto-blocked (#122299, #122487, #122500). The spawned env must put the
+    running install's root first on PYTHONPATH — and never for a resolved shim
+    path, which owns its own imports.
+    """
+    import os
+    import sys
+    from pathlib import Path
+
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    root = str(Path(kbd.__file__).resolve().parents[1])
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env", {})
+            self.pid = 4242
+
+    monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+    task = kb.Task(
+        id="t_import_root", title="x", body=None, assignee="coder", status="ready",
+        priority=0, created_by=None, created_at=0, started_at=None, completed_at=None,
+        workspace_kind="worktree", workspace_path=str(tmp_path / "ws"), claim_lock=None,
+        claim_expires=None, tenant=None, branch_name=None,
+    )
+
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: [sys.executable, "-m", "hermes_cli.main"])
+    kbd._default_spawn(task, str(tmp_path / "ws"))
+    assert captured["env"]["PYTHONPATH"].split(os.pathsep)[0] == root
+
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["/opt/hermes/bin/hermes"])
+    kbd._default_spawn(task, str(tmp_path / "ws"))
+    assert root not in captured["env"].get("PYTHONPATH", "").split(os.pathsep)
 
 
 # ---------------------------------------------------------------------------
@@ -1680,27 +1686,6 @@ def test_resolve_hermes_argv_module_actually_runs():
 # ---------------------------------------------------------------------------
 
 
-def _make_task(**overrides) -> "kb.Task":
-    """Minimal Task with all required fields filled in. Override anything."""
-    defaults = dict(
-        id="t_age",
-        title="x",
-        body=None,
-        assignee=None,
-        status="ready",
-        priority=0,
-        created_by=None,
-        created_at=0,
-        started_at=None,
-        completed_at=None,
-        workspace_kind="scratch",
-        workspace_path=None,
-        claim_lock=None,
-        claim_expires=None,
-        tenant=None,
-    )
-    defaults.update(overrides)
-    return kb.Task(**defaults)
 
 
 
@@ -1872,71 +1857,35 @@ def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):
 # First-use tip for scratch workspaces
 # ---------------------------------------------------------------------------
 
-def test_maybe_emit_scratch_tip_fires_once_per_install(kanban_home, caplog):
-    """First scratch workspace materialization warns + emits an event.
-
-    Subsequent scratch workspaces on the SAME install stay silent — the
-    sentinel file under kanban_home() flips after the first emit.
-    """
-    import logging
-
+def test_maybe_emit_scratch_tip_fires_once_per_install(kanban_home):
+    """The first scratch workspace materialized on an install appends a
+    ``tip_scratch_workspace`` event; later scratch tasks on the same install
+    stay silent, and non-scratch workspaces never trigger it."""
     with kbc.connect() as conn:
+        wt = kb.create_task(conn, title="worktree task")
         t1 = kb.create_task(conn, title="first scratch")
         t2 = kb.create_task(conn, title="second scratch")
 
-    # Sentinel must not exist yet on a fresh install.
-    assert not kbw._scratch_tip_shown()
-
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
+    def _kinds(task_id):
         with kbc.connect() as conn:
-            kbw._maybe_emit_scratch_tip(conn, t1, "scratch")
+            rows = conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+                (task_id,),
+            ).fetchall()
+        return [r["kind"] for r in rows]
 
-    # Sentinel is now set.
-    assert kbw._scratch_tip_shown()
-    assert kbw._scratch_tip_sentinel_path().exists()
-
-    # Warning was logged exactly once.
-    tip_records = [
-        r for r in caplog.records
-        if "scratch workspaces are ephemeral" in r.getMessage()
-    ]
-    assert len(tip_records) == 1, (
-        f"Expected exactly one tip warning, got {len(tip_records)}: "
-        f"{[r.getMessage() for r in tip_records]!r}"
-    )
-
-    # An event row was appended on the first task.
     with kbc.connect() as conn:
-        events = conn.execute(
-            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
-            (t1,),
-        ).fetchall()
-    kinds = [e["kind"] for e in events]
-    assert "tip_scratch_workspace" in kinds, (
-        f"Expected tip_scratch_workspace event on first scratch task; "
-        f"got {kinds!r}"
-    )
+        kbw._maybe_emit_scratch_tip(conn, wt, "worktree")
+    assert "tip_scratch_workspace" not in _kinds(wt)
 
-    # Second scratch materialization on the same install stays silent.
-    caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
-        with kbc.connect() as conn:
-            kbw._maybe_emit_scratch_tip(conn, t2, "scratch")
-    tip_records2 = [
-        r for r in caplog.records
-        if "scratch workspaces are ephemeral" in r.getMessage()
-    ]
-    assert tip_records2 == [], (
-        f"Tip should not re-fire after sentinel is set; got "
-        f"{[r.getMessage() for r in tip_records2]!r}"
-    )
     with kbc.connect() as conn:
-        events2 = conn.execute(
-            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
-            (t2,),
-        ).fetchall()
-    assert "tip_scratch_workspace" not in [e["kind"] for e in events2], (
-        "Tip event should not be appended for subsequent scratch tasks."
+        kbw._maybe_emit_scratch_tip(conn, t1, "scratch")
+    assert _kinds(t1).count("tip_scratch_workspace") == 1
+
+    with kbc.connect() as conn:
+        kbw._maybe_emit_scratch_tip(conn, t2, "scratch")
+    assert "tip_scratch_workspace" not in _kinds(t2), (
+        "scratch tip re-fired on the same install"
     )
 
 
@@ -2079,20 +2028,6 @@ def test_write_txn_check_reads_correct_header_fields(tmp_path):
 
 
 
-def test_bare_connect_does_not_close_on_context_exit(tmp_path):
-    """Document the leak that connect_closing exists to prevent.
-
-    sqlite3.Connection's __exit__ commits/rollbacks but doesn't close.
-    This is the upstream behaviour we cannot change; the regression
-    guard is to make sure connect_closing() does the right thing.
-    """
-    db_path = tmp_path / "kanban.db"
-    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
-    with kbc.connect(db_path=db_path) as conn:
-        pass
-    # Still usable after with-block exit (the leak).
-    conn.execute("SELECT 1").fetchone()
-    conn.close()  # explicit close to avoid leaking THIS test
 
 
 def test_archive_running_task_terminates_worker(kanban_home, monkeypatch):

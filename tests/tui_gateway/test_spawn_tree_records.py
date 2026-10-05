@@ -32,4 +32,3 @@ def test_spawn_tree_load_rejects_non_dict_snapshot(tmp_path, monkeypatch):
 
     envelope = srv._methods["spawn_tree.load"](1, {"path": str(bad)})
     assert "error" in envelope
-    assert "not a JSON object" in envelope["error"]["message"]

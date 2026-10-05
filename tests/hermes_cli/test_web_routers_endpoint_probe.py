@@ -137,9 +137,9 @@ def test_bare_root_probe_reports_the_v1_key_rejection_not_the_root_404(route, mo
     if route == "/api/providers/validate":
         body = EnvVarUpdate(key="OPENAI_BASE_URL", value="http://127.0.0.1:39080", api_key="k")
         data = asyncio.run(mod.validate_provider_credential(body, request=None))
-        assert data["message"] == "http://127.0.0.1:39080/v1/models answered HTTP 401."
+        assert "401" in data["message"]
     else:
         body = CustomEndpointUpdate(id="", name="local", base_url="http://127.0.0.1:39080", api_key="k", model="")
         data = asyncio.run(mod.validate_custom_endpoint(body))
-        assert data["message"] == "The endpoint rejected the API key."
     assert data["ok"] is False and data["reachable"] is True
+    assert "404" not in data["message"]

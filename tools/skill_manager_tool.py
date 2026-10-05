@@ -14,13 +14,12 @@ from contextlib import ExitStack, suppress
 import logging
 import re
 import shutil
-import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import yaml
+import hermes_yaml as yaml
 
-from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_constants import get_hermes_home
 from utils import atomic_write_text, is_truthy_value
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
@@ -30,8 +29,8 @@ from agent.skill_utils import (
     SKILL_PROMPT_DESC_LIMIT)
 from tools.skill_manager_guards import (
     _background_review_preflight, _background_review_read_before_write_guard, _background_review_write_guard,
-    _containing_skills_root, _curator_consolidation_delete_guard, _maybe_auto_propose_org_edit,
-    _org_mirror_write_guard, _pinned_guard, _validate_delete_target, _is_background_review, _refusal as _err)
+    _containing_skills_root, _curator_consolidation_delete_guard, _is_path_redirect, _pinned_guard,
+    _validate_delete_target, _is_background_review, _refusal as _err)
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
@@ -114,15 +113,6 @@ VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')  # filesystem-safe, URL-fr
 ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}  # for write_file/remove_file
 _FRONTMATTER_END_RE = re.compile(r'\n---\s*\n')
 _NAME_RULE = "Use lowercase letters, numbers, hyphens, dots, and underscores."
-
-
-def _display_create_dir() -> str:
-    """Skill-creation dir for schema/instruction text; follows ``skills.create_dir``."""
-    try:
-        from agent.skill_utils import display_skill_create_dir
-        return display_skill_create_dir()
-    except Exception:
-        return f"{display_hermes_home()}/skills/"
 
 
 # --- Validation helpers -------------------------------------------------------
@@ -343,16 +333,13 @@ def _resolve_supporting_file(skill_dir: Path, file_path: str):
     return (None, _err(err)) if err else (target, None)
 
 
-def _locate_for_write(name: str, action: str, not_found_suffix: str = "", *,
-                      org_guard: bool = True):
-    """Find the skill; run the org-mirror (unless ``org_guard=False``) and background-review
-    write guards -> ``(skill_dir, None)`` | ``(None, error_dict)``."""
+def _locate_for_write(name: str, action: str, not_found_suffix: str = ""):
+    """Find the skill; run the background-review write guard -> ``(skill_dir, None)`` | ``(None, error_dict)``."""
     existing = _find_skill(name)
     if not existing:
         return None, _err(_skill_not_found_error(name, not_found_suffix))
     skill_dir = existing["path"]
-    guard = ((org_guard and _org_mirror_write_guard(name, skill_dir, action))
-             or _background_review_write_guard(name, skill_dir, action))
+    guard = _background_review_write_guard(name, skill_dir, action)
     return (None, guard) if guard else (skill_dir, None)
 
 
@@ -364,7 +351,7 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
     if target.exists():
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
-        original = target.read_text(encoding="utf-8")
+        original = target.read_text(encoding="utf-8-sig")
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
@@ -376,13 +363,6 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
     else:
         target.unlink(missing_ok=True)
     return _err(scan_error)
-
-
-def _attach_org_note(result: Dict[str, Any], name: str, skill_dir: Path) -> Dict[str, Any]:
-    if org_note := _maybe_auto_propose_org_edit(name, skill_dir):
-        result["org_sharing"] = org_note
-        result["message"] = f"{result['message']} {org_note}"
-    return result
 
 
 def _add_description_prompt_preview(result: Dict[str, Any], content: str) -> Dict[str, Any]:
@@ -429,12 +409,26 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
     skill_dir = _resolve_skill_dir(name, category)
     from hermes_constants import mkdir_under_hermes_home
-    mkdir_under_hermes_home(skill_dir)
+    mkdir_under_hermes_home(skill_dir.parent)
+    try:
+        skill_dir.mkdir(exist_ok=False)
+    except FileExistsError:
+        # mkdir raised EEXIST for a file, symlink (live or dangling) or dir alike; only an EMPTY
+        # real directory (leftover of an earlier create whose SKILL.md write failed) may be used.
+        # Anything else — or anything unstat-able/unlistable — is someone else's: never adopt.
+        try:
+            usable = (not _is_path_redirect(skill_dir) and skill_dir.is_dir()
+                      and not any(skill_dir.iterdir()))
+        except OSError:  # permissions / ACL
+            usable = False
+        if not usable:
+            return _err(f"Cannot create skill '{name}': {skill_dir} already exists (not an empty "
+                        "directory, or unreadable). Choose another name, or move/remove that path and retry.")
     skill_md = skill_dir / "SKILL.md"
-    atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
-    if scan_error := _security_scan_skill(skill_dir):
-        shutil.rmtree(skill_dir, ignore_errors=True)
-        return _err(scan_error)
+    if guard := _guarded_write(name, skill_dir, skill_md, "create", "SKILL.md", content):
+        with suppress(OSError):  # rmdir, not rmtree: only an empty dir goes, anything foreign stays
+            skill_dir.rmdir()
+        return guard
     root = _skills_dir()  # display relative under the profile dir; absolute under skills.create_dir
     display = skill_dir.relative_to(root) if skill_dir.is_relative_to(root) else skill_dir
     result = {
@@ -459,7 +453,7 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     result = {
         "success": True, "message": f"Skill '{name}' updated (full rewrite).",
         "path": str(skill_dir), "_change": {"description": _description_preview(content)}}
-    return _add_description_prompt_preview(_attach_org_note(result, name, skill_dir), content)
+    return _add_description_prompt_preview(result, content)
 
 
 def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = None,
@@ -485,9 +479,9 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
         return _err(f"File not found: {target.relative_to(skill_dir)}")
     if read_guard := _background_review_read_before_write_guard(name, target, "patch", target_label):
         return read_guard
-    content = target.read_text(encoding="utf-8")
-    # Same fuzzy engine as the file patch tool (whitespace/indent/escape normalization,
-    # block anchors) so minor formatting mismatches don't fail.
+    content = target.read_text(encoding="utf-8-sig")
+
+    # Use the same fuzzy matching engine as the file patch tool.
     from tools.fuzzy_match import fuzzy_find_and_replace
     new_content, match_count, _strategy, match_error = fuzzy_find_and_replace(
         content, old_string, new_string, replace_all)
@@ -506,7 +500,6 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
         "success": True,
         "message": f"Patched {target_label} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
         "_change": {"old": _clip(old_string, 200, "…"), "new": _clip(new_string, 200, "…")}}
-    result = _attach_org_note(result, name, skill_dir)
     # SKILL.md grows by patches, not by creates: surface findings on the patch that crosses a line
     # (oversized-body, incident-log-shape) — a clean patch attaches nothing and stays quiet.
     if not file_path:
@@ -573,8 +566,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     target, err = _resolve_supporting_file(skill_dir, file_path)
     if guard := err or _guarded_write(name, skill_dir, target, "write_file", file_path, file_content):
         return guard
-    result = _attach_org_note({"success": True, "message": f"File '{file_path}' written to skill '{name}'.",
-                               "path": str(target)}, name, skill_dir)
+    result = {"success": True, "message": f"File '{file_path}' written to skill '{name}'.", "path": str(target)}
     # references/ is where per-session hoarding shows up; surface the sprawl finding on the write
     # that crosses the line so the review fork sees it in the same turn.
     if file_path.startswith("references/") and (skill_dir / "SKILL.md").exists():
@@ -586,7 +578,7 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     """Remove a supporting file from any skill directory."""
     if err := _validate_file_path(file_path):
         return _err(err)
-    skill_dir, guard = _locate_for_write(name, "remove_file", org_guard=False)
+    skill_dir, guard = _locate_for_write(name, "remove_file")
     if guard:
         return guard
     target, err = _resolve_supporting_file(skill_dir, file_path)
@@ -663,41 +655,6 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
         _skill_gate_bypass.reset(token)
 
 
-# Sync push debounce: a burst of skill_manage writes collapses into one push on a daemon timer.
-# One timer per profile home: in a multiplexed process B's write must not cancel A's pending push.
-_sync_push_timers: Dict[str, threading.Timer] = {}
-_sync_push_lock = threading.Lock()
-_SYNC_PUSH_DEBOUNCE_S = 5.0
-
-
-def _maybe_debounced_sync_push(skill_name: str) -> None:
-    """Debounced best-effort sync push after a skill write; never blocks the caller. Skills not
-    opted into sync do nothing (no auth/network); ``maybe_push_skills`` enforces the access gate."""
-    try:
-        from tools.skill_usage import is_sync_enabled
-        if not is_sync_enabled(skill_name):
-            return
-    except Exception:
-        return
-    from hermes_constants import hermes_home_key
-    home_key = hermes_home_key()
-    # Timer threads start with empty ContextVars; without the scheduling turn's context the push would
-    # resolve the launch profile's home and credentials instead of the writing profile's.
-    ctx = _ctxvars.copy_context()
-    def _fire():
-        with suppress(Exception):
-            from tools.skills_sync_client import maybe_push_skills
-            maybe_push_skills(message=f"sync: {skill_name}")
-    with _sync_push_lock:
-        pending = _sync_push_timers.get(home_key)
-        if pending is not None:
-            pending.cancel()  # only sets an Event; never raises
-        timer = threading.Timer(_SYNC_PUSH_DEBOUNCE_S, ctx.run, args=(_fire,))
-        timer.daemon = True
-        _sync_push_timers[home_key] = timer
-        timer.start()
-
-
 def _act_patch(a):
     """Two shapes: old_string/new_string = targeted replacement (validated in _patch_skill so the
     tool and the helper give the same guidance); content alone = full rewrite (the old 'edit')."""
@@ -722,7 +679,7 @@ _ACTION_HANDLERS = {
 def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
                     session_id, ledger_before) -> None:
     """Best-effort post-mutation side effects (never break the tool): ledger, prompt-cache
-    clear, curator telemetry, debounced sync push."""
+    clear, curator telemetry (which fires ``on_skill_lifecycle`` for plugins)."""
     with suppress(Exception):
         from tools import skill_ledger as _ledger
         _post = _find_skill(name)
@@ -754,9 +711,6 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
             bump_patch(name, action=action, task_id=task_id, session_id=session_id)
         elif action == "delete" and not result.get("_archived"):
             forget(name)
-    # Only AFTER the write gate passed (staged writes returned early): never push un-reviewed content.
-    with suppress(Exception):
-        _maybe_debounced_sync_push(name)
 
 
 def skill_manage(
@@ -813,13 +767,13 @@ def skill_manage(
 
 # --- OpenAI Function-Calling Schema -------------------------------------------
 
-def _skill_manage_description(create_dir: str) -> str:
+def _skill_manage_description() -> str:
     return (
         "Create, update, or delete skills — your procedural memory for "
         "recurring task types. The call is an operations array (a single "
         "edit is a list of one); it applies atomically — any failure rolls "
         "every touched skill back. Ops: create (full SKILL.md; lands in "
-        f"{create_dir}; must precede that skill's other "
+        "the profile's skills directory or configured skills.create_dir; must precede that skill's other "
         "ops), patch (targeted old_string/new_string fix — preferred; "
         "content alone REPLACES the whole file, read it via skill_view() "
         "first), write_file/remove_file (supporting files), delete (sole "
@@ -830,13 +784,6 @@ def _skill_manage_description(create_dir: str) -> str:
         "rule per lesson, references/ named by topic (extend before adding). "
         "skill_view() shows format conventions."
     )
-
-
-def _skill_manage_schema_overrides() -> dict:
-    """Rebuild the create-dir hint from the ACTIVE profile at every get_definitions(): the
-    multiplexed gateway serves every profile from one process, so a path baked in at import
-    would name the launch profile's skills dir for everyone else (#95685)."""
-    return {"description": _skill_manage_description(_display_create_dir())}
 
 
 _NAME = {"type": "string"}
@@ -865,7 +812,7 @@ SKILL_MANAGE_SCHEMA = {
     # ONE advertised call shape (memory-tool pattern): the call IS an operations
     # array. The legacy flat shape (top-level action/name/content/...) is still
     # ACCEPTED for old transcripts and staged-write replay, but not advertised.
-    "description": _skill_manage_description("the profile's skills.create_dir"),
+    "description": _skill_manage_description(),
     "parameters": {
         "type": "object",
         "properties": {
@@ -926,27 +873,4 @@ from tools.registry import registry, tool_error
 registry.register(
     name="skill_manage", toolset="skills", schema=SKILL_MANAGE_SCHEMA, emoji="📝",
     handler=lambda args, **kw: _skill_manage_from(
-        args, task_id=kw.get("task_id"), session_id=kw.get("session_id")),
-    dynamic_schema_overrides=_skill_manage_schema_overrides)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'mark_background_review_skill_read': ('tools.skill_manager_guards', 'mark_background_review_skill_read'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----
+        args, task_id=kw.get("task_id"), session_id=kw.get("session_id")))

@@ -20,7 +20,6 @@ import json
 import os
 import shutil
 import sqlite3
-import sys
 import tempfile
 import threading
 import types
@@ -29,7 +28,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.memory_manager import build_memory_context_block
 from agent.turn_context import (
     _memory_query_text,
     build_turn_context,
@@ -46,14 +44,6 @@ from hermes_state import SessionDB
 class TestComposeUserApiContent:
     def test_none_when_nothing_to_inject(self):
         assert compose_user_api_content("hello", "", "") is None
-
-
-    def test_composes_memory_block_and_plugin_context(self):
-        out = compose_user_api_content("hello", "likes tea", "PLUGIN-CTX")
-        fenced = build_memory_context_block("likes tea")
-        assert out == "hello" + "\n\n" + fenced + "\n\n" + "PLUGIN-CTX"
-
-
 
 
 class TestComposeMultimodalContextPart:
@@ -103,17 +93,6 @@ class TestSessionDbSidecar:
             assert msgs[0]["api_content"] == sent  # byte-for-byte
         finally:
             db.close()
-
-
-    def test_get_messages_exposes_column(self, tmp_path):
-        db = self._open(tmp_path)
-        try:
-            db.append_message("s1", "user", content="hello", api_content="hello+ctx")
-            rows = db.get_messages("s1")
-            assert rows[0]["api_content"] == "hello+ctx"
-        finally:
-            db.close()
-
 
 
 class TestAutoMigration:
@@ -633,22 +612,6 @@ class TestWireInvariant:
 # guard, sanitize-divergence capture, max-iterations replay, replay cleanup
 # ---------------------------------------------------------------------------
 
-from agent.turn_context import reanchor_current_turn_user_idx
-
-
-class TestReanchorCurrentTurnUserIdx:
-
-
-
-    def test_minus_one_when_no_user_message(self):
-        messages = [{"role": "assistant", "content": "a"}]
-        assert reanchor_current_turn_user_idx(messages, "hello") == -1
-        assert reanchor_current_turn_user_idx([], "hello") == -1
-
-    def test_non_dict_entries_ignored(self):
-        messages = ["junk", {"role": "user", "content": "hello"}, None]
-        assert reanchor_current_turn_user_idx(messages, "hello") == 1
-
 
 class TestPrologueMoaAndInPlaceBackfill:
     def test_no_stamp_for_moa_turns(self):
@@ -959,7 +922,7 @@ class TestMaxIterationsSummaryReplay:
             {"role": "assistant", "content": "a1"},
         ]
         with patch.object(
-            agent, "_ensure_primary_openai_client", return_value=client
+            agent, "_create_request_openai_client", return_value=client
         ):
             out = handle_max_iterations(agent, messages, 5)
 

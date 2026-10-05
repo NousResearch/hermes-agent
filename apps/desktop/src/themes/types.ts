@@ -98,6 +98,10 @@ export interface DesktopTheme {
   terminal?: DesktopTerminalPalette
   /** Dark-variant terminal ANSI palette. Falls back to `terminal`. */
   darkTerminal?: DesktopTerminalPalette
+  /** Raw CSS injected as a scoped <style> tag on theme apply.
+   *  Persists across updates because it lives in ~/.hermes/skins/,
+   *  not inside app.asar. */
+  customCSS?: string
 }
 
 // The minimal set of color keys a stored theme must carry to be usable. We keep

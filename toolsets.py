@@ -27,7 +27,6 @@ _HERMES_CORE_TOOLS = [
     "clarify",
     "execute_code", "delegate_task",
     "cronjob_manage",
-    "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     "kanban_show", "kanban_list",
     "kanban_complete", "kanban_block", "kanban_request_review",
     "kanban_request_changes",
@@ -42,7 +41,6 @@ _HERMES_CORE_TOOLS = [
 
 # Webhook payloads are untrusted third-party content: no file/system execution.
 _HERMES_WEBHOOK_SAFE_TOOLS = ["web_search", "web_extract", "vision_analyze", "clarify"]
-_HA_TOOLS = ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"]
 _FEISHU_TOOLS = [
     "feishu_doc_read", "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
     "feishu_drive_reply_comment", "feishu_drive_add_comment",
@@ -66,8 +64,12 @@ def _core_without(*excluded, kanban=True):
 
 
 # Coding posture: everything you reach for while pairing on code; drops messaging,
-# tts, image_gen, home-assistant, cron, kanban and computer-use.
-_CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manage", "computer_use", *_HA_TOOLS, kanban=False)
+# tts, image_gen, cron, kanban and computer-use.
+_CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manage", "computer_use", kanban=False)
+
+# Toolsets a CLIENT adds to its own sessions (tui_gateway/server.py::_gui_surface_toolsets), never
+# config: another surface lacking them made no configuration choice.
+CLIENT_SURFACE_TOOLSETS = frozenset({"project", "desktop_ui"})
 
 # Core toolset definitions: individual tools or references to other toolsets.
 TOOLSETS = {
@@ -149,13 +151,12 @@ TOOLSETS = {
     "setup": _ts(
         "Onboarding-only surface for the setup profile: catalog plugin/skill install "
         "requests through the approval card",
-        [],
+        ["manage_catalog"],
         role="setup",
     ),
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
     "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),
     "delegation": _ts("Spawn subagents with isolated context for complex subtasks", ["delegate_task"]),
-    "homeassistant": _ts("Home Assistant smart home control and monitoring", _HA_TOOLS),
     "kanban": _ts(
         "Kanban multi-agent coordination — only active when the agent is spawned by "
         "the kanban dispatcher (HERMES_KANBAN_TASK env set). The dispatcher runs "
@@ -220,7 +221,6 @@ TOOLSETS = {
     "hermes-slack": _bundle("Slack bot toolset - full access for workspace use (terminal has safety checks)"),
     "hermes-signal": _bundle("Signal bot toolset - encrypted messaging platform (full access)"),
     "hermes-bluebubbles": _bundle("BlueBubbles iMessage bot toolset - Apple iMessage via local BlueBubbles server"),
-    "hermes-homeassistant": _bundle("Home Assistant bot toolset - smart home event monitoring and control"),
     "hermes-email": _bundle("Email bot toolset - interact with Hermes via email (IMAP/SMTP)"),
     "hermes-mattermost": _bundle("Mattermost bot toolset - self-hosted team messaging (full access)"),
     "hermes-matrix": _bundle("Matrix bot toolset - decentralized encrypted messaging (full access)"),
@@ -243,13 +243,18 @@ TOOLSETS = {
         [],
         includes=[
             "hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack",
-            "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email",
+            "hermes-signal", "hermes-bluebubbles", "hermes-email",
             "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk",
             "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin",
             "hermes-qqbot", "hermes-webhook", "hermes-yuanbao",
         ],
     ),
 }
+
+# Captured before create_custom_toolset() can add user-named tools: shared metrics may export only
+# these names, so a plugin, MCP server or custom toolset name never leaves the machine.
+BUILTIN_TOOL_NAMES = frozenset(tool for spec in TOOLSETS.values() for tool in spec["tools"])
+BUILTIN_TOOLSET_NAMES = frozenset(TOOLSETS)
 
 
 def _registry():
@@ -297,7 +302,7 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
 
     if toolset:
         merged_tools = set(toolset.get("tools", [])) | set(registry.get_tool_names_for_toolset(name))
-        # An MCP server named like a built-in toolset ("homeassistant", "browser") registers a bare
+        # An MCP server named like a built-in toolset ("browser", "memory") registers a bare
         # alias to its `mcp-<name>` toolset; without this union the static entry shadows it and the
         # server's tools never reach the model even though discovery registered them.
         alias_target = registry.get_toolset_alias_target(name)
@@ -481,28 +486,3 @@ def get_toolset_info(name: str) -> Dict[str, Any]:
         "resolved_tools": resolved_tools, "tool_count": len(resolved_tools),
         "is_composite": bool(toolset["includes"]),
     }
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def resolve_multiple_toolsets(toolset_names: List[str]) -> List[str]:
-    """
-    Resolve multiple toolsets and combine their tools.
-
-    Args:
-        toolset_names (List[str]): List of toolset names to resolve
-
-    Returns:
-        List[str]: Combined list of all tool names (deduplicated)
-    """
-    all_tools = set()
-
-    for name in toolset_names:
-        tools = resolve_toolset(name)
-        all_tools.update(tools)
-
-    return sorted(all_tools)
-# ---- END PLUGIN-COMPAT ----

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const focusOpenSession = vi.fn()
+const frontMainIfSelected = vi.fn((storedSessionId: string) => false)
 const openSessionTile = vi.fn()
 const reuseBlankDraftTile = vi.fn()
 const setSessionTileWorkspaceScope = vi.fn()
@@ -18,6 +19,7 @@ vi.mock('@/store/session-states', () => ({
     !focused || (focused === 'main' && workspaceIsPage),
   focusedSessionWorkspaceScope: () => focusedSessionWorkspaceScope(),
   focusOpenSession: (...args: unknown[]) => focusOpenSession(...args),
+  frontMainIfSelected: (storedSessionId: string) => frontMainIfSelected(storedSessionId),
   openSessionTile: (...args: unknown[]) => openSessionTile(...args),
   reuseBlankDraftTile: (...args: unknown[]) => reuseBlankDraftTile(...args),
   setSessionTileWorkspaceScope: (...args: unknown[]) => setSessionTileWorkspaceScope(...args)
@@ -35,31 +37,7 @@ vi.mock('./routes', () => ({
 
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
-import { mainChatOccupied, openSession, openSessionFromPicker, openSessionIntentFromModifiers } from './open-session'
-
-/**
- * The question behind both the sidebar "+" and a palette open: is there a
- * conversation on main that must not be discarded? A create affordance stacks a
- * tab rather than replacing a chat that may still be mid-turn, and an open from
- * nowhere does the same.
- */
-describe('mainChatOccupied', () => {
-  it('is occupied once a conversation is on screen', () => {
-    expect(mainChatOccupied('runtime-a', 'stored-a')).toBe(true)
-  })
-
-  it('is occupied by a live runtime whose stored id has not landed yet', () => {
-    expect(mainChatOccupied('runtime-a', null)).toBe(true)
-  })
-
-  it('is occupied by a selected session still resuming into a runtime', () => {
-    expect(mainChatOccupied(null, 'stored-a')).toBe(true)
-  })
-
-  it('is free when nothing is open', () => {
-    expect(mainChatOccupied(null, null)).toBe(false)
-  })
-})
+import { openSession, openSessionFromPicker, openSessionIntentFromModifiers } from './open-session'
 
 describe('openSessionIntentFromModifiers', () => {
   it('defaults to in-place', () => {
@@ -92,6 +70,8 @@ describe('openSession', () => {
   beforeEach(() => {
     navigate.mockClear()
     focusOpenSession.mockReset()
+    frontMainIfSelected.mockClear()
+    frontMainIfSelected.mockReturnValue(false)
     openSessionTile.mockReset()
     openSessionInNewWindow.mockReset()
     canOpenSessionWindow.mockReturnValue(true)
@@ -129,6 +109,30 @@ describe('openSession', () => {
     focusOpenSession.mockReturnValue(null)
     openSession('s1', navigate)
     expect(navigate).toHaveBeenCalledWith('/c/s1')
+  })
+
+  it('in-place fronts main when a Bot-scoped open targets the chat main already holds', () => {
+    // #125899: the bot lost its tile (closing main promoted it into the
+    // workspace pane) and another bot's tab is active. focusOpenSession won't
+    // claim 'main' for a Bot scope, and the route already points at the chat
+    // so navigating changes nothing — only the explicit front makes the
+    // roster click visible.
+    const scope = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'bot:local::emp' }
+    $selectedStoredSessionId.set('s1')
+    focusOpenSession.mockReturnValue(null)
+    frontMainIfSelected.mockReturnValue(true)
+
+    openSession('s1', navigate, 'in-place', scope)
+
+    expect(navigate).toHaveBeenCalledWith('/c/s1')
+    expect(frontMainIfSelected).toHaveBeenCalledWith('s1')
+    expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
+  it('in-place skips the main front when focus already landed somewhere', () => {
+    focusOpenSession.mockReturnValue('tile')
+    openSession('s1', navigate)
+    expect(frontMainIfSelected).not.toHaveBeenCalled()
   })
 
   it('main routes to the workspace even when the session is already open as a tile', () => {

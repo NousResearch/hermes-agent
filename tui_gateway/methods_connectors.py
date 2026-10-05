@@ -372,8 +372,8 @@ def _(rid, params):
 def _apply_connection_answer(rid, answer, operation):
     from tools.connectors import live
     from tools.connectors.contract import SettleReason
-    from tools.connectors.mcp import apply_answer
     from tools.connectors.operation import IllegalTransition
+    from tools.connectors.run import apply_answer
     from tui_gateway.contracts.connectors import ConnectorErrorReason
 
     try:

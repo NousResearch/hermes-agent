@@ -43,12 +43,14 @@ def nesting_depth(stmts: list[ast.stmt], depth: int = 0) -> int:
         if isinstance(stmt, (*_FUNCS, ast.ClassDef)) or not isinstance(stmt, _BLOCKS):
             continue
         for index, block in enumerate(_child_blocks(stmt)):
-            # `elif` is an If alone in orelse: same visual depth as its `if`.
+            # `elif` is an If alone in orelse that starts at its `if`'s column (the `elif`
+            # keyword); `else:` + an indented `if` has the same AST but is nested.
             is_elif = (
                 isinstance(stmt, ast.If)
                 and index == 1
                 and len(block) == 1
                 and isinstance(block[0], ast.If)
+                and block[0].col_offset == stmt.col_offset
             )
             deepest = max(deepest, nesting_depth(block, depth if is_elif else depth + 1))
     return deepest

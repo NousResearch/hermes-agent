@@ -243,3 +243,39 @@ def test_recursive_rename_controls():
     # a closure's reference to the enclosing function is still a self-reference
     closure = "def {0}(n):\n    def helper():\n        return {0}(n - 1)\n    return helper()\n"
     assert _hash(closure.format("legacy")) == _hash(closure.format("renamed"))
+
+
+# --- nesting: `else:` + indented `if` is nesting; `elif` is not ---
+
+# `>` keeps the fixtures off HX011 (an if/elif ladder on one name).
+def _else_if(levels: int, inert: bool = False) -> str:
+    out, pad = ["def f(x):"], "    "
+    for k in range(levels):
+        if inert and k:
+            out.append(pad + "pass")
+        out += [f"{pad}if x > {k}:", f"{pad}    return {k}", f"{pad}else:"]
+        pad += "    "
+    out.append(pad + "return -1")
+    return "\n".join(out) + "\n"
+
+
+def _elif(levels: int) -> str:
+    arms = "".join(f"    {'if' if k == 0 else 'elif'} x > {k}:\n        return {k}\n" for k in range(levels))
+    return "def f(x):\n" + arms + "    else:\n        return -1\n"
+
+
+def _depth(src: str) -> int:
+    return nesting_depth(ast.parse(src).body[0].body)
+
+
+def test_nesting_counts_physically_nested_else_if():
+    assert _depth(_else_if(7)) == _depth(_else_if(7, inert=True)) == 7
+    assert _depth(_elif(7)) == 1
+    assert _depth(_else_if(6)) == 6
+
+
+def test_seven_physical_else_if_levels_block(tmp_path, capsys):
+    code, out = _judge(tmp_path / "nested", capsys, {}, {"pkg/n.py": _else_if(7)})
+    assert code == 1 and "NESTING" in out, out
+    code, out = _judge(tmp_path / "flat", capsys, {}, {"pkg/n.py": _elif(7)})
+    assert code == 0, out

@@ -5,6 +5,7 @@ from the ``/voice join`` copy, which never carries the per-event role grant, so 
 check refused every role-only speaker. The grant is recomputed for the current speaker against the
 guild's current member, never inherited from whoever ran ``/voice join``.
 """
+from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -25,7 +26,9 @@ _ROLE, _GUILD, _TEXT, _JOINER = 1234, 1, 700, 42
     ([], 0),        # the joiner holds the role, this speaker does not
     (None, 0),      # speaker no longer in the guild
 ])
-async def test_role_member_speech_passes_the_gateway_gate(monkeypatch, speaker_roles, dispatched):
+async def test_role_member_speech_passes_the_gateway_gate(
+    monkeypatch: pytest.MonkeyPatch, speaker_roles: list[int] | None, dispatched: int,
+) -> None:
     for var in ("DISCORD_ALLOWED_USERS", "DISCORD_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
                 "GATEWAY_ALLOW_ALL_USERS"):
         monkeypatch.delenv(var, raising=False)

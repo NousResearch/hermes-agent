@@ -270,7 +270,9 @@ async def test_native_event_carries_this_actors_role_grant(adapter, builder, act
     if builder == "slash":
         dispatched.append(adapter._build_slash_event(interaction, "/reset"))
     else:
-        await adapter._dispatch_thread_session(interaction, "555", "topic", "hello")
+        thread = SimpleNamespace(id=555, name="topic", guild=interaction.guild, topic=None,
+                                 parent=SimpleNamespace(id=100, name="general", guild=interaction.guild))
+        await adapter._dispatch_thread_session(interaction, thread, "hello")
 
     assert [_gateway_authorizes(event.source) for event in dispatched] == [gateway_admits]
 

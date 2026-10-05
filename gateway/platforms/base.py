@@ -1985,6 +1985,9 @@ class BasePlatformAdapter(ABC):
         self._detached_fatal_tasks: set = set()
         # Lock takeover armed only for the initial connect of ``gateway run --replace``.
         self._platform_lock_takeover_allowed = self._platform_lock_takeover_attempted = False
+        # Last lock conflict was with THIS home's holder (our own restart predecessor, #131875);
+        # stamped by _acquire_platform_lock, read by the startup router.
+        self._platform_lock_conflict_own_home = False
         # Per-session interrupt Event + owner Task: without the owner map an old task's finally
         # could drop a newer guard.
         self._active_sessions: Dict[str, asyncio.Event] = {}
@@ -2257,8 +2260,10 @@ class BasePlatformAdapter(ABC):
         holder is replaced only when the runner armed this adapter for its initial
         ``--replace`` connect (the status module validates ownership and terminates)."""
         from gateway.status import (
-            acquire_scoped_lock, scoped_lock_owner_label, take_over_scoped_lock_holder)
+            acquire_scoped_lock, scoped_lock_owner_label, scoped_lock_record_is_own_home,
+            take_over_scoped_lock_holder)
         self._platform_lock_scope, self._platform_lock_identity = scope, identity
+        self._platform_lock_conflict_own_home = False
         lock_meta = {"platform": self.platform.value}
         acquired, existing = acquire_scoped_lock(scope, identity, metadata=lock_meta)
         if acquired:
@@ -2287,6 +2292,9 @@ class BasePlatformAdapter(ABC):
                   if owner_profile else " Stop the other gateway first.")
         message = f"{resource_desc} already in use{holder}.{remedy}"
         logger.error('[%s] %s', self.name, message)
+        # Whether the losing record is OUR OWN predecessor (restart race) decides the startup
+        # router: retryable takeover when it is, fatal exit-78 parking when it is foreign.
+        self._platform_lock_conflict_own_home = scoped_lock_record_is_own_home(existing)
         self._set_fatal_error(f'{scope}_lock', message, retryable=True)
         return False
 
@@ -2304,6 +2312,9 @@ class BasePlatformAdapter(ABC):
     # subclasses that skip ``super().__init__`` still re-wire safely).
     _plugin_handler_native: Any = None
     _plugin_handlers_wired: Optional[set] = None
+    # Class default for the same reason: adapters built via object.__new__ in tests must read as
+    # "no own-home conflict record" until _acquire_platform_lock stamps one.
+    _platform_lock_conflict_own_home: bool = False
 
     def _wire_plugin_handlers(self, native: Any = None) -> None:
         """Invoke plugin-registered native handler factories (``ctx.register_platform_handler``)

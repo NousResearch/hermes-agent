@@ -1038,3 +1038,25 @@ class TestRuntimeAlibabaRegionalAndTokenPlan:
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "atp-key"
         assert result["base_url"] == "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+
+
+class TestOpencodeRetiredAuxModelDrains:
+    """#133181: retired relay ids must not surface as aux defaults from either source."""
+
+    def test_opencode_aux_defaults_empty_and_dict_has_no_stale_mirror(self):
+        import model_tools  # noqa: F401  -- triggers plugin discovery
+        from providers import get_provider_profile
+        from agent.auxiliary_client import (
+            _API_KEY_PROVIDER_AUX_MODELS_FALLBACK,
+            _get_aux_model_for_provider,
+        )
+
+        for pid in ("opencode-zen", "opencode-go"):
+            profile = get_provider_profile(pid)
+            assert profile is not None, f"{pid} profile must be registered"
+            # The hardcoded ids (gemini-3-flash / glm-5) are retired on the relays, so the
+            # profile must ship an empty default and let aux tasks inherit the main model.
+            assert profile.default_aux_model == ""
+            # The legacy dict is read after the profile, so it must not resurrect the id.
+            assert pid not in _API_KEY_PROVIDER_AUX_MODELS_FALLBACK
+            assert _get_aux_model_for_provider(pid) == ""

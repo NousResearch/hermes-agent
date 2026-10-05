@@ -1704,6 +1704,12 @@ try {
         $manualAction = $finalCode -eq 0 -and $script:ManualFollowup
         Write-Result ($finalCode -eq 0) $finalCode $finalMsg $manualAction
         Invoke-MarkerRelease
+        # The R6 wait can last hours, and the Desktop drops a non-manual result
+        # whose finished_at is 30 minutes old: publish it again with the real
+        # finish time (unless something already consumed it).
+        if ($script:MarkerReleaseWaited -and [System.IO.File]::Exists($ResultPath)) {
+            Write-Result ($finalCode -eq 0) $finalCode $finalMsg $manualAction
+        }
         if ($finalCode -ne 0) {
             Show-ErrorFinale $finalMsg
             Close-ProgressWindow

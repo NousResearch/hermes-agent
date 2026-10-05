@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 
 import pytest
@@ -121,6 +122,35 @@ def test_a_result_that_cannot_be_published_leaves_no_tmp_file(tmp_path: Path) ->
     assert code == 0, out
     assert result is None
     assert not list(home.glob('.hermes-update-result.json.*.tmp')), list(home.iterdir())
+
+
+_TIMED_CHECKOUT_HOLDER = """
+import msvcrt, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT | os.O_BINARY, 0o644)
+os.lseek(fd, 1 << 20, os.SEEK_SET)
+msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)   # hermes_cli/update_lock.py::_try_lock's byte
+time.sleep(float(sys.argv[2]))
+"""
+
+
+@pytest.mark.platforms('windows')
+def test_result_finished_at_is_stamped_after_the_r6_release_wait(tmp_path: Path) -> None:
+    # The relaunched Desktop drops a non-manual result whose finished_at is 30 minutes old; the
+    # R6 wait lasts up to 2 h. The result must carry the time the hand-off actually finished.
+    holders = []
+
+    def hold_checkout(_home: Path, install: Path) -> None:
+        holders.append((subprocess.Popen([sys.executable, '-c', _TIMED_CHECKOUT_HOLDER,
+                                          str(install / '.hermes-update.lock'), '25']), time.time() + 25))
+    try:
+        code, out, _, result, home = _handoff(tmp_path, '-NoGateway', prepare=hold_checkout)
+    finally:
+        for proc, _ in holders:
+            proc.kill(); proc.wait()
+    assert code == 0, out
+    log = (home / 'logs/desktop-update-handoff.log').read_text(encoding='utf-8-sig')
+    assert 'keeping the update marker' in log, log
+    assert result['ok'] is True and result['finished_at'] >= int(holders[0][1]) - 1, result
 
 
 @pytest.mark.platforms('windows')

@@ -225,6 +225,7 @@ function Invoke-MarkerRelease {
     $waited = 0
     while (Test-CheckoutLockHeld) {
         if ($waited -eq 0) { Write-HandoffLog "a process still holds the checkout update lock; keeping the update marker until it exits" }
+        $script:MarkerReleaseWaited = $true
         if ($waited -ge $script:MarkerReleaseWaitSeconds) {
             Write-HandoffLog "checkout update lock still held after $($waited)s; leaving the update marker"
             return

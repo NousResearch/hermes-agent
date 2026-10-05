@@ -138,6 +138,7 @@ marker_release() { # A7 rule 5, under the lock. Never while a survivor of the
   [ "$MARKER_CLAIMED" -eq 1 ] && [ "$NO_MARKER_CLEANUP" -eq 0 ] || { marker_refresher_stop; return 0; }
   while checkout_lock_held; do
     [ "$waited" -gt 0 ] || log "a process still holds the checkout update lock; keeping the update marker until it exits"
+    RELEASE_WAITED=1
     if [ "$waited" -ge "$RELEASE_WAIT_S" ]; then
       log "WARNING: checkout update lock still held after ${waited}s; leaving the update marker"
       marker_refresher_stop
@@ -150,6 +151,7 @@ marker_release() { # A7 rule 5, under the lock. Never while a survivor of the
   MARKER_CLAIMED=0
 }
 RELEASE_WAIT_S=7200
+RELEASE_WAITED=0  # the R6 wait ran: the result written before it carries a stale finished_at
 
 # An older packaged Desktop judges a marker by line 2 alone and deletes it 20
 # minutes in, live owner or not. From the claim until the release is decided
@@ -664,6 +666,10 @@ finish() {
   write_result
 
   marker_release
+  # The R6 wait can last hours, and the Desktop drops a non-manual result whose
+  # finished_at is 30 minutes old: publish it again with the real finish time
+  # (unless something already consumed it).
+  if [ "$RELEASE_WAITED" -eq 1 ] && [ -f "$RESULT" ]; then write_result; fi
 
   if [ "$FINAL_CODE" -ne 0 ]; then
     publish "error" "$FINAL_MSG"; stop_ui leave-window

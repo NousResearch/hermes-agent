@@ -340,6 +340,31 @@ def test_release_waits_for_the_survivor_then_removes_the_marker(tmp_path):
     assert not (home / ".hermes-update-in-progress").exists()
 
 
+def test_result_finished_at_is_stamped_after_the_r6_release_wait(tmp_path):
+    """The relaunched Desktop has no expected run id and drops a non-manual result whose
+    finished_at is 30 minutes old. The R6 wait lasts up to 2 h, so a result stamped before it
+    went stale unread: finished_at must be the time the hand-off actually finished."""
+    home, install = _install(tmp_path, legacy=True)
+    completion = tmp_path / "release-completion"
+    env = _env(tmp_path, home, HANDOFF_COMPLETION=str(completion), HANDOFF_CHECKOUT_LOCK=str(install / ".hermes-update.lock"))
+    script = subprocess.Popen(["bash", str(POSIX), "--daemonized", "--no-ui", "--install-root", str(install)], env=env, cwd=tmp_path,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    log = home / "logs" / "desktop-update-handoff.log"
+    try:
+        deadline = time.monotonic() + 60
+        while "keeping the update marker" not in (log.read_text(encoding="utf-8-sig") if log.exists() else ""):
+            assert time.monotonic() < deadline and script.poll() is None
+            time.sleep(0.05)
+        time.sleep(3.0)
+        released = int(time.time())
+    finally:
+        completion.touch()
+    assert script.wait(timeout=30) == 0
+    result = json.loads((home / ".hermes-update-result.json").read_text(encoding="utf-8-sig"))
+    assert result["ok"] is True and result["finished_at"] >= released, (result, released)
+    assert not list(home.glob(".hermes-update-result.json.*.tmp"))
+
+
 def test_line_two_stays_young_through_the_r6_release_wait(tmp_path):
     """An old packaged Desktop deletes a marker whose line 2 is 20 minutes old, live owner or
     not. The release wait can last hours, so the refresher must outlive `hermes update`."""

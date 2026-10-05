@@ -919,7 +919,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
         return None
     with _abort_on_error("Could not prepare Windows gateway pause for update"):
         from gateway.status import get_process_start_time, terminate_pid
-        from hermes_cli.gateway import _capture_gateway_argv
+        from hermes_cli.gateway import _capture_gateway_argv, _restart_argv_is_host_gateway
     profile_processes, service_gateways, service_gateway_pids, running_pids = _discover_windows_gateways()
     if not running_pids:
         token = _windows_cold_start_plan()
@@ -938,11 +938,16 @@ def _pause_windows_gateways_for_update() -> dict | None:
     unmapped_pids = [pid for pid in running_pids if pid not in profile_processes and pid not in service_gateway_pids]
     # Snapshot unmapped gateways' argv *before* force-killing so resume can replay it.
     # Unmapped = no profile->PID-file mapping (e.g. Scheduled Task ``pythonw.exe -m ...``).
-    unmapped = [
-        {"pid": int(pid), "argv": _try_call(lambda p=int(pid): _capture_gateway_argv(p),
-                                            "Could not capture argv for unmapped gateway %s: %s", int(pid))}
-        for pid in unmapped_pids
-    ]
+    # Settle host identity now too: a selector-less host argv is only recognisable while its
+    # rendezvous record is live, and the replay runs after the kill. Without it the relaunch
+    # followed the sticky ``active_profile`` and the host stayed down (#132645).
+    unmapped = []
+    for pid in unmapped_pids:
+        argv = _try_call(lambda p=int(pid): _capture_gateway_argv(p),
+                         "Could not capture argv for unmapped gateway %s: %s", int(pid))
+        host = _try_call(lambda a=argv: _restart_argv_is_host_gateway(list(a)),
+                         "Could not classify unmapped gateway %s: %s", int(pid)) if argv else None
+        unmapped.append({"pid": int(pid), "argv": argv, "host": host})
     # Tree-kill survivors, unmapped gateways, and pre-drain launchers; a launcher
     # already gone with its worker raises ProcessLookupError and is skipped.
     force_killed = []
@@ -1216,7 +1221,10 @@ def _relaunch_paused_gateways(token: dict, profiles: dict, unmapped: list) -> tu
     failed_unmapped = []
     for entry in unmapped:
         argv, old_pid = entry.get("argv"), entry.get("pid")
-        if argv and old_pid and _try_call(lambda o=old_pid, a=argv: launch_detached_gateway_restart_by_cmdline(int(o), list(a)),
+        # The identity settled at pause time, while the gateway was live; None (absent / older token)
+        # falls back to inferring it at spawn.
+        host = entry.get("host") if isinstance(entry.get("host"), bool) else None
+        if argv and old_pid and _try_call(lambda o=old_pid, a=argv, h=host: launch_detached_gateway_restart_by_cmdline(int(o), list(a), host=h),
                                           "Could not restart unmapped Windows gateway (pid %s) after update: %s", old_pid):
             unmapped_relaunched += 1
         else:

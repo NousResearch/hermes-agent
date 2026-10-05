@@ -977,9 +977,14 @@ def _prepare_profile_gateway_update_restart(profile: str, pid: int) -> str | Non
     return None
 
 
-def launch_detached_gateway_restart_by_cmdline(old_pid: int, run_argv: list[str]) -> bool:
-    """Relaunch a gateway with no profile→PID-file mapping by replaying its captured argv after exit."""
-    return old_pid > 0 and bool(run_argv) and _spawn_gateway_restart_watcher(old_pid, list(run_argv))
+def launch_detached_gateway_restart_by_cmdline(old_pid: int, run_argv: list[str], *, host: bool | None = None) -> bool:
+    """Relaunch a gateway with no profile→PID-file mapping by replaying its captured argv after exit.
+
+    ``host`` is the identity the caller settled while the gateway was still live. Pass it whenever the
+    replay happens after the process is gone: by then the live evidence ``_restart_argv_is_host_gateway``
+    reads (the published rendezvous record) has died with it, and ``None`` re-infers from what is left.
+    """
+    return old_pid > 0 and bool(run_argv) and _spawn_gateway_restart_watcher(old_pid, list(run_argv), host=host)
 
 
 def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
@@ -1009,9 +1014,14 @@ def _restart_argv_is_host_gateway(argv: list[str]) -> bool:
     1. this process's own settled multiplex verdict (``is_multiplex_active`` — set by
        boot after ``resolve_multiplex_mode``; the gateway replaying its own restart);
     2. the live host gateway's published rendezvous record (proof the RUNNING owner
-       settled multiplex — the update/fleet process replaying a foreign gateway's
-       captured argv has no settled flag of its own);
+       settled what it serves — the update/fleet process replaying a foreign gateway's
+       captured argv has no settled flag of its own): a multiplex roster, or exactly
+       the default profile (a single-profile host is still the host);
     3. only then the compatibility default-root comparison.
+
+    Steps 2-3 only hold while the gateway is alive or the caller sits on the default
+    root, so callers that replay after the process is gone settle this before stopping
+    it and pass ``host=`` explicitly.
     """
     if not argv or "gateway" not in argv:
         return False
@@ -1036,8 +1046,10 @@ def _restart_argv_is_host_gateway(argv: list[str]) -> bool:
     try:
         from gateway import host_rendezvous as hr
         record = hr.read_record(hr.ROLE_GATEWAY)
-        if record is not None and hr.liveness_is_proven(record) and len(record.profiles) > 1:
-            return True
+        if record is not None and hr.liveness_is_proven(record):
+            served = tuple(record.profiles)
+            if len(served) > 1 or served == ("default",):
+                return True
     except Exception:
         pass
     try:

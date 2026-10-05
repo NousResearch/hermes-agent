@@ -92,6 +92,61 @@ function reclaimDeadRepairLock(repairPath: string, emptyPolls: number): boolean 
   return false
 }
 
+/** Count consecutive empty-lock polls, then reclaim a dead lock or back off. */
+function waitOnContendedRepairLock(repairPath: string, emptyPolls: number): number {
+  let polls: number
+
+  try {
+    polls = fs.statSync(repairPath).size === 0 ? emptyPolls + 1 : 0
+  } catch {
+    polls = 0
+  }
+
+  if (!reclaimDeadRepairLock(repairPath, polls)) {
+    waitForRepair()
+  }
+
+  return polls
+}
+
+/** Replace a corrupt/unreadable ID file (never following another user's file) with a fresh ID. */
+function replaceInstallationIdFile(filePath: string, installationId: string): void {
+  try {
+    const stat = fs.lstatSync(filePath)
+
+    if (!stat.isFile() && !stat.isSymbolicLink()) {
+      throw new Error('Desktop installation ID path is not a regular file.')
+    }
+
+    if (!stat.isSymbolicLink() && typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
+      throw new Error('Desktop installation ID is owned by another user.')
+    }
+
+    fs.unlinkSync(filePath)
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') {
+      throw error
+    }
+  }
+
+  fs.writeFileSync(filePath, JSON.stringify({ installationId }), { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+}
+
+function releaseRepairLock(repairFd: number | undefined, repairPath: string, ownedBody: Buffer | null): void {
+  if (repairFd !== undefined) {
+    fs.closeSync(repairFd)
+  }
+
+  try {
+    // Compare-and-delete: never unlink a lock a reclaimer handed to someone else.
+    if (ownedBody && fs.readFileSync(repairPath).equals(ownedBody)) {
+      fs.unlinkSync(repairPath)
+    }
+  } catch {
+    void 0
+  }
+}
+
 function loadOrCreateInstallationId(filePath, randomUUID = crypto.randomUUID) {
   const existing = readInstallationId(filePath)
 
@@ -127,15 +182,7 @@ function loadOrCreateInstallationId(filePath, randomUUID = crypto.randomUUID) {
         return winner
       }
 
-      try {
-        emptyPolls = fs.statSync(repairPath).size === 0 ? emptyPolls + 1 : 0
-      } catch {
-        emptyPolls = 0
-      }
-
-      if (!reclaimDeadRepairLock(repairPath, emptyPolls)) {
-        waitForRepair()
-      }
+      emptyPolls = waitOnContendedRepairLock(repairPath, emptyPolls)
 
       continue
     }
@@ -150,40 +197,11 @@ function loadOrCreateInstallationId(filePath, randomUUID = crypto.randomUUID) {
         return winner
       }
 
-      try {
-        const stat = fs.lstatSync(filePath)
-
-        if (!stat.isFile() && !stat.isSymbolicLink()) {
-          throw new Error('Desktop installation ID path is not a regular file.')
-        }
-
-        if (!stat.isSymbolicLink() && typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
-          throw new Error('Desktop installation ID is owned by another user.')
-        }
-
-        fs.unlinkSync(filePath)
-      } catch (error: any) {
-        if (error?.code !== 'ENOENT') {
-          throw error
-        }
-      }
-
-      fs.writeFileSync(filePath, JSON.stringify({ installationId }), { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+      replaceInstallationIdFile(filePath, installationId)
 
       return installationId
     } finally {
-      if (repairFd !== undefined) {
-        fs.closeSync(repairFd)
-      }
-
-      try {
-        // Compare-and-delete: never unlink a lock a reclaimer handed to someone else.
-        if (ownedBody && fs.readFileSync(repairPath).equals(ownedBody)) {
-          fs.unlinkSync(repairPath)
-        }
-      } catch {
-        void 0
-      }
+      releaseRepairLock(repairFd, repairPath, ownedBody)
     }
   }
 

@@ -270,7 +270,7 @@ def test_adopt_withdraw_and_taken_need_an_exact_identity(tmp_path, procs, blind_
     assert marker.exists() is blind_ct
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root unlinks inside a read-only directory")
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root unlinks inside a read-only directory")
 def test_reclaim_reports_busy_when_the_dead_marker_cannot_be_removed(tmp_path):
     """marker-claim.ps1 answers `busy` when Remove-MarkerLocked fails; posix printed `reclaimed`
     after an `rm -f` that could not unlink, so the Desktop went on as if the marker were gone."""

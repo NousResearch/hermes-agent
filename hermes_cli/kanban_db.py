@@ -3617,10 +3617,19 @@ def complete_task(
             # requirement while the txn validates A's would otherwise let the
             # cleanup delete A's artifact. Roll back with the divergence
             # mechanism so the card is NOT closed with a lost requirement.
-            _scratch_uncovered = [
-                req for req in _required_scratch
-                if str(req).strip() not in _covered_scratch
-            ]
+            _scratch_uncovered = []
+            for req in _required_scratch:
+                # Compare on the RESOLVED form: the requirement keeps its
+                # declared spelling (for lexical classification) while the
+                # staging records the resolved source it copied — resolving both
+                # sides makes the coverage check correct across symlinked
+                # workspaces (round-4 re-review).
+                try:
+                    req_key = str(Path(str(req).strip()).expanduser().resolve())
+                except OSError:
+                    req_key = str(req).strip()
+                if req_key not in _covered_scratch:
+                    _scratch_uncovered.append(req)
             if _scratch_uncovered:
                 raise _ContractSwappedInTxn(
                     {
@@ -4722,7 +4731,13 @@ def _merge_contract_artifacts_into_metadata(
     if not is_managed_ws:
         return
     artifacts = metadata.get("artifacts")
-    if not isinstance(artifacts, list):
+    if isinstance(artifacts, tuple):
+        # Round 4 (re-review HIGH): a caller/tool may pass a TUPLE of paths;
+        # normalising to [] silently dropped every element and the staging then
+        # skipped the copy. Preserve the elements (list and tuple alike).
+        artifacts = list(artifacts)
+        metadata["artifacts"] = artifacts
+    elif not isinstance(artifacts, list):
         artifacts = []
         metadata["artifacts"] = artifacts
     for item in raw:

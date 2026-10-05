@@ -243,7 +243,14 @@ def required_scratch_artifacts(
         except OSError:
             continue
         if resolved.is_relative_to(workspace_root):
-            out.append(str(resolved))
+            # Round 4 (re-review MEDIUM): return the ORIGINAL declared spelling,
+            # not the resolved path. Downstream classification
+            # (``_is_managed_scratch_path``) is deliberately LEXICAL, so a
+            # requirement declared through a symlinked workspace must keep its
+            # original form or it stops being recognised as managed and the
+            # completion is wrongly refused. The resolved path is only the
+            # containment test above.
+            out.append(item)
     return out
 
 

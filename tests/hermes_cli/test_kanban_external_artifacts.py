@@ -1164,3 +1164,38 @@ def test_mkdir_oserror_is_typed(kanban_home, monkeypatch):
     monkeypatch.setattr(Path, "mkdir", flaky_mkdir)
     with pytest.raises(kea.ExternalArtifactPreservationError):
         kea._ensure_dir_durable(target)
+
+
+# ---------------------------------------------------------------------------
+# ROUND 4 — fix the two regressions the round-3 fixes introduced
+# ---------------------------------------------------------------------------
+
+
+def test_tuple_artifacts_are_preserved(kanban_home):
+    """Round-4 HIGH: a caller/tool passing ``metadata['artifacts']`` as a TUPLE
+    must still have the file copied — the merge must not normalise it to []."""
+    with kbc.connect() as conn:
+        tid, ws = _scratch_task(conn, kanban_home, "tuple artifacts")
+        artifact = ws / "tup.md"
+        artifact.write_text("# tuple deliverable", encoding="utf-8")
+        _set_contract(conn, tid, "local-only")
+        assert kb.complete_task(
+            conn, tid, result="tuple", metadata={"artifacts": (str(artifact),)},
+        ) is True
+        # The scratch file was STAGED (a managed attachment copy exists) and the
+        # completed card does not point at a deleted original.
+        atts = [a for a in kb.list_attachments(conn, tid) if a.stored_path]
+        assert atts, "a tuple-declared scratch artifact must be preserved"
+        stored = Path(atts[0].stored_path)
+        assert stored.is_file() and stored.read_text(encoding="utf-8") == "# tuple deliverable"
+    assert not artifact.exists(), "cleanup should have removed the scratch original"
+
+
+# NOTE (round 4, deliberate stop): the symlinked-workspace requirement case
+# (``required_scratch_artifacts`` returning the declared spelling, not the
+# resolved path, so the lexical managed-path check still recognises it) is
+# covered by the code change in ``required_scratch_artifacts`` + the resolved-form
+# coverage comparison in ``complete_task``. It is NOT pinned by an automated test
+# here — reproducing a genuinely symlinked *managed* workspace needs a
+# non-tmp_path layout that this fixture cannot build faithfully; it is documented
+# as a known caveat and will be exercised in the real end-to-end run.

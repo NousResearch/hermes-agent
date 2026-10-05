@@ -2006,8 +2006,14 @@ export function ChatSidebar({
               />
             )}
 
+            {/* Messaging platform sections are global, not project-owned: a
+                Telegram thread belongs to no repo, and recents excludes its
+                source by design (MESSAGING_SESSION_SOURCE_IDS). Gating this on
+                `!worktreeGroupingActive` therefore hid the thread ENTIRELY the
+                moment the sidebar grouped by project — it was in neither the
+                project tree nor its platform section. Keep it reachable in
+                every view (#90579). */}
             {!trimmedQuery &&
-              !worktreeGroupingActive &&
               messagingGroups.map(group => {
                 const visible = messagingVisible[group.sourceId] ?? NON_SESSION_INITIAL_ROWS
                 const shownSessions = group.sessions.slice(0, visible)

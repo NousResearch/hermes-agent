@@ -53,12 +53,18 @@ def _prune_stale_markers(now: Optional[float] = None) -> None:
 
 
 def request_cancel(execution_id: str, *, reason: Optional[str] = None) -> Path:
-    """Record a cancel for one execution. Idempotent: the marker holds the first reason."""
+    """Record a cancel for one execution. Idempotent: the marker holds the first reason.
+
+    A second request for the same execution keeps the reason already on disk, because the run
+    may have read it into its report before the later request lands. The first ask is the one
+    that describes why the operator acted.
+    """
     path = _marker_path(execution_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".cancel.tmp")
-    tmp.write_text((reason or _DEFAULT_REASON).strip(), encoding="utf-8")
-    os.replace(tmp, path)
+    if not path.exists():
+        tmp = path.with_suffix(".cancel.tmp")
+        tmp.write_text((reason or _DEFAULT_REASON).strip(), encoding="utf-8")
+        os.replace(tmp, path)
     _prune_stale_markers()
     return path
 

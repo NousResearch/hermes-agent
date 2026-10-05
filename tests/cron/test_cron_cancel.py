@@ -95,6 +95,8 @@ def test_operator_cancel_is_not_treated_as_claim_loss():
 @pytest.mark.live_system_guard_bypass
 def test_cancelling_a_script_job_kills_it_and_names_the_reason(tmp_path, monkeypatch):
     import os
+    import sys
+    from pathlib import Path
 
     import psutil
     from cron import scheduler, scheduler_script
@@ -103,6 +105,21 @@ def test_cancelling_a_script_job_kills_it_and_names_the_reason(tmp_path, monkeyp
     # Script paths resolve under the firing profile's home; point it at the scratch dir.
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(scheduler_script, "_get_script_timeout", lambda: 60)
+    # Spawn through a scratch dependency environment: the store interpreter resolves under the
+    # real Hermes home, which the home-I/O guard refuses. Pinned the same way
+    # tests/cron/test_cron_script.py pins this seam — what is under test is the marker and the
+    # kill, not interpreter selection.
+    venv = tmp_path / "venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").symlink_to(sys.executable)
+    monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda repo: Path(sys.executable))
+    monkeypatch.setattr("pm.environments.selected_venv", lambda repo: venv)
+    # Spawning sanitizes PATH, which resolves the real install's bin dir; the guard refuses that
+    # read. The bin dir is irrelevant to the kill, and None is the documented "no install" answer.
+    from tools.environments import local as local_env
+
+    monkeypatch.setattr(local_env, "_resolve_hermes_bin_dir", lambda: None)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     ready = tmp_path / "script.pid"
@@ -143,6 +160,32 @@ def test_cancelling_a_script_job_kills_it_and_names_the_reason(tmp_path, monkeyp
             if _alive(pid):
                 os.kill(pid, 9)
         thread.join(timeout=20)
+
+
+def test_a_second_request_keeps_the_reason_the_run_already_reported():
+    from cron.cancellation import CancelRequest, request_cancel
+
+    request_cancel("exec-reason", reason="operator asked")
+
+    request_cancel("exec-reason", reason="second ask")
+    request_cancel("exec-reason")
+
+    # The docstring promises the first reason wins; the run may already have reported it.
+    assert CancelRequest("exec-reason").reason == "operator asked"
+
+
+def test_a_second_request_still_prunes_stale_markers(monkeypatch):
+    from cron import cancellation
+    from cron.cancellation import request_cancel
+
+    pruned: list = []
+    monkeypatch.setattr(cancellation, "_prune_stale_markers", lambda now=None: pruned.append(now))
+
+    request_cancel("exec-pruned", reason="first")
+    request_cancel("exec-pruned", reason="second")
+
+    # An idempotent write must not skip the sweep that rides along with it.
+    assert len(pruned) == 2
 
 
 def _alive(pid: int) -> bool:

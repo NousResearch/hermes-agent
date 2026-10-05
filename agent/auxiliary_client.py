@@ -33,6 +33,7 @@ from agent.error_classifier import (
 )
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import remember_structured_output_rejection
+from agent.auxiliary_model_scope import _accepts_model_scope, _call_scoped_or_unscoped, _select_pool_entry
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
@@ -1026,47 +1027,6 @@ def _load_pool_with_credentials(provider: str, note: str = "") -> Optional[Any]:
         logger.debug("Auxiliary client: could not load pool for %s%s: %s", provider, note, exc)
         return None
     return pool if pool and pool.has_credentials() else None
-
-
-def _accepts_model_scope(fn: Any) -> bool:
-    """Whether ``fn`` accepts a ``model`` keyword (or swallows ``**kwargs``).
-
-    Unknown signatures (C builtins without introspectable parameters) count as
-    accepting: attempt the scoped call and let genuine errors surface.
-    """
-    try:
-        params = inspect.signature(fn).parameters.values()
-    except (TypeError, ValueError):
-        return True
-    return any(p.kind == inspect.Parameter.VAR_KEYWORD or p.name == "model" for p in params)
-
-
-def _call_scoped_or_unscoped(fn: Any, *args: Any, model: Optional[str] = None, **kwargs: Any) -> Any:
-    """Call ``fn`` scoped by ``model`` when its signature allows it.
-
-    Legacy callees without a ``model`` parameter fall back to an unscoped call
-    with a warning. Any other ``TypeError`` is a real bug: it propagates to the
-    caller's outer handler (logged, no credential) instead of silently
-    downgrading to the credential the scoped path refused (#130053).
-    """
-    if _accepts_model_scope(fn):
-        return fn(*args, model=model, **kwargs)
-    if model is not None:
-        logger.warning("Auxiliary client: %s does not accept a model scope; falling back unscoped",
-                       getattr(fn, "__qualname__", repr(fn)))
-    return fn(*args, **kwargs)
-
-
-def _select_pool_entry(provider: str, model: Optional[str] = None) -> Tuple[bool, Optional[Any]]:
-    """Return (pool_exists_for_provider, selected_entry)."""
-    pool = _load_pool_with_credentials(provider)
-    if pool is None:
-        return False, None
-    try:
-        return True, _call_scoped_or_unscoped(pool.select, model=model)
-    except Exception as exc:
-        logger.debug("Auxiliary client: could not select pool entry for %s: %s", provider, exc)
-        return True, None
 
 
 def _peek_pool_entry(provider: str, pool: Any = None) -> Optional[Any]:

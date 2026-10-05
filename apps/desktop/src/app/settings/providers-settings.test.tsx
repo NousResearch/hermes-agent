@@ -393,6 +393,98 @@ describe('ProvidersSettings', () => {
     expect(state.current!.rowProps.revealed[varKey]).toBeUndefined()
   })
 
+  it('drops a late revealed secret after the credential profile changes', async () => {
+    const varKey = 'WIDGET_API_KEY'
+    let resolveReveal!: (value: { value: string }) => void
+    revealEnvVar.mockImplementation(
+      () =>
+        new Promise<{ value: string }>(resolve => {
+          resolveReveal = resolve
+        })
+    )
+    getEnvVars.mockResolvedValue({
+      [varKey]: keyVar({ is_set: true, redacted_value: '••••••••' })
+    })
+
+    const { useEnvCredentials } = await import('./env-credentials')
+    const state = { current: null as null | ReturnType<typeof useEnvCredentials> }
+
+    function Harness({ profile }: { profile: string }) {
+      state.current = useEnvCredentials(profile)
+
+      return null
+    }
+
+    const view = render(<Harness profile="profile-a" />)
+    await waitFor(() => expect(state.current?.vars).not.toBeNull())
+
+    act(() => {
+      state.current!.rowProps.onReveal(varKey)
+    })
+    expect(revealEnvVar).toHaveBeenCalledWith(varKey, 'profile-a')
+
+    view.rerender(<Harness profile="profile-b" />)
+    await waitFor(() => expect(getEnvVars).toHaveBeenLastCalledWith('profile-b'))
+
+    await act(async () => {
+      resolveReveal({ value: 'profile-a-secret' })
+      await Promise.resolve()
+    })
+
+    expect(state.current!.rowProps.revealed[varKey]).toBeUndefined()
+  })
+
+  it('does not patch the new profile with a late save result from the old profile', async () => {
+    const varKey = 'WIDGET_API_KEY'
+    let resolveSave!: (value: { ok: boolean }) => void
+    setEnvVar.mockImplementation(
+      () =>
+        new Promise<{ ok: boolean }>(resolve => {
+          resolveSave = resolve
+        })
+    )
+    getEnvVars.mockImplementation(async (profile?: string) => ({
+      [varKey]: keyVar({
+        is_set: profile === 'profile-a',
+        redacted_value: profile === 'profile-a' ? 'old-a' : null
+      })
+    }))
+
+    const { useEnvCredentials } = await import('./env-credentials')
+    const state = { current: null as null | ReturnType<typeof useEnvCredentials> }
+
+    function Harness({ profile }: { profile: string }) {
+      state.current = useEnvCredentials(profile)
+
+      return null
+    }
+
+    const view = render(<Harness profile="profile-a" />)
+    await waitFor(() => expect(state.current?.vars?.[varKey]?.is_set).toBe(true))
+
+    act(() => {
+      state.current!.rowProps.setEdits(current => ({ ...current, [varKey]: 'new-a-secret' }))
+    })
+    await waitFor(() => expect(state.current!.rowProps.edits[varKey]).toBe('new-a-secret'))
+
+    act(() => {
+      state.current!.rowProps.onSave(varKey)
+    })
+    expect(setEnvVar).toHaveBeenCalledWith(varKey, 'new-a-secret', 'profile-a')
+
+    view.rerender(<Harness profile="profile-b" />)
+    await waitFor(() => expect(state.current?.vars?.[varKey]?.is_set).toBe(false))
+
+    await act(async () => {
+      resolveSave({ ok: true })
+      await Promise.resolve()
+    })
+
+    expect(state.current?.vars?.[varKey]?.is_set).toBe(false)
+    expect(state.current?.vars?.[varKey]?.redacted_value).toBeNull()
+    expect(state.current?.rowProps.saving).toBeNull()
+  })
+
   it('orders API-key providers by priority then name, and filters them via search', async () => {
     // These three providers have no curated PROVIDER_GROUPS priority, so they
     // share the default priority and fall back to alphabetical among themselves

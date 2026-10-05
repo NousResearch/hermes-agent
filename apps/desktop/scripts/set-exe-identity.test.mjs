@@ -8,8 +8,8 @@ import { stampExeIdentity } from './set-exe-identity.mjs'
 
 function makeDesktopRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-exe-identity-'))
-  fs.mkdirSync(path.join(root, 'assets'))
-  fs.writeFileSync(path.join(root, 'assets', 'icon.ico'), 'icon')
+  fs.mkdirSync(path.join(root, 'public'))
+  fs.writeFileSync(path.join(root, 'public', 'ix-agency.ico'), 'icon')
   const exe = path.join(root, 'Hermes.exe')
   fs.writeFileSync(exe, 'exe')
   return { exe, root }

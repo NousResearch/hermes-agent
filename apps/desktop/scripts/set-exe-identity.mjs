@@ -74,8 +74,9 @@ async function stampExeIdentity(
     throw new Error(`target exe not found: ${exe}`)
   }
 
-  // Icon lives at apps/desktop/assets/icon.ico
-  const icon = join(desktopRoot, 'assets', 'icon.ico')
+  // Icon is the IX Agency mark. The generated assets/icon.ico stays the
+  // upstream girl art so the icon freshness check still matches.
+  const icon = join(desktopRoot, 'public', 'ix-agency.ico')
   if (!existsSync(icon)) {
     throw new Error(`icon not found: ${icon}`)
   }
@@ -86,8 +87,8 @@ async function stampExeIdentity(
   const options = {
     icon,
     'version-string': {
-      ProductName: 'Hermes',
-      FileDescription: 'Hermes',
+      ProductName: 'IVX-Agency',
+      FileDescription: 'IVX-Agency',
       CompanyName: 'Nous Research',
       LegalCopyright: 'Copyright (c) 2026 Nous Research'
     }

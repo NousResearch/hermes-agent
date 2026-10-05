@@ -28,7 +28,7 @@ from collections import OrderedDict
 from contextvars import Context, copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Callable, Dict, Optional, Any, List, Set, Tuple, cast
+from typing import Callable, Dict, Optional, Any, List, Tuple, cast
 
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
@@ -3760,8 +3760,9 @@ class GatewayRunner(
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
         # Chats already notified of a failed auto voice reply (#133134): the note fires once per
-        # failure streak so a dead TTS provider doesn't annotate every message.
-        self._voice_fail_noted: Set[str] = set()
+        # failure streak so a dead TTS provider doesn't annotate every message. Insertion-ordered
+        # and size-bounded via ``bounded_put`` so a long-lived gateway can't grow it forever.
+        self._voice_fail_noted: Dict[str, None] = {}
         # Per-(guild,user) transcript dedup: the voice/STT pipeline can emit one utterance twice.
         self._recent_voice_transcripts: Dict[tuple[int, int], List[tuple[float, str]]] = {}
         # Background tasks kept referenced so they are not garbage-collected mid-execution.

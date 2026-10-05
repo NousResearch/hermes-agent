@@ -22,10 +22,22 @@ from gateway.session import SessionSource
 def _make_runner() -> GatewayRunner:
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._voice_mode = {}
-    runner._voice_fail_noted = set()
+    runner._voice_fail_noted = {}
     runner.adapters = {}
     runner._voice_key_for_source = lambda source: f"{source.platform.value}:{source.chat_id}"
+    runner._delivery_adapter_for = lambda source: _NotificationsAdapter()
     return runner
+
+
+class _NotificationsAdapter:
+    """Minimal adapter stand-in whose warning-notification opt-out can be flipped per test."""
+
+    def __init__(self, enabled: bool = True):
+        self.enabled = enabled
+
+    def warning_notifications_enabled(self, logical_platform=None, *, chat_id=None,
+                                      metadata=None) -> bool:
+        return self.enabled
 
 
 def _make_event(platform: Platform = Platform.TELEGRAM, chat_id: str = "123") -> MessageEvent:
@@ -64,18 +76,22 @@ class TestSendVoiceReplyReturnsFailureReason:
         assert reason == "TTS returned an invalid response"
 
     @pytest.mark.asyncio
-    async def test_tts_exception_returns_reason(self):
+    async def test_tts_exception_returns_fixed_phrase(self):
+        """The exception branch reports a fixed phrase: str(e) can carry httpx/SDK internals
+        (request URLs, internal hostnames) into what may be a group chat."""
         runner = _make_runner()
-        with patch("tools.tts_tool.text_to_speech_tool", side_effect=RuntimeError("connection reset")):
+        with patch("tools.tts_tool.text_to_speech_tool",
+                   side_effect=RuntimeError("connection reset by http://internal-host:8080/x")):
             reason = await runner._send_voice_reply(_make_event(), "hello")
-        assert reason == "connection reset"
+        assert reason == "voice synthesis failed"
+        assert "internal-host" not in reason and "connection reset" not in reason
 
     @pytest.mark.asyncio
     async def test_successful_delivery_rearms_the_note(self, tmp_path):
         """A delivered voice reply clears the chat's noted flag, so the NEXT failure after a
         recovery is announced again instead of staying silent forever."""
         runner = _make_runner()
-        runner._voice_fail_noted.add("telegram:123")
+        runner._voice_fail_noted["telegram:123"] = None
         runner._deliver_voice_reply = AsyncMock()
 
         def ok_tts(*, text, output_path):
@@ -113,6 +129,27 @@ class TestVoiceUnavailableNote:
         note = runner._voice_unavailable_note(_make_event(), "line1\n  line2\n" + "x" * 500)
         assert "\n" not in note
         assert len(note) <= len("(Voice reply unavailable: ") + 200 + 1
+
+    def test_warning_notification_optout_hides_the_note(self):
+        """Operators silence non-content gateway notices per chat via
+        ``warning_notifications_enabled``; the note is a gateway notice, so it must honour that."""
+        runner = _make_runner()
+        runner._delivery_adapter_for = lambda source: _NotificationsAdapter(enabled=False)
+        assert runner._voice_unavailable_note(_make_event(), "boom") is None
+        # The opted-out chat is not marked as notified: re-enabling notices must bring the
+        # note back on the very next failure.
+        assert not runner._voice_fail_noted
+
+    def test_noted_chats_are_bounded(self):
+        """The noted set can't grow unbounded over a long-lived gateway: the oldest entry is
+        evicted past the cap."""
+        runner = _make_runner()
+        runner._voice_key_for_source = lambda source: f"{source.platform.value}:{source.chat_id}"
+        for i in range(2001):
+            runner._voice_unavailable_note(_make_event(chat_id=str(i)), "boom")
+        assert len(runner._voice_fail_noted) == 2000
+        # Chat "0" (oldest) was evicted, so its next failure is announced again.
+        assert runner._voice_unavailable_note(_make_event(chat_id="0"), "boom") is not None
 
 
 class TestDeliverTurnResponseSurfacesNote:

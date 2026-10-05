@@ -2631,8 +2631,11 @@ def _relay_sync_completion(
     kwargs = prepare_chat_messages(client, kwargs)
     # The progress hook is installed per TASK, so every attempt (retries, recovery rungs, fallbacks)
     # must stream through _create_with_progress or the compression watchdog sees silence (#98466).
-    # Recovery rungs / credential retries keep the task's ``no_progress_timeout`` window.
-    task = (_RELAY_AUX_CALL_CONTEXT.get() or {}).get("task")
+    # Recovery rungs / credential retries keep the task's ``no_progress_timeout`` window; the
+    # first-token window uses this attempt's provider (fallbacks name theirs) for its stale timeout.
+    relay_context = _RELAY_AUX_CALL_CONTEXT.get() or {}
+    task = relay_context.get("task")
+    relay_context["stream_provider"] = provider or relay_context.get("provider")
     callback = create or (lambda request: _create_with_progress(client, request, task))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Isolate only the provider callback so the owning thread can unwind its lease/DB

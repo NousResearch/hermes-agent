@@ -296,7 +296,7 @@ class TestAggregateChatStream:
                 self.end_headers()
                 self.wfile.flush()
                 try:
-                    if script == "openai/o3":  # silent reasoning before the first token
+                    if script in ("openai/o3", "slow"):  # silent reasoning before the first token
                         time.sleep(2.0)
                     if script == "b":
                         gates["b_started"].set()
@@ -332,14 +332,14 @@ class TestAggregateChatStream:
         monkeypatch.setattr("agent.model_metadata.is_local_endpoint", lambda _url: False)
         client = openai.OpenAI(api_key="k", base_url=f"http://127.0.0.1:{server.server_port}/v1", max_retries=0)
 
-        def call(model, task, *, via_relay_seam=False):
+        def call(model, task, *, via_relay_seam=False, provider=None):
             from agent.auxiliary_client import _relay_aux_call_scope, _relay_sync_completion
 
             request = {"model": model, "messages": [], "timeout": 20.0}
             with aux_progress_hook(lambda: None):
                 if via_relay_seam:  # a recovery rung / credential retry: the default relay callback
                     with _relay_aux_call_scope((task,), {}):
-                        return _relay_sync_completion(client, request)
+                        return _relay_sync_completion(client, request, provider=provider)
                 return _create_with_progress(client, request, task)
 
         try:
@@ -365,17 +365,26 @@ class TestAggregateChatStream:
         assert "stalled: no new output for 0.4s" in str(excinfo.value)
         assert _should_skip_same_provider_retry("compression", excinfo.value)
 
-    @pytest.mark.parametrize("case", ["reasoning_before_first_token", "stall_after_terminal_usage",
-                                      "late_timer_after_pool_reuse"])
-    def test_watchdog_only_cuts_its_own_unfinished_stream(self, sse, case):
-        """The no-progress watchdog must not cut (a) a reasoning model thinking silently before its
-        first token for 5x the inter-chunk window (main-loop reasoning floor applies), (b) a response
+    @pytest.mark.parametrize("case", ["reasoning_before_first_token", "provider_stale_timeout_before_first_token",
+                                      "stall_after_terminal_usage", "late_timer_after_pool_reuse"])
+    def test_watchdog_only_cuts_its_own_unfinished_stream(self, sse, case, monkeypatch):
+        """The no-progress watchdog must not cut (a) a model thinking silently before its first token
+        for 5x the inter-chunk window (main-loop reasoning floor, or the routed provider's explicit
+        ``providers.<id>.stale_timeout_seconds`` over a shorter env stale timeout), (b) a response
         whose terminal chunk and billed usage already arrived, nor (c) a later request that reused
         the keepalive connection after a stalled attempt's timer had already woken."""
         gates, call = sse
         if case == "reasoning_before_first_token":
             gates["release"].set()  # the stream ends right after its first chunk
             assert call("openai/o3", "compression").choices[0].message.content == "partial"
+            return
+        if case == "provider_stale_timeout_before_first_token":
+            gates["release"].set()
+            monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.5")
+            monkeypatch.setattr("hermes_cli.config.load_config_readonly",
+                                lambda: {"providers": {"openrouter": {"stale_timeout_seconds": 900}}})
+            result = call("slow", "compression", via_relay_seam=True, provider="openrouter")
+            assert result.choices[0].message.content == "partial"
             return
         if case == "stall_after_terminal_usage":
             result = call("usage", "compression")

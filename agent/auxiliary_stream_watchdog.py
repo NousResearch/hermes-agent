@@ -13,6 +13,7 @@ from __future__ import annotations
 import inspect
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any, Optional
 
 
@@ -134,16 +135,20 @@ class ChatStreamWatchdog:
 def chat_stream_windows(client: Any, kwargs: dict, task: Optional[str]) -> "tuple[float, Optional[float]]":
     """(inter-chunk window, first-token window) for a streamed chat-completions attempt. Between
     chunks: the Codex guard's window (``auxiliary.<task>.no_progress_timeout``, 60s default). Before
-    the first token: the main loop's cloud stale patience (context-scaled, reasoning-model floor), so
+    the first token: the main loop's cloud stale patience for the routed provider (its explicit
+    ``providers.<id>.stale_timeout_seconds``, else context-scaled with the reasoning-model floor), so
     a model thinking silently on a large prompt is not cut; local servers keep their silent prefill
     on the request timeout (None). Both are capped at the request timeout."""
-    from agent.auxiliary_client import _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS, _get_task_no_progress_timeout
-    from agent.chat_completion_helpers import _cloud_stale_timeout, _stream_env_stale_base
+    from agent.auxiliary_client import (
+        _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS, _RELAY_AUX_CALL_CONTEXT, _get_task_no_progress_timeout)
+    from agent.chat_completion_helpers import _cloud_stale_timeout_for
     from agent.model_metadata import is_local_endpoint
     window = _get_task_no_progress_timeout(task or "") or _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS
     first = None
     if not is_local_endpoint(str(getattr(client, "base_url", "") or "")):
-        first = max(window, _cloud_stale_timeout(_stream_env_stale_base()[0], kwargs))
+        route = SimpleNamespace(provider=(_RELAY_AUX_CALL_CONTEXT.get() or {}).get("stream_provider") or "",
+                                model=kwargs.get("model"))
+        first = max(window, _cloud_stale_timeout_for(route, kwargs))
     timeout = kwargs.get("timeout")
     if isinstance(timeout, (int, float)) and timeout > 0:
         window = min(window, float(timeout))

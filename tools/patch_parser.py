@@ -42,6 +42,8 @@ class PatchOperation:
     file_path: str
     new_path: Optional[str] = None  # MOVE only
     hunks: List[Hunk] = field(default_factory=list)
+    # Fuzzy strategies that located this operation's hunks (filled while applying an UPDATE).
+    strategies_used: List[str] = field(default_factory=list)
 
 
 # Markers must occupy the whole line at column 0 so content lines that merely
@@ -292,6 +294,7 @@ def apply_v4a_operations(operations: List[PatchOperation], file_ops: Any) -> Pat
     """Two-phase: validate everything, then apply (atomic on validation failure). A phase-2
     failure (validate/apply race) carries a ``git diff`` note since state may be inconsistent.
     ``file_ops`` needs read_file_raw/write_file/delete_file/move_file."""
+    from tools.fuzzy_match import boundary_note
 
     def _bullets(errs: List[str]) -> str:
         return "\n".join(f"  • {e}" for e in errs)
@@ -305,6 +308,8 @@ def apply_v4a_operations(operations: List[PatchOperation], file_ops: Any) -> Pat
     # V4A bypasses write_file's WriteResult plumbing: LSP diagnostics and lint propagate per file.
     lsp_blocks: List[str] = []
     lint_results: Dict[str, dict] = {}
+    # A hunk found by a similarity strategy may have landed a line off; say so, per file.
+    boundary_notes: List[str] = []
     for op in operations:
         handler, verb, bucket = _APPLY_DISPATCH[op.operation]
         try:
@@ -318,6 +323,8 @@ def apply_v4a_operations(operations: List[PatchOperation], file_ops: Any) -> Pat
         is_move = op.operation is OperationType.MOVE
         files[bucket].append(f"{op.file_path} -> {op.new_path}" if is_move else op.file_path)
         all_diffs.append(payload)
+        if note := boundary_note(op.strategies_used, "the hunk's", f" in {op.file_path}"):
+            boundary_notes.append(note)
         if lsp:
             lsp_blocks.append(lsp)
         if lint:
@@ -329,7 +336,8 @@ def apply_v4a_operations(operations: List[PatchOperation], file_ops: Any) -> Pat
                + _bullets(errors)) if errors else None,
         diff='\n'.join(all_diffs),
         files_modified=files["modified"], files_created=files["created"], files_deleted=files["deleted"],
-        lint=lint_results or None, lsp_diagnostics="\n\n".join(lsp_blocks) or None)
+        lint=lint_results or None, lsp_diagnostics="\n\n".join(lsp_blocks) or None,
+        note=" ".join(boundary_notes) or None)
 
 
 def _write_file_accepts_pre_content(file_ops: Any) -> bool:
@@ -417,18 +425,21 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
             if err:
                 return _fail(err)
             continue
-        new_content, count, _strategy, error = fuzzy_find_and_replace(
+        new_content, count, strategy, error = fuzzy_find_and_replace(
             new_content, search_pattern, replacement, replace_all=False)
         if not (error and count == 0):
+            if count > 0:
+                op.strategies_used.append(strategy)
             continue
         # Retry inside a window around the context hint, if any.
         hint_pos = new_content.find(hunk.context_hint) if hunk.context_hint else -1
         if hint_pos != -1:
             window_start = max(0, hint_pos - 500)
             window_end = min(len(new_content), hint_pos + 2000)
-            window_new, count, _strategy, error = fuzzy_find_and_replace(
+            window_new, count, strategy, error = fuzzy_find_and_replace(
                 new_content[window_start:window_end], search_pattern, replacement, replace_all=False)
             if count > 0:
+                op.strategies_used.append(strategy)
                 new_content = new_content[:window_start] + window_new + new_content[window_end:]
                 error = None
         if error:

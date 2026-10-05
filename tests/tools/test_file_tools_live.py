@@ -210,6 +210,59 @@ class TestPatchReplace:
         assert result.note is None
 
 
+class TestPatchV4A:
+    """The V4A path runs the same fuzzy chain as patch_replace, so it gets the same boundary note."""
+    FUNC = TestPatchReplace.FUNC
+
+    @staticmethod
+    def _patch(path, *hunk_lines):
+        return "\n".join(["*** Begin Patch", f"*** Update File: {path}", "@@ @@", *hunk_lines, "*** End Patch"])
+
+    def test_similarity_match_gets_boundary_note_naming_the_file(self, ops, tmp_path):
+        from tools.fuzzy_match import fuzzy_find_and_replace
+        old = "def total(x):\n    y = x + 2\n    return y"
+        assert fuzzy_find_and_replace(self.FUNC, old, "pass", False)[2] == "block_anchor"
+        path = tmp_path / "anchor.py"
+        path.write_text(self.FUNC)
+        result = ops.patch_v4a(self._patch(
+            path, " def total(x):", "-    y = x + 2", "-    return y", "+    return x + 1"))
+        assert result.success, result.error
+        assert result.note and "block_anchor" in result.note and str(path) in result.note
+
+    def test_line_trimmed_match_gets_no_note(self, ops, tmp_path):
+        from tools.fuzzy_match import fuzzy_find_and_replace
+        assert fuzzy_find_and_replace(self.FUNC, "y = x + 1\nreturn y", "pass", False)[2] == "line_trimmed"
+        path = tmp_path / "trimmed.py"
+        path.write_text(self.FUNC)
+        result = ops.patch_v4a(self._patch(path, "-y = x + 1", "+y = x + 3", " return y"))
+        assert result.success, result.error
+        assert path.read_text() == "def total(x):\n    y = x + 3\n    return y\n"
+        assert result.note is None
+
+    def test_exact_match_gets_no_note(self, ops, tmp_path):
+        path = tmp_path / "exact.py"
+        path.write_text(self.FUNC)
+        result = ops.patch_v4a(self._patch(
+            path, " def total(x):", "-    y = x + 1", "+    y = x + 3", "     return y"))
+        assert result.success, result.error
+        assert result.note is None
+
+    def test_note_names_only_the_file_that_matched_approximately(self, ops, tmp_path):
+        approx, exact = tmp_path / "approx.py", tmp_path / "exact.py"
+        approx.write_text(self.FUNC)
+        exact.write_text("a = 1\nb = 2\n")
+        patch = "\n".join([
+            "*** Begin Patch",
+            f"*** Update File: {approx}", "@@ @@",
+            " def total(x):", "-    y = x + 2", "-    return y", "+    return x + 1",
+            f"*** Update File: {exact}", "@@ @@",
+            "-a = 1", "+a = 5",
+            "*** End Patch"])
+        result = ops.patch_v4a(patch)
+        assert result.success, result.error
+        assert str(approx) in result.note and str(exact) not in result.note
+
+
 # ── search ───────────────────────────────────────────────────────────────
 
 class TestSearch:

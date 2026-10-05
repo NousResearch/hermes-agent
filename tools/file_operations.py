@@ -1606,7 +1606,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         raw_content = data.decode("utf-8", "surrogateescape")
         content, _ = _strip_bom(raw_content)
 
-        from tools.fuzzy_match import SIMILARITY_STRATEGIES, fuzzy_find_and_replace
+        from tools.fuzzy_match import boundary_note, fuzzy_find_and_replace
         new_content, match_count, strategy, error = fuzzy_find_and_replace(
             content, old_string, new_string, replace_all)
         if error or match_count == 0:
@@ -1623,23 +1623,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if verify_error is not None:
             return verify_error
         lint_result = self._check_lint_delta(path, pre_content=content, post_content=new_content)
-        # The similarity strategies accept a window whose lines only resemble old_string, so
-        # the spliced span can land a line off (observed: a duplicated closing delimiter/brace
-        # just outside the intended region). The normalizing strategies still match every
-        # line, so their boundaries are exact — and they fire on routine edits (e.g. missing
-        # base indentation), where a note would teach the model to ignore it. Post-write
-        # verification above cannot catch a shifted span: it only confirms new_content landed.
-        boundary_note = (
-            f"Non-exact match (strategy: {strategy}). The edit span was located approximately, "
-            "not matched to old_string's literal boundaries — review the diff below to confirm "
-            "the change landed exactly where intended (a shifted boundary can duplicate or drop "
-            "a line just outside the edited region)."
-            if strategy in SIMILARITY_STRATEGIES else None
-        )
         return PatchResult(
             success=True, diff=self._unified_diff(content, new_content, path), files_modified=[path],
             lint=lint_result.to_dict() if lint_result else None,
-            note=boundary_note,
+            note=boundary_note([strategy]),
             # From the internal write_file call, whose baseline was the pre-patch content.
             lsp_diagnostics=write_result.lsp_diagnostics)
 

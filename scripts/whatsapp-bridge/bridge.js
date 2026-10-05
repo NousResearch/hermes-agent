@@ -19,7 +19,7 @@
  *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session
  */
 
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser, USyncQuery, USyncUser } from '@whiskeysockets/baileys';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
@@ -45,12 +45,15 @@ import {
   createQuotedMediaCache,
   extractBridgeEvent,
   getMessageContent,
+  groupMembersFromMetadata,
   inboundReadReceiptKeys,
   inferMediaType,
   mediaPayloadForFile,
   normalizeWhatsAppId,
+  parseWhatsAppUsername,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
+  resolveWhatsAppUsername,
   writeJsonLine,
 } from './bridge_helpers.js';
 
@@ -838,7 +841,30 @@ app.get('/messages', (req, res) => {
 });
 
 // Send a message
-app.post('/send', async (req, res) => {
+// A send target may be an @username: resolve it to the account's @lid first.
+// `usernamePin` carries the PIN when the username's owner set one.
+async function resolveUsernameTarget(req, res, next) {
+  const username = parseWhatsAppUsername(req.body?.chatId);
+  if (!username) return next();
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+  try {
+    const lid = await resolveWhatsAppUsername(
+      (query) => sock.executeUSyncQuery(query), { USyncQuery, USyncUser },
+      username, req.body.usernamePin);
+    if (!lid) {
+      const hint = req.body.usernamePin ? '' : ' (or its owner requires a PIN: pass usernamePin)';
+      return res.status(404).json({ error: `no WhatsApp account has the username @${username}${hint}` });
+    }
+    req.body.chatId = lid;
+    return next();
+  } catch (err) {
+    return res.status(502).json({ error: `could not resolve @${username}: ${err.message}` });
+  }
+}
+
+app.post('/send', resolveUsernameTarget, async (req, res) => {
   if (!sock || connectionState !== 'connected') {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
@@ -912,7 +938,7 @@ app.post('/edit', async (req, res) => {
 });
 
 // Send media (image, video, document) natively
-app.post('/send-media', async (req, res) => {
+app.post('/send-media', resolveUsernameTarget, async (req, res) => {
   if (!sock || connectionState !== 'connected') {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
@@ -1015,7 +1041,7 @@ app.post('/send-media', async (req, res) => {
 // Send poll primitive. Approval UX is intentionally not wired here; gateway
 // approvals need text fallback and explicit confirmation semantics above this
 // low-level transport helper.
-app.post('/send-poll', async (req, res) => {
+app.post('/send-poll', resolveUsernameTarget, async (req, res) => {
   if (!sock || connectionState !== 'connected') {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
@@ -1037,7 +1063,7 @@ app.post('/send-poll', async (req, res) => {
 });
 
 // Send native WhatsApp location pin
-app.post('/send-location', async (req, res) => {
+app.post('/send-location', resolveUsernameTarget, async (req, res) => {
   if (!sock || connectionState !== 'connected') {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
@@ -1111,6 +1137,8 @@ app.get('/chat/:id', async (req, res) => {
         name: metadata.subject,
         isGroup: true,
         participants: metadata.participants.map(p => p.id),
+        // Who each member is: phone (null when hidden), @username, admin.
+        members: groupMembersFromMetadata(metadata.participants),
       });
     } catch {
       // Fall through to default
@@ -1122,6 +1150,26 @@ app.get('/chat/:id', async (req, res) => {
     isGroup,
     participants: [],
   });
+});
+
+// Resolve a WhatsApp @username to the account's @lid. Read-only: nobody is
+// contacted. `?pin=` passes the PIN when the username's owner set one.
+app.get('/resolve-username/:username', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+  const username = parseWhatsAppUsername(`@${String(req.params.username || '').replace(/^@/, '')}`);
+  if (!username) {
+    return res.status(400).json({ error: 'not a WhatsApp username (3-35 letters, digits, . or _)' });
+  }
+  try {
+    const lid = await resolveWhatsAppUsername(
+      (query) => sock.executeUSyncQuery(query), { USyncQuery, USyncUser },
+      username, req.query.pin);
+    res.json({ username, found: Boolean(lid), lid });
+  } catch (err) {
+    res.status(502).json({ username, error: err.message });
+  }
 });
 
 // Health check

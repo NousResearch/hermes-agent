@@ -79,7 +79,7 @@ def _new_session(**kwargs):
 def check_sms_requirements() -> bool:
     """Check if SMS adapter dependencies are available."""
     return AIOHTTP_AVAILABLE and bool(
-        _get_scoped_secret("TWILIO_ACCOUNT_SID") and (_get_scoped_secret("TWILIO_AUTH_TOKEN") or "").strip())
+        _get_scoped_secret("TWILIO_ACCOUNT_SID") and _get_scoped_secret("TWILIO_AUTH_TOKEN", "").strip())
 
 
 class SmsAdapter(BasePlatformAdapter):
@@ -95,7 +95,7 @@ class SmsAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.SMS)
         self._account_sid: str = _get_scoped_secret("TWILIO_ACCOUNT_SID", "")
         # Stripped: a whitespace-only token must read as unset, not key the signature HMAC with blanks.
-        self._auth_token: str = (_get_scoped_secret("TWILIO_AUTH_TOKEN", "") or "").strip()
+        self._auth_token: str = _get_scoped_secret("TWILIO_AUTH_TOKEN", "").strip()
         # Scoped like the sibling reads above: a secondary profile must not send from the default
         # profile's TWILIO_PHONE_NUMBER (#98738 class).
         self._from_number: str = _get_scoped_secret("TWILIO_PHONE_NUMBER", "")
@@ -302,7 +302,7 @@ def _strip_markdown_for_sms(message: str) -> str:
 
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
     """Out-of-process SMS delivery via the Twilio REST API (standalone_sender_fn contract)."""
-    auth_token = (getattr(pconfig, "api_key", None) or _get_scoped_secret("TWILIO_AUTH_TOKEN", "") or "").strip()
+    auth_token = (getattr(pconfig, "api_key", None) or _get_scoped_secret("TWILIO_AUTH_TOKEN", "")).strip()
     if not AIOHTTP_AVAILABLE:
         return send_error("aiohttp not installed. Run: pip install aiohttp")
     account_sid = _get_scoped_secret("TWILIO_ACCOUNT_SID", "")

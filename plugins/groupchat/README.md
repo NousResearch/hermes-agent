@@ -108,6 +108,17 @@ relevance scoring for real text messages, including messages that name people
 as invitees. System/lifecycle filtering and the separate voice-processing
 gate still apply.
 
+When a channel verifies that exactly two members have joined a room (the bot
+and the sender), Groupchat bypasses relevance scoring and immediately forwards
+real messages, including short approvals such as `go`. This also applies to
+named two-member groups; it does not depend on a DM label or whether the other
+member is human or another bot. System/lifecycle messages are still filtered.
+If membership cannot be verified, the saved room policy remains in force.
+The bypass never rewrites `RELEVANCE_CONTEXT.xml`, so a room automatically
+returns to its configured policy when a third member joins. Matrix supplies
+this verified membership signal; other channels can supply the same normalized
+signal when their adapters support it.
+
 When Groupchat derives an agent's role for a newly discovered group room, the
 agent posts one short introduction describing that role and explicitly invites
 people in the room to redefine its focus or level of participation. The

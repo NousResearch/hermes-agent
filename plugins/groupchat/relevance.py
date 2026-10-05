@@ -1091,8 +1091,6 @@ class IntelligentReactionGate:
             )
             return
 
-        rc = self._get_room_context(room)
-
         def _commit_to_transcript() -> None:
             self._record_transcript(
                 room,
@@ -1101,6 +1099,38 @@ class IntelligentReactionGate:
                 timestamp=_now(),
                 event_id=msg_event.message_id,
             )
+
+        # Membership is normalized by the channel adapter. A verified two-party
+        # room has no bystanders to protect with selective relevance scoring.
+        # Do not rewrite its stored room policy: the same room may gain members.
+        if msg_event.metadata.get("conversation_two_member_room") is True:
+            if self._is_agent_status_message(msg_event):
+                self._audit(
+                    msg_event,
+                    phase="decision",
+                    decision="drop",
+                    reason_code="other_agent_status_before_two_member_bypass",
+                    dispatch_attempted=False,
+                )
+                return
+            if msg_event.message_type in (MessageType.AUDIO, MessageType.VOICE):
+                await self._process_voice_message(msg_event, room, text, sender)
+                return
+            self._audit(
+                msg_event,
+                phase="decision",
+                decision="deliver_immediately",
+                reason_code="two_member_room_bypass",
+            )
+            await self._flush(
+                room,
+                with_event=msg_event,
+                rationale="Verified two-member room; relevance scoring bypassed.",
+            )
+            _commit_to_transcript()
+            return
+
+        rc = self._get_room_context(room)
 
         # Plain-language agent names are transport-neutral addressing in
         # selective room modes. ALWAYS must dispatch real user messages even
@@ -1891,6 +1921,23 @@ class IntelligentReactionGate:
         instructed_event = dataclasses.replace(
             msg_event, text=f"[Voice message from {sender}]"
         )
+
+        if msg_event.metadata.get("conversation_two_member_room") is True:
+            if event_id:
+                self._pending_voice_transcriptions[room] = (event_id, sender, _now())
+                self._processed_voice_event_ids[event_id] = _now()
+            self._audit(
+                msg_event,
+                phase="decision",
+                decision="deliver_immediately",
+                reason_code="two_member_room_bypass",
+            )
+            await self._flush(
+                room,
+                with_event=instructed_event,
+                rationale="Verified two-member room; relevance scoring bypassed.",
+            )
+            return
 
         if is_thread:
             logger.info("Conversation IR: room %s voice message is thread continuation, passing", room)

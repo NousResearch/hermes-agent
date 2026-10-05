@@ -55,7 +55,8 @@ from gateway.platforms._shared import (
 
 try:
     from mautrix.types import (
-        ContentURI, EventID, EventType, PresenceState, RoomCreatePreset, RoomID, TrustState, UserID)
+        ContentURI, EventID, EventType, Membership, PresenceState, RoomCreatePreset,
+        RoomID, TrustState, UserID)
 except ImportError:
     # Import-safe stubs without mautrix: check_matrix_requirements() gates production use, but
     # tests exercise adapter methods so the attributes must exist.
@@ -65,6 +66,7 @@ except ImportError:
         "ROOM_MESSAGE": "m.room.message", "REACTION": "m.reaction",
         "TYPING": "m.typing",
         "ROOM_ENCRYPTED": "m.room.encrypted", "ROOM_NAME": "m.room.name"})
+    Membership = type("_MembershipStub", (), {"JOIN": "join"})  # type: ignore[misc,assignment]
     PresenceState = type("_PresenceStateStub", (), {  # type: ignore[misc,assignment]
         "ONLINE": "online", "OFFLINE": "offline", "UNAVAILABLE": "unavailable"})
     RoomCreatePreset = type("_RoomCreatePresetStub", (), {  # type: ignore[misc,assignment]
@@ -2197,6 +2199,8 @@ class MatrixAdapter(BasePlatformAdapter):
             body = ""  # transport filename, not user text
         metadata = dict(extra.pop("metadata", {}) or {})
         metadata["conversation_mentioned"] = is_mentioned
+        if await self._is_verified_two_member_room(room_id, sender):
+            metadata["conversation_two_member_room"] = True
         return MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply_to, reply_to_text=reply_to_text, reply_to_author_id=reply_to_author_id,
@@ -2806,6 +2810,36 @@ class MatrixAdapter(BasePlatformAdapter):
             if value:
                 return str(value)
         return None
+
+    async def _is_verified_two_member_room(self, room_id: str, sender: str) -> bool:
+        """True only when joined members are exactly this bot and the sender.
+
+        Invited accounts do not count. Unknown or unavailable membership fails
+        closed, leaving Groupchat's configured relevance policy in force.
+        """
+        own_user_id = str(self._user_id or "")
+        if not own_user_id or not sender or own_user_id == sender:
+            return False
+        client = getattr(self, "_client", None)
+        state_store = getattr(client, "state_store", None) if client else None
+        if state_store is not None:
+            try:
+                members = await state_store.get_members(
+                    RoomID(room_id), memberships=(Membership.JOIN,)
+                )
+                if members is not None:
+                    return {str(member) for member in members} == {own_user_id, sender}
+            except Exception as exc:
+                logger.debug("Matrix: joined-member lookup failed in %s: %s", room_id, exc)
+        if client is not None and hasattr(client, "joined_members"):
+            try:
+                response = await client.joined_members(RoomID(room_id))
+                members = getattr(response, "members", None)
+                if members is not None:
+                    return {str(member) for member in members} == {own_user_id, sender}
+            except Exception as exc:
+                logger.debug("Matrix: joined-members request failed in %s: %s", room_id, exc)
+        return False
 
     async def _get_room_member_count(self, room_id: str) -> Optional[int]:
         """state_store first (cached), then a direct joined_members API query."""

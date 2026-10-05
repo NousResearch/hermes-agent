@@ -6,7 +6,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.session import SessionSource
-from plugins.platforms.matrix.adapter import MatrixAdapter
+from plugins.platforms.matrix.adapter import MatrixAdapter, Membership
 
 
 @pytest.fixture
@@ -45,6 +45,50 @@ async def test_normalized_event_carries_native_mention_signal():
 
     assert event is not None
     assert event.metadata["conversation_mentioned"] is True
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("members,sender,expected", [
+    (["@agent:example.test", "@human:example.test"], "@human:example.test", True),
+    (["@agent:example.test", "@peer:example.test"], "@peer:example.test", True),
+    (["@agent:example.test", "@peer:example.test"], "@human:example.test", False),
+    (["@agent:example.test", "@human:example.test", "@third:example.test"], "@human:example.test", False),
+])
+async def test_two_member_proof_requires_exact_joined_members(members, sender, expected):
+    adapter = MatrixAdapter(PlatformConfig(extra={"user_id": "@agent:example.test"}))
+    store = SimpleNamespace(get_members=AsyncMock(return_value=members))
+    adapter._client = SimpleNamespace(state_store=store)
+
+    assert await adapter._is_verified_two_member_room(
+        "!room:example.test", sender
+    ) is expected
+    store.get_members.assert_awaited_once_with(
+        "!room:example.test", memberships=(Membership.JOIN,)
+    )
+
+
+@pytest.mark.anyio
+async def test_two_member_proof_is_normalized_into_message_metadata():
+    adapter = MatrixAdapter(PlatformConfig(extra={"user_id": "@agent:example.test"}))
+    source = SessionSource(
+        platform=adapter.platform, chat_id="!room:example.test",
+        chat_type="group", user_id="@human:example.test",
+    )
+    adapter._resolve_message_context = AsyncMock(
+        return_value=("go", False, "group", None, "Human", source)
+    )
+    adapter._extract_reply_context = AsyncMock(
+        return_value=("go", None, None, None, None)
+    )
+    adapter._is_verified_two_member_room = AsyncMock(return_value=True)
+
+    event = await adapter._build_inbound_event(
+        "!room:example.test", "@human:example.test", "$go",
+        "go", {"body": "go"}, {},
+    )
+
+    assert event is not None
+    assert event.metadata["conversation_two_member_room"] is True
 
 
 @pytest.mark.anyio

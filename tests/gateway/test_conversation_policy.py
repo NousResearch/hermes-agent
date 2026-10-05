@@ -536,6 +536,126 @@ async def test_followup_boost_does_not_transfer_to_other_sender_or_peer(tmp_path
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("platform", [Platform.MATRIX, Platform.SLACK, Platform.TELEGRAM])
+async def test_verified_two_member_group_bypasses_saved_relevance_mode(platform, tmp_path):
+    context_file = tmp_path / "RELEVANCE_CONTEXT.xml"
+    original_context = (
+        '<relevance_context><rooms><room id="same-room">'
+        '<answer_priority>ASK_AI</answer_priority>'
+        '</room></rooms></relevance_context>'
+    )
+    context_file.write_text(original_context)
+    adapter = Adapter(platform, {
+        "relevance": {"enabled": True},
+        "pingpong_guard": {"enabled": False},
+    })
+    gate = adapter.conversation_policy().relevance
+    gate._peer_names = ["lena"]
+    gate._peer_name_pattern = gate._names_pattern(gate._peer_names)
+    gate._throttled_evaluate = AsyncMock(
+        side_effect=AssertionError("two-member message reached relevance scorer")
+    )
+
+    for index, text in enumerate(("go", "hallo?", "Lena, please check this")):
+        message = event(platform, text=text)
+        message.message_id = f"two-member-{index}"
+        message.metadata.update({
+            "conversation_mentioned": False,
+            "conversation_two_member_room": True,
+        })
+        await adapter.handle_message(message)
+
+    assert [delivered.text.split("\n", 1)[0] for delivered in adapter.delivered] == [
+        "go", "hallo?", "Lena, please check this"
+    ]
+    assert context_file.read_text() == original_context
+    assert gate._pending == {}
+    gate._throttled_evaluate.assert_not_awaited()
+    decisions = [json.loads(line) for line in (
+        tmp_path / f"logs/{platform.value}-relevance-decisions.jsonl"
+    ).read_text().splitlines() if json.loads(line)["phase"] == "decision"]
+    assert [record["reason_code"] for record in decisions] == [
+        "two_member_room_bypass"
+    ] * 3
+    await adapter.disconnect()
+
+
+@pytest.mark.anyio
+async def test_two_member_bypass_keeps_system_filter_and_fails_closed_without_proof(tmp_path):
+    adapter = Adapter(Platform.MATRIX, {
+        "relevance": {"enabled": True},
+        "pingpong_guard": {"enabled": False},
+    })
+    gate = adapter.conversation_policy().relevance
+    gate._throttled_evaluate = AsyncMock(return_value=(1, "Passive only."))
+
+    status = event(Platform.MATRIX, text="⚡ Interrupting current task. I'll respond to your message shortly.")
+    status.metadata.update({"conversation_mentioned": False, "conversation_two_member_room": True})
+    await adapter.handle_message(status)
+    assert adapter.delivered == []
+
+    unverified = event(Platform.MATRIX, text="go")
+    unverified.message_id = "unverified"
+    unverified.metadata["conversation_mentioned"] = False
+    await adapter.handle_message(unverified)
+    assert adapter.delivered == []
+    assert gate._throttled_evaluate.await_count == 1
+    await adapter.disconnect()
+
+
+@pytest.mark.anyio
+async def test_two_member_bypass_still_ignores_peer_status_with_custom_empty_patterns(tmp_path):
+    adapter = Adapter(Platform.MATRIX, {
+        "relevance": {"enabled": True, "system_patterns": [], "multiline_patterns": []},
+        "pingpong_guard": {"enabled": False},
+    })
+    gate = adapter.conversation_policy().relevance
+    gate._own_user_id = lambda: "@self:example.test"
+    status = event(Platform.MATRIX, text="📚 Reading skill media-layout")
+    status.user_id = "@peer:example.test"
+    status.metadata.update({
+        "conversation_mentioned": False,
+        "conversation_two_member_room": True,
+    })
+
+    await adapter.handle_message(status)
+
+    assert adapter.delivered == []
+    decisions = [json.loads(line) for line in (
+        tmp_path / "logs/matrix-relevance-decisions.jsonl"
+    ).read_text().splitlines() if json.loads(line)["phase"] == "decision"]
+    assert decisions[-1]["reason_code"] == "other_agent_status_before_two_member_bypass"
+    await adapter.disconnect()
+
+
+@pytest.mark.anyio
+async def test_verified_two_member_voice_bypasses_mention_only_mode(tmp_path):
+    (tmp_path / "RELEVANCE_CONTEXT.xml").write_text(
+        '<relevance_context><rooms><room id="same-room">'
+        '<answer_priority>WHEN_MENTIONED_ONLY</answer_priority>'
+        '</room></rooms></relevance_context>'
+    )
+    adapter = Adapter(Platform.MATRIX, {
+        "relevance": {"enabled": True},
+        "pingpong_guard": {"enabled": False},
+    })
+    voice = event(Platform.MATRIX, text="voice.ogg")
+    voice.message_type = MessageType.VOICE
+    voice.media_urls = ["/tmp/voice.ogg"]
+    voice.metadata.update({
+        "conversation_mentioned": False,
+        "conversation_two_member_room": True,
+    })
+
+    await adapter.handle_message(voice)
+
+    assert len(adapter.delivered) == 1
+    assert adapter.delivered[0].media_urls == ["/tmp/voice.ogg"]
+    assert adapter.delivered[0].text.startswith("[Voice message from Human]")
+    await adapter.disconnect()
+
+
+@pytest.mark.anyio
 async def test_always_room_dispatches_messages_naming_peers_without_scoring(tmp_path):
     (tmp_path / "RELEVANCE_CONTEXT.xml").write_text(
         '<relevance_context><rooms><room id="same-room">'

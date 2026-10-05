@@ -1,6 +1,7 @@
 """Tests for TTS speed configuration across providers."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -283,3 +284,54 @@ class TestToolLevelSpeed:
         config_passed = mock_gen.call_args[0][2]
         assert config_passed.get("speed") == 1.5  # original config preserved
         assert original_config.get("speed") == 1.5  # original not mutated
+
+
+# ---------------------------------------------------------------------------
+# Speed precedence: per-call > tts.<provider>.speed > tts.speed
+# ---------------------------------------------------------------------------
+
+def test_call_speed_beats_configured_provider_speed(tmp_path, monkeypatch):
+    """The tool's ``speed`` argument reaches the request even when the provider sets its own
+    speed (a built-in section, and a command provider's ``tts.providers.<name>`` entry)."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    config = {
+        "provider": "openai",
+        "speed": 1.5,
+        "openai": {"speed": 1.2},
+        "providers": {"echo-speed": {
+            "type": "command", "command": "printf %s {speed} > {output_path}", "speed": 1.1}},
+    }
+    mock_client = MagicMock()
+    mock_client.audio.speech.create.return_value.stream_to_file.side_effect = (
+        lambda path: open(path, "wb").write(b"ID3fake"))
+    with patch("tools.tts_tool._load_tts_config", return_value=config), \
+         patch("tools.tts_tool._import_openai_client", return_value=MagicMock(return_value=mock_client)), \
+         patch("tools.tts_tool_openai._resolve_openai_audio_client_config",
+               return_value=("test-key", None, False)), \
+         patch("gateway.session_context.get_session_env", return_value=""):
+        from tools.tts_tool import text_to_speech_tool
+        text_to_speech_tool("Hello", str(tmp_path / "oai.mp3"), speed=0.5)
+        result = text_to_speech_tool("Hello", str(tmp_path / "cmd.mp3"), speed=0.5, provider="echo-speed")
+
+    assert mock_client.audio.speech.create.call_args.kwargs["speed"] == 0.5
+    with open(json.loads(result)["file_path"]) as f:
+        assert f.read() == "0.5"
+    assert config["openai"]["speed"] == 1.2  # the cached config is never mutated
+
+
+def test_global_speed_reaches_minimax_and_kittentts(tmp_path, monkeypatch):
+    """``tts.speed`` applies to every provider that has no speed of its own."""
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
+    with patch("requests.post", return_value=_hex_response()) as mock_post:
+        from tools.tts_tool import _generate_minimax_tts
+        _generate_minimax_tts("Hello", str(tmp_path / "mm.mp3"), {"speed": 1.5})
+    assert mock_post.call_args.kwargs["json"]["voice_setting"]["speed"] == 1.5
+
+    from tools import tts_tool_local
+    model = MagicMock()
+    model.generate.side_effect = RuntimeError("stop once the request is built")
+    monkeypatch.setattr(tts_tool_local, "_kittentts_model_cache", {})
+    with patch("tools.tts_tool._import_kittentts", return_value=MagicMock(return_value=model)), \
+         pytest.raises(RuntimeError, match="stop once"):
+        tts_tool_local._generate_kittentts("Hello", str(tmp_path / "kt.wav"), {"speed": 1.5})
+    assert model.generate.call_args.kwargs["speed"] == 1.5

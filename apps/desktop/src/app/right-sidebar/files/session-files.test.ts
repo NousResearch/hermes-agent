@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { deriveSessionFileKeys, sessionFileKey } from './session-files'
+import { buildSessionFileTree, deriveSessionFileKeys, deriveSessionFiles, sessionFileKey } from './session-files'
 
 const DIFF = '--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+hello'
 
@@ -99,5 +99,45 @@ describe('deriveSessionFileKeys', () => {
     const write = edit('write_file', { path: '/repo/a.md' }, { files_modified: ['/repo/a.md'], inline_diff: DIFF })
 
     expect(deriveSessionFileKeys([message(write), message(write, write)]).size).toBe(1)
+  })
+})
+
+describe('deriveSessionFiles', () => {
+  it('keeps the path as the tool reported it, for display', () => {
+    const files = deriveSessionFiles([
+      message(edit('write_file', { path: 'x' }, { files_modified: ['C:\\Proj\\Session Test.md'], inline_diff: DIFF }))
+    ])
+
+    expect(files.get(sessionFileKey('c:/proj/session test.md'))).toBe('C:\\Proj\\Session Test.md')
+  })
+})
+
+describe('buildSessionFileTree', () => {
+  it('nests files under their folders, folders first, all open', () => {
+    const tree = buildSessionFileTree(['/repo/test.md', '/repo/docs/plan.md', '/repo/a.md'], '/repo')
+
+    expect(tree.fileCount).toBe(3)
+    expect(tree.data.map(node => node.name)).toEqual(['docs', 'a.md', 'test.md'])
+    expect(tree.data[0].children?.map(node => node.id)).toEqual(['/repo/docs/plan.md'])
+    expect(tree.openState).toEqual({ '/repo/docs': true })
+  })
+
+  it('leaves out files outside the folder', () => {
+    const tree = buildSessionFileTree(['/repo/a.md', '/elsewhere/b.md', '/repository/c.md'], '/repo/')
+
+    expect(tree.fileCount).toBe(1)
+    expect(tree.data.map(node => node.id)).toEqual(['/repo/a.md'])
+  })
+
+  it('matches a Windows folder regardless of case and keeps its separators', () => {
+    const tree = buildSessionFileTree(['C:\\Users\\Deb\\Proj\\docs\\Plan.md'], 'c:\\users\\deb\\proj')
+
+    expect(tree.fileCount).toBe(1)
+    expect(tree.data[0]).toMatchObject({ id: 'c:\\users\\deb\\proj\\docs', isDirectory: true, name: 'docs' })
+    expect(tree.data[0].children?.[0]).toMatchObject({ id: 'C:\\Users\\Deb\\Proj\\docs\\Plan.md', name: 'Plan.md' })
+  })
+
+  it('is empty without a folder', () => {
+    expect(buildSessionFileTree(['/repo/a.md'], '').fileCount).toBe(0)
   })
 })

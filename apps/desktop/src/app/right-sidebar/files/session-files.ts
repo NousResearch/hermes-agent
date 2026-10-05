@@ -13,6 +13,8 @@ import {
 } from '@/components/assistant-ui/tool/fallback-model'
 import { type ToolResultMetadata, toolResultRecord } from '@/lib/tool-result-metadata'
 
+import type { TreeNode } from './use-project-tree'
+
 interface SessionFilePart {
   args?: unknown
   result?: unknown
@@ -71,11 +73,12 @@ function editedPaths(part: SessionFilePart, result: Record<string, unknown>): st
 }
 
 /**
- * Keys (see `sessionFileKey`) of every file a landed file edit in `messages`
- * created or edited. `cwd` resolves the rare relative path a tool reports.
+ * Every file a landed file edit in `messages` created or edited, as
+ * comparison key (see `sessionFileKey`) -> the path as the tool reported it.
+ * `cwd` resolves the rare relative path a tool reports.
  */
-export function deriveSessionFileKeys(messages: readonly SessionFileMessage[], cwd?: string): Set<string> {
-  const keys = new Set<string>()
+export function deriveSessionFiles(messages: readonly SessionFileMessage[], cwd?: string): Map<string, string> {
+  const files = new Map<string, string>()
 
   for (const message of messages) {
     for (const raw of message.parts ?? []) {
@@ -91,11 +94,104 @@ export function deriveSessionFileKeys(messages: readonly SessionFileMessage[], c
         continue
       }
 
-      for (const path of editedPaths(part, result)) {
-        keys.add(sessionFileKey(isAbsolutePath(path) || !cwd ? path : joinPath(cwd, path)))
+      for (const reported of editedPaths(part, result)) {
+        const path = isAbsolutePath(reported) || !cwd ? reported : joinPath(cwd, reported)
+        const key = sessionFileKey(path)
+
+        if (!files.has(key)) {
+          files.set(key, path)
+        }
       }
     }
   }
 
-  return keys
+  return files
+}
+
+/** Comparison keys only; see `deriveSessionFiles`. */
+export function deriveSessionFileKeys(messages: readonly SessionFileMessage[], cwd?: string): Set<string> {
+  return new Set(deriveSessionFiles(messages, cwd).keys())
+}
+
+export interface SessionFileTree {
+  /** Folders + files under `cwd`, folders first, each level sorted by name. */
+  data: TreeNode[]
+  /** Number of files in `data` (session files outside `cwd` are left out). */
+  fileCount: number
+  /** Every folder open, so the whole filtered tree is visible at once. */
+  openState: Record<string, boolean>
+}
+
+function sortLevel(nodes: TreeNode[]): TreeNode[] {
+  nodes.sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.localeCompare(b.name))
+
+  for (const node of nodes) {
+    if (node.children) {
+      sortLevel(node.children)
+    }
+  }
+
+  return nodes
+}
+
+/**
+ * The filtered tree for the "This session" toggle: only the session's files
+ * under `cwd`, inside their folders. Built from paths rather than by pruning
+ * the live tree, because the live tree loads folders lazily and would miss
+ * files in folders that were never opened.
+ */
+export function buildSessionFileTree(paths: Iterable<string>, cwd: string): SessionFileTree {
+  const root = cwd.trim().replace(/[\\/]+$/, '')
+  const rootKey = sessionFileKey(root)
+  const sep = root.includes('\\') ? '\\' : '/'
+  const data: TreeNode[] = []
+  const folders = new Map<string, TreeNode>()
+  const openState: Record<string, boolean> = {}
+  let fileCount = 0
+
+  if (!root) {
+    return { data, fileCount, openState }
+  }
+
+  for (const path of paths) {
+    const key = sessionFileKey(path)
+
+    if (!key.startsWith(`${rootKey}/`)) {
+      continue
+    }
+
+    const segments = path
+      .trim()
+      .replace(/\\/g, '/')
+      .slice(root.replace(/\\/g, '/').length)
+      .split('/')
+      .filter(Boolean)
+
+    if (segments.length === 0) {
+      continue
+    }
+
+    let level = data
+    let folderId = root
+
+    for (const segment of segments.slice(0, -1)) {
+      folderId = `${folderId}${sep}${segment}`
+      const folderKey = sessionFileKey(folderId)
+      let folder = folders.get(folderKey)
+
+      if (!folder) {
+        folder = { children: [], id: folderId, isDirectory: true, name: segment }
+        folders.set(folderKey, folder)
+        openState[folderId] = true
+        level.push(folder)
+      }
+
+      level = folder.children ?? []
+    }
+
+    level.push({ id: path, isDirectory: false, name: segments.at(-1) ?? path })
+    fileCount += 1
+  }
+
+  return { data: sortLevel(data), fileCount, openState }
 }

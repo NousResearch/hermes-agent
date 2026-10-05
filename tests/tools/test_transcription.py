@@ -145,6 +145,7 @@ class TestTranscribeLocal:
             ("zh_TW", "zh"),
             ("繁體中文", "zh"),
             ("简体中文", "zh"),
+            ("xx", None),
             ("not-a-language", None),
         ],
     )

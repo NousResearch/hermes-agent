@@ -33,7 +33,8 @@ from tools.transcription_audio import (
 from tools.transcription_local import (
     _get_idle_unload_seconds, _has_local_command, _join_confident_segments,
     _load_local_whisper_model, _looks_like_cuda_lib_error, _normalize_local_model,
-    _transcribe_local_command, _try_lazy_install_stt, build_local_transcribe_kwargs)
+    _normalize_local_stt_language, _transcribe_local_command, _try_lazy_install_stt,
+    build_local_transcribe_kwargs)
 # The ``_transcribe_<provider>`` handlers are looked up in this module's globals by _dispatch_stt_provider.
 from tools.transcription_cloud import (  # noqa: F401  (handlers dispatched via globals())
     _has_xai_stt_credentials, _resolve_openai_audio_client_config, _transcribe_deepinfra,
@@ -110,34 +111,6 @@ def _resolve_stt_language(
         candidates.append(stt_config.get("language"))
     candidates.append(os.getenv(LOCAL_STT_LANGUAGE_ENV))
     return next((c.strip() for c in candidates if isinstance(c, str) and c.strip()), None)
-
-
-_LOCAL_LANGUAGE_ALIASES = {
-    "繁體中文": "zh",
-    "繁体中文": "zh",
-    "简体中文": "zh",
-    "簡體中文": "zh",
-}
-
-
-def _normalize_local_stt_language(language: Optional[str], model: object) -> Optional[str]:
-    """Return a faster-whisper language code, or None to preserve auto-detection."""
-    if not isinstance(language, str) or not language.strip():
-        return None
-    raw = language.strip()
-    folded = raw.casefold().replace("_", "-")
-    candidate = _LOCAL_LANGUAGE_ALIASES.get(raw, folded.split("-", 1)[0])
-    if not (candidate.isascii() and candidate.isalpha() and 2 <= len(candidate) <= 3):
-        logger.warning("Local STT language %r is not a language code; using auto-detection", raw)
-        return None
-
-    supported = getattr(model, "supported_languages", None)
-    if isinstance(supported, (list, tuple, set, frozenset)):
-        supported_codes = {str(code).casefold() for code in supported}
-        if candidate not in supported_codes:
-            logger.warning("Local STT language %r is unsupported; using auto-detection", raw)
-            return None
-    return candidate
 
 
 def _openai_audio_unavailable_reason() -> Optional[str]:
@@ -408,7 +381,8 @@ def _transcribe_local(
         # pre_transcription hook overrides win over config-resolved values.
         transcribe_kwargs = build_local_transcribe_kwargs(stt_config)
         effective_language = language if language is not None else transcribe_kwargs.get("language")
-        normalized_language = _normalize_local_stt_language(effective_language, model)
+        normalized_language = _normalize_local_stt_language(
+            effective_language, getattr(model, "supported_languages", None))
         if normalized_language:
             transcribe_kwargs["language"] = normalized_language
         else:

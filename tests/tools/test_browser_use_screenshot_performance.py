@@ -25,6 +25,17 @@ def test_screenshot_discovery_preserves_path_order_and_matching(monkeypatch, std
     assert bu_cli._find_screenshot(stdout, since=100) == expected
 
 
+@pytest.mark.parametrize("letter", ["\u0130", "\u0131", "\u017f", "\u212a"])
+@pytest.mark.parametrize("separator", ["/", "\\"])
+def test_unicode_casefold_drive_prefix_preserves_legacy_path(monkeypatch, letter, separator):
+    # Python's legacy IGNORECASE character class also accepts these Unicode letters.
+    path = letter + ":" + separator + "screens" + separator + "shot.png"
+    assert bu_cli._IMAGE_PATH_RE.findall(path) == [path]
+    monkeypatch.setattr(bu_cli.os.path, "isfile", lambda candidate: candidate == path)
+    monkeypatch.setattr(bu_cli.os.path, "getmtime", lambda candidate: 100)
+    assert bu_cli._find_screenshot(path, since=100) == path
+
+
 @pytest.mark.parametrize("size", [120_000, 1_000_000])
 def test_slash_heavy_output_does_not_block_screenshot_discovery(size):
     # A GIL-holding regex can block thread-based timeout enforcement.

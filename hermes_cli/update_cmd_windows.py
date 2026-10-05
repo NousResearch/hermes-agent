@@ -257,7 +257,7 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
     # ``python -c <src> … -m hermes_cli.main <subcommand>``: the entry token belongs to the argv the
     # inline source carries for a LATER spawn, not to this holder (#107002) -- unless the source is a
     # Hermes bootstrap running the entry point in this process (#124318).
-    from gateway.status import command_line_runs_inline_source, inline_bootstrap_argv
+    from gateway.status_inline_source import command_line_runs_inline_source, inline_bootstrap_argv
     normalized = [t.strip("\"'").replace("\\", "/") for t in tokens]
     if command_line_runs_inline_source(normalized):
         tokens = inline_bootstrap_argv(normalized)
@@ -1260,7 +1260,7 @@ def _service_gateway_ready(name: str, profile: str | None, timeout_s: float | No
     def under_service(pids):
         try:
             service_pid = int(service.pid() or 0)
-        except Exception:
+        except (psutil.Error, OSError, ValueError, TypeError):  # SCM/psutil failure or a non-int pid
             return []
         owned = []
         for pid in pids:
@@ -1277,8 +1277,12 @@ def _service_gateway_ready(name: str, profile: str | None, timeout_s: float | No
 
 def _service_running(name: str) -> bool:
     try:
+        import psutil  # noqa: PLC0415 -- the same module _win_service resolves (tests stub it)
+    except ImportError:
+        return False
+    try:
         return _win_service(name)[1].status() == "running"
-    except Exception:
+    except (psutil.Error, OSError, AttributeError):  # missing service, SCM access, non-Windows psutil
         return False
 
 
@@ -1395,7 +1399,7 @@ def _unmapped_ready_filter(entry: dict, taken: set):
             return False
         try:
             return list(psutil.Process(pid).cmdline() or [])[1:] == tail
-        except Exception:
+        except (psutil.Error, OSError, ValueError):  # exited, access denied, zombie, invalid pid
             return False
     return lambda pids: [pid for pid in _owned_gateway_pids(pids) if matches(int(pid))]
 
@@ -1502,7 +1506,7 @@ def _resume_paused_set(token: dict) -> None:
     def attempt(step) -> None:
         try:
             step()
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- per-step isolation: any failed step is recorded and re-raised as a summary so it never keeps the other paused runtimes stopped
             failures.append(str(exc))
 
     attempt(lambda: _resume_windows_services(token))

@@ -178,7 +178,7 @@ def _venv_is_current(root: Path) -> bool:
     try:
         import pm
         return bool(pm.venv_is_current(project_root=root))
-    except Exception:
+    except Exception:  # health: allow BLE001 -- fail closed: any error reading the venv state means "not current", so paused gateways stay stopped
         return False
 
 
@@ -675,7 +675,7 @@ def _resume_fenced(claim_path: Path, body: dict) -> None:
             _resume_windows_gateways_after_update(token)
         else:
             token["resume_needed"] = False
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- recovery boundary: any resume error is reported and the claim handed back (finally), never raised into the launch
         print(f"  ⚠ Could not restart every paused gateway: {exc}. Run `hermes update` or "
               "`hermes gateway start`.", file=sys.stderr)
     finally:
@@ -709,5 +709,5 @@ def recover(argv: list[str] | None = None) -> None:
             won = claim(src)
             if won is not None:
                 _resume_claimed(*won)
-    except Exception as exc:  # never brick a launch on recovery
+    except Exception as exc:  # health: allow BLE001 -- never brick a launch on recovery; the record stays for the next one
         print(f"  ⚠ Paused-gateway recovery skipped: {exc}", file=sys.stderr)

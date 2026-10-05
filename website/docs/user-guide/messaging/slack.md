@@ -838,7 +838,7 @@ If this target passes but a live workspace still misroutes messages, investigate
 
 ### Channel allowlist (`allowed_channels`)
 
-Restrict the bot to a fixed set of Slack channels — useful when the bot is invited to many channels but should only respond in a few. When set, messages from channels NOT in this list are **silently ignored**, even if the bot is `@mentioned`.
+Restrict the bot to a fixed set of Slack channels — useful when the bot is invited to many channels but should only respond in a few. When set, messages and slash commands from channels NOT in this list are **silently ignored**, even if the bot is `@mentioned`. Slash commands in a channel listed in `ignored_channels` are ignored too.
 
 **1:1 DMs are exempt** from this filter, so authorized users can always reach the bot in a direct message. **Group DMs (MPIMs) are not exempt** — like channels, an MPIM must be on the allowlist (its ID starts with `G`) or its messages are dropped.
 

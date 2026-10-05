@@ -17,7 +17,8 @@ def github(tmp_path, monkeypatch):
              "classic_required": True, "rules_403": None, "pr_state": "OPEN",
              "merge_commit": None, "final_merge_commit": None, "compare_status": "ahead",
              "merge_base": None, "base_sha": "d" * 40, "base_sha_after_compare": None,
-             "branch_reads": 0, "check_runs": None, "statuses": []}
+             "branch_reads": 0, "check_runs": None, "statuses": [], "merged_at": None,
+             "check_suites": []}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -26,6 +27,7 @@ def github(tmp_path, monkeypatch):
             if self.path == "/graphql":
                 value = {"data": {"repository": {"pullRequest": {
                     "headRefOid": sha, "baseRefName": "main", "state": state["pr_state"],
+                    "mergedAt": state["merged_at"] if state["pr_state"] == "MERGED" else None,
                     "mergeCommit": {"oid": state["merge_commit"]} if state["pr_state"] == "MERGED" and state["merge_commit"] else None,
                     "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
                         {"context": "required", "app": {"databaseId": 1}}
@@ -65,6 +67,8 @@ def github(tmp_path, monkeypatch):
                     state["race"]()
                 if state.get("head_change"):
                     state["head"] = "b" * 40
+            elif "/check-suites" in self.path:
+                value = [{"total_count": len(state["check_suites"]), "check_suites": state["check_suites"]}]
             elif "/statuses" in self.path:
                 value = [state["statuses"]]
             elif "/branches/" in self.path:
@@ -275,6 +279,50 @@ def test_merged_pr_rejects_unknown_or_failed_landing_evidence(github, change):
         assert receipt["classification"] == "stale"
     elif change == "missing_head":
         assert receipt["classification"] == "infra"
+
+
+@pytest.mark.parametrize("case", [
+    "triggered_after_merge", "triggered_before_merge", "queued_past_merge", "unknown_trigger_time",
+    "only_post_merge_runs",
+])
+def test_merged_pr_fallback_ignores_only_check_runs_triggered_after_the_merge(github, case):
+    """With no required set, a check run its suite says the merge itself triggered (a
+    pull_request "closed" workflow such as delete-head-branch) is not this PR's CI evidence.
+    A run triggered before the merge still counts even if it started later, and an unknown
+    trigger time counts too, so a pending run keeps refusing completion."""
+    merged_at, before, after = "2026-10-05T11:42:25Z", "2026-10-05T11:38:41Z", "2026-10-05T11:42:28Z"
+    late_suite = {"triggered_after_merge": after, "only_post_merge_runs": after,
+                  "triggered_before_merge": before, "queued_past_merge": before}.get(case)
+    late_started = before if case == "triggered_before_merge" else "2026-10-05T11:42:31Z"
+    guard = {"id": 1, "name": "guard", "head_sha": "a" * 40, "app": {"id": 1}, "check_suite": {"id": 1},
+             "started_at": "2026-10-05T11:38:44Z", "status": "completed", "conclusion": "success"}
+    late = {"id": 2, "name": "delete-head-branch", "head_sha": "a" * 40, "app": {"id": 1},
+            "check_suite": {"id": 2}, "started_at": late_started, "status": "in_progress", "conclusion": None}
+    suites = [{"id": 1, "created_at": before}]
+    if late_suite:
+        suites.append({"id": 2, "created_at": late_suite})
+    github.update(pr_state="MERGED", merge_commit="c" * 40, merged_at=merged_at, rules_403="dict",
+                  classic_required=False, check_suites=suites,
+                  check_runs=[late] if case == "only_post_merge_runs" else [guard, late])
+    with connect() as conn:
+        tid = kb.create_task(conn, title=f"Landed {case}", completion_contract="acme/repo", body="## Allowed paths\nsrc/\n")
+        ok = kb.complete_task(conn, tid, result="done", metadata={
+            "published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+    assert ok is (case == "triggered_after_merge")
+    assert receipt["ruleset_evidence"] == "feature_unavailable" and receipt["required"] == []
+    if case == "triggered_after_merge":
+        assert receipt["classification"] == "success"
+        assert receipt["checks_evidence"] == "all_current_head_check_runs_pass"
+        assert [check["name"] for check in receipt["checks"]] == ["guard"]
+        assert receipt["post_merge_check_runs"] == [{"name": "delete-head-branch", "id": 2}]
+    elif case == "only_post_merge_runs":
+        assert receipt["classification"] == "missing"
+        assert "no current-head check" in receipt["detail"]
+    else:
+        assert receipt["classification"] == "pending"
+        assert "delete-head-branch" in {check["name"] for check in receipt["checks"]}
 
 
 @pytest.mark.platforms("linux")

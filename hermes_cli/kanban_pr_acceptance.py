@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -143,7 +144,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
         repo, number = match[1], int(match[2])
         receipt["pr_url"] = url
         owner, name = repo.split("/")
-        query = '''{repository(owner:%s,name:%s){pullRequest(number:%d){headRefOid baseRefName state mergeCommit{oid}
+        query = '''{repository(owner:%s,name:%s){pullRequest(number:%d){headRefOid baseRefName state mergedAt mergeCommit{oid}
             baseRef{branchProtectionRule{requiredStatusChecks{context app{databaseId}}}}}}}''' % (
                 json.dumps(owner), json.dumps(name), number)
         repository = _api("graphql", query=query, profile_home=profile_home)["data"]["repository"]
@@ -226,7 +227,22 @@ def collect_acceptance(contract: str, published_pr: str | None,
                     "head_sha": check.get("head_sha", check.get("sha")),
                     "classification": classification, "conclusion": outcome})
         if merged and not required:
-            observed = [(run, run.get("conclusion"), True) for run in runs]
+            # A run in a check suite GitHub created after the merge was triggered by the merge
+            # itself (a pull_request "closed" workflow), so it is not this PR's CI evidence. The
+            # suite's server-set created_at is the trigger time; a run's started_at is app-supplied
+            # and later than the trigger for a queued job. Unknown times keep the run counted.
+            merged_at = _github_time(pr.get("mergedAt"))
+            suite_created = {} if merged_at is None else {
+                suite["id"]: _github_time(suite.get("created_at"))
+                for page in _api(f"repos/{repo}/commits/{sha}/check-suites?per_page=100",
+                                 paginate=True, profile_home=profile_home)
+                for suite in page["check_suites"]}
+            post_merge = {run["id"] for run in runs
+                          if (created := suite_created.get((run.get("check_suite") or {}).get("id")))
+                          and created > merged_at}
+            receipt["post_merge_check_runs"] = [{"name": run.get("name"), "id": run["id"]}
+                                                for run in runs if run["id"] in post_merge]
+            observed = [(run, run.get("conclusion"), True) for run in runs if run["id"] not in post_merge]
             if not observed:
                 receipt.update(classification="missing",
                                detail="Merged PR has no current-head check-run evidence.")
@@ -274,6 +290,14 @@ def collect_acceptance(contract: str, published_pr: str | None,
         # Never persist gh stderr (credentials/host details); the failed phase is actionable.
         receipt.update(classification="infra", detail="GitHub acceptance evidence unavailable or incomplete; check gh authentication/API access and retry.")
         return receipt
+
+
+def _github_time(value) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else None
 
 
 def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:

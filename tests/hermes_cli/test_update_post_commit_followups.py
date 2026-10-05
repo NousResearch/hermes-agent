@@ -224,12 +224,13 @@ def test_interrupt_after_the_run_closed_as_success_never_tells_the_gateway_1(tmp
     """Review regression 3, the ``cmd_update`` boundary: once this run's receipt says ``success``,
     an interrupt escaping afterwards must not write 1 to the gateway /update status."""
     from types import SimpleNamespace
-    from hermes_cli import main, update_cmd
+    from hermes_cli import main, update_cmd, update_owning_install
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
     monkeypatch.setattr(main, "_install_hangup_protection", lambda **kw: None)
     monkeypatch.setattr(main, "_finalize_update_output", lambda state: None)
+    monkeypatch.setattr(update_owning_install, "retarget_to_owning_install", lambda root: None)  # not the target
 
     def committed_then_interrupted(args, gateway_mode):
         update_receipt.begin_update_receipt()
@@ -245,12 +246,13 @@ def test_interrupt_after_the_run_closed_as_success_never_tells_the_gateway_1(tmp
 
 def test_a_failure_before_the_run_closed_still_tells_the_gateway_1(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from hermes_cli import main, update_cmd
+    from hermes_cli import main, update_cmd, update_owning_install
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
     monkeypatch.setattr(main, "_install_hangup_protection", lambda **kw: None)
     monkeypatch.setattr(main, "_finalize_update_output", lambda state: None)
+    monkeypatch.setattr(update_owning_install, "retarget_to_owning_install", lambda root: None)  # not the target
 
     def interrupted_while_open(args, gateway_mode):
         update_receipt.begin_update_receipt()

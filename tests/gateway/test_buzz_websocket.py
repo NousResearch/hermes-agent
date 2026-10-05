@@ -194,6 +194,65 @@ async def test_websocket_loop_reconnects_when_read_goes_silent(monkeypatch, capl
 
 
 @pytest.mark.asyncio
+async def test_websocket_loop_keeps_a_live_but_silent_connection(monkeypatch):
+    """Silence alone must not cut a healthy socket: the read bound has to probe first.
+
+    Buzz channels go frameless when idle and websockets answers keepalive pongs inside its own
+    reader, so a live relay can stay silent far past the read bound. The old bound treated that as
+    death and reconnected every 300s; a socket that answers a liveness ping must stay open.
+    """
+    adapter = _make_adapter()
+    monkeypatch.setattr(_buzz_mod, "_WS_READ_IDLE_TIMEOUT", 0.05)
+
+    sockets = []
+    pings = []
+
+    class LiveWebSocket(_ScriptedWebSocket):
+        def __init__(self):
+            super().__init__(self._parked)
+            self.pings = 0
+
+        async def _parked(self):
+            await asyncio.Event().wait()
+
+        async def ping(self, data=None):
+            self.pings += 1
+            pings.append(self)
+            waiter = asyncio.get_running_loop().create_future()
+            waiter.set_result(0.0)  # the relay answers
+            return waiter
+
+    def fake_connect(*args, **kwargs):
+        ws = LiveWebSocket()
+        sockets.append(ws)
+        return ws
+
+    import websockets as _ws_mod
+
+    monkeypatch.setattr(_ws_mod, "connect", fake_connect)
+
+    task = asyncio.create_task(adapter._websocket_loop())
+    try:
+        # Several expired read bounds: each one probes, gets a pong, and keeps the socket.
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        socket_count = len(sockets)
+        still_open = not sockets[0].exited
+        probe_count = len(pings)
+    finally:
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, 5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+
+    assert socket_count == 1, f"a live idle socket was reconnected {socket_count} times"
+    assert still_open, "the live connection was closed despite answering the liveness ping"
+    assert probe_count >= 2, "the read bound expired without probing liveness"
+
+
+@pytest.mark.asyncio
 async def test_websocket_loop_reconnects_when_discovery_send_sees_closed_socket(monkeypatch):
     """A send-side ConnectionClosed proves the socket is dead even while the read is parked.
 

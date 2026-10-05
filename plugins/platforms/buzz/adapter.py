@@ -146,7 +146,13 @@ _WS_AUTH_TIMEOUT = 20.0
 # The library keepalive (ping_interval/ping_timeout below) should catch a dead relay first, but a relay-side
 # close the transport never surfaces (observed as a CLOSE_WAIT socket with the loop parked on recv, #98097)
 # leaves the gateway "connected" while inbound stops; this timeout forces the normal reconnect path instead.
+# The bound alone is not a liveness test: websockets' asyncio client answers keepalive pongs in its own reader
+# (connection.pong_waiters) and never yields them to the frame iterator, so a healthy Buzz channel with no
+# events produces zero frames and the bound would cut a live socket every 300s. An expired bound therefore
+# probes the socket (_websocket_alive) and reconnects only when the ping goes unanswered.
 _WS_READ_IDLE_TIMEOUT = 300.0
+# How long an expired read bound waits for a ping answer before calling the socket dead.
+_WS_LIVENESS_PROBE_TIMEOUT = 10.0
 _WS_MAX_MESSAGE_BYTES = 2_000_000
 _WS_MEMBERSHIP_KIND = 44100  # Buzz channel-membership event — live DM discovery
 _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
@@ -1144,38 +1150,66 @@ class BuzzAdapter(BasePlatformAdapter):
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
+    async def _websocket_alive(self, websocket) -> bool:
+        """Probe a socket whose read went silent: a pong proves liveness, silence or an error proves death.
+
+        The library's keepalive pongs are answered inside its own reader and never reach the frame
+        iterator, so an expired read bound cannot tell a dead relay from a healthy channel with no
+        events. It has to ask directly before ending a connection that may be live.
+        """
+        ping = getattr(websocket, "ping", None)
+        if ping is None:
+            # No control-frame support to probe with (a test double, or a transport without ping):
+            # trust the read bound.
+            return False
+        try:
+            pong_waiter = await ping()
+            await asyncio.wait_for(pong_waiter, timeout=_WS_LIVENESS_PROBE_TIMEOUT)
+            return True
+        except Exception:
+            return False
+
     async def _ws_read_loop(self, websocket, subscriptions: Dict[str, Optional[str]]) -> None:
-        """Read frames until the relay closes; a close or an idle read raises ConnectionError to reconnect."""
+        """Read frames until the relay closes; a close or a dead idle read raises ConnectionError to reconnect."""
         frame_iter = websocket.__aiter__()
-        while True:
-            read_task = asyncio.ensure_future(frame_iter.__anext__())
-            try:
+        read_task: Optional[asyncio.Task] = None
+        try:
+            while True:
+                pending = read_task
+                if pending is None:
+                    pending = read_task = asyncio.ensure_future(frame_iter.__anext__())
                 done, _ = await asyncio.wait(
-                    {read_task}, timeout=_WS_READ_IDLE_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
+                    {pending}, timeout=_WS_READ_IDLE_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
                 )
                 if not done:
-                    # wait_for() cancels and then waits for its awaitable to acknowledge the cancellation.
-                    # A transport receive stuck below asyncio can ignore that cancellation forever, leaving the
-                    # adapter healthy-looking. Detach the read instead so the outer loop can close and reconnect.
+                    if await self._websocket_alive(websocket):
+                        # Silence is not death: websockets answers keepalive pongs in its own reader and
+                        # never yields them to the frame iterator, so a healthy Buzz channel with no events
+                        # stays frameless. Keep the same read parked and wait out another bound.
+                        continue
+                    # A transport receive stuck below asyncio can ignore cancellation forever, so the read
+                    # is detached rather than awaited: the outer loop closes and reconnects without it.
                     raise ConnectionError(
-                        f"no WebSocket frame for {_WS_READ_IDLE_TIMEOUT:.0f}s; assuming the connection went silent"
+                        f"no WebSocket frame for {_WS_READ_IDLE_TIMEOUT:.0f}s and the liveness ping went "
+                        "unanswered; assuming the connection went silent"
                     )
-                raw = read_task.result()
-            except StopAsyncIteration:
-                # A clean relay close is still a disconnect: raising sends it through the same
-                # backoff + "retrying" path instead of reconnecting in a hot loop.
-                raise ConnectionError("relay closed the WebSocket") from None
-            finally:
-                if not read_task.done():
-                    read_task.cancel()
-                    read_task.add_done_callback(_consume_ws_read_task)
-            try:
-                message = json.loads(raw)
-            except (ValueError, TypeError):
-                logger.warning("Buzz: ignoring malformed WebSocket frame")
-                continue
-            if isinstance(message, list) and message:
-                await self._handle_ws_message(websocket, subscriptions, message)
+                raw = pending.result()
+                read_task = None
+                try:
+                    message = json.loads(raw)
+                except (ValueError, TypeError):
+                    logger.warning("Buzz: ignoring malformed WebSocket frame")
+                    continue
+                if isinstance(message, list) and message:
+                    await self._handle_ws_message(websocket, subscriptions, message)
+        except StopAsyncIteration:
+            # A clean relay close is still a disconnect: raising sends it through the same
+            # backoff + "retrying" path instead of reconnecting in a hot loop.
+            raise ConnectionError("relay closed the WebSocket") from None
+        finally:
+            if read_task is not None and not read_task.done():
+                read_task.cancel()
+                read_task.add_done_callback(_consume_ws_read_task)
 
     async def _handle_ws_message(self, websocket, subscriptions: Dict[str, Optional[str]], message: list) -> None:
         """Route one parsed relay frame (EVENT / CLOSED / NOTICE)."""

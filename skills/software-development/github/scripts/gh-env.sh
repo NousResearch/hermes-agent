@@ -37,8 +37,9 @@ fi
 
 # Resolve username for curl method
 if [ "$GH_AUTH_METHOD" = "curl" ] && [ -z "$GH_USER" ]; then
-    GH_USER=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-        https://api.github.com/user 2>/dev/null \
+    GH_AUTH="Authorization: token $GITHUB_TOKEN"
+    GH_USER_JSON=$(curl -s -H "$GH_AUTH" https://api.github.com/user 2>/dev/null)
+    GH_USER=$(printf '%s' "$GH_USER_JSON" \
         | python3 -c "import sys,json; print(json.load(sys.stdin).get('login',''))" 2>/dev/null)
 fi
 

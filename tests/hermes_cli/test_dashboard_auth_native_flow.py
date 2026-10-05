@@ -229,8 +229,8 @@ def _native_authorize_params(challenge, **overrides):
 @pytest.mark.parametrize("forwarded_template", ["198.51.100.{i}", ", 198.51.100.{i}"],
                          ids=["rotated-address", "empty-first-hop"])
 def test_native_authorize_spoofed_forwarded_headers_cannot_bypass_pending_cap(
-    gated_client, forwarded_template,
-):
+    gated_client: TestClient, forwarded_template: str,
+) -> None:
     # The public OAuth entry point must limit one peer before allocating the
     # global pending store, even when XFF rotates or has an empty first hop.
     _verifier, challenge = _make_pkce()
@@ -251,7 +251,7 @@ def test_native_authorize_spoofed_forwarded_headers_cannot_bypass_pending_cap(
 
     # Exhausting one peer's allowance must leave room for another real peer.
     other_client = TestClient(
-        web_server.app, base_url=gated_client.base_url,
+        web_server.app, base_url=str(gated_client.base_url),
         client=("203.0.113.10", 50000), follow_redirects=False,
     )
     assert other_client.get("/auth/native/authorize", params=params).status_code == 302

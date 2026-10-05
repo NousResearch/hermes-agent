@@ -341,15 +341,15 @@ class TestRateLimit:
         ids=["direct", "loopback-proxy", "configured-proxy"],
     )
     def test_spoofed_x_forwarded_for_does_not_reset_rate_limit(
-        self, gated_app, peer, forwarded_suffix,
-    ):
+        self: TestRateLimit, gated_app: TestClient, peer: str, forwarded_suffix: str,
+    ) -> None:
         # X-Forwarded-For is attacker-controlled unless it came from a trusted
         # reverse proxy. Even behind an appending proxy, the client-supplied
         # first hop must not override Uvicorn's resolved client address.
         trusted = _dashboard_forwarded_allow_ips({"trusted_proxies": ["172.18.0.0/16"]})
         # Uvicorn and Starlette expose incompatible static ASGI type aliases.
         app = cast(Any, ProxyHeadersMiddleware(cast(Any, web_server.app), trusted_hosts=trusted))
-        client = TestClient(app, base_url=gated_app.base_url, client=(peer, 50000))
+        client = TestClient(app, base_url=str(gated_app.base_url), client=(peer, 50000))
         for i in range(_PW_RATE_MAX_ATTEMPTS):
             resp = client.post(
                 "/auth/password-login",
@@ -368,7 +368,7 @@ class TestRateLimit:
         # Another real client must retain its own budget, including when both
         # clients reach the dashboard through the same trusted proxy.
         other_peer = peer if forwarded_suffix else "203.0.113.10"
-        other_client = TestClient(app, base_url=gated_app.base_url, client=(other_peer, 50001))
+        other_client = TestClient(app, base_url=str(gated_app.base_url), client=(other_peer, 50001))
         allowed = other_client.post(
             "/auth/password-login",
             headers={"X-Forwarded-For": "203.0.113.10"},
@@ -378,7 +378,7 @@ class TestRateLimit:
 
 
 @pytest.mark.parametrize("peer", [("203.0.113.7", 12345), None])
-def test_client_ip_uses_asgi_peer_not_forwarded_header(peer):
+def test_client_ip_uses_asgi_peer_not_forwarded_header(peer: tuple[str, int] | None) -> None:
     from fastapi import Request
 
     from hermes_cli.dashboard_auth.request_utils import client_ip

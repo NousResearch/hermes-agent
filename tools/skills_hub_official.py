@@ -53,6 +53,14 @@ class OptionalSkillSource(SkillSource):
         # "category/skill" -> True from the live repo tree; None = not fetched yet.
         self._remote_dirs: Optional[Dict[str, bool]] = None
 
+    @property
+    def is_unreachable(self) -> bool:  # nested GitHubSource's flag, read by the install failure classifier
+        return self._github is not None and self._github.is_unreachable
+
+    def reset_unreachable(self) -> None:
+        if self._github is not None:
+            self._github.reset_unreachable()
+
     @staticmethod
     def _rel(identifier: str) -> str:
         return identifier.split("/", 1)[-1] if identifier.startswith("official/") else identifier
@@ -292,6 +300,14 @@ class HermesIndexSource(SkillSource):
         self._loaded = False
         self.auth = auth
         self._github: Optional[GitHubSource] = None  # only needed for fetch
+
+    @property
+    def is_unreachable(self) -> bool:  # nested GitHubSource's flag, read by the install failure classifier
+        return self._github is not None and self._github.is_unreachable
+
+    def reset_unreachable(self) -> None:
+        if self._github is not None:
+            self._github.reset_unreachable()
 
     def _ensure_loaded(self) -> dict:
         if not self._loaded:

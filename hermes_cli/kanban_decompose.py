@@ -353,6 +353,24 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str, mo
     )
 
 
+def _record_mode_event(task_id: str, *, mode: str, forced: bool, outcome: DecomposeOutcome) -> None:
+    """Board-visible audit: the card shows WHY it fanned out or was rewritten.
+
+    ``mode`` rides the outcome and the CLI ok-line, but neither is durable for
+    whoever reads the board later - one ``decompose_mode`` task event records
+    the mode, whether it was forced, and whether the run succeeded. An audit
+    failure never masks the outcome.
+    """
+    try:
+        with kbc.connect_closing() as conn:
+            with kb.write_txn(conn, allow_nested=True):
+                kb._append_event(conn, task_id, "decompose_mode", {
+                    "mode": mode, "forced": forced, "fanout": outcome.fanout, "ok": outcome.ok,
+                })
+    except Exception:
+        logger.exception("decompose: failed to record mode audit for task %s", task_id)
+
+
 def decompose_task(
     task_id: str,
     *,
@@ -413,22 +431,27 @@ def decompose_task(
             }]
             parsed = {"fanout": True, "tasks": synthetic_tasks, "rationale": "forced fan-out (model chose tighten)"}
             logger.info("decompose: task %s forced fan-out over model's tighten reply", task_id)
-        return _apply_fanout(task_id, parsed, routing, audit_author, mode=mode)
+        outcome = _apply_fanout(task_id, parsed, routing, audit_author, mode=mode)
     elif force_fanout is False:
         mode = "forced_tighten"
         if model_fanout:
             # Force tighten but model returned fanout — typed failure, not silent collapse.
-            return DecomposeOutcome(
+            outcome = DecomposeOutcome(
                 task_id, False,
                 "forced tighten but model returned fanout=true (refusing to silently collapse)",
                 fanout=False, mode=mode,
             )
-        return _apply_single(task, parsed, routing, audit_author, mode=mode)
+        else:
+            outcome = _apply_single(task, parsed, routing, audit_author, mode=mode)
     else:
         mode = "auto"
         if not model_fanout:
-            return _apply_single(task, parsed, routing, audit_author, mode=mode)
-        return _apply_fanout(task_id, parsed, routing, audit_author, mode=mode)
+            outcome = _apply_single(task, parsed, routing, audit_author, mode=mode)
+        else:
+            outcome = _apply_fanout(task_id, parsed, routing, audit_author, mode=mode)
+
+    _record_mode_event(task_id, mode=mode, forced=force_fanout is not None, outcome=outcome)
+    return outcome
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:

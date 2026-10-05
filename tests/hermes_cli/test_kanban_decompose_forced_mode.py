@@ -90,6 +90,15 @@ def test_forced_fanout_against_single_task_reply(kanban_home):
     assert outcome.child_ids and len(outcome.child_ids) == 1
     assert outcome.mode == "forced_fanout"
 
+    # Board-visible audit: the mode and forced-ness survive the run as an event,
+    # so a later reader of the board (not just the CLI stdout) sees why it fanned out.
+    with kbc.connect() as conn:
+        mode_events = [e for e in kb.list_events(conn, tid) if e.kind == "decompose_mode"]
+    assert mode_events, "mode must be readable from the board"
+    assert mode_events[-1].payload["mode"] == "forced_fanout"
+    assert mode_events[-1].payload["forced"] is True
+    assert mode_events[-1].payload["ok"] is True
+
     # Verify the child was created with the model's tightened content
     with kbc.connect() as conn:
         child = kb.get_task(conn, outcome.child_ids[0])
@@ -129,6 +138,14 @@ def test_forced_tighten_against_fanout_reply(kanban_home):
     assert outcome.fanout is False
     assert outcome.mode == "forced_tighten"
 
+    # The refusal is board-visible too: mode recorded, ok=False, no children.
+    with kbc.connect() as conn:
+        mode_events = [e for e in kb.list_events(conn, tid) if e.kind == "decompose_mode"]
+    assert mode_events, "mode must be readable from the board"
+    assert mode_events[-1].payload["mode"] == "forced_tighten"
+    assert mode_events[-1].payload["forced"] is True
+    assert mode_events[-1].payload["ok"] is False
+
     # Verify no children were created
     with kbc.connect() as conn:
         task = kb.get_task(conn, tid)
@@ -163,6 +180,12 @@ def test_no_flag_control_model_chooses_fanout(kanban_home):
     assert outcome.fanout is True
     assert outcome.child_ids and len(outcome.child_ids) == 2
     assert outcome.mode == "auto"
+
+    # No flag: the board record says the model chose, not a force.
+    with kbc.connect() as conn:
+        mode_events = [e for e in kb.list_events(conn, tid) if e.kind == "decompose_mode"]
+    assert mode_events and mode_events[-1].payload["mode"] == "auto"
+    assert mode_events[-1].payload["forced"] is False
 
 
 def test_no_flag_control_model_chooses_tighten(kanban_home):

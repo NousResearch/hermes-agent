@@ -326,17 +326,20 @@ async function probeRemoteHermesHome(ssh) {
  * The probe uses only the host's system Python and the shared marker judge
  * (remote-update-marker-programs.ts); it never imports the changing checkout.
  * Absence or a confirmed-dead claim (owner and delegate) is clear, and a dead
- * claim is unlinked under `<marker>.lock`. Every parse, read, lock, or
+ * claim is unlinked under `<marker>.lock` unless the checkout lock is still
+ * held (HELD: a killed updater's child is still running). `hermesPath`, once
+ * located, adds its checkout to the probed ones. Every parse, read, lock, or
  * transport uncertainty fails closed so a Desktop relaunch cannot start
  * `serve` beside an updater that survived the old app process.
  */
-async function assertRemoteInstallUpdateClear(ssh, hermesHome) {
+async function assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath = '') {
   const marker = expandRemotePath(`${remoteInstallRoot(hermesHome)}/.hermes-update-in-progress`)
+  const hermes = hermesPath ? ` '' ${expandRemotePath(hermesPath)}` : ''
   let observation = ''
 
   try {
     observation =
-      String(await ssh.exec(`python3 -c ${shq(REMOTE_MARKER_GATE_PY)} ${marker}`))
+      String(await ssh.exec(`python3 -c ${shq(REMOTE_MARKER_GATE_PY)} ${marker}${hermes}`))
         .trim()
         .split(/\r?\n/)
         .pop() || ''
@@ -356,7 +359,9 @@ async function assertRemoteInstallUpdateClear(ssh, hermesHome) {
   const error: any = new Error(
     live
       ? `Remote Hermes update process ${live[1]} is still running; SSH startup is paused.`
-      : 'The remote Hermes update marker is unreadable, malformed, or locked; refusing SSH startup.'
+      : observation === 'HELD'
+        ? 'A process the remote Hermes update started still holds the install; SSH startup is paused.'
+        : 'The remote Hermes update marker is unreadable, malformed, or locked; refusing SSH startup.'
   )
 
   error.kind = 'update-in-progress'
@@ -960,14 +965,16 @@ finally:
 
 // Run `command` under the updaters' marker lock: REMOTE_MARKER_GATE_PY holds
 // `<marker>.lock` (the sidecar Python update_lock and marker.sh flock), clears a
-// dead claim, and refuses (exit 75) a live or unreadable one, then keeps the
+// dead claim while `hermes`'s checkout lock is free, and refuses (exit 75) a
+// live, unreadable, or checkout-held one, then keeps the
 // lock across the spawn and the initial lockfile publication. The descriptor
 // is close-on-exec and passed only to the outer shell; each detached child
 // closes it before execing Hermes. markerPath is expandRemotePath() output — a
 // complete shell word ("$HOME"'/…' or '/abs/…') embedded raw so $HOME expands
-// remotely; a second shq() would hand python the quote characters.
-function withRemoteUpdateMutex(command, markerPath) {
-  return `python3 -c ${shq(REMOTE_MARKER_GATE_PY)} ${markerPath} ${shq(command)}`
+// remotely; a second shq() would hand python the quote characters. `hermes`
+// is the same kind of word (expandRemotePath of the located executable).
+function withRemoteUpdateMutex(command, markerPath, hermes) {
+  return `python3 -c ${shq(REMOTE_MARKER_GATE_PY)} ${markerPath} ${shq(command)} ${hermes}`
 }
 
 /**
@@ -1135,7 +1142,8 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
       `mkdir -p "$(dirname ${logPath})" && ` +
         `${detachedSpawn}; ` +
         `${markerAbsent} || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 75; }; echo "$child"`,
-      marker
+      marker,
+      hermes
     )
   }
 
@@ -1176,7 +1184,8 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
       `temporary_lock="\${lock}.${reservationNonce}.tmp"; ` +
       `printf '%s' "$lock_json" > "$temporary_lock" && mv -f "$temporary_lock" "$lock" || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 76; }; ` +
       `echo "$child"`,
-    marker
+    marker,
+    hermes
   )
 }
 
@@ -1545,7 +1554,7 @@ async function connect(deps) {
       }
 
       assertBootstrapNotSuperseded(signal)
-      await assertRemoteInstallUpdateClear(ssh, hermesHome)
+      await assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath)
       const localPort = await openForward(deps, lock.port)
 
       try {
@@ -1564,7 +1573,7 @@ async function connect(deps) {
         if (reuseClassification === 'authenticated-stale') {
           assertBootstrapNotSuperseded(signal)
           await cancelForwardSafe(deps, localPort, lock.port)
-          await assertRemoteInstallUpdateClear(ssh, hermesHome)
+          await assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath)
           await cleanupStale(ssh, ownershipId, lock)
         } else if (reuseClassification === 'authenticated-ok') {
           const token = await adoptOwnedServedToken(
@@ -1608,13 +1617,13 @@ async function connect(deps) {
       }
     } else {
       assertBootstrapNotSuperseded(signal)
-      await assertRemoteInstallUpdateClear(ssh, hermesHome)
+      await assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath)
       await cleanupStale(ssh, ownershipId, lock, pidAlive)
     }
   }
 
   assertBootstrapNotSuperseded(signal)
-  await assertRemoteInstallUpdateClear(ssh, hermesHome)
+  await assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath)
   const spawnToken = mintToken()
 
   const spawned = await spawnRemoteDashboard(ssh, {
@@ -1624,7 +1633,7 @@ async function connect(deps) {
     ownershipId,
     hermesHome,
     guestOnboarding,
-    assertInstallClear: () => assertRemoteInstallUpdateClear(ssh, hermesHome)
+    assertInstallClear: () => assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath)
   })
 
   if (spawned.existing) {

@@ -225,6 +225,41 @@ test('Windows relaunch gate refuses live and uncertain markers before executing 
   }
 })
 
+test('Windows gates keep a dead marker while the checkout lock or a lease byte is held', async () => {
+  // Review G1: a dead claim is deleted (spawn) or reported CLEAR (probe) only
+  // after the update_lock byte range -- owner byte + 16 R5b lease bytes at
+  // 1048576 -- of the installer checkout and the runtime python's checkout is free.
+  const decode = (command: string) => Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  const runtime = { hermesHome: 'C:\\Users\\alice\\.hermes', python: 'C:\\src\\hermes\\venv\\Scripts\\python.exe' }
+  const spawnScript = decode(atomicWindowsSpawnCommand(runtime))
+  let probeScript = ''
+
+  const observed = await assertWindowsRemoteInstallUpdateClear(
+    sshWith(async command => {
+      probeScript = decode(command)
+
+      return 'HELD'
+    }),
+    runtime.hermesHome,
+    runtime.python
+  ).catch(error => error)
+
+  assert.equal(observed.kind, 'update-in-progress')
+  assert.match(observed.message, /still holds the install/)
+
+  for (const script of [spawnScript, probeScript]) {
+    assert.match(script, /\$lockFile\.Lock\(1048576,17\)/)
+    assert.match(script, /Combine\(\$gitdir,"hermes-update\.lock"\)/)
+    assert.match(script, /\$checkoutRoots=@\(\[IO\.Path\]::Combine\(\$installRoot,"hermes-agent"\),/)
+    assert.ok(script.includes("GetDirectoryName('C:\\src\\hermes\\venv\\Scripts\\python.exe')"))
+  }
+
+  const deleteAt = spawnScript.indexOf('[IO.File]::Delete($marker)')
+  const guardAt = spawnScript.indexOf('if($verdict -eq "CLEAR" -and (Test-CheckoutLockHeld $checkoutRoots)){$verdict="HELD"}')
+  assert.ok(guardAt > 0 && guardAt < deleteAt, 'the checkout probe must precede the dead-marker delete')
+  assert.match(probeScript, /if\(\$result -eq "CLEAR" -and \(Test-CheckoutLockHeld \$checkoutRoots\)\)\{\$result="HELD"\}/)
+})
+
 test('Windows relaunch gate uses strict install-wide marker parsing and fail-closed PID probing', async () => {
   let script = ''
 

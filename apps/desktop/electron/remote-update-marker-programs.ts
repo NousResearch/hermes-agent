@@ -104,18 +104,23 @@ def marker_verdict(raw):
 `
 
 /**
- * POSIX gate: `python3 -c GATE <marker> [payload]`. Holds the updaters' kernel
- * lock `<marker>.lock` (A7 rule 1: Python update_lock flock, marker.sh flock)
- * for a bounded 10 s, judges the marker, unlinks a dead claim inside that hold,
- * then either prints the verdict (no payload: the relaunch probe) or runs the
- * payload as `sh -c payload hermes-update-mutex <fd>` still holding the lock.
- * A refused payload exits 75 with the verdict on stderr. The probe skips the
- * lock when there is no marker, so it never creates files on a clean host.
+ * POSIX gate: `python3 -c GATE <marker> [payload] [hermes...]` (an empty payload
+ * is the probe). Holds the updaters' kernel lock `<marker>.lock` (A7 rule 1:
+ * Python update_lock flock, marker.sh flock) for a bounded 10 s, judges the
+ * marker, and unlinks a dead claim inside that hold only while the install's
+ * CHECKOUT lock is free (update_lock._reclaim_dead): a killed updater's
+ * completion/build child still holding it answers HELD and keeps the marker.
+ * The checkouts probed are `<marker dir>/hermes-agent` plus the checkout of
+ * each `hermes` executable argument (`<root>/venv/bin/hermes`, symlinks
+ * resolved). Then it either prints the verdict (no payload: the relaunch probe)
+ * or runs the payload as `sh -c payload hermes-update-mutex <fd>` still holding
+ * the lock. A refused payload exits 75 with the verdict on stderr. The probe
+ * skips the lock when there is no marker, so it never creates files on a clean host.
  */
 export const REMOTE_MARKER_GATE_PY = `${REMOTE_MARKER_JUDGE_PY}
 import fcntl,subprocess
 marker=sys.argv[1]
-payload=sys.argv[2] if len(sys.argv)>2 else None
+payload=sys.argv[2] if len(sys.argv)>2 and sys.argv[2] else None
 if payload is None and not os.path.lexists(marker):
     print('CLEAR');sys.exit(0)
 
@@ -133,6 +138,36 @@ def read_marker():
         with open(marker,'rb') as stream:return stream.read(4097)
     except FileNotFoundError:return None
 
+def checkout_lock(root):
+    # hermes_cli/update_lock.py::checkout_lock_path: <git common dir>/hermes-update.lock, else <root>/.hermes-update.lock.
+    plain=os.path.join(root,'.hermes-update.lock');dot=os.path.join(root,'.git')
+    try:
+        if os.path.isdir(dot):gitdir=dot
+        elif os.path.isfile(dot):
+            with open(dot,encoding='utf-8-sig') as stream:text=stream.read().strip()
+            if not text.startswith('gitdir:'):return plain
+            gitdir=os.path.join(root,text[len('gitdir:'):].strip())
+        else:return plain
+        common=os.path.join(gitdir,'commondir')
+        if os.path.isfile(common):
+            with open(common,encoding='utf-8-sig') as stream:gitdir=os.path.join(gitdir,stream.read().strip())
+    except (OSError,ValueError):return plain
+    return os.path.join(os.path.normpath(gitdir),'hermes-update.lock')
+
+def checkout_held():
+    # update_lock.checkout_lock_held: take the flock for one try and drop it. A lock file that
+    # exists but cannot be opened or probed counts as held: reclaim needs a provably free checkout.
+    roots=[os.path.join(os.path.dirname(marker),'hermes-agent')]
+    roots+=[os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(os.path.expanduser(exe))))) for exe in sys.argv[3:] if exe]
+    for root in roots:
+        try:lock=os.open(checkout_lock(root),os.O_RDONLY|os.O_CLOEXEC)
+        except (FileNotFoundError,NotADirectoryError):continue
+        except OSError:return True
+        try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except OSError:return True
+        finally:os.close(lock)
+    return False
+
 os.makedirs(os.path.dirname(marker),exist_ok=True)
 try:fd=os.open(marker+'.lock',os.O_RDWR|os.O_CREAT|os.O_CLOEXEC,0o644)
 except PermissionError:fd=os.open(marker+'.lock',os.O_RDONLY|os.O_CLOEXEC)
@@ -140,8 +175,10 @@ verdict='UNCERTAIN'
 if hold(fd):
     raw=read_marker();verdict=marker_verdict(raw)
     if verdict=='CLEAR' and raw is not None:
-        try:os.unlink(marker)
-        except FileNotFoundError:pass
+        if checkout_held():verdict='HELD'
+        else:
+            try:os.unlink(marker)
+            except FileNotFoundError:pass
 if payload is None or verdict!='CLEAR':
     print(verdict,file=sys.stderr if payload else sys.stdout);sys.exit(75 if payload else 0)
 sys.exit(subprocess.run(['sh','-c',payload,'hermes-update-mutex',str(fd)],pass_fds=(fd,)).returncode)
@@ -174,5 +211,34 @@ export const WINDOWS_MARKER_JUDGE_PS = [
   '$now=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()',
   'foreach($id in $ids){if(Test-MarkerIdentity $id[0] $id[1] $started $now){return "LIVE:$($id[0])"}}',
   'return "CLEAR"',
+  '}'
+].join('\n')
+
+/**
+ * PowerShell `Test-CheckoutLockHeld $roots` -> $true while any checkout in
+ * `$roots` has its update kernel lock held: the Python update_lock byte range on
+ * `checkout_lock_path` (offset 1048576, the owner byte plus the 16 R5b lease
+ * bytes a refused completion child keeps while it outlives its owner), taken for
+ * one try and dropped. A lock file that exists but cannot be opened or locked
+ * counts as held. Gates delete a dead marker only when this is $false.
+ */
+export const WINDOWS_CHECKOUT_LOCK_PS = [
+  'function Get-CheckoutLockPath([string]$root){',
+  '$plain=[IO.Path]::Combine($root,".hermes-update.lock");$dot=[IO.Path]::Combine($root,".git");$gitdir=$null',
+  'try{',
+  'if([IO.Directory]::Exists($dot)){$gitdir=$dot}elseif([IO.File]::Exists($dot)){$text=[IO.File]::ReadAllText($dot).Trim();if($text.StartsWith("gitdir:")){$gitdir=[IO.Path]::Combine($root,$text.Substring(7).Trim())}}',
+  'if($gitdir){$common=[IO.Path]::Combine($gitdir,"commondir");if([IO.File]::Exists($common)){$gitdir=[IO.Path]::Combine($gitdir,[IO.File]::ReadAllText($common).Trim())}}',
+  '}catch{return $plain}',
+  'if(-not $gitdir){return $plain}',
+  'return [IO.Path]::GetFullPath([IO.Path]::Combine($gitdir,"hermes-update.lock"))',
+  '}',
+  'function Test-CheckoutLockHeld([object[]]$roots){',
+  'foreach($root in $roots){',
+  'if([string]::IsNullOrWhiteSpace([string]$root)){continue}',
+  '$lockFile=$null',
+  'try{$lockFile=[IO.File]::Open((Get-CheckoutLockPath ([string]$root)),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)}catch [IO.FileNotFoundException],[IO.DirectoryNotFoundException]{continue}catch{return $true}',
+  'try{$lockFile.Lock(1048576,17);$lockFile.Unlock(1048576,17)}catch{return $true}finally{$lockFile.Dispose()}',
+  '}',
+  'return $false',
   '}'
 ].join('\n')

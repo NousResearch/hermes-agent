@@ -316,157 +316,157 @@
     "llamacpp-cpu": {
       "artifacts": {
         "darwin-arm64": {
-          "sha256": "1ad3f9eff80edb9dbef4259ad564d1720612ef7eea48fa4afed0e54f5f3d5711",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-macos-arm64.tar.gz"
+          "sha256": "9d7d074ca8db0c2233af760ca2ad89182a52c909abdcbfa3b94e27fb78de9355",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/llama-b11370-bin-macos-arm64.tar.gz"
         },
         "darwin-x64": {
-          "sha256": "305f0e3a17d2c01eb205cd0a62128357f1ec3b55329cb084d94e5ec0115d7a3b",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-macos-x64.tar.gz"
+          "sha256": "2bdcdc8936621840fc246198da8a7d4e87d2db58ae232c6126ee54b594be3746",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/llama-b11370-bin-macos-x64.tar.gz"
         },
         "linux-arm64": [
           {
-            "sha256": "4aeda6fe68831547e49b7fa87607383ca5352b3d72ca5f70d52ed265f58c131f",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-ubuntu-arm64.tar.gz"
+            "sha256": "2589668b61f4b2a2baa1a860c45e3dbd75af89e3620340589929632d981d28f2",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/llama-b11370-bin-ubuntu-arm64.tar.gz"
           },
           {
-            "sha256": "3f777eac64c87e2db843675b229efd16efe2ac1ae977318d687b39b812747863",
-            "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/libgomp1_14-20240412-0ubuntu1_arm64.deb"
+            "sha256": "c1719335234ccdef7558e97b37b1f6baf069911ce2f26d2789336051a7c929cd",
+            "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-12/libgomp1_12-20220319-1ubuntu1_arm64.deb"
           }
         ],
         "linux-x64": [
           {
-            "sha256": "c150306eb16b5ab696f76a8bdf810c35fd98a24e82158742e6fa28f420ff8410",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-ubuntu-x64.tar.gz"
+            "sha256": "1c86f91cb0e2bbf5bce7eae7c0ce6beb95137e41251b1dbb19839175d624d0cf",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/llama-b11370-bin-ubuntu-x64.tar.gz"
           },
           {
-            "sha256": "cc2ca1193d2c11d7383bdb03dd333cc621d128237b82dafeb8d7f2bd8302f3dd",
-            "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/libgomp1_14-20240412-0ubuntu1_amd64.deb"
+            "sha256": "8627999dd5f3d38473774ce7924a62af9a2840b2238bc52611e38257bc140b5d",
+            "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-12/libgomp1_12-20220319-1ubuntu1_amd64.deb"
           }
         ],
         "win32-arm64": {
-          "sha256": "1727d241f3bf6d27360e984e851cf013928fd655bf89f8628e70da027f377b7d",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-win-cpu-arm64.zip"
+          "sha256": "da7a253099f13567a9f6a9b7fe914f8dc677afd9135aed3109b273dfa14f0060",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/llama-b11370-bin-win-cpu-arm64.zip"
         },
         "win32-x64": {
-          "sha256": "14cf1303ca9ac3abd94816850532f9f9a69ac66fbaca3776fc6f9061c2fac1d1",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-win-cpu-x64.zip"
+          "sha256": "e433a6b1592af1deedf001dcc1abc933e990be8dc94e5d28104c3c4406a1d35f",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/llama-b11370-bin-win-cpu-x64.zip"
         }
       },
-      "version": "11146"
+      "version": "11370"
     },
     "llamacpp-cuda": {
       "artifacts": {
         "linux-arm64": [
           {
-            "sha256": "4e00496ab6cdee9c00afb11de3cb9d10f9da7e17147d8ed14ca3af05209b400f",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-ubuntu-cuda-13.4-arm64.tar.gz"
+            "sha256": "d417ce88799fb5bca9a51b53c36585fec9d7a8e7415873424919af0cb64d33e2",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/llama-b11370-bin-ubuntu-cuda-13.4-arm64.tar.gz"
           },
           {
-            "sha256": "7f46057efcba6338c58ed9f91c06f268c290f3a228fdbdd4bea229dd60b0e094",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/cudart-llama-b11146-bin-ubuntu-cuda-13.4-arm64.tar.gz"
+            "sha256": "204bbe1ec25f6927163b0a765e691f8530364af005c1e1633ef0845beb80f302",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/cudart-llama-b11370-bin-ubuntu-cuda-13.4-arm64.tar.gz"
           },
           {
-            "sha256": "3f777eac64c87e2db843675b229efd16efe2ac1ae977318d687b39b812747863",
-            "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/libgomp1_14-20240412-0ubuntu1_arm64.deb"
+            "sha256": "c1719335234ccdef7558e97b37b1f6baf069911ce2f26d2789336051a7c929cd",
+            "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-12/libgomp1_12-20220319-1ubuntu1_arm64.deb"
           }
         ],
         "linux-x64": [
           {
-            "sha256": "1603d9c00a4b6eac8298c5c7868cdb080a3ac31948ab1e457441d71ce274dd7e",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-ubuntu-cuda-13.4-x64.tar.gz"
+            "sha256": "81ced34431758b1d1932cf7eb99852598c76bec1885009f4519ad4f54bb0159b",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/llama-b11370-bin-ubuntu-cuda-13.4-x64.tar.gz"
           },
           {
-            "sha256": "7c2af505f8b26ecd3707ab7723fa985fee1df233b7c1d60e5e17724b536d15bb",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/cudart-llama-b11146-bin-ubuntu-cuda-13.4-x64.tar.gz"
+            "sha256": "5b610baaf6ae4f86215610ecf248e4444ca1cbb50770d80350ba365a1dad1ce9",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/cudart-llama-b11370-bin-ubuntu-cuda-13.4-x64.tar.gz"
           },
           {
-            "sha256": "cc2ca1193d2c11d7383bdb03dd333cc621d128237b82dafeb8d7f2bd8302f3dd",
-            "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/libgomp1_14-20240412-0ubuntu1_amd64.deb"
+            "sha256": "8627999dd5f3d38473774ce7924a62af9a2840b2238bc52611e38257bc140b5d",
+            "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-12/libgomp1_12-20220319-1ubuntu1_amd64.deb"
           }
         ],
         "win32-arm64": [
           {
-            "sha256": "a4060b5031a0e862e225d4a7c4aa403852ebedf598906ef8258a86cb77de8351",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-win-cuda-13.4-arm64.zip"
+            "sha256": "29e829e1343ea470d6700b90564b02a82e1ae5cff7307cdbca222ce794c19056",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/llama-b11370-bin-win-cuda-13.4-arm64.zip"
           },
           {
             "sha256": "642dcde8805b3e3165ca710a5443b3b4044b27d96bd3ee3132473988c9bcb774",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/cudart-llama-bin-win-cuda-13.4-arm64.zip"
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/cudart-llama-bin-win-cuda-13.4-arm64.zip"
           }
         ],
         "win32-x64": [
           {
-            "sha256": "b1866c0ce76bc7bfb0c24b33e9a37e9669f1be18539b12c74ce361f81c41f047",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-win-cuda-13.4-x64.zip"
+            "sha256": "05a1e951d7eb3fb32a8159b6f6dc06f5e8f681154b57369d585ae4100bae4999",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/llama-b11370-bin-win-cuda-13.4-x64.zip"
           },
           {
             "sha256": "738f8c251ac22b70c3ae6f83a10cf222725df0395246a2cf58f32bdb85fbe668",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/cudart-llama-bin-win-cuda-13.4-x64.zip"
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/cudart-llama-bin-win-cuda-13.4-x64.zip"
           }
         ]
       },
-      "version": "11146"
+      "version": "11370"
     },
     "llamacpp-hip": {
       "artifacts": {
         "linux-x64": [
           {
-            "sha256": "50e79dc559a11af3ea59391d416e9a704a715ac6be94352dbba710782c5dd7d1",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-ubuntu-rocm-10.0-x64.tar.gz"
+            "sha256": "29725bca551c9275156860410fe5c550b85dfc684aeac7eaf09f175d13a565d0",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/llama-b11370-bin-ubuntu-rocm-10.0-x64.tar.gz"
           },
           {
-            "sha256": "cc2ca1193d2c11d7383bdb03dd333cc621d128237b82dafeb8d7f2bd8302f3dd",
-            "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/libgomp1_14-20240412-0ubuntu1_amd64.deb"
+            "sha256": "8627999dd5f3d38473774ce7924a62af9a2840b2238bc52611e38257bc140b5d",
+            "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-12/libgomp1_12-20220319-1ubuntu1_amd64.deb"
           }
         ],
         "win32-x64": {
-          "sha256": "5dee283ec0fd5f38f29df0929769a07266ac6047f74381c153eb54b441e4ef99",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-win-rocm-10.0-x64.zip"
+          "sha256": "86e6d2354a6752ed0ae8adbd697f5e0b7a9847b0d568c661e95b44450a9fd010",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/llama-b11370-bin-win-rocm-10.0-x64.zip"
         }
       },
-      "version": "11146"
+      "version": "11370"
     },
     "llamacpp-metal": {
       "artifacts": {
         "darwin-arm64": {
-          "sha256": "1ad3f9eff80edb9dbef4259ad564d1720612ef7eea48fa4afed0e54f5f3d5711",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-macos-arm64.tar.gz"
+          "sha256": "9d7d074ca8db0c2233af760ca2ad89182a52c909abdcbfa3b94e27fb78de9355",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/llama-b11370-bin-macos-arm64.tar.gz"
         },
         "darwin-x64": {
-          "sha256": "305f0e3a17d2c01eb205cd0a62128357f1ec3b55329cb084d94e5ec0115d7a3b",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-macos-x64.tar.gz"
+          "sha256": "2bdcdc8936621840fc246198da8a7d4e87d2db58ae232c6126ee54b594be3746",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/llama-b11370-bin-macos-x64.tar.gz"
         }
       },
-      "version": "11146"
+      "version": "11370"
     },
     "llamacpp-vulkan": {
       "artifacts": {
         "linux-arm64": [
           {
-            "sha256": "5dcebe3ecbcb43a1ed85e3284453f9edf54dcca833e1cb1f54b4022b753c1da5",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-ubuntu-vulkan-arm64.tar.gz"
+            "sha256": "cb8ab033dd9565e0d82aa3b6c407527966661d8a1736ae083c417338025d4e9d",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/llama-b11370-bin-ubuntu-vulkan-arm64.tar.gz"
           },
           {
-            "sha256": "3f777eac64c87e2db843675b229efd16efe2ac1ae977318d687b39b812747863",
-            "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/libgomp1_14-20240412-0ubuntu1_arm64.deb"
+            "sha256": "c1719335234ccdef7558e97b37b1f6baf069911ce2f26d2789336051a7c929cd",
+            "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-12/libgomp1_12-20220319-1ubuntu1_arm64.deb"
           }
         ],
         "linux-x64": [
           {
-            "sha256": "d3ce40fce7403cc93bcf5718fc46c6efb61ed9709f8e5d9f10c86bf0e30e8fb3",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-ubuntu-vulkan-x64.tar.gz"
+            "sha256": "46bb8add9cf46dee199692cf7852927758d7b2ad663949d81c8c80974032a398",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/llama-b11370-bin-ubuntu-vulkan-x64.tar.gz"
           },
           {
-            "sha256": "cc2ca1193d2c11d7383bdb03dd333cc621d128237b82dafeb8d7f2bd8302f3dd",
-            "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/libgomp1_14-20240412-0ubuntu1_amd64.deb"
+            "sha256": "8627999dd5f3d38473774ce7924a62af9a2840b2238bc52611e38257bc140b5d",
+            "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-12/libgomp1_12-20220319-1ubuntu1_amd64.deb"
           }
         ],
         "win32-x64": {
-          "sha256": "55a378aa095b466979d85075234f66d7655c7a7483222af0c006c0e55b4d7bd6",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-win-vulkan-x64.zip"
+          "sha256": "29af812c5789905ecfdb4c43a9d098983cbfdd26ea0be113b401af41438e3e01",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11370/llama-b11370-bin-win-vulkan-x64.zip"
         }
       },
-      "version": "11146"
+      "version": "11370"
     },
     "node": {
       "artifacts": {

@@ -279,7 +279,7 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
 
     try:
         import tools.approval as _approval
-        from tools.approval_context import get_current_session_key
+        from tools.approval_context import _fire_approval_hook, get_current_session_key
         from tools.approval_gateway_wait import _await_gateway_decision
         from tools.approval_prompt import prompt_dangerous_approval
     except Exception:
@@ -319,8 +319,14 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
             # No human channel (script, cron, background thread): fail closed —
             # auto-approving here would recreate the persistence vector.
             return blocked.format(why=_NO_HUMAN)
+        # Same observer payload as the gateway branch (#131876), fired like the
+        # dangerous-command CLI prompt in tools/approval.py.
+        hook_kwargs = dict(command=display, description=description, pattern_key="protected_instruction_file",
+                           pattern_keys=["protected_instruction_file"], session_key=session_key, surface="cli")
+        _fire_approval_hook("pre_approval_request", **hook_kwargs)
         choice = prompt_dangerous_approval(
             display, description, allow_permanent=False, allow_session=False, approval_callback=callback)
+        _fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
         if choice == "cancelled":
             return blocked.format(why="approval prompt could not be delivered or was not answered "
                                       f"({getattr(choice, 'cause', 'no answer')}).")

@@ -245,6 +245,7 @@ _UPDATE_PIPELINE = (
     "hermes_cli/gateway_launchd.py",
     "hermes_cli/gateway_migrate",
     "hermes_cli/gateway_supervised_restart.py",
+    "hermes_cli/git_pack_tidy.py",  # partial-clone pack tidy: every update's pre-fetch runs it
     "hermes_bootstrap.py",  # every launch's prepare_launch
     "hermes_constants.py",  # root home = update marker location
     "gateway/status.py",  # code_sha stamp the fleet verify reads

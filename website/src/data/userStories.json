@@ -3584,5 +3584,16 @@
     "headline": "Recursively built a Supabase-backed CRM dashboard where each build reuses prior components",
     "quote": "Used the Hermes Desktop App to recursively generate a CRM dashboard where each build reuses components from prior generations; it can also build full videos using official HyperFrame skills — HTML-native, full control over scenes, animations, and rendering.",
     "size": "sm"
+  },
+  {
+    "id": "ganesh-job-pipeline-cron",
+    "source": "github",
+    "author": "Ganesh",
+    "url": "",
+    "date": "2026-10-05",
+    "category": "personal-assistant",
+    "headline": "40 tailored job applications a day: cron scouts, applies, screenshots, and files evidence",
+    "quote": "My Hermes agent runs my job hunt on cron: a scout profile scrapes and filters postings, tailors my resume per role with a per-job folder (screenshot + tailored PDF as proof), and logs everything to a tracker — about 40 applications a day. I review everything over Telegram.",
+    "size": "md"
   }
 ]

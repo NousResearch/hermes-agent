@@ -141,6 +141,20 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
   }
 }
 
+/* Installed to a home screen there is no browser chrome, so the shell paints
+   under the status bar, notch and home indicator (index.html sets
+   `viewport-fit=cover`). Inset by the safe area; `box-sizing: border-box`
+   spends the padding out of the existing 100dvh budget rather than adding to
+   it, so xterm's fit addon still measures a height that fits the screen. */
+@media (display-mode: standalone) {
+  body {
+    box-sizing: border-box;
+    background: var(--background-base);
+    padding: env(safe-area-inset-top) env(safe-area-inset-right)
+      env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+}
+
 /* Nousnet's hermes-agent layout bumps `small` and `code` to readable
    dashboard sizes. Keep in sync. */
 small { font-size: 1.0625rem; }

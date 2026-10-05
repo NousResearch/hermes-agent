@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from hermes_cli.local_runtime.binaries import runtimes_root
-from hermes_cli.local_runtime.gguf import SPLIT_PART_RE, model_id_from_stem
+from hermes_cli.local_runtime.gguf import SPLIT_PART_RE, is_companion_asset, model_id_from_stem
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +71,11 @@ def assets_dir() -> Path:
 def staged_in(models_dir: Path, *, require_complete: bool = True) -> "list[Path]":
     """Servable GGUFs in a directory: single files, plus split GGUFs once by their first part.
     With ``require_complete`` a split counts only when EVERY part is on disk — a mid-download split
-    is not servable and must not surface anywhere as a model."""
-    files = sorted(models_dir.glob("*.gguf"))
+    is not servable and must not surface anywhere as a model. Companion assets (vision projectors,
+    spec-decode drafts) are not servable on their own however they are named, so they are skipped
+    even when they sit in ``models/`` instead of ``assets/``: a phantom picker row that answers
+    empty content costs a ``--models-max`` slot and a launch-budget share for nothing."""
+    files = sorted(p for p in models_dir.glob("*.gguf") if not is_companion_asset(p.name))
     names = {p.name for p in files}
     out = []
     for p in files:
@@ -110,19 +113,23 @@ def adopt_legacy_models() -> "list[Path]":
         old = home / "models"
         if home.name.startswith(".") or not old.is_dir() or not named_profile_has_identity(home):
             continue
-        for src_dir, dest_dir in ((old, models_dir()), (old / "assets", assets_dir())):
+        for src_dir, into_assets in ((old, False), (old / "assets", True)):
             for src in sorted(src_dir.glob("*.gguf")):
-                dest = dest_dir / src.name
+                # A companion staged in the old models/ dir belongs beside the assets, not in the
+                # served set: left in models_dir it would be skipped by staged_in() as unservable
+                # and never reachable as a projector.
+                target = assets_dir() if into_assets or is_companion_asset(src.name) else models_dir()
+                dest = target / src.name
                 if dest.exists():
                     logger.warning("legacy model %s not moved: %s already exists", src, dest)
                     continue
                 try:
-                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    target.mkdir(parents=True, exist_ok=True)
                     os.rename(src, dest)
                 except FileNotFoundError:
                     continue
                 except OSError as exc:
-                    logger.warning("legacy model %s not moved to %s: %s", src, dest_dir, exc)
+                    logger.warning("legacy model %s not moved to %s: %s", src, target, exc)
                     continue
                 moved.append(dest)
         for emptied in (old / "assets", old):

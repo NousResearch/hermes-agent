@@ -16,6 +16,8 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, replace
 
+from hermes_cli.local_runtime.gguf import is_companion_asset
+
 logger = logging.getLogger(__name__)
 
 _HF = "https://huggingface.co"
@@ -99,8 +101,8 @@ def repo_files(repo: str) -> list[HFFileGroup]:
         path = str(f.get("path", ""))
         if not path.lower().endswith(".gguf"):
             continue
-        name = path.rsplit("/", 1)[-1].lower()
-        if name.startswith(("mmproj", "dspark")) or "draft" in name:
+        name = path.rsplit("/", 1)[-1]
+        if is_companion_asset(name):
             continue
         size = int(f.get("size") or 0)
         m = _SPLIT_RE.search(path)

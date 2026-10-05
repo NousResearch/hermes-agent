@@ -25,6 +25,20 @@ def model_id_from_stem(stem: str) -> str:
     return _PART_SUFFIX_RE.sub("", stem)
 
 
+def is_companion_asset(name: str) -> bool:
+    """True when a GGUF is another model's companion — a vision projector or a spec-decode
+    draft — rather than a servable model of its own. Such a file has no chat template and no
+    usable prompt surface, so serving it yields 200s with empty content.
+
+    Name-based, because the tensor table gives no reliable marker and reading a header per
+    candidate file is the cost the picker must not pay: llama.cpp, unsloth and the audio-codec
+    GGUFs all name companions this way. Assets under ``assets/`` never reach a caller of this,
+    so the predicate only has to catch a companion dropped in beside the models.
+    """
+    lowered = name.lower()
+    return lowered.startswith(("mmproj", "dspark")) or "draft" in lowered
+
+
 # ggml tensor type sizes: type_id -> (block_bytes, block_elems). IQ-family verified against
 # ggml-common.h.
 _GGML_TYPE_SIZES = {

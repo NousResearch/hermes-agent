@@ -231,6 +231,7 @@ class CLIStatusBarMixin:
             "battery_category": "dim",
             "focus_label": "",  # /focus badge: the reduced-output mode is never invisible.
             "git_branch": "",
+            "session_id": str(getattr(self, "session_id", "") or ""),
             "goal_active": False,
             "goal_turns_used": 0,
             "goal_max_turns": 0}
@@ -998,7 +999,8 @@ class CLIStatusBarMixin:
         Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
         bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only), duration,
         prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
-        (opt-in only). Order is fixed; the config controls visibility only.
+        (opt-in only), session_id (opt-in only). Order is fixed; the config controls
+        visibility only.
         """
         from cli import CLI_CONFIG
         if hasattr(self, "_status_bar_field_set_cache"):
@@ -1100,10 +1102,25 @@ class CLIStatusBarMixin:
         if yolo_active:
             add("yolo", "class:status-bar-yolo", t("cli.status_bar.yolo_badge"))
         if wide:
-            # Session token total (Σ) — opt-in only via an explicit fields list.
-            total_tokens = snapshot.get("session_total_tokens", 0)
-            if total_tokens and field_set is not None and "total_tokens" in field_set:
-                segs.append([(_DIM, f"Σ{format_token_count_compact(total_tokens)}")])
+            segs.extend(self._status_bar_opt_in_tail(snapshot, field_set))
+        return segs
+
+    def _status_bar_opt_in_tail(self, snapshot, field_set: Optional[frozenset]) -> list:
+        """Wide-only opt-in tail segments: session token total (Σ) and durable session id.
+
+        Both only render when the user explicitly names the field in
+        ``display.status_bar.fields`` (like git_branch — never as part of the default
+        set, never when the field list is null). Kept in a helper so a single ``if wide``
+        branch yields the full opt-in tail."""
+        from cli import format_token_count_compact
+
+        segs: list = []
+        total_tokens = snapshot.get("session_total_tokens", 0)
+        if total_tokens and field_set is not None and "total_tokens" in field_set:
+            segs.append([(_DIM, f"Σ{format_token_count_compact(total_tokens)}")])
+        session_id = snapshot.get("session_id") or ""
+        if session_id and field_set is not None and "session_id" in field_set:
+            segs.append([(_DIM, f"#{session_id}")])
         return segs
 
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:

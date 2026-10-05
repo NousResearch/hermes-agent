@@ -338,6 +338,46 @@ class TestStatusBarFieldConfig:
         assert "claude-sonnet-4-20250514" in text
 
 
+    def test_session_id_when_explicitly_requested(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj.session_id = "20261005_111549_970fc8"
+        with patch.object(
+            cli_mod,
+            "CLI_CONFIG",
+            {"display": {"status_bar": {"fields": ["model", "session_id"]}}},
+        ):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "#20261005_111549_970fc8" in text
+        assert "claude-sonnet-4-20250514" in text
+
+    def test_session_id_opt_in_never_shown_by_default(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj.session_id = "20261005_111549_970fc8"
+        with patch.object(
+            cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model"]}}}
+        ):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "20261005_111549_970fc8" not in text
+
+
 
     def test_field_config_never_empties_the_bar(self):
         """A fields list matching nothing still anchors on the model name."""

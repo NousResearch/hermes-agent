@@ -2,6 +2,7 @@
 
 import contextlib
 import json
+import os
 import re
 import sys
 from datetime import timezone
@@ -693,6 +694,11 @@ def cron_doctor() -> int:
     """Run read-only cron health checks and return a shell-friendly status."""
     from cron.jobs import list_jobs
     jobs = list_jobs(include_disabled=False)
+    # A cron job that wraps `cron doctor` must not report itself: its last_error is the previous
+    # doctor output, so it would fail forever and nest that output on every run (#133135).
+    # health: allow HX002 -- set by the scheduler for its own script subprocess, not a setting
+    if invoking_id := os.environ.get("HERMES_CRON_JOB_ID", "").strip():
+        jobs = [job for job in jobs if job.get("id") != invoking_id]
     findings = [(job, issues) for job in jobs if (issues := _cron_doctor_issues_for_job(job))]
     if not findings:
         print(color("✓ Cron doctor found no issues", Colors.GREEN))

@@ -204,7 +204,16 @@ def begin_update_receipt(*, previous: dict | None = None, correlation_id: str | 
     Nested updates are safe: the previous receipt (if any) is preserved
     behind the ContextVar token and comes back when this one finalizes —
     a nested begin/finalize never drops the outer update's receipt or
-    correlation. Never raises."""
+    correlation. Never raises.
+
+    The begun receipt is ALSO persisted to ``latest.json`` immediately
+    (``_persist_running_receipt``): the finalize-time write at the command
+    boundary never happens when the updater is killed mid-flight — an
+    in-gateway update is SIGKILLed by the very fleet restart it ordered
+    (cgroup cleanup) — and a pulled-code run with no receipt is exactly
+    the run operators need to post-mortem. The running snapshot carries
+    no fleet rows, so stale-runtime readers see nothing to warn about."""
+    outer = _current.get()  # captured BEFORE the set: a nested begin must not clobber the outer pointer
     try:
         receipt = UpdateReceipt()
         if previous:
@@ -217,6 +226,26 @@ def begin_update_receipt(*, previous: dict | None = None, correlation_id: str | 
         logger.debug("Could not start update receipt: %s", exc)
         return
     receipt.current_token = _current.set(receipt)
+    if outer is None:
+        _persist_running_receipt(receipt)
+
+
+def _persist_running_receipt(receipt: UpdateReceipt) -> None:
+    """Write the just-begun receipt to ``latest.json`` (best effort, never raises).
+
+    Finalize overwrites this pointer with the completed receipt; if the run
+    dies before finalizing, the pointer still records WHO started an update,
+    WHEN, from what code, and how far the context got. Top-level updates
+    only: a nested begin keeps the outer receipt's pointer undisturbed."""
+    try:
+        directory = _receipt_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        from hermes_cli.runtime_state import _atomic_bytes
+
+        payload = (json.dumps(receipt.data, indent=2, default=str) + "\n").encode("utf-8")
+        _atomic_bytes(directory / "latest.json", payload)
+    except Exception as exc:
+        logger.debug("Could not persist running update receipt: %s", exc)
 
 
 def _record(method: str, what: str, *args: Any, **kwargs: Any) -> None:

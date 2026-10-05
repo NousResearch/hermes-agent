@@ -124,12 +124,17 @@ def _restart_notify_payload(event: MessageEvent) -> dict:
 
 
 def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
-    """Spawn ``hermes update --gateway`` detached so it survives the gateway restart it may trigger.
-    setsid is portable (works where ``systemd-run --user`` lacks a D-Bus session); ``--gateway``
-    enables file-based IPC so interactive prompts are forwarded; PYTHONUNBUFFERED lets the gateway
-    stream output live.  Windows has no setsid: an inline helper runs the updater as a module under
-    this interpreter (not venv\\Scripts\\hermes.exe — that shim holds its own file open, and the
-    update must replace it), redirects both outputs to one file and writes the exit code."""
+    """Spawn ``hermes update --gateway`` detached so its output/exit-code IPC outlives this process.
+    setsid detaches the SESSION, not the cgroup: the updater still lives in the gateway unit's
+    cgroup, so the fleet restart it orders may SIGKILL it mid-run (KillMode sweeps the whole
+    group). Survival of the UPDATE — not the process — comes from recording the exit code before
+    the restart (see ``update_finish.finish_update``) and from this function's output/exit-code
+    files, which let a restarted gateway's watcher re-report completion from the markers.
+    ``--gateway`` enables file-based IPC so interactive prompts are forwarded; PYTHONUNBUFFERED
+    lets the gateway stream output live.  Windows has no setsid: an inline helper runs the updater
+    as a module under this interpreter (not venv\\Scripts\\hermes.exe — that shim holds its own
+    file open, and the update must replace it), redirects both outputs to one file and writes the
+    exit code."""
     import shutil
     import subprocess
     if sys.platform == "win32":

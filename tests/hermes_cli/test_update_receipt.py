@@ -111,6 +111,33 @@ class TestReceiptLifecycle:
         assert latest is not None
         assert latest["outcome"] == "partial"
 
+    def test_begin_persists_running_snapshot_to_latest_pointer(self, receipt_home):
+        # A SIGKILLed updater (gateway-cgroup cleanup at the fleet restart it ordered) never
+        # reaches the command-boundary finalize — the running snapshot is the post-mortem record.
+        ur.begin_update_receipt()
+        pointer = receipt_home / "logs" / "update_receipts" / "latest.json"
+        assert pointer.is_file()
+        payload = json.loads(pointer.read_text(encoding="utf-8"))
+        assert payload["outcome"] == "running"
+        assert payload["finished_at"] is None
+        assert payload["update_id"] == ur.current_correlation_id()
+        _finalize("success")
+        final = json.loads(pointer.read_text(encoding="utf-8"))
+        assert final["outcome"] == "success"
+        assert final["finished_at"] is not None
+        assert final["update_id"] == payload["update_id"]
+
+    def test_nested_begin_does_not_clobber_latest_pointer(self, receipt_home):
+        ur.begin_update_receipt()
+        pointer = receipt_home / "logs" / "update_receipts" / "latest.json"
+        outer_bytes = pointer.read_bytes()
+        ur.begin_update_receipt()  # nested: the outer receipt's pointer stays undisturbed
+        assert pointer.read_bytes() == outer_bytes
+        _finalize("failed")
+        assert json.loads(pointer.read_text(encoding="utf-8"))["outcome"] == "failed"
+        _finalize("success")
+        assert json.loads(pointer.read_text(encoding="utf-8"))["outcome"] == "success"
+
 
     def test_record_without_begin_is_noop(self, receipt_home):
         # No begin — nothing should raise, nothing should be written.

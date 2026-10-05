@@ -538,6 +538,53 @@ test.runIf(process.platform !== 'win32')(
   }
 )
 
+test.runIf(process.platform !== 'win32')(
+  'managed observer reads a named profile update receipt from the root home the CLI writes',
+  async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-profile-receipt-'))
+    const profileHome = path.join(root, 'profiles', 'research')
+
+    const receipt = (outcome: string) =>
+      JSON.stringify({
+        correlation_id: CORRELATION,
+        outcome,
+        started_at: '2026-08-23T00:00:00Z',
+        finished_at: '2026-08-23T00:01:00Z'
+      })
+
+    try {
+      // The CLI's receipt store is install-wide; a stale copy under the profile is not its source.
+      await mkdir(path.join(root, 'logs', 'update_receipts'), { recursive: true })
+      await mkdir(path.join(profileHome, 'logs', 'update_receipts'), { recursive: true })
+      await writeFile(path.join(profileHome, `.update_exit_code.${CORRELATION}`), '0')
+      await writeFile(path.join(root, 'logs', 'update_receipts', `update_${CORRELATION}.json`), receipt('success'))
+      await writeFile(
+        path.join(profileHome, 'logs', 'update_receipts', `update_${CORRELATION}.json`),
+        receipt('failed')
+      )
+
+      const command = buildRemoteUpdateObservationCommand(
+        {
+          ssh: { exec: async () => '' },
+          platform: 'Linux',
+          hermesPath: '/opt/hermes/hermes',
+          hermesHome: profileHome
+        },
+        CORRELATION
+      )
+
+      const { stdout } = await exec(command, { shell: 'sh' })
+      const parsed = parseRemoteUpdateObservation(stdout, CORRELATION)
+
+      assert.equal(parsed.exitCode, 0)
+      assert.equal(parsed.receipt?.correlationId, CORRELATION)
+      assert.equal(parsed.receipt?.outcome, 'success')
+    } finally {
+      await rm(root, { force: true, recursive: true })
+    }
+  }
+)
+
 test('Windows coordinator handoff is pending until its marker clears and correlated receipt is durable', async () => {
   const replies = [
     observation({ marker: 'live', markerPid: 44 }),

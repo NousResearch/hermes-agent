@@ -324,9 +324,10 @@ from pathlib import Path
 
 home=Path(os.path.expanduser(sys.argv[1]))
 correlation=sys.argv[2]
-# The update marker is install-wide even when the launcher was invoked with a
-# named profile home (<root>/profiles/<name>). Correlated status/intent/receipt
-# remain under the launch home, matching the CLI writer.
+# The update marker and the receipt store are install-wide even when the launcher
+# was invoked with a named profile home (<root>/profiles/<name>): the CLI writes
+# receipts under the root home. Correlated status/ready/intent stay under the
+# launch home, matching their writers.
 profile_parent=home.parent.name
 is_profile_home=(profile_parent.lower()=='profiles') if os.name=='nt' else (profile_parent=='profiles')
 install_root=home.parent.parent if is_profile_home else home
@@ -416,7 +417,7 @@ def terminal_code():
     except ValueError:return 'malformed'
 
 def receipt():
-    directory=home/'logs'/'update_receipts'
+    directory=install_root/'logs'/'update_receipts'
     try:paths=sorted(directory.glob('update_*.json'),key=lambda p:p.stat().st_mtime_ns,reverse=True)
     except OSError:return None
     for path in paths:

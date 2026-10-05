@@ -1005,6 +1005,15 @@ def _run_post_update_maintenance(
     # Both shallow history and missing tags can hide the release identity.
     # Refresh them before the completion line and install stamp read it.
     try:
+        from hermes_cli.gitlock import convert_treeless_checkout
+        from hermes_cli.update_cmd import _no_prompt_git_kwargs
+        if convert_treeless_checkout(Path(_m().PROJECT_ROOT), **_no_prompt_git_kwargs()):
+            print("  ✓ Fetched this checkout's directory history once; updates stop re-downloading it")
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
+        print(f"  ⚠ Could not fetch this checkout's directory history ({detail[0]}); retrying next update")
+
+    try:
         from hermes_cli.gitlock import fetch_full_commit_graph
         from hermes_cli.update_cmd import _no_prompt_git_kwargs
         if fetch_full_commit_graph(Path(_m().PROJECT_ROOT), **_no_prompt_git_kwargs()):

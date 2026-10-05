@@ -24,13 +24,14 @@ Don't point two agent processes at the same Hermes home directory. Memory writes
 :::
 
 :::info
-Character limits keep memory focused. Memory does **not** auto-compact: when a
-write would exceed the limit, the `memory` tool returns an error instead of
-silently dropping entries. The agent then makes room itself — consolidating or
-removing entries in the same turn before retrying (see [What Happens When Memory
-is Full](#what-happens-when-memory-is-full)). Note that `replace` is also bound
-by the limit: swapping an entry for a longer one can still overflow, so the new
-content must be shortened (or another entry removed) to fit.
+Character limits keep memory focused. Memory does **not** auto-compact, but it no
+longer dead-ends either: an `add` that would exceed the limit evicts the **oldest**
+entries to `ARCHIVE.jsonl` and lets the new fact land, so a full memory never
+silently blocks later saves (see [What Happens When Memory is
+Full](#what-happens-when-memory-is-full)). Evicted entries are archived, not
+dropped — they are recoverable from `ARCHIVE.jsonl`. `replace` is still bound by
+the limit: swapping an entry for a longer one can overflow, so the new content
+must be shortened (or another entry removed) to fit.
 :::
 
 ## How Memory Appears in the System Prompt
@@ -166,24 +167,36 @@ Memory has strict character limits to keep system prompts bounded:
 
 ### What Happens When Memory is Full
 
-When you try to add an entry that would exceed the limit, the tool returns an error:
+Adding an entry that would exceed the limit **evicts the oldest entries** to make room:
 
 ```json
 {
-  "success": false,
-  "error": "Memory at 2,100/2,200 chars. Adding this entry (250 chars) would exceed the limit. Consolidate now: use 'replace' to merge overlapping entries into shorter ones or 'remove' stale or less important entries (see current_entries below), then retry this add — all in this turn.",
-  "current_entries": ["..."],
-  "usage": "2,100/2,200"
+  "success": true,
+  "done": true,
+  "usage": "94% — 2,064/2,200 chars",
+  "evicted": 2,
+  "archive": "ARCHIVE.jsonl",
+  "evicted_entries": ["...", "..."]
 }
 ```
 
-The agent should then:
-1. Read the current entries (shown in the error response)
-2. Identify entries that can be removed or consolidated
-3. Use `replace` to merge related entries into shorter versions
-4. Then `add` the new entry
+Eviction is oldest-first, down to a small headroom below the limit so a burst of
+saves doesn't evict on every call. The prompt's current entries are the ones in
+play, so the oldest are the likeliest to be stale — and they land in
+`~/.hermes/memories/ARCHIVE.jsonl` verbatim, so nothing is destroyed. Two cases
+still refuse, with the original consolidation guidance:
 
-**Best practice:** When memory is above 80% capacity (visible in the system prompt header), consolidate entries before adding new ones. For example, merge three separate "project uses X" entries into one comprehensive project description entry.
+- **The archive write fails.** Dropping entries with no trace is worse than refusing, so the write is refused and the file is left untouched.
+- **The entry cannot fit even an empty store** (an entry longer than the limit itself).
+
+`replace` and `remove` are unchanged: they act on entries you name, so capacity is
+your call there, and the tool still returns the consolidation error with
+`current_entries`.
+
+**Best practice:** when memory is above 80% capacity (visible in the system prompt
+header), consolidate related entries with `replace` — merging three "project uses X"
+entries into one keeps the facts you actually want, rather than leaving it to
+age-based eviction.
 
 ### Practical Examples of Good Memory Entries
 

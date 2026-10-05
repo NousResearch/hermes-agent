@@ -662,6 +662,44 @@ def _dir_identity(path: str) -> Optional[Tuple[int, int]]:
         return None
 
 
+def _nearest_git_marker(path: str) -> Optional[Path]:
+    """The nearest ``.git`` (directory or linked-worktree pointer file) at or above
+    *path* — git's own discovery rule, derived by stat alone so the replay gate can
+    consult it on every rebuild without shelling out."""
+    try:
+        start = Path(path).resolve()
+    except (OSError, RuntimeError):
+        return None
+    for candidate in (start, *start.parents):
+        marker = candidate / ".git"
+        try:
+            if marker.exists():
+                return marker
+        except OSError:
+            continue
+    return None
+
+
+def _workspace_generation(path: str) -> Optional[Tuple[int, int, Optional[Tuple[int, int]]]]:
+    """Directory identity bound to the workspace lifetime that owned it at capture:
+    ``(st_dev, st_ino)`` of *path* plus the identity of the ``.git`` marker that owns it
+    (None when no workspace marker sits above the path).
+
+    The bare directory pair alone cannot tell a directory lifetime from its successor:
+    a removed-and-recreated pathname can reuse the pair (observed on overlayfs), and a
+    pin recorded before the replacement then replays old bytes — or an old emptiness —
+    onto the new occupant. Ordinary git work never deletes ``.git``, so the marker's
+    identity is stable across a workspace's life and changes whenever a different
+    generation takes over the pathname (a fresh ``git init`` or clone among them); the
+    replay gate re-probes on any doubt. None when the path cannot be stat'd."""
+    base = _dir_identity(path)
+    if base is None:
+        return None
+    marker = _nearest_git_marker(path)
+    marker_identity = _dir_identity(str(marker)) if marker is not None else None
+    return (base[0], base[1], marker_identity)
+
+
 def _persisted_root_still_physical(root_line: str) -> bool:
     """Provenance evidence carried by a persisted ``- Root:`` line.
 
@@ -678,29 +716,88 @@ def _persisted_root_still_physical(root_line: str) -> bool:
         return False
 
 
+def _persisted_git_history(block: str) -> Optional[List[str]]:
+    """The snapshot's git-history tip as its bytes recorded it at capture: the
+    ``- Recent commits:`` entries when the block carries git state, ``[]`` for a
+    repository without commits, None when the block describes a workspace without
+    git (marker-only project). The tip is the bytes' own capture-time generation
+    evidence — it cannot be manufactured at resume."""
+    lines = block.splitlines()
+    if not any(line.startswith("- Branch: ") for line in lines):
+        return None
+    history: List[str] = []
+    in_commits = False
+    for line in lines:
+        if line.startswith("- Recent commits:"):
+            in_commits = True
+            continue
+        if in_commits:
+            if line.startswith("    "):
+                history.append(line.strip())
+            else:
+                break
+    return history
+
+
+def _persisted_generation_matches(block: str, owner: Path, expect_git: bool) -> bool:
+    """Whether the snapshot's capture-time evidence still describes today's occupant of
+    the workspace. A git workspace is identified by its history tip (the same
+    ``git log -3`` render the producer emits); a marker-only workspace by its project
+    facts. A pathname whose previous occupant was replaced by an independent workspace
+    fails even when every spelling and ancestry check passes."""
+    from agent.coding_context import _facts_lines, _git, detect_project_facts
+    persisted_history = _persisted_git_history(block)
+    if (persisted_history is not None) != expect_git:
+        return False
+    if persisted_history is not None:
+        today = [line for line in _git(owner, "log", "-3", "--pretty=%h %s").splitlines()
+                 if line.strip()]
+        return persisted_history == today
+    persisted_facts = [line for line in block.splitlines()
+                       if line.startswith(("- Project: ", "- Verify: ", "- Context files: "))]
+    return persisted_facts == _facts_lines(detect_project_facts(owner))
+
+
 def _persisted_workspace_block(prompt: str, key: str) -> Optional[str]:
-    """The workspace snapshot inside ``prompt`` taken for ``key`` (its ``- Root:`` is ``key`` or an
-    ancestor); "" when the prompt has none; None when it has one for another root."""
-    from agent.coding_context import WORKSPACE_BLOCK_HEADER
+    """The workspace snapshot inside ``prompt`` taken for ``key`` (its ``- Root:`` is
+    the workspace that owns ``key``); "" when the prompt has none; None when its only
+    candidate is not provably this workspace's snapshot.
+
+    Framing first: project context (repo-controlled AGENTS.md content) is rendered
+    before the canonical snapshot, so the LAST workspace-shaped block in the prompt is
+    the renderer's — earlier copies are project-context prose and are never adopted,
+    however exactly they imitate the frame (a context block can name the real root and
+    copy its history, but it cannot move itself after the canonical block).
+
+    The candidate then has to prove it still describes this workspace:
+    * the persisted ``- Root:`` line is git's physical spelling at capture — if it no
+      longer resolves to itself, the directory was renamed or rebound and today's
+      ``samefile`` agreement proves nothing (resolved here so a loop in persisted
+      bytes cannot escape into the caller's blanket handler);
+    * that root must be the workspace that OWNS the cwd today — the producer's own
+      git/marker-root resolution, not merely an ancestor: a nested independent
+      repository under the captured root is a different workspace;
+    * the bytes' git history tip (or project facts, for marker-only workspaces) must
+      still match the occupant's — a pathname reused by an independent workspace is a
+      new generation even when the spelling is unchanged."""
+    from agent.coding_context import WORKSPACE_BLOCK_HEADER, _workspace_roots
     head = f"\n\n{WORKSPACE_BLOCK_HEADER}\n- Root: "
-    start = prompt.find(head)
+    start = prompt.rfind(head)
     if start < 0:
         return ""
-    cwd = Path(key).resolve()
-    while start >= 0:
-        block = prompt[start + 2:].split("\n\n", 1)[0]
-        # The Root line is persisted session bytes: resolve it inside _same_live_dir so a
-        # symlink loop in it cannot escape into the caller's blanket handler.
-        root_line = block.split("\n", 2)[1][len("- Root: "):]
-        # Provenance first: a Root line that no longer resolves to itself names a
-        # directory that was renamed or rebound after capture, so today's samefile
-        # agreement is not evidence this block belongs to the current workspace.
-        if _persisted_root_still_physical(root_line) and (
-                _same_live_dir(root_line, str(cwd)) or any(
-                    _same_live_dir(root_line, str(p)) for p in cwd.parents)):
-            return block
-        start = prompt.find(head, start + 2)
-    return None
+    block = prompt[start + 2:].split("\n\n", 1)[0]
+    root_line = block.split("\n", 2)[1][len("- Root: "):]
+    if not _persisted_root_still_physical(root_line):
+        return None
+    try:
+        git_root, owner = _workspace_roots(key)
+    except Exception:
+        return None
+    if owner is None or not _same_live_dir(root_line, str(owner)):
+        return None
+    if not _persisted_generation_matches(block, Path(owner), git_root is not None):
+        return None
+    return block
 
 
 def _session_prompt(agent: Any) -> Optional[str]:
@@ -740,7 +837,7 @@ def _seed_workspace_pin(agent: Any, key: str) -> None:
     # Only a real snapshot is adopted: a prompt without one (built on a surface without the
     # coding posture, or with tools off) leaves the pin open so this build captures one.
     if block:
-        agent._frozen_workspace_snapshot = (key, block, _dir_identity(key))
+        agent._frozen_workspace_snapshot = (key, block, _workspace_generation(key))
 
 
 def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
@@ -765,20 +862,32 @@ def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
         pinned = getattr(agent, "_frozen_workspace_snapshot", None)
         # "" is a real pinned value (no workspace here) — only a cwd mismatch re-probes.
         # A key match alone is not provenance: the captured key names its directory only
-        # until the path is rebound (renamed + reused for a symlink), so a pinned snapshot
-        # whose recorded directory identity no longer matches the key's today replays as
-        # None and the build probes fresh. Legacy 2-tuples carry no identity and keep the
-        # key-match contract.
+        # until the path is rebound (renamed + reused for a symlink), and the recorded
+        # directory identity alone does not prove a lifetime — a removed-and-recreated
+        # pathname can reuse the (st_dev, st_ino) pair. The generation adds the owning
+        # .git marker's identity, which ordinary git work never deletes and every new
+        # workspace generation changes; a pin whose recorded generation no longer
+        # matches today's replays as None and the build probes fresh. Legacy tuples
+        # carry no generation and keep the key-match contract.
         replay = None
         if pinned is not None and _same_pin_key(pinned[0], cwd_key):
             identity = pinned[2] if len(pinned) > 2 else None
-            if identity is None or _dir_identity(pinned[0]) == identity:
+            if identity is None or _workspace_generation(pinned[0]) == identity:
                 replay = pinned[1]
+        if replay is None:
+            # Pairing: the published pin must bind the collected bytes to the directory
+            # generation they were taken in. Sampling only after the producer runs lets a
+            # replacement that lands in between certify old bytes with the new
+            # occupant's identity, so the generation is sampled on both sides and a
+            # mismatched pairing publishes nothing — the pin stays unseeded and the
+            # next build probes fresh.
+            pre = _workspace_generation(cwd_key)
         parts = coding_system_prompt_parts(platform=agent.platform, cwd=cwd, model=agent.model,
                                            valid_tool_names=agent.valid_tool_names, workspace_block=replay)
         if replay is None:
-            agent._frozen_workspace_snapshot = (cwd_key, parts[1][0] if parts[1] else "",
-                                                _dir_identity(cwd_key))
+            post = _workspace_generation(cwd_key)
+            if pre is not None and pre == post:
+                agent._frozen_workspace_snapshot = (cwd_key, parts[1][0] if parts[1] else "", post)
         return parts
     except Exception:
         pass

@@ -514,6 +514,232 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_pin_is_not_published_when_the_directory_is_replaced_during_collection(self):
+        """Bytes and identity must be paired at collection: a replacement that lands between
+        the workspace producer's snapshot and a post-hoc stat must not publish a pin that
+        pairs one directory's bytes with another's identity — the pin stays unseeded and
+        the next build probes fresh."""
+        import tempfile, shutil
+        from pathlib import Path
+        import agent.coding_context as cc
+        from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-pairing-"))
+        try:
+            captured = _init_repo(tmp / "captured", "init captured")
+            other = _init_repo(tmp / "other", "init other")
+            captured_key = captured.resolve()
+            real_parts = cc.coding_system_prompt_parts
+            state = {"armed": True}
+
+            def renderer(**kwargs):
+                parts = real_parts(**kwargs)
+                if state["armed"] and parts[1]:
+                    state["armed"] = False
+                    self._rebind(captured, other)  # replacement lands after collection
+                return parts
+
+            agent = self._pin_agent()
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=captured), \
+                 patch("agent.coding_context.coding_system_prompt_parts", side_effect=renderer):
+                build_system_prompt(agent)
+            # No publishable pairing: the stat that would certify the collected bytes
+            # describes the replacement, not the directory they were taken in.
+            self.assertIsNone(getattr(agent, "_frozen_workspace_snapshot", None))
+            invalidate_system_prompt(agent)
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=other):
+                rebuilt = build_system_prompt(agent)
+            self.assertIn(f"- Root: {other.resolve()}\n", rebuilt)
+            self.assertNotIn(f"- Root: {captured_key}\n", rebuilt)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_persisted_adoption_requires_the_owner_not_just_an_ancestor(self):
+        """Capture beneath repository A's root (cwd = A/src), rebind that subdirectory to an
+        independent nested repository B, resume bound to B: A's root is still a physical
+        ancestor of B, but it is not the workspace that owns B — the persisted snapshot
+        must not be adopted, and the resumed agent must probe B."""
+        import tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-owner-"))
+        try:
+            import subprocess
+            outer = _init_repo(tmp / "outer", "init outer")
+            src, inner = outer / "src", outer / "inner"
+            src.mkdir()
+            inner.mkdir()
+            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=inner, check=True)
+            subprocess.run(["git", "-C", str(inner), "config", "user.email", "t@t"], check=True)
+            subprocess.run(["git", "-C", str(inner), "config", "user.name", "t"], check=True)
+            (inner / "inner.py").write_text("print(2)\n")
+            subprocess.run(["git", "-C", str(inner), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(inner), "commit", "-qm", "init inner"], check=True)
+
+            def env(cwd):
+                return patch("agent.prompt_builder.build_environment_hints",
+                             return_value=f"Host: x\nUser home directory: /h\nCurrent working directory: {cwd}")
+
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(src), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=src):
+                stored = build_system_prompt(self._pin_agent())
+                self.assertIn(f"- Root: {outer.resolve()}", stored)
+            self._rebind(src, inner)
+            # Control: an unchanged subdirectory resume still replays the captured snapshot
+            # (cwd src-saved is the same workspace the snapshot was taken in).
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(outer / "src-saved"), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=outer / "src-saved"):
+                same = build_system_prompt(self._pin_agent(_cached_system_prompt=None,
+                                                           _session_db=SimpleNamespace(
+                                                               get_session=lambda sid: {"system_prompt": stored})))
+                self.assertIn(f"- Root: {outer.resolve()}\n", same)
+            # The rebind: the persisted root is an ancestor of the new cwd, not its owner.
+            db = SimpleNamespace(get_session=lambda sid: {"system_prompt": stored})
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(inner), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=inner):
+                rebuilt = build_system_prompt(self._pin_agent(_cached_system_prompt=None, _session_db=db))
+            self.assertIn(f"- Root: {inner.resolve()}\n", rebuilt)
+            self.assertNotIn(f"- Root: {outer.resolve()}\n", rebuilt)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_same_path_replacement_cannot_adopt_the_previous_workspace(self):
+        """Repository A is captured at pathname P, its lifetime ends, and an independent
+        repository B is created at the same P (no symlink involved): every spelling and
+        ancestry check passes, so adoption needs the bytes' own capture-time evidence —
+        B's git history differs from the snapshot's, and B must be probed fresh."""
+        import tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-same-path-"))
+        try:
+            repo = _init_repo(tmp / "proj", "init captured")
+
+            def env(cwd):
+                return patch("agent.prompt_builder.build_environment_hints",
+                             return_value=f"Host: x\nUser home directory: /h\nCurrent working directory: {cwd}")
+
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(repo), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+                stored = build_system_prompt(self._pin_agent())
+                self.assertIn("init captured", stored)
+            shutil.rmtree(repo)
+            _init_repo(tmp / "proj", "init replaced")
+            db = SimpleNamespace(get_session=lambda sid: {"system_prompt": stored})
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(repo), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+                rebuilt = build_system_prompt(self._pin_agent(_cached_system_prompt=None, _session_db=db))
+            self.assertIn("init replaced", rebuilt)
+            self.assertNotIn("init captured", rebuilt)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_recycled_pathname_cannot_replay_an_empty_pin_onto_a_new_workspace(self):
+        """The live sibling of the same-path replacement: a plain directory's empty pin,
+        pathname recreated as an independent repository. Directory identity can be
+        recycled by the filesystem (observed on overlayfs), so the replay gate must not
+        certify the old emptiness onto the new occupant — B is probed."""
+        import tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import (_dir_identity, build_system_prompt,
+                                         invalidate_system_prompt)
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-recycled-"))
+        try:
+            plain = tmp / "plain"
+            plain.mkdir()
+            agent = self._pin_agent()
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=plain):
+                build_system_prompt(agent)
+                pin = agent._frozen_workspace_snapshot
+                self.assertEqual(pin[1], "")
+            shutil.rmtree(plain)
+            _init_repo(tmp / "plain", "init replaced")
+            # The recycled-identity shape the gate must survive: the new occupant stats
+            # to the recorded (st_dev, st_ino) pair.
+            agent._frozen_workspace_snapshot = (pin[0], pin[1], _dir_identity(str(plain)))
+            invalidate_system_prompt(agent)
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=plain):
+                rebuilt = build_system_prompt(agent)
+            self.assertIn(f"- Root: {plain.resolve()}", rebuilt)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_project_context_copy_cannot_impersonate_the_workspace_snapshot(self):
+        """The persisted parser must not discover workspace state from unframed prompt
+        prose: project context (repo-controlled AGENTS.md content) is rendered BEFORE the
+        canonical snapshot, and a copy there — naming the real root — must never be
+        adopted or pinned. The canonical block is what gets frozen, and once the
+        context file is gone its bytes cannot survive through the workspace pin."""
+        import tempfile, shutil, subprocess
+        from pathlib import Path
+        from agent.coding_context import WORKSPACE_BLOCK_HEADER
+        from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-impersonation-"))
+        try:
+            repo = _init_repo(tmp / "proj", "init captured")
+            (repo / "AGENTS.md").write_text(
+                "# Agent notes\n\n"
+                f"{WORKSPACE_BLOCK_HEADER}\n"
+                f"- Root: {repo.resolve()}\n"
+                "- Status: FAKE-CONTEXT\n")
+            # Commit so the canonical snapshot reads a clean worktree.
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "add agents notes"], cwd=repo, check=True)
+
+            def env(cwd):
+                return patch("agent.prompt_builder.build_environment_hints",
+                             return_value=f"Host: x\nUser home directory: /h\nCurrent working directory: {cwd}")
+
+            def ctx_agent(**over):
+                # _pin_agent skips context files; the impersonating copy lives in AGENTS.md.
+                return _agent(
+                    load_soul_identity=False, skip_context_files=False, valid_tool_names={"terminal"},
+                    platform="cli", model="gpt-4o", _task_completion_guidance=False,
+                    _parallel_tool_call_guidance=False, _tool_use_enforcement=False, _execution_guidance=False,
+                    _environment_probe=False, _bot_mode_protocol=False, _kanban_worker_guidance="",
+                    pass_session_id=False, session_id="s1", _emit_status=lambda *a, **k: None, **over)
+
+            agent = ctx_agent()
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(repo), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+                stored = build_system_prompt(agent)
+            # Precondition: the impersonating copy really is in the persisted prompt,
+            # ahead of the canonical snapshot.
+            head = f"\n\n{WORKSPACE_BLOCK_HEADER}\n- Root: "
+            self.assertIn("FAKE-CONTEXT", stored)
+            self.assertLess(stored.find(head), stored.rfind(head))
+            db = SimpleNamespace(get_session=lambda sid: {"system_prompt": stored})
+            resumed = ctx_agent(_cached_system_prompt=None, _session_db=db)
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(repo), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+                build_system_prompt(resumed)
+            # The pin froze the canonical snapshot, not the project-context copy.
+            self.assertIn("Status: clean", resumed._frozen_workspace_snapshot[1])
+            self.assertNotIn("FAKE-CONTEXT", resumed._frozen_workspace_snapshot[1])
+            # Removing the context file takes its copy out of the prompt; the pinned
+            # snapshot is the canonical one, so the impersonating bytes cannot survive.
+            (repo / "AGENTS.md").unlink()
+            invalidate_system_prompt(resumed)
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(repo), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+                rebuilt = build_system_prompt(resumed)
+            self.assertNotIn("FAKE-CONTEXT", rebuilt)
+            self.assertIn("Status: clean", rebuilt)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

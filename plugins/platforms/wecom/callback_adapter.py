@@ -32,6 +32,7 @@ except ImportError:
     HTTPX_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms._shared import extra_or_secret as _extra_or_secret
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import MessageDeduplicator, send_chunks
@@ -87,6 +88,11 @@ def _ack():
     return web.Response(text="success", content_type="text/plain")
 
 
+def _credential(extra: Dict[str, Any], key: str, env: str) -> str:
+    """One callback credential: the profile's env first, then ``extra`` (blank counts as unset)."""
+    return str(_extra_or_secret(extra, key, env, "") or "").strip()
+
+
 class WecomCallbackAdapter(BasePlatformAdapter):
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
@@ -113,12 +119,27 @@ class WecomCallbackAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _normalize_apps(extra: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """The callback apps this config describes: the ``apps`` block, or the single app the
+        resolved corp_id + corp_secret pair builds (both halves required).
+
+        Credentials resolve env-first through ``_credential`` — the same rungs
+        ``_callback_is_connected`` reads — so a config the checker calls connected is one this
+        adapter can start (#120870).
+        """
         apps = extra.get("apps")
         if isinstance(apps, list) and apps:
             return [dict(app) for app in apps if isinstance(app, dict)]
-        if extra.get("corp_id"):
-            return [{"name": extra.get("name") or "default", "corp_id": extra.get("corp_id", ""), "corp_secret": extra.get("corp_secret", ""),
-                     "agent_id": str(extra.get("agent_id", "")), "token": extra.get("token", ""), "encoding_aes_key": extra.get("encoding_aes_key", "")}]
+        corp_id = _credential(extra, "corp_id", "WECOM_CALLBACK_CORP_ID")
+        corp_secret = _credential(extra, "corp_secret", "WECOM_CALLBACK_CORP_SECRET")
+        if corp_id and corp_secret:
+            return [{
+                "name": extra.get("name") or "default",
+                "corp_id": corp_id,
+                "corp_secret": corp_secret,
+                "agent_id": _credential(extra, "agent_id", "WECOM_CALLBACK_AGENT_ID"),
+                "token": _credential(extra, "token", "WECOM_CALLBACK_TOKEN"),
+                "encoding_aes_key": _credential(extra, "encoding_aes_key", "WECOM_CALLBACK_ENCODING_AES_KEY"),
+            }]
         return []
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:

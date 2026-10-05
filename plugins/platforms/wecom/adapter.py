@@ -34,7 +34,7 @@ from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendR
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_float
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
+from gateway.platforms._shared import extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret, send_error
 from plugins.platforms.wecom.send_queue import ChatSendQueueMixin
 from plugins.platforms.wecom.media import WeComMediaMixin, APP_CMD_SEND
 from plugins.platforms.wecom.streaming import (
@@ -121,7 +121,21 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
                 return default
 
         def _setting(*keys: str, env: str = "", default: str = "") -> str:
-            return str(next((extra[k] for k in keys if extra.get(k)), None) or (_get_scoped_secret(env, default) if env else "")).strip()
+            """One setting, resolved the same way ``_is_connected`` reads credentials: the
+            profile's env first (blank counts as unset), then the first truthy non-blank
+            ``extra`` key, then ``default``. Config-first here would contradict the verdict the
+            checker reports off the env rung (#120870)."""
+            if env:
+                env_value = _get_scoped_secret(env, None)
+                if env_value is not None and str(env_value).strip():
+                    return str(env_value).strip()
+            for key in keys:
+                value = extra.get(key)
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    continue
+                if value:
+                    return str(value).strip()
+            return str(default or "").strip()
 
         self._bot_id = _setting("bot_id", env="WECOM_BOT_ID")
         self._secret = _setting("secret", env="WECOM_SECRET")
@@ -818,14 +832,34 @@ def interactive_setup() -> None:
     print_success("💬 WeCom configured!")
 
 
+def _credential(extra: dict, key: str, env: str) -> str:
+    """One WeCom credential: the profile's env first, then ``extra`` (blank counts as unset)."""
+    return str(_extra_or_secret(extra, key, env, "") or "").strip()
+
+
 def _is_connected(config) -> bool:
-    return bool((getattr(config, "extra", {}) or {}).get("bot_id"))
+    """Connected once bot_id + secret resolve (the profile's env, then ``extra``).
+
+    ``hermes gateway setup`` hands every plugin platform a synthetic ``PlatformConfig(enabled=True)``
+    with an empty ``extra``, so an install whose credentials live in ``.env`` — the shape
+    ``gateway/config_env.py`` seeds for WECOM_BOT_ID / WECOM_SECRET — must resolve through the env
+    rung, or the picker reports "not configured" while the adapter is connected. Both halves are
+    required: ``connect()`` rejects a missing secret, so a half-configured install must not read as
+    ready.
+    """
+    extra = getattr(config, "extra", {}) or {}
+    return bool(_credential(extra, "bot_id", "WECOM_BOT_ID") and _credential(extra, "secret", "WECOM_SECRET"))
 
 
 def _callback_is_connected(config) -> bool:
-    """Callback mode: corp_id or a multi-app `apps` block."""
+    """Callback mode: a multi-app ``apps`` block, or corp_id + corp_secret (env, then ``extra``)."""
     extra = getattr(config, "extra", {}) or {}
-    return bool(extra.get("corp_id") or extra.get("apps"))
+    if extra.get("apps"):
+        return True
+    return bool(
+        _credential(extra, "corp_id", "WECOM_CALLBACK_CORP_ID")
+        and _credential(extra, "corp_secret", "WECOM_CALLBACK_CORP_SECRET")
+    )
 
 
 

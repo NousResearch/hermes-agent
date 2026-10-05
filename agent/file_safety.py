@@ -247,6 +247,20 @@ def build_write_approval_paths(home: str) -> set[str]:
 # Control files (auth.json, config.yaml, webhook_subscriptions.json) are
 # deliberately NOT here (#45947): read-denied, but the user may ask to edit them.
 _HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile")
+# Code the gateway imports in-process (``hooks/`` at startup, enabled ``plugins/``) runs
+# outside every sandbox with the gateway's secrets, so an agent-planted handler is a sandbox escape.
+# Refused to the file tools here and read-only for agent-driven children (``terminal_protected_paths``),
+# for every home and profile. Operators install hooks and plugins from the CLI, not the agent.
+_GATEWAY_CODE_DIRS = ("hooks", "plugins")
+
+
+def _all_hermes_homes() -> list[Path]:
+    """Active HERMES_HOME, the root and every profile under them, resolved and deduplicated."""
+    homes: list[Path] = list(_hermes_dirs())
+    for base in list(homes):
+        with suppress(OSError):
+            homes.extend(p.resolve() for p in (base / "profiles").iterdir() if p.is_dir())
+    return list(dict.fromkeys(homes))
 
 
 def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
@@ -296,6 +310,9 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
             with suppress(Exception):
                 if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
                     return "credential"
+    code_dirs = (os.path.realpath(home / sub) for home in _all_hermes_homes() for sub in _GATEWAY_CODE_DIRS)
+    if any(_is_under(resolved, d) for d in code_dirs):
+        return "credential"
 
     safe_roots = get_safe_write_roots()
     if safe_roots and not any(_is_under(resolved, root) for root in safe_roots):
@@ -432,16 +449,12 @@ def terminal_protected_paths() -> tuple[list[str], list[str]]:
     ancestors (``landlock_exec._protection_sets``), and in a frozen home a missing ``.env`` cannot be
     created either.
     """
-    homes: list[Path] = list(_hermes_dirs())
-    for base in list(homes):
-        with suppress(OSError):
-            homes.extend(p.resolve() for p in (base / "profiles").iterdir() if p.is_dir())
     no_access: dict[str, None] = {}
     read_only: dict[str, None] = {}
-    for home in dict.fromkeys(homes):
+    for home in _all_hermes_homes():
         for name in (*_CREDENTIAL_FILE_NAMES, *_TERMINAL_NO_ACCESS_DIRS):
             no_access[str(home / name)] = None
-        for name in _TERMINAL_READ_ONLY_FILES:
+        for name in (*_TERMINAL_READ_ONLY_FILES, *_GATEWAY_CODE_DIRS):
             read_only[str(home / name)] = None
     return list(no_access), [p for p in read_only if p not in no_access]
 

@@ -63,6 +63,7 @@ _GUARDS = {
     "config-writers": ["scripts/check_config_yaml_writers.py"],
     "os-marker-fakes": ["scripts/ci/check_os_marker_fakes.py"],
 }
+_CHECKS = (*_GUARDS, "ruff", "health")
 
 
 @dataclass
@@ -107,11 +108,8 @@ def _tree_snapshot(tree: str) -> Iterator[tuple[Path, dict[str, str]]]:
         yield root, env
 
 
-def _jobs(only: str | None, base: str | None, head: str | None,
+def _jobs(names: list[str], base: str | None, head: str | None,
           root: Path = REPO, env: dict[str, str] | None = None) -> dict[str, _Job]:
-    names = [*_GUARDS, "ruff", "health"]
-    if only:
-        names = [n for n in names if n in only.split(",")]
     jobs: dict[str, _Job] = {}
     for name in names:  # built only when selected: `--only shebangs` needs no ruff
         if name in _GUARDS:
@@ -176,10 +174,22 @@ def uninstall_hooks() -> int:
     return 0
 
 
+def _selected(parser: argparse.ArgumentParser, only: str | None) -> list[str]:
+    """Every check, or exactly the named ones. A typo must not turn into an empty green run."""
+    if only is None:
+        return list(_CHECKS)
+    wanted = {name.strip() for name in only.split(",")} - {""}
+    unknown = sorted(wanted - set(_CHECKS))
+    if not wanted or unknown:
+        parser.error(f"--only {only!r}: unknown or no check name ({', '.join(unknown) or 'empty'});"
+                     f" valid: {', '.join(_CHECKS)}")
+    return [name for name in _CHECKS if name in wanted]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="scripts/check", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--only", help=f"comma list of: {', '.join([*_GUARDS, 'ruff', 'health'])}")
+    parser.add_argument("--only", help=f"comma list of: {', '.join(_CHECKS)}")
     parser.add_argument("--base", help="base revision for the code-health ratchet")
     target = parser.add_mutually_exclusive_group()
     target.add_argument("--staged", action="store_true",
@@ -189,6 +199,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="run on every commit (default) or every push")
     parser.add_argument("--uninstall-hook", action="store_true", help="remove our git hooks")
     args = parser.parse_args(argv)
+    args.only = _selected(parser, args.only)
     if args.install_hook:
         return install_hook(args.install_hook)
     if args.uninstall_hook:

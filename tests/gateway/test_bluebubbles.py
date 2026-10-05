@@ -2275,3 +2275,88 @@ async def test_webhook_uses_actual_gateway_admission_receipt(monkeypatch, path):
             handler.assert_awaited_once()
     finally:
         await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("after_acceptance", [False, True], ids=["before_admission", "after_admission"])
+async def test_cancelled_gateway_admission_settles_guid_against_receipt(
+    monkeypatch, after_acceptance,
+):
+    """Cancellation must not replay a command the real gateway already handled."""
+    adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    handled = []
+    events = []
+
+    async def handler(event):
+        events.append(event)
+        if not after_acceptance:
+            entered.set()
+            await release.wait()
+        handled.append(event.message_id)
+        return "status reply"
+
+    async def send(chat_id, content, **kwargs):
+        if after_acceptance:
+            entered.set()
+            await release.wait()
+        return SendResult(success=True, message_id="reply")
+
+    adapter.set_message_handler(handler)
+    monkeypatch.setattr(adapter, "send", send)
+    source = adapter.build_source(chat_id="user@example.com", user_id="user@example.com")
+    key = adapter._event_session_key(MessageEvent(text="/status", source=source))
+    owner = asyncio.create_task(asyncio.Event().wait())
+    adapter._active_sessions[key] = asyncio.Event()
+    adapter._session_tasks[key] = owner
+    payload = {"type": "new-message", "data": {
+        "guid": "cancel-admission-guid", "text": "/status",
+        "chatIdentifier": "user@example.com",
+        "handle": {"address": "user@example.com"}, "isFromMe": False,
+    }}
+    first = asyncio.create_task(adapter._handle_webhook(_FakeBlueBubblesRequest(payload)))
+    duplicate = None
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        assert events[0]._gateway_accepted is after_acceptance
+        duplicate = asyncio.create_task(adapter._handle_webhook(_FakeBlueBubblesRequest(payload)))
+        await asyncio.sleep(0)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        duplicate_response = await asyncio.wait_for(duplicate, timeout=5)
+        assert handled == (["cancel-admission-guid"] if after_acceptance else [])
+        release.set()
+        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))).status == 200
+        assert handled == ["cancel-admission-guid"]
+        assert len(events) == (1 if after_acceptance else 2)
+        assert duplicate_response.status == (200 if after_acceptance else 503)
+        assert not adapter._inflight_message_ids
+    finally:
+        for task in (first, duplicate):
+            if task is not None:
+                task.cancel()
+        await asyncio.gather(*(task for task in (first, duplicate) if task is not None), return_exceptions=True)
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group", [False, True], ids=["dm", "group"])
+async def test_unseen_updated_attachment_is_acknowledged_without_dispatch(monkeypatch, group):
+    adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+    handler = AsyncMock()
+    download = AsyncMock()
+    monkeypatch.setattr(adapter, "handle_message", handler)
+    monkeypatch.setattr(adapter, "_download_attachment", download)
+    payload = {"type": "updated-message", "data": {
+        "guid": "unseen-update-guid", "text": "newly hydrated caption", "isGroup": group,
+        "chatGuid": "iMessage;+;group" if group else "iMessage;-;user@example.com",
+        "handle": {"address": "user@example.com"}, "isFromMe": False,
+        "attachments": [{"guid": "new-attachment", "mimeType": "image/jpeg"}],
+    }}
+    assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))).status == 200
+    handler.assert_not_awaited()
+    download.assert_not_awaited()
+    assert not adapter._inflight_message_ids
+    assert not adapter._message_dedup.contains("unseen-update-guid")

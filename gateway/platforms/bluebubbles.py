@@ -1152,6 +1152,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             self._finish_inbound_claim(message_id, claim, accepted=False)
             return web.json_response({"error": "missing message fields"}, status=400)
         session_chat_id = chat_guid or chat_identifier
+        event: Optional[MessageEvent] = None
         try:
             source = self.build_source(
                 chat_id=session_chat_id,
@@ -1178,18 +1179,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             # handoff and spawning agent work; awaiting it lets us release a
             # failed claim without waiting for the agent turn itself.
             await self.handle_message(event)
-        except asyncio.CancelledError:
-            self._finish_inbound_claim(message_id, claim, accepted=False)
-            raise
         except Exception:
-            self._finish_inbound_claim(message_id, claim, accepted=False)
             logger.exception("[bluebubbles] failed to hand off inbound message")
             return web.Response(text="handoff unavailable", status=503)
+        finally:
+            # Cancellation can arrive after admission while an inline reply is
+            # sending. Retain that GUID so replay cannot execute the command again.
+            accepted = event is not None and event._gateway_accepted is True
+            self._finish_inbound_claim(message_id, claim, accepted=accepted)
 
-        if event._gateway_accepted is not True:
-            self._finish_inbound_claim(message_id, claim, accepted=False)
+        if not accepted:
             return web.Response(text="handoff unavailable", status=503)
-        self._finish_inbound_claim(message_id, claim, accepted=True)
 
         # Fire-and-forget read receipt
         if self.send_read_receipts and session_chat_id:

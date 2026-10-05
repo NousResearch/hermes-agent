@@ -130,6 +130,14 @@ Hermes → BlueBubbles REST API → Messages.app → iMessage
 - **Outbound:** Hermes sends messages via the BlueBubbles REST API.
 - **Media:** Images, voice messages, videos, and documents are supported in both directions. Inbound attachments are downloaded and cached locally for the agent to process.
 
+### Incoming event policy
+
+`new-message` and the legacy `message` alias can start a turn. Hermes acknowledges `updated-message` without dispatching a turn or downloading attachments, even when the GUID is unseen. An update containing newly available attachments or group content therefore does not deliver that content to the agent. Edits and retractions do not start turns either.
+
+This policy applies to DMs and groups. Attachments are retried within the original new-message request; successful downloads and captions are preserved, with an attachment-unavailable fallback if every download fails. Hermes does not rely on a later update to hydrate the message. GUID replay protection follows actual gateway admission: cancellation before admission releases the GUID; cancellation after admission retains it.
+
+Synthetic tests cover the update policy and group payload shapes. Fresh on-device group traffic has not been validated; this change does not claim to consolidate the broader update-based attachment/group handling proposed in [#116401](https://github.com/NousResearch/hermes-agent/pull/116401).
+
 ### Two URLs, opposite directions
 
 The setup uses two URLs that point in opposite directions — don't confuse them:
@@ -139,7 +147,7 @@ The setup uses two URLs that point in opposite directions — don't confuse them
 
 ### How the webhook is registered
 
-You do **not** need to create a webhook in the BlueBubbles UI. When the gateway connects, Hermes registers the webhook itself via the BlueBubbles REST API (`/api/v1/webhook`) for the `new-message` and `updated-message` events, and removes the registration again on clean shutdown.
+You do **not** need to create a webhook in the BlueBubbles UI. When the gateway connects, Hermes registers the webhook itself via the BlueBubbles REST API (`/api/v1/webhook`) for `new-message` only. The exact fixed-URL registration is retained on disconnect so another gateway or outbound client cannot remove it.
 
 Two details worth knowing:
 

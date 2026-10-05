@@ -604,3 +604,37 @@ async def test_reply_batches_preserve_context_and_pending_delivery(
         *adapter._background_tasks, *adapter._pending_text_batch_tasks.values()
     )
     assert [call.args[0] for call in adapter.handle_message.await_args_list] == expected
+
+
+@pytest.mark.asyncio
+async def test_reply_boundary_teardown_preserves_in_flight_and_pending_events():
+    adapter = _make_adapter()
+    adapter._text_batch_delay_seconds = 3600
+    adapter._text_batch_split_delay_seconds = 3600
+    first = _make_event("first", reply_to_message_id="reply-a")
+    second = _make_event("second", reply_to_message_id="reply-b")
+    expected = [replace(first), replace(second)]
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def dispatch(event):
+        if event is first:
+            entered.set()
+            await release.wait()
+
+    adapter.handle_message.side_effect = dispatch
+    adapter._enqueue_text_event(first)
+    adapter._enqueue_text_event(second)
+    boundaries = tuple(adapter._background_tasks)
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        adapter._mark_disconnected()
+        await asyncio.wait_for(adapter._cancel_pending_delivery_tasks(), timeout=5)
+        actual = (adapter._held_inbound_events, all(t.done() for t in boundaries))
+        assert actual == (expected, True)
+    finally:
+        release.set()
+        tasks = (*boundaries, *adapter._pending_text_batch_tasks.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)

@@ -551,6 +551,36 @@ def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
         assert kbd.check_respawn_guard(conn, spawn_failed_id) == "blocker_auth"
 
 
+
+def test_respawn_guard_does_not_block_pr_acceptance_auth_errors(kanban_home, monkeypatch):
+    """PR-acceptance auth errors (GitHub credential issues on the assignee
+    profile) must NOT trip the ``blocker_auth`` respawn guard.
+
+    The PR acceptance gate (``kanban_pr_acceptance_store.record_acceptance``)
+    writes ``PR acceptance auth: ...`` to ``last_failure_error`` when the
+    assignee profile's ``gh`` login can't reach the repository. That text
+    contains "auth"/"login", which the ``_RESPAWN_BLOCKER_RE`` regex matches
+    — but the guard is designed for LLM provider quota/auth walls, not GitHub
+    credential misconfiguration. An out-of-slice credential fix + redeploy
+    is the recovery path, so the card must stay dispatchable (#132389).
+    """
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="pr-acceptance-auth", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error=? WHERE id=?",
+            (
+                "PR acceptance auth: GitHub refused the acceptance read "
+                "(gh has no login for graphql) as assignee profile 'planner' "
+                "gh login; fix that profile's GitHub credentials/access to "
+                "the repository, then retry completion.",
+                tid,
+            ),
+        )
+        conn.commit()
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
 def test_infrastructure_spawn_refusal_never_charges_the_card(
     kanban_home, monkeypatch, all_assignees_spawnable,
 ):

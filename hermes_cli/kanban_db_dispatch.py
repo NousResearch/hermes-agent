@@ -1586,8 +1586,25 @@ def check_respawn_guard(
     # crash is different: its persisted error includes the worker's last
     # captured output, which is context rather than a diagnosis and may contain
     # benign commands such as ``claude auth status`` (#117097).
+    #
+    # PR-acceptance errors (``PR acceptance <classification>: ...``) are
+    # written here by ``kanban_pr_acceptance_store.record_acceptance`` (line 50)
+    # when the completion gate fails — most often a GitHub credential/auth 403
+    # on the assignee profile, or a billing-exception check. Those are
+    # OUT-OF-SLICE configuration problems the operator fixes out-of-band, NOT
+    # provider quota/auth walls: the fix is credential setup + re-dispatch, so
+    # the ``blocker_auth`` circuit (designed for LLM provider auth/quota
+    # failures) must NOT park the task and must let it re-spawn once fixed
+    # (#132389, t_2c20d307). The regex would otherwise match "auth"/"login"
+    # in that error text and permanently block a re-dispatchable card.
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
+    if (
+        err
+        and latest_outcome != "crashed"
+        and err.startswith("PR acceptance ")
+    ):
+        return None
     if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 

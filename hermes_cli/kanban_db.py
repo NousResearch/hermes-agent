@@ -108,6 +108,9 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+HUMAN_BLOCK_KINDS = {"needs_input", "capability"}
+VALID_TASK_TYPES = {"general", "implementation", "review", "research", "ops"}
+VALID_DELIVERY_TYPES = {"local", "pre_pr", "PR"}
 
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
@@ -810,6 +813,12 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    task_type: str = "general"
+    delivery_type: str = "local"
+    block_owner: Optional[str] = None
+    block_evidence: Optional[str] = None
+    block_unblock_action: Optional[str] = None
+    block_followup_review: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -840,6 +849,8 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
+    "task_type", "delivery_type", "block_owner", "block_evidence", "block_unblock_action",
+    "block_followup_review",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -1044,7 +1055,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    task_type            TEXT NOT NULL DEFAULT 'general',
+    delivery_type       TEXT NOT NULL DEFAULT 'local',
+    block_owner          TEXT,
+    block_evidence       TEXT,
+    block_unblock_action TEXT,
+    block_followup_review TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1198,92 +1215,6 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
-def _resolve_project_link(
-    conn: sqlite3.Connection, project_id: Optional[str], project_source_task_id: Optional[str],
-    workspace_kind: str, workspace_path: Optional[str],
-) -> tuple[Optional[str], Any, Optional[str], str]:
-    """``(project_id, project_obj, project_repo, workspace_kind)`` for ``create_task``.
-
-    A project-linked task is anchored to the project's primary repo as a
-    worktree with a deterministic branch (slug + task id). Projects live in the
-    creator's per-profile projects.db, but the stored repo path is absolute so
-    the cross-profile dispatcher needs no projects.db access. ``project_repo``
-    is set when the worktree path must still be derived from the new task id.
-    """
-    project_id = (str(project_id).strip() or None) if project_id is not None else None
-    if not project_id:
-        return None, None, None, workspace_kind
-    from hermes_cli import projects_db as _pdb
-
-    project_repo: Optional[str] = None
-    try:
-        with _pdb.connect_closing() as _pconn:
-            project_obj = _pdb.get_project(_pconn, project_id)
-    except Exception:
-        project_obj = None
-    if project_obj is None and project_source_task_id:
-        project_obj, project_repo = _project_from_source_task(
-            conn, _pdb, project_id, str(project_source_task_id),
-        )
-        if project_obj is not None and workspace_kind == "scratch":
-            workspace_kind = "worktree"
-    if project_obj is None:
-        # Unresolvable id/slug: drop the link (never a dangling reference,
-        # never a crash) and create an ordinary scratch task.
-        return None, None, None, workspace_kind
-    # Canonicalise (a slug may have been passed) and anchor the worktree
-    # under the project's primary repo.
-    if workspace_kind == "scratch" and project_obj.primary_path:
-        workspace_kind = "worktree"
-    if workspace_kind == "worktree" and workspace_path is None and project_obj.primary_path:
-        # Concrete path is deferred to the insert loop: a fresh
-        # ``<repo>/.worktrees/<task-id>`` keyed on the new task id.
-        project_repo = str(project_obj.primary_path)
-    return project_obj.id, project_obj, project_repo, workspace_kind
-
-
-def _project_from_source_task(
-    conn: sqlite3.Connection, _pdb: Any, project_id: str, source_task_id: str,
-) -> tuple[Any, Optional[str]]:
-    """Recover a Project (and its repo) from a canonical project-linked
-    worktree task on this board. Worker profiles have their own projects.db
-    while the Kanban DB is shared, so this carries the repo + branch
-    convention forward without opening the creator's store and without
-    reusing the source task's literal worktree path. ``(None, None)`` when
-    the source task is not a ``<repo>/.worktrees/<id>`` project worktree."""
-    source_task = get_task(conn, source_task_id)
-    if not (
-        source_task is not None
-        and source_task.project_id == project_id
-        and source_task.workspace_kind == "worktree"
-        and source_task.workspace_path
-    ):
-        return None, None
-    source_path = Path(source_task.workspace_path)
-    if not (
-        source_path.is_absolute()
-        and source_path.name == source_task.id
-        and source_path.parent.name == ".worktrees"
-    ):
-        return None, None
-    project_slug = None
-    if source_task.branch_name:
-        prefix, separator, leaf = source_task.branch_name.partition("/")
-        if separator and (leaf == source_task.id or leaf.startswith(f"{source_task.id}-")):
-            with contextlib.suppress(ValueError):
-                project_slug = _pdb.normalize_slug(prefix)
-    if project_slug is None:
-        with contextlib.suppress(ValueError):
-            project_slug = _pdb.normalize_slug(project_id)
-    if not project_slug:
-        return None, None
-    project_repo = str(source_path.parent.parent)
-    project_obj = _pdb.Project(
-        id=project_id, slug=project_slug, name=project_slug, created_at=0, primary_path=project_repo,
-    )
-    return project_obj, project_repo
-
-
 def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str]]:
     """Strip/dedupe a skills list. Commas are refused (a comma-joined string must
     not land in one argv slot); toolset names are rejected all at once because
@@ -1338,6 +1269,7 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    task_type: str = "general", delivery_type: str = "local",
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1355,9 +1287,13 @@ def create_task(
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
+    from hermes_cli.kanban_db_task import resolve_project_link, validate_task_attributes
     from hermes_cli.kanban_pr_acceptance import validate_contract
-
     completion_contract = validate_contract(completion_contract)
+    task_type, delivery_type = validate_task_attributes(
+        task_type, delivery_type, completion_contract, assignee,
+        VALID_TASK_TYPES, VALID_DELIVERY_TYPES,
+    )
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
@@ -1385,13 +1321,11 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
-
-    project_id, project_obj, project_repo, workspace_kind = _resolve_project_link(
+    project_id, project_obj, project_repo, workspace_kind = resolve_project_link(
         conn, project_id, project_source_task_id, workspace_kind, workspace_path
     )
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
-
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
     # race may insert twice, the next lookup stabilises on the newest.
     if idempotency_key:
@@ -1437,8 +1371,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        task_type, delivery_type
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1448,6 +1383,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        task_type, delivery_type,
                     ),
                 )
                 for pid in parents:
@@ -1624,10 +1560,13 @@ def list_tasks(
 
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
     """Assign/reassign; raises RuntimeError while the task is running under a claim."""
+    from hermes_cli.kanban_db_task import require_dispatchable_assignee
+
     profile = _canonical_assignee(profile)
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
+            "SELECT status, claim_lock, assignee, task_type, delivery_type "
+            "FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
         if not row:
             return False
@@ -1636,6 +1575,8 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
                 f"cannot reassign {task_id}: currently running (claimed). "
                 "Wait for completion or reclaim the stale lock first."
             )
+        if row["task_type"] != "general" or row["delivery_type"] != "local":
+            require_dispatchable_assignee(profile)
         if row["assignee"] != profile:
             # The failure streak is per task/profile; a new profile starts fresh.
             conn.execute(
@@ -2347,6 +2288,11 @@ def claim_task(
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``ready`` status).
     """
+    from hermes_cli.kanban_db_task import require_dispatchable_assignee
+
+    task = get_task(conn, task_id)
+    if task and (task.task_type != "general" or task.delivery_type != "local"):
+        require_dispatchable_assignee(task.assignee)
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
@@ -2380,6 +2326,11 @@ def claim_review_task(
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
     separately from the implementer."""
+    from hermes_cli.kanban_db_task import require_dispatchable_assignee
+
+    task = get_task(conn, task_id)
+    if task and (task.task_type != "general" or task.delivery_type != "local"):
+        require_dispatchable_assignee(task.assignee)
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
@@ -2863,7 +2814,11 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
-                       block_recurrences = 0
+                       block_recurrences = 0,
+                       block_owner = NULL,
+                       block_evidence = NULL,
+                       block_unblock_action = NULL,
+                       block_followup_review = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
                 """
@@ -3213,19 +3168,41 @@ def edit_task(
     body: Optional[str] = None, priority: Optional[int] = None,
     result: Optional[str] = None, summary: Optional[str] = None,
     metadata: Optional[dict] = None, board: Optional[str] = None,
+    task_type: Optional[str] = None, delivery_type: Optional[str] = None,
 ) -> bool:
     """Edit task fields, optionally backfilling a completed task's result."""
+    from hermes_cli.kanban_db_task import require_dispatchable_assignee
+
+    if task_type is not None:
+        task_type = str(task_type).strip().lower()
+        if task_type not in VALID_TASK_TYPES:
+            raise ValueError(f"task_type must be one of {sorted(VALID_TASK_TYPES)}")
+    if delivery_type is not None:
+        delivery_type = str(delivery_type).strip()
+        if delivery_type not in VALID_DELIVERY_TYPES:
+            raise ValueError(f"delivery_type must be one of {sorted(VALID_DELIVERY_TYPES)}")
     changed_fields = [
-        field for field, value in (("title", title), ("body", body), ("priority", priority))
+        field for field, value in (("title", title), ("body", body), ("priority", priority),
+                                   ("task_type", task_type), ("delivery_type", delivery_type))
         if value is not None
     ]
     with write_txn(conn):
-        status = _task_status(conn, task_id)
+        current = conn.execute(
+            "SELECT status, assignee, completion_contract, delivery_type FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        status = current["status"] if current else None
         if status is None or (result is not None and status != "done"):
             return False
+        effective_delivery = delivery_type or current["delivery_type"]
+        if effective_delivery == "PR" and (not current["completion_contract"] or current["completion_contract"] == "local-only"):
+            raise ValueError("delivery_type=PR requires a non-local completion_contract")
+        if (effective_delivery != "local" or (task_type is not None and task_type != "general")):
+            require_dispatchable_assignee(current["assignee"])
         assignments = []
         params = []
-        for field, value in (("title", title), ("body", body), ("priority", priority)):
+        for field, value in (("title", title), ("body", body), ("priority", priority),
+                             ("task_type", task_type), ("delivery_type", delivery_type)):
             if value is not None:
                 assignments.append(f"{field} = ?")
                 params.append(value)
@@ -3284,10 +3261,11 @@ def edit_task(
     notify_task_updated(conn, task_id, changed_fields, board=board)
     return True
 
-
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    block_owner: Optional[str] = None, block_evidence: Optional[str] = None,
+    block_unblock_action: Optional[str] = None, block_followup_review: Optional[str] = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
@@ -3305,6 +3283,9 @@ def block_task(
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
+    blocker_fields = (block_owner, block_evidence, block_unblock_action, block_followup_review)
+    if any(value is not None and not str(value).strip() for value in blocker_fields):
+        raise ValueError("blocker fields must be non-empty when supplied")
     with write_txn(conn):
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
@@ -3343,6 +3324,10 @@ def block_task(
         if kind == "dependency" and _parents_satisfied(conn, task_id):
             kind = "needs_input"
             rekind_reason = "no_open_parent"
+        missing_human_metadata = kind in HUMAN_BLOCK_KINDS and any(
+            value is None or not str(value).strip() for value in blocker_fields)
+        if missing_human_metadata:
+            raise ValueError("human blockers require owner, evidence, unblock action, and follow-up review")
         new_status, event_kind, set_sql, params, payload = _route_block(
             kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
             prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
@@ -3350,6 +3335,14 @@ def block_task(
         if rekind_reason:
             payload["requested_kind"] = requested_kind
             payload["rekind_reason"] = rekind_reason
+        if kind != "dependency" and any(value is not None for value in blocker_fields):
+            set_sql += ",\n                       block_owner = ?, block_evidence = ?, block_unblock_action = ?, block_followup_review = ?"
+            params = (*params, *(str(value).strip() if value is not None else None for value in blocker_fields))
+            payload.update({
+                "block_owner": block_owner, "block_evidence": block_evidence,
+                "block_unblock_action": block_unblock_action,
+                "block_followup_review": block_followup_review,
+            })
         sql = f"""
                 UPDATE tasks
                    SET status        = '{new_status}',
@@ -3377,7 +3370,6 @@ def block_task(
             return True
     _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
     return True
-
 
 def _route_block(
     kind: Optional[str], reason: Optional[str], source_status: str, *,
@@ -3451,6 +3443,10 @@ def request_review(
 
     summary = redact_review_value(summary)
     metadata = redact_review_value(metadata)
+    from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
+    acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
+    if acceptance is False:
+        return _ret(False, "PR delivery requires a complete acceptance handoff")
     # Declared (metadata["artifacts"]) and prose-referenced files
     # must be durable BEFORE anything can clean the scratch workspace up: for a
     # review-bound card the reviewer's completion is the cleanup trigger.
@@ -3463,6 +3459,8 @@ def request_review(
         with write_txn(conn):
             if not _parents_satisfied(conn, task_id):
                 return _ret(False, "parent dependencies are not satisfied")
+            if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
+                return _ret(False, "PR acceptance evidence is missing or stale")
             trow = conn.execute(
                 "SELECT assignee, status, claim_lock, current_run_id, worker_pid, "
                 "worker_started_at FROM tasks WHERE id = ?", (task_id,),
@@ -3749,7 +3747,9 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # is a fresh start for the retry budget.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
+            "consecutive_failures = 0, last_failure_error = NULL, "
+            "block_owner = NULL, block_evidence = NULL, block_unblock_action = NULL, "
+            "block_followup_review = NULL "
             "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
         )
         if cur.rowcount != 1:

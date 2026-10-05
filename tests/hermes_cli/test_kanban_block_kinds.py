@@ -74,10 +74,18 @@ def _make_running_again(conn, tid):
 def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
     with kbc.connect_closing() as conn:
         tid = _running_task(conn)
-        kb.block_task(conn, tid, reason="x", kind="capability")
+        kb.block_task(
+            conn, tid, reason="x", kind="capability",
+            block_owner="operator", block_evidence="access issue",
+            block_unblock_action="grant access", block_followup_review="review",
+        )
         kb.unblock_task(conn, tid)
         _make_running_again(conn, tid)
-        kb.block_task(conn, tid, reason="x", kind="capability")
+        kb.block_task(
+            conn, tid, reason="x", kind="capability",
+            block_owner="operator", block_evidence="access issue",
+            block_unblock_action="grant access", block_followup_review="review",
+        )
         events = [e for e in kb.list_events(conn, tid)
                   if e.kind == "block_loop_detected"]
         assert events, "expected a block_loop_detected event"
@@ -129,7 +137,11 @@ def test_dependency_block_with_terminal_parents_parks_then_escalates(
         child = _running_task(conn, title="child-of-done", parents=(parent,))
 
         # `hermes kanban block <child> --kind dependency waiting on upstream`
-        args = argparse.Namespace(task_id=child, ids=None, reason=["waiting", "on", "upstream"], kind="dependency")
+        args = argparse.Namespace(
+            task_id=child, ids=None, reason=["waiting", "on", "upstream"], kind="dependency",
+            block_owner="operator", block_evidence="dependency audit",
+            block_unblock_action="supply parent", block_followup_review="review linkage",
+        )
         assert kanban_cli._cmd_block(args) == 0
         assert "needs_input" in capsys.readouterr().out
         parked = kb.get_task(conn, child)
@@ -144,7 +156,11 @@ def test_dependency_block_with_terminal_parents_parks_then_escalates(
         # A cron/human unblocks; the worker re-declares the same impossible wait.
         assert kb.unblock_task(conn, child)
         assert kb.claim_task(conn, child, claimer="worker") is not None
-        assert kb.block_task(conn, child, reason="still waiting", kind="dependency")
+        assert kb.block_task(
+            conn, child, reason="still waiting", kind="dependency",
+            block_owner="operator", block_evidence="dependency audit",
+            block_unblock_action="supply parent", block_followup_review="review linkage",
+        )
         assert kb.get_task(conn, child).status == "triage"
         loop = [e for e in kb.list_events(conn, child) if e.kind == "block_loop_detected"][-1].payload
         assert loop["recurrences"] == kb.BLOCK_RECURRENCE_LIMIT

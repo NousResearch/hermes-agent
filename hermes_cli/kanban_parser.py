@@ -165,6 +165,8 @@ _SPECS = [
                   "newlines or flag-like lines survive shell quoting. "
                   "Mutually exclusive with --body."),
         _arg("--assignee", help="Profile name to assign"),
+        _arg("--task-type", choices=sorted(kb.VALID_TASK_TYPES), default="general"),
+        _arg("--delivery-type", choices=sorted(kb.VALID_DELIVERY_TYPES), default="local"),
         _arg("--parent", action="append", default=[], help="Parent task id (repeatable)"),
         _arg("--workspace",
              help="scratch | worktree | worktree:<path> | dir:<path> (default: scratch; "
@@ -309,6 +311,8 @@ _SPECS = [
         _arg("--title", help="Replace the task title"),
         _arg("--body", help="Replace the task body"),
         _arg("--priority", type=int, help="Replace the task priority"),
+        _arg("--task-type", choices=sorted(kb.VALID_TASK_TYPES)),
+        _arg("--delivery-type", choices=sorted(kb.VALID_DELIVERY_TYPES)),
         _arg("--result", help="Backfilled task result text for a done task"),
         *_STEP_HANDOFF,
     ], help="Edit task fields or recovery fields on an already-completed task"),
@@ -322,6 +326,8 @@ _SPECS = [
                   "blocked for a human; 'transient' marks a maybe-flaky failure. "
                   "Repeated same-kind re-blocks after unblock route the task to "
                   "triage to break unblock loops. Omit for a generic block."),
+        _arg("--block-owner"), _arg("--block-evidence"), _arg("--block-unblock-action"),
+        _arg("--block-followup-review"),
     ], help="Mark one or more tasks blocked"),
     _cmd("schedule", [
         _TASK_ID,

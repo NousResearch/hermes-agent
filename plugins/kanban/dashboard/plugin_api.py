@@ -403,6 +403,8 @@ class CreateTaskBody(BaseModel):
     title: str
     body: Optional[str] = None
     assignee: Optional[str] = None
+    task_type: str = "general"
+    delivery_type: str = "local"
     tenant: Optional[str] = None
     priority: int = 0
     workspace_kind: Optional[str] = None  # None = scratch, or the board project's worktree when scoped
@@ -521,11 +523,17 @@ def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
 class UpdateTaskBody(BaseModel):
     status: Optional[str] = None
     assignee: Optional[str] = None
+    task_type: Optional[str] = None
+    delivery_type: Optional[str] = None
     priority: Optional[int] = None
     title: Optional[str] = None
     body: Optional[str] = None
     result: Optional[str] = None
     block_reason: Optional[str] = None
+    block_owner: Optional[str] = None
+    block_evidence: Optional[str] = None
+    block_unblock_action: Optional[str] = None
+    block_followup_review: Optional[str] = None
     # Handoff fields forwarded to complete_task on -> 'done' (parity with ``hermes kanban complete``).
     summary: Optional[str] = None
     metadata: Optional[dict] = None
@@ -582,7 +590,11 @@ def _drag_to(conn, task_id: str, s: str) -> bool:
 _STATUS_HANDLERS: dict[str, Any] = {
     "done": lambda conn, tid, p: kanban_db.complete_task(
         conn, tid, result=p.result, summary=p.summary, metadata=p.metadata, force=True),
-    "blocked": lambda conn, tid, p: kanban_db.block_task(conn, tid, reason=getattr(p, "block_reason", None)),
+    "blocked": lambda conn, tid, p: kanban_db.block_task(
+        conn, tid, reason=getattr(p, "block_reason", None),
+        block_owner=getattr(p, "block_owner", None), block_evidence=getattr(p, "block_evidence", None),
+        block_unblock_action=getattr(p, "block_unblock_action", None),
+        block_followup_review=getattr(p, "block_followup_review", None)),
     "scheduled": lambda conn, tid, p: kanban_db.schedule_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "review": lambda conn, tid, p: kanban_db.request_review(
         conn, tid, summary=p.summary, metadata=p.metadata, reviewer=(p.assignee or None), force=True),
@@ -696,6 +708,11 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 _require_ok(ok)
         if payload.priority is not None:
             _set_priority(conn, task_id, payload.priority, board)
+        if payload.task_type is not None or payload.delivery_type is not None:
+            with _map_errors(400, ValueError, RuntimeError):
+                _require_ok(kanban_db.edit_task(
+                    conn, task_id, task_type=payload.task_type,
+                    delivery_type=payload.delivery_type, board=board))
         if payload.title is not None or payload.body is not None:
             _patch_title_body(conn, task_id, payload, board)
         updated = kanban_db.get_task(conn, task_id)

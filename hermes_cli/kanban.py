@@ -370,6 +370,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime, skills=getattr(args, "skills", None) or None,
             max_retries=max_retries, model_override=getattr(args, "model_override", None),
             provider_override=getattr(args, "provider_override", None),
+            task_type=getattr(args, "task_type", "general"),
+            delivery_type=getattr(args, "delivery_type", "local"),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),
@@ -950,10 +952,12 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     title = getattr(args, "title", None)
     body = getattr(args, "body", None)
     priority = getattr(args, "priority", None)
+    task_type = getattr(args, "task_type", None)
+    delivery_type = getattr(args, "delivery_type", None)
     if result is None and (summary is not None or raw_metadata is not None):
         return _err("kanban edit: --summary and --metadata require --result", 2)
-    if all(value is None for value in (title, body, priority, result)):
-        return _err("kanban edit: provide --title, --body, --priority, or --result", 2)
+    if all(value is None for value in (title, body, priority, result, task_type, delivery_type)):
+        return _err("kanban edit: provide an editable field", 2)
     metadata, rc = _parse_metadata_flag(raw_metadata)
     if rc:
         return rc
@@ -961,6 +965,7 @@ def _cmd_edit(args: argparse.Namespace) -> int:
         ok = kb.edit_task(
             conn, args.task_id, title=title, body=body, priority=priority,
             result=result, summary=summary, metadata=metadata,
+            task_type=task_type, delivery_type=delivery_type,
         )
     return _ok_or_err(
         ok,
@@ -1001,7 +1006,10 @@ def _cmd_block(args: argparse.Namespace) -> int:
             return f"Blocked {tid}{suffix}"
 
         op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(
-            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid)))
+            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid),
+            block_owner=getattr(args, "block_owner", None), block_evidence=getattr(args, "block_evidence", None),
+            block_unblock_action=getattr(args, "block_unblock_action", None),
+            block_followup_review=getattr(args, "block_followup_review", None)))
         return _bulk_apply(ids, op, ok_msg, lambda tid: f"cannot block {tid}")
 
 

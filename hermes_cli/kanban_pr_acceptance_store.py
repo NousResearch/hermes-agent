@@ -6,7 +6,7 @@ from hermes_cli.kanban_pr_acceptance import _PR, collect_acceptance
 
 
 def _snapshot(conn, task_id):
-    row = conn.execute("SELECT current_run_id, status, completion_contract FROM tasks WHERE id=?", (task_id,)).fetchone()
+    row = conn.execute("SELECT current_run_id, status, completion_contract, delivery_type FROM tasks WHERE id=?", (task_id,)).fetchone()
     return tuple(row) if row else None
 
 
@@ -14,9 +14,11 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
     snapshot = _snapshot(conn, task_id)
     if snapshot is None:
         return False
-    run_id, status, contract = snapshot
-    if not contract or contract == "local-only":
+    run_id, status, contract, delivery_type = snapshot
+    if delivery_type != "PR":
         return None
+    if not contract or contract == "local-only":
+        return False
     if status not in {"running", "ready", "blocked", "review"} or (expected_run_id is not None and run_id != expected_run_id):
         return False
     published_pr = metadata.get("published_pr") if isinstance(metadata, dict) else None
@@ -27,7 +29,7 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
             if _snapshot(conn, task_id) != snapshot:
                 return False
             conn.execute("UPDATE tasks SET completion_contract=? WHERE id=?", (published_pr, task_id))
-        snapshot = (run_id, status, published_pr)
+        snapshot = (run_id, status, published_pr, delivery_type)
         contract = published_pr
     # The assignee profile's gh login owns the repo: acceptance must not run as
     # the ambient login of whichever process completes the card (#122689).

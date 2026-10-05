@@ -199,6 +199,10 @@ KANBAN_BLOCK_SCHEMA = _schema(
                 "The others surface to a human. Omit only if none apply."
             ),
         },
+        "block_owner": _prop("string", "Person/profile responsible for clearing a human blocker."),
+        "block_evidence": _prop("string", "Expected verifiable evidence, URL, run, or artifact reference; never a secret."),
+        "block_unblock_action": _prop("string", "Concrete action that can clear the blocker."),
+        "block_followup_review": _prop("string", "Required follow-up reviewer/card, or 'none'."),
     },
     ["reason"],
 )
@@ -411,6 +415,8 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "Required — tasks without an assignee are never "
                 "dispatched."
         )),
+        "task_type": {"type": "string", "enum": ["general", "implementation", "review", "research", "ops"], "description": "Work role; defaults to general."},
+        "delivery_type": {"type": "string", "enum": ["local", "pre_pr", "PR"], "description": "Delivery gate; only PR requires PR acceptance evidence."},
         "body": _prop("string", (
                 "Opening post: full spec, acceptance criteria, "
                 "links. The assigned worker reads this as part of "

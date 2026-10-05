@@ -153,7 +153,11 @@ def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
             chat_id="chat-1",
             notifier_profile="main",
         )
-        kb.block_task(conn, tid, reason=reason, kind="needs_input")
+        kb.block_task(
+            conn, tid, reason=reason, kind="needs_input",
+            block_owner="operator", block_evidence="notification",
+            block_unblock_action="resolve", block_followup_review="review",
+        )
     finally:
         conn.close()
 

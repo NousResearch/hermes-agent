@@ -413,6 +413,10 @@ def test_review_escalation_unblocks_back_to_review(conn) -> None:
         task_id,
         reason="needs_input: maintainer decision required",
         kind="needs_input",
+        block_owner="maintainer",
+        block_evidence="decision request",
+        block_unblock_action="record decision",
+        block_followup_review="review result",
         expected_run_id=review.current_run_id,
     )
     blocked_event = _event(kb.list_events(conn, task_id), "blocked")

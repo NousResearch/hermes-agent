@@ -32,6 +32,19 @@ from agent.web_search_provider import WebSearchProvider
 
 logger = logging.getLogger(__name__)
 
+# Exa reference (docs.exa.ai/reference/search): the entity categories only accept a
+# limited filter set, and sending the rest is a 400 for the entire call.
+_UNSUPPORTED_FILTERS = {
+    "company": frozenset({
+        "exclude_domains", "start_published_date", "end_published_date",
+        "start_crawl_date", "end_crawl_date",
+    }),
+    "people": frozenset({
+        "exclude_domains", "start_published_date", "end_published_date",
+        "start_crawl_date", "end_crawl_date",
+    }),
+}
+
 # Module-level note: the canonical ``_exa_client`` cache slot lives on
 # :mod:`tools.web_tools` so tests that do ``tools.web_tools._exa_client =
 # None`` between cases see fresh state. The plugin reads/writes through
@@ -224,7 +237,9 @@ class ExaWebSearchProvider(WebSearchProvider):
 
             logger.info("Exa advanced search: '%s'", query)
 
-            contents: Dict[str, Any] = {"text": True}
+            # No contents.text: it is billed per page and the result mapper below
+            # never reads result.text — highlights/summary/subpages carry the content.
+            contents: Dict[str, Any] = {}
             if kwargs.get("enable_highlights"):
                 contents["highlights"] = True
             if kwargs.get("enable_summary"):
@@ -236,6 +251,8 @@ class ExaWebSearchProvider(WebSearchProvider):
                 "num_results": int(kwargs.get("num_results", 10)),
                 "contents": contents,
             }
+            category = kwargs.get("category")
+            unsupported = _UNSUPPORTED_FILTERS.get(category, frozenset()) if category else frozenset()
             for key in (
                 "include_domains",
                 "exclude_domains",
@@ -249,8 +266,14 @@ class ExaWebSearchProvider(WebSearchProvider):
                 "exclude_text",
                 "user_location",
             ):
-                if kwargs.get(key) is not None:
-                    search_kwargs[key] = kwargs[key]
+                if kwargs.get(key) is None:
+                    continue
+                if key in unsupported:
+                    # Exa 400s on these for company/people; drop them rather than
+                    # fail the whole call (the filter is a narrowing hint).
+                    logger.info("Exa: dropping %s, unsupported for category=%s", key, category)
+                    continue
+                search_kwargs[key] = kwargs[key]
 
             response = _get_exa_client().search(query, **search_kwargs)
 

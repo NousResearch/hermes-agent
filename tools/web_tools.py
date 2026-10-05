@@ -1265,7 +1265,6 @@ WEB_SEARCH_ADVANCED_SCHEMA = {
                     "publication",
                     "news",
                     "pdf",
-                    "github",
                     "personal site",
                     "people",
                     "financial report",
@@ -1332,15 +1331,21 @@ WEB_SEARCH_ADVANCED_SCHEMA = {
 }
 
 
+from agent.web_search_provider import WebSearchProvider
+from agent.web_search_registry import get_provider as _wsp_get_provider
+
+
 def web_search_advanced_tool(query: str, **kwargs: Any) -> str:
     """Dispatch advanced search to the configured provider (Exa)."""
     try:
         _ensure_web_plugins_loaded()
-        from agent.web_search_registry import get_provider as _wsp_get_provider
 
         backend = _get_search_backend()
         provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not hasattr(provider, "advanced_search"):
+        # hasattr() is always True: the base class defines advanced_search and
+        # raises NotImplementedError. Check the override so a provider without it
+        # gets the actionable message instead of a raw NotImplementedError.
+        if provider is None or type(provider).advanced_search is WebSearchProvider.advanced_search:
             return tool_error(
                 "Advanced search requires the Exa backend. Set web.backend=exa "
                 "and ensure EXA_API_KEY is configured."

@@ -159,3 +159,75 @@ class TestAdvancedSearchSummarySubpages:
         item = out["data"]["web"][0]
         assert "summary" not in item
         assert "subpages" not in item
+
+
+class TestAdvancedSearchFilterCompatibility:
+    """Schema-legal combos must not reach Exa as a 400."""
+
+    def _capture_kwargs(self, monkeypatch) -> dict:
+        from plugins.web.exa import provider as exa_provider
+
+        seen: dict = {}
+
+        class _Result:
+            url = "https://example.com"
+            title = "Example"
+            highlights = None
+            summary = None
+            subpages = None
+
+        class _Resp:
+            results = [_Result()]
+            search_time = 0.1
+
+        class _Client:
+            def search(self, query, **kw):
+                seen.update(kw)
+                return _Resp()
+
+        monkeypatch.setattr(exa_provider, "_get_exa_client", lambda: _Client())
+        return seen
+
+    @pytest.mark.parametrize("category", ["company", "people"])
+    def test_entity_categories_drop_unsupported_filters(self, monkeypatch, category) -> None:
+        """Exa 400s on these with company/people (docs.exa.ai/reference/search)."""
+        from plugins.web.exa import provider as exa_provider
+
+        seen = self._capture_kwargs(monkeypatch)
+        out = exa_provider.ExaWebSearchProvider().advanced_search(
+            "acme",
+            category=category,
+            start_published_date="2024-10-01",
+            end_published_date="2025-01-01",
+            exclude_domains=["example.com"],
+        )
+
+        assert out["success"] is True, "an unsupported filter must not fail the call"
+        assert "start_published_date" not in seen
+        assert "end_published_date" not in seen
+        assert "exclude_domains" not in seen
+        assert seen["category"] == category
+
+    def test_news_keeps_every_filter(self, monkeypatch) -> None:
+        """The drop is scoped to entity categories, not blanket."""
+        from plugins.web.exa import provider as exa_provider
+
+        seen = self._capture_kwargs(monkeypatch)
+        exa_provider.ExaWebSearchProvider().advanced_search(
+            "ai",
+            category="news",
+            start_published_date="2025-01-01",
+            exclude_domains=["spam.com"],
+        )
+
+        assert seen["start_published_date"] == "2025-01-01"
+        assert seen["exclude_domains"] == ["spam.com"]
+
+    def test_text_contents_not_requested(self, monkeypatch) -> None:
+        """text is billed per page and the mapper never reads result.text."""
+        from plugins.web.exa import provider as exa_provider
+
+        seen = self._capture_kwargs(monkeypatch)
+        exa_provider.ExaWebSearchProvider().advanced_search("ai")
+
+        assert "text" not in seen.get("contents", {})

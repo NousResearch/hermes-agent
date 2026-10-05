@@ -95,7 +95,12 @@ def test_every_surface_persists_the_same_active_set(db, n, rich):
         assert [r for r, _c in active] == ["user", "assistant", "tool", "assistant"] * (3 - n)
         assert [c for r, c in active if r == "user"] == [
             c for r, c, _a in expected if r == "user"][: 3 - n]
-        assert all("QUJD" in c for r, c in active if r == "user")
+        # The SQLite text projection no longer embeds base64; replay must still
+        # retain every surviving image across all three rewind surfaces.
+        assert all("QUJD" not in c for r, c in active if r == "user")
+        for surface in SURFACES:
+            history = db.get_messages_as_conversation(f"rewind-{surface}-{n}-{rich}", repair_alternation=True)
+            assert [m["content"][1] for m in history if m["role"] == "user"] == [_IMAGE] * (3 - n)
 
 
 def test_cli_undo_leaves_the_warm_history_shape_alone_while_the_tui_adopts_row_ids(db):

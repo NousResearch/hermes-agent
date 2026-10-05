@@ -265,8 +265,12 @@ class ComputeHost:
                 hermes_undo.on_user_message_appended(session["session_key"])
             with contextlib.suppress(Exception):
                 server._persist_branch_seed(session)
-            server._persist_submit_user_row(
-                session, text, frame.get("display_kind"), accept_metadata=frame.get("display_metadata"))
+            # Queued turns already have a dispatch row written by the owning parent.
+            if frame.get("submit_user_row") is not None:
+                session["_submit_user_row"] = frame["submit_user_row"]
+            else:
+                server._persist_submit_user_row(
+                    session, text, frame.get("display_kind"), accept_metadata=frame.get("display_metadata"))
             server._emit_submit_user_row(sid, session)
             server._run_prompt_submit(
                 request_id, sid, session, text, display_kind=frame.get("display_kind") or None,

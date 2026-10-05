@@ -139,3 +139,61 @@ def test_compute_worker_projects_the_row_its_turn_adopts(tmp_path, monkeypatch):
         finally:
             host.close()
             server._sessions.pop(sid, None)
+
+
+def test_queued_compute_worker_adopts_the_dispatch_row_once(tmp_path, monkeypatch):
+    import io
+    import json
+    from types import SimpleNamespace
+    from tui_gateway.compute_host import ComputeHost
+    from tests.tui_gateway.test_queued_prompt_persistence import _run_turn
+
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        sid, key = _desktop_session(monkeypatch, db)
+        parent = server._sessions[sid]
+        _busy(parent)
+        server._handle_busy_submit("q", sid, parent, "queued input", None,
+                                   queued=True, client_message_id="optimistic")
+        accepted_uid = parent["queued_prompt"]["_submit_user_row"]["message_uid"]
+        parent["running"] = False
+        server._clear_inflight_turn(parent)
+        events = []
+        monkeypatch.setattr(server, "_emit", lambda *args: events.append(args))
+        monkeypatch.setattr(server, "_session_info", lambda *args: {})
+        monkeypatch.setattr(server, "_session_uses_compute_host", lambda *args: True)
+
+        def run(_rid, _sid, current, text, **kwargs):
+            _run_turn(current, db, key, text, "worker reply")
+            current["running"] = False
+
+        monkeypatch.setattr(server, "_run_prompt_submit", run)
+        output = io.StringIO()
+        host = ComputeHost(stdout=output, heartbeat_secs=0)
+
+        def submit_turn(frame, **kwargs):
+            # The worker owns a separate session dictionary; only the wire frame crosses.
+            child = {**parent, "running": False}
+            child.pop("_submit_user_row", None)
+            server._sessions[sid] = child
+            try:
+                host._run_real_turn(json.loads(json.dumps(frame)))
+            finally:
+                server._sessions[sid] = parent
+
+        monkeypatch.setattr(server, "_get_compute_host_supervisor",
+                            lambda *args: SimpleNamespace(submit_turn=submit_turn))
+        try:
+            assert server._drain_queued_prompt("drain", sid, parent)
+            frames = [json.loads(line) for line in output.getvalue().splitlines()]
+            assert frames[-1]["type"] == "turn.end", frames
+            rows = db.get_messages(key)
+            assert [row["role"] for row in rows] == ["user", "assistant"]
+            users = [event[2] for event in events if event[0] == "message.user"]
+            assert len(users) == 1
+            assert users[0]["message"]["row_id"] == rows[0]["id"]
+            assert users[0]["message"]["message_uid"] == rows[0]["message_uid"] == accepted_uid
+            assert users[0]["client_message_ids"] == ["optimistic"]
+            assert "_submit_user_row" not in parent
+        finally:
+            host.close()
+            server._sessions.pop(sid, None)

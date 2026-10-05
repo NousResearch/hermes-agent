@@ -510,7 +510,8 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             session["_submit_user_row"] = dispatch_row
         else:
             session.pop("_submit_user_row", None)
-    _emit_submit_user_row(sid, session)
+    if not use_compute_host:
+        _emit_submit_user_row(sid, session)
     # The compute-host frame has no author field, so only the inline runner receives it.
     author_kwargs = {"turn_author": queued["turn_author"]} if queued.get("turn_author") else {}
     dispatch_failed = False

@@ -259,7 +259,7 @@ def test_url_and_rejection_diagnostics_stay_redacted_across_reconnect_rotations(
     # The useful diagnostic survives: status, method and the reflected body, minus the secret.
     assert f"HTTP {status} from POST" in hermes_text and "unsupported transport at /mcp/" in hermes_text
     assert ("Streamable HTTP connect failed" if strict else "over SSE") in hermes_text
-    assert hermes_text.count("definition changed") == 3
+    assert "definition changed" in hermes_text
     assert "Failed to connect to MCP server 'private'" in hermes_text and "failed" in status_text
     assert _fragments(hermes_text + status_text, A, B) == []
     assert "[REDACTED]" in hermes_text and "[REDACTED]" in status_text

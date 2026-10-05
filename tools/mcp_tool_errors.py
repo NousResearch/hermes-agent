@@ -91,6 +91,7 @@ def _is_streamable_http_rejection(exc: BaseException) -> bool:
 
 
 _HTTP_REJECTION_BODY_CHARS = 300
+_HTTP_REJECTION_REDACTION_MARGIN = 4096  # bytes past the excerpt window still read for redaction
 
 
 def _make_http_rejection_recorder(sink: dict, redaction_values=()):
@@ -110,7 +111,10 @@ def _make_http_rejection_recorder(sink: dict, redaction_values=()):
         if response.headers.get("content-type", "").split(";")[0].strip().lower() != "text/event-stream":
             try:
                 raw = await response.aread()  # buffered: the SDK's own aread() afterwards sees the same bytes
-                text = _sanitize_error(raw.decode("utf-8", "replace"), redaction_values)
+                # A bounded prefix, not the whole (up to 10 MiB) body: this hook runs on the shared
+                # MCP loop. The margin keeps a value that straddles the excerpt cut whole for matching.
+                window = raw[:_HTTP_REJECTION_BODY_CHARS * 4 + _HTTP_REJECTION_REDACTION_MARGIN]
+                text = _sanitize_error(window.decode("utf-8", "replace"), redaction_values)
                 body = " ".join(text[:_HTTP_REJECTION_BODY_CHARS * 4].split())
             except Exception:  # the failure itself is still reported, just without the body
                 body = ""

@@ -146,18 +146,40 @@ function tokenText(tokens, node, sf, cuts) {
   return out.join(' ')
 }
 
+// Whether `n` declares `name` (a variable, parameter, function or class of that name).
+function declaresName(n, name) {
+  const declares = ts.isVariableDeclaration(n) || ts.isParameter(n) ||
+    ts.isFunctionDeclaration(n) || ts.isClassDeclaration(n)
+  return Boolean(declares && n.name && ts.isIdentifier(n.name) && n.name.text === name)
+}
+
+// Whether function `fn`'s own scope binds `name`: a parameter, a named function expression's
+// own name, or a declaration in its body outside any nested function or class (those bind
+// only inside themselves).
+function bindsOwn(fn, name) {
+  if (fn.parameters?.some(p => declaresName(p, name))) return true
+  if (ts.isFunctionExpression(fn) && fn.name?.text === name) return true
+  let found = false
+  const walk = n => {
+    if (found) return
+    if (declaresName(n, name)) found = true
+    else if (!ts.isFunctionLike(n) && !ts.isClassLike(n)) ts.forEachChild(n, walk)
+  }
+  if (fn.body) walk(fn.body)
+  return found
+}
+
 // The body's tokens with its own references to `name` removed (`name(...)`, `this.name(...)`),
-// unless the body rebinds that name: renaming a recursive function together with its
-// self-call is still the same code. Strings and other objects' `.name` members are untouched.
+// unless the function's own scope rebinds that name: renaming a recursive function together
+// with its self-call is still the same code. A nested function that binds the name
+// (`.map((legacy) => legacy)`) keeps its own reads. Strings and other objects' `.name`
+// members are untouched.
 function bodyWithoutSelf(tokens, node, sf, name) {
   if (!node.body) return ''
   const cuts = new Set()
-  if (!name) return tokenText(tokens, node.body, sf, cuts)
-  let rebound = node.parameters.some(p => ts.isIdentifier(p.name) && p.name.text === name)
+  if (!name || bindsOwn(node, name)) return tokenText(tokens, node.body, sf, cuts)
   const visit = n => {
-    const declares = ts.isVariableDeclaration(n) || ts.isParameter(n) ||
-      ts.isFunctionDeclaration(n) || ts.isClassDeclaration(n)
-    if (declares && n.name && ts.isIdentifier(n.name) && n.name.text === name) rebound = true
+    if (n !== node.body && ts.isFunctionLike(n) && bindsOwn(n, name)) return
     if (ts.isIdentifier(n) && n.text === name) {
       const p = n.parent
       const member = p && ts.isPropertyAccessExpression(p) && p.name === n
@@ -170,7 +192,7 @@ function bodyWithoutSelf(tokens, node, sf, name) {
     ts.forEachChild(n, visit)
   }
   visit(node.body)
-  return tokenText(tokens, node.body, sf, rebound ? new Set() : cuts)
+  return tokenText(tokens, node.body, sf, cuts)
 }
 
 // The name an object literal is bound to (`const a = {...}`, `a: {...}`), so its methods are

@@ -206,6 +206,23 @@ def test_ts_identity_ignores_comments(tmp_path, capsys, files, blocks):
     assert code == (1 if blocks else 0), out
 
 
+# A nested callback's own `legacy` parameter is not the outer function rebinding its name.
+_TS_RECURSIVE = ("export function legacy(x: number): number {\n  const ys = [x].map((legacy) => legacy)\n"
+                 + _ifs(21, indent="  ") + "  return legacy(ys[0] - 1)\n}\n")
+
+
+@pytest.mark.parametrize("files, blocks", [
+    ({"web/r.ts": _TS_RECURSIVE.replace("function legacy", "function walk").replace("return legacy(", "return walk(")},
+     False),
+    # control: a rename that leaves the old self-call behind is different code
+    ({"web/r.ts": _TS_RECURSIVE.replace("function legacy", "function walk")}, True),
+])
+def test_ts_recursive_rename_ignores_nested_bindings(tmp_path, capsys, files, blocks):
+    repo, base = _ts_base(tmp_path, {"web/r.ts": _TS_RECURSIVE})
+    code, out = _verdict(repo, base, files, capsys)
+    assert code == (1 if blocks else 0), out
+
+
 _RUN_DECL = "declare function run(cb: (x: number) => number): void\n"
 _SMALL_CB = "run((x: number) => {\n  return x + 1\n})\n"
 _BIG_CB = "run((x: number) => {\n" + _ifs(21, indent="  ") + "  return -1\n})\n"

@@ -29,6 +29,7 @@ from hermes_cli import main as hermes_main
 import hermes_cli.main_web_build as main_web_build
 import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
+from hermes_cli import update_cmd_git
 
 
 GIT = ["git"]
@@ -147,6 +148,37 @@ def test_equivalent_cherry_picked_commit_is_still_safe(repo_pair):
     )
     assert safe is True
     assert reason == ""
+
+
+def test_partial_clone_avoids_patch_id_scan(repo_pair, monkeypatch):
+    """A promisor clone must not compute patch IDs for the upstream range.
+
+    ``git cherry`` on a blob-filtered clone launches lazy network fetches for
+    old trees/blobs and can leave ``/update`` stuck at "Fetching updates...".
+    Commit reachability is enough for the safety verdict because committed
+    local work remains anchored on its branch.
+    """
+    (repo_pair / "feature.txt").write_text("unmerged work\n")
+    _git(repo_pair, "add", "feature.txt")
+    _git(repo_pair, "commit", "-qm", "feature work")
+    _git(repo_pair, "config", "remote.origin.promisor", "true")
+
+    calls = []
+    real_git_run = update_cmd_git._git_run
+
+    def traced_git_run(git_cmd, args, cwd=None, *, check=False):
+        calls.append(tuple(args))
+        return real_git_run(git_cmd, args, cwd, check=check)
+
+    monkeypatch.setattr(update_cmd_git, "_git_run", traced_git_run)
+    safe, reason = update_cmd._assess_parked_branch_switch(
+        GIT, repo_pair, "old-feature", "main"
+    )
+
+    assert safe is True
+    assert reason == "unmerged:1"
+    assert not any(args and args[0] == "cherry" for args in calls)
+    assert any(args[:2] == ("rev-list", "--count") for args in calls)
 
 
 def test_config_opt_out_blocks_auto_switch(repo_pair, monkeypatch):

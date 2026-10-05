@@ -4,6 +4,18 @@
 //   node ts_units.mjs <typescript-module-path> <root>  < paths.json  > units.json
 //
 // CC is classic McCabe, like ruff's: 1 + if, ?:, case, loops, catch, &&, ||, ??.
+// It is NOT ESLint's `complexity` rule, which also counts these (so ESLint's numbers are
+// higher on the same code): optional chaining (`a?.b`, `f?.()`), the logical assignments
+// `&&=`, `||=`, `??=`, and default parameter values (`f(x = 1)`). They are left out on purpose,
+// to stay comparable with Python's count; the ratchet compares this count only with itself.
+//
+// Identity: a unit's name is its path of classes, functions and named object literals
+// (`Cls.method`, `outer.inner`, `obj.method` for `const obj = { method() {} }`); a repeated
+// name gets `#2`, `#3` in source order, and the comparison pairs repeated names by body, not
+// by that number. Signatures without a body (overloads, `declare`, abstract) are not units.
+// The body hash covers the token stream (comments and whitespace excluded), so a renamed or
+// re-commented function is still the same code. A file with syntax errors is an error, never
+// a partial measurement.
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -91,15 +103,56 @@ function ownName(node) {
   return bindingName(node)
 }
 
-// The body's text with its own references to `name` removed (`name(...)`, `this.name(...)`),
+// The file's code tokens in order (comments, whitespace and JSDoc excluded), collected once:
+// a function's hash input is its slice of them, so a comment edit is not a code edit.
+function fileTokens(sf) {
+  const starts = []
+  const texts = []
+  const visit = n => {
+    if (n.kind >= K.FirstJSDocNode && n.kind <= K.LastJSDocNode) return
+    const children = n.getChildren(sf)
+    if (children.length === 0) {
+      const text = ts.isJsxText(n) ? n.getText(sf).replace(/\s+/g, ' ').trim() : n.getText(sf)
+      if (text) {
+        starts.push(n.getStart(sf))
+        texts.push(text)
+      }
+      return
+    }
+    for (const child of children) visit(child)
+  }
+  visit(sf)
+  return { starts, texts }
+}
+
+function lowerBound(sorted, value) {
+  let lo = 0
+  let hi = sorted.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (sorted[mid] < value) lo = mid + 1
+    else hi = mid
+  }
+  return lo
+}
+
+// The tokens of `node`, without those starting at a position in `cuts`.
+function tokenText(tokens, node, sf, cuts) {
+  const out = []
+  const end = lowerBound(tokens.starts, node.getEnd())
+  for (let i = lowerBound(tokens.starts, node.getStart(sf)); i < end; i++) {
+    if (!cuts.has(tokens.starts[i])) out.push(tokens.texts[i])
+  }
+  return out.join(' ')
+}
+
+// The body's tokens with its own references to `name` removed (`name(...)`, `this.name(...)`),
 // unless the body rebinds that name: renaming a recursive function together with its
 // self-call is still the same code. Strings and other objects' `.name` members are untouched.
-function bodyWithoutSelf(node, sf, name) {
+function bodyWithoutSelf(tokens, node, sf, name) {
   if (!node.body) return ''
-  const start = node.body.getStart(sf)
-  let text = node.body.getText(sf)
-  if (!name) return text
-  const cuts = []
+  const cuts = new Set()
+  if (!name) return tokenText(tokens, node.body, sf, cuts)
   let rebound = node.parameters.some(p => ts.isIdentifier(p.name) && p.name.text === name)
   const visit = n => {
     const declares = ts.isVariableDeclaration(n) || ts.isParameter(n) ||
@@ -111,15 +164,33 @@ function bodyWithoutSelf(node, sf, name) {
       const key = p && (ts.isPropertyAssignment(p) || ts.isMethodDeclaration(p) ||
         ts.isPropertyDeclaration(p)) && p.name === n
       if ((!member && !key) || (member && p.expression.kind === K.ThisKeyword)) {
-        cuts.push(n.getStart(sf) - start)
+        cuts.add(n.getStart(sf))
       }
     }
     ts.forEachChild(n, visit)
   }
   visit(node.body)
-  if (rebound) return text
-  for (const at of cuts.sort((a, b) => b - a)) text = text.slice(0, at) + text.slice(at + name.length)
-  return text
+  return tokenText(tokens, node.body, sf, rebound ? new Set() : cuts)
+}
+
+// The name an object literal is bound to (`const a = {...}`, `a: {...}`), so its methods are
+// `a.f` and `b.f`, not `f` and `f#2` paired by position. Unbound objects add nothing.
+function objectName(node) {
+  let current = node.parent
+  while (current && (ts.isParenthesizedExpression(current) || ts.isAsExpression(current) ||
+         ts.isSatisfiesExpression?.(current) || ts.isTypeAssertionExpression(current))) {
+    current = current.parent
+  }
+  if (current && (ts.isVariableDeclaration(current) || ts.isPropertyAssignment(current) ||
+      ts.isPropertyDeclaration(current))) return propertyName(current.name)
+  return null
+}
+
+function parseError(sf) {
+  const diag = sf.parseDiagnostics?.[0]
+  if (!diag) return null
+  const line = sf.getLineAndCharacterOfPosition(diag.start ?? 0).line + 1
+  return `does not parse: ${ts.flattenDiagnosticMessageText(diag.messageText, ' ')} (line ${line})`
 }
 
 // Comment trivia (not string or template text) that carries a `health: allow` directive.
@@ -147,6 +218,11 @@ function measureFile(path) {
   const text = readFileSync(join(root, path), 'utf8')
   const kind = path.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS
   const sf = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, kind)
+  // The parser recovers from syntax errors instead of throwing: a broken file must fail
+  // closed (MEASURE), not read as whatever functions survived recovery.
+  const error = parseError(sf)
+  if (error) return { error }
+  const tokens = fileTokens(sf)
   const units = []
   const seen = new Map()
   const unique = q => {
@@ -163,16 +239,19 @@ function measureFile(path) {
     let nextParent = parent
     if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
       next = [...stack, propertyName(node.name) ?? '<class>']
-    } else if (FUNCTION_KINDS.has(node.kind)) {
+    } else if (ts.isObjectLiteralExpression(node)) {
+      const name = objectName(node)
+      if (name) next = [...stack, name]
+    } else if (FUNCTION_KINDS.has(node.kind) && node.body) {
       const qual = unique([...stack, ownName(node) ?? '<anon>'].join('.'))
       const start = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1
       const end = sf.getLineAndCharacterOfPosition(node.getEnd()).line + 1
       // Name-independent: parameters + body only, so a rename (or a move) keeps the cap.
-      const params = node.parameters.map(p => p.getText(sf)).join(',')
+      const params = node.parameters.map(p => tokenText(tokens, p, sf, new Set())).join(' , ')
       const selfName = propertyName(node.name) ?? bindingName(node)
-      const body = (params + '=>' + bodyWithoutSelf(node, sf, selfName)).replace(/\s+/g, ' ')
+      const body = params + ' => ' + bodyWithoutSelf(tokens, node, sf, selfName)
       const unit = {
-        q: qual, line: start, cc: complexity(node), nesting: nesting(node),
+        q: qual, line: start, end, cc: complexity(node), nesting: nesting(node),
         hash: createHash('sha1').update(body).digest('hex').slice(0, 16)
       }
       for (let line = start; line <= end; line++) owner.set(line, unit)

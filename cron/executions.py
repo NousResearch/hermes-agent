@@ -2,16 +2,15 @@
 
 The ledger records what is known about each attempt; it is not a retry queue. Interrupted attempts
 become ``unknown`` only after their owner process is proved gone — a start-time reading that fails
-to match the claim-time fingerprint is not proof of death. Terminal states are immutable.
-become ``unknown`` only after their exact owner process is proved gone. Terminal states are
-immutable, with one exception: ``unknown`` means the ledger never learned the outcome, so that row
-may be closed ONCE against external evidence (``reconcile_execution`` / ``hermes cron reconcile``).
+to match the claim-time fingerprint is not proof of death. Terminal states are immutable, with one
+exception: ``unknown`` means the ledger never learned the outcome, so that row may be closed ONCE
+against external evidence (``reconcile_execution`` / ``hermes cron reconcile``).
 """
 
 from __future__ import annotations
 
-import math
 import hashlib
+import math
 import os
 import sqlite3
 import threading
@@ -456,6 +455,8 @@ def terminalize_dead_owner(execution_id: str, *, reason: str) -> bool:
         _prune_unlocked(conn)
     _emit_execution_state(record)
     return True
+
+
 def _caller_profile() -> Optional[str]:
     """Best-effort name of the profile closing the row, or ``None``.
 

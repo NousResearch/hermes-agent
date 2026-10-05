@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -620,23 +621,26 @@ def convert_treeless_checkout(repo_root: Path, **run_kwargs) -> bool:
     release ref the refspec does not name), so its history is checked offline and refetched by
     commit when trees are still missing. The new filter is recorded only once that history is
     whole: a failed or partial conversion leaves the checkout treeless, so the next update
-    retries. Returns whether it converted; fetch failures raise subprocess errors.
+    retries. That check, not the fetch's exit status, is the verdict: a refused tag update (a
+    local tag that would be clobbered) fails the fetch after its objects have landed. Git before
+    2.36 has no ``--refetch`` and is left as it is. Returns whether it converted; fetch failures
+    raise subprocess errors.
     """
     run_kwargs["creationflags"] = run_kwargs.get("creationflags", 0) | windows_hide_flags()
-    if _partial_clone_filter(repo_root, **run_kwargs) != "tree:0":
+    if _partial_clone_filter(repo_root, **run_kwargs) != "tree:0" or _git_version(**run_kwargs) < (2, 36):
         return False
     # A fetch spawns a detached gc/maintenance that would repack the whole refetch outside the
     # update's time limit; the per-command keys leave the user's own settings alone.
     refetch = ["git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "fetch", "--quiet", "--refetch",
                "--filter=blob:none", "origin"]
-    fetch_kwargs = dict(cwd=str(repo_root), check=True, capture_output=True, text=True,
+    fetch_kwargs = dict(cwd=str(repo_root), capture_output=True, text=True,
                         encoding="utf-8", errors="replace", timeout=900, **run_kwargs)
-    subprocess.run([*refetch, "--tags"], **fetch_kwargs)
+    subprocess.run([*refetch, "--tags"], check=False, **fetch_kwargs)
     if not _history_trees_complete(repo_root, **run_kwargs):
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo_root), check=True,
                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
                               **run_kwargs).stdout.strip()
-        subprocess.run([*refetch, head], **fetch_kwargs)
+        subprocess.run([*refetch, head], check=True, **fetch_kwargs)
         if not _history_trees_complete(repo_root, **run_kwargs):
             raise subprocess.CalledProcessError(1, refetch, stderr="the checked-out history is still missing trees")
     # A refetch into an existing partial clone leaves its configured filter alone; record the
@@ -646,6 +650,13 @@ def convert_treeless_checkout(repo_root: Path, **run_kwargs) -> bool:
         cwd=str(repo_root), check=True, capture_output=True, timeout=30, **run_kwargs,
     )
     return True
+
+
+def _git_version(**run_kwargs) -> tuple:
+    out = subprocess.run(["git", "--version"], capture_output=True, text=True, encoding="utf-8",
+                         errors="replace", timeout=30, **run_kwargs).stdout
+    match = re.search(r"(\d+)\.(\d+)", out)
+    return (int(match[1]), int(match[2])) if match else (0, 0)
 
 
 def _history_trees_complete(repo_root: Path, **run_kwargs) -> bool:

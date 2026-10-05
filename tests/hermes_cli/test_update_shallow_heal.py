@@ -88,6 +88,11 @@ def _check_out_tag_only_release(clone: Path) -> None:
     _git(clone, "checkout", "-q", "--detach", "v9")
 
 
+def _check_out_release_under_a_clashing_local_tag(clone: Path) -> None:
+    _check_out_tag_only_release(clone)
+    _git(clone, "tag", "-f", "v9", "origin/main")  # the tag refetch is now refused: would clobber
+
+
 def _check_out_branch_outside_the_refspec(clone: Path) -> None:
     _git(clone, "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
     _git(clone, "fetch", "-q", "origin", "side:side")
@@ -97,6 +102,7 @@ def _check_out_branch_outside_the_refspec(clone: Path) -> None:
 @pytest.mark.parametrize("ref, check_out, history", [
     ("refs/heads/side", _check_out_main, 5),
     ("refs/tags/v9", _check_out_tag_only_release, 7),
+    ("refs/tags/v9", _check_out_release_under_a_clashing_local_tag, 7),
     ("refs/heads/side", _check_out_branch_outside_the_refspec, 7),
 ])
 def test_treeless_checkout_gets_its_whole_history_once_so_walks_stay_offline(tmp_path, ref, check_out, history):

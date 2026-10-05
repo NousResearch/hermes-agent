@@ -207,3 +207,87 @@ def test_pre_injection_sslcontext_survives_the_truststore_injection():
     context.options |= ssl.OP_NO_COMPRESSION
     context.verify_mode = ssl.CERT_REQUIRED
     assert context.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_repaired_setters_keep_their_stdlib_side_effects():
+    """Rebinding a setter must not drop the Python-level behaviour it carries (#126808 review).
+
+    3.14's ``minimum_version`` setter clears ``OP_NO_SSLv3`` for an SSLv3 request before
+    delegating, and ``_msg_callback``'s setter stores a wrapper the getter unwraps. Swapping
+    in the raw C descriptor for either loses that half of the contract: the first leaves the
+    disable bit set while ``minimum_version`` reports SSLv3, the second makes ``get`` raise
+    ``AttributeError: 'function' object has no attribute 'user_function'`` right after a
+    successful ``set``.
+    """
+    import ssl
+
+    from agent.ssl_verify import _stdlib_ssl_context_class, install_truststore
+
+    stdlib_class = _stdlib_ssl_context_class()
+    install_truststore()
+
+    # minimum_version: the SSLv3 disable bit is cleared, matching the native setter.
+    ctx = stdlib_class(ssl.PROTOCOL_TLS_CLIENT)
+    assert bool(ctx.options & ssl.Options.OP_NO_SSLv3) is True  # PROTOCOL_TLS_CLIENT default
+    assert ctx.minimum_version == ssl.TLSVersion.TLSv1_2
+    ctx.minimum_version = ssl.TLSVersion.SSLv3
+    assert ctx.minimum_version == ssl.TLSVersion.SSLv3
+    assert not ctx.options & ssl.Options.OP_NO_SSLv3
+
+    # A later non-SSLv3 assignment only delegates (native never re-arms the bit).
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    assert ctx.minimum_version == ssl.TLSVersion.TLSv1_2
+    assert not ctx.options & ssl.Options.OP_NO_SSLv3
+
+    # _msg_callback: set then get returns the same object (native getter unwraps ``user_function``).
+    seen: list[int] = []
+    ctx._msg_callback = lambda *args: seen.append(1)
+    assert ctx._msg_callback is not None and callable(ctx._msg_callback)
+    ctx._msg_callback = None
+    assert ctx._msg_callback is None
+
+    # truststore's subclass: properties it does NOT redefine (``_msg_callback``) inherit the
+    # repair, so an injected instance sets and reads back too. ``minimum_version``/``options``
+    # are truststore's own properties on that class and stay exactly as truststore wrote them.
+    injected = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    injected.verify_mode = ssl.CERT_REQUIRED
+    assert injected.verify_mode == ssl.CERT_REQUIRED
+    injected._msg_callback = lambda *args: None
+    assert injected._msg_callback is not None
+
+
+def test_repaired_minimum_version_matches_the_native_stdlib_setter():
+    """The repaired ``minimum_version`` must agree with an un-injected interpreter's native setter.
+
+    Runs the same sequence in a subprocess where nothing was injected: that is the only
+    trustworthy reference for a stdlib contract (review of #126808 compared against it).
+    """
+    import subprocess
+    import sys
+
+    script = """\
+import ssl
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+before = bool(ctx.options & ssl.Options.OP_NO_SSLv3)
+ctx.minimum_version = ssl.TLSVersion.SSLv3
+after_bit = bool(ctx.options & ssl.Options.OP_NO_SSLv3)
+print(f"{ctx.minimum_version.value} {before} {after_bit}")
+"""
+    child = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+    assert child.returncode == 0, child.stderr
+    native_version, native_before, native_after = child.stdout.split()
+
+    import ssl
+
+    from agent.ssl_verify import _stdlib_ssl_context_class, install_truststore
+
+    stdlib_class = _stdlib_ssl_context_class()
+    install_truststore()
+    ctx = stdlib_class(ssl.PROTOCOL_TLS_CLIENT)
+    before = bool(ctx.options & ssl.Options.OP_NO_SSLv3)
+    ctx.minimum_version = ssl.TLSVersion.SSLv3
+    after_bit = bool(ctx.options & ssl.Options.OP_NO_SSLv3)
+
+    assert str(ctx.minimum_version.value) == native_version
+    assert str(before) == native_before
+    assert str(after_bit) == native_after == "False"

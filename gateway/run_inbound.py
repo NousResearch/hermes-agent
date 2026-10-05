@@ -1428,7 +1428,12 @@ class GatewayInboundMixin:
             source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
         )
-        if _is_shared_multi_user and source.user_name:
+        # A synthetic event is not authored by any human, so it must never be stamped with a
+        # participant's display name (describe_inbound_event_author holds the same invariant for the
+        # log line). Two harms otherwise: a shared group session shows a ghost message from someone
+        # who never spoke, and prefixing an EMPTY internal event makes it non-empty, which silently
+        # skips the downstream blank-text recovery-note substitution that only fires on empty text.
+        if _is_shared_multi_user and source.user_name and not getattr(event, "internal", False):
             # Display names are attacker-influenceable: neutralize newlines/control chars or a
             # hostile name masquerades as a fake markdown section (mirrors build_session_context_prompt).
             _safe_user_name = neutralize_untrusted_inline_text(source.user_name)

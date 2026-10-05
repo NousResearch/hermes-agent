@@ -477,6 +477,20 @@ def _gateway_platform_value(platform: Any) -> str:
     return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
+def describe_inbound_event_author(event: Any, source: Any) -> str:
+    """Return the identity to log for an inbound event.
+
+    Synthetic/internal events (boot auto-resume re-prompts, queued continuations, background-process
+    completion notices) are produced by the gateway, not typed by a human. Logging them under the
+    human's display name sends incident forensics chasing a phantom "user sent an empty message", so
+    they are attributed to ``<system:internal>`` instead. Genuine inbound messages keep the existing
+    display-name -> user-id -> ``"unknown"`` ladder.
+    """
+    if getattr(event, "internal", False):
+        return "<system:internal>"
+    return getattr(source, "user_name", None) or getattr(source, "user_id", None) or "unknown"
+
+
 def _non_conversational_metadata(
     metadata: Optional[Dict[str, Any]] = None, *, platform: Any = None) -> Optional[Dict[str, Any]]:
     """Mark Discord lifecycle/status sends without changing other platforms."""

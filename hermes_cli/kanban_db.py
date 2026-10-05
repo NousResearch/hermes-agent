@@ -3281,6 +3281,20 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class ExternalArtifactPreservationError(ArtifactPreservationError):
+    """Raised when a declared EXTERNAL completion-contract artifact cannot be
+    preserved durably (Kanban P3b, audit 2026-10-04).
+
+    The artifact lives OUTSIDE managed scratch, so it is not ours to copy
+    in-txn; P3b captures it before the write lock and publishes a managed copy.
+    A preservation failure — the file exceeds ``KANBAN_ATTACHMENT_MAX_BYTES`` or
+    changes/disappears while being read — refuses the completion rather than
+    closing a ``done`` card onto content that is gone or unstable. Subclasses
+    :class:`ArtifactPreservationError` so the existing tool error handlers treat
+    it as a recoverable preservation failure (the worker can fix the file and
+    retry); a ``RuntimeError``, since it is not a caller input error."""
+
+
 class IdempotencyStateConflictError(RuntimeError):
     """A task's state update would re-activate an idempotency key another
     non-archived row already holds.
@@ -3459,6 +3473,14 @@ def complete_task(
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
         return False
+    # P3b external-artifact durability (audit 2026-10-04): a contract artifact
+    # OUTSIDE managed scratch is not ours to copy in-txn, so capture + publish a
+    # managed copy NOW — before the write lock and before the in-txn recheck —
+    # so the closing txn binds the EXACT bytes the contract validated. This is
+    # what closes the delete-after-recheck race: the durable copy, not the
+    # external pathname, is the proof; the original may vanish at any moment.
+    captured_external = _kea.capture_external_artifacts(conn, task_id)
+    published_external = _kea.publish_external_artifacts(captured_external, task_id)
     try:
         with write_txn(conn):
             # Hard invariant even for human review approval: a parent may have
@@ -3515,6 +3537,14 @@ def complete_task(
             )
             if _txn_served is not None and isinstance(metadata, dict):
                 metadata["served_model"] = _txn_served
+            # P3b: bind the captured external copies INSIDE this txn — attachment
+            # row + auditable event + run-metadata binding — so the fence and the
+            # proof commit together. The bytes were captured before the lock;
+            # this only records them (no large I/O under the write lock).
+            if isinstance(metadata, dict):
+                _kea.bind_external_artifacts(
+                    conn, task_id, published_external, metadata, now,
+                )
             if isinstance(metadata, dict):
                 _stage_completion_artifacts(conn, task_id, metadata, now)
             run_id = _end_run(
@@ -3552,7 +3582,9 @@ def complete_task(
     except _ContractSwappedInTxn as exc:
         # The completion txn rolled back (card keeps its prior status). The
         # divergence marker must SURVIVE the rollback: separate txn, like the
-        # other auditable refusal paths (+ then raise ContractSpecError).
+        # other auditable refusal paths (+ then raise ContractSpecError). The
+        # published copies never got bound — discard them (recoverable orphan).
+        _kea.discard_published_artifacts(published_external)
         with write_txn(conn):
             _append_event(
                 conn, task_id, "completion_blocked_contract_changed", exc.payload,
@@ -3563,11 +3595,18 @@ def complete_task(
         # concurrent origin write / run swap). The rollback already restored
         # the card; record the durable refusal in its own txn, then raise the
         # typed, recoverable OffBoardOriginError.
+        _kea.discard_published_artifacts(published_external)
         with write_txn(conn):
             _append_event(
                 conn, task_id, "completion_blocked_off_board_origin", exc.payload,
             )
         raise OffBoardOriginError(task_id) from exc
+    except BaseException:
+        # Any other failure (e.g. an in-txn staging refusal) rolled the txn
+        # back: the published external copies have no binding — discard them so
+        # a retry does not stage a duplicate next to an orphan.
+        _kea.discard_published_artifacts(published_external)
+        raise
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)
@@ -6224,6 +6263,7 @@ from hermes_cli.kanban_db_workspace import (  # noqa: E402
     _managed_scratch_path_info,
     _scratch_workspace,
 )
+from hermes_cli import kanban_external_artifacts as _kea  # noqa: E402
 from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     DEFAULT_FAILURE_LIMIT,
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,

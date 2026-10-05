@@ -251,22 +251,31 @@ def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
 
 
 class SharedRouteAdapters:
-    """Read-only adapter map for a credentialless satellite profile. ``get(platform, target)``
-    resolves the PRIMARY adapter iff the inbound route matcher (``ProfileRoute.matches``) accepts
-    the target; anything else (unmatched target, disabled route, other profile, or target-less
+    """Read-only adapter map for a satellite profile. ``get(platform, target)`` resolves the
+    PRIMARY adapter iff the inbound route matcher (``ProfileRoute.matches``) accepts the target;
+    anything else (unmatched target, disabled route, other profile, or target-less
     ``get(platform)``) is a miss — fail closed, never the default bot.
+
+    ``own_adapters`` are the satellite's OWN live adapters (a mixed satellite may run its own bot
+    on one platform and rely on host routes for another). A platform present there is ALWAYS
+    served by the satellite's own adapter, never the host bot; host routes only fill platforms
+    the satellite lacks.
 
     See #101113.
     """
 
-    def __init__(self, primary_adapters, routes) -> None:
+    def __init__(self, primary_adapters, routes, own_adapters=None) -> None:
         self._primary = dict(primary_adapters or {})
         self._routes = list(routes or [])
+        self.own_adapters = dict(own_adapters or {})
 
     def __bool__(self) -> bool:
-        return bool(self._primary) and bool(self._routes)
+        return bool(self.own_adapters) or (bool(self._primary) and bool(self._routes))
 
     def get(self, platform, target=None, default=None):
+        own = self.own_adapters.get(platform)
+        if own is not None:
+            return own
         if not target:
             return default
         adapter = self._primary.get(platform)
@@ -289,6 +298,24 @@ class SharedRouteAdapters:
             ):
                 return adapter
         return default
+
+
+def satellite_delivery_adapters(own_adapters, primary_adapters, routes=None):
+    """Delivery adapter view for a multiplexed satellite profile (the ticker and the restart-safe
+    drain both use this so they cannot drift). Call inside the satellite's profile scope when
+    ``routes`` is omitted: they are the live host's ``profile_routes`` targeting this profile.
+
+    Returns ``own_adapters`` unchanged when there is nothing to route through the host (no primary
+    adapters or no routes); otherwise a ``SharedRouteAdapters`` that serves the satellite's own
+    platforms from its own adapters and the rest only through exact enabled host routes.
+    """
+    if not primary_adapters:
+        return own_adapters
+    if routes is None:
+        routes = _primary_profile_routes_for_current_home()
+    if not routes:
+        return own_adapters
+    return SharedRouteAdapters(primary_adapters, routes, own_adapters)
 
 
 def _preflight_check_delivery(job: dict) -> Optional[str]:

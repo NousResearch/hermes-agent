@@ -1,6 +1,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { esModelMenu } from './es_model_menu'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
@@ -5041,22 +5042,7 @@ export const esOverrides = {
     windowControls: 'Controles de ventana',
     paneControls: 'Controles de panel',
     appControls: 'Controles de app',
-    modelMenu: {
-      search: 'Buscar modelos',
-      noModels: 'No se encontraron modelos',
-      editModels: 'Editar modelos…',
-      followDefault: 'Usar el predeterminado de Ajustes',
-      refreshModels: 'Actualizar modelos',
-      favorites: 'Favoritos',
-      addFavorite: 'Añadir a favoritos',
-      removeFavorite: 'Quitar de favoritos',
-      favoriteShortcut: '⇧ Clic',
-      fast: 'Rápido',
-      free: 'gratis',
-      cacheRead: 'lectura en caché',
-      priceTitle: (input: string, output: string, cache: string) =>
-        `Entrada ${input}/Mtok · Salida ${output}/Mtok` + (cache ? ` · Lectura en caché ${cache}/Mtok` : '')
-    },
+    modelMenu: esModelMenu,
     modelOptions: {
       noOptions: 'No hay opciones para este modelo',
       options: 'Opciones',
@@ -6018,9 +6004,6 @@ export const esOverrides = {
     sessionUnavailable: 'Sesión no disponible',
     createSessionFailed: 'No se pudo crear una sesión nueva',
     promptFailed: 'Falló el prompt',
-    staleSessionTitle: 'Chat desactualizado',
-    staleSessionBody:
-      'Esta ventana estaba detrás de otra vista del mismo chat. Se cargaron los mensajes más recientes. Envía de nuevo si aún quieres.',
     providerCredentialRequired: 'Añade una credencial de proveedor antes de enviar tu primer mensaje.',
     emptySlashCommand: 'comando slash vacío',
     desktopCommands: 'Comandos de escritorio',

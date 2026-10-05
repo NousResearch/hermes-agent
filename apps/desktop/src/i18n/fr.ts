@@ -1,6 +1,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { frModelMenu } from './fr_model_menu'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
@@ -5063,22 +5064,7 @@ export const frOverrides = {
     windowControls: 'Contrôles de fenêtre',
     paneControls: 'Contrôles de panneau',
     appControls: "Contrôles d'application",
-    modelMenu: {
-      search: 'Rechercher des modèles',
-      noModels: 'Aucun modèle trouvé',
-      editModels: 'Modifier les modèles…',
-      followDefault: 'Utiliser le modèle par défaut des Réglages',
-      refreshModels: 'Actualiser les modèles',
-      favorites: 'Favoris',
-      addFavorite: 'Ajouter aux favoris',
-      removeFavorite: 'Retirer des favoris',
-      favoriteShortcut: '⇧ Clic',
-      fast: 'Rapide',
-      free: 'gratuit',
-      cacheRead: 'lecture en cache',
-      priceTitle: (input: string, output: string, cache: string) =>
-        `Entrée ${input}/Mtok · Sortie ${output}/Mtok` + (cache ? ` · Lecture en cache ${cache}/Mtok` : '')
-    },
+    modelMenu: frModelMenu,
     modelOptions: {
       noOptions: 'Aucune option pour ce modèle',
       options: 'Options',
@@ -6040,9 +6026,6 @@ export const frOverrides = {
     sessionUnavailable: 'Session indisponible',
     createSessionFailed: 'Impossible de créer une nouvelle session',
     promptFailed: "Échec de l'invite",
-    staleSessionTitle: 'Conversation obsolète',
-    staleSessionBody:
-      'Cette fenêtre était en retard sur une autre vue du même chat. Les derniers messages ont été chargés. Renvoyez si vous le souhaitez encore.',
     providerCredentialRequired: "Ajoutez un identifiant de fournisseur avant d'envoyer votre premier message.",
     emptySlashCommand: 'commande slash vide',
     desktopCommands: 'Commandes Desktop',

@@ -743,6 +743,15 @@
         }
       },
       "version": "0.12.3"
+    },
+    "whispercpp-cpu": {
+      "artifacts": {
+        "win32-arm64": {
+          "sha256": "799543b926ab5b6c2d60cab269a2092e0ae8d27820e9e15429e59de3699546fc",
+          "url": "https://github.com/ggml-org/whisper.cpp/releases/download/b5130/whisper-bin-win-cpu-arm64.zip"
+        }
+      },
+      "version": "b5130"
     }
   },
   "schema": 1

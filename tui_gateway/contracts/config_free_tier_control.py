@@ -435,6 +435,30 @@ class ModelCapabilities(Result):
     can_disable_reasoning: bool | None = None
 
 
+class ProviderLimit(Result):
+    """``hermes_cli/inventory.py::_apply_limits`` — ``account``: the whole login is rate-limited until
+    ``resets_at`` (ISO, absent when unknown); ``models``: only these models are, each until its time."""
+
+    scope: Literal["account", "models"]
+    resets_at: str | None = None
+    models: dict[str, str] | None = None
+
+
+class ProviderUsageWindow(Result):
+    """One subscription usage window (``agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour
+    session or the weekly cap, with how much of it is spent and when it rolls over (ISO)."""
+
+    label: str
+    used_percent: float
+    resets_at: str | None = None
+
+
+class ProviderUsage(Result):
+    """``hermes_cli/inventory.py::_apply_usage`` — the provider's account usage windows, from cache."""
+
+    windows: list[ProviderUsageWindow]
+
+
 class ModelOptionProvider(OpenModel):
     """One ``hermes_cli/inventory.py::build_models_payload`` provider row (the union of every field
     the builder sets; ``pricing_pending`` / ``free_tier_pending`` mark the cached-only path)."""
@@ -460,6 +484,8 @@ class ModelOptionProvider(OpenModel):
     free_tier_pending: bool | None = None
     free_tier_row: bool | None = None
     unavailable_models: list[str] | None = None
+    limit: ProviderLimit | None = None
+    usage: ProviderUsage | None = None
 
 
 class ModelOptionsResult(Result):

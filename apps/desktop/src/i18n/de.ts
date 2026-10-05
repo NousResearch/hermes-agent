@@ -1,5 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { deModelMenu } from './de_model_menu'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
@@ -5049,22 +5050,7 @@ export const deOverrides = {
     windowControls: 'Fenster-Bedienelemente',
     paneControls: 'Panele-Bedienelemente',
     appControls: 'App-Bedienelemente',
-    modelMenu: {
-      search: 'Modelle durchsuchen',
-      noModels: 'Keine Modelle gefunden',
-      editModels: 'Modelle bearbeiten…',
-      followDefault: 'Standard aus den Einstellungen verwenden',
-      refreshModels: 'Modelle aktualisieren',
-      favorites: 'Favoriten',
-      addFavorite: 'Zu Favoriten hinzufügen',
-      removeFavorite: 'Aus Favoriten entfernen',
-      favoriteShortcut: '⇧ Klick',
-      fast: 'Schnell',
-      free: 'kostenlos',
-      cacheRead: 'Cache-Lesung',
-      priceTitle: (input: string, output: string, cache: string) =>
-        `Eingabe ${input}/Mtok · Ausgabe ${output}/Mtok` + (cache ? ` · Cache-Lesung ${cache}/Mtok` : '')
-    },
+    modelMenu: deModelMenu,
     modelOptions: {
       noOptions: 'Keine Optionen für dieses Modell',
       options: 'Optionen',
@@ -6027,9 +6013,6 @@ export const deOverrides = {
     sessionUnavailable: 'Session nicht verfügbar',
     createSessionFailed: 'Neue Session konnte nicht erstellt werden',
     promptFailed: 'Prompt fehlgeschlagen',
-    staleSessionTitle: 'Chat veraltet',
-    staleSessionBody:
-      'Dieses Fenster war hinter einer anderen Ansicht desselben Chats. Die neuesten Nachrichten wurden geladen. Senden Sie erneut, wenn Sie noch möchten.',
     providerCredentialRequired:
       'Fügen Sie Anmeldedaten für einen Anbieter hinzu, bevor Sie Ihre erste Nachricht senden.',
     emptySlashCommand: 'leerer Slash-Befehl',

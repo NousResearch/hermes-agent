@@ -72,3 +72,45 @@ def test_marker_oracle_reads_a_marker_live_exactly_when_update_lock_does(age, wi
     ct = f"ct:{psutil.Process(pid).create_time():.3f}\n" if with_ct else ""
     text = f"{pid}\n{time.time() - age}\n{ct}"
     assert crash._marker_live(text) == (f"owner {pid}" if live else None)
+
+
+class _Journey:
+    def __init__(self, machine, cells: dict) -> None:
+        self.machine, self._cells = machine, cells
+
+    def __getitem__(self, cell: str) -> dict:
+        return self._cells[cell]
+
+
+@pytest.mark.parametrize("rc,receipt,completed", [
+    (0, None, True),  # exited 0 after logging completion
+    (crash.PY_FINAL_FLUSH_FAILED, "success", True),  # only the flush into the dead script failed
+    (crash.PY_FINAL_FLUSH_FAILED, "failed", False),  # 120 masked a failure exit
+    (crash.PY_FINAL_FLUSH_FAILED, None, False),  # 120 and no receipt of this run
+])
+def test_orphan_cell_accepts_exit_120_only_with_a_success_receipt(tmp_path, monkeypatch, rc, receipt, completed):
+    monkeypatch.delenv("HERMES_E2E_STRICT_ACCEPTANCE", raising=False)
+    target = "a" * 40
+    tree = {"head": target, "dirty": "", "diff_rc": 0, "diff_err": "", "target_file": True}
+    ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+    cell = {"orphan_finished": True, "orphan_reported_done": True, "orphan_rc": rc, "orphan_receipt": receipt,
+            "target": target, "tree_after_orphan": tree, "tree_final": tree, "holders": ["delegate"],
+            "turn": type("Turn", (), {"ok": True, "run": ok})(), "follow_up": ok, "marker_final": False,
+            "dead_while_running": None, "marker_after_orphan": None}
+    journey = _Journey(_Machine(tmp_path), {"orphaned_update": cell})
+    if completed:
+        crash.test_desktop_handoff_script_killed_alone_keeps_the_marker_live_until_its_update_ends(journey)
+    else:
+        with pytest.raises(AssertionError, match="did not finish the update"):
+            crash.test_desktop_handoff_script_killed_alone_keeps_the_marker_live_until_its_update_ends(journey)
+
+
+def test_orphan_receipt_is_the_newest_one_written_after_the_baseline(tmp_path):
+    receipts = tmp_path / "logs" / "update_receipts"
+    receipts.mkdir(parents=True)
+    machine = type("M", (), {"hermes_home": tmp_path})()
+    (receipts / "update_20261004_000000_1_a.json").write_text('{"outcome": "success"}', encoding="utf-8")
+    before = crash._receipts(machine)
+    assert crash._new_receipt_outcome(machine, before) is None  # an earlier run's success is not this run's
+    (receipts / "update_20261004_000100_2_b.json").write_text('{"outcome": "failed"}', encoding="utf-8")
+    assert crash._new_receipt_outcome(machine, before) == "failed"

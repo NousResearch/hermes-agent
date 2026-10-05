@@ -57,6 +57,7 @@ website/docs/developer-guide/source-update-completion.md.
 from __future__ import annotations
 
 import contextlib
+import json
 import shlex
 import shutil
 import subprocess
@@ -475,8 +476,30 @@ UPDATE_DONE = "Update complete!"
 # CPython's exit status when the final flush of stdout fails at shutdown. The orphan's
 # stdout is a pipe into the killed script, so its last flush has no reader; only that
 # dead script ever waited on this exit code (run 37149266852: the update's own receipt
-# says success, the checkout is at the target, the process exits 120).
+# says success, the checkout is at the target, the process exits 120). It replaces ANY
+# exit status, a failure's too, so 120 proves nothing without the run's own receipt.
 PY_FINAL_FLUSH_FAILED = 120
+
+
+def _receipts(machine) -> set[Path]:
+    return set((machine.hermes_home / "logs" / "update_receipts").glob("update_*.json"))
+
+
+def _new_receipt_outcome(machine, before: set[Path]) -> str | None:
+    """The outcome of the newest update receipt not in ``before`` (hermes_cli/update_receipt.py)."""
+    new = _receipts(machine) - before
+    if not new:
+        return None
+    try:
+        return json.loads(max(new, key=lambda p: p.stat().st_mtime).read_text(encoding="utf-8-sig")).get("outcome")
+    except (OSError, ValueError):
+        return None
+
+
+def _orphan_completed(r: dict) -> bool:
+    """Logged its completion and exited 0, or exited 120 with its own receipt saying success."""
+    return r["orphan_reported_done"] and (
+        r["orphan_rc"] == 0 or (r["orphan_rc"] == PY_FINAL_FLUSH_FAILED and r["orphan_receipt"] == "success"))
 
 
 def _update_banners(machine, banner: str = UPDATE_BANNER) -> int:
@@ -536,6 +559,7 @@ def _orphan(machine, srv, label: str) -> dict:
         # this (even while taskkill / wait below run) is this run's, never the baseline's.
         banners = _update_banners(machine)
         done_before = _update_banners(machine, UPDATE_DONE)
+        receipts_before = _receipts(machine)
         proc = _handoff(machine, f"{label}-script")()
         deadline = time.monotonic() + UPDATE_TIMEOUT
         child = None
@@ -593,13 +617,14 @@ def _orphan(machine, srv, label: str) -> dict:
             machine.kill_owned()
         tree_after_orphan = _tree(machine, label)
         orphan_reported_done = _update_banners(machine, UPDATE_DONE) > done_before
+        orphan_receipt = _new_receipt_outcome(machine, receipts_before)
         marker_after_orphan = _read_marker(machine)
         marker_after_orphan_text = _marker_text(machine)
         turn = one_shot_turn(machine, srv, f"{label}-next-launch")
         follow_up = machine.hermes("update", "--yes", label=f"{label}-follow-up-update", timeout=UPDATE_TIMEOUT)
     return {"label": label, "pre": pre, "target": target, "seen": f"update child {child.pid}",
             "marker_at_kill": marker_at_kill, "orphan_finished": orphan_finished, "orphan_rc": rc,
-            "orphan_reported_done": orphan_reported_done,
+            "orphan_reported_done": orphan_reported_done, "orphan_receipt": orphan_receipt,
             "dead_while_running": dead_while_running, "holders": sorted(holders),
             "tree_after_orphan": tree_after_orphan, "marker_after_orphan": marker_after_orphan,
             "marker_after_orphan_text": marker_after_orphan_text,
@@ -734,10 +759,10 @@ def test_desktop_handoff_script_killed_alone_keeps_the_marker_live_until_its_upd
     assert r["orphan_finished"], fail_with(
         m, f"orphaned_update: the orphaned hermes update was still running {UPDATE_TIMEOUT:.0f}s after "
            f"the script died")
-    finished = r["orphan_reported_done"] and r["orphan_rc"] in (0, PY_FINAL_FLUSH_FAILED)
-    assert finished, fail_with(
+    assert _orphan_completed(r), fail_with(
         m, f"orphaned_update: the hermes update orphaned by the dead script did not finish the update "
            f"(rc={r['orphan_rc']}, '{UPDATE_DONE}' logged={r['orphan_reported_done']}, "
+           f"its receipt's outcome={r['orphan_receipt']}, "
            f"tree {_tree_text(r['tree_after_orphan'])}, target {r['target']}; marker holders seen: {r['holders']})")
     _assert_tree_is(m, "orphaned_update", "after the orphaned update finished", r["tree_after_orphan"],
                     {"target": r["target"]}, r["target"])

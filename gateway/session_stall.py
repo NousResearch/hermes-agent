@@ -8,9 +8,12 @@ stall *policy gate*, not a delivery obligation and not process liveness.
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from typing import Any, Mapping, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def should_emit_session_stall_notification(
@@ -42,6 +45,42 @@ def format_session_stall_notification(idle_seconds: float) -> str:
     mins = max(1, int(idle_seconds // 60))
     return (f"⚠️ I seem to be stuck (no activity for {mins} min). Send /stop to cancel the current "
             "task, or /new to start a fresh conversation.")
+
+
+def format_session_stall_watchdog_payload(idle_seconds: float) -> str:
+    """Agent-facing recovery text for an in-flight stall (redirect/steer payload)."""
+    mins = max(1, int(idle_seconds // 60))
+    return (
+        "[watchdog] Session stall: no activity for "
+        f"{mins} min. Continue the current task or report that you are stuck."
+    )
+
+
+def inject_session_stall_recovery(agent: Any, payload: str) -> bool:
+    """Prefer ``redirect()`` so a stalled model request is cancelled and retried.
+
+    ``steer()`` only drains after a future tool result, so a model-side stall can
+    accept that nudge and never see it. Fall back to steer during tool execution
+    or when redirect declines. Empty payload is a no-op.
+    """
+    if not payload or not str(payload).strip() or agent is None:
+        return False
+    text = str(payload).strip()
+    redirect = getattr(agent, "redirect", None)
+    if callable(redirect):
+        try:
+            if redirect(text):
+                return True
+        except Exception:
+            logger.debug("Session stall recovery redirect failed", exc_info=True)
+    steer = getattr(agent, "steer", None)
+    if callable(steer):
+        try:
+            return bool(steer(text))
+        except Exception:
+            logger.debug("Session stall recovery steer failed", exc_info=True)
+            return False
+    return False
 
 
 def _finite_float(value: Any) -> Optional[float]:

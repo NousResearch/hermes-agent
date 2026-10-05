@@ -193,6 +193,15 @@ export class JsonRpcRequestChannel {
   private heartbeatSequence = 0
   private readonly outstandingPings = new Set<string>()
   private lastLivenessAt = 0
+  /**
+   * Wall-clock time of the last heartbeat tick that actually ran. A tick that
+   * observes a gap far past the heartbeat cadence proves the HOST loop
+   * stalled between ticks (renderer jank, GC) — silence during the stall is
+   * unattributable to the transport, so the deadline window restarts there
+   * instead of failing a healthy backend the moment the loop resumes
+   * (#69930).
+   */
+  private lastHeartbeatTickAt = 0
   /** The bound generation's backend counts `decline` as one client abstaining (see `ServerRequest.decline`). */
   private backendCountsDeclines = false
   private readonly requestHandlers: ServerRequestHandler[] = []
@@ -538,7 +547,23 @@ export class JsonRpcRequestChannel {
         return
       }
 
-      if (Date.now() - this.lastLivenessAt >= this.options.heartbeatDeadlineMs) {
+      const now = Date.now()
+
+      // A gap far past the heartbeat cadence means the HOST loop stalled
+      // between ticks (renderer jank, GC — #69930): the silence it produced
+      // is not transport silence. Restart the deadline window instead of
+      // failing a backend that was alive (and possibly streaming) throughout
+      // the stall; a genuinely dead transport still fails one deadline after
+      // the loop resumes.
+      const stalled = this.lastHeartbeatTickAt > 0 && now - this.lastHeartbeatTickAt > 2 * this.options.heartbeatIntervalMs
+
+      if (stalled) {
+        this.lastLivenessAt = now
+      }
+
+      this.lastHeartbeatTickAt = now
+
+      if (now - this.lastLivenessAt >= this.options.heartbeatDeadlineMs) {
         this.failHeartbeat(new Error('WebSocket heartbeat acknowledgement timed out'))
 
         return

@@ -57,8 +57,9 @@ Legs, each in its OWN subprocess (module state is fixed at import):
                 `claimed` forever, which is the leak this leg guards.
 
 The "before" leg is a genuinely pristine tree: this script resets every file this PR fixes
-(`cron/jobs.py`, `cron/scheduler.py`) to the merge-base with `origin/main` and refuses the leg
-unless NONE of the fix markers are present.
+(`cron/jobs.py`, `cron/scheduler.py`) to `origin/main` and refuses the leg unless NONE of the fix
+markers are present. It is an ancestor of every revision this PR has carried, so all "before"
+results are what the reviewer started from.
 
 Exit code: 0 when the fixed tree degrades instead of aborting, 1 when the tick still raises.
 """
@@ -224,7 +225,7 @@ try:
             out["post_recovery_tick_raised"] = f"{getattr(exc, 'errno', None)}:{exc}"
         out["executed_after_post_recovery_tick"] = list(executed)
     out["executed"] = list(executed)
-out["open_receipts_final"] = _open_receipts()
+    out["open_receipts_final"] = _open_receipts()
 finally:
     if previous is not None:
         resource.setrlimit(resource.RLIMIT_FSIZE, previous)
@@ -341,11 +342,11 @@ def main() -> int:
             verdict_bad.append("advance-fail(after) double-fired the occurrence on the next tick")
     cf_before, cf_after = results.get(("before", "claim-fail")), results.get(("after", "claim-fail"))
     if cf_before and cf_after:
-        # On the pristine tree the tick aborts at the scan's persist BEFORE any receipt is created,
-        # so `open_receipts` there is legitimately empty — this leg passes trivially on old code
-        # (that is exactly what the reviewer described), while the unit regression in
-        # tests/cron/test_due_scan_save_failure.py fails on 5742a7cd19 and passes on this head.
-        # The assertions below are therefore all on the fixed side:
+        # Genuine repro: the pristine tree reaches dispatch (the fixture fails only the claim's
+        # persist) and leaves the receipt it created stuck non-terminal.
+        if not cf_before.get("open_receipts"):
+            verdict_bad.append(
+                "claim-fail(before) left no open receipt — the repro is not genuine")
         if cf_after.get("open_receipts"):
             verdict_bad.append(
                 f"claim-fail(after) left an execution receipt non-terminal: {cf_after['open_receipts']}")

@@ -287,8 +287,10 @@ class TestFireClaimFailureClosesTheReceipt:
     between those two points, so the row stayed ``claimed`` forever — a permanently in-flight
     attempt for a run that never happened. These drive the real ledger through a full tick.
 
-    On ``main`` these pass trivially (the tick aborts before the row is created); at ``5742a7cd19``
-    the open-row assertion is what fails.
+    The fixture fails ONLY the claim's persist, so the tick reaches dispatch on every revision of
+    this PR AND on ``main`` — the assertion that fails there is the open row, not the reach. (A
+    whole-store failure would abort the tick on ``main`` before the row existed, which is the
+    trivially-passing shape this deliberately avoids.)
     """
 
     @pytest.fixture(autouse=True)

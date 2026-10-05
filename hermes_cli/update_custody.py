@@ -177,7 +177,7 @@ def _death_signal_preexec():
     on it. For the git children that do NOT hold the lock fd (fetch, ls-remote, readers): a
     killed owner must not leave a fetch rewriting refs under the next lock owner. The ruling's
     stale-lock rules recover a fetch killed mid-write. ``None`` elsewhere (Windows: the job;
-    macOS: no parent-death signal — see NOT_COVERED)."""
+    macOS has no parent-death signal: :func:`run_git` puts a fetch under :func:`_owner_watch`)."""
     if not sys.platform.startswith("linux"):
         return None
     import ctypes
@@ -332,7 +332,83 @@ def run_git(git_cmd: Sequence[str], args: Sequence[str], **kwargs) -> subprocess
     mutator = is_local_mutator(argv[1:])
     if mutator:
         _prefetch_for_move(list(git_cmd), list(args), kwargs)
+    elif git_subcommand(argv[1:]) in _FD_LESS_REF_WRITERS and sys.platform != "win32" \
+            and _held() is not None and "preexec_fn" not in kwargs and _death_signal_preexec() is None:
+        return _run_owner_watched(argv, kwargs)
     return run(argv, inherit_lock=mutator, **kwargs)
+
+
+# git commands that write refs WITHOUT the lock fd (m3: their network half must not hold it). On
+# Linux the parent-death signal ends one whose owner died; where there is none (macOS) a watchdog
+# does (R3), or it would go on rewriting refs and leave live `*.lock` files under the next owner.
+_FD_LESS_REF_WRITERS = frozenset({"fetch"})
+
+# The watchdog: stdin is a pipe only the owner writes. A byte = the child finished; EOF with no
+# byte = the owner died (the kernel closed its end), so SIGKILL the child, as PR_SET_PDEATHSIG
+# would. It holds no lock fd and runs in its own session (a terminal's ^C/hang-up is the owner's).
+_OWNER_WATCH = (
+    "import os, signal, sys\n"
+    "if not os.read(0, 1):\n"
+    "    try:\n"
+    "        os.kill(int(sys.argv[1]), signal.SIGKILL)\n"
+    "    except OSError:\n"
+    "        pass\n"
+)
+
+
+def _owner_watch(pid: int):
+    """Start the parent-death stand-in for child ``pid``; returns the callable that dismisses it
+    once the child is done, or ``None`` when it could not start (logged: the fetch still runs, as
+    it did before; only the owner's death mid-fetch is then unfenced)."""
+    import os
+
+    read_end, write_end = os.pipe()  # non-inheritable: no other child keeps the owner's end open
+    try:
+        watcher = subprocess.Popen([sys.executable, "-I", "-S", "-c", _OWNER_WATCH, str(pid)], stdin=read_end,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError as exc:
+        os.close(write_end)
+        logger.warning("Could not watch update child %s for its owner's death: %s", pid, exc)
+        return None
+    finally:
+        os.close(read_end)
+
+    def dismiss() -> None:
+        with contextlib.suppress(OSError):  # the watcher already gone: nothing left to tell it
+            os.write(write_end, b"x")
+        os.close(write_end)
+        with contextlib.suppress(subprocess.TimeoutExpired):  # it exits on the byte; never block on it
+            watcher.wait(timeout=5)
+
+    return dismiss
+
+
+def _run_owner_watched(argv: Sequence[str], kwargs: dict) -> subprocess.CompletedProcess:
+    """``subprocess.run`` for an fd-less ref writer, under :func:`_owner_watch` while it runs."""
+    input, timeout = kwargs.pop("input", None), kwargs.pop("timeout", None)
+    check = kwargs.pop("check", False)
+    if input is not None:
+        kwargs["stdin"] = subprocess.PIPE
+    if kwargs.pop("capture_output", False):
+        kwargs["stdout"] = kwargs["stderr"] = subprocess.PIPE
+    with subprocess.Popen(list(argv), **kwargs) as proc:
+        dismiss = _owner_watch(proc.pid)
+        try:
+            stdout, stderr = proc.communicate(input, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            exc.stdout, exc.stderr = proc.communicate()
+            raise
+        except BaseException:
+            proc.kill()
+            raise
+        finally:
+            if dismiss is not None:
+                dismiss()
+        code = proc.poll()
+    if check and code:
+        raise subprocess.CalledProcessError(code, proc.args, output=stdout, stderr=stderr)
+    return subprocess.CompletedProcess(proc.args, code, stdout, stderr)
 
 
 def _partial_clone(git_cmd: Sequence[str], kwargs: dict) -> bool:

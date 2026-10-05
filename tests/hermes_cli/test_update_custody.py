@@ -114,11 +114,23 @@ def test_lock_fd_reaches_local_mutators_only(repo, tmp_path, monkeypatch):
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="parent-death signal is Linux-only")
 def test_network_git_dies_with_its_killed_owner(repo, tmp_path):
     """The fd-less fetch must not keep rewriting refs after the owner died (the next owner's lease)."""
+    _assert_fetch_dies_with_killed_owner(repo, tmp_path, "")
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads the fetch's pid from /proc")
+def test_network_git_dies_with_its_killed_owner_without_a_parent_death_signal(repo, tmp_path):
+    """R3: where there is no parent-death signal (macOS), the fetch must still die with its owner."""
+    _assert_fetch_dies_with_killed_owner(
+        repo, tmp_path, "from hermes_cli import update_custody\nupdate_custody._death_signal_preexec = lambda: None\n")
+
+
+def _assert_fetch_dies_with_killed_owner(repo, tmp_path, prelude: str) -> None:
     script = textwrap.dedent(f"""
         import sys
         sys.path.insert(0, {str(REPO_ROOT)!r})
         from pathlib import Path
         from hermes_cli import update_lock as ul, update_cmd
+    """) + prelude + textwrap.dedent("""
         lock = ul.UpdateLock(path=Path(sys.argv[2]), install_root=sys.argv[1])
         assert lock.acquire()
         update_cmd._git_run(["git"], ["fetch", "--upload-pack=" + sys.argv[3], "origin"], cwd=sys.argv[1], network=True)

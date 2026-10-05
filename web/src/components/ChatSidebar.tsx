@@ -164,12 +164,29 @@ export function ChatSidebar({
   // Short name of a just-saved model awaiting confirm to reload (a fresh chat
   // session is how the running chat adopts it; we confirm before discarding it).
   const [pendingReloadModel, setPendingReloadModel] = useState<string | null>(null)
+  // Set while a runtime fallback is serving turns: the badge then names the model
+  // that is really answering, with the configured one in the tooltip
+  // (`/api/model/info` → `active_model`, see agent/active_model_state.py).
+  const [fallbackInfo, setFallbackInfo] = useState<{ active: string; configured: string } | null>(null)
 
   const refreshEffectiveModel = useCallback(() => {
     void api
       .getModelInfo(profile)
       .then(r => {
-        if (r?.model) setEffectiveModel(String(r.model))
+        // Badge the model that is really serving turns, not the configured one:
+        // the runtime can switch models with no config change (provider outage,
+        // rate limit, or a different default written to config.yaml) and the badge
+        // has to follow it. `active_model` is the model of the last real call --
+        // fallbacks included -- with `fallback_active` marking a fallback. It is
+        // absent until the first call (or once stale), so fall back to the
+        // configured model name.
+        const active = String(r?.active_model || '').trim()
+        const fallbackActive = !!(r?.fallback_active && active)
+        setFallbackInfo(
+          fallbackActive ? { active: String(r.active_model), configured: String(r?.model || '') } : null
+        )
+        if (active) setEffectiveModel(active)
+        else if (r?.model) setEffectiveModel(String(r.model))
         setSupportsReasoning(!!r?.capabilities?.supports_reasoning)
         // Bump so ReasoningPicker re-reads the saved effort for the new model.
         setModelRefreshKey(k => k + 1)
@@ -429,9 +446,14 @@ export function ChatSidebar({
   }, [channel, feed, onDashboardNewSessionRequest, onSessionTitleChange, version])
 
   // Seed the badge on mount and re-read it whenever the sockets are rebuilt
-  // (a profile/channel switch bumps `version`).
+  // (a profile/channel switch bumps `version`). Polled as well: a fallback
+  // starts and ends on the agent side, with no event this card could listen to.
   useEffect(() => {
     refreshEffectiveModel()
+    // Short interval: the badge has to follow a runtime model switch (fallback,
+    // or a new default) instead of waiting for the reader to send /model.
+    const fallbackPoll = setInterval(refreshEffectiveModel, 3000)
+    return () => clearInterval(fallbackPoll)
   }, [refreshEffectiveModel, version])
 
   const reconnect = useCallback(() => {
@@ -473,6 +495,15 @@ export function ChatSidebar({
           >
             <span className="flex min-w-0 max-w-full items-center gap-1">
               <span className="truncate">{modelLabel}</span>
+              {fallbackInfo ? (
+                <span
+                  className="shrink-0"
+                  title={`Fallback: ${fallbackInfo.configured} is unavailable, so ${fallbackInfo.active} is answering.`}
+                  aria-label="running on a fallback model"
+                >
+                  ⚡
+                </span>
+              ) : null}
 
               <ChevronDown className="size-3.5 shrink-0 text-text-secondary" />
             </span>

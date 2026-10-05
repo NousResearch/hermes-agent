@@ -194,6 +194,11 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             # Bad clientState is an auth failure: a fully forged batch gets 403 so the sender stops
             # retrying; legitimate Graph retries carry a valid clientState → accepted/duplicate paths.
             return "auth"
+        from agent.estop import check_paused
+        if check_paused("msgraph-webhook", logger):
+            # `hermes pause`: a notification is new work, not in-flight; don't record the receipt so
+            # Graph's redelivery after resume is not deduped away.
+            return "paused"
         receipt_key = f"id:{explicit_id}" if (explicit_id := str(notification.get("id") or "").strip()) else None
         if receipt_key is not None:
             if receipt_key in self._seen_receipts:
@@ -212,10 +217,14 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         status, notifications = await self._read_notifications(request)
         if status:
             return web.Response(status=status)
-        counts = {"accepted": 0, "duplicate": 0, "auth": 0, "other": 0}
+        counts = {"accepted": 0, "duplicate": 0, "auth": 0, "other": 0, "paused": 0}
         for raw_notification in notifications:
             counts[self._ingest_notification(raw_notification)] += 1
         self._duplicate_count += counts["duplicate"]
+        if counts["paused"]:
+            # 503 + Retry-After so Graph redelivers after `hermes resume` (same as the cron webhook);
+            # items accepted before a mid-batch pause dedupe on redelivery by their receipt.
+            return web.Response(status=503, headers={"Retry-After": "60"})
         # Anything ingested OR deduped → 202 with empty body (Graph acks; no counter leak). Every item
         # failed auth → 403 so forged POSTs get a clear reject. Otherwise (malformed / not accepted) → 400.
         if counts["accepted"] or counts["duplicate"]:

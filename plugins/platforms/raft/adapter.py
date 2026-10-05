@@ -450,6 +450,10 @@ class RaftAdapter(BasePlatformAdapter):
         if _has_content_field(payload):
             return _error_response("content_not_allowed", 400)
         not_ready = {"ok": False, "error": "not_ready", "runtimeSession": self._runtime_session}
+        from agent.estop import check_paused
+        if check_paused("raft-wake", logger):
+            # `hermes pause`: a wake is new work, not in-flight; ask the bridge to retry after resume.
+            return web.json_response({**not_ready, "error": "paused"}, status=503, headers={"Retry-After": "60"})
         if not self._message_handler:
             logger.warning("[raft] Wake received before gateway message handler was attached")
             return web.json_response(not_ready, status=503)

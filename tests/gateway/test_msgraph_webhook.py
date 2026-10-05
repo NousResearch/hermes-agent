@@ -144,6 +144,38 @@ class TestMSGraphNotifications:
         assert event.message_id == "id:notif-1"
 
     @pytest.mark.anyio
+    async def test_paused_gateway_defers_notification_for_redelivery(self):
+        """`hermes pause`: a Graph notification is new work, so it must not start a turn while paused.
+        503 + Retry-After makes Graph redeliver, and the receipt is not recorded, so the redelivery
+        after `hermes resume` is accepted instead of deduped away."""
+        from agent import estop
+
+        adapter = _make_adapter()
+        scheduled: list = []
+
+        async def _capture(notification, event):
+            scheduled.append(event)
+
+        adapter.set_notification_scheduler(_capture)
+        payload = {"value": [{
+            "id": "notif-p", "subscriptionId": "sub-1", "changeType": "updated",
+            "resource": "communications/onlineMeetings/meeting-1", "clientState": "expected-client-state",
+        }]}
+        estop.engage(reason="maintenance")
+        try:
+            resp = await adapter._handle_notification(_FakeRequest(json_payload=payload))
+            assert resp.status == 503 and resp.headers["Retry-After"] == "60"
+        finally:
+            estop.disengage()
+        await asyncio.sleep(0.05)
+        assert scheduled == []
+
+        resp = await adapter._handle_notification(_FakeRequest(json_payload=payload))
+        assert resp.status == 202
+        await asyncio.sleep(0.05)
+        assert [e.message_id for e in scheduled] == ["id:notif-p"]
+
+    @pytest.mark.anyio
     async def test_oversized_notification_rejected_by_content_length(self):
         adapter = _make_adapter(max_body_bytes=100)
         payload = {

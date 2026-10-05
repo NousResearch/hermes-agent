@@ -1827,6 +1827,9 @@ class GatewayInboundMixin:
         loop = getattr(self, "_gateway_loop", None)
         if not getattr(self, "_running", False) or loop is None or loop.is_closed():
             return False
+        from agent.estop import check_paused
+        if check_paused("plugin-injection", logger):
+            return False  # `hermes pause`: a plugin-triggered turn is new work, not in-flight
 
         coro = self._dispatch_plugin_message_injection(
             session_key=session_key, content=content, plugin_id=plugin_id,

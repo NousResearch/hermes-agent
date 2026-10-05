@@ -371,6 +371,24 @@ async def test_scheduler_logs_async_failure_without_callback_error():
 
 
 
+def test_scheduler_rejects_injection_while_paused():
+    """`hermes pause`: a plugin-triggered turn is new work, not an in-flight completion."""
+    from agent import estop
+
+    runner = _runner(_entry())
+    loop = MagicMock()
+    loop.is_closed.return_value = False
+    runner._gateway_loop = loop
+    runner._running = True
+    estop.engage(reason="maintenance")
+    try:
+        assert runner._schedule_plugin_message_injection(
+            session_key="key", content="wake up", plugin_id="notify-plugin") is False
+    finally:
+        estop.disengage()
+    loop.call_soon_threadsafe.assert_not_called()
+
+
 def test_scheduler_rejects_stopped_or_closed_gateway():
     runner = _runner(_entry())
     loop = MagicMock()

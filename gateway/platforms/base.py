@@ -2898,16 +2898,33 @@ class BasePlatformAdapter(ABC):
     ) -> SendResult:
         """Interactive exec-approval prompt; a press resolves via
         ``tools.approval.resolve_gateway_approval``. Text and choice set are shared; adapters
-        render them natively in ``_send_exec_approval_prompt``."""
+        render them natively in ``_send_exec_approval_prompt``.
+
+        Per-platform ``config.extra.approval_chat`` (or ``APPROVAL_CHAT`` env var)
+        redirects prompt *delivery* to a single operator-controlled chat
+        (e.g. ``#approvals``) without disturbing the originating session's
+        resolution scope. See ``tests/gateway/test_approval_chat_override.py``.
+        """
         if description is None:
             description = ea_default_reason_text()
         prompt = ExecApprovalPrompt(
-            chat_id=chat_id, session_key=session_key, metadata=metadata, command=str(command or ""),
+            chat_id=self._approval_chat_override() or chat_id,
+            session_key=session_key, metadata=metadata, command=str(command or ""),
             description=description, smart_denied=smart_denied,
             text=self._format_exec_approval(command, description, smart_denied),
             actions=self._exec_approval_actions(
                 allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied))
         return await self._send_exec_approval_prompt(prompt)
+
+    def _approval_chat_override(self) -> str:
+        """Return the ``approval_chat`` override (empty string if unset).
+
+        ``config.extra.approval_chat`` wins; ``APPROVAL_CHAT`` is the
+        env-var fallback. Empty/whitespace values fall through to the
+        originating session's chat id (preserves prior behavior).
+        """
+        value = self.config.extra.get("approval_chat") or os.environ.get("APPROVAL_CHAT")
+        return str(value).strip() if value else ""
 
     async def _send_exec_approval_prompt(self, prompt: "ExecApprovalPrompt") -> SendResult:
         """Render ``prompt`` with the platform's native buttons; the default has none."""

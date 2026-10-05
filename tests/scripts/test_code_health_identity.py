@@ -266,3 +266,26 @@ def test_typescript_install_uses_repo_npmrc_and_fails_cleanly(tmp_path, monkeypa
     got = subprocess.run([npm, "config", "get", "min-release-age", "--prefix", str(prefix)],
                          cwd=prefix, capture_output=True, text=True, timeout=60, check=True).stdout.strip()
     assert got == "14"
+
+
+# --- line survival stays near-linear on huge files ---------------------------------------------
+
+
+def test_line_survival_on_a_large_file_with_scattered_edits_is_fast():
+    """Blank lines repeat thousands of times; matched with autojunk off they made this
+    quadratic (a 23k-line test file with an edit every 50 lines ran past the CI timeout)."""
+    import time
+
+    from scripts.code_health.compare import _line_survival
+    from scripts.code_health.model import FileMeasure
+
+    base = [line for i in range(6000) for line in (f"def f{i}():", f"    return {i}", "")]
+    head = [line + "  ;pass" if n % 50 == 0 and line else line for n, line in enumerate(base)]
+    bf, hf = FileMeasure("a.py", lines=base), FileMeasure("a.py", lines=head)
+    hf.hit_lines = {"x": [1]}  # type: ignore[dict-item]  # any hit enables the matcher
+    started = time.monotonic()
+    kept, survived = _line_survival(hf, bf)
+    assert time.monotonic() - started < 20
+    edited = {n + 1 for n, line in enumerate(base) if n % 50 == 0 and line}
+    assert kept == {n + 1 for n, line in enumerate(head) if line} - edited
+    assert survived == {n + 1 for n, line in enumerate(base) if line} - edited

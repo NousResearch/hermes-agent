@@ -286,12 +286,15 @@ def _line_survival(hf: FileMeasure | None, bf: FileMeasure | None) -> tuple[set[
     # Line matching only places hits; without any on either side it is pure cost.
     if hf is None or bf is None or not (hf.hit_lines or bf.hit_lines):
         return set(), set()
-    old = [bf.code_line(n) for n in range(1, len(bf.lines) + 1)]
-    new = [hf.code_line(n) for n in range(1, len(hf.lines) + 1)]
+    # Blank and comment-only lines carry no hit, and with autojunk off they are by far the most
+    # frequent element: kept in, they make the match quadratic (minutes on a 23k-line file).
+    old_rows = [(n, code) for n in range(1, len(bf.lines) + 1) if (code := bf.code_line(n))]
+    new_rows = [(n, code) for n in range(1, len(hf.lines) + 1) if (code := hf.code_line(n))]
+    old, new = [code for _, code in old_rows], [code for _, code in new_rows]
     # autojunk off: `except Exception:` and `pass` are frequent lines, never noise here.
     blocks = SequenceMatcher(None, old, new, autojunk=False).get_matching_blocks()
-    kept = {b.b + i + 1 for b in blocks for i in range(b.size)}
-    survived = {b.a + i + 1 for b in blocks for i in range(b.size)}
+    kept = {new_rows[b.b + i][0] for b in blocks for i in range(b.size)}
+    survived = {old_rows[b.a + i][0] for b in blocks for i in range(b.size)}
     return kept, survived
 
 

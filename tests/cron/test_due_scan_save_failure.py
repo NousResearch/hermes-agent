@@ -83,6 +83,36 @@ def full_disk(monkeypatch):
     return _raise
 
 
+@pytest.fixture()
+def claim_persist_fails(monkeypatch):
+    """Fail ONLY the fire claim's persist, leaving the tick's own writes intact.
+
+    The claim is the one store write distinguishable by its payload: it is the sole pass that
+    stamps ``fire_claim`` on the record. Failing on that discriminator reproduces the reviewer's
+    sequence — scan and advance persist fine, dispatch happens, and the claim raises — rather
+    than the blunter whole-store failure the other cases inject.
+    """
+    real_save = cronjobs.save_jobs
+    attempts: list = []
+
+    def _claim_only(jobs, *args, **kwargs):
+        if any(isinstance(j.get("fire_claim"), dict) for j in jobs):
+            attempts.append(True)
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_save(jobs, *args, **kwargs)
+
+    monkeypatch.setattr(cronjobs, "save_jobs", _claim_only)
+    return attempts
+
+
+def _open_receipts(tmp_path):
+    """Every execution row the ledger still holds in a non-terminal state."""
+    import cron.executions as executions
+
+    rows = executions.list_executions(limit=100)
+    return [r for r in rows if r["status"] in ("claimed", "running")]
+
+
 def _record_dispatch(monkeypatch, sched, ran=None):
     """Stub the tick's executor boundary so a full tick runs cheaply, recording what it dispatched.
 
@@ -247,3 +277,69 @@ class TestFullTickWithUnwritableStore:
         assert ran == ["due-job"]             # the occurrence was consumed; no replay
 
         sched._shutdown_parallel_pool()
+
+
+class TestFireClaimFailureClosesTheReceipt:
+    """A claim that cannot be written must still close the execution receipt it was dispatched with.
+
+    ``_submit_with_guard`` creates the ledger row BEFORE the worker claims the occurrence, and
+    ``run_one_job`` is what normally owns the terminal writes. A claim that RAISES used to exit
+    between those two points, so the row stayed ``claimed`` forever — a permanently in-flight
+    attempt for a run that never happened. These drive the real ledger through a full tick.
+
+    On ``main`` these pass trivially (the tick aborts before the row is created); at ``5742a7cd19``
+    the open-row assertion is what fails.
+    """
+
+    @pytest.fixture(autouse=True)
+    def ledger(self, monkeypatch, tmp_path):
+        """Point the ledger at a temp file so a full tick can persist real receipts."""
+        import cron.executions as executions
+
+        monkeypatch.setattr(executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db")
+
+    def test_a_raising_fire_claim_leaves_no_open_receipt(
+            self, cron_store, claim_persist_fails, monkeypatch, tmp_path):
+        """The reviewer's regression: the tick's claim raises, and the receipt is still terminal."""
+        import cron.executions as executions
+        import cron.scheduler as sched
+
+        save_jobs([_due_job(), _half_paused_job()])
+        ran: list = []
+        monkeypatch.setattr(sched, "run_one_job", lambda job, **_kw: ran.append(job["id"]) or True)
+        sched._running_job_ids.clear()
+
+        sched.tick(verbose=False, sync=True)   # must not raise
+
+        assert claim_persist_fails, "the fire claim's persist never failed — the repro is not genuine"
+        assert ran == []                       # fail-closed: the occurrence was NOT executed
+        assert _open_receipts(tmp_path) == []  # and nothing is left non-terminal
+
+        rows = executions.list_executions(limit=100)
+        assert [r["status"] for r in rows] == ["failed"]
+        assert "Fire claim" in (rows[0]["error"] or "")
+        sched._shutdown_parallel_pool()
+
+    def test_a_non_store_claim_error_still_surfaces_but_settles_the_receipt(
+            self, cron_store, monkeypatch, tmp_path):
+        """Only ``OSError`` is contained: anything else propagates — after the row is settled."""
+        import cron.executions as executions
+        import cron.scheduler as sched
+
+        save_jobs([_due_job()])
+        receipt = executions.create_execution("due-job", source="builtin")
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("unexpected")
+
+        monkeypatch.setattr(sched, "claim_job_for_fire", _boom)
+        monkeypatch.setattr(sched, "run_one_job", lambda job, **_kw: pytest.fail("must not run"))
+        sched._running_job_ids.clear()
+
+        with pytest.raises(RuntimeError):
+            sched._process_due_job(
+                {"id": "due-job", "execution_id": receipt["id"]}, None, None, False)
+
+        assert _open_receipts(tmp_path) == []
+        settled = executions.get_execution(receipt["id"])
+        assert settled is not None and settled["status"] == "failed"

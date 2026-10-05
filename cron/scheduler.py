@@ -4277,17 +4277,61 @@ def _sweep_mcp_orphans() -> None:
         logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
 
 
+def _settle_unstarted_execution(execution_id: str, job_id: str, error: str) -> None:
+    """Close a dispatch's execution receipt for a run that never started.
+
+    Every exit from the dispatch path must leave the ledger terminal: a row left ``claimed`` never
+    resolves, so it reads forever as an attempt still in flight. Best-effort on purpose — a ledger
+    write must not mask the failure the caller is about to log or re-raise.
+    """
+    try:
+        finish_execution(execution_id, success=False, error=error)
+    except Exception as record_err:
+        logger.error(
+            "Job '%s': failed to close execution receipt %s (%s): %s",
+            job_id, execution_id, error, record_err)
+
+
 def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
-    """Run one due job via the shared ``run_one_job`` body."""
+    """Run one due job via the shared ``run_one_job`` body.
+
+    EVERY exit settles the receipt ``_submit_with_guard`` already created. The fire claim is the
+    last step that can fail before ``run_one_job`` opens its own terminal-write guard, so a raising
+    claim would otherwise leave the row ``claimed`` forever. A claim that raised never won the
+    occurrence, so it is never executed here — fail-closed at-most-once is unchanged.
+    """
+    execution_id = job["execution_id"]
     # Claim only when the worker actually starts, so a queued lease can't expire first.
-    claimed = claim_job_for_fire(job["id"], return_job=True)
+    try:
+        claimed = claim_job_for_fire(job["id"], return_job=True)
+    except OSError as exc:
+        # The store cannot be written right now (full disk, read-only mount, EACCES): contained
+        # exactly like the tick's other persists — the occurrence fails CLOSED (it is never run
+        # unclaimed, the claim still being the at-most-once gate) and the next writable tick fires
+        # it once. The receipt is settled here either way.
+        logger.warning(
+            "Job '%s': fire claim could not be written (errno=%s: %s) — the occurrence was not "
+            "executed and its execution receipt is closed; the store being unwritable never lets "
+            "an occurrence run unclaimed",
+            job["id"], getattr(exc, "errno", None), exc)
+        _settle_unstarted_execution(
+            execution_id, job["id"],
+            f"Fire claim could not be written: {type(exc).__name__}: {exc}")
+        return True
+    except BaseException as exc:
+        # Anything else still surfaces — but only AFTER the receipt is settled, so no claim failure
+        # mode can leave a permanently in-flight row behind.
+        _settle_unstarted_execution(
+            execution_id, job["id"],
+            f"Fire claim failed: {type(exc).__name__}: {exc}")
+        raise
     if not claimed:
         finish_execution(
-            job["execution_id"], success=False, error="Fire claim lost; execution was not started.")
+            execution_id, success=False, error="Fire claim lost; execution was not started.")
         return True
     # CAS returns the persisted record; bool fallback only for older test doubles.
     claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)
-    claimed_job["execution_id"] = job["execution_id"]
+    claimed_job["execution_id"] = execution_id
     claimed_job["_scheduled_instant"] = job.get("_scheduled_instant")
     return run_one_job(claimed_job, adapters=adapters, loop=loop, verbose=verbose)
 
@@ -4346,6 +4390,7 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
     # discard the LAUNCH home's key and leak every secondary profile's claim.
     _claim_home = _get_hermes_home()
     # Record the attempt before dispatch; recovery marks abandoned rows unknown (no retry).
+    execution = None
     try:
         execution = create_execution(
             job_id, source="builtin", scheduled_instant=job.get("_scheduled_instant"))
@@ -4356,6 +4401,13 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         # Release the claim so the next tick retries instead of wedging "already running".
         release_running_job(job_id, home=_claim_home, owner=registration_owner)
         _clear_run_claim_best_effort()
+        if execution is not None:
+            # The receipt was already persisted, so a failure in the (rare) steps after creation
+            # must not leave it ``claimed`` forever — same settle as every other dispatch exit.
+            _settle_unstarted_execution(
+                execution["id"], job_id,
+                f"Dispatch preparation failed before the worker started: "
+                f"{type(execution_err).__name__}: {execution_err}")
         logger.exception(
             "Job '%s' not dispatched: execution creation failed: %s", job_label, execution_err)
         return None

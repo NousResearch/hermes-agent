@@ -38,6 +38,15 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   unpersisted; it runs once, after the store accepts writes. Do not "fix" this by dispatching
   around an unwritable store: removing the fire claim's fail-closed gate is what would actually
   break the rule.
+- **Every created execution receipt reaches a terminal state.** `_submit_with_guard` (and every
+  other dispatch entry) persists a ledger row BEFORE the worker claims the occurrence, while
+  `run_one_job` owns the terminal writes once it starts. Any exit BETWEEN those two points must
+  still close the row (`cron/scheduler.py::_settle_unstarted_execution`), or a run that never
+  happened reads forever as an attempt still in flight. That includes a `claim_job_for_fire` that
+  RAISES: `_process_due_job` contains `OSError` narrowly (store unwritable → warn, settle, skip)
+  and settles the row before re-raising anything else; a contained claim failure never executes the
+  occurrence, so fail-closed at-most-once is unchanged. Any new dispatch path that creates a receipt
+  must settle it on every non-run exit.
 - Per-home tick lock `<home>/cron/.tick.lock` prevents duplicate ticks across processes for
   that profile's store; never a `~/.hermes/...` literal.
 - **The ticker binds each served profile's scope for the whole tick, including pre-loop code.**

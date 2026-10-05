@@ -69,11 +69,14 @@ def publish_launchers(project_root: Path, *, create: bool = True) -> None:
     """Refresh durable commands; bootstrap repairs only existing PATH exposure."""
     import logging
 
-    from hermes_cli._launchers import ENTRY_POINTS, ensure_install_launchers, expose_cli, resolve_store_python
+    from hermes_cli._launchers import ENTRY_POINTS, ensure_install_launchers, expose_cli, resolve_store_python, ephemeral_task_store
     from hermes_cli.steward import read_install_stamp
 
     root = Path(project_root)
     log = logging.getLogger(__name__)
+    if ephemeral_task_store(root):
+        log.info("launchers: skipped shared commands for ephemeral task store")
+        return
     if _is_sealed(root):
         log.info("launchers: sealed tree at %s keeps its own", root)
         return  # Sealed and external/Nix interpreters retain their own launchers.

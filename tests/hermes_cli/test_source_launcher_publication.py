@@ -64,12 +64,27 @@ def test_task_store_cannot_replace_shared_launchers(tmp_path, monkeypatch):
     assert len(_launchers.ensure_install_launchers(repo, local)) == 2
     original = {path.name: path.read_bytes() for path in local.iterdir()}
 
-    task_store = tmp_path.parent / (tmp_path.name + "-task") / "tools"
+    task_store = tmp_path.parent / "multica_workspaces_fixture" / "task-0123456789ab" / "hermes-home" / "tools"
     task_store.mkdir(parents=True)
     (task_store / "facts.json").write_text((home / "tools" / "facts.json").read_text())
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(task_store))
+    assert _launchers.expose_cli(repo, create=False) == {"ok": True, "skipped": "ephemeral-store"}
+    assert _launchers._expose_windows_user_bin(repo, create=True) == {"ok": True, "skipped": "ephemeral-store"}
+    from hermes_cli.venv_sync import publish_launchers
+    publish_launchers(repo)
     assert _launchers.ensure_install_launchers(repo, local) == []
     assert {path.name: path.read_bytes() for path in local.iterdir()} == original
+
+
+def test_durable_external_store_still_publishes(tmp_path, monkeypatch):
+    repo, home, _ = fixture_tree(tmp_path, monkeypatch)
+    external = tmp_path.parent / (tmp_path.name + "-data-volume") / "tools"
+    external.mkdir(parents=True)
+    (external / "facts.json").write_text((home / "tools" / "facts.json").read_text())
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(external))
+    local = repo / ".hermes" / "bin"
+    assert len(_launchers.ensure_install_launchers(repo, local)) == 2
+    assert _launchers.expose_cli(repo, create=False)["ok"] is True
 
 
 def select_generation(repo, name, value):

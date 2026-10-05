@@ -3212,7 +3212,7 @@ def _systemd_command(argv: list[str]) -> str:
 
 def _prepare_service_launcher(*, system: bool = False, run_as_user: str | None = None) -> None:
     """Publish the source command before a service definition references it."""
-    from hermes_cli._launchers import ENTRY_POINTS, ensure_install_launchers, resolve_store_python
+    from hermes_cli._launchers import ENTRY_POINTS, ensure_install_launchers, resolve_store_python, ephemeral_task_store
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
     root, home = PROJECT_ROOT, get_hermes_home()
@@ -3222,6 +3222,8 @@ def _prepare_service_launcher(*, system: bool = False, run_as_user: str | None =
         root = Path(_remap_path_for_user(str(root), home_dir))
         home = Path(_hermes_home_for_target_user(home_dir))
         owner = (uid, username)
+    if ephemeral_task_store(root):
+        return
     token = set_hermes_home_override(home)
     try:
         if resolve_store_python(root) is None:
@@ -5747,4 +5749,3 @@ def _pm_runtime_venv_dir(project_root: Path | None = None) -> Path | None:
 
     venv = selected_venv(root)  # a malformed committed selection raises: fail closed
     return venv if venv.is_dir() else None
-

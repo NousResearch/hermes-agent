@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -98,6 +99,18 @@ ENTRY_POINTS = {
 
 def _is_windows() -> bool:
     return os.name == "nt"
+
+
+def ephemeral_task_store(repo_root: Path) -> bool:
+    """Recognize Multica's disposable per-task Hermes store, not external stores generally."""
+    parts = store_root(repo_root).parts
+    return any(
+        part.startswith("multica_workspaces_")
+        and i + 3 < len(parts)
+        and re.fullmatch(r"task-[0-9a-f]{12}", parts[i + 1])
+        and parts[i + 2:i + 4] == ("hermes-home", "tools")
+        for i, part in enumerate(parts)
+    )
 
 
 def resolve_store_python(repo_root: Path) -> Path | None:
@@ -391,9 +404,8 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
 def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
     """Publish exact-install commands; conveniences follow them across Python repins."""
     root = Path(repo_root).resolve()
-    # A task-local PM store may be removed while this checkout's launchers
-    # remain on the user's PATH. Never publish that interpreter globally.
-    if not store_root(root).is_relative_to(root.parent):
+    # A Multica task store may vanish while shared launchers remain on PATH.
+    if ephemeral_task_store(root):
         return []
     local = root / ".hermes" / "bin"
     local.mkdir(parents=True, exist_ok=True)
@@ -424,6 +436,8 @@ def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict
     from pm.paths import install_root
 
     root = Path(project_root or install_root()).resolve()
+    if ephemeral_task_store(root):
+        return {"ok": True, "skipped": "ephemeral-store"}
     if _is_windows():
         # The installer stages the user-facing commands into $HERMES_HOME\bin
         # and registers that directory in the User PATH. An update skipped both
@@ -528,6 +542,9 @@ def _expose_windows_user_bin(root: Path, *, create: bool) -> dict:
     """
     from hermes_constants import get_default_hermes_root
 
+    if ephemeral_task_store(root):
+        return {"ok": True, "skipped": "ephemeral-store"}
+
     directory = get_default_hermes_root() / "bin"
     try:
         if not create:
@@ -613,6 +630,9 @@ if __name__ == "__main__":
     parser.add_argument("out_dir", type=Path)
     args = parser.parse_args()
     repo_root = Path(__file__).resolve().parents[1]
+    if ephemeral_task_store(repo_root):
+        print("hermes: skipped shared launchers for ephemeral task store", file=sys.stderr)
+        raise SystemExit(0)
     if resolve_store_python(repo_root) is None:
         parser.exit(1, "hermes: store interpreter is missing; finish pm install before publishing launchers\n")
     args.out_dir.mkdir(parents=True, exist_ok=True)

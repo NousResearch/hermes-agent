@@ -26,6 +26,8 @@ from hermes_cli import kanban_db_connect as kbc
 def conn(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     db_path = kb.kanban_db_path(board="default")
@@ -112,6 +114,30 @@ def test_cli_triage_requires_explicit_force_and_evidence(conn, capsys):
     args.result = "operator closed unroutable work"
     assert kb_cli._cmd_complete(args) == 0
     assert kb.get_task(conn, parent).status == "done"
+
+
+@pytest.mark.parametrize("triage,contract,force,expected_status,expected_message", [
+    (True, None, True, "done", None),
+    (True, "acme/repo", False, "triage", "completion_contract"),
+    (True, "acme/repo", True, "triage", "completion_contract"),
+    (False, "acme/repo", True, "ready", "PR acceptance "),
+])
+def test_cli_completion_contract_force_matrix(
+    conn, capsys, triage, contract, force, expected_status, expected_message,
+):
+    tid = kb.create_task(conn, title="acceptance gate", assignee="coder", triage=triage,
+                         completion_contract=contract)
+    args = Namespace(task_ids=[tid], result="operator closes card", summary=None,
+                     metadata=None, force=force)
+    rc = kb_cli._cmd_complete(args)
+    stderr = capsys.readouterr().err
+    assert kb.get_task(conn, tid).status == expected_status
+    assert rc == (0 if expected_status == "done" else 1)
+    if expected_message:
+        assert expected_message in stderr
+        assert "use --force" not in stderr
+    if triage and contract and force:
+        assert "without PR acceptance" in stderr
 
 
 def test_force_does_not_bypass_triage_parent_dependency(conn):

@@ -2800,6 +2800,9 @@ def _claim_is_live(trow) -> bool:
     )
 
 
+_COMPLETABLE = ("running", "ready", "blocked", "review")
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
@@ -2868,11 +2871,10 @@ def complete_task(
                        block_recurrences = 0
                  WHERE id = ?
                 """
-        statuses = "'running', 'ready', 'blocked', 'review'"
-        if force:
-            statuses += ", 'triage'"
-        sql += f" AND status IN ({statuses})"
+        statuses = (*_COMPLETABLE, "triage") if force else _COMPLETABLE
+        sql += f" AND status IN ({', '.join('?' for _ in statuses)})"
         params: tuple = (result, now, task_id)
+        params = (*params, *statuses)
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))

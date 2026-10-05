@@ -72,14 +72,13 @@ _FALSY = {"0", "false", "no", "off"}
 
 _SLACK = Platform.SLACK.value
 
-# Prompt option id -> in-channel ack label (the option set doubles as the choice allowlist).
+# Prompt option id -> in-channel ack label catalog key, resolved per ack (the option set doubles as the choice allowlist).
 _EXEC_APPROVAL_LABELS = {
-    "once": "✅ Approved once",
-    "session": "✅ Approved for session",
-    "always": "✅ Approved permanently",
-    "deny": "❌ Denied",
+    "once": "platform.relay.approval.resolved_once", "session": "platform.relay.approval.resolved_session",
+    "always": "platform.relay.approval.resolved_always", "deny": "platform.relay.approval.resolved_deny",
 }
-_SLASH_CONFIRM_LABELS = {"once": "✅ Approved once", "always": "🔒 Always approve", "cancel": "❌ Cancelled"}
+_SLASH_CONFIRM_LABELS = {"once": "platform.relay.slash_confirm.resolved_once", "always": "platform.relay.slash_confirm.resolved_always",
+                         "cancel": "platform.relay.slash_confirm.resolved_cancel"}
 
 
 def _utf16_len(text: str) -> int:

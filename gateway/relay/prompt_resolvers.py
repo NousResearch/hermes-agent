@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from agent.i18n import t
+
 
 def prompt_actor(adapter, event) -> dict:
     """Who answers *event*'s prompt press: the clicker, the bot-owning profile's answer policy, and
@@ -53,7 +55,7 @@ async def resolve_exec_approval(adapter, state, option_id, chat_id, ack_meta) ->
     # The answerer's authority is rechecked against the entry this settles, in the same critical section.
     count = resolve_gateway_approval_card(str(state.get("session_key") or ""), choice, state.get("request_id"),
                                           **(state.get("actor") or {}))
-    label = _relay._EXEC_APPROVAL_LABELS[choice] if count else "⌛ Approval expired — no command was waiting."
+    label = t(_relay._EXEC_APPROVAL_LABELS[choice] if count else "platform.relay.approval.expired")
     # In-channel ack preserves the audit trail the native edit gives (the
     # connector's prompt message can't be edited cross-platform yet).
     adapter._send_lifecycle_ack(chat_id, label, ack_meta)
@@ -69,7 +71,7 @@ async def resolve_slash_confirm(adapter, state, option_id, chat_id, ack_meta) ->
     result_text = await slash_confirm_mod.resolve(
         str(state.get("session_key") or ""), str(state.get("confirm_id") or ""), choice
     )
-    adapter._send_lifecycle_ack(chat_id, _relay._SLASH_CONFIRM_LABELS[choice], ack_meta)
+    adapter._send_lifecycle_ack(chat_id, t(_relay._SLASH_CONFIRM_LABELS[choice]), ack_meta)
     if result_text:
         adapter._send_lifecycle_ack(chat_id, str(result_text), ack_meta)
 
@@ -80,7 +82,7 @@ async def resolve_clarify(adapter, state, option_id, chat_id, ack_meta) -> None:
     clarify_id = str(state.get("clarify_id") or "")
     if option_id == "other":
         mark_awaiting_text(clarify_id)
-        adapter._send_lifecycle_ack(chat_id, "✏️ Type your answer:", ack_meta)
+        adapter._send_lifecycle_ack(chat_id, t("platform.relay.clarify.type_answer"), ack_meta)
         return
     choices = state.get("choices") or []
     try:

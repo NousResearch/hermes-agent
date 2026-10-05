@@ -127,6 +127,12 @@ def _matrix_voice_metadata_for_file(path: Path) -> dict[str, Any]:
             logger.debug("Matrix: failed to build voice waveform for %s", path, exc_info=True)
     return metadata
 
+# Agent protocol (https://github.com/phrac/fluxchat/blob/main/docs/agent-protocol.md): run state and
+# prompt choices in message content, so clients can show buttons instead of decoding reactions.
+# Callers opt in by putting a ``fluxchat_agent`` dict in ``metadata``.
+_AGENT_STATUS_KEY = "org.fluxchat.agent"
+
+
 _MATRIX_BANG_COMMAND_RE = re.compile(r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$", re.DOTALL)
 
 
@@ -351,6 +357,9 @@ class _MatrixApprovalPrompt:
     resolved: bool = False
     requester_user_id: str | None = None
     expires_at: float | None = None
+    # Prompt text and its agent-protocol choices, to edit it out of "waiting" once settled.
+    text: str = ""
+    agent_choices: list = field(default_factory=list)
     bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
 
 
@@ -1390,6 +1399,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 self.format_message(content), self.max_message_length, len_fn=self.message_len_fn):
             msg_content = self._build_text_message_content(chunk)
             self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
+            agent_status = (metadata or {}).get("fluxchat_agent")
+            if isinstance(agent_status, dict):
+                msg_content[_AGENT_STATUS_KEY] = agent_status
             try:
                 last_event_id = await self._send_room_message(chat_id, msg_content)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
@@ -1470,9 +1482,12 @@ class MatrixAdapter(BasePlatformAdapter):
     async def stop_typing(self, chat_id: str) -> None:
         await self._set_typing(chat_id, 0)
 
-    async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
+    async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False,
+                           agent_status: Optional[Dict[str, Any]] = None) -> SendResult:
         formatted = self.format_message(content)
         new_content = self._build_text_message_content(formatted)
+        if agent_status:
+            new_content[_AGENT_STATUS_KEY] = agent_status
         msg_content: dict[str, Any] = {"msgtype": "m.text", "body": f"* {formatted}", "m.new_content": new_content}
         if "m.mentions" in new_content:
             msg_content["m.mentions"] = new_content["m.mentions"]
@@ -1480,6 +1495,8 @@ class MatrixAdapter(BasePlatformAdapter):
             msg_content["format"] = "org.matrix.custom.html"
             msg_content["formatted_body"] = f'* {new_content["formatted_body"]}'
         msg_content["m.relates_to"] = {"rel_type": "m.replace", "event_id": message_id}
+        if agent_status:
+            msg_content[_AGENT_STATUS_KEY] = agent_status
         if _content_bytes(msg_content) > _MAX_CONTENT_BYTES:
             # The top-level copy is only the fallback for clients without edit support (edit-aware
             # clients render m.new_content); shorten it rather than double the event past the cap.
@@ -1688,6 +1705,11 @@ class MatrixAdapter(BasePlatformAdapter):
             f"{t('platform.matrix.approval.legend_intro')}\n" + "\n".join(t(self._EA_LEGEND_KEYS[c]) for c in choices))
         reactions = tuple(self._EA_REACTIONS[c] for c in choices)
         session_key, chat_id = prompt.session_key, prompt.chat_id
+        # Agent protocol: the same choices, labelled as the prompt's own actions are.
+        labels = {choice: label for label, choice, _style in prompt.actions}
+        agent_choices = [{"key": self._EA_REACTIONS[c], "label": labels.get(c) or c} for c in choices]
+        metadata = dict(prompt.metadata or {})
+        metadata["fluxchat_agent"] = {"v": 1, "state": "waiting", "choices": agent_choices}
 
         def _make(message_id, requester, expires_at):
             old_event = self._approval_prompt_by_session.get(session_key)
@@ -1696,9 +1718,9 @@ class MatrixAdapter(BasePlatformAdapter):
             self._approval_prompt_by_session[session_key] = message_id
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
-                expires_at=expires_at)
+                expires_at=expires_at, text=text, agent_choices=agent_choices)
         return await self._send_reaction_prompt(
-            chat_id, text, prompt.metadata, _make, self._approval_prompts_by_event, reactions, "approval")
+            chat_id, text, metadata, _make, self._approval_prompts_by_event, reactions, "approval")
 
     async def send_model_picker(
         self, chat_id: str, providers: list, current_model: str, current_provider: str, session_key: str,
@@ -2550,6 +2572,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix reaction resolved %d approval(s) for session %s (choice=%s, user=%s)",
                     count, prompt.session_key, choice, sender)
                 await self._redact_bot_approval_reactions(room_id, prompt)
+                await self._settle_agent_prompt(room_id, prompt)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
         return True
@@ -2629,11 +2652,22 @@ class MatrixAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("Matrix: failed to send invalid reaction feedback: %s", exc)
 
+    async def _settle_agent_prompt(self, room_id: str, prompt: Any) -> None:
+        """Agent protocol: edit a settled prompt out of "waiting" so clients drop its buttons."""
+        if not getattr(prompt, "agent_choices", None) or not getattr(prompt, "text", ""):
+            return
+        try:
+            await self.edit_message(room_id, prompt.message_id, prompt.text,
+                                    agent_status={"v": 1, "state": "working", "choices": prompt.agent_choices})
+        except Exception as exc:
+            logger.debug("Matrix: couldn't settle agent prompt %s: %s", prompt.message_id, exc)
+
     async def _expire_matrix_approval_prompt(self, room_id: str, target_event_id: str, prompt: Any) -> None:
         prompt.resolved = True
         self._approval_prompts_by_event.pop(target_event_id, None)
         self._approval_prompt_by_session.pop(prompt.session_key, None)
         await self._redact_bot_approval_reactions(room_id, prompt)
+        await self._settle_agent_prompt(room_id, prompt)
         await self._send_invalid_reaction_feedback(
             room_id, target_event_id,
             t("platform.matrix.approval.expired"))

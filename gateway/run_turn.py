@@ -2102,57 +2102,57 @@ class GatewayTurnMixin:
 
         # An unreadable store is not an empty conversation: stop before the agent invents continuity
         # from []. Restore task-local context here (before the broad cleanup finally).
-        try:
-            history = await self.async_session_store.load_transcript(session_entry.session_id)
-            _hygiene_activity_message = [None]
-            history = await self._hmwa_run_session_hygiene(
-                event, source, session_entry, session_key, history, _quick_key, run_generation,
-                _hygiene_activity_message,
+        from gateway.rolling_activity import own_hygiene_activity
+        async with own_hygiene_activity(self, event, source) as _hygiene_activity_message:
+            try:
+                history = await self.async_session_store.load_transcript(session_entry.session_id)
+                history = await self._hmwa_run_session_hygiene(
+                    event, source, session_entry, session_key, history, _quick_key, run_generation,
+                    _hygiene_activity_message,
+                )
+            except TranscriptReadError:
+                self._clear_session_env(_session_env_tokens)
+                return t("gateway.errors.history_unavailable"), _session_env_tokens
+
+            await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes)
+
+            # Voice channel state rides the user message ONLY when changed (in the system prompt it
+            # forced a rebuild + prompt-cache re-key per message).
+            _vc_note = self._voice_channel_sidecar_note(event, source, session_key)
+            if _vc_note:
+                turn_sidecar_notes.append(_vc_note)
+
+            # Auto-analyze user images so the model gets a description plus the local path.
+            message_text = await self._prepare_profile_scoped_inbound_message_text(
+                event=event, source=source, history=history, session_key=session_key,
             )
-        except TranscriptReadError:
-            self._clear_session_env(_session_env_tokens)
-            return t("gateway.errors.history_unavailable"), _session_env_tokens
+            if message_text is None:
+                return None, _session_env_tokens
 
-        await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes)
+            message_text, persist_user_message, persist_user_timestamp = (
+                self._hmwa_apply_message_timestamp(event, message_text)
+            )
 
-        # Voice channel state rides the user message ONLY when changed (in the system prompt it
-        # forced a rebuild + prompt-cache re-key per message).
-        _vc_note = self._voice_channel_sidecar_note(event, source, session_key)
-        if _vc_note:
-            turn_sidecar_notes.append(_vc_note)
-
-        # Auto-analyze user images so the model gets a description plus the local path.
-        message_text = await self._prepare_profile_scoped_inbound_message_text(
-            event=event, source=source, history=history, session_key=session_key,
-        )
-        if message_text is None:
-            return None, _session_env_tokens
-
-        message_text, persist_user_message, persist_user_timestamp = (
-            self._hmwa_apply_message_timestamp(event, message_text)
-        )
-
-        # Stage the notes (one-shot; consumed in run_sync) AFTER the early-out so an aborted turn
-        # cannot leak them into the next turn.
-        if turn_sidecar_notes and session_key:
-            self._set_pending_turn_sidecar_notes(session_key, turn_sidecar_notes)
-
-        # Bind this run generation to the adapter so deferred post-delivery callbacks are released
-        # by the run that registered them.
-        self._bind_adapter_run_generation(self._delivery_adapter_for(source), session_key, run_generation)
-        # Delivery IDs are only unique in their transport namespace. Keyless turns
-        # need their own identity, even when another process writes to this session.
-        import uuid
-        namespace = [source.platform.value, source.profile, source.scope_id,
-                     source.chat_id, source.thread_id, str(event.message_id)]
-        owner = (str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(namespace)))
-                 if event.message_id else str(uuid.uuid4()))
-        return self._PreparedTurn(
-            history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
-            persist_user_display_kind, session_entry.session_id, owner,
-            title_user_message=title_user_message,
-            progress_message_id=_hygiene_activity_message[0],
-        ), _session_env_tokens
+            # Stage the notes (one-shot; consumed in run_sync) AFTER the early-out so an aborted turn
+            # cannot leak them into the next turn.
+            if turn_sidecar_notes and session_key:
+                self._set_pending_turn_sidecar_notes(session_key, turn_sidecar_notes)
+            # Bind this run generation to the adapter so deferred post-delivery callbacks are released
+            # by the run that registered them.
+            self._bind_adapter_run_generation(self._delivery_adapter_for(source), session_key, run_generation)
+            # Delivery IDs are only unique in their transport namespace. Keyless turns
+            # need their own identity, even when another process writes to this session.
+            import uuid
+            namespace = [source.platform.value, source.profile, source.scope_id,
+                         source.chat_id, source.thread_id, str(event.message_id)]
+            owner = (str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(namespace)))
+                     if event.message_id else str(uuid.uuid4()))
+            return self._PreparedTurn(
+                history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
+                persist_user_display_kind, session_entry.session_id, owner,
+                title_user_message=title_user_message,
+                progress_message_id=_hygiene_activity_message.pop(),
+            ), _session_env_tokens
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""

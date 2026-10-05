@@ -4,6 +4,7 @@ import asyncio
 import logging
 import queue
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -78,6 +79,31 @@ class OrderedRollingAdapter(SmallLimitProgressAdapter):
         return await super().edit_message(chat_id, message_id, content)
 
 
+class RetryableTerminalAdapter(RollingCaptureAdapter):
+    def __init__(self, failures=1):
+        super().__init__()
+        self.failures = failures
+
+    async def edit_message(self, chat_id, message_id, content, metadata=None) -> SendResult:
+        self.edits.append((message_id, content, metadata))
+        if self.failures:
+            self.failures -= 1
+            return SendResult(success=False, error="temporary failure", retryable=True)
+        return SendResult(success=True, message_id=message_id)
+
+
+class NativeTaskCardCaptureAdapter(RollingCaptureAdapter):
+    def __init__(self):
+        super().__init__()
+        self.stops = 0
+
+    async def send_native_task_card_progress(self, **_kwargs) -> SendResult:
+        return SendResult(success=True, message_id="native-card")
+
+    async def stop_native_task_card_progress(self, *_args, **_kwargs) -> None:
+        self.stops += 1
+
+
 class SlowToolAgent:
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
@@ -147,6 +173,108 @@ async def test_rolling_sender_reuses_hygiene_message_and_metadata_compatible_edi
     assert adapter.sent == []
     assert {message_id for message_id, _, _ in adapter.edits} == {"hygiene-1"}
     assert adapter.edits[-1][2]["non_conversational"] is True
+
+
+@pytest.mark.asyncio
+async def test_native_task_card_finish_marker_stops_without_cleanup_cancellation():
+    adapter = NativeTaskCardCaptureAdapter()
+    ctx, turn = _turn(adapter)
+    ctx._native_slack_task_cards = True
+    task = asyncio.create_task(turn.send_progress_messages())
+    ctx.activity_result = {"completed": True}
+
+    await asyncio.wait_for(
+        finish_turn_activity(ctx, task, logging.getLogger(__name__)), timeout=2.0
+    )
+
+    assert task.done() and not task.cancelled()
+    assert adapter.stops == 1
+
+
+@pytest.mark.asyncio
+async def test_retryable_terminal_edit_retains_finish_intent_and_message_identity():
+    adapter = RetryableTerminalAdapter()
+    ctx, turn = _turn(adapter, initial_message_id="activity-1")
+    task = asyncio.create_task(turn.send_progress_messages())
+    ctx.activity_result = {"completed": True}
+
+    await asyncio.wait_for(
+        finish_turn_activity(ctx, task, logging.getLogger(__name__)), timeout=2.0
+    )
+
+    assert task.done() and not task.cancelled()
+    assert [message_id for message_id, _, _ in adapter.edits] == ["activity-1", "activity-1"]
+    assert adapter.edits[-1][1] == "✅ Completed"
+
+
+@pytest.mark.asyncio
+async def test_persistent_retryable_terminal_edit_failure_is_bounded():
+    adapter = RetryableTerminalAdapter(failures=10)
+    ctx, turn = _turn(adapter, initial_message_id="activity-1")
+    task = asyncio.create_task(turn.send_progress_messages())
+    ctx.activity_result = {"completed": True}
+
+    await asyncio.wait_for(
+        finish_turn_activity(ctx, task, logging.getLogger(__name__)), timeout=2.0
+    )
+
+    assert task.done() and not task.cancelled()
+    assert len(adapter.edits) == 3
+
+
+@pytest.mark.asyncio
+async def test_blocked_inbound_after_hygiene_closes_preflight_without_completed(monkeypatch):
+    import gateway.run as gateway_run
+    import gateway.run_turn as gateway_turn
+
+    adapter = RollingCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = SimpleNamespace(multiplex_profiles=False)
+    runner._delivery_adapter_for = lambda _source: adapter
+    runner._hmwa_open_session = AsyncMock(return_value=(False, False))
+    runner._set_session_env = lambda _context: ()
+    runner._pinned_session_context_prompt = lambda *_args, **_kwargs: "context"
+    runner._hmwa_acquire_turn_lease = AsyncMock()
+    runner._mark_durable_active_turn = AsyncMock()
+    runner.session_store = object()
+    runner._async_session_store = SimpleNamespace(
+        _store=runner.session_store,
+        load_transcript=AsyncMock(return_value=[{"role": "user"}] * 4),
+    )
+
+    async def _hygiene(*args):
+        args[-1][0] = "hygiene-1"
+        return args[4]
+
+    runner._hmwa_run_session_hygiene = _hygiene
+    runner._hmwa_first_contact_notes = AsyncMock()
+    runner._voice_channel_sidecar_note = lambda *_args: None
+
+    warning = "Context reference blocked"
+
+    async def _blocked(**_kwargs):
+        await adapter.send("chat", warning)
+        return None
+
+    runner._prepare_profile_scoped_inbound_message_text = _blocked
+    runner._run_agent_progress_threading = lambda *_args: ({"non_conversational": True}, None, None)
+    runner._reply_anchor_for_event = lambda event: event.message_id
+    runner._clear_session_env = lambda _tokens: None
+    monkeypatch.setattr(gateway_turn, "build_session_context", lambda *_args: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    source = SessionSource(platform=Platform.DISCORD, chat_id="chat", chat_type="channel")
+    event = MessageEvent(text="@file:blocked", source=source, message_id="trigger")
+    entry = SimpleNamespace(session_id="session", session_key="agent:main:discord:chat")
+
+    prepared, _tokens = await runner._hmwa_prepare_turn(
+        event, source, entry, entry.session_key, entry.session_key, 1
+    )
+
+    assert prepared is None
+    assert [content for content, _, _ in adapter.sent] == [warning]
+    assert adapter.edits[-1][0] == "hygiene-1"
+    assert adapter.edits[-1][1] == "⏹️ Stopped"
+    assert all("Completed" not in content for _, content, _ in adapter.edits)
 
 
 @pytest.mark.asyncio

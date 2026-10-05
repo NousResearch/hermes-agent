@@ -31,6 +31,7 @@ from gateway.rolling_activity import configure_state as configure_activity_state
 from gateway.rolling_activity import fit_tail as fit_activity_tail
 from gateway.rolling_activity import has_renderable_state as has_renderable_activity_state
 from gateway.rolling_activity import render_text as render_activity_text
+from gateway.rolling_activity import is_finish_marker, retry_terminal_edit
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -506,11 +507,7 @@ class TurnRunner:
         return changed
 
     async def _send_native_task_card_progress(self, adapter) -> None:
-        """Drain progress into native cards; supported destinations retain editable fallback.
-        Unsupported destinations and egress refusals suppress publication, never finalization.
-
-        See #29483.
-        """
+        """Drain native cards; unsupported destinations suppress publication, not finalization. See #29483."""
         ctx = self._ctx
         st = self._TaskCardState(adapter)
         try:
@@ -520,6 +517,8 @@ class TurnRunner:
                 except queue.Empty:
                     await asyncio.sleep(0.1)
                     continue
+                if is_finish_marker(raw):
+                    return
                 if not self._agent_interrupted() and st.apply_event(raw):
                     await self._task_card_publish(st)
         except asyncio.CancelledError:
@@ -727,7 +726,7 @@ class TurnRunner:
                     self._drain_progress_queue()
                     return
                 raw = ctx.progress_queue.get_nowait()
-                finish_after_flush = bool(isinstance(raw, tuple) and len(raw) >= 2 and raw[0] == "__activity_finish__")
+                finish_after_flush = is_finish_marker(raw)
                 if self._agent_interrupted() and not finish_after_flush:
                     await asyncio.sleep(0)
                     continue
@@ -744,6 +743,9 @@ class TurnRunner:
                         await asyncio.sleep(remaining)
                         continue
                     if not ctx._run_still_current():
+                        return
+                    if marker_finishes:
+                        await retry_terminal_edit(self._progress_send_or_edit, st, msg, logger)
                         return
                     if not await self._progress_send_or_edit(st, msg):
                         continue

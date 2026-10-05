@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+from contextlib import asynccontextmanager
 from contextlib import suppress
 from typing import Any, Optional
 
@@ -76,6 +77,22 @@ def absorb_marker(state: Any, raw: Any) -> tuple[bool, Any, bool]:
     return False, None, False
 
 
+def is_finish_marker(raw: Any) -> bool:
+    return bool(isinstance(raw, tuple) and len(raw) >= 2 and raw[0] == "__activity_finish__")
+
+
+async def retry_terminal_edit(send: Any, state: Any, message: Any, log: Any) -> bool:
+    """Retry a consumed terminal marker without losing its finish intent."""
+    attempts = 3
+    for attempt in range(1, attempts + 1):
+        if await send(state, message):
+            return True
+        if attempt < attempts:
+            await asyncio.sleep(0.3)
+    log.warning("[%s] Rolling activity terminal edit failed after %d attempts", state.adapter.name, attempts)
+    return False
+
+
 def has_renderable_state(state: Any) -> bool:
     return bool(
         state.progress_lines
@@ -126,11 +143,17 @@ async def continue_hygiene_activity(
     runner: Any, source: Any, message_id: Optional[str], event_message_id: Optional[str]
 ) -> None:
     """Hand a pre-turn activity bubble to the normal rolling sender."""
+    await _edit_hygiene_activity(runner, source, message_id, event_message_id, WORKING_HEADER)
+
+
+async def _edit_hygiene_activity(
+    runner: Any, source: Any, message_id: Optional[str], event_message_id: Optional[str], content: str
+) -> None:
     if not message_id:
         return
     adapter = runner._delivery_adapter_for(source)
     metadata, _, _ = runner._run_agent_progress_threading(source, event_message_id, False)
-    kwargs = {"chat_id": source.chat_id, "message_id": message_id, "content": WORKING_HEADER}
+    kwargs = {"chat_id": source.chat_id, "message_id": message_id, "content": content}
     try:
         params = inspect.signature(adapter.edit_message).parameters
         if "metadata" in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
@@ -141,6 +164,38 @@ async def continue_hygiene_activity(
         await adapter.edit_message(**kwargs)
     except Exception:
         logger.debug("Session hygiene rolling activity edit failed", exc_info=True)
+
+
+async def abort_hygiene_activity(
+    runner: Any, source: Any, message_id: Optional[str], event_message_id: Optional[str]
+) -> None:
+    """Close a pre-turn bubble that cannot be handed to a real agent turn."""
+    if not message_id:
+        return
+    from gateway.platforms.base import BasePlatformAdapter
+
+    adapter = runner._delivery_adapter_for(source)
+    delete = getattr(type(adapter), "delete_message", None) if adapter is not None else None
+    if delete not in (None, BasePlatformAdapter.delete_message):
+        try:
+            if await adapter.delete_message(source.chat_id, message_id):
+                return
+        except Exception:
+            logger.debug("Session hygiene rolling activity delete failed", exc_info=True)
+    await _edit_hygiene_activity(runner, source, message_id, event_message_id, "⏹️ Stopped")
+
+
+@asynccontextmanager
+async def own_hygiene_activity(runner: Any, event: Any, source: Any):
+    """Own a preflight message until preparation hands its ID to the agent turn."""
+    activity_message = [None]
+    try:
+        yield activity_message
+    finally:
+        if activity_message:
+            await abort_hygiene_activity(
+                runner, source, activity_message[0], runner._reply_anchor_for_event(event)
+            )
 
 
 async def finish_turn_activity(turn_ctx: Any, progress_task: Any, logger: Any) -> None:

@@ -67,8 +67,11 @@ requires:
 |---|---|---|
 | `app` | bool | when true, `app:` must exist and the server is gated on presence |
 | `min_version` | str | requires `app: true`; dotted numeric; every applicable `app.<os>` must declare a real `version.kind`; compared numerically per segment, non-numeric characters in a segment are dropped (`2.3.0.12594` ≥ `2.3.0`; prerelease suffixes are not ordered) |
+| `gpu` | str | `nvidia`; the server is offered only on a host where `hermes_platform.host.facts.gpu_class()` reports that vendor. Independent of `app`: a server with no `app:` block can require a GPU. |
 
 `requires.app: true` with no `app:` block is a `DeclarationError`.
+
+`gpu` is for an application that has no install location to check, or that needs the hardware whatever is installed. `gpu_class()` reads the registry on Windows, sysfs on Linux and the CPU architecture on macOS, never a subprocess or a driver library. When it cannot read the GPU (`unknown`), the requirement passes: a failed read must not lock out a machine that has the GPU, and the connection check still applies. Only `nvidia` is accepted: `gpu_class()` reports the highest-priority vendor present, which answers "is an NVIDIA GPU here" exactly and would not answer the same question for AMD or Intel on a machine that also has an NVIDIA GPU.
 
 ## Availability: the one evaluation every reader uses
 
@@ -77,21 +80,22 @@ requires:
 ```
 Availability(
   state:   available | installed_not_running | missing_app | version_too_old
-         | unsupported_os | no_requirements,
+         | unsupported_os | unsupported_gpu | no_requirements,
   version: str | None,       # inspected, when present
   path:    str | None,       # where the app was found or looked for
   min_version: str | None,   # from requires
 )
 ```
 
-- `no_requirements`: no `requires.app`; the application gate passes, but the connection check still applies.
+- `no_requirements`: no `requires.app`, and `requires.gpu` (if any) is met; the application gate passes, but the connection check still applies.
 - `unsupported_os`: `requires.app` and no `app.<this os>` block. Zero I/O.
+- `unsupported_gpu`: `requires.gpu` names a vendor this host's GPU is not. The install is refused (`… is unavailable: unsupported_gpu, needs an NVIDIA GPU.`), and a registered server's status sentence is "`<app>` needs an NVIDIA GPU; none was found on this machine. Use `<app>` on a machine with an NVIDIA GPU."
 - `missing_app`: `locate` found nothing at `location`.
 - `version_too_old`: the version is below the minimum or cannot be read.
 - `available`: present, version acceptable or not required.
 - `installed_not_running`: reserved vocabulary; this evaluator never produces it.
 
-Evaluation uses `locate` and optional version inspection. It never probes a server, launches an application, or connects. The tool registry retains its existing availability cache.
+Evaluation uses `locate`, optional version inspection and the cached GPU fact. It never probes a server, launches an application, or connects. The tool registry retains its existing availability cache.
 
 ## The two gates
 

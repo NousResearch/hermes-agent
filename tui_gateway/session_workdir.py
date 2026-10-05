@@ -6,6 +6,8 @@ install time (method_ctx.bind_module), so they reference server.py globals bare.
 from __future__ import annotations
 
 import contextlib
+from typing import Any
+
 from tui_gateway import git_probe
 
 from .method_ctx import bind_module
@@ -48,7 +50,7 @@ def _completion_cwd(params: dict | None = None) -> str:
     raw = str(client_cwd or session_cwd or _profile_workspace_cwd(profile_home)
               # A named ssh profile never inherits the LAUNCH profile's host cwd: its remote default is ~.
               or ("~" if named_ssh else "") or _launch_configured_cwd()
-              or os.environ.get("TERMINAL_CWD") or os.getcwd())
+              or os.environ.get("TERMINAL_CWD") or _sandbox_workspace_cwd(None) or os.getcwd())
     # An ssh cwd lives on the remote host: host expansion/isdir cannot vouch for it, and ``~`` names the REMOTE
     # user's home, never this host's. The launch profile keeps main's host fast path for everything else.
     if named_ssh:
@@ -60,6 +62,11 @@ def _completion_cwd(params: dict | None = None) -> str:
         if os.path.isdir(resolved):
             return resolved
     if profile_home is None and _is_remote_cwd_shape(raw) and _cwd_is_remote(None):
+        return raw
+    # A container backend's cwd (docker ``/workspace``) lives inside the sandbox, like ``_terminal_task_cwd``'s: the
+    # host has no such dir. Falling back to the gateway's own cwd ($HOME for the desktop) made every host file look
+    # "inside the workspace", so attachments were never staged into the mounted dir (#103147).
+    if _is_container_path(raw) and _bound_terminal_backend(profile_home) != "local":
         return raw
     return os.getcwd()
 
@@ -122,9 +129,32 @@ def _is_remote_cwd_shape(raw: str) -> bool:
     return _is_ssh_remote_tilde_cwd("ssh", raw) or os.path.isabs(raw)
 
 
+def _is_container_path(raw: str) -> bool:
+    """An absolute POSIX path, the only shape a container backend's working directory takes."""
+    return raw.startswith("/") and not raw.startswith("//")
+
+
+def _sandbox_workspace_cwd(profile_home) -> str | None:
+    """A container backend's configured ``terminal.cwd`` (docker ``/workspace``), unchecked against this host.
+
+    ``_profile_configured_cwd``/``_launch_configured_cwd`` require ``os.path.isdir``, which a path inside the
+    sandbox fails. Only a path missing on the host qualifies: an existing host dir keeps the host path (it is the
+    ``docker_mount_cwd_to_workspace`` source). ssh has its own remote-cwd rules above."""
+    if profile_home:
+        policy = _profile_terminal_policy(profile_home)
+        backend, raw = _policy_backend(policy), str(policy.get("TERMINAL_CWD") or "").strip()
+    else:
+        backend = _effective_terminal_backend()
+        raw = os.environ.get("TERMINAL_CWD", "").strip() or _workdir_terminal_cfg("cwd")
+    if backend in {"local", "ssh"} or not _is_container_path(raw) or os.path.isdir(raw):
+        return None
+    return raw
+
+
 def _profile_workspace_cwd(profile_home) -> str | None:
-    """A named profile's configured workspace: an ssh profile's remote dir, else a host dir."""
-    return _declared_remote_profile_cwd(profile_home) or _profile_configured_cwd(profile_home)
+    """A named profile's configured workspace: an ssh profile's remote dir, a host dir, else a container dir."""
+    return (_declared_remote_profile_cwd(profile_home) or _profile_configured_cwd(profile_home)
+            or (_sandbox_workspace_cwd(profile_home) if profile_home else None))
 
 
 def _workspace_cwd(profile_home, raw: str) -> str:
@@ -190,9 +220,43 @@ def _persisted_session_cwd(session: dict) -> str | None:
     """The cwd to stamp on the session's DB row, or None to leave it unset (launch-dir rule: ``_ensure_session_db_row``)."""
     if session.get("explicit_cwd"):
         return _session_cwd(session)
-    if _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE:
+    if _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE or _is_remote_launch_cwd(session):
         return None
     return str(session.get("cwd") or "") or None  # the session's OWN dir, never _session_cwd's gateway-wide fallback
+
+
+def _is_remote_launch_cwd(session: dict | None) -> bool:
+    """An ssh session's cwd that nobody picked: the gateway's launch directory, a path on THIS host. Host-side context
+    discovery reads it from memory, but it is never persisted: a resume adopts a stored ssh cwd as the remote
+    workspace."""
+    return bool(session) and not session.get("explicit_cwd") and _cwd_is_remote(session.get("profile_home"))
+
+
+def _is_hermes_owned_cwd(cwd: str, profile_home) -> bool:
+    """Whether ``cwd`` is inside Hermes's own host tree: the Hermes root (``/opt/data`` and its ``/opt/data/home``
+    subprocess home in the Docker image, which also holds every named profile) or the install tree
+    (``/opt/hermes``). A ``~`` path is the remote's home, never this host's."""
+    from agent.runtime_cwd import _is_install_tree
+    from hermes_constants import get_default_hermes_root
+
+    if not os.path.isabs(cwd):
+        return False
+    try:
+        path = Path(cwd).resolve()
+        home = Path(profile_home or get_hermes_home()).expanduser()
+        roots = {home.resolve(), get_default_hermes_root(home=home).resolve()}
+    except (OSError, RuntimeError):
+        return False
+    return any(path == root or root in path.parents for root in roots) or _is_install_tree(path)
+
+
+def _resumable_stored_cwd(cwd, profile_home) -> str:
+    """A session row's stored cwd as a resume may adopt it: empty when an ssh session's row holds a path in Hermes's
+    own host tree (a host launch directory, never a remote workspace)."""
+    cwd = str(cwd or "")
+    if cwd and _cwd_is_remote(profile_home) and _is_hermes_owned_cwd(cwd, profile_home):
+        return ""
+    return cwd
 
 
 def _heal_dead_cwd(cwd: str) -> str:
@@ -222,11 +286,11 @@ def _session_is_local_backend(session: dict | None) -> bool:
     whatever the launch process runs (one multiplexed gateway serves many profiles), and a per-profile gateway
     (``hermes -p x``) may set ``terminal.backend: ssh`` in config without ``TERMINAL_ENV``: an env-only check would
     heal a live remote cwd to its nearest host ancestor (``/home``) and persist that."""
-    if session and session.get("profile_home") and _cwd_is_remote(session["profile_home"]):
+    if session and session.get("profile_home") and _bound_terminal_backend(session["profile_home"]) != "local":
         return False
-    # Otherwise main's env check, plus a per-profile gateway whose config (not env) says ssh.
-    env_backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
-    return env_backend in ("", "local") and _effective_terminal_backend() != "ssh"
+    # Otherwise the launch backend, env or config: an in-process gateway (no TERMINAL_ENV bridge) under
+    # ``terminal.backend: docker`` holds a container cwd (``/workspace``) that healing would walk up to ``/``.
+    return _effective_terminal_backend() == "local"
 
 
 def _effective_terminal_backend() -> str:
@@ -254,11 +318,16 @@ def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
     """Re-anchor a session that SETTLED in another worktree of the SAME repo. Returns moved. An agent told to work in
     a fresh worktree `git worktree add`s and `cd`s in while the session stays pinned (labelled with the primary
     checkout's branch). A plain `cd` is deliberately NOT a workspace move (see ``_apply_project_workspace``): a non-git
-    workspace stepping into a repo or a visit to an unrelated repo is browsing, and an explicitly chosen workspace is
-    never overridden. Local backends only (a remote cwd cannot be stat'ed or git-probed here)."""
-    # An explicit choice only moves by another explicit action; a cwd adopted HERE is marked `cwd_from_settle` so
-    # successive settles keep following.
-    if not session or (session.get("explicit_cwd") and not session.get("cwd_from_settle")):
+    workspace stepping into a repo or a visit to an unrelated repo is browsing, and a workspace the user deliberately
+    moved the chat into is never overridden. Local backends only (a remote cwd cannot be stat'ed or git-probed
+    here)."""
+    # A workspace the USER put the chat in (the composer's folder picker -> session.cwd.set, the sidebar's
+    # move-to-project -> session.workspace.move) only moves by another deliberate action; a cwd adopted HERE is
+    # marked `cwd_from_settle` so successive settles keep following. NOT `explicit_cwd`: session.create sets that for
+    # ANY session whose cwd exists on disk, so keying the pin on it made every desktop session — all of which are
+    # created with a workspace — unfollowable, which is exactly the agent-made-a-worktree case this reconcile exists
+    # for.
+    if not session or (session.get("cwd_pinned") and not session.get("cwd_from_settle")):
         return False
     if not _session_is_local_backend(session):
         return False
@@ -310,10 +379,27 @@ def _register_session_cwd(session: dict | None) -> None:
     # Do not reinitialize memory providers or invalidate the cached system prompt.
     if hasattr(agent := session.get("agent"), "session_cwd"):
         agent.session_cwd = session.get("cwd") or None
+    # A session that adopted a real workspace out of a home-fallback cwd (#76902: the
+    # packaged Desktop pins $HOME when no default project dir is configured) resumes
+    # subdirectory-hint discovery anchored to that project. No prompt/system-prompt
+    # state changes — the tracker only scopes future tool-result hints.
+    hints = getattr(agent, "_subdirectory_hints", None) if session.get("cwd") else None
+    if hints is not None and hasattr(hints, "rebind_working_dir"):
+        hints.rebind_working_dir(str(session.get("cwd")))
     with contextlib.suppress(Exception):
         from tools.terminal_tool import register_task_env_overrides
         cwd, cwd_source = _terminal_task_cwd_with_source(session)
-        register_task_env_overrides(session["session_key"], {"cwd": cwd, "cwd_source": cwd_source})
+        # The cwd/override record is keyed by the ROUTED home (#123989). session.create is a plain
+        # @method, so bind the session's own profile home here or the record lands under the raw key
+        # and the scoped turn (`profile:<p>:<key>`) misses it until the first `cd`. Callers already
+        # inside the session's scope (the turn) bind nothing: the routed home is theirs already.
+        import hermes_constants as hc
+
+        with contextlib.ExitStack() as stack:
+            profile_home = session.get("profile_home")
+            if profile_home and hc.hermes_home_key(hc.get_hermes_home()) != hc.hermes_home_key(profile_home):
+                stack.callback(hc.reset_hermes_home_override, hc.set_hermes_home_override(str(profile_home)))
+            register_task_env_overrides(session["session_key"], {"cwd": cwd, "cwd_source": cwd_source})
 
 
 def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
@@ -412,11 +498,26 @@ def _ensure_session_db_row(session: dict) -> bool:
                         session.pop("pending_archived", None)
                 except Exception:
                     logger.debug("failed to apply pending archived flag", exc_info=True)
+            _schedule_row_git_meta(session, key, db)
         except Exception as exc:
             # Disk-full is not a soft failure: swallowed here, prompt.submit returns {"status":"streaming"} and the
             # message vanishes silently.
             _workdir_reraise_disk_full(exc, "failed to persist desktop session row")
     return True
+
+
+def _schedule_row_git_meta(session: dict, key: str, db) -> None:
+    """Git-enrich a lazily created row once per live session. The row lands here with its cwd on the first submit, so
+    ``_hydrate_session_cwd`` (which ran when no row existed) never claimed a probe, and a desktop row kept NULL
+    git_branch/git_repo_root for life: its lane fell back to a fake ``main`` label (#108784). Probes the row's own
+    cwd (the upsert never overwrites it), and only when enrichment is missing."""
+    if session.get("row_git_meta_checked"):
+        return
+    session["row_git_meta_checked"] = True
+    row = (db.get_session(key) if hasattr(db, "get_session") else None) or {}
+    cwd = str(row.get("cwd") or "").strip()
+    if cwd and not (row.get("git_branch") and row.get("git_repo_root")):
+        _persist_session_cwd_and_schedule_git_meta(session, cwd, db=db)
 
 
 def _workdir_reraise_disk_full(exc: BaseException, log_msg: str) -> None:
@@ -443,8 +544,12 @@ def _persist_branch_seed(session: dict) -> None:
     ``history`` and must never re-append it."""
     if not (key := session.get("session_key")) or not session.get("seeded") or session.get("_branch_seed_persisted"):
         return
-    with session["history_lock"]:
-        seed = [dict(msg) for msg in (session.get("history") or [])]
+    from agent.message_metadata import message_identity
+    from agent.transcript_repair import sync_flushed_message_markers
+    with session["history_lock"]:  # message_identity stamps the live dicts
+        live = list(session.get("history") or [])
+        seed = [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS},
+                 **message_identity(msg)} for msg in live]
     if not seed:
         return
     with _session_db(session) as db:
@@ -455,50 +560,103 @@ def _persist_branch_seed(session: dict) -> None:
             # partial seed with _branch_seed_persisted unset.
             # Bounded-chunk transactions (see #23254): a branch seed can be hundreds of rows; chunking keeps
             # each BEGIN IMMEDIATE short so concurrent writers aren't starved.
-            db.append_messages_batch(
-                key, [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS}} for msg in seed],
-                chunk_rows=500)
+            db.append_messages_batch(key, seed, chunk_rows=500)
+            with session["history_lock"]:
+                sync_flushed_message_markers(live, seed)
             session["_branch_seed_persisted"] = True
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "branch seed persist failed")
 
 
-def _write_submit_user_row(session: dict, text: Any, display_kind: str | None) -> dict | None:
+def _submit_row_target_key(session: dict) -> str:
+    """The session row an off-turn submit write must use: the live ``agent.session_id`` when it has
+    rotated off ``session_key``, else ``session_key`` itself.
+
+    The turn's own transcript is flushed under ``agent.session_id`` (``_db_flush_write``), while an
+    off-turn write only has ``session_key`` to go on — and those diverge for the whole of a turn that
+    begins after the agent's session rotated: a compression publish, an adopted continuation tip, or a
+    lease-wait re-resolve all move ``agent.session_id`` while ``session_key`` is re-anchored only at
+    TURN END (``_absorb_turn_result`` -> ``_sync_session_key_after_compress``). Writing the submit row
+    to the stale key splits one turn's rows across two sessions: the user row in the parent, every tool
+    row and the final text in the child (#123545, evidence A + B).
+
+    The live id IS the authority — it is the value the turn will flush under, and the same
+    ``getattr(agent, "session_id", None) or session_key`` the sibling system-prompt persist already uses
+    against this handle (``_persist_live_session_system_prompt``). Do NOT re-resolve through the lineage
+    here: ``resolve_resume_session_id`` returns the deepest node that has MESSAGES, so the freshly-minted
+    child of a just-published rotation resolves back to the parent and the fix would no-op exactly when
+    it is needed. The choice is made ONCE here and recorded on the staged dict under
+    ``_SUBMIT_ROW_SESSION_KEY`` so every later addresser of that row — the @-expansion rewrite, the
+    queue merge, the drain deactivation — reads the same key instead of re-deriving one that a rotation
+    can invalidate mid-turn.
+    """
+    return str(getattr(session.get("agent"), "session_id", None) or "") or str(session.get("session_key") or "")
+
+
+# Wire-sanitizer-safe key carrying the session the submit row was actually written under. Mirrors
+# ``_DB_PERSISTED_MARKER``'s contract (leading underscore, stripped from provider payloads).
+_SUBMIT_ROW_SESSION_KEY = "_submit_row_session_id"
+
+
+def _submit_row_owner_key(staged: dict, session: dict) -> str:
+    """The session id a staged submit row lives under: recorded at write time, else the current best.
+    Every caller narrows to a dict (and checks ``_row_id``) immediately before, so the recorded value is
+    the answer whenever the row exists; the re-derivation only covers a dict that predates the stamp."""
+    recorded = str(staged.get(_SUBMIT_ROW_SESSION_KEY) or "")
+    return recorded or _submit_row_target_key(session)
+
+
+def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
+                           accept_metadata: dict | None = None) -> dict | None:
     """Write the submitted user turn to the transcript and RETURN the durable dict (stamped
     ``_DB_PERSISTED_MARKER``/``_row_id``) WITHOUT slotting it on the session. The write half of
     :func:`_persist_submit_user_row`, shared by the busy-queue accept (which attaches the dict to
     the queue envelope, never the shared session slot a possibly-still-staged in-flight turn owns).
+    ``accept_metadata`` merges into ``display_metadata`` (the busy-queue accept's never-drained
+    marker, retired by ``reopen_session`` — #125577).
     Returns None when nothing was written (no key / non-text / store unavailable / failed write)."""
-    key = session.get("session_key")
-    if not key or not isinstance(text, str) or not text.strip():
+    # ``session_key`` is only an "is this a real session" probe — the row is written to ``target`` below,
+    # which a rotation can already have moved off ``session_key`` (#123545). One guard, one value: the
+    # writer must not read a different key than the one it checks.
+    if not session.get("session_key") or not isinstance(text, str) or not text.strip():
         return None
     from agent.context_compressor import _DB_PERSISTED_MARKER
-    from agent.message_metadata import stamp_message_timestamp
+    from agent.message_metadata import stamp_message_timestamp, stamp_message_uid
     staged = stamp_message_timestamp({"role": "user", "content": text})
     if display_kind:
         staged["display_kind"] = display_kind
+    if accept_metadata:
+        staged["display_metadata"] = {**accept_metadata}
     with _session_db(session) as db:
         if db is None:
             return None
+        target = _submit_row_target_key(session)
         try:
             staged["_row_id"] = db.append_message(
-                key, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"])
+                target, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"],
+                message_uid=stamp_message_uid(staged),  # the live dict the turn adopts carries the row's uid
+                display_metadata=staged.get("display_metadata"))
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "submit-time user row persist failed")
             return None
     staged[_DB_PERSISTED_MARKER] = True
+    # Record the owning session so every later addresser of THIS row (the @-expansion rewrite, the
+    # queue merge, the drain deactivation) finds it by the same key even if a rotation lands mid-turn.
+    staged[_SUBMIT_ROW_SESSION_KEY] = target
     return staged
 
 
-def _persist_submit_user_row(session: dict, text: Any, display_kind: str | None) -> None:
+def _persist_submit_user_row(session: dict, text: Any, display_kind: str | None,
+                             accept_metadata: dict | None = None) -> None:
     """Write the submitted user turn at send time, before the agent build and turn: the agent's own
     crash persist only runs once the build finished, so quitting a frozen app during a slow first build
     left a session row with no message (#111868). The dict is staged on the session already stamped
     durable (the shape ``quiet_single_query`` re-stages an unanswered DM in) so the turn adopts it via
     ``_stage_turn_user_message`` and the flush writes no second row. A failed write stages nothing:
-    the turn's crash persist then writes the row as before."""
+    the turn's crash persist then writes the row as before. ``accept_metadata`` marks a row that
+    belongs to a still-QUEUED envelope (#125577); a dispatching turn's row is never marked."""
     session.pop("_submit_user_row", None)  # a failed/unsupported write must not acknowledge an older send
-    if (staged := _write_submit_user_row(session, text, display_kind)) is not None:
+    if (staged := _write_submit_user_row(session, text, display_kind, accept_metadata)) is not None:
         session["_submit_user_row"] = staged
 
 
@@ -518,8 +676,12 @@ def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any, text
             if db is None:
                 return
             try:
+                # Address the row where it was actually WRITTEN (``_write_submit_user_row`` recorded it);
+                # a rotated-away ``session_key`` would miss that row's session_id and silently skip the
+                # rewrite, leaving the transcript replaying the raw keystrokes.
                 db.set_user_message_content(
-                    session["session_key"], staged["_row_id"], _durable_content(persist_user_message))
+                    _submit_row_owner_key(staged, session), staged["_row_id"],
+                    _durable_content(persist_user_message))
             except Exception:
                 logger.debug("submit-time user row update failed; the turn writes its own row", exc_info=True)
                 return
@@ -658,8 +820,9 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     from hermes_constants import translate_cwd_for_wsl_backend
     cwd = translate_cwd_for_wsl_backend(str(cwd))
     resolved = _workspace_cwd(session.get("profile_home"), cwd)
-    # An explicit user choice: persisted as the workspace (not the launch-dir fallback), superseding a settle-adopted cwd.
-    session.update(cwd=resolved, explicit_cwd=True, cwd_from_settle=False)
+    # An explicit user choice: persisted as the workspace (not the launch-dir fallback), superseding a settle-adopted
+    # cwd — and PINNED, so the settle reconcile cannot drag it to another worktree the agent merely visited.
+    session.update(cwd=resolved, explicit_cwd=True, cwd_pinned=True, cwd_from_settle=False)
     _register_session_cwd(session)
     # The synchronous DB write claims ordering authority; git probes may publish only for that exact generation.
     _persist_session_cwd_and_schedule_git_meta(session, resolved)

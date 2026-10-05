@@ -14,6 +14,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -205,6 +206,17 @@ def get_browser_backend() -> str:
     return (BACKEND_DISABLED if raw is False else "") if isinstance(raw, bool) else str(raw or "").strip().lower()
 
 
+def set_browser_use_mode(enabled: bool) -> None:
+    """``/browser use [off]`` on every surface: persist ``browser.backend`` for the current profile and drop
+    cached tool availability. A live agent keeps its tools (prompt cache); the next one built gets the swap."""
+    from hermes_cli.config import load_config, save_config
+    from tools.registry import invalidate_check_fn_cache
+    config = load_config()
+    config.setdefault("browser", {})["backend"] = _BACKEND_KEY if enabled else BACKEND_DISABLED
+    save_config(config)
+    invalidate_check_fn_cache()
+
+
 def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
     """True for pre-CLI direct-API Browser Use cloud configs. An explicit backend or
     a non-Browser-Use cloud_provider wins; Camofox is selected via env var, not
@@ -355,6 +367,31 @@ def _resolve_lightpanda_cdp(env: dict, task_id: Optional[str], session_name: str
     return err
 
 
+def _reach_sandbox_cdp(cdp: str) -> str:
+    """A CDP endpoint agent-browser reported from INSIDE the terminal backend's sandbox is that sandbox's
+    loopback: unreachable from this host (Docker bridge / ssh remote). The harness, the vault supervisor
+    and ``browser_exec`` all connect from here, so forward the port over the sandbox's exec stream and hand
+    them the local end. Chromium's DevTools accepts any loopback ``Host`` header, port included."""
+    try:
+        from tools.browser_tool_session import _browser_in_sandbox
+        if not _browser_in_sandbox():
+            return cdp
+        from urllib.parse import urlsplit, urlunsplit
+        from tools.bot_desktop import runtime as _bd_runtime, sandbox_host
+        from tools.environments import streams
+        parts = urlsplit(cdp)
+        if parts.hostname not in ("127.0.0.1", "localhost") or not parts.port:
+            return cdp
+        sandbox = _bd_runtime._sandbox_env(create=True)
+        if sandbox is None:
+            return cdp
+        local = streams.forward_port(sandbox, parts.port, user=sandbox_host._user_for(sandbox))
+        return urlunsplit(parts._replace(netloc=f"127.0.0.1:{local}"))
+    except Exception as e:  # a failed forward degrades to the unreachable endpoint's own error
+        logger.debug("sandbox CDP forward unavailable: %s", e)
+        return cdp
+
+
 def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:
     """Point the harness at Hermes' packaged Chromium, launched through agent-browser for this cache key —
     the same browser the built-in tools drive. Left alone, the harness discovers the user's INSTALLED
@@ -375,6 +412,7 @@ def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_nam
     if not cdp:
         return (f"The local browser could not be started: {(res or {}).get('error') or 'agent-browser returned no CDP endpoint'} "
                 "Run `hermes tools` → Browser Automation to (re)install Chromium, or switch backends.")
+    cdp = _reach_sandbox_cdp(cdp)
     _set_cdp_env(env, cdp)
     env[_PRIVATE_BROWSER_SENTINEL] = "1"  # one Chromium per cache key: nothing to share a tab with
     env[_BOT_DESKTOP_BROWSER_SENTINEL] = "1"
@@ -564,6 +602,28 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
+# BU_NAMEs whose harness daemon this process has driven. The daemon reads BU_CDP_* once, at start, and
+# outlives every call, so a backend swap (/browser connect|disconnect) that only changes the resolved
+# endpoint leaves later browser_exec calls in the old browser until these are stopped.
+_driven_daemons: set = set()
+_driven_daemons_lock = threading.Lock()
+
+
+def stop_harness_daemons() -> None:
+    """Stop every harness daemon this process drove, through the harness's own identity-checked
+    ``--reload``; the next browser_exec respawns one on the endpoint it resolves then."""
+    with _driven_daemons_lock:
+        names = sorted(_driven_daemons)
+        _driven_daemons.clear()
+    cmd = _find_cli() if names else None
+    if not cmd:
+        return
+    env = _base_subprocess_env()
+    for name in names:
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            _run_cli_killing_process_group([*cmd, "--reload"], "", {**env, "BU_NAME": name}, 15)
+
+
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
@@ -612,6 +672,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     def dispatch() -> Dict[str, Any]:
         _attach_vault_supervisor(env, task_id)
+        with _driven_daemons_lock:
+            _driven_daemons.add(env.get("BU_NAME", "default"))
         try:
             return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
         except subprocess.TimeoutExpired:

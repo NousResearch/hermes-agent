@@ -205,6 +205,10 @@ class TestServiceIdentityForForeignHome:
         home = tmp_path / "home"
         home.mkdir()
         monkeypatch.setattr(Path, "home", lambda: home)
+        # The user unit dir follows the ACCOUNT home (#98699), which is read from the environment.
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         return home
 
     def test_foreign_home_gets_its_own_unit(self, machine_home, tmp_path, monkeypatch):
@@ -388,6 +392,76 @@ class TestGeneratedSystemdUnits:
         plist = gateway_cli.generate_launchd_plist()
 
         assert "SoftResourceLimits" not in plist
+
+
+class TestWslInteropPaths:
+    """_build_wsl_interop_paths() — only Windows-interop tool dirs belong in the unit's PATH.
+
+    #73163: scraping every ``/mnt/`` entry from the shell PATH persisted heavy
+    Desktop-app/git/node dirs into the gateway unit's Environment=PATH, and the
+    Plan 9 interop (9p) connections those dirs force at gateway start can
+    exhaust the 9p server connection limit. which()-resolved tool dirs and the
+    hardcoded System32 set already cover interop.
+    """
+
+    def test_arbitrary_mount_entries_are_not_scraped_from_shell_path(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
+        monkeypatch.setenv(
+            "PATH",
+            os.pathsep.join(
+                [
+                    "/usr/local/bin",
+                    "/mnt/d/heavy-app/bin",
+                    "/mnt/d/tools/git/cmd",
+                    "/mnt/c/Users/me/AppData/Local/Programs/desktop/bin",
+                ]
+            ),
+        )
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda name: None)
+        # The hardcoded candidates (System32…) don't exist on this macOS host, so the
+        # expected result is empty — no /mnt/ entry survives.
+        monkeypatch.setattr(Path, "exists", lambda self: False)
+
+        result = gateway_cli._build_wsl_interop_paths([])
+
+        assert result == []
+
+    def test_which_resolved_tool_dirs_and_system32_set_are_included(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
+        monkeypatch.setenv(
+            "PATH",
+            "/usr/local/bin:/mnt/d/heavy-app/bin:/mnt/c/WINDOWS/system32",
+        )
+
+        def fake_which(name):
+            resolved = {
+                "powershell.exe": "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe",
+                "cmd.exe": "/mnt/c/WINDOWS/system32/cmd.exe",
+                "explorer.exe": "/mnt/c/WINDOWS/explorer.exe",
+                "wsl.exe": "/mnt/c/Windows/System32/wsl.exe",
+            }
+            return resolved.get(name)
+
+        monkeypatch.setattr(gateway_cli.shutil, "which", fake_which)
+        monkeypatch.setattr(Path, "exists", lambda self: True)
+
+        result = gateway_cli._build_wsl_interop_paths(["/mnt/d/heavy-app/bin"])
+
+        # which()-resolved dirs land even when absent from the caller's PATH entry list.
+        assert "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0" in result
+        assert "/mnt/c/WINDOWS/system32" in result
+        # Hardcoded System32 family, gated on existence like on a real install.
+        assert "/mnt/c/WINDOWS" in result
+        assert "/mnt/c/WINDOWS/System32/Wbem" in result
+        # Heavy shell-PATH /mnt/ entries never enter, and dedupe keeps out the
+        # entry the caller already has.
+        assert "/mnt/d/heavy-app/bin" not in result
+
+    def test_outside_wsl_nothing_is_added(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)
+        monkeypatch.setenv("PATH", "/usr/local/bin:/mnt/c/WINDOWS/system32")
+
+        assert gateway_cli._build_wsl_interop_paths([]) == []
 
 
 class TestGatewayStopCleanup:
@@ -1751,6 +1825,33 @@ class TestProfileArg:
         assert returncode == 23
         assert int(stdout_log.read_text()) == wrapper.pid
         assert stderr_log.read_text() == ""
+
+    @pytest.mark.platforms("macos")
+    def test_launchd_command_path_timestamps_gateway_stdout(self, tmp_path):
+        """gateway.log is also the logging handler's file: a raw print() through the plist's
+        osascript + stderr_timestamp chain must arrive stamped or ``--since`` cannot filter it."""
+        stdout_log = tmp_path / "gateway.log"
+        stderr_log = tmp_path / "gateway.error.log"
+        command = [
+            sys.executable, "-m", "hermes_cli.stderr_timestamp", "--error-log", str(stderr_log), "--",
+            sys.executable, "-c", "print('[whatsapp] Bridge started on port 3000')",
+        ]
+
+        wrapper = subprocess.Popen(
+            launchd_program_arguments(command, stdout_log, stderr_log), start_new_session=True
+        )
+        try:
+            returncode = wrapper.wait(timeout=30)
+        finally:
+            if wrapper.poll() is None:
+                os.killpg(wrapper.pid, signal.SIGKILL)
+                wrapper.wait()
+
+        assert returncode == 0
+        assert re.fullmatch(
+            r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \[whatsapp\] Bridge started on port 3000\n",
+            stdout_log.read_text(encoding="utf-8"),
+        )
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"

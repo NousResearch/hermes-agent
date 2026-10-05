@@ -670,33 +670,66 @@ def _confirm_install(c: Console, bundle, category: str) -> bool:
                               cancel="[dim]Installation cancelled.[/]\n")
 
 
+_SKILL_METRIC_SOURCES = {"official": "catalog", "url": "url"}
+
+
+def _record_skill_install(identifier: str, bundle, outcome: str) -> None:
+    """One shared-metrics extension install: official optional skills are the catalog, URL skills
+    stay anonymous, every other registry is the hub."""
+    from hermes_cli.observability.shared_metrics_events import record_extension_install
+    origin = getattr(bundle, "source", None) or (
+        "official" if identifier.startswith("official/")
+        else "url" if identifier.startswith(("http://", "https://")) else "hub")
+    source = _SKILL_METRIC_SOURCES.get(origin, "hub")
+    name = None if source == "url" else (getattr(bundle, "name", None) or identifier)
+    record_extension_install(kind="skill", source=source, name=name, outcome=outcome)
+
+
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True, name_override: str = "",
                source_id: Optional[str] = None) -> None:
     """Fetch, quarantine, scan, confirm, and install a skill. ``source_id`` pins resolution to one
     adapter; callers that know the provenance (``do_update``) must pass it so a bare identifier
-    cannot resolve to a same-named skill elsewhere."""
+    cannot resolve to a same-named skill elsewhere.
+
+    A first install is recorded once as an extension install; updates and ``--force`` reinstalls
+    of an installed skill run through here too and are not installs, nor is a cancelled prompt."""
+    from tools.skills_hub import HubLockFile
+    fresh = not HubLockFile().get_installed(identifier.rstrip("/").rsplit("/", 1)[-1])
+    try:
+        bundle, outcome = _install_skill(identifier, category, force, console or _console,
+                                         skip_confirm, invalidate_cache, name_override, source_id)
+    except Exception:
+        if fresh:
+            _record_skill_install(identifier, None, "failed")
+        raise
+    if fresh and outcome:
+        _record_skill_install(identifier, bundle, outcome)
+
+
+def _install_skill(identifier: str, category: str, force: bool, c: Console, skip_confirm: bool,
+                   invalidate_cache: bool, name_override: str, source_id: Optional[str]) -> tuple:
+    """``do_install``'s body: ``(bundle, outcome)``, outcome None when this was no new install."""
     from tools.skills_hub import HubLockFile, ensure_hub_dirs, skills_hub_http_session
     from tools.skills_hub_install import install_from_quarantine, quarantine_bundle
     from tools.skills_guard import should_allow_install
-    c = console or _console
     ensure_hub_dirs()
     sources = _pinned_sources(c, _sources(), source_id, identifier)
     if sources is None:
-        return
+        return None, "failed"
     # One pooled guarded client for the whole resolve + fetch fan-out (tree, SKILL.md, N support files).
     with skills_hub_http_session():
         identifier = _full_identifier(identifier, sources, c)
         if not identifier:
-            return
+            return None, "failed"
         c.print(f"\n[bold]Fetching:[/] {identifier}")
         meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
     if not bundle:
         _print_fetch_failure(c, sources, identifier, meta=meta, source=_matched_source)
-        return
+        return None, "failed"
     if not _resolve_url_bundle_name(c, bundle, meta, identifier, name_override, skip_confirm):
-        return
+        return bundle, "failed"
 
     # URL-sourced skills: pick a category interactively when none was given (TTY only;
     # non-interactive installs fall through to flat install like every other source).
@@ -712,7 +745,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
         if not force:
             c.print("Use --force to reinstall.\n")
-            return
+            return bundle, None
+    failed = None if existing else "failed"
 
     extra_metadata = {**(getattr(meta, "extra", {}) or {}), **bundle.metadata}
 
@@ -720,7 +754,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         q_path = quarantine_bundle(bundle)
     except ValueError as exc:
         _invalid_path(c, bundle, exc)
-        return
+        return bundle, failed
     c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
 
     result = _scan_quarantined(c, q_path, bundle, meta, identifier)
@@ -728,7 +762,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     if not allowed:
         _install_blocked(c, bundle, _scan_block_message(result, identifier), result.verdict,
                          f"{len(result.findings)}_findings", q_path=q_path, lead="\n", label="Not installed:")
-        return
+        return bundle, failed
     # Advisory second opinion — warn-and-continue by design (PII-class findings are
     # informational); the install confirmation below is where the user decides.
     _print_tier1_advisory(q_path, c)
@@ -739,18 +773,19 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     # skip_confirm bypasses the prompt (TUI mode, where input() hangs).
     if not force and not skip_confirm and not _confirm_install(c, bundle, category):
         shutil.rmtree(q_path, ignore_errors=True)
-        return
+        return bundle, None
 
     try:
         install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
     except ValueError as exc:
         _invalid_path(c, bundle, exc, q_path)
-        return
+        return bundle, failed
     from tools.skills_hub import SKILLS_DIR
     c.print(f"[bold green]Installed:[/] {install_dir.resolve().relative_to(Path(SKILLS_DIR).resolve()).as_posix()}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
     _announce_blueprint(c, bundle.name)
     _finish_change(c, invalidate_cache, "Skill will be available", "activate")
+    return bundle, None if existing else "success"
 
 
 def _print_tier1_advisory(skill_dir, console) -> None:
@@ -785,14 +820,16 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     profile's config — ``-p`` swaps HERMES_HOME at process start, so no profile flag here."""
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
     from tools.skills_sync import _read_manifest
-    from tools.skills_tool import _find_all_skills
-    from agent.skill_utils import get_disabled_skill_names
+    from tools.skills_tool import _skill_catalog
+    from agent.skill_utils import TIER_CREATE_DIR, TIER_EXTERNAL, TIER_PROJECT, get_disabled_skill_names
     from agent.skill_commands import skill_command_collision_note
     c = console or _console
     ensure_hub_dirs()
     hub_installed = {e["name"]: e for e in HubLockFile().list_installed()}
     builtin_names = set(_read_manifest())
-    all_skills = _find_all_skills(skip_disabled=True)  # include disabled ones to annotate status
+    # Rows are what skill_view loads: shadowed copies hidden, same-tier duplicates under their exact path.
+    all_skills = [{**s, "name": s["load_name"]} for s in _skill_catalog(skip_disabled=True) if s["load_name"]]
+    root_labels = {TIER_PROJECT: "project", TIER_CREATE_DIR: "create_dir", TIER_EXTERNAL: "external"}
     disabled_names = get_disabled_skill_names()
 
     table = _table(("Name", {"style": "bold cyan"}), "Category", "Source", "Trust", "Status",
@@ -808,6 +845,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
             trust = hub_entry.get("trust_level", "community")
         else:
             source_type = source_display = trust = "builtin" if name in builtin_names else "local"
+            source_display = root_labels.get(skill["tier"], source_display)
         is_enabled = name not in disabled_names
         if source_filter not in ("all", source_type) or (enabled_only and not is_enabled):
             continue

@@ -1,0 +1,24 @@
+name: codex-skin
+title: Codex Skin
+repo: https://github.com/FPSUnleashed/hermes-codex-skin
+sha: 8bd9a9fed436eaa5d7b6d9d320be4cfdd46a2b4f
+subdir: codex-chat-look
+description: >-
+  Codex-inspired Hermes Desktop skin with native theme support, refined chat,
+  sidebar and browser styling, Inbox with Settle and Snooze, and a user-clicked
+  in-plugin update button. Disclosure: checks GitHub for releases; downloads,
+  verifies and replaces its own local plugin file only after the user's click;
+  styles and observes native Desktop markup and uses local Desktop file access.
+maintainer: FPSUnleashed
+tier: community
+category: desktop
+docs_url: https://github.com/FPSUnleashed/hermes-codex-skin
+version: "1.9.0"
+readme: false
+screenshots:
+  - https://raw.githubusercontent.com/FPSUnleashed/hermes-codex-skin/8bd9a9fed436eaa5d7b6d9d320be4cfdd46a2b4f/screenshots/codex-skin-native-glass.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

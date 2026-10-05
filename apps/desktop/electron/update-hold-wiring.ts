@@ -7,6 +7,7 @@ import path from 'node:path'
 
 import type { IpcMain, IpcMainInvokeEvent } from 'electron'
 
+import { type UpdateGateDeps, waitForUpdateClearance, type WaitForUpdateClearanceOptions } from './update-gate'
 import { cachedCreateTimeProbe } from './update-marker'
 import {
   allowStartOverHold,
@@ -235,4 +236,75 @@ export function registerUpdateHoldIpc(ipc: IpcMain, host: UpdateHoldIpcHost) {
 
     return { ok: true }
   })
+}
+
+export interface PoolUpdateWaitHost {
+  profile: string
+  poolKey: string
+  /** main.ts's `updateGateDeps`: the gate deps shared with the primary boot wait. */
+  gateDeps: (callbacks: MarkerGateCallbacks) => UpdateGateDeps
+  signal: WaitForUpdateClearanceOptions['signal']
+  isCancelled: () => boolean
+  log: (line: string) => void
+  showHold: (state: HeldState, owner: string) => void
+  clearHold: (owner: string) => void
+  pollMs: number
+  timeoutMs: number
+}
+
+/**
+ * A pool/profile backend's update wait. No boot-progress UI (pool backends
+ * boot silently for background profiles), so it only logs while parked. A
+ * blocking hold never ages out here either (R8 D3). Past the grace it is
+ * published on the window's blocked screen like the primary's (R8 M6): a
+ * remote primary, or one that booted before the hold appeared, never shows
+ * one of its own. Check again / Start anyway act on its hold id.
+ */
+export async function waitForPoolUpdateClearance(host: PoolUpdateWaitHost): Promise<void> {
+  const { profile } = host
+  let poolAnnounced = false
+  let poolHoldLogged: string | null = null
+  let poolHeld: HeldState | null = null
+  const poolBlockedHold = holdGraceClock()
+  const holdOwner = `pool:${host.poolKey}`
+
+  const poolGateDeps = host.gateDeps({
+    onHeld: state => {
+      poolHeld = state
+
+      if (state.blocking && poolHoldLogged !== state.holdId) {
+        poolHoldLogged = state.holdId
+        host.log(
+          `[updates] pool backend start for profile "${profile}" blocked: update marker ${state.verdict}, ` +
+            `hold ${state.holdId}; waiting for the hold to end or a Start anyway on the blocked screen`
+        )
+      }
+    }
+  })
+
+  try {
+    await waitForUpdateClearance(poolGateDeps, {
+      signal: host.signal,
+      isCancelled: host.isCancelled,
+      onWaitTick: reason => {
+        if (!poolAnnounced) {
+          poolAnnounced = true
+          host.log(`[updates] update in progress (${reason}); deferring pool backend start for profile "${profile}"`)
+        }
+
+        const blocked = poolBlockedHold(reason, poolHeld)
+        poolHeld = null
+
+        if (blocked) {
+          host.showHold(blocked, holdOwner)
+        } else {
+          host.clearHold(holdOwner)
+        }
+      },
+      pollMs: host.pollMs,
+      timeoutMs: host.timeoutMs
+    })
+  } finally {
+    host.clearHold(holdOwner)
+  }
 }

@@ -119,7 +119,12 @@ import {
   buildBrowserWindowUrl
 } from './browser-windows'
 import { createBundleSkewChecker } from './bundle-skew'
-import { detectBundleSwap, readBundleSwapStamp } from './bundle-swap'
+import {
+  BUNDLE_SWAP_RELAUNCH_FAILSAFE_MS,
+  detectBundleSwap,
+  readBundleSwapStamp,
+  relaunchIntoSwappedBundle
+} from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
 import { provisionCliLinks } from './cli-provision'
 import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
@@ -281,7 +286,6 @@ import { probeGatewayWebSocket, spawnedBackendProbeOptions } from './gateway-ws-
 import { windowsGitCandidates } from './git-binary-candidates'
 import { registerGitIpc } from './git-ipc'
 import { desktopBackendSpawnEnv, guestOnboardingEnabled } from './guest-onboarding'
-import { readAndConsumeHandoffResult } from './handoff-result'
 import {
   assertExistingPathForOpen,
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
@@ -591,14 +595,21 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
-import { waitForUpdateClearance } from './update-gate'
+import {
+  UPDATE_HANDOFF_DWELL_MS,
+  UPDATE_WAIT_POLL_MS,
+  UPDATE_WAIT_TIMEOUT_MS,
+  waitForUpdateClearance
+} from './update-gate'
+import { reportHandoffResult } from './update-handoff-report'
 import {
   createUpdateHoldScreen,
   holdGraceClock,
   type MarkerGateCallbacks,
   markerGateProbe,
   registerUpdateHoldIpc,
-  type UpdateHoldWire
+  type UpdateHoldWire,
+  waitForPoolUpdateClearance
 } from './update-hold-wiring'
 import { describeSkippedPrewrite, markerPath, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { type HeldState, heldWaitMessage } from './update-marker-gate'
@@ -611,6 +622,7 @@ import {
 } from './updater'
 import {
   observeUpdaterHandoff,
+  repairMacUpdaterHelper,
   resolveInstallationLauncher,
   resolveStagedUpdaterBinary,
   resolveVenvDir,
@@ -2977,21 +2989,6 @@ function directoryExists(filePath) {
 // own relaunch hits our single-instance lock and quits). Marker parsing +
 // staleness self-heal live in update-marker.ts (unit-tested).
 
-// How long the launch parks on an in-process update signal (in-flight /
-// hand-off) before starting the backend anyway. A LIVE marker owner is waited
-// out with no deadline (owner liveness, never age); past this the boot copy
-// says the update is still running.
-const UPDATE_WAIT_TIMEOUT_MS = 20 * 60 * 1000
-const UPDATE_WAIT_POLL_MS = 1000
-// How long the desktop lingers on the "updating, don't reopen" overlay after
-// spawning the detached updater, before it quits to release the venv shim. The
-// old 600ms was long enough to register the child process but far too short for
-// the user to READ the overlay — the window just vanished, looked like a crash,
-// and the user relaunched mid-update (the #50238 restart-loop trigger). A
-// couple of seconds lets the message land and bridges the gap until the
-// updater's own progress window appears. (#50419)
-const UPDATE_HANDOFF_DWELL_MS = 2500
-
 // Gate deps shared by the primary-window boot path and the pool-backend
 // spawn path. Consulting the on-disk marker, the in-process updateInFlight
 // flag, AND the successful detached hand-off state is load-bearing (#73822):
@@ -3011,59 +3008,6 @@ function updateGateDeps(callbacks: MarkerGateCallbacks = {}) {
     isUpdateInFlight: () => updateInFlight,
     isHandoffActive: () => isQuittingForHandoff
   }
-}
-
-// One-shot guard for the automatic bundle-swap relaunch below: the relaunched
-// instance carries this flag so a stamp that still mismatches (unreadable
-// resources, exotic packaging) can never produce a relaunch loop.
-const BUNDLE_SWAP_RELAUNCH_FLAG = '--hermes-bundle-swap-relaunched'
-
-// How long the parked instance waits for its own scheduled exit to land before
-// giving up and booting the stale build anyway. Better a torn renderer with a
-// banner than a window that never comes back.
-const BUNDLE_SWAP_RELAUNCH_FAILSAFE_MS = 15_000
-
-// The detached updater swaps the packaged bundle on disk AFTER `hermes update`
-// exits (posix.sh mac_swap / windows.ps1). An instance reopened mid-update —
-// the #50238 gesture the gate above exists for — was launched from the
-// PRE-swap bundle, and the updater's `open` leg then merely focuses us (single
-// instance), so no process ever loads the new build. Letting boot proceed here
-// runs the new runtime under the old renderer: exactly the skew
-// detectRendererSkew() warns about, except the Updates card already says
-// "latest", so the warning's own remedy has nothing to run.
-//
-// This is the earliest point where the swap is PROVABLE — it happens while we
-// are parked on the gate, so checking any sooner (at `ready`, before the gate)
-// only ever compares a stamp with itself. Relaunching here also keeps the
-// boot-progress window up for the whole wait instead of leaving the user with
-// no window at all.
-//
-// Returns true when the relaunch was scheduled; the caller must park rather
-// than continue booting, because the process exits underneath it.
-function relaunchIntoSwappedBundle() {
-  if (!IS_PACKAGED || process.argv.includes(BUNDLE_SWAP_RELAUNCH_FLAG)) {
-    return false
-  }
-
-  if (!detectBundleSwap(INSTALL_STAMP, readBundleSwapStamp(process.resourcesPath))) {
-    return false
-  }
-
-  rememberLog('[updates] app bundle was swapped during the update; relaunching into the new build')
-
-  try {
-    app.relaunch({
-      args: [...buildNoSandboxRelaunchArgs(process.argv.slice(1)), BUNDLE_SWAP_RELAUNCH_FLAG]
-    })
-  } catch (err) {
-    rememberLog(`[updates] bundle-swap relaunch failed: ${err?.message || err}; continuing with the current build`)
-
-    return false
-  }
-
-  void exitAfterBackendShutdown(0)
-
-  return true
 }
 
 // The blocked boot screen (R8 D3) every update wait publishes its hold on.
@@ -3168,72 +3112,16 @@ async function waitForUpdateToFinish() {
 
   clearUpdateHold()
 
-  // The detached hand-off script (scripts/desktop-update/windows.ps1) runs hidden;
-  // its result file is the ONLY way the user learns a detached update
-  // failed. Consume it exactly once, here, right where boot passes the
-  // update gate — success gets a log line, failure gets a real dialog
-  // (previously a failed detached update was indistinguishable from
-  // "nothing happened").
-  try {
-    const result = readAndConsumeHandoffResult(HERMES_HOME, {
-      expectedStartedAt: parkedRunStartedAt,
-      log: rememberLog
-    })
-
-    if (result && result.ok && result.warnings.length && !result.manual) {
-      // Committed, but follow-up work failed (C2/C3): the user IS on the new
-      // version, so this is a non-blocking notice, never "previous version".
-      rememberLog(`[updates] detached update finished with warnings: ${result.warnings.join(' | ')}`)
-      void dialog.showMessageBox({
-        type: 'info',
-        title: 'Hermes update',
-        message: 'Hermes updated, but some follow-up steps need another try',
-        detail: `${result.warnings.join('\n')}\n\nHermes retries them on the next launch or the next update.`
-      })
-    } else if (result && result.ok && result.manual) {
-      // Update landed but the user must act (reopen/reinstall/sandbox). On
-      // machines with no shim browser and no notifier this dialog is the
-      // FIRST time the message is visible — it must not be a log line.
-      rememberLog(`[updates] detached update finished with manual action (branch ${result.branch}): ${result.message}`)
-      dialog.showMessageBox({
-        type: 'warning',
-        title: 'Hermes update',
-        message: 'The update finished, but needs one more step',
-        detail: result.message
-      })
-    } else if (result && result.ok) {
-      rememberLog(`[updates] detached update finished OK (branch ${result.branch})`)
-    } else if (result) {
-      rememberLog(`[updates] detached update FAILED (exit ${result.exitCode}): ${result.message}`)
-      const handoffLogPath = path.join(HERMES_HOME, 'logs', 'desktop-update-handoff.log')
-
-      // Async so boot is not blocked behind the dialog; the response handlers
-      // reuse the menu's open-updates path (queued until the renderer is ready)
-      // and the same reveal primitive as 'hermes:logs:reveal'.
-      void dialog
-        .showMessageBox({
-          type: 'error',
-          title: 'Hermes update',
-          message: "Hermes couldn't finish updating",
-          detail:
-            "You're still on the previous version and can keep using it. Try the update again, or open the update log to report the problem.\n\n" +
-            `Details: ${result.message}`,
-          buttons: ['Try again', 'Open log', 'Close'],
-          defaultId: 0,
-          cancelId: 2,
-          noLink: true
-        })
-        .then(({ response }) => {
-          if (response === 0) {
-            sendOpenUpdatesRequested()
-          } else if (response === 1) {
-            shell.showItemInFolder(handoffLogPath)
-          }
-        })
-    }
-  } catch (err) {
-    rememberLog(`[updates] could not read hand-off result: ${err.message}`)
-  }
+  // A detached update's result file is the only way the user learns it
+  // failed: consumed once, here, where boot passes the update gate.
+  reportHandoffResult({
+    hermesHome: HERMES_HOME,
+    expectedStartedAt: parkedRunStartedAt,
+    log: rememberLog,
+    dialog,
+    shell,
+    openUpdates: sendOpenUpdatesRequested
+  })
 
   if (outcome === 'cancelled') {
     localBackendLifecycle.assertCanStart()
@@ -3247,7 +3135,18 @@ async function waitForUpdateToFinish() {
     rememberLog('[updates] update still in progress after wait timeout; starting backend anyway')
   } else if (overridden) {
     rememberLog('[updates] proceeding with backend start over a held update (user chose Start anyway); no relaunch')
-  } else if (relaunchIntoSwappedBundle()) {
+  } else if (
+    relaunchIntoSwappedBundle({
+      isPackaged: IS_PACKAGED,
+      argv: process.argv,
+      running: INSTALL_STAMP,
+      resourcesPath: process.resourcesPath,
+      relaunch: extraArgs =>
+        app.relaunch({ args: [...buildNoSandboxRelaunchArgs(process.argv.slice(1)), ...extraArgs] }),
+      exit: () => void exitAfterBackendShutdown(0),
+      log: rememberLog
+    })
+  ) {
     await advanceBootProgress('backend.update-restart', 'Restarting Hermes to load the updated app…', 14)
     // Park while the scheduled exit lands so this stale build never starts a
     // backend; the failsafe below only runs if the exit somehow does not.
@@ -4053,7 +3952,7 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
     rememberLog,
     startHermes,
     stopBackendsForUpdate,
-    repairMacUpdaterHelper,
+    repairMacUpdaterHelper: updater => repairMacUpdaterHelper(updater, { isMac: IS_MAC, log: rememberLog }),
     preflightStateDb: async (home: string, log: (message: string) => void): Promise<void> => {
       const root: string = resolveUpdateRoot()
 
@@ -4177,34 +4076,6 @@ let quitConfirmedWithActiveWork = false
 // whenever no hand-off applies; callers degrade gracefully.
 function resolveUpdaterBinary() {
   return resolveStagedUpdaterBinary(HERMES_HOME, { fileExists, isWindows: IS_WINDOWS })
-}
-
-function repairMacUpdaterHelper(updater) {
-  if (!IS_MAC || !updater) {
-    return
-  }
-
-  try {
-    execFileSync('/usr/bin/xattr', ['-cr', updater], { stdio: 'ignore' })
-  } catch (err) {
-    rememberLog(`[updates] macOS updater helper quarantine repair skipped: ${err.message}`)
-  }
-
-  try {
-    execFileSync('/usr/bin/codesign', ['--verify', updater], { stdio: 'ignore' })
-
-    return
-  } catch {
-    // Unsigned or invalid helper. Apply a local ad-hoc signature so Gatekeeper
-    // does not block the staged updater before it can run.
-  }
-
-  try {
-    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', updater], { stdio: 'ignore' })
-    rememberLog('[updates] repaired macOS updater helper signature')
-  } catch (err) {
-    rememberLog(`[updates] macOS updater helper signature repair skipped: ${err.message}`)
-  }
 }
 
 // Path to the venv shim whose lock decides whether `hermes update` can write
@@ -12362,59 +12233,18 @@ async function runPoolBackendStart(
   // during applyUpdates' critical section starts a backend on the runtime
   // being replaced. No boot-progress UI here — pool backends boot
   // silently for background profiles — so we only log while parked.
-  {
-    let poolAnnounced = false
-    let poolHoldLogged: string | null = null
-    let poolHeld: HeldState | null = null
-    const poolBlockedHold = holdGraceClock()
-    const holdOwner = `pool:${poolKey}`
-
-    // A blocking hold never ages out here either (R8 D3). Past the grace it is
-    // published on the window's blocked screen like the primary's (R8 M6): a
-    // remote primary, or one that booted before the hold appeared, never
-    // shows one of its own. Check again / Start anyway act on its hold id.
-    const poolGateDeps = updateGateDeps({
-      onHeld: state => {
-        poolHeld = state
-
-        if (state.blocking && poolHoldLogged !== state.holdId) {
-          poolHoldLogged = state.holdId
-          rememberLog(
-            `[updates] pool backend start for profile "${profile}" blocked: update marker ${state.verdict}, ` +
-              `hold ${state.holdId}; waiting for the hold to end or a Start anyway on the blocked screen`
-          )
-        }
-      }
-    })
-
-    try {
-      await waitForUpdateClearance(poolGateDeps, {
-        signal: localBackendLifecycle.signal,
-        isCancelled: (): boolean => backendPool.get(poolKey) !== entry,
-        onWaitTick: reason => {
-          if (!poolAnnounced) {
-            poolAnnounced = true
-            rememberLog(
-              `[updates] update in progress (${reason}); deferring pool backend start for profile "${profile}"`
-            )
-          }
-
-          const blocked = poolBlockedHold(reason, poolHeld)
-          poolHeld = null
-
-          if (blocked) {
-            showUpdateHold(blocked, holdOwner)
-          } else {
-            clearUpdateHold(holdOwner)
-          }
-        },
-        pollMs: UPDATE_WAIT_POLL_MS,
-        timeoutMs: UPDATE_WAIT_TIMEOUT_MS
-      })
-    } finally {
-      clearUpdateHold(holdOwner)
-    }
-  }
+  await waitForPoolUpdateClearance({
+    profile,
+    poolKey,
+    gateDeps: updateGateDeps,
+    signal: localBackendLifecycle.signal,
+    isCancelled: (): boolean => backendPool.get(poolKey) !== entry,
+    log: rememberLog,
+    showHold: showUpdateHold,
+    clearHold: clearUpdateHold,
+    pollMs: UPDATE_WAIT_POLL_MS,
+    timeoutMs: UPDATE_WAIT_TIMEOUT_MS
+  })
 
   profileDeletionGate.assertCanStart(profile)
 

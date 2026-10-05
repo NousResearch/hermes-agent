@@ -1,4 +1,4 @@
-import { spawn, type SpawnOptions, spawnSync, type SpawnSyncReturns } from 'node:child_process'
+import { execFileSync, spawn, type SpawnOptions, spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import { existsSync, realpathSync, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -468,6 +468,41 @@ export function stagedUpdaterSupportsPrewrittenMarker(
   const mtimeMs = (deps.stagedMtimeMs ?? stagedFileMtimeMs)(candidate)
 
   return typeof mtimeMs === 'number' && Number.isFinite(mtimeMs) && mtimeMs >= MARKER_SELF_ADOPT_EPOCH_MS
+}
+
+/**
+ * Clear the staged macOS updater helper's quarantine and, when its signature
+ * does not verify, ad-hoc sign it so Gatekeeper lets it run. Best effort.
+ */
+export function repairMacUpdaterHelper(
+  updater: string | null,
+  deps: { isMac: boolean; log: (line: string) => void }
+): void {
+  if (!deps.isMac || !updater) {
+    return
+  }
+
+  try {
+    execFileSync('/usr/bin/xattr', ['-cr', updater], { stdio: 'ignore' })
+  } catch (err) {
+    deps.log(`[updates] macOS updater helper quarantine repair skipped: ${(err as Error).message}`)
+  }
+
+  try {
+    execFileSync('/usr/bin/codesign', ['--verify', updater], { stdio: 'ignore' })
+
+    return
+  } catch {
+    // Unsigned or invalid helper. Apply a local ad-hoc signature so Gatekeeper
+    // does not block the staged updater before it can run.
+  }
+
+  try {
+    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', updater], { stdio: 'ignore' })
+    deps.log('[updates] repaired macOS updater helper signature')
+  } catch (err) {
+    deps.log(`[updates] macOS updater helper signature repair skipped: ${(err as Error).message}`)
+  }
 }
 
 export interface SpawnUpdaterProcessDeps {

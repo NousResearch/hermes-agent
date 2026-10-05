@@ -33,6 +33,21 @@ import { runBackendStartStep } from './backend-start-cancellation'
  * updater's marker reads dead and opens the gate by itself.
  */
 
+// How long the launch parks on an in-process update signal (in-flight /
+// hand-off) before starting the backend anyway. A LIVE marker owner is waited
+// out with no deadline (owner liveness, never age); past this the boot copy
+// says the update is still running.
+export const UPDATE_WAIT_TIMEOUT_MS = 20 * 60 * 1000
+export const UPDATE_WAIT_POLL_MS = 1000
+// How long the desktop lingers on the "updating, don't reopen" overlay after
+// spawning the detached updater, before it quits to release the venv shim. The
+// old 600ms was long enough to register the child process but far too short for
+// the user to READ the overlay — the window just vanished, looked like a crash,
+// and the user relaunched mid-update (the #50238 restart-loop trigger). A
+// couple of seconds lets the message land and bridges the gap until the
+// updater's own progress window appears. (#50419)
+export const UPDATE_HANDOFF_DWELL_MS = 2500
+
 export type UpdateGateReason = 'marker' | 'update-in-flight' | 'handoff' | null
 
 export interface UpdateGateDeps {

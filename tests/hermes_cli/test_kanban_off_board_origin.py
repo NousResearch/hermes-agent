@@ -339,6 +339,55 @@ def test_tool_recorded_origin_assigns_model_and_event(env):
     assert rows and rows[-1]["served_model"] == "tool-model"
 
 
+def test_launch_event_with_cleared_metadata_refuses(env):
+    """Round-3 residual HIGH: a run with a launch event whose metadata lost the
+    origin (emptied / key removed) must REFUSE, not downgrade to on-board."""
+    kb = env
+    for cleared in (None, "", "{}", '{"other": 1}'):
+        tid = _card(kb)
+        with _conn() as c:
+            kb.record_off_board_run(c, tid, served_model="m")
+            rid = kb._current_run_id(c, tid)
+            c.execute("UPDATE task_runs SET metadata = ? WHERE id = ?", (cleared, rid))
+            c.commit()
+            with pytest.raises(kb.OffBoardOriginError):
+                kb.complete_task(c, tid, summary="s", require_recorded_origin=False)
+        assert _status(kb, tid) == "running", cleared
+
+
+def test_launch_event_refusal_event_has_run_id(env):
+    kb = env
+    tid = _card(kb)
+    with _conn() as c:
+        rid = kb.record_off_board_run(c, tid, served_model="m")
+        c.execute("UPDATE task_runs SET metadata = NULL WHERE id = ?", (rid,))
+        c.commit()
+        with pytest.raises(kb.OffBoardOriginError):
+            kb.complete_task(c, tid, summary="s", require_recorded_origin=False)
+    ev = _events(kb, tid, "completion_blocked_off_board_origin")
+    assert ev and ev[-1]["run_id"] == rid
+
+
+def test_request_review_rejects_non_dict_metadata(env):
+    from hermes_cli import kanban_db_connect as kbc
+    kb = env
+    with kbc.connect_closing() as c:
+        tid = kb.create_task(c, title="rr", assignee="builder", workspace_kind="scratch")
+        assert kb.claim_task(c, tid) is not None
+        with pytest.raises(TypeError):
+            kb.request_review(c, tid, summary="x", metadata=[("off_board_run", None)])
+
+
+def test_edit_task_rejects_non_dict_metadata(env):
+    kb = env
+    tid = _card(kb)
+    with _conn() as c:
+        assert kb.complete_task(c, tid, summary="s")
+    with _conn() as c:
+        with pytest.raises(TypeError):
+            kb.edit_task(c, tid, result="r2", metadata=[("off_board_run", None)])
+
+
 def test_previous_run_origin_does_not_cover_current(env):
     """An origin on an ENDED run must not attribute the current run."""
     kb = env

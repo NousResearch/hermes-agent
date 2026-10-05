@@ -3236,11 +3236,11 @@ class OffBoardOriginError(ValueError):
         self.task_id = task_id
         super().__init__(
             f"completion blocked: {task_id} is declared off-board or its active "
-            "run carries a recorded external-launch origin, but the launch "
-            "origin is missing, invalid, or contradicts the completion — record "
-            "the launch with record_off_board_run before completing, or pass "
-            "require_recorded_origin=False when the invoking surface has no "
-            "launch step"
+            "run carries a recorded external-launch origin, but the launch origin "
+            "is missing, invalid, or contradicts the completion (record_off_board_run "
+            "must be called before the work starts). If this surface has no launch "
+            "step, it must attest the served model directly and pass "
+            "explicitly (require_recorded_origin=False) — never rely on the default"
         )
 
 
@@ -3825,25 +3825,30 @@ def _off_board_run_origin_state(
     NOT be silently downgraded to on-board (review round-2 HIGH). Both
     ``invalid`` and ``ambiguous`` MUST refuse.
 
-    ``(None, False, False)`` = "no origin recorded" — the ordinary on-board run."""
+    ``(None, False, False)`` = "no origin recorded" — the ordinary on-board run.
+    A ``route_off_board_launch`` event for the run OVERRIDES any metadata-derived
+    "no origin": if the launch event exists but the metadata no longer carries a
+    valid origin, the state is ``ambiguous`` (refuse), regardless of whether the
+    metadata is missing/empty/unparseable (review round-3 HIGH)."""
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
         return None, False, False
     if expected_run_id is not None and int(expected_run_id) != run_id:
         return None, False, False
+    launched = _launch_event_exists(conn, task_id, run_id)
     row = conn.execute(
         "SELECT metadata FROM task_runs WHERE id = ?", (run_id,),
     ).fetchone()
     if row is None or not row["metadata"]:
-        return None, False, False
+        return None, False, launched
     try:
         meta = json.loads(row["metadata"])
     except (ValueError, TypeError):
-        return None, False, _launch_event_exists(conn, task_id, run_id)
+        return None, False, launched
     if not isinstance(meta, dict):
-        return None, False, _launch_event_exists(conn, task_id, run_id)
+        return None, False, launched
     if "off_board_run" not in meta:
-        return None, False, False
+        return None, False, launched
     origin = meta.get("off_board_run")
     if not isinstance(origin, dict):
         return None, True, False
@@ -3907,7 +3912,7 @@ def _gate_off_board_served_model(
         with write_txn(conn):
             _append_event(
                 conn, task_id, "completion_blocked_off_board_origin",
-                {"reason": "invalid_origin" if invalid else "origin_unreadable",
+                {"reason": "invalid_origin" if invalid else "origin_lost",
                  "declared": declared, "run_id": run_id},
             )
         raise OffBoardOriginError(task_id)
@@ -3961,8 +3966,8 @@ def _off_board_state_in_txn(
     run_id = _current_run_id(conn, task_id)
     if invalid or ambiguous:
         raise _OffBoardGateChangedInTxn(
-            "origin_invalid_in_txn" if invalid else "origin_unreadable_in_txn",
-            {"reason": "invalid_origin" if invalid else "origin_unreadable",
+            "origin_invalid_in_txn" if invalid else "origin_lost_in_txn",
+            {"reason": "invalid_origin" if invalid else "origin_lost",
              "run_id": run_id})
     now_effective = declared or (origin is not None)
     if pre_effective and not now_effective:
@@ -4834,6 +4839,8 @@ def edit_task(
     # origin on a historical run (review round-2 residual of MEDIUM #5). The
     # dispatcher's ``resolved_route_provenance`` stays editable on purpose
     # (operator correction), so only the launch origin is stripped here.
+    if metadata is not None and not isinstance(metadata, dict):
+        raise TypeError("metadata must be a dict or None")
     metadata = _strip_keys(metadata, _LAUNCH_KEY)
     changed_fields = [
         field for field, value in (("title", title), ("body", body), ("priority", priority))
@@ -5091,6 +5098,8 @@ def request_review(
         return (ok, reason) if with_reason else ok
 
     summary = redact_review_value(summary)
+    if metadata is not None and not isinstance(metadata, dict):
+        raise TypeError("metadata must be a dict or None")
     metadata = redact_review_value(metadata)
     # A review handoff carries UNTRUSTED caller metadata; it must never clobber
     # or forge the trusted launch origin (review round-2 residual of MEDIUM #5).

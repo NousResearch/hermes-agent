@@ -19,11 +19,18 @@ export const SHARED_METRICS_CHOICES: Record<SharedMetricsChoice, { enabled: bool
 
 export type SharedMetricsRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
+/**
+ * Name the profile on every consent RPC: an unscoped one resolves to the
+ * backend's launch home, so on a shared backend the answer landed in another
+ * profile's config.yaml and the focused profile's offer never retired (#130714).
+ * `custom` is a HERMES_HOME outside profiles/ the backend cannot resolve by
+ * name; there the ambient route already is that home.
+ */
 export function sharedMetricsProfileRequester(
   request: SharedMetricsRequester,
   profile: string
 ): SharedMetricsRequester {
-  return (method, params = {}) => request(method, { ...params, profile })
+  return profile === 'custom' ? request : (method, params = {}) => request(method, { ...params, profile })
 }
 
 function isConsent(value: unknown): value is SharedMetricsConsent {

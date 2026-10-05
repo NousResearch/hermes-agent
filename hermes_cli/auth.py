@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_json_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
+from utils import atomic_json_write, env_float, file_signature, is_truthy_value, read_text_contended  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
@@ -745,7 +745,8 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     if not auth_file.exists():
         return _empty_auth_store()
     try:
-        raw = json.loads(auth_file.read_text(encoding="utf-8-sig"))
+        # Contended: unlocked readers race other processes' atomic replace of auth.json on Windows.
+        raw = json.loads(read_text_contended(auth_file))
     except OSError:
         # Exists but unreadable (EMFILE, EACCES, EIO, stalled mount): contents are not bad, and this
         # module read-modify-writes everywhere, so an empty store here is one _save_auth_store()

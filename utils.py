@@ -206,6 +206,28 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     return real_path
 
 
+_READ_RETRY_ATTEMPTS = 10
+_READ_RETRY_DELAY_S = 0.05
+
+
+def read_text_contended(path: Union[str, Path], *, encoding: str = "utf-8-sig") -> str:
+    """``Path.read_text`` that rides out the Windows sharing violation a reader hits while another
+    process atomically replaces the file — the reader-side twin of the bounded retry in
+    :func:`atomic_replace`. ``open()`` goes through the C runtime, which maps the sharing violation
+    to a bare EACCES ``PermissionError`` with no winerror, so on Windows every PermissionError is a
+    candidate; a genuine ACL denial still raises, ~0.5 s later. Any other error raises at once."""
+    path = Path(path)
+    for attempt in range(_READ_RETRY_ATTEMPTS):
+        try:
+            return path.read_text(encoding=encoding)
+        except OSError as exc:
+            contended = _IS_WINDOWS and (isinstance(exc, PermissionError) or _is_contended_windows_replace_error(exc))
+            if attempt == _READ_RETRY_ATTEMPTS - 1 or not contended:
+                raise
+            time.sleep(_READ_RETRY_DELAY_S)
+    raise AssertionError("unreachable")
+
+
 def _publish_path(target_str: str) -> str:
     """The path :func:`atomic_replace` renames onto: a symlink's real file, else the target itself."""
     return os.path.realpath(target_str) if os.path.islink(target_str) else target_str

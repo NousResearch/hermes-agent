@@ -111,10 +111,11 @@ def _tick_admitted(
         except OSError as exc:
             # No durable advance -> a crash mid-run would re-fire recurring jobs; skipping is the
             # at-most-once side. One-shots still go through their own fire claim.
-            recurring = [j for j in due_jobs if j.get("schedule", {}).get("kind") in {"cron", "interval"}]
-            warn_store_unwritable(exc, f"skipped {len(recurring)} recurring job(s)")
-            due_jobs = [j for j in due_jobs if j not in recurring]
+            n = len(due_jobs)
+            due_jobs = [j for j in due_jobs if j.get("schedule", {}).get("kind") not in {"cron", "interval"}]
+            warn_store_unwritable(exc, f"skipped {n - len(due_jobs)} recurring job(s)")
             if not due_jobs:
+                _sched._sweep_mcp_orphans()
                 return 0
 
         _max_workers = _sched._resolve_max_parallel_workers()

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const $activeGatewayProfile = atom('default')
 const $newChatProfile = atom<string | null>(null)
+const $newChatRoute = atom<{ connectionId: string; profile: string } | null>(null)
 const $freshSessionRequest = atom(0)
 const $showAllProfiles = atom(false)
 const $connection = atom<{ connectionId: string; mode: 'remote'; profile: string; registryScoped: true } | null>(null)
@@ -10,6 +11,7 @@ const $activeSessionId = atom<string | null>(null)
 const $selectedStoredSessionId = atom<string | null>(null)
 const $defaultProfileRoute = atom<{ connectionId: string; profile: string } | null>(null)
 const getProfiles = vi.fn()
+let newChatIntentRevision = 0
 
 const ensureGatewayAgent = vi.fn(
   async (connectionId: string, profile: string, options?: { beforeActivate?: () => boolean }) => {
@@ -30,12 +32,16 @@ vi.mock('@/store/session', () => ({ $connection, $activeSessionId, $selectedStor
 vi.mock('@/store/profile', () => ({
   $activeGatewayProfile,
   $newChatProfile,
+  $newChatRoute,
   $freshSessionRequest,
   $showAllProfiles,
   normalizeProfileKey: (value: string | null | undefined) => value?.trim() || 'default',
   ensureGatewayAgent,
   openGatewayAgent,
-  captureNewChatSource: vi.fn(),
+  currentNewChatIntent: () => newChatIntentRevision,
+  captureNewChatSource: vi.fn(() => {
+    newChatIntentRevision += 1
+  }),
   refreshActiveProfile: vi.fn(async () => undefined),
   requestFreshSession: vi.fn()
 }))
@@ -72,6 +78,8 @@ beforeEach(() => {
   $selectedStoredSessionId.set(null)
   $defaultProfileRoute.set(null)
   $showAllProfiles.set(false)
+  $newChatRoute.set(null)
+  newChatIntentRevision = 0
   ensureGatewayAgent.mockClear()
   openGatewayAgent.mockClear()
   getProfiles.mockReset()
@@ -102,6 +110,16 @@ describe('restoring a remote primary without an explicit default', () => {
 
     expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
     expect($showAllProfiles.get()).toBe(true)
+  })
+
+  it('keeps a pinned new-chat route when boot corrects the active profile', async () => {
+    $newChatRoute.set({ connectionId: 'homelab', profile: 'marina' })
+    getProfiles.mockResolvedValue({ profiles: [{ name: 'default' }, { name: 'marina' }] })
+
+    await initializeConnectionsRegistry()
+
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect($newChatRoute.get()).toEqual({ connectionId: 'homelab', profile: 'marina' })
   })
 
   it('preserves a matching remote profile, without any re-home', async () => {
@@ -143,10 +161,12 @@ describe('restoring a remote primary without an explicit default', () => {
   it('still leaves All profiles on an intentional user connection pick', async () => {
     setConnectionsRegistry(registry as Parameters<typeof setConnectionsRegistry>[0])
     $showAllProfiles.set(true)
+    $newChatRoute.set({ connectionId: 'homelab', profile: 'office-evals-windows' })
 
     await selectConnection('homelab', { profile: 'marina' })
 
     expect($showAllProfiles.get()).toBe(false)
+    expect($newChatRoute.get()).toBe(null)
   })
 
   it('does not undo a user profile choice made while the roster is loading', async () => {

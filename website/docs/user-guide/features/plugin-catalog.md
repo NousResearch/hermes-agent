@@ -17,7 +17,7 @@ hermes plugins install <name>
 Browse it visually at **[/docs/plugins](/plugins)** — entries are shelved by
 category (Memory, Desktop, Platforms, Web & Browser, Tools, Voice, Automation,
 Models), with search, tier filters (Official / Community), capability chips, and
-**Open in Hermes Desktop** buttons and copyable CLI commands for every entry.
+copyable install commands for every entry.
 
 Every entry also has its own page at `/docs/plugins/<name>` (click a card):
 the full description and any disclosure, the pinned commit, tools, hooks and
@@ -26,12 +26,6 @@ screenshots and the README from the reviewed commit, plus a **More by this
 author** shelf. Authors have a page at `/docs/plugins/by/<maintainer>` listing
 everything they maintain in the catalog. Both are generated at build time from
 the same catalog files, so a merged PR is the only way a page changes.
-
-In Desktop, open **Capabilities → Plugins → Browse** for the native catalog
-view. It is not an embedded website. **Installed** is a separate tab backed
-by the app's desktop-plugin registry and the selected profile's agent-plugin
-state, rather than catalog metadata. Skills uses the same **Installed / Browse**
-layout; search stays at the top and the tab switch and actions share one row.
 
 The catalog complements — it does not replace — the existing
 [plugin system](plugins.md). Anything you can install from the catalog is a
@@ -42,20 +36,6 @@ During desktop onboarding, the setup guide can also offer catalog plugins and sk
 approval card. Each row installs into your `default` profile only when you click Install, at the
 same reviewed commit this page describes.
 
-### Published browse data
-
-The website and Desktop read the same generated CDN snapshot:
-[`https://hermes-agent.nousresearch.com/docs/api/plugins.json`](https://hermes-agent.nousresearch.com/docs/api/plugins.json).
-Desktop fetches it through
-`https://nousresearch.github.io/hermes-agent/docs/api/plugins.json`; the public
-docs alias serves the same data. The docs build reads `plugin-catalog/*.yaml`
-and adds cached repository star counts. It also publishes the installer's
-removed-entry list. Neither Browse view crawls source repositories or queries
-the GitHub API live.
-
-This browse snapshot is distinct from the installer's
-[`plugin-catalog.json`](#live-refresh), which resolves catalog names and pins.
-
 ## What's in an entry
 
 Each catalog entry is a small YAML file in the
@@ -65,6 +45,7 @@ directory of the hermes-agent repository, declaring:
 | Field | Meaning |
 |---|---|
 | `name` | The catalog key you pass to `hermes plugins install` |
+| `description` | One-line summary shown on cards and in the install prompt, including any reviewer disclosure |
 | `repo` | The plugin's public git repository |
 | `sha` | The **exact 40-hex commit** that was reviewed — installs check out this pin, not a branch tip |
 | `subdir` | Path to the plugin inside the repo for monorepos — a plain relative path matching `[A-Za-z0-9._/-]+` (no `..`, `.`, empty segments, absolute or backslash forms) (optional, default repo root) |
@@ -77,6 +58,7 @@ directory of the hermes-agent repository, declaring:
 | `title` | Human name shown on cards, e.g. `NVIDIA App` (optional; defaults to `name`) |
 | `onboarding` | `true` offers the plugin on the desktop onboarding card, beside the hosted connectors, on the platforms it lists. Curated: official entries only (optional, default `false`) |
 | `docs_url` | External documentation link (optional) |
+| `known_issues` | Short notes shown at the install prompt, e.g. an unsupported install mode. Informational; they never block the install (optional) |
 | `version` | Human-readable label for the pinned sha, e.g. `"1.4.0"`; shown as `1.4.0 @ abcd1234` in the CLI, on the catalog card and on the Desktop **Update to** button (optional, cosmetic) |
 | `image` | Banner image for the catalog card and the plugin page hero, shown at 2:1 (1200×600 works; other shapes are centre-cropped); an `https` URL on `raw.githubusercontent.com`, `github.com` or `*.githubusercontent.com` (optional). Pin it to the entry's commit (`raw.githubusercontent.com/owner/repo/<sha>/...`) so it never changes under the review |
 | `screenshots` | Up to 6 images shown as a gallery on the plugin page, same host rule as `image` (optional). Pin them to the entry's commit too |
@@ -147,22 +129,6 @@ repository. Review the code of anything you give credentials to.
 :::
 
 ## Installing from the catalog
-
-On the website, **Open in Hermes Desktop** opens a protocol link of this form:
-
-```text
-hermes://plugin/install?catalog=example-plugin
-```
-
-Desktop resolves the name against the published catalog and asks you to review
-the source, destination and components before confirming. The link does not
-auto-install or supply its own repository or commit. An unknown name or failed
-lookup shows an error; it never falls back to a repository install. For the
-agent-plugin component, the backend resolves the catalog name to its reviewed pin.
-
-Use an updated Desktop build for catalog links and the Skills Hub's
-`hermes://skill/install?identifier=...` route. The cards retain CLI commands,
-so you can install by catalog name without Desktop:
 
 ```bash
 # Install a reviewed catalog entry by name (checks out the pinned SHA)
@@ -273,31 +239,18 @@ catalog for discovery.
 ## Submitting a plugin to the catalog
 
 Submissions are pull requests that add one `plugin-catalog/<name>.yaml` file.
-The full checklist lives in the
-[plugin-catalog README](https://github.com/NousResearch/hermes-agent/tree/main/plugin-catalog);
-in short, an entry must be:
+The complete guidelines live in
+**[Submitting to the plugin catalog](../../developer-guide/plugins/catalog-submission.md)**:
+what to check before you submit, how the PR and review work, every admission
+rule, and how pin updates, delisting and removal work. That page mirrors the
+canonical rules in the
+[plugin-catalog README](https://github.com/NousResearch/hermes-agent/tree/main/plugin-catalog).
 
-1. **Owner-submitted** — the PR author owns or maintains the plugin repo.
-   Maintainers also add batches of community plugins from a reviewed sweep
-   (each pin validated and scanned at the pinned commit); if yours was swept
-   in and you want it changed or removed, open a PR on your entry.
-2. **A public repository** — the `repo` URL is publicly cloneable.
-3. **Released** — the repo has real releases/tags, not just a default branch.
-4. **Passing validation** — the catalog validation GitHub Action is green on
-   the PR (schema, SHA format, reachability).
-5. **Not self-updating** — the catalog build must not download and replace
-   its own files; the pinned SHA is the only update path (a SHA-bump PR plus
-   `hermes plugins update <name>`).
-
-Pin updates (bumping `sha` to a newer commit) follow the same PR + review
-process; bump `version` in the same PR so the label users see matches the
-code, and re-pin any `image` / `screenshots` URLs that embed the sha. Your
-plugin page (`/docs/plugins/<name>`) is built from the same file: add
-`screenshots:` there to fill it out (the README renders by default) — there is no separate
-listing to maintain. Installed plugins compare their recorded sha against the live pin:
-`hermes plugins list --json` reports `update_available`, the Desktop Plugins
-tab shows an **Update to 1.4.0** button, and `hermes plugins update <name>`
-checks out exactly the new pin.
+In short, a listed plugin is submitted by its owner (or added in a reviewed
+maintainer sweep), lives in a public repository, pins an exact commit, passes
+`hermes plugins validate` in catalog CI, never updates itself, and extends
+Hermes only through public hooks and the Desktop SDK, never by patching core
+code or Desktop UI at runtime.
 
 ## See also
 
@@ -306,3 +259,4 @@ checks out exactly the new pin.
 - [Built-in Plugins](built-in-plugins.md) — plugins that ship with Hermes
 - [Build a Hermes Plugin](../../developer-guide/plugins/index.md) — write your own
 - [Plugin Catalog page](/plugins) — the browsable catalog
+- [Submitting to the plugin catalog](../../developer-guide/plugins/catalog-submission.md) — admission rules and the submission guide

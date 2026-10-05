@@ -1448,8 +1448,6 @@ platform:
   irc:
     quit_message: "Hermes Agent를 종료하는 중"
     standalone_quit: "전송됨"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "한 번 승인"
     confirm_always_approve: "항상 승인"
@@ -2355,6 +2353,7 @@ cli:
     removed: "대기열 항목 {index}을(를) 제거했어요: {preview}"
     item_not_found: "대기열 항목 {index}을(를) 찾을 수 없어요. 현재 크기: {size}"
     usage_edit: "사용법: /queue edit <number> <new prompt>"
+    usage_remove: "사용법: /queue rm <number>"
     updated: "대기열 항목 {index}을(를) 수정했어요: {preview}"
     usage_move: "사용법: /queue move <from> <to>"
     move_out_of_range: "대기열 이동 범위를 벗어났어요. 현재 크기: {size}"
@@ -2720,6 +2719,7 @@ cli:
       restored: "상태를 복원했어요: {snapshot_id}"
       restart_recommended: "게이트웨이/대시보드 프로세스가 state.db 변경을 반영하려면 재시작을 권장해요."
       not_found: "스냅샷을 찾을 수 없어요: {snapshot_id}"
+      restore_incomplete: "스냅샷 {snapshot_id}을(를) 완전히 복원하지 못했어요: 일부 파일이 거부되었어요 (로그 확인)"
       usage_prune: "사용법: /snapshot prune [keep-count]"
       pruned: "오래된 스냅샷 {deleted}개를 정리했어요 ({keep}개 유지)."
     export:
@@ -3674,7 +3674,7 @@ tips:
   t197: "궤적 저장(--save-trajectories)은 모델 학습용으로 도구 사용 전체 기록을 남겨요."
   t198: "플러그인은 세 종류예요: 일반(도구/훅), 메모리 제공자, 컨텍스트 엔진."
   t199: "hermes plugins install owner/repo로 GitHub에서 직접 플러그인을 설치할 수 있어요."
-  t200: "외부 메모리 제공자: Honcho, OpenViking, Mem0은 기본 포함이고, Hindsight 등은 hermes plugins install로 설치해요."
+  t200: "외부 메모리 제공자: OpenViking, Mem0은 기본 포함이고, Honcho, Hindsight 등은 hermes plugins install로 설치해요."
   t201: "플러그인 훅에는 pre/post_tool_call, pre/post_llm_call, 그리고 출력 정규화용 transform_terminal_output이 있어요."
   t202: "프롬프트 캐싱(Anthropic)은 캐시된 시스템 프롬프트 접두부를 재사용해 비용을 줄여요."
   t203: "에이전트는 백그라운드 스레드에서 세션 제목을 자동 생성해요 — 지연 시간에 영향이 없어요."

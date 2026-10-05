@@ -1227,7 +1227,11 @@ agent:
                                # Set a positive integer to cap; "none"/"null"/
                                # "unlimited"/"inf"/"infinity"/"infinite"/0/-1 = no limit
   budget_warning_ratio: null   # Optional one-time checkpoint warning, e.g. 0.75
-  api_max_retries: 3           # Retries per provider before fallback engages (default: 3)
+  api_max_retries: 3           # API attempts per provider before fallback (minimum: 1)
+  codex:
+    ttfb_below_stale: true     # Couple small-request TTFB below the stale deadline
+    ttfb_fast_reconnect_seconds: 40.0  # Target cutoff; <= 0 disables coupling
+    ttfb_below_stale_margin_seconds: 10.0  # Desired gap before stale (nonnegative)
   auto_recovery_cycles: 5      # Wait-and-retry cycles after retries + fallback are spent on an outage (0 = off)
 ```
 
@@ -1235,7 +1239,9 @@ agent:
 
 `agent.budget_warning_ratio` is off by default for ordinary and delegated conversations. When set to a value strictly between `0` and `1` alongside a finite `max_turns`, Hermes appends one model-visible checkpoint notice to the latest tool result after the threshold is reached. The notice rearms each conversation turn and uses each agent's own iteration budget. It only appends to a current tool-result tail, never an older turn, and does not add a synthetic user/system message or change the existing exhaustion grace call. Dispatcher-owned Kanban workers receive a completion checkpoint at 90% by default (an explicit ratio changes that threshold), while their tools are still available. The checkpoint asks for verified completion or a durable progress comment, not premature success.
 
-`agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](./features/fallback-providers.md) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
+`agent.api_max_retries` controls the application-level attempt budget for a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3`; `1` selects a single attempt. Cron jobs may set `api_max_retries` through `cronjob_manage` create/update to **raise**, never lower, this inherited budget. An absent override inherits the global setting; an empty string on update clears the override.
+
+`agent.codex` configures no-event fast reconnect for Codex Responses requests below 10,000 estimated tokens. It never lengthens an existing TTFB cutoff or enables a disabled watchdog, and leaves upstream large-prefill and hard-timeout policies unchanged. With a finite positive stale deadline, the cutoff stays strictly below it, even below five seconds: the desired margin is capped at half the stale budget (a zero margin still leaves a strictly earlier deadline). Polling may observe both deadlines in one tick; TTFB is checked first. Set `ttfb_below_stale: false` to disable coupling. These three settings are read from `config.yaml` per request, not from environment variables; existing watchdog environment settings are unchanged.
 
 `agent.auto_recovery_cycles` is the safety net *after* both the retries and the fallback chain are spent. When the failure is a transient outage (HTTP 5xx, an `overloaded`/529 response, a connect or read timeout) and no answer text has reached you yet, Hermes does not end the turn with "API failed after N retries" — it waits and tries again, up to this many cycles (default `5`), with a jittered 15/30/60/60/60 s schedule. A provider `Retry-After` header wins over the schedule (honoured up to 120 s). Every surface shows the same line while it waits — `⏳ Provider temporarily unavailable — retrying automatically in 30s (cycle 2/5); press Esc to stop` on the CLI/TUI/Desktop, a status bubble on messaging platforms (`send /stop to cancel`), a `hermes.status` SSE event on the API server, and a log line for cron jobs. Pressing Esc (or `/stop`) cancels the wait immediately. Fallback still comes first: with a fallback chain configured, exhaustion moves to the next provider as before, and the ladder only engages once the chain has nothing left. Authentication, billing, request-format, entitlement, content-policy and account-policy errors never enter the ladder. Set `0` to disable it.
 

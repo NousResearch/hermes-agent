@@ -1134,3 +1134,70 @@ class TestTrustWarningSymlinkAware:
             self._log("sym", root / "sym" / "SKILL.md", [root], root)
 
         assert "outside the trusted" in caplog.text, caplog.text
+
+
+# ---------------------------------------------------------------------------
+# _skill_linked_files — custom subdirectory discovery and dot-dir exclusion
+# ---------------------------------------------------------------------------
+
+
+class TestSkillLinkedFiles:
+    """_skill_linked_files auto-discovers custom subdirectories and
+    excludes files under any dot-directory component at any depth."""
+
+    def _make_skill_with_dirs(self, tmp_path, extra_dirs=None, dot_files=None):
+        """Helper: create a skill with standard + extra subdirs and optional dot-dir files."""
+        from tools.skills_tool import _skill_linked_files
+
+        skill_dir = tmp_path / "linked-test"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("---\nname: linked-test\ndescription: t\n---\nbody\n")
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "api.md").write_text("# API")
+        (skill_dir / "templates").mkdir()
+        (skill_dir / "templates" / "config.yaml").write_text("key: val")
+        if extra_dirs:
+            for d in extra_dirs:
+                (skill_dir / d).mkdir(parents=True, exist_ok=True)
+                (skill_dir / d / "file.md").write_text("content")
+        if dot_files:
+            for df in dot_files:
+                (skill_dir / df).parent.mkdir(parents=True, exist_ok=True)
+                (skill_dir / df).write_text("hidden")
+        return skill_dir, _skill_linked_files(skill_dir)
+
+    def test_includes_standard_subdirs(self, tmp_path):
+        skill_dir, result = self._make_skill_with_dirs(tmp_path)
+        assert "references" in result
+        assert "templates" in result
+        assert result["references"] == ["references/api.md"]
+
+    def test_includes_custom_subdirs(self, tmp_path):
+        _, result = self._make_skill_with_dirs(tmp_path, extra_dirs=["steps", "checks"])
+        assert "steps" in result
+        assert "checks" in result
+
+    def test_excludes_top_level_dot_dir(self, tmp_path):
+        _, result = self._make_skill_with_dirs(tmp_path, dot_files=[".hidden/secret.md"])
+        assert ".hidden" not in result
+
+    def test_excludes_nested_dot_dir(self, tmp_path):
+        """A file under steps/.hidden/x.md must not appear in linked_files
+        and the nested dot-dir name must not leak into discovery."""
+        _, result = self._make_skill_with_dirs(
+            tmp_path, extra_dirs=["steps"], dot_files=["steps/.hidden/secret.md"])
+        assert "steps" in result
+        # The secret file must not appear under steps
+        steps_entries = result.get("steps", [])
+        assert not any(".hidden" in e for e in steps_entries)
+        assert "steps/visible.md" not in steps_entries  # no visible.md was created
+
+    def test_excludes_deeply_nested_dot_dir(self, tmp_path):
+        """steps/phase1/.meta/config.md — dot at any depth is excluded."""
+        _, result = self._make_skill_with_dirs(
+            tmp_path, extra_dirs=["steps"],
+            dot_files=["steps/phase1/.meta/config.md", "steps/phase1/work.md"])
+        assert "steps" in result
+        steps_entries = result.get("steps", [])
+        assert any("work.md" in e for e in steps_entries)
+        assert not any(".meta" in e for e in steps_entries)

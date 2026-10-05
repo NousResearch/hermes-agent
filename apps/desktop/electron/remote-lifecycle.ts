@@ -1157,6 +1157,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   // phantom profiles/0/ directory (#88842).
   const pinned = backendProfileArg(profile)
   const profileArgs = pinned ? `--profile ${shq(pinned)} ` : ''
+
   // The lockfile the spawn script publishes must carry the SAME normalized
   // profile as the argv: pidIsOurDashboard and the managed-update drain both
   // prove ownership by comparing the live `--profile` value against
@@ -1164,6 +1165,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   if (opts.lockMetadata && opts.lockMetadata.profile !== (pinned ?? '')) {
     opts.lockMetadata = { ...opts.lockMetadata, profile: pinned ?? '' }
   }
+
   const logPath = expandRemotePath(opts.logPath)
   const tokenFilePath = opts.tokenFilePath
   const tokenArg = tokenFilePath ? ` --ssh-session-token-file ${expandRemotePath(tokenFilePath)}` : ''
@@ -1741,9 +1743,13 @@ async function connect(deps) {
     // record. Inside the try: if this write itself fails, the catch still
     // kills the just-spawned process via the in-memory record.
     await writeLockfile(ssh, ownershipId, ownedSpawn)
+    // The spawn command returns the short-lived wrapper pid. The detached
+    // serve daemon can outlive that wrapper while it is still starting, so a
+    // wrapper liveness check races the READY line and rejects healthy boots.
+    // The bounded READY wait is the authoritative startup check; later
+    // requests verify the daemon through the established connection.
     remotePort = await scrapeReadyPort(ssh, logPath, {
       timeoutMs: readyTimeoutMs,
-      isAlive: () => remotePidAlive(ssh, pid),
       signal
     })
     assertBootstrapNotSuperseded(signal)

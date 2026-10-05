@@ -174,7 +174,7 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     then in-place rewrite).
     """
     target_str = str(target)
-    real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
+    real_path = _publish_path(target_str)
     tmp_str = str(tmp_path)
     try:
         os.replace(tmp_str, real_path)
@@ -204,6 +204,31 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
         # The rewrite re-raises its own error, so an ACL denial is reported as such, not as contention.
         (_rewrite_in_place if contended else _copy_fallback)(tmp_str, real_path)
     return real_path
+
+
+def _publish_path(target_str: str) -> str:
+    """The path :func:`atomic_replace` renames onto: a symlink's real file, else the target itself."""
+    return os.path.realpath(target_str) if os.path.islink(target_str) else target_str
+
+
+def mkstemp_beside(target: Union[str, Path], **kw: Any) -> tuple[int, str]:
+    """``tempfile.mkstemp`` in the directory :func:`atomic_replace` will rename into.
+
+    A temp staged next to a symlink whose target lives on another filesystem turns the publish
+    rename into EXDEV, and atomic_replace's copy fallback then rewrites the file in place (torn on
+    a crash). Staging beside the resolved target keeps the rename atomic. If that directory is not
+    writable to us (the file itself may still be), stage beside the link instead: the save keeps
+    working through the non-atomic copy fallback, exactly as before.
+    """
+    target_str = str(target)
+    link_dir = str(Path(target_str).parent)
+    stage_dir = os.path.dirname(_publish_path(target_str)) or link_dir
+    try:
+        return tempfile.mkstemp(dir=stage_dir, **kw)
+    except PermissionError:
+        if stage_dir == link_dir:
+            raise
+        return tempfile.mkstemp(dir=link_dir, **kw)
 
 
 def fsync_directory(path: Union[str, Path]) -> None:
@@ -286,7 +311,7 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     if mode is None and not path.exists():
         mode = default_new_file_mode()
     original_owner = _preserve_file_owner(path) if preserve_owner else None
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
+    fd, tmp_path = mkstemp_beside(path, prefix=prefix, suffix=".tmp")
     try:
         with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding) as f:
             if mode is not None and hasattr(os, "fchmod"):

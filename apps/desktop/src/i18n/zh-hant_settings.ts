@@ -608,7 +608,7 @@ export const zhHantSettings = {
       fileReadMaxChars: 'Hermes 單次檔案讀取可讀取的最大字元數。',
       approvals: {
         mode: 'Hermes 如何處理需要明確批准的指令。',
-        timeout: '訊息平台上的批准提示逾時前等待的時間。App 與終端機會一直等到你回覆。'
+        timeout: '批准提示逾時前等待的時間。'
       },
       security: {
         redactSecrets: '盡可能從模型可見內容中隱藏偵測到的密鑰。'
@@ -776,7 +776,11 @@ export const zhHantSettings = {
       imported: '設定已匯入',
       invalidJson: '設定 JSON 無效',
       keepAwakeTitle: '保持電腦喚醒',
-      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
+      keepAwakeDesc:
+        '阻止本機睡眠。「執行期間」僅在有回合進行時生效，整夜執行得以持續，又不會讓筆電整週保持喚醒。螢幕仍可變暗。',
+      keepAwakeOff: '關閉',
+      keepAwakeWhileWorking: '執行期間',
+      keepAwakeAlways: '一律',
       voiceShortcutHintTitle: '語音錄製快捷鍵',
       voiceShortcutHintDesc:
         '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「Start / stop voice conversation」）。voice.record_key 設定僅適用於 CLI 和 TUI。',

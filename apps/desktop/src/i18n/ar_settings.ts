@@ -483,8 +483,7 @@ export const arSettings = {
       'codeExecution.mode': 'مدى تقييد تنفيذ الكود بالمشروع الحالي.',
       fileReadMaxChars: 'أقصى عدد أحرف يستطيع Hermes قراءته من ملف واحد في الطلب.',
       'approvals.mode': 'كيف يتعامل Hermes مع الأوامر التي تحتاج موافقة صريحة.',
-      'approvals.timeout':
-        'مدة انتظار طلبات الموافقة على منصات المراسلة قبل انتهاء المهلة. التطبيق والطرفية ينتظران حتى تجيب.',
+      'approvals.timeout': 'مدة انتظار طلبات الموافقة قبل انتهاء المهلة.',
       'security.redactSecrets': 'يخفي الأسرار المكتشفة من المحتوى المرئي للنموذج قدر الإمكان.',
       'checkpoints.enabled': 'ينشئ لقطات رجوع قبل تعديلات الملفات.',
       'memory.memoryEnabled': 'يحفظ ذكريات دائمة يمكن أن تساعد الجلسات القادمة.',
@@ -726,6 +725,8 @@ export const arSettings = {
       defaultsLabel: 'الافتراضيات',
       reasoning: 'الاستدلال',
       reasoningOff: 'إيقاف',
+      speed: 'السرعة',
+      speedStandard: 'قياسية',
       defaultsFailed: 'فشل حفظ افتراضيات النموذج',
       loadFailed: 'تعذر تحميل النماذج',
       restartRequired: 'بعد التحديث ما زال هذا الخلفية يشغّل كودا قديما. أعد تشغيله لتحميل الكود الجديد.',

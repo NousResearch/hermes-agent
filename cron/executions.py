@@ -482,6 +482,21 @@ def latest_execution(job_id: str) -> Optional[Dict[str, Any]]:
     return rows[0] if rows else None
 
 
+def live_inflight_execution(job_id: str) -> Optional[Dict[str, Any]]:
+    """The job's latest attempt while it is still claimed/running under a LIVE owner, else ``None``.
+
+    This is scheduler OWNERSHIP, not recent activity: a run inside a long tool call writes no
+    heartbeat yet stays owned, while a run whose process died (watchdog kill, crash) does not.
+    Read-only — unlike ``recover_interrupted_executions`` it never rewrites a row.
+    """
+    record = latest_execution(job_id)
+    if not record or record.get("status") not in ("claimed", "running"):
+        return None
+    if not _owner_is_live(int(record["pid"]), record.get("process_started_at")):
+        return None
+    return record
+
+
 def latest_executions(job_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     """Load latest execution for many jobs in one query."""
     clean = [str(job_id) for job_id in dict.fromkeys(job_ids) if job_id]

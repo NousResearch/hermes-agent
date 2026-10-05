@@ -108,6 +108,67 @@ def test_a_stale_reclaim_never_deletes_a_claim_published_after_its_read(tmp_path
             claimant.wait()
 
 
+_RECLAIM_PAUSED_READER = """
+import os, signal, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hermes_cli import update_lock
+def trace(frame, event, arg):
+    if event == "call" and frame.f_code.co_name == "_reclaim_dead":
+        sys.settrace(None)
+        os.kill(os.getpid(), signal.SIGSTOP)   # stale snapshot taken; a scheduling pause, nothing replaced
+    return None
+sys.settrace(trace)
+print(update_lock.read_live_update(path=Path(sys.argv[2]), install_root=Path(sys.argv[3])) is not None, flush=True)
+"""
+
+_MARKER_ONLY_CLAIMANT = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hermes_cli.update_lock import UpdateLock
+assert UpdateLock(path=Path(sys.argv[2]), install_root=Path(sys.argv[3]), checkout_first=False).acquire()
+Path(sys.argv[4]).touch()
+time.sleep(60)
+"""
+
+
+@posix_only
+def test_a_reader_reports_the_live_claim_that_replaced_its_stale_snapshot(tmp_path):
+    """F2: the reader read a dead marker and paused before the locked recheck; a real marker-only
+    claimant (no checkout lease, as the launch hand-off does) replaced it meanwhile. The recheck
+    kept the replacement but the reader still answered "no update" — a skew-retirement vote."""
+    home, install = tmp_path / "home", tmp_path / "install"
+    home.mkdir()
+    install.mkdir()
+    marker = home / ".hermes-update-in-progress"
+    _dead_marker(marker)
+    reader = _python(tmp_path, _RECLAIM_PAUSED_READER, marker, install, stdout=subprocess.PIPE, text=True)
+    claimant = None
+    try:
+        _pid, status = os.waitpid(reader.pid, os.WUNTRACED)
+        assert os.WIFSTOPPED(status)
+        claimant = _python(tmp_path, _MARKER_ONLY_CLAIMANT, marker, install, tmp_path / "claimed")
+        _wait_for(tmp_path / "claimed", claimant)
+        claim = marker.read_bytes()
+        os.kill(reader.pid, signal.SIGCONT)
+        out, _err = reader.communicate(timeout=30)
+        assert reader.returncode == 0
+        assert out.strip() == "True", "the reader reported a live replacement claim as no update"
+        assert marker.read_bytes() == claim, "the live replacement claim was not preserved byte-for-byte"
+        from hermes_cli.update_lock import checkout_lock_held
+        # update_in_progress() is this answer OR the checkout lease, which a marker-only claim lacks.
+        assert checkout_lock_held(install) is False, "the claim is marker-only: no checkout lease answers for it"
+    finally:
+        if reader.poll() is None:
+            os.kill(reader.pid, signal.SIGCONT)
+            reader.kill()
+        reader.wait()
+        if claimant is not None:
+            claimant.kill()
+            claimant.wait()
+
+
 _MUTEX_HOLDER = """
 import sys, time
 from pathlib import Path

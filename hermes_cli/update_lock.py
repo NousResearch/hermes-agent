@@ -865,15 +865,21 @@ def read_live_update(*, path: Path | None = None, install_root: Path | str | Non
     """
     marker = path or update_marker_path()
     try:
-        parsed = _read_marker(marker)
-        if parsed is None:
-            return None
-        live = parsed.live_pid()
-        if live is not None:
-            return UpdateHolder(pid=live, age_seconds=parsed.age() if parsed.started_at is not None else 0.0)
-        if _reclaim_dead(marker, install_root) == "held":
-            return UpdateHolder(pid=0, age_seconds=max(parsed.age(), 0.0) if parsed.started_at is not None else 0.0,
-                                held=True)
+        # "live" from the locked recheck = a claim replaced our dead snapshot: judge that claim
+        # rather than answer "clear" (F2) — a marker-only claim has no checkout lease to OR in.
+        for _attempt in range(2):
+            parsed = _read_marker(marker)
+            if parsed is None:
+                return None
+            live = parsed.live_pid()
+            if live is not None:
+                return UpdateHolder(pid=live, age_seconds=parsed.age() if parsed.started_at is not None else 0.0)
+            verdict = _reclaim_dead(marker, install_root)
+            if verdict == "held":
+                return UpdateHolder(pid=0, held=True,
+                                    age_seconds=max(parsed.age(), 0.0) if parsed.started_at is not None else 0.0)
+            if verdict != "live":
+                break
     except Exception as exc:  # health: allow BLE001 -- never raises: fails open on the marker only; the kernel lock guards (doc)
         logger.debug("Could not judge update marker %s: %s", marker, exc)
     return None

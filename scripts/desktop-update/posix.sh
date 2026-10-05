@@ -153,18 +153,20 @@ marker_release() { # A7 rule 5, under the lock. Never while a survivor of the
 RELEASE_WAIT_S=7200
 RELEASE_WAITED=0  # the R6 wait ran: the result written before it carries a stale finished_at
 
-# An older packaged Desktop judges a marker by line 2 alone and deletes it 20
-# minutes in, live owner or not. From the claim until the release is decided
-# (the update, every follow-up step and the R6 wait above), keep line 2 young
-# -- under the A7 lock and only while line 1 is still our exact incarnation
-# (marker_refresh_locked). It dies with us: a dead script refreshes nothing.
+# An older packaged Desktop judges a marker by lines 1 and 2 alone: a dead pid,
+# or a line 2 20 minutes old, and it deletes the marker and boots its backend.
+# From the claim until the release is decided (the update, every follow-up
+# step and the R6 wait above), keep line 2 young -- under the A7 lock and only
+# while line 1 is still our exact incarnation (marker_refresh_locked). If we
+# die first (SIGKILL runs no trap) while our update still runs or holds the
+# checkout lock, the refresher outlives us as its custodian (marker_custody).
 MARKER_REFRESHER=""
 marker_refresher_start() {
   [ "$MARKER_CLAIMED" -eq 1 ] && [ -z "$MARKER_REFRESHER" ] || return 0
   ( trap '' HUP INT QUIT TERM
     while :; do
       for ((_tick = 0; _tick < MARKER_REFRESH_EVERY_S; _tick++)); do
-        sleep 1; kill -0 "$MY_PID" 2>/dev/null || exit 0
+        sleep 1; kill -0 "$MY_PID" 2>/dev/null || marker_custody
       done
       marker_locked marker_refresh_locked
     done ) </dev/null >/dev/null 2>&1 &

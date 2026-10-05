@@ -444,6 +444,40 @@ marker_refresh_locked() { # old packaged Desktops age a marker on line 2 (20 min
   marker_replace "$(marker_canonical "$M_PID" "$(marker_now)" "$M_CT" "$M_DPID" "$M_DCT")"$'\n'
 }
 
+marker_custody_take_locked() { # pid ct -> 0 iff the dead hand-off's claim now names this custodian
+  marker_read || return 1
+  marker_judge "$SEEN"
+  [ "$M_PID" = "$MY_PID" ] && [ "$J_OWNER_STATE" -eq 0 ] || return 1
+  if [ "$J_DELEGATE_STATE" -ne 2 ]; then
+    checkout_lock_held || return 1
+    M_DPID="" M_DCT=""
+  fi
+  marker_replace "$(marker_canonical "$1" "$(marker_now)" "$2" "$M_DPID" "$M_DCT")"$'\n'
+}
+
+marker_custody() { # posix.sh's refresher, once the hand-off is gone; never returns
+  # The hand-off's claim would name a dead pid while the `hermes update` it
+  # started (line 4) or a completion survivor still mutates the checkout, and
+  # an old packaged Desktop judges line 1 alone. So name ourselves on line 1
+  # until both are gone (bounded like the R6 wait), keep line 2 young, then
+  # release. Only the dead hand-off ever wrote a delegate, so an unlocked look
+  # that finds neither one nor a held checkout lock is final -- no need to wait
+  # out a busy A7 lock. `exec sh` reports our pid: bash 3.2 has no BASHPID.
+  local me ct dpid dct tick=0
+  marker_read && marker_parse "$SEEN" && { [ -n "$M_DPID" ] || checkout_lock_held; } || exit 0
+  me="$(exec sh -c 'echo "$PPID"')"; ct="$(proc_ct "$me")"
+  [ -n "$ct" ] && marker_locked marker_custody_take_locked "$me" "$ct" || exit 0
+  dpid="$M_DPID" dct="$M_DCT" MY_PID="$me" MY_CT="$ct"
+  log "update hand-off died while its update still holds the checkout; pid $me keeps the update marker"
+  while { [ -n "$dpid" ] && ident_alive "$dpid" "$dct"; } || checkout_lock_held; do
+    [ "$tick" -lt "${RELEASE_WAIT_S:-7200}" ] || exit 0
+    sleep 1; tick=$((tick + 1))
+    [ $((tick % ${MARKER_REFRESH_EVERY_S:-300})) -ne 0 ] || marker_locked marker_refresh_locked
+  done
+  marker_locked marker_release_locked
+  exit 0
+}
+
 marker_release_locked() { # A7 rule 5 / corpus "release"
   marker_read || return 0
   marker_judge "$SEEN"

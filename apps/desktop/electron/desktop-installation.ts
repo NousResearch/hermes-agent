@@ -78,18 +78,57 @@ function reclaimDeadRepairLock(repairPath: string, emptyPolls: number): boolean 
     return false
   }
 
-  try {
-    // Compare-and-delete: only the bytes judged dead.
-    if (fs.readFileSync(repairPath).equals(raw)) {
-      fs.unlinkSync(repairPath)
+  // Rename-then-verify: a read/compare/unlink by name could delete the fresh
+  // lock a peer created after reclaiming the same dead one. The rename is the
+  // atomic claim (one reclaimer wins it); the moved file is unlinked only if it
+  // still holds the bytes judged dead, else it goes back under the name.
+  const claim = `${repairPath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.reclaim`
 
-      return true
-    }
+  try {
+    fs.renameSync(repairPath, claim)
   } catch {
-    void 0
+    return false
   }
 
+  let moved: Buffer | null = null
+
+  try {
+    moved = fs.readFileSync(claim)
+  } catch {
+    moved = null
+  }
+
+  if (moved?.equals(raw)) {
+    dropReclaimClaim(claim)
+
+    return true
+  }
+
+  try {
+    fs.linkSync(claim, repairPath) // never over a lock created meanwhile
+  } catch (error: any) {
+    if (error?.code !== 'EEXIST') {
+      // No hard links on this filesystem: move it back (EEXIST = a newer lock
+      // already holds the name, and its holder proceeds).
+      try {
+        fs.renameSync(claim, repairPath)
+      } catch {
+        void 0
+      }
+    }
+  }
+
+  dropReclaimClaim(claim)
+
   return false
+}
+
+function dropReclaimClaim(claim: string) {
+  try {
+    fs.rmSync(claim, { force: true })
+  } catch {
+    void 0 // a leftover `.reclaim` sibling is inert: nothing reads it
+  }
 }
 
 /** Count consecutive empty-lock polls, then reclaim a dead lock or back off. */

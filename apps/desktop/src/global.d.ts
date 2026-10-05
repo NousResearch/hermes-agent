@@ -1404,7 +1404,7 @@ export interface DesktopBootProgress {
   updateHold?: DesktopUpdateHold | null
 }
 
-/** What holds the install while the boot is blocked (electron/main.ts UpdateHoldWire). */
+/** What holds the install while the boot is blocked (electron/update-hold-wiring.ts UpdateHoldWire). */
 export interface DesktopUpdateHold {
   holdId: string
   /** `held`: a leftover process holds the checkout lock; `busy`/`error`: ownership could not be verified. */

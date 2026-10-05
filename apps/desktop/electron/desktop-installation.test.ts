@@ -4,9 +4,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import { loadOrCreateInstallationId, parseInstallationId, sshOwnershipId } from './desktop-installation'
+import { formatCreateTime, processCreateTimeSync } from './update-marker'
 
 const ID_A = '11111111-1111-4111-8111-111111111111'
 const ID_B = '22222222-2222-4222-8222-222222222222'
@@ -124,4 +125,46 @@ test('a repair lock whose holder died is reclaimed instead of bricking launch', 
     fs.rmSync(filePath)
     fs.writeFileSync(`${filePath}.repair.lock`, '')
     assert.equal(loadOrCreateInstallationId(filePath, () => ID_B), ID_B)
+  }))
+
+// Review G5: reclaiming a dead repair lock by read/compare/unlink-by-name could
+// delete the fresh lock a peer created after reclaiming the same dead one (the
+// peer swaps the file between our compare and our unlink). The reclaim must
+// only ever remove the file it judged dead.
+test('reclaiming a dead repair lock never deletes a lock a peer created meanwhile', () =>
+  withTempDir(directory => {
+    const filePath = path.join(directory, 'installation.json')
+    const repairPath = `${filePath}.repair.lock`
+    const gone = spawnSync(process.execPath, ['-p', 'process.pid'], { encoding: 'utf8' })
+    const peerBody = `${process.pid}\nct:${formatCreateTime(processCreateTimeSync(process.pid)!)}\n`
+    fs.writeFileSync(repairPath, `${gone.stdout.trim()}\n`)
+
+    const realRead = fs.readFileSync
+    let lockReads = 0
+
+    const spy = vi.spyOn(fs, 'readFileSync').mockImplementation(((target: any, ...rest: any[]) => {
+      const value = (realRead as any)(target, ...rest)
+
+      // The second read of the lock (the old compare, or the read of our own
+      // rename claim): a peer reclaims the dead lock and takes it, live.
+      if (String(target).startsWith(repairPath) && ++lockReads === 2) {
+        fs.rmSync(repairPath, { force: true })
+        fs.writeFileSync(repairPath, peerBody, { flag: 'wx' })
+      }
+
+      return value
+    }) as any)
+
+    try {
+      assert.throws(() => loadOrCreateInstallationId(filePath, () => ID_A), /Could not repair/)
+    } finally {
+      spy.mockRestore()
+    }
+
+    assert.equal(fs.readFileSync(repairPath, 'utf8'), peerBody, "the peer's live lock survives")
+    assert.deepEqual(
+      fs.readdirSync(directory).filter(name => name.endsWith('.reclaim')),
+      [],
+      'no rename claim is left behind'
+    )
   }))

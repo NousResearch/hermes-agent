@@ -275,6 +275,74 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     return status
   }
 
+  /**
+   * Staged (Tauri) updater path: spawn it detached and pre-write its marker
+   * when it is new enough to adopt it.
+   */
+  async function spawnStagedUpdater(updater, updaterArgs: string[], updateRoot: string) {
+    const child = spawnUpdaterProcess(updater, updaterArgs, {
+      cwd: deps.hermesHome,
+      env: {
+        ...sourceUpdateEnvironment(updateRoot, deps.hermesHome)
+      },
+      detached: true,
+      stdio: 'ignore'
+    })
+
+    // Write the update-in-progress marker IMMEDIATELY — before the 2.5s
+    // quit dwell. The Tauri updater won't write its own marker for several
+    // seconds (window init + manifest), and during that gap our renderer
+    // can reconnect into an update still replacing application files.
+    // By writing the marker ourselves the renderer's
+    // waitForUpdateToFinish() gate sees a live update and parks instead.
+    // The marker names the updater's pid AND creation time (v2): the updater
+    // adopts it as its own claim, so no age ceiling applies to a slow update
+    // and the `hermes update` it runs can add its delegate line.
+    //
+    // SKIPPED for pre-#74782 staged updaters: those have no self-PID
+    // exclusion, so they read this very marker as a foreign live owner and
+    // abort with "Another Hermes update is already running (PID <itself>)" —
+    // an unbreakable loop, because the update that would replace the stale
+    // binary is the one being refused. Losing the anti-respawn hardening is
+    // strictly better than never updating again, and the updater still writes
+    // its own marker moments later.
+    // Exclusive create only (A7 rule 3): over any existing marker the
+    // pre-write is skipped and the staged updater claims for itself.
+    if (Number.isInteger(child.pid) && stagedUpdaterSupportsPrewrittenMarker(updater)) {
+      const prewrite = await writeUpdateMarker(deps.hermesHome, child.pid)
+
+      if (!prewrite.ok) {
+        deps.rememberLog(`[updates] skipping marker pre-write: ${describeSkippedPrewrite(prewrite)}`)
+      }
+    } else if (Number.isInteger(child.pid)) {
+      deps.rememberLog(
+        `[updates] skipping marker pre-write: staged updater predates self-adopt (${updater}); it would refuse its own claim`
+      )
+    }
+
+    deps.rememberLog(
+      `[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop for application replacement`
+    )
+
+    return child
+  }
+
+  /** The hand-off settle window: a failure message when the updater did not take over, else null. */
+  async function settleHandoff(child, plan: HandoffPlan | null, handoffStartedAt: number): Promise<string | null> {
+    if (plan) {
+      return await confirmScriptHandoff(child, plan, handoffStartedAt)
+    }
+
+    const handoffOutcome = await observeUpdaterHandoff(child, deps.updateHandoffDwellMs)
+    const failure = handoffOutcome.ok ? null : describeUpdaterHandoffFailure(handoffOutcome)
+
+    if (failure) {
+      deps.rememberLog(`[updates] hand-off not viable, aborting quit: ${handoffOutcome.message}`)
+    }
+
+    return failure
+  }
+
   async function apply(): Promise<UpdaterApplyResultWire> {
     const result: UpdaterApplyResultWire = await applyBody()
     result.mechanism = mechanism
@@ -478,49 +546,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
         `[updates] launched repo hand-off script: ${scriptHandoff.scriptPath} (${targetLabel}); exiting desktop for application replacement`
       )
     } else {
-      child = spawnUpdaterProcess(updater, updaterArgs, {
-        cwd: deps.hermesHome,
-        env: {
-          ...sourceUpdateEnvironment(updateRoot, deps.hermesHome)
-        },
-        detached: true,
-        stdio: 'ignore'
-      })
-
-      // Write the update-in-progress marker IMMEDIATELY — before the 2.5s
-      // quit dwell. The Tauri updater won't write its own marker for several
-      // seconds (window init + manifest), and during that gap our renderer
-      // can reconnect into an update still replacing application files.
-      // By writing the marker ourselves the renderer's
-      // waitForUpdateToFinish() gate sees a live update and parks instead.
-      // The marker names the updater's pid AND creation time (v2): the updater
-      // adopts it as its own claim, so no age ceiling applies to a slow update
-      // and the `hermes update` it runs can add its delegate line.
-      //
-      // SKIPPED for pre-#74782 staged updaters: those have no self-PID
-      // exclusion, so they read this very marker as a foreign live owner and
-      // abort with "Another Hermes update is already running (PID <itself>)" —
-      // an unbreakable loop, because the update that would replace the stale
-      // binary is the one being refused. Losing the anti-respawn hardening is
-      // strictly better than never updating again, and the updater still writes
-      // its own marker moments later.
-      // Exclusive create only (A7 rule 3): over any existing marker the
-      // pre-write is skipped and the staged updater claims for itself.
-      if (Number.isInteger(child.pid) && stagedUpdaterSupportsPrewrittenMarker(updater)) {
-        const prewrite = await writeUpdateMarker(deps.hermesHome, child.pid)
-
-        if (!prewrite.ok) {
-          deps.rememberLog(`[updates] skipping marker pre-write: ${describeSkippedPrewrite(prewrite)}`)
-        }
-      } else if (Number.isInteger(child.pid)) {
-        deps.rememberLog(
-          `[updates] skipping marker pre-write: staged updater predates self-adopt (${updater}); it would refuse its own claim`
-        )
-      }
-
-      deps.rememberLog(
-        `[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop for application replacement`
-      )
+      child = await spawnStagedUpdater(updater, updaterArgs, updateRoot)
     }
 
     // Linger on the "updating — don't reopen" overlay long enough for the user
@@ -537,18 +563,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     // the bridge marker within 20 s (C2); the staged binary IS the updater, so
     // its own exit status is meaningful.
     const dwellStartedAt = Date.now()
-    let failure: string | null
-
-    if (plan) {
-      failure = await confirmScriptHandoff(child, plan, handoffStartedAt)
-    } else {
-      const handoffOutcome = await observeUpdaterHandoff(child, deps.updateHandoffDwellMs)
-      failure = handoffOutcome.ok ? null : describeUpdaterHandoffFailure(handoffOutcome)
-
-      if (failure) {
-        deps.rememberLog(`[updates] hand-off not viable, aborting quit: ${handoffOutcome.message}`)
-      }
-    }
+    const failure: string | null = await settleHandoff(child, plan, handoffStartedAt)
 
     if (failure) {
       deps.emitUpdateProgress({ stage: 'error', message: failure, percent: null })

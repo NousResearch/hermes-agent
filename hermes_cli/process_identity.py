@@ -50,6 +50,70 @@ def install_id(project_root: Optional[Path] = None) -> str:
             project_root = Path(_root)
         except Exception:
             project_root = Path(__file__).resolve().parent.parent
+    return _owning_install_id(Path(project_root))
+
+
+_OWNED_ENVIRONMENT_IDS: "dict[tuple[str, str], str]" = {}
+
+
+def _owning_install_id(project_root: Path) -> str:
+    """Hash of *project_root*, mapped to the OWNING install for PM environment trees.
+
+    A managed environment lives at ``<installs>/<state>/environments/<gen>/…`` and is a
+    copy of its parent checkout's code — but hashing that path yields a fresh id, so the
+    same release under a second path reads as a DIFFERENT installation to every
+    ``install_id`` consumer: spawn tags, ledger entries and the reapers that filter them,
+    and the shared-profile warning (which fires for the host product every time a child
+    process runs from its pinned environment against the same profile home — one
+    installation, warning about itself).
+
+    ``installs/<state>/inputs/.project-root`` (written by ``record_activation_inputs``)
+    names the parent checkout, and ``update_owning_install`` already treats that stamp as
+    install evidence — but only after verifying it. Same rule here: the stamped parent is
+    trusted exactly when ``install_key(parent)`` equals the state directory name, so a
+    writable stamp file can never alias one tree onto another install's identity. A
+    missing, unreadable, non-absolute, or mismatching stamp falls back to hashing the
+    given path unchanged.
+
+    ``install_id`` here is the 12-hex process/ledger identity; ``update_channel`` keeps a
+    separate 16-hex install-key identity for channel records — this mapping does not
+    touch that one.
+    """
+    try:
+        from pm.environments import install_key, installs_root
+
+        installs = installs_root().resolve()
+        resolved = project_root.resolve()
+    except Exception:
+        return _hash_install_id(project_root)
+    try:
+        rel = resolved.relative_to(installs)
+    except ValueError:
+        return _hash_install_id(project_root)
+    # installs/<state>/environments/<gen>/... — the environments/ rung is PM's fixed
+    # generation layout (pm.environments); only trees under it consult the stamp.
+    if len(rel.parts) >= 3 and rel.parts[1] == "environments":
+        cache_key = (str(installs), str(resolved))
+        cached = _OWNED_ENVIRONMENT_IDS.get(cache_key)
+        if cached is not None:
+            return cached
+        # utf-8-sig: the stamp can carry a BOM on Windows-written trees (same read as
+        # update_owning_install). install_key is the cheap authoritative check.
+        try:
+            stamp = (installs / rel.parts[0] / "inputs" / ".project-root").read_text(
+                encoding="utf-8-sig"
+            ).strip()
+            parent = Path(stamp) if stamp else None
+            if parent is not None and parent.is_absolute() and install_key(parent) == rel.parts[0]:
+                result = _hash_install_id(parent)
+                _OWNED_ENVIRONMENT_IDS[cache_key] = result
+                return result
+        except (OSError, ValueError):
+            pass
+    return _hash_install_id(project_root)
+
+
+def _hash_install_id(project_root: Path) -> str:
     try:
         canonical = str(Path(project_root).resolve()).lower()
     except OSError:

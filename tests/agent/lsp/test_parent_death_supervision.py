@@ -12,7 +12,10 @@ Live orphan evidence this covers: ``evals/lsp_parent_death_orphan.py``.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -84,7 +87,7 @@ async def test_spawn_registers_the_server_group_for_parent_death(tmp_path: Path,
         proc = client._proc
         assert proc is not None
         assert registered == [os.getpgid(proc.pid)]
-        assert client._supervised_pgid == registered[0]
+        assert client._supervised_pgids == {registered[0]}
     finally:
         await client._cleanup_process()
 
@@ -97,43 +100,115 @@ def test_release_unregisters_a_group_that_is_gone(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(client_module, "_process_group_alive", lambda pgid: False)
 
     client = _make_client(tmp_path)
-    client._supervised_pgid = 4242
-    client._release_process_group_supervision()
+    client._supervised_pgids = {4242}
+    client._release_process_group_supervision(4242)
 
     assert released == [4242]
-    assert client._supervised_pgid is None
+    assert client._supervised_pgids == set()
 
 
 def test_release_keeps_coverage_when_a_member_survived_teardown(tmp_path: Path, monkeypatch):
     """A group with live members stays registered: the supervisor is the only thing left that can
-    reap an escaped descendant, and it prunes the registration itself once the group empties."""
+    reap an escaped descendant.  The pgid stays on the client so a later spawn or teardown releases
+    it once the group empties."""
     released: list[int] = []
     monkeypatch.setattr(client_module, "_unregister_process_group_with_parent_death_supervisor",
                         released.append)
     monkeypatch.setattr(client_module, "_process_group_alive", lambda pgid: True)
 
     client = _make_client(tmp_path)
-    client._supervised_pgid = 4242
-    client._release_process_group_supervision()
+    client._supervised_pgids = {4242}
+    client._release_process_group_supervision(4242)
 
     assert released == []
+    assert client._supervised_pgids == {4242}
+
+
+@pytest.mark.asyncio
+async def test_reentered_spawn_releases_the_superseded_attempts_group(tmp_path: Path, monkeypatch):
+    """A second spawn cycle must not orphan a registration retained by the first.
+
+    ``start()`` is documented re-call-to-retry and a failed handshake leaves it re-callable, so the
+    first attempt's group can still be covered when a second attempt registers its own.  With a
+    single overwritten slot the earlier pgid was lost: the supervisor kept it registered forever,
+    and once that group emptied it was a stale, recyclable pgid — the residual
+    process-group-reuse risk ``tools/mcp_death_supervisor.py`` documents.
+
+    Assertions are on the supervisor's own record, never on client internals, so this same test
+    body fails against the pre-fix implementation for the right reason.
+    """
+    supervised: set[int] = set()
+    dead: set[int] = set()  # a group here has no members left; everything else counts as live
+    monkeypatch.setattr(client_module, "_register_process_group_with_parent_death_supervisor",
+                        lambda pgid: supervised.add(pgid) or True)
+    monkeypatch.setattr(client_module, "_unregister_process_group_with_parent_death_supervisor",
+                        supervised.discard)
+    monkeypatch.setattr(client_module, "_process_group_alive", lambda pgid: pgid not in dead)
+
+    client = _make_client(tmp_path)
+
+    # Cycle 1: a member survives teardown, so coverage is retained -- exactly what the PR intends.
+    await client._spawn()
+    proc = client._proc
+    assert proc is not None
+    first = os.getpgid(proc.pid)
+    await client._cleanup_process()
+    assert supervised == {first}, "a group with a live member must stay covered"
+
+    # That member now exits on its own: the group is empty while the registration is still there.
+    dead.add(first)
+
+    # Cycle 2: the retry registers its own group and must release the superseded registration.
+    await client._spawn()
+    proc = client._proc
+    assert proc is not None
+    second = os.getpgid(proc.pid)
+    assert second != first
+    assert second in supervised
+    assert first not in supervised, (
+        f"registration {first} was orphaned by the re-entered spawn; the supervisor would still "
+        f"signal that pgid on parent death and could hit an unrelated recycled group")
+
+    # Keep the second group covered through its own teardown for symmetry.
+    await client._cleanup_process()
+
+
+def test_reentry_sweep_releases_a_retained_group_that_since_emptied(tmp_path: Path, monkeypatch):
+    """The retained pgid from a superseded attempt is released once its group has emptied."""
+    released: list[int] = []
+    monkeypatch.setattr(client_module, "_unregister_process_group_with_parent_death_supervisor",
+                        released.append)
+
+    client = _make_client(tmp_path)
+    client._supervised_pgids = {4242, 4243}
+    monkeypatch.setattr(client_module, "_process_group_alive", lambda pgid: pgid == 4243)
+
+    client._release_dead_process_group_supervisions()
+
+    assert released == [4242]
+    assert client._supervised_pgids == {4243}
 
 
 @pytest.mark.asyncio
 async def test_cleanup_releases_supervision(tmp_path: Path, monkeypatch):
     """The graceful path (``shutdown`` → ``_cleanup_process``) drops coverage once it has reaped."""
-    released: list[int] = []
+    supervised: set[int] = set()
+    dead: set[int] = set()
     monkeypatch.setattr(client_module, "_register_process_group_with_parent_death_supervisor",
-                        lambda pgid: True)
+                        lambda pgid: supervised.add(pgid) or True)
     monkeypatch.setattr(client_module, "_unregister_process_group_with_parent_death_supervisor",
-                        released.append)
+                        supervised.discard)
+    monkeypatch.setattr(client_module, "_process_group_alive", lambda pgid: pgid not in dead)
 
     client = _make_client(tmp_path)
     await client._spawn()
-    pgid = client._supervised_pgid
-    assert pgid is not None
+    proc = client._proc
+    assert proc is not None
+    pgid = os.getpgid(proc.pid)
+    assert supervised == {pgid}
+    dead.add(pgid)  # the kill during cleanup leaves nothing behind
     await client._cleanup_process()
-    assert released == [pgid]
+    assert supervised == set()
 
 
 def test_supervisor_reaps_the_group_when_the_owner_dies_ungracefully(tmp_path: Path):
@@ -162,3 +237,72 @@ def test_supervisor_reaps_the_group_when_the_owner_dies_ungracefully(tmp_path: P
     finally:
         if _alive(server_pid):  # never leave the failure behind
             os.kill(server_pid, 9)
+
+
+# A launcher that forks a long-lived grandchild into its own (already new) session and exits, so the
+# group outlives its leader -- the escaped-descendant case the retained-coverage branch exists for.
+_ORPHANING_LAUNCHER = (
+    "import subprocess, sys\n"
+    "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)'])\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_escaped_descendant_stays_covered_until_its_group_empties(tmp_path: Path, monkeypatch):
+    """Retained coverage must survive teardown, then be released once the group is finally empty.
+
+    Real processes (no mocks of the supervisor helpers): the leader exits immediately, leaving a
+    grandchild in the group, so ``_cleanup_process`` finds the group alive and keeps it registered.
+    Killing the survivor makes the group empty, and the next teardown must then drop the
+    registration — the pgid is stale at that point and could be recycled.
+    """
+    registered: set[int] = set()
+    released: set[int] = set()
+    real_register = client_module._register_process_group_with_parent_death_supervisor
+    real_unregister = client_module._unregister_process_group_with_parent_death_supervisor
+
+    def _register(pgid: int) -> bool:
+        ok = real_register(pgid)
+        if ok:
+            registered.add(pgid)
+        return ok
+
+    def _unregister(pgid: int) -> None:
+        released.add(pgid)
+        real_unregister(pgid)
+
+    monkeypatch.setattr(client_module, "_register_process_group_with_parent_death_supervisor", _register)
+    monkeypatch.setattr(client_module, "_unregister_process_group_with_parent_death_supervisor", _unregister)
+
+    client = LSPClient(
+        server_id="launcher", workspace_root=str(tmp_path),
+        command=[sys.executable, "-c", _ORPHANING_LAUNCHER], env={}, cwd=str(tmp_path),
+    )
+    await client._spawn()
+    proc = client._proc
+    assert proc is not None
+    pgid = os.getpgid(proc.pid)
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(proc.wait(), timeout=5.0)  # the launcher itself exits at once
+
+    try:
+        # The descendant is alive: the group outlives teardown and must stay covered.
+        assert client_module._process_group_alive(pgid), "the grandchild should still hold the group"
+        await client._cleanup_process()
+        assert pgid in registered and pgid not in released
+
+        # The descendant now exits on its own: the next teardown releases the stale registration.
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only test module
+        deadline = time.monotonic() + 10.0
+        while client_module._process_group_alive(pgid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not client_module._process_group_alive(pgid)
+
+        await client._cleanup_process()
+        assert pgid in released, "an emptied retained group must be unregistered, not left stale"
+        assert pgid not in client._supervised_pgids
+    finally:
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            if client_module._process_group_alive(pgid):
+                os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only test module

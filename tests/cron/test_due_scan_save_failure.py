@@ -80,9 +80,14 @@ def test_due_jobs_are_returned_when_the_store_cannot_be_saved(cron_store, full_d
         assert [d["id"] for d in get_due_jobs()] == ["due-job"]
         assert [d["id"] for d in get_due_jobs()] == ["due-job"]
 
-    # Rate-limited like the tick-level skips: one WARNING per outage, not one per 60s scan.
+        with cronjobs.use_cron_store(cron_store / "other-profile"):  # a second profile's store
+            cronjobs.warn_store_unwritable(OSError(errno.ENOSPC, "No space left on device"), "x")
+
+    # Rate-limited per store: one WARNING per outage per profile, not one per 60s scan, and a
+    # sibling profile on the same errno is not silenced; each names its store.
     warnings = [r.getMessage() for r in caplog.records if r.name == "cron.jobs" and r.levelno == logging.WARNING]
-    assert len(warnings) == 1 and "due-scan repairs not persisted" in warnings[0]
+    assert len(warnings) == 2 and "due-scan repairs not persisted" in warnings[0]
+    assert str(cron_store / "cron") in warnings[0] and str(cron_store / "other-profile") in warnings[1]
 
 
 def test_tick_on_unwritable_store_returns_cleanly_without_dispatch(cron_store, monkeypatch, caplog):
@@ -109,7 +114,7 @@ def test_tick_on_unwritable_store_returns_cleanly_without_dispatch(cron_store, m
         assert scheduler.tick(verbose=False, sync=True) == 0
 
     assert ran == []
-    assert "Cron store is unwritable" in caplog.text
+    assert f"Cron store {cron_store / 'cron'} is unwritable" in caplog.text
     assert load_jobs() == before
     row = executions.latest_execution("once")
     assert row["status"] == "failed" and "Cron store unwritable" in row["error"]

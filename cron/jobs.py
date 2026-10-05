@@ -1247,7 +1247,7 @@ def _write_marker(name: str, text: str, tmp_prefix: str) -> None:
         pass
 
 
-# One WARNING per errno per window: an unwritable store fails every 60s tick until fixed.
+# One WARNING per (store, errno) per window: an unwritable store fails every 60s tick until fixed.
 _STORE_WARN_INTERVAL_SECONDS = 900.0
 _last_store_warning: dict = {}
 
@@ -1255,14 +1255,15 @@ _last_store_warning: dict = {}
 def warn_store_unwritable(exc: OSError, consequence: str) -> None:
     """Rate-limited WARNING for a failed cron store write (ENOSPC/EROFS/EACCES). Callers skip the
     dispatch that needed the write: no job runs without a durable advance/fire claim."""
-    now, key = time.monotonic(), exc.errno
+    cron_dir = str(_current_cron_store().cron_dir)  # multi-profile gateway: one key per store
+    now, key = time.monotonic(), (cron_dir, exc.errno)
     last = _last_store_warning.get(key)
     if last is not None and now - last < _STORE_WARN_INTERVAL_SECONDS:
         return
     _last_store_warning[key] = now
     logger.warning(
-        "Cron store is unwritable (%s); %s. Jobs stay due and fire once the store accepts writes "
-        "again.", exc, consequence)
+        "Cron store %s is unwritable (%s); %s. Jobs stay due and fire once the store accepts writes "
+        "again.", cron_dir, exc, consequence)
 
 
 def record_ticker_heartbeat(success: bool = False) -> None:

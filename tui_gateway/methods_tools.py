@@ -745,6 +745,7 @@ def _cmd_goal(rid, params, session, name, arg):
         from hermes_cli.goal_command import dispatch_goal_command
         result = dispatch_goal_command(
             mgr, arg, authorize_gate=lambda: None,
+            mode="supergoal" if name in {"supergoal", "sg"} else "goal",
             last_user_message=goals.last_user_message_from_db(sid_key),
         )
         if result.error:
@@ -754,7 +755,7 @@ def _cmd_goal(rid, params, session, name, arg):
         payload = {"type": "send", "notice": result.output, "message": result.prompt}
         if not result.kickoff:
             payload["notice"] += "\nContinuing now — taking the next step."
-            payload["display"] = "/goal resume"
+            payload["display"] = f"/{name} resume"
         return _ok(rid, payload)
 
 
@@ -853,6 +854,7 @@ def _cmd_compress(rid, params, session, name, arg):
 _SLASH_BUILTINS = {
     "queue": _cmd_queue, "q": _cmd_queue, "learn": _cmd_learn, "plan": _cmd_plan, "init": _cmd_init,
     "moa": _cmd_moa, "focus": _cmd_focus, "retry": _cmd_retry, "steer": _cmd_steer, "goal": _cmd_goal,
+    "supergoal": _cmd_goal, "sg": _cmd_goal,
     "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
     "compress": _cmd_compress, "compact": _cmd_compress}
 

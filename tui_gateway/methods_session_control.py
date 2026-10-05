@@ -211,7 +211,7 @@ def _goal_blocks_loop_tick(session_key: str) -> bool:
 
 # Slash commands whose success changes the snapshot; ``command.dispatch`` (/goal, /loop built-ins) and the
 # slash worker (/heartbeat, /subgoal) both publish after these so the Desktop card never waits for a turn.
-_SESSION_CONTROL_SLASHES = frozenset({"goal", "heartbeat", "loop", "subgoal"})
+_SESSION_CONTROL_SLASHES = frozenset({"goal", "supergoal", "sg", "heartbeat", "loop", "subgoal"})
 
 
 def _publish_session_control_snapshot(sid: str, session: dict | None, *, only_if_present: bool = False) -> None:

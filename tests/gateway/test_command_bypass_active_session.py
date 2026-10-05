@@ -86,6 +86,18 @@ class TestCommandBypassActiveSession:
     """Commands that must bypass the active-session guard."""
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", ["supergoal", "sg"])
+    @pytest.mark.parametrize("control", ["status", "pause", "resume", "clear"])
+    async def test_supergoal_controls_bypass_without_interrupt(self, name, control):
+        adapter = _make_adapter()
+        sk = _session_key()
+        active = adapter._active_sessions[sk] = asyncio.Event()
+        await adapter.handle_message(_make_event(f"/{name} {control}"))
+        assert sk not in adapter._pending_messages
+        assert not active.is_set()
+        assert any(f"handled:{name}" in response for response in adapter.sent_responses)
+
+    @pytest.mark.asyncio
     async def test_stop_bypasses_guard(self):
         """/stop must be dispatched directly, not queued."""
         adapter = _make_adapter()

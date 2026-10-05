@@ -34,7 +34,10 @@ def _mgr_call(prefix: str, fn, *args, errors=(RuntimeError, ValueError)):
 class GatewayGoalCommandsMixin:
     """Autonomy-loop gateway commands: /goal, /subgoal, /heartbeat, /loop, /refine, /review."""
 
-    async def _handle_goal_command(self, event: MessageEvent) -> str:
+    async def _handle_supergoal_command(self, event: MessageEvent) -> str:
+        return await self._handle_goal_command(event, mode="supergoal")
+
+    async def _handle_goal_command(self, event: MessageEvent, *, mode: str = "goal") -> str:
         from hermes_cli.goal_command import dispatch_goal_command
         from hermes_cli.goals import last_user_message_from_db
 
@@ -51,7 +54,7 @@ class GatewayGoalCommandsMixin:
 
         def dispatch():
             return dispatch_goal_command(
-                mgr, event.get_command_args() or "", authorize_gate=authorize_gate,
+                mgr, event.get_command_args() or "", authorize_gate=authorize_gate, mode=mode,
                 render=lambda key, default, **values: t(key, **values),
                 last_user_message=last_user_message_from_db(getattr(mgr, "session_id", None)),
             )

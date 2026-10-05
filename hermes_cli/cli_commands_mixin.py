@@ -2273,7 +2273,10 @@ class CLICommandsMixin:
         _cp(f"  {format_dispatch_note(result, prompt)}")
 
     # ---- /goal, /loop, /subgoal -----------------------------------------------------------
-    def _handle_goal_command(self, cmd: str) -> None:
+    def _handle_supergoal_command(self, cmd: str) -> None:
+        self._handle_goal_command(cmd, mode="supergoal")
+
+    def _handle_goal_command(self, cmd: str, *, mode: str = "goal") -> None:
         from hermes_cli.goal_command import dispatch_goal_command
         from hermes_cli.goals import last_user_message_content
 
@@ -2281,7 +2284,7 @@ class CLICommandsMixin:
         if mgr is None:
             return
         result = dispatch_goal_command(
-            mgr, _command_arg(cmd), authorize_gate=lambda: None,
+            mgr, _command_arg(cmd), authorize_gate=lambda: None, mode=mode,
             progress=lambda text: _cp(_dim_line(text)),
             last_user_message=last_user_message_content(getattr(self, "conversation_history", None)),
         )

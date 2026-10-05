@@ -527,3 +527,44 @@ def test_goal_draft_uses_session_profile_without_blocking_rpc_reader(
         assert state.max_turns == 37 and state.contract.verification == "tests pass"
     result = next(frame["result"] for frame in frames if frame.get("id") == "draft")
     assert result["type"] == "send" and result["message"] == state.goal
+
+
+@pytest.mark.parametrize("command", ["supergoal", "sg"])
+def test_supergoal_chains_main_and_judge_on_cached_agent_without_cache_mutation(
+    server, turn_env, monkeypatch, command,
+):
+    """Integration test: real dispatch/persistence/turn loop; model boundary is fake."""
+    import json
+    from hermes_cli import goals
+
+    key = "supergoal-alternation"
+    events, prompts = [], []
+    system = "existing byte-stable system prompt"
+    schemas = [{"type": "function", "function": {"name": "clarify"}}]
+    def run_conversation(message, **kwargs):
+        events.append("main")
+        prompts.append(message)
+        assert agent._cached_system_prompt == system
+        assert agent.tools is schemas
+        return {"final_response": "first method failed" if len(prompts) == 1 else "verified deliverable"}
+    agent = types.SimpleNamespace(
+        session_id=key, run_conversation=run_conversation, clear_interrupt=lambda: None,
+        _cached_system_prompt=system, tools=schemas,
+    )
+    session = _turn_session(agent, key)
+    server._sessions[key] = session
+    verdicts = iter(["continue", "done"])
+    def judge_call(**kwargs):
+        events.append("judge")
+        assert "attestation" in kwargs["messages"][0]["content"]
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(
+            content=json.dumps({"verdict": next(verdicts), "reason": "fixture evaluation"})))])
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", judge_call)
+    dispatched = _call(server, "command.dispatch", name=command, arg="build result", session_id=key)
+    prompt = dispatched["result"]["message"]
+    server._run_prompt_submit("rid", key, session, prompt)
+    assert events == ["main", "judge", "main", "judge"]
+    assert all("Do not ask" in message for message in prompts)
+    assert goals.load_goal(key).mode == "supergoal"
+    assert goals.load_goal(key).status == "done"
+    assert agent._cached_system_prompt == system and agent.tools is schemas

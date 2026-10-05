@@ -77,6 +77,16 @@ The classic CLI, TUI, Desktop, dashboard chat, and messaging gateway use one sha
 
 Messaging platforms retain their access rules: `/goal gate add` requires an explicitly configured gateway admin; listing, removing, and clearing gates remain available for recovery. Rendering and turn scheduling are surface-specific, but command parsing and persisted goal changes are shared.
 
+## Autonomous supergoals (`/supergoal`, `/sg`)
+
+Use `/supergoal <objective>` (or `/sg <objective>`) to run the goal loop in fully autonomous mode. Hermes starts immediately, makes reasonable decisions from the available context, and searches for alternative tools and approaches when a method fails. It must not ask you clarifying questions; calls to the built-in `clarify` tool are rejected while the supergoal is active, before any question is displayed.
+
+Supergoals use separate instructions for both the working agent and the auxiliary judge. A failed attempt, an unavailable preferred tool, or routine ambiguity is a reason to investigate alternatives. Before reporting that the task cannot be solved, the agent must explicitly explain that it examined the feasible approaches, broadened its search instead of repeating one method, and established with evidence that the available tools cannot achieve the objective. The judge evaluates that explanation semantically. There is no magic sentence or exact-text matcher that unlocks a blocked verdict, and the agent must never claim to have checked approaches it did not actually investigate.
+
+The existing completion contract, subgoals, quality gates, persistence, and goal controls apply: `/sg status`, `/sg show`, `/sg pause`, `/sg resume`, `/sg clear`, and `/sg draft <objective>`. There is one goal slot per session. Setting `/goal <new objective>` replaces a supergoal with a normal goal; pause/resume retain its mode. Plain `/goal` behavior is unchanged.
+
+Autonomy stays within the user's authorization and scope. Supergoals do not bypass command approvals, permissions, explicit stop conditions, or user interruption. The existing turn budget, judge-error limits, and gate retry limits still apply; fully autonomous does not mean unbounded spending. The mode is stored with the goal. Its working instructions travel in new goal prompts rather than rewriting the cached system prompt or removing tool schemas mid-conversation.
+
 ## Completion contracts
 
 A bare `/goal <text>` works fine, but a *vague* goal makes for vague judging — the judge can only check what you told it to want. Codex's `/goal` guidance makes the same point: a durable objective works best when it names **what done means, how to prove it, what not to break, what's in scope, and when to stop**. Hermes adapts this as an optional **completion contract** layered on top of the existing goal loop.

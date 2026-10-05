@@ -3229,6 +3229,16 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
 
 _ACK_FUTURE_RE = re.compile(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b")
+# A planning reply that explicitly waits for the user is a completed turn, not an
+# intermediate acknowledgment. Keep this separate from the future-action detector so
+# "I will check ..." continues to receive the nudge while "Give me a go ..." does not.
+_ACK_APPROVAL_REQUEST_RE = re.compile(
+    r"\b(?:give|send|provide)\s+(?:me\s+)?(?:a\s+)?(?:clear\s+)?go\b"
+    r"|\b(?:once|after)\s+(?:you\s+)?(?:approve|confirm|authorize)\b"
+    r"|\bwait(?:ing)?\s+for\s+(?:your\s+)?(?:approval|permission|go-ahead)\b",
+    re.IGNORECASE,
+)
+
 _ACK_ACTION_MARKERS = (
     "look into", "look at", "inspect", "scan", "check", "analyz", "review", "explore", "read", "open",
     "run", "test", "fix", "debug", "search", "find", "walkthrough", "report back", "summarize",
@@ -3250,6 +3260,8 @@ def looks_like_codex_intermediate_ack(
         return False
     assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
     if not assistant_text or len(assistant_text) > 1200:
+        return False
+    if _ACK_APPROVAL_REQUEST_RE.search(assistant_text):
         return False
     if not _ACK_FUTURE_RE.search(assistant_text):
         return False

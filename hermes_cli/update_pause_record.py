@@ -41,6 +41,7 @@ import glob
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -137,12 +138,38 @@ def _mutex(wait_s: float = _MUTEX_WAIT_S):
         os.close(fd)
 
 
+def _git_executable() -> str:
+    """The git ``hermes update`` runs, found without installing anything: PATH's, else the copy
+    install.ps1 staged in PM's store (``_subprocess_compat.expose_pm_git`` puts it on PATH only
+    inside the updater). A bare ``git`` on such an install dies with WinError 2, so every gate
+    read would fail and the paused gateways would never be restarted."""
+    found = shutil.which("git")
+    if found:
+        return found
+    with suppress(Exception):  # health: allow BLE001 -- no PM, no store, no Windows git package: PATH's answer ("git") stands
+        import pm
+        from pm import paths
+        from pm.lock import Lockfile
+
+        recorded = pm.installed_package("git", allow_outdated=True)
+        if recorded is not None and recorded.binary is not None and recorded.binary.is_file():
+            return str(recorded.binary)
+        package, target = pm.get_package("git"), pm.current_target()
+        version = Lockfile(paths.lockfile_path()).version("git")
+        staged = package.binary(paths.store_root() / package.store_entry(version, target), target)
+        if staged is not None and staged.is_file():
+            return str(staged)
+    return "git"
+
+
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess | None:
+    """A read-only git query in the updater's custody (``update_custody.run_git``: job-bound on
+    Windows inside an update, custody config in argv); ``None`` when git cannot run."""
+    from hermes_cli.update_custody import run_git
     try:
-        return subprocess.run(
-            ["git", "-C", str(root), *args], capture_output=True, text=True, encoding="utf-8",
-            errors="replace", stdin=subprocess.DEVNULL, timeout=30, check=False)
-    except (OSError, subprocess.SubprocessError):
+        return run_git([_git_executable(), "-C", str(root)], args, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=30, check=False)
+    except (OSError, ValueError, subprocess.SubprocessError):
         return None
 
 

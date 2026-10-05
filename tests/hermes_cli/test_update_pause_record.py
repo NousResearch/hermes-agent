@@ -660,3 +660,28 @@ def test_a_host_without_psutil_records_an_identity_the_liveness_rule_can_prove(m
     ident = pause_record.identity()
     assert ident["ct"] is not None, "no creation time without psutil"
     assert update_lock.incarnation_live(ident["pid"], ident["ct"]) is True
+
+
+def test_the_tree_gate_finds_pm_git_and_runs_it_in_the_updaters_custody(tmp_path, monkeypatch):
+    """Review 5411136378 fix 3: on an install whose only git is PM's staged copy (no git on PATH),
+    a bare ``git`` made ``head_sha`` None, so ``tree_is_whole`` refused forever."""
+    import shutil
+    from types import SimpleNamespace
+
+    import pm
+    from hermes_cli import update_custody
+    root = tmp_path / "checkout"
+    root.mkdir()
+    _git(root, "init", "-q")
+    (root / "a.py").write_text("v1\n", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "v1")
+    head, pm_git = _git(root, "rev-parse", "HEAD"), shutil.which("git")
+    ran, real_run_git = [], update_custody.run_git
+    monkeypatch.setattr(update_custody, "run_git", lambda cmd, args, **kw: ran.append(cmd[0]) or real_run_git(cmd, args, **kw))
+    monkeypatch.setattr(pm, "installed_package",
+                        lambda name, allow_outdated=False: SimpleNamespace(binary=Path(pm_git)) if name == "git" else None)
+    (tmp_path / "no-git").mkdir()
+    monkeypatch.setenv("PATH", str(tmp_path / "no-git"))
+    assert pause_record.head_sha(root) == head
+    assert ran == [pm_git], "the gate's git bypassed update_custody.run_git"

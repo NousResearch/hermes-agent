@@ -774,12 +774,21 @@ def _complete_source_update(request: dict | None) -> None:
     # A head capture that came back empty must not arm an SHA-less record: it names no code the
     # fleet can be proven current on, so the warning could never clear (#125952).
     _write_fleet_restart_pending_marker(expected_sha=request.get("expected_sha") or _current_checkout_sha() or "")
+    # Pre-swap module (imported with run_completion above): never the replacement tree's.
+    from hermes_cli.update_completion import settle_lost_completion
     try:
         result = run_completion(request)
     except KeyboardInterrupt as interrupt:
         # Ctrl-C after the commit point: the tree is new, so the run is interrupted, never "failed".
         _completion_receipt.finalize_interrupted_update_receipt("KeyboardInterrupt: interrupted after the code was updated")
         raise SystemExit(130) from interrupt
+    except Exception as exc:  # health: allow BLE001 -- after the commit point a lost completion is owed, never a failed update (C3)
+        result = settle_lost_completion(request, f"{type(exc).__name__}: {exc}")
+    if result.get("receipt") is None and result["exit_code"] == 130:
+        _completion_receipt.finalize_interrupted_update_receipt("the completion was interrupted after the code was updated")
+    elif result.get("receipt") is None:
+        # The child crashed (OOM, SIGKILL) or never answered: the same owed tail (review P2).
+        result = settle_lost_completion(request, result.get("error") or f"the completion process exited {result['exit_code']}")
     _accept_completion_pm_receipt(result.get("pm_receipt"), request["receipt"]["update_id"])
     token = request["windows_resume"]
     if token is not None and result.get("windows_resume") is not None:
@@ -788,7 +797,7 @@ def _complete_source_update(request: dict | None) -> None:
         token.update(resumed)
         _settle_windows_resume(request)
     elif token and token.get("resume_needed") and not result["exit_code"]:
-        # Dependencies owed (A6): the bootstrap child cannot resume paused gateways; this process can.
+        # Dependencies owed (A6) or a lost completion: no child resumed paused gateways; this process can.
         try:
             _m()._resume_windows_gateways_after_update(token)
         except Exception as exc:  # health: allow BLE001 -- the code is committed (C3)

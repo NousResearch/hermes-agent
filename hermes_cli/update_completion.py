@@ -116,8 +116,9 @@ def run_completion(request: dict) -> dict:
             if code == 0 and receipt is None:
                 raise ValueError("completion did not publish a terminal receipt")
         except (OSError, ValueError, KeyError, TypeError) as exc:
-            print(f"✗ Source update completion did not finish: {exc}")
-            return {"exit_code": code or 1, "receipt": None, "windows_resume": None}
+            # No correlated terminal result: the caller settles it (settle_lost_completion).
+            return {"exit_code": code or 1, "receipt": None, "windows_resume": None,
+                    "error": f"{exc} (the completion process exited {code})"}
         return result
 
 
@@ -216,6 +217,41 @@ def _report_desktop_build_owed(request: dict, record: dict | None, reason: str) 
     if any(isinstance(mark, dict) and mark.get("name") == "build" for mark in (record or {}).get("stages") or ()):
         return
     print(f"  {DESKTOP_BUILD_OWED} {reason}", flush=True)
+
+
+def settle_lost_completion(request: dict, reason: str) -> dict:
+    """The parent's side of C3: the code is committed, but the completion never answered (review P2).
+
+    Reached when spawning or reading the completion failed (an OSError from the temporary
+    directory, the request file or Popen) or the child died without a correlated terminal result
+    (OOM, SIGKILL). The tail is owed, never a failed update: it is armed for the next launch, the
+    run's receipt is a success that names the ``completion`` follow-up, and the exit is 0 -- unless
+    the user's local changes are still parked (#122557: ``partial``, exit 1). Runs in the parent
+    (pre-swap) interpreter: everything it uses is already imported there.
+    """
+    from hermes_cli import update_receipt
+
+    print(f"  ⚠ Source update completion did not finish: {reason}", flush=True)
+    receipt = _read_terminal_receipt(request)  # the child finalized the run, then died
+    if receipt is None:
+        try:
+            from hermes_cli.venv_sync import arm_completion
+
+            arm_completion(Path(request["source"]))
+        except Exception as exc:  # health: allow BLE001 -- post-commit boundary: stale dependencies still make the next launch sync
+            print(f"  ⚠ Could not record the owed source-update tail: {exc}")
+        _report_desktop_build_owed(request, _running_record(request), "the update completion did not finish")
+        update_receipt.record_followup("completion", reason, retry="the next launch or `hermes update` finishes it")
+        parked = not _record_owed_user_action(request)
+        if parked:
+            print(_owed_user_action(request))  # the completion child that prints it may never have run
+        update_receipt.finalize_pending_update_receipt(1 if parked else 0, "completion owed after the code was updated")
+        receipt = _read_terminal_receipt(request)
+    outcome = (receipt or {}).get("outcome")
+    code = 130 if outcome == "interrupted" else 1 if outcome == "partial" else 0
+    if code == 0:
+        _publish_gateway_success(request)
+    return {"exit_code": code, "receipt": receipt, "windows_resume": None, "pm_receipt": None}
 
 
 def _settle_after_commit(request: dict, result_path: Path, step: str, reason: str) -> int:

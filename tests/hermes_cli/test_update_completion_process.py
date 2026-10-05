@@ -248,13 +248,11 @@ def test_old_process_new_git_tree_completes_in_fresh_python(transition, tmp_path
     assert [e["name"] for e in events].index("exit_marker") < [e["name"] for e in events].index("restart")
 
 
-@pytest.mark.parametrize("code", [0, 23])
-def test_missing_child_result_fails_boundary_receipt_and_releases_lock(transition, monkeypatch, code):
+def _run_cmd_update(monkeypatch, request, capsys):
+    """``hermes update --gateway`` whose impl hands this request to the real post-commit completion."""
     from types import SimpleNamespace
-    from hermes_cli import main, update_cmd, update_receipt, update_lock
+    from hermes_cli import main, update_cmd, update_receipt
 
-    root, git, old, new, request = transition
-    (root / "hermes_cli/update_completion.py").write_text(f"import os\nos._exit({code})\n")
     monkeypatch.setenv("HERMES_HOME", request["home"])
     monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
     monkeypatch.setattr(main, "_install_hangup_protection", lambda **kw: None)
@@ -266,18 +264,76 @@ def test_missing_child_result_fails_boundary_receipt_and_releases_lock(transitio
         update_cmd._complete_source_update(request)
 
     monkeypatch.setattr(update_cmd, "_cmd_update_impl", complete)
-    with pytest.raises(SystemExit) as error:
+    try:
         main.cmd_update(SimpleNamespace(gateway=True))
-    assert error.value.code == (code or 1)
-    receipt = update_receipt.read_latest_receipt()
-    assert receipt["outcome"] == "failed"
-    assert receipt["exit_code"] == (code or 1)
+        code = 0
+    except SystemExit as exc:
+        code = exc.code
+    return code, update_receipt.read_latest_receipt(), capsys.readouterr().out
+
+
+@pytest.mark.parametrize("code", [0, 23, -9])
+def test_missing_child_result_is_an_owed_completion_and_releases_lock(transition, monkeypatch, capsys, code):
+    """Review P2 (invariant 3): the tree already moved, so a completion that died without a result
+    (exit 0/23 with no answer, SIGKILL/OOM) is an owed ``completion`` follow-up, never "Update failed".
+
+    Was exit ``code or 1``, receipt ``failed``, ``.update_exit_code`` 1 and the paused gateways left
+    paused: that pinned the failure invariant 3 forbids.
+    """
+    from hermes_cli import update_lock
+
+    root, git, old, new, request = transition
+    die = f"os._exit({code})" if code >= 0 else "os.kill(os.getpid(), 9)"
+    (root / "hermes_cli/update_completion.py").write_text(f"import os\n{die}\n")
+    exit_code, receipt, out = _run_cmd_update(monkeypatch, request, capsys)
+    assert exit_code == 0, out
     assert receipt["update_id"] == request["receipt"]["update_id"]
-    assert request["windows_resume"]["resume_needed"] is True
-    assert (Path(request["home"]) / ".update_exit_code").read_text().strip() == "1"
+    assert receipt["outcome"] == "success"
+    assert receipt["exit_code"] == 0
+    assert [row["step"] for row in receipt["followups"]] == ["completion"]
+    assert "Update failed" not in out
+    # The Desktop hand-off scripts must not read this as a plain "Update complete." (review P4).
+    assert "Desktop app build owed: the update completion did not finish" in out
+    # This process resumes what the lost child never did, and the gateway watcher hears success.
+    assert request["windows_resume"]["resume_needed"] is False
+    assert (Path(request["home"]) / ".update_exit_code").read_text().strip() == "0"
     lock = update_lock.UpdateLock()
     assert lock.acquire()
     lock.release()
+
+
+def test_completion_spawn_failure_after_commit_is_owed(transition, monkeypatch, capsys):
+    """Review P2: an OSError while starting the completion (temporary directory, request file,
+    Popen) after the commit point is the same owed ``completion`` follow-up and exit 0."""
+    import tempfile
+
+    root, git, old, new, request = transition
+
+    def no_temporary_directory(*args, **kwargs):
+        raise FileNotFoundError(2, "No usable temporary directory found")
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", no_temporary_directory)
+    exit_code, receipt, out = _run_cmd_update(monkeypatch, request, capsys)
+    assert exit_code == 0, out
+    assert receipt["outcome"] == "success"
+    assert [row["step"] for row in receipt["followups"]] == ["completion"]
+    assert "No usable temporary directory" in receipt["followups"][0]["reason"]
+    assert (Path(request["home"]) / ".update_exit_code").read_text().strip() == "0"
+
+
+def test_lost_completion_with_parked_local_changes_stays_partial(transition, monkeypatch, capsys):
+    """The one documented exception survives the owed path: parked user changes still exit 1."""
+    from hermes_cli import update_cmd
+
+    root, git, old, new, request = transition
+    (root / "hermes_cli/update_completion.py").write_text("import os\nos._exit(0)\n")
+    notice = "⚠ Your local changes are parked in stash@{0}; re-apply them by hand."
+    monkeypatch.setattr(update_cmd, "_unrestored_autostash_notice", lambda: notice)
+    exit_code, receipt, out = _run_cmd_update(monkeypatch, request, capsys)
+    assert exit_code == 1, out
+    assert receipt["outcome"] == "partial"
+    assert [row["step"] for row in receipt["followups"]] == ["completion"]
+    assert notice in out
 
 
 @pytest.mark.platforms("posix")

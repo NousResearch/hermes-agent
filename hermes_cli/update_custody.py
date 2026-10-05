@@ -350,7 +350,7 @@ _OWNER_WATCH = (
     "import os, signal, sys\n"
     "if not os.read(0, 1):\n"
     "    try:\n"
-    "        os.kill(int(sys.argv[1]), signal.SIGKILL)\n"
+    "        os.kill(int(sys.argv[1]), signal.SIGKILL)\n"  # windows-footgun: ok -- POSIX only (run_git gates win32 out)
     "    except OSError:\n"
     "        pass\n"
 )
@@ -397,7 +397,11 @@ def _run_owner_watched(argv: Sequence[str], kwargs: dict) -> subprocess.Complete
             stdout, stderr = proc.communicate(input, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             proc.kill()
-            exc.stdout, exc.stderr = proc.communicate()
+            try:
+                exc.stdout, exc.stderr = proc.communicate(timeout=_DRAIN_SECONDS)
+            except subprocess.TimeoutExpired:
+                # A helper git started still holds the pipes: leave them to the reader threads.
+                proc.stdin = proc.stdout = proc.stderr = None
             raise
         except BaseException:
             proc.kill()

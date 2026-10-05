@@ -724,7 +724,7 @@ def _dispatch_skill(rid, params, session, name, arg):
             # Stacked leading /skill tokens (up to 5, cli.py + gateway parity, #74705): the
             # first token matched above; consume any further leading skill tokens from `arg`,
             # then build one invocation that loads every skill over the remaining instruction.
-            extra_keys, user_instruction = sc.split_stacked_skill_commands(arg)
+            extra_keys, user_instruction = sc.split_stacked_skill_commands(arg, interactive=True)
             if extra_keys:
                 stacked = sc.build_stacked_skill_invocation_message(
                     [key, *extra_keys], user_instruction,

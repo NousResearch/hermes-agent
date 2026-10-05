@@ -41,6 +41,7 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 _UNSET = object()  # "no per-profile human_delay snapshot": fall back to the primary's value
+_MAX_PLUGIN_LOAD_REARMS = 3  # per queued platform: transient load failures heal, a broken plugin stops re-importing
 
 
 def _adapter_unavailable_message(platform: Platform, *, retrying: bool = True) -> str:
@@ -821,9 +822,11 @@ class GatewayAdapterLifecycleMixin:
                     )
                     self._drop_from_reconnect_queue(platform, "adapter creation returned None")
                     return
-                # Unregistered plugin: keep it queued and re-arm a failed load for the next tick.
+                # Unregistered plugin: keep it queued and re-arm a failed load (capped) for the next tick.
                 from hermes_cli.plugins import get_plugin_manager
-                get_plugin_manager().rearm_failed_platform(platform.value)
+                if info.get("load_rearms", 0) < _MAX_PLUGIN_LOAD_REARMS and get_plugin_manager().rearm_failed_platform(
+                        platform.value):
+                    info["load_rearms"] = info.get("load_rearms", 0) + 1
                 backoff = self._bump_reconnect_backoff(
                     platform, info, attempt, "adapter_unavailable", _adapter_unavailable_message(platform),
                 )

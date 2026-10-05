@@ -379,13 +379,16 @@ class TestPlatformReconnectWatcher:
         manager.rearm_failed_platform.side_effect = lambda name: rearmed.append(name) or True
         monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
         adapter = StubAdapter(platform=platform)
-        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: adapter if rearmed else None)
+        healed = []
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: adapter if rearmed and healed else None)
 
-        for _ in range(2):
+        for tick in range(6):
+            if tick == 5:
+                healed.append(True)
             runner._failed_platforms.get(platform, {})["next_retry"] = 0
             await runner._reconnect_failed_platform(platform, time.monotonic())
 
-        assert rearmed == ["irc"]
+        assert rearmed == ["irc"] * 3  # a permanently broken plugin stops being re-imported after the cap
         runner._install_reconnected_adapter.assert_awaited_once_with(platform, adapter)
 
 

@@ -2116,13 +2116,8 @@ def _today_for_prompt() -> str:
 _SECTION_INSTRUCTIONS: Dict[bool, Dict[str, str]] = {
     True: {
         "language": (
-            "Write the summary in the language of the USER's own messages in this "
-            "conversation. Determine that language from user-authored turns ONLY — "
-            "ignore the language of assistant replies, summaries, and tool output "
-            "entirely; assistant messages in any other language are noise, not a "
-            "precedent, and must never set the summary language. If user messages "
-            "are in English, the summary is in English even when recent assistant "
-            "messages are in another language. "
+            "Write the summary in the language of the user's own messages (not assistant replies, earlier "
+            "summaries, or tool output) — do not translate or switch to English. "
         ),
         "historical_task": """[THE SINGLE MOST IMPORTANT FIELD. Identify the user's most recent unfulfilled
 input precisely, but summarize it in your own words rather than copying long
@@ -2162,10 +2157,8 @@ If no outstanding task exists, write "None."]""",
     },
     False: {
         "language": (
-            "This session contains no user-authored turns. Write the summary in the "
-            "dominant natural language actually present in the source turns being "
-            "summarized. Do not translate, invent a user, or attribute any request "
-            "to a user. "
+            "This session contains no user-authored turns. Write the summary in the dominant natural language of "
+            "the source turns being summarized. Do not translate, invent a user, or attribute any request to a user. "
         ),
         "historical_task": f"""[NO user-authored turn exists in this session. Write exactly:
 {_NO_USER_TASK_SENTINEL}

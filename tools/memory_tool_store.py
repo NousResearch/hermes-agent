@@ -235,6 +235,19 @@ class MemoryStore:
         return self._consolidation_failure(
             _error(message, current_entries=self._entries_for(target), usage=self._usage(target)))
 
+    def _capacity_failure(self, target: str, message: str) -> Dict[str, Any]:
+        """Offer bounded, advisory candidates without bypassing the retry limit."""
+        response = self._failure_with_entries(target, message)
+        if "current_entries" in response:
+            entries = response["current_entries"]
+            candidates = sorted(enumerate(entries), key=lambda item: (len(item[1]), item[0]))[:5]
+            response["candidates_for_eviction"] = [
+                {"index": index, "text": entry, "preview": entry[:120],
+                 "reason": "Shortest entries first; ties follow store order. Review relevance before removal."}
+                for index, entry in candidates
+            ]
+        return response
+
     def _batch_failure(self, target: str, message: str) -> Dict[str, Any]:
         """Batch-abort failure WITHOUT ``current_entries``: the store did not change and the
         caller already holds the inventory, so echoing it made each consolidation retry
@@ -285,7 +298,7 @@ class MemoryStore:
             if content in entries:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
             if len(ENTRY_DELIMITER.join(entries + [content])) > limit:
-                return self._failure_with_entries(target, (
+                return self._capacity_failure(target, (
                     f"Memory at {self._char_count(target):,}/{limit:,} chars. Adding this entry "
                     f"({len(content)} chars) would exceed the limit. Consolidate now: use 'replace' to merge "
                     f"overlapping entries into shorter ones or 'remove' stale or less important entries (see "
@@ -353,7 +366,7 @@ class MemoryStore:
                 return replaced, "Entry removed.", {"removed_entry": entries[idx]}
             new_total = len(ENTRY_DELIMITER.join(replaced))
             if new_total > limit:
-                return self._failure_with_entries(target, (
+                return self._capacity_failure(target, (
                     f"Replacement would put memory at {new_total:,}/{limit:,} chars. Shorten the new content, "
                     f"or 'remove' other stale or less important entries to make room (see current_entries "
                     f"below), then retry — all in this turn."))

@@ -1513,6 +1513,45 @@ platform:
     confirm_cancel: "취소"
     prompt_other: "✏️ 기타 (직접 입력)"
     prompt_expired: ⌛ 이 프롬프트는 더 이상 답변을 기다리지 않아요. 일반 메시지로 답변을 보내 주세요.
+    approval:
+      resolved_once: "✅ 한 번 승인됨"
+      resolved_session: "✅ 세션 동안 승인됨"
+      resolved_always: "✅ 영구 승인됨"
+      resolved_deny: "❌ 거부됨"
+      expired: "⌛ 승인 만료됨 — 대기 중인 명령이 없었어요."
+    slash_confirm:
+      resolved_once: "✅ 한 번 승인됨"
+      resolved_always: "🔒 항상 승인"
+      resolved_cancel: "❌ 취소됨"
+    clarify_type_answer: "✏️ 답변을 입력해 주세요:"
+    command:
+      model:
+        arg_name: "모델 이름. 비워 두면 현재 모델을 보여줘요."
+      reasoning:
+        arg_effort: "수준, reset 또는 show/hide. 비워 두면 현재 설정을 보여줘요."
+      personality:
+        arg_name: "성격 이름. 비워 두면 목록을 보여줘요."
+      steer:
+        arg_text: "에이전트에게 전할 내용"
+      title:
+        arg_text: "새 제목. 비워 두면 현재 제목을 보여줘요."
+      resume:
+        arg_name: "세션 제목 또는 ID"
+      reload_skills:
+        description: "스킬을 다시 스캔해 새로 추가되거나 삭제된 항목 반영"
+      approve:
+        arg_scope: "승인 범위"
+      deny:
+        arg_reason: "이유 (에이전트에게 전달됨)"
+      bg:
+        arg_text: "실행할 프롬프트"
+      btw:
+        arg_text: "답변받을 질문"
+  qqbot:
+    approval:
+      title: "이 명령을 실행할까요?"
+      smart_deny_suffix: " 소유자 재정의 승인은 이번 한 번의 작업에만 적용돼요."
+    update_prompt: "☤ **업데이트에 입력이 필요해요**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "대기 중인 위험 명령 승인"

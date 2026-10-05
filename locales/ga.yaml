@@ -1513,6 +1513,45 @@ platform:
     confirm_cancel: "Cealaigh"
     prompt_other: "✏️ Eile (clóscríobh freagra)"
     prompt_expired: ⌛ Níl an leid sin ag fanacht le freagra a thuilleadh. Seol do fhreagra mar ghnáth-theachtaireacht.
+    approval:
+      resolved_once: "✅ Ceadaithe uair amháin"
+      resolved_session: "✅ Ceadaithe don seisiún"
+      resolved_always: "✅ Ceadaithe go buan"
+      resolved_deny: "❌ Diúltaithe"
+      expired: "⌛ Chuaigh an cead in éag — ní raibh aon ordú ag fanacht."
+    slash_confirm:
+      resolved_once: "✅ Ceadaithe uair amháin"
+      resolved_always: "🔒 Ceadaigh i gcónaí"
+      resolved_cancel: "❌ Cealaithe"
+    clarify_type_answer: "✏️ Clóscríobh do fhreagra:"
+    command:
+      model:
+        arg_name: "Ainm na samhla. Fág folamh é chun an tsamhail reatha a fheiceáil."
+      reasoning:
+        arg_effort: "Leibhéal, reset, nó show/hide. Fág folamh é chun an leibhéal reatha a fheiceáil."
+      personality:
+        arg_name: "Ainm na pearsantachta. Fág folamh é chun an liosta a fheiceáil."
+      steer:
+        arg_text: "Cad ba cheart a rá leis an ngníomhaire"
+      title:
+        arg_text: "Teideal nua. Fág folamh é chun an teideal reatha a thaispeáint."
+      resume:
+        arg_name: "Teideal nó ID an tseisiúin"
+      reload_skills:
+        description: "Athscan na scileanna le haghaidh iontrálacha nua nó bainte"
+      approve:
+        arg_scope: "Raon an cheada"
+      deny:
+        arg_reason: "Cén fáth (curtha ar aghaidh chuig an ngníomhaire)"
+      bg:
+        arg_text: "An leid le rith"
+      btw:
+        arg_text: "An cheist le freagairt"
+  qqbot:
+    approval:
+      title: "An t-ordú seo a rith?"
+      smart_deny_suffix: " Ní bhaineann sárú an úinéara ach leis an oibríocht amháin seo."
+    update_prompt: "☤ **Teastaíonn d'ionchur ón nuashonrú**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Ceadaigh ordú contúirteach atá ag fanacht"

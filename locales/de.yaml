@@ -1513,6 +1513,45 @@ platform:
     confirm_cancel: "Abbrechen"
     prompt_other: "✏️ Eigene Antwort"
     prompt_expired: ⌛ Diese Abfrage wartet nicht mehr auf eine Antwort. Senden Sie Ihre Antwort als normale Nachricht.
+    approval:
+      resolved_once: "✅ Einmalig genehmigt"
+      resolved_session: "✅ Für diese Sitzung genehmigt"
+      resolved_always: "✅ Dauerhaft genehmigt"
+      resolved_deny: "❌ Abgelehnt"
+      expired: "⌛ Genehmigung abgelaufen — es wartete kein Befehl darauf."
+    slash_confirm:
+      resolved_once: "✅ Einmalig genehmigt"
+      resolved_always: "🔒 Immer genehmigen"
+      resolved_cancel: "❌ Abgebrochen"
+    clarify_type_answer: "✏️ Geben Sie Ihre Antwort ein:"
+    command:
+      model:
+        arg_name: "Modellname. Leer lassen, um das aktuelle anzuzeigen."
+      reasoning:
+        arg_effort: "Stufe, reset oder show/hide. Leer lassen, um den aktuellen Wert anzuzeigen."
+      personality:
+        arg_name: "Name der Persönlichkeit. Leer lassen, um alle aufzulisten."
+      steer:
+        arg_text: "Was dem Agenten mitgeteilt werden soll"
+      title:
+        arg_text: "Neuer Titel. Leer lassen, um den aktuellen anzuzeigen."
+      resume:
+        arg_name: "Sitzungstitel oder -ID"
+      reload_skills:
+        description: "Skills erneut nach neuen oder entfernten Einträgen durchsuchen"
+      approve:
+        arg_scope: "Geltungsbereich der Genehmigung"
+      deny:
+        arg_reason: "Begründung (wird an den Agenten weitergeleitet)"
+      bg:
+        arg_text: "Der auszuführende Prompt"
+      btw:
+        arg_text: "Die zu beantwortende Frage"
+  qqbot:
+    approval:
+      title: "Diesen Befehl ausführen?"
+      smart_deny_suffix: " Eine Freigabe durch den Besitzer gilt nur für diesen einen Vorgang."
+    update_prompt: "☤ **Update benötigt Ihre Eingabe**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Einen ausstehenden gefährlichen Befehl genehmigen"

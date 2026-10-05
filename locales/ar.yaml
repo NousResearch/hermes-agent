@@ -1513,6 +1513,45 @@ platform:
     confirm_cancel: "إلغاء"
     prompt_other: "✏️ غير ذلك (اكتب الإجابة)"
     prompt_expired: ⌛ لم يعد هذا الطلب ينتظر إجابة. أرسل ردك كرسالة عادية.
+    approval:
+      resolved_once: "✅ تمت الموافقة مرة واحدة"
+      resolved_session: "✅ تمت الموافقة للجلسة"
+      resolved_always: "✅ تمت الموافقة بشكل دائم"
+      resolved_deny: "❌ مرفوض"
+      expired: "⌛ انتهت صلاحية الموافقة — لم يكن هناك أمر ينتظر."
+    slash_confirm:
+      resolved_once: "✅ تمت الموافقة مرة واحدة"
+      resolved_always: "🔒 الموافقة دائمًا"
+      resolved_cancel: "❌ أُلغي"
+    clarify_type_answer: "✏️ اكتب إجابتك:"
+    command:
+      model:
+        arg_name: "اسم النموذج. اتركه فارغًا لعرض الحالي."
+      reasoning:
+        arg_effort: "المستوى، أو reset، أو show/hide. اتركه فارغًا لعرض الحالي."
+      personality:
+        arg_name: "اسم الشخصية. اتركه فارغًا لعرض القائمة."
+      steer:
+        arg_text: "ما تريد قوله للوكيل"
+      title:
+        arg_text: "العنوان الجديد. اتركه فارغًا لعرض الحالي."
+      resume:
+        arg_name: "عنوان الجلسة أو معرّفها"
+      reload_skills:
+        description: "إعادة فحص المهارات بحثًا عن إدخالات جديدة أو محذوفة"
+      approve:
+        arg_scope: "نطاق الموافقة"
+      deny:
+        arg_reason: "السبب (يُبلَّغ للوكيل)"
+      bg:
+        arg_text: "المطالبة المراد تشغيلها"
+      btw:
+        arg_text: "السؤال المراد الإجابة عنه"
+  qqbot:
+    approval:
+      title: "تنفيذ هذا الأمر؟"
+      smart_deny_suffix: " تجاوز المالك ينطبق على هذه العملية فقط."
+    update_prompt: "☤ **التحديث يحتاج إلى إدخالك**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "الموافقة على أمر خطير قيد الانتظار"

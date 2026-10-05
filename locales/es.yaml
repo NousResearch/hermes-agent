@@ -1513,6 +1513,45 @@ platform:
     confirm_cancel: "Cancelar"
     prompt_other: "✏️ Otra (escribir respuesta)"
     prompt_expired: ⌛ Esa solicitud ya no espera respuesta. Envía tu respuesta como un mensaje normal.
+    approval:
+      resolved_once: "✅ Aprobado una vez"
+      resolved_session: "✅ Aprobado para la sesión"
+      resolved_always: "✅ Aprobado permanentemente"
+      resolved_deny: "❌ Denegado"
+      expired: "⌛ La aprobación expiró — no había ningún comando esperando."
+    slash_confirm:
+      resolved_once: "✅ Aprobado una vez"
+      resolved_always: "🔒 Aprobar siempre"
+      resolved_cancel: "❌ Cancelado"
+    clarify_type_answer: "✏️ Escribe tu respuesta:"
+    command:
+      model:
+        arg_name: "Nombre del modelo. Déjalo vacío para ver el actual."
+      reasoning:
+        arg_effort: "Nivel, reset o show/hide. Déjalo vacío para ver el actual."
+      personality:
+        arg_name: "Nombre de la personalidad. Déjalo vacío para ver la lista."
+      steer:
+        arg_text: "Qué decirle al agente"
+      title:
+        arg_text: "Título nuevo. Déjalo vacío para ver el actual."
+      resume:
+        arg_name: "Título o id de la sesión"
+      reload_skills:
+        description: "Vuelve a escanear las skills en busca de entradas nuevas o eliminadas"
+      approve:
+        arg_scope: "Alcance de la aprobación"
+      deny:
+        arg_reason: "Motivo (se transmite al agente)"
+      bg:
+        arg_text: "El prompt que se ejecutará"
+      btw:
+        arg_text: "La pregunta que hay que responder"
+  qqbot:
+    approval:
+      title: "¿Ejecutar este comando?"
+      smart_deny_suffix: " La anulación del propietario aplica solo a esta operación."
+    update_prompt: "☤ **La actualización necesita tu respuesta**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Aprobar un comando peligroso pendiente"

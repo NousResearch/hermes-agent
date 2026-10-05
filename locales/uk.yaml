@@ -1513,6 +1513,45 @@ platform:
     confirm_cancel: "Скасувати"
     prompt_other: "✏️ Інше (ввести відповідь)"
     prompt_expired: ⌛ Цей запит більше не очікує відповіді. Надішліть відповідь звичайним повідомленням.
+    approval:
+      resolved_once: "✅ Схвалено один раз"
+      resolved_session: "✅ Схвалено для сеансу"
+      resolved_always: "✅ Схвалено назавжди"
+      resolved_deny: "❌ Відхилено"
+      expired: "⌛ Схвалення застаріло — жодна команда на нього не очікувала."
+    slash_confirm:
+      resolved_once: "✅ Схвалено один раз"
+      resolved_always: "🔒 Завжди схвалювати"
+      resolved_cancel: "❌ Скасовано"
+    clarify_type_answer: "✏️ Введіть відповідь:"
+    command:
+      model:
+        arg_name: "Назва моделі. Залиште порожнім, щоб побачити поточну."
+      reasoning:
+        arg_effort: "Рівень, reset або show/hide. Залиште порожнім, щоб побачити поточне значення."
+      personality:
+        arg_name: "Назва особистості. Залиште порожнім, щоб побачити список."
+      steer:
+        arg_text: "Що передати агентові"
+      title:
+        arg_text: "Нова назва. Залиште порожнім, щоб показати поточну."
+      resume:
+        arg_name: "Назва або ID сеансу"
+      reload_skills:
+        description: "Пересканувати навички на нові чи видалені"
+      approve:
+        arg_scope: "Область дії схвалення"
+      deny:
+        arg_reason: "Причина (буде передано агентові)"
+      bg:
+        arg_text: "Запит, який потрібно виконати"
+      btw:
+        arg_text: "Питання, на яке потрібно відповісти"
+  qqbot:
+    approval:
+      title: "Виконати цю команду?"
+      smart_deny_suffix: " Дозвіл власника в обхід заборони діє лише для цієї операції."
+    update_prompt: "☤ **Оновлення потребує вашої відповіді**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Схвалити небезпечну команду, що очікує"

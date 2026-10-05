@@ -1765,6 +1765,45 @@ platform:
     confirm_cancel: "Annuler"
     prompt_other: "✏️ Autre (saisir)"
     prompt_expired: ⌛ Cette invite n'attend plus de réponse. Envoyez votre réponse comme un message normal.
+    approval:
+      resolved_once: "✅ Approuvé une fois"
+      resolved_session: "✅ Approuvé pour la session"
+      resolved_always: "✅ Approuvé définitivement"
+      resolved_deny: "❌ Refusé"
+      expired: "⌛ Approbation expirée — aucune commande n'était en attente."
+    slash_confirm:
+      resolved_once: "✅ Approuvé une fois"
+      resolved_always: "🔒 Toujours approuver"
+      resolved_cancel: "❌ Annulé"
+    clarify_type_answer: "✏️ Saisissez votre réponse :"
+    command:
+      model:
+        arg_name: "Nom du modèle. Laissez vide pour voir le modèle actuel."
+      reasoning:
+        arg_effort: "Niveau, reset ou show/hide. Laissez vide pour voir le réglage actuel."
+      personality:
+        arg_name: "Nom de la personnalité. Laissez vide pour afficher la liste."
+      steer:
+        arg_text: "Ce qu'il faut dire à l'agent"
+      title:
+        arg_text: "Nouveau titre. Laissez vide pour afficher le titre actuel."
+      resume:
+        arg_name: "Titre ou ID de la session"
+      reload_skills:
+        description: "Réanalyser les skills pour détecter les ajouts et les suppressions"
+      approve:
+        arg_scope: "Portée de l'approbation"
+      deny:
+        arg_reason: "Motif (transmis à l'agent)"
+      bg:
+        arg_text: "Le prompt à exécuter"
+      btw:
+        arg_text: "La question à laquelle répondre"
+  qqbot:
+    approval:
+      title: "Exécuter cette commande ?"
+      smart_deny_suffix: " La dérogation du propriétaire ne s'applique qu'à cette seule opération."
+    update_prompt: "☤ **La mise à jour attend votre réponse**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Approuver une commande dangereuse en attente"

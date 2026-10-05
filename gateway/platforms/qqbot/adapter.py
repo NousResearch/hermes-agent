@@ -38,6 +38,7 @@ except ImportError:
     HTTPX_AVAILABLE = False
     httpx = None  # type: ignore[assignment]
 
+from agent.i18n import t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult,
@@ -1487,9 +1488,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         DM targeting, so only the ``always`` choice and the raw command/reason are used."""
         description = prompt.description
         if prompt.smart_denied:
-            description += " Owner override applies to this one operation only."
+            description += t("platform.qqbot.approval.smart_deny_suffix")
         req = ApprovalRequest(
-            session_key=prompt.session_key, title="Execute this command?", description=description,
+            session_key=prompt.session_key, title=t("platform.qqbot.approval.title"), description=description,
             command_preview=prompt.command, timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
             allow_permanent="always" in prompt.choices)
         # QQ requires a msg_id for passive replies; the last inbound id is the natural one.
@@ -1502,8 +1503,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         """Yes/No update-confirmation prompt; button clicks (``update_prompt:y|n``)
         are written to ``~/.hermes/.update_response`` by the interaction callback."""
         del session_key, metadata  # present for contract parity only.
-        default_hint = f" (default: {default})" if default else ""
-        content = f"☤ **Update Needs Your Input**\n\n{prompt}{default_hint}"
+        default_hint = t("gateway.update.prompt_default", default=default) if default else ""
+        content = t("platform.qqbot.update_prompt", prompt=prompt, default_hint=default_hint)
         return await self.send_with_keyboard(
             chat_id, content, build_update_prompt_keyboard(), reply_to=self._last_msg_id.get(chat_id)
         )

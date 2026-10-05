@@ -1584,6 +1584,45 @@ platform:
     confirm_cancel: "Cancel"
     prompt_other: "✏️ Other (type answer)"
     prompt_expired: "⌛ That prompt is no longer waiting for an answer. Send your reply as a normal message."
+    approval:
+      resolved_once: "✅ Approved once"
+      resolved_session: "✅ Approved for session"
+      resolved_always: "✅ Approved permanently"
+      resolved_deny: "❌ Denied"
+      expired: "⌛ Approval expired — no command was waiting."
+    slash_confirm:
+      resolved_once: "✅ Approved once"
+      resolved_always: "🔒 Always approve"
+      resolved_cancel: "❌ Cancelled"
+    clarify_type_answer: "✏️ Type your answer:"
+    command:
+      model:
+        arg_name: "Model name. Leave empty to see current."
+      reasoning:
+        arg_effort: "Level, reset, or show/hide. Leave empty to see current."
+      personality:
+        arg_name: "Personality name. Leave empty to list."
+      steer:
+        arg_text: "What to tell the agent"
+      title:
+        arg_text: "New title. Leave empty to show."
+      resume:
+        arg_name: "Session title or id"
+      reload_skills:
+        description: "Re-scan skills for new or removed entries"
+      approve:
+        arg_scope: "Approval scope"
+      deny:
+        arg_reason: "Why (relayed to the agent)"
+      bg:
+        arg_text: "The prompt to run"
+      btw:
+        arg_text: "The question to answer"
+  qqbot:
+    approval:
+      title: "Execute this command?"
+      smart_deny_suffix: " Owner override applies to this one operation only."
+    update_prompt: "☤ **Update Needs Your Input**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Approve a pending dangerous command"

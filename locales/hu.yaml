@@ -1530,6 +1530,45 @@ platform:
     confirm_cancel: "Mégse"
     prompt_other: "✏️ Egyéb (írd be a választ)"
     prompt_expired: ⌛ Ez a kérdés már nem vár válaszra. Küldd el a válaszodat normál üzenetként.
+    approval:
+      resolved_once: "✅ Egyszer jóváhagyva"
+      resolved_session: "✅ Munkamenetre jóváhagyva"
+      resolved_always: "✅ Véglegesen jóváhagyva"
+      resolved_deny: "❌ Elutasítva"
+      expired: "⌛ A jóváhagyás lejárt — nem várakozott parancs."
+    slash_confirm:
+      resolved_once: "✅ Egyszer jóváhagyva"
+      resolved_always: "🔒 Mindig jóváhagy"
+      resolved_cancel: "❌ Megszakítva"
+    clarify_type_answer: "✏️ Írd be a válaszod:"
+    command:
+      model:
+        arg_name: "Modellnév. Hagyd üresen az aktuális megtekintéséhez."
+      reasoning:
+        arg_effort: "Szint, reset vagy show/hide. Hagyd üresen az aktuális megtekintéséhez."
+      personality:
+        arg_name: "Személyiség neve. Hagyd üresen a listázáshoz."
+      steer:
+        arg_text: "Mit mondjunk az ügynöknek"
+      title:
+        arg_text: "Új cím. Hagyd üresen a megjelenítéshez."
+      resume:
+        arg_name: "Munkamenet címe vagy azonosítója"
+      reload_skills:
+        description: "Skillek újrakeresése új vagy eltávolított bejegyzésekért"
+      approve:
+        arg_scope: "Jóváhagyás hatóköre"
+      deny:
+        arg_reason: "Indok (továbbítva az ügynöknek)"
+      bg:
+        arg_text: "A futtatandó prompt"
+      btw:
+        arg_text: "A megválaszolandó kérdés"
+  qqbot:
+    approval:
+      title: "Végrehajtod ezt a parancsot?"
+      smart_deny_suffix: " A tulajdonosi felülbírálás csak erre az egy műveletre vonatkozik."
+    update_prompt: "☤ **A frissítéshez a döntésed kell**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Függőben lévő veszélyes parancs jóváhagyása"

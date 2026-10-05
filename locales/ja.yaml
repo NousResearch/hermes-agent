@@ -1513,6 +1513,45 @@ platform:
     confirm_cancel: "キャンセル"
     prompt_other: "✏️ その他（回答を入力）"
     prompt_expired: ⌛ このプロンプトはもう回答を待っていません。通常のメッセージとして返信を送ってください。
+    approval:
+      resolved_once: "✅ 一度だけ承認"
+      resolved_session: "✅ セッション中は承認"
+      resolved_always: "✅ 永続的に承認"
+      resolved_deny: "❌ 拒否"
+      expired: "⌛ 承認の有効期限切れ — 待機中のコマンドはありませんでした。"
+    slash_confirm:
+      resolved_once: "✅ 一度だけ承認"
+      resolved_always: "🔒 常に承認"
+      resolved_cancel: "❌ キャンセル済み"
+    clarify_type_answer: "✏️ 回答を入力してください:"
+    command:
+      model:
+        arg_name: "モデル名。空欄で現在のモデルを表示します。"
+      reasoning:
+        arg_effort: "レベル、reset、または show/hide。空欄で現在の設定を表示します。"
+      personality:
+        arg_name: "パーソナリティ名。空欄で一覧を表示します。"
+      steer:
+        arg_text: "エージェントに伝える内容"
+      title:
+        arg_text: "新しいタイトル。空欄で現在のタイトルを表示します。"
+      resume:
+        arg_name: "セッションのタイトルまたは ID"
+      reload_skills:
+        description: "スキルを再スキャンして追加・削除を反映します"
+      approve:
+        arg_scope: "承認の範囲"
+      deny:
+        arg_reason: "理由 (エージェントに伝えられます)"
+      bg:
+        arg_text: "実行するプロンプト"
+      btw:
+        arg_text: "答えてほしい質問"
+  qqbot:
+    approval:
+      title: "このコマンドを実行しますか？"
+      smart_deny_suffix: " オーナーによる上書き承認は、この 1 回の操作にのみ適用されます。"
+    update_prompt: "☤ **アップデートに入力が必要です**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "保留中の危険なコマンドを承認"

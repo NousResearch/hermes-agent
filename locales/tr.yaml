@@ -1513,6 +1513,45 @@ platform:
     confirm_cancel: "İptal"
     prompt_other: "✏️ Diğer (yanıt yazın)"
     prompt_expired: ⌛ Bu istem artık yanıt beklemiyor. Yanıtınızı normal bir mesaj olarak gönderin.
+    approval:
+      resolved_once: "✅ Bir kez onaylandı"
+      resolved_session: "✅ Oturum için onaylandı"
+      resolved_always: "✅ Kalıcı olarak onaylandı"
+      resolved_deny: "❌ Reddedildi"
+      expired: "⌛ Onay süresi doldu — bekleyen komut yoktu."
+    slash_confirm:
+      resolved_once: "✅ Bir kez onaylandı"
+      resolved_always: "🔒 Her zaman onayla"
+      resolved_cancel: "❌ İptal edildi"
+    clarify_type_answer: "✏️ Yanıtınızı yazın:"
+    command:
+      model:
+        arg_name: "Model adı. Geçerli olanı görmek için boş bırakın."
+      reasoning:
+        arg_effort: "Düzey, reset veya show/hide. Geçerli olanı görmek için boş bırakın."
+      personality:
+        arg_name: "Kişilik adı. Listelemek için boş bırakın."
+      steer:
+        arg_text: "Ajana ne söyleneceği"
+      title:
+        arg_text: "Yeni başlık. Göstermek için boş bırakın."
+      resume:
+        arg_name: "Oturum başlığı veya kimliği"
+      reload_skills:
+        description: "Yeni veya kaldırılmış girdiler için skill'leri yeniden tara"
+      approve:
+        arg_scope: "Onay kapsamı"
+      deny:
+        arg_reason: "Neden (ajana iletilir)"
+      bg:
+        arg_text: "Çalıştırılacak istem"
+      btw:
+        arg_text: "Yanıtlanacak soru"
+  qqbot:
+    approval:
+      title: "Bu komut çalıştırılsın mı?"
+      smart_deny_suffix: " Sahip geçersiz kılması yalnızca bu tek işlem için geçerlidir."
+    update_prompt: "☤ **Güncelleme Girdinizi Bekliyor**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Bekleyen tehlikeli bir komutu onayla"

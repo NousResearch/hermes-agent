@@ -1513,6 +1513,45 @@ platform:
     confirm_cancel: "Kanselleer"
     prompt_other: "✏️ Ander (tik antwoord)"
     prompt_expired: ⌛ Daardie navraag wag nie meer op 'n antwoord nie. Stuur jou antwoord as 'n gewone boodskap.
+    approval:
+      resolved_once: "✅ Eenmalig goedgekeur"
+      resolved_session: "✅ Vir sessie goedgekeur"
+      resolved_always: "✅ Permanent goedgekeur"
+      resolved_deny: "❌ Geweier"
+      expired: "⌛ Goedkeuring het verval — geen opdrag het gewag nie."
+    slash_confirm:
+      resolved_once: "✅ Eenmalig goedgekeur"
+      resolved_always: "🔒 Altyd goedkeur"
+      resolved_cancel: "❌ Gekanselleer"
+    clarify_type_answer: "✏️ Tik jou antwoord:"
+    command:
+      model:
+        arg_name: "Modelnaam. Laat leeg om die huidige te sien."
+      reasoning:
+        arg_effort: "Vlak, reset, of show/hide. Laat leeg om die huidige te sien."
+      personality:
+        arg_name: "Persoonlikheidsnaam. Laat leeg om te lys."
+      steer:
+        arg_text: "Wat om vir die agent te sê"
+      title:
+        arg_text: "Nuwe titel. Laat leeg om te wys."
+      resume:
+        arg_name: "Sessietitel of -ID"
+      reload_skills:
+        description: "Herskandeer vaardighede vir nuwe of verwyderde inskrywings"
+      approve:
+        arg_scope: "Goedkeuringsomvang"
+      deny:
+        arg_reason: "Waarom (aan die agent oorgedra)"
+      bg:
+        arg_text: "Die prompt om uit te voer"
+      btw:
+        arg_text: "Die vraag om te beantwoord"
+  qqbot:
+    approval:
+      title: "Voer hierdie opdrag uit?"
+      smart_deny_suffix: " Eienaar-oorskrywing geld slegs vir hierdie een bewerking."
+    update_prompt: "☤ **Opdatering benodig jou insette**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Keur 'n hangende gevaarlike opdrag goed"

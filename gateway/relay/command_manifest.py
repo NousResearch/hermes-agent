@@ -14,15 +14,26 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from agent.i18n import t
+from gateway.platforms.base import _prefix_within_utf16_limit
+
 # Discord option type 3 = STRING.
 _STR = 3
+# Discord rejects the whole bulk overwrite (error 50035) when ONE description exceeds 100 UTF-16
+# units, so every localized description is cut at the cap AFTER translation.
+_DISCORD_DESCRIPTION_LIMIT = 100
 
 
-def _opt(name: str, description: str, *, choices: List[str] | None = None) -> Dict[str, Any]:
+def _text(key: str) -> str:
+    """``t(key)`` for the active language, cut to Discord's description cap."""
+    return _prefix_within_utf16_limit(t(key), _DISCORD_DESCRIPTION_LIMIT)
+
+
+def _opt(name: str, description_key: str, *, choices: List[str] | None = None) -> Dict[str, Any]:
     row: Dict[str, Any] = {
         "type": _STR,
         "name": name,
-        "description": description,
+        "description": _text(description_key),
         "required": False,
     }
     if choices:
@@ -30,13 +41,14 @@ def _opt(name: str, description: str, *, choices: List[str] | None = None) -> Di
     return row
 
 
-def _cmd(name: str, description: str, *options: Dict[str, Any]) -> Dict[str, Any]:
-    row: Dict[str, Any] = {"name": name, "description": description}
+def _cmd(name: str, description_key: str, *options: Dict[str, Any]) -> Dict[str, Any]:
+    row: Dict[str, Any] = {"name": name, "description": _text(description_key)}
     if options:
         row["options"] = list(options)
     return row
 
 
+# Choice names are command identifiers (name == value), never prose.
 _REASONING_CHOICES = [
     "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
     "reset", "show", "hide",
@@ -44,47 +56,48 @@ _REASONING_CHOICES = [
 
 
 def build_relay_command_manifest() -> List[Dict[str, Any]]:
-    """The relay lane's Discord slash-command manifest (native-tree mirror)."""
+    """The relay lane's Discord slash-command manifest (native-tree mirror), with descriptions
+    resolved for the active language. Built per ``hello``, so a language change reaches Discord on
+    the next dial: the connector's GET → diff → PUT sees the changed descriptions."""
     return [
-        _cmd("new", "Start a new conversation"),
-        _cmd("reset", "Reset your Hermes session"),
-        _cmd("model", "Show or change the model",
-             _opt("name", "Model name. Leave empty to see current.")),
-        _cmd("reasoning", "Show/change reasoning effort, or toggle showing it",
-             _opt("effort", "Level, reset, or show/hide. Leave empty to see current.",
-                  choices=_REASONING_CHOICES)),
-        _cmd("personality", "Set a personality",
-             _opt("name", "Personality name. Leave empty to list.")),
-        _cmd("retry", "Retry your last message"),
-        _cmd("undo", "Remove the last exchange"),
-        _cmd("status", "Show Hermes session status"),
-        _cmd("sethome", "Set this chat as the home channel"),
-        _cmd("stop", "Stop the running Hermes agent"),
-        _cmd("steer", "Inject a message after the next tool call (no interrupt)",
-             _opt("text", "What to tell the agent")),
-        _cmd("compress", "Compress conversation context"),
-        _cmd("title", "Set or show the session title",
-             _opt("text", "New title. Leave empty to show.")),
-        _cmd("resume", "Resume a previously-named session",
-             _opt("name", "Session title or id")),
-        _cmd("usage", "Show token usage for this session"),
-        _cmd("help", "Show available commands"),
-        _cmd("insights", "Show usage insights and analytics"),
-        _cmd("reload-mcp", "Reload MCP servers from config"),
-        _cmd("reload-skills", "Re-scan skills for new or removed entries"),
-        _cmd("voice", "Toggle voice reply mode"),
-        _cmd("update", "Update Hermes Agent to the latest version"),
-        _cmd("restart", "Gracefully restart the Hermes gateway"),
-        _cmd("approve", "Approve a pending dangerous command",
-             _opt("scope", "Approval scope", choices=["once", "session", "always", "all"])),
-        _cmd("deny", "Deny a pending dangerous command",
-             _opt("reason", "Why (relayed to the agent)")),
-        _cmd("thread", "Create a new thread and start a Hermes session in it",
-             _opt("name", "Thread name")),
-        _cmd("queue", "Queue a prompt for the next turn (doesn't interrupt)",
-             _opt("text", "The prompt to queue")),
-        _cmd("bg", "Run a prompt in a separate background session",
-             _opt("text", "The prompt to run")),
-        _cmd("btw", "Ask a side question about the current conversation",
-             _opt("text", "The question to answer")),
+        _cmd("new", "platform.discord.command.new.description"),
+        _cmd("reset", "platform.discord.command.reset.description"),
+        _cmd("model", "platform.discord.command.model.description",
+             _opt("name", "platform.relay.command.model.arg_name")),
+        _cmd("reasoning", "platform.discord.command.reasoning.description",
+             _opt("effort", "platform.relay.command.reasoning.arg_effort", choices=_REASONING_CHOICES)),
+        _cmd("personality", "platform.discord.command.personality.description",
+             _opt("name", "platform.relay.command.personality.arg_name")),
+        _cmd("retry", "platform.discord.command.retry.description"),
+        _cmd("undo", "platform.discord.command.undo.description"),
+        _cmd("status", "platform.discord.command.status.description"),
+        _cmd("sethome", "slash.sethome.description"),
+        _cmd("stop", "platform.discord.command.stop.description"),
+        _cmd("steer", "platform.discord.command.steer.description",
+             _opt("text", "platform.relay.command.steer.arg_text")),
+        _cmd("compress", "platform.discord.command.compress.description"),
+        _cmd("title", "platform.discord.command.title.description",
+             _opt("text", "platform.relay.command.title.arg_text")),
+        _cmd("resume", "slash.resume.description",
+             _opt("name", "platform.relay.command.resume.arg_name")),
+        _cmd("usage", "platform.discord.command.usage.description"),
+        _cmd("help", "platform.discord.command.help.description"),
+        _cmd("insights", "slash.insights.description"),
+        _cmd("reload-mcp", "slash.reload_mcp.description"),
+        _cmd("reload-skills", "platform.relay.command.reload_skills.description"),
+        _cmd("voice", "platform.discord.command.voice.description"),
+        _cmd("update", "slash.update.description"),
+        _cmd("restart", "platform.discord.command.restart.description"),
+        _cmd("approve", "slash.approve.description",
+             _opt("scope", "platform.relay.command.approve.arg_scope", choices=["once", "session", "always", "all"])),
+        _cmd("deny", "platform.discord.command.deny.description",
+             _opt("reason", "platform.relay.command.deny.arg_reason")),
+        _cmd("thread", "platform.discord.command.thread.description",
+             _opt("name", "platform.discord.command.thread.arg_name")),
+        _cmd("queue", "platform.discord.command.queue.description",
+             _opt("text", "platform.discord.command.queue.arg_prompt")),
+        _cmd("bg", "slash.bg.description",
+             _opt("text", "platform.relay.command.bg.arg_text")),
+        _cmd("btw", "platform.discord.command.btw.description",
+             _opt("text", "platform.relay.command.btw.arg_text")),
     ]

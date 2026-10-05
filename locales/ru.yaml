@@ -1513,6 +1513,45 @@ platform:
     confirm_cancel: "Отмена"
     prompt_other: "✏️ Другое (ввести ответ)"
     prompt_expired: ⌛ Этот запрос больше не ожидает ответа. Отправьте ответ обычным сообщением.
+    approval:
+      resolved_once: "✅ Одобрено один раз"
+      resolved_session: "✅ Одобрено на сеанс"
+      resolved_always: "✅ Одобрено навсегда"
+      resolved_deny: "❌ Отклонено"
+      expired: "⌛ Одобрение устарело — ни одна команда его не ожидала."
+    slash_confirm:
+      resolved_once: "✅ Одобрено один раз"
+      resolved_always: "🔒 Одобрять всегда"
+      resolved_cancel: "❌ Отменено"
+    clarify_type_answer: "✏️ Введите ответ:"
+    command:
+      model:
+        arg_name: "Имя модели. Оставьте пустым, чтобы увидеть текущую."
+      reasoning:
+        arg_effort: "Уровень, reset или show/hide. Оставьте пустым, чтобы увидеть текущий."
+      personality:
+        arg_name: "Имя личности. Оставьте пустым, чтобы увидеть список."
+      steer:
+        arg_text: "Что передать агенту"
+      title:
+        arg_text: "Новое название. Оставьте пустым, чтобы показать текущее."
+      resume:
+        arg_name: "Название или ID сеанса"
+      reload_skills:
+        description: "Пересканировать навыки на предмет новых или удалённых"
+      approve:
+        arg_scope: "Область действия одобрения"
+      deny:
+        arg_reason: "Причина (будет передана агенту)"
+      bg:
+        arg_text: "Промпт для выполнения"
+      btw:
+        arg_text: "Вопрос, на который нужно ответить"
+  qqbot:
+    approval:
+      title: "Выполнить эту команду?"
+      smart_deny_suffix: " Разрешение владельца в обход запрета действует только для этой операции."
+    update_prompt: "☤ **Обновлению нужен ваш ответ**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "Одобрить ожидающую опасную команду"

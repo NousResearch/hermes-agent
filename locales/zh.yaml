@@ -1513,6 +1513,45 @@ platform:
     confirm_cancel: "取消"
     prompt_other: "✏️ 其他（输入回答）"
     prompt_expired: ⌛ 该提示已不再等待回答。请以普通消息发送您的回复。
+    approval:
+      resolved_once: "✅ 已批准一次"
+      resolved_session: "✅ 已批准（本会话）"
+      resolved_always: "✅ 已永久批准"
+      resolved_deny: "❌ 已拒绝"
+      expired: "⌛ 审批已过期——没有等待中的命令。"
+    slash_confirm:
+      resolved_once: "✅ 已批准一次"
+      resolved_always: "🔒 始终批准"
+      resolved_cancel: "❌ 已取消"
+    clarify_type_answer: "✏️ 请输入你的答案："
+    command:
+      model:
+        arg_name: "模型名称。留空则查看当前模型。"
+      reasoning:
+        arg_effort: "级别、reset 或 show/hide。留空则查看当前设置。"
+      personality:
+        arg_name: "人格名称。留空则列出可用人格。"
+      steer:
+        arg_text: "要告诉代理的内容"
+      title:
+        arg_text: "新标题。留空则显示当前标题。"
+      resume:
+        arg_name: "会话标题或 ID"
+      reload_skills:
+        description: "重新扫描技能，发现新增或移除的条目"
+      approve:
+        arg_scope: "批准范围"
+      deny:
+        arg_reason: "原因（会转告代理）"
+      bg:
+        arg_text: "要运行的提示词"
+      btw:
+        arg_text: "要回答的问题"
+  qqbot:
+    approval:
+      title: "执行此命令？"
+      smart_deny_suffix: " 所有者的覆盖批准仅适用于这一次操作。"
+    update_prompt: "☤ **更新需要你的输入**\n\n{prompt}{default_hint}"
 slash:
   approve:
     description: "批准待处理的危险命令"

@@ -396,6 +396,27 @@ def test_cjk_without_action_verb_is_not_a_dangling_ack():
     assert not trailing_continue_intent("让我想想。")
 
 
+def test_cjk_plan_tail_without_leading_marker_word():
+    # "我先…" (no 让) is the most common Chinese planning order; it must fire too.
+    assert trailing_continue_intent("我先读一下配置。")
+
+
+def test_cjk_complete_answers_with_bridging_verbs_do_not_fire():
+    """Complete answers whose earlier clause holds a verb-shaped character
+    (补充/翻译/这样写/换个说法) must not read as dangling announcements — the announced
+    action must be what the text ENDS on (anchored check)."""
+    assert not trailing_continue_intent("我来补充一点，这个方法的时间复杂度是 O(n)。")
+    assert not trailing_continue_intent("我来解释一下为什么这样写：它避免了竞态。")
+    assert not trailing_continue_intent("我来翻译一下这段话。")
+    assert not trailing_continue_intent("我来换个说法：这一段是历史遗留代码。")
+
+
+def test_cjk_added_execution_verbs_fire():
+    assert trailing_continue_intent("让我先运行一遍测试。")
+    assert trailing_continue_intent("我先启动服务，再看结果。")
+    assert trailing_continue_intent("接下来我提交这个修改。")
+
+
 # ── batch-cycle loop breaker (port of can1357/oh-my-pi#10521) ───────────────
 
 

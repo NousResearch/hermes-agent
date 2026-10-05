@@ -553,6 +553,44 @@ class TestMemoryBatch:
         assert result["success"] is False
         assert "legit fact" not in store.memory_entries
 
+    def test_batch_non_dict_op_returns_tool_error_not_crash(self, store):
+        """A malformed call where 'operations' contains a plain string instead of an
+        {action, content?, old_text?} object must return a normal tool error, not raise
+        AttributeError out of the dispatcher ('str' object has no attribute 'get'). Seen in
+        production right after a memory-at-capacity rejection, i.e. during consolidation --
+        exactly when an uncaught crash kills the whole turn instead of letting the model retry."""
+        store.add("memory", "existing fact")
+        result = json.loads(memory_tool(
+            target="memory",
+            operations=["just a bare string, not an object", {"action": "add", "content": "new fact"}],
+            store=store,
+        ))
+        assert result["success"] is False
+        assert "object" in result["error"].lower()
+        # Nothing applied -- the whole call is rejected before touching the store.
+        assert "new fact" not in store.memory_entries
+        assert "existing fact" in store.memory_entries
+
+    def test_batch_none_op_returns_tool_error_not_crash(self, store):
+        """None in the operations list is also non-dict; must be rejected the same way."""
+        result = json.loads(memory_tool(
+            target="memory",
+            operations=[None, {"action": "add", "content": "new fact"}],
+            store=store,
+        ))
+        assert result["success"] is False
+        assert "new fact" not in store.memory_entries
+
+    def test_destructive_ops_tolerates_non_dict_entries(self):
+        """destructive_ops() is also called directly from the background-review gate and the
+        staged-pending-apply path, outside memory_tool()'s own validation -- it must not crash
+        on a non-dict op either (#same bug class as the dispatcher-level check above)."""
+        from tools.memory_tool import destructive_ops
+        payload = {"action": "batch", "target": "memory",
+                   "operations": ["a bare string", None, {"action": "remove", "old_text": "x"}]}
+        result = destructive_ops(payload)
+        assert result == [{"action": "remove", "old_text": "x"}]
+
 
 # =========================================================================
 # External drift guard (#26045)

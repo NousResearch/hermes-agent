@@ -112,7 +112,10 @@ _STORE_ACTIONS = {
 
 
 def _batch_op_line(op: Dict[str, Any]) -> str:
-    op = op or {}
+    # ``op`` is untrusted batch input and may be any JSON value (a model can send a bare
+    # string instead of an object); ``op or {}`` only catches falsy values like None -- a
+    # non-empty string is truthy and survives to the .get() call below. Guard on type instead.
+    op = op if isinstance(op, dict) else {}
     act, content, old = op.get("action", "?"), op.get("content") or op.get("new_text") or "", op.get("old_text", "")
     if act == "remove":
         return f"- remove: {old}"
@@ -158,9 +161,11 @@ _BG_DELETE_ACTIONS = ("replace", "remove")
 
 
 def destructive_ops(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """The replace/remove ops of a staged memory payload, single-op or batch shape."""
+    """The replace/remove ops of a staged memory payload, single-op or batch shape. Tolerates
+    a malformed op (e.g. a bare string instead of an object) by treating it as non-destructive
+    rather than crashing -- ``(op or {})`` only catches None, not a truthy non-dict value."""
     ops = (payload.get("operations") or []) if payload.get("action") == "batch" else [payload]
-    return [op for op in ops if (op or {}).get("action") in _BG_DELETE_ACTIONS]
+    return [op for op in ops if isinstance(op, dict) and op.get("action") in _BG_DELETE_ACTIONS]
 
 
 def _background_delete_gate(store, action, operations, target="memory", content=None,
@@ -235,6 +240,13 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
     if operations:
         if not isinstance(operations, list):
             return "rejected", tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
+        bad_ops = [i + 1 for i, op in enumerate(operations) if not isinstance(op, dict)]
+        if bad_ops:
+            return "rejected", tool_error(
+                f"operations[{', '.join(str(i) for i in bad_ops)}] must be an object with "
+                f"{{action, content?, old_text?}} -- got a non-object value. Each item in the "
+                f"'operations' array is a single op; reissue with every item as an object, not a string.",
+                success=False)
         denied = _background_delete_gate(store, action, operations, target)
         if denied is not None:
             return "rejected", denied

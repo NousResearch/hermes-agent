@@ -411,7 +411,9 @@ class MemoryStore:
     def _batch(self, target: str, operations: List[Dict[str, Any]], *, commit: bool) -> Dict[str, Any]:
         if not operations:
             return _error("operations list is empty.")
-        ops = [op or {} for op in operations]
+        # ``op or {}`` only catches None -- a non-dict truthy value (e.g. a bare string sent
+        # instead of an object) would survive and crash the first .get() call below.
+        ops = [op if isinstance(op, dict) else {} for op in operations]
         # Scan every add/replace content BEFORE touching disk -- one poisoned op rejects the batch.
         for i, op in enumerate(ops):
             scan_error = op.get("action") in {"add", "replace"} and op.get("content") and _scan_memory_content(op["content"])

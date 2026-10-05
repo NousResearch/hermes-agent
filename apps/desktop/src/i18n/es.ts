@@ -1204,6 +1204,9 @@ export const esOverrides = {
       },
       backdropTitle: 'Fondo del chat',
       backdropDesc: 'La tenue imagen de la estatua detrás de la conversación.',
+      reduceEffectsTitle: 'Reducir los efectos visuales',
+      reduceEffectsDesc:
+        'Elimina el desenfoque del cristal esmerilado y las animaciones decorativas. Cuesta menos dibujar y solo afecta a Hermes, a diferencia del mismo ajuste del sistema, que afecta a todas las aplicaciones.',
       userBubbleTitle: 'Burbuja de mensaje',
       userBubbleDesc: 'Cuánta transparencia tienen tus propios mensajes. Opaca en 0; en 100 solo queda el contorno.',
       textDirectionTitle: 'Dirección del texto',

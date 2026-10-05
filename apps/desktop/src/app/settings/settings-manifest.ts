@@ -92,6 +92,11 @@ export const SETTINGS_MANIFEST = {
       ['titlebar', 'settings gear', 'layout', 'HUD', 'left', 'right', 'tabs'],
       'appActions'
     ),
+    reduceEffects: appearanceSetting(
+      'window-layout',
+      ['performance', 'speed', 'slow', 'lag', 'fps', 'stutter', 'blur', 'frost', 'motion', 'animation', 'effects'],
+      'reduceEffects'
+    ),
     minimizeToTray: {
       subpage: 'window-layout',
       keywords: ['tray', 'background', 'minimize', 'dock', 'taskbar', 'menu bar'],

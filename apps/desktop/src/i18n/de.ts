@@ -1204,6 +1204,9 @@ export const deOverrides = {
       },
       backdropTitle: 'Chat-Hintergrund',
       backdropDesc: 'Das zarte Statuenbild hinter der Konversation.',
+      reduceEffectsTitle: 'Visuelle Effekte reduzieren',
+      reduceEffectsDesc:
+        'Entfernt den Milchglas-Unschärfeeffekt und die dekorativen Animationen. Günstiger zu zeichnen und nur für Hermes — anders als dieselbe Systemeinstellung, die alle Apps betrifft.',
       userBubbleTitle: 'Nachrichten-Blase',
       userBubbleDesc:
         'Wie durchsichtig Ihre eigenen Nachrichten sind. Bei 0 deckend; bei 100 bleibt nur die Kontur übrig.',

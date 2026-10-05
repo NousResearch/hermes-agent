@@ -965,6 +965,8 @@ export interface Translations {
       }
       backdropTitle: string
       backdropDesc: string
+      reduceEffectsTitle: string
+      reduceEffectsDesc: string
       userBubbleTitle: string
       userBubbleDesc: string
       textDirectionTitle: string

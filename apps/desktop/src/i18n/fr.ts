@@ -1208,6 +1208,9 @@ export const frOverrides = {
       },
       backdropTitle: 'Arrière-plan de la conversation',
       backdropDesc: "L'image de statue discrète derrière la conversation.",
+      reduceEffectsTitle: 'Réduire les effets visuels',
+      reduceEffectsDesc:
+        "Supprime le flou du verre dépoli et les animations décoratives. Plus léger à dessiner, et limité à Hermes — contrairement au même réglage du système, qui touche toutes les applications.",
       userBubbleTitle: 'Bulle des messages',
       userBubbleDesc: 'Transparence de vos messages : fond opaque à 0 ; seul le contour reste visible à 100.',
       textDirectionTitle: 'Sens du texte',

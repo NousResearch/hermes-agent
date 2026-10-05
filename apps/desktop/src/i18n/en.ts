@@ -1174,6 +1174,9 @@ export const en: Translations = {
       },
       backdropTitle: 'Chat Backdrop',
       backdropDesc: 'The faint statue image behind the conversation.',
+      reduceEffectsTitle: 'Reduce visual effects',
+      reduceEffectsDesc:
+        'Drops the frosted-glass blur and the decorative animations. Cheaper to draw, and scoped to Hermes — unlike the same setting in your operating system, which affects every app.',
       userBubbleTitle: 'Message Bubble',
       userBubbleDesc: 'How see-through your own messages are. Solid at 0; only the outline remains at 100.',
       textDirectionTitle: 'Text direction',

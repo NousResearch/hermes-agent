@@ -33,6 +33,7 @@ import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
+import { $reduceEffects, setReduceEffects } from '@/store/reduce-effects'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $textDirection, setTextDirection, TEXT_DIRECTIONS, type TextDirection } from '@/store/text-direction'
@@ -418,6 +419,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const hideCodeDiffs = useStore($hideCodeDiffs)
   const hideCodeDiffsShadowed = useStore($modeShadowed('hideCodeDiffs'))
   const hideThreadTimeline = useStore($hideThreadTimeline)
+  const reduceEffects = useStore($reduceEffects)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const reasoningCollapsedShadowed = useStore($modeShadowed('reasoningCollapsedByDefault'))
   const interfaceMode = useStore($interfaceMode)
@@ -871,6 +873,20 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               description={glassMode ? a.translucencyGlassDesc : a.translucencyDesc}
               id={settingElementId(ids.translucency)}
               title={a.translucencyTitle}
+            />
+          )}
+
+          {/* Per-app counterpart to the OS reduced-motion / reduced-transparency
+              signals: strips the backdrop blur and the decorative animations for
+              Hermes only, instead of asking the user to change a machine-wide
+              accessibility setting for one app's rendering cost. */}
+          {show('window-layout') && (
+            <ToggleRow
+              checked={reduceEffects}
+              description={a.reduceEffectsDesc}
+              id={settingElementId(ids.reduceEffects)}
+              label={a.reduceEffectsTitle}
+              onChange={setReduceEffects}
             />
           )}
 

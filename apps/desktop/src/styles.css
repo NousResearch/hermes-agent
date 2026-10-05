@@ -64,6 +64,24 @@
   }
 }
 
+/* The same two resets, driven by the APP's own switch rather than the OS one.
+   The media queries above are machine-wide: a user who wants only THIS app to
+   stop costing frames should not have to strip translucency and motion from
+   every other app on their desktop. `[data-reduce-effects]` is set by
+   store/reduce-effects.ts (Settings → Appearance → Reduce visual effects) and
+   carries exactly the resets the two OS gates carry, so the rendering is the
+   one already proven legibility-safe in the reduced-transparency note above. */
+:root[data-reduce-effects] *,
+:root[data-reduce-effects] *::before,
+:root[data-reduce-effects] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
 /* Pause continuous animations only when the window is hidden/minimized, not
    merely unfocused. main.tsx owns this attribute for the primary window;
    wake/pet overlays retain their purpose-built visibility behavior. */

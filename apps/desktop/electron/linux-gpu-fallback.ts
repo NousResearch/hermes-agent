@@ -357,24 +357,34 @@ export function linuxGpuChildDeathPath(options: {
   alreadySoftware?: boolean
   sandboxRelaunchAttempted?: boolean
   softwareRelaunchAttempted?: boolean
+  /** Linux: this host sandboxes Chromium with user namespaces, where
+   *  `--no-sandbox` is the crash rather than the recovery (#131055). */
+  userNamespaceSandbox?: boolean
 }): LinuxGpuDeathPath {
   if ((options.platform ?? process.platform) !== 'linux') {
     return null
   }
 
-  const type = String(options.details?.type || '').toLowerCase()
+  const type = String(options.details?.type ?? '').toLowerCase()
 
   if (type !== 'gpu') {
     return null
   }
 
-  const reason = String(options.details?.reason || '').toLowerCase()
+  const reason = String(options.details?.reason ?? '').toLowerCase()
 
   const sandboxSignature =
     options.details?.exitCode === GPU_CHILD_SANDBOX_SIGTERM_EXIT &&
-    String(options.details?.signalName || '').toUpperCase() === 'SIGTERM'
+    String(options.details?.signalName ?? '').toUpperCase() === 'SIGTERM'
 
-  if (sandboxSignature && !options.alreadyNoSandbox && !options.sandboxRelaunchAttempted) {
+  // #131055: on a userns host the renderer's chroot is what makes /dev/shm
+  // reachable, so `--no-sandbox` does not recover this death — it starts the
+  // SIGILL loop the boot-abort ladder refuses to enter. That ladder's escape
+  // hatch ("leave no marker, the GPU-child signature is the real witness")
+  // hands the decision straight to this rung, so the gate has to hold here
+  // too or it only moves the escalation one launch later. Software rendering
+  // keeps the sandbox, so it is still a bounded recovery.
+  if (sandboxSignature && !options.userNamespaceSandbox && !options.alreadyNoSandbox && !options.sandboxRelaunchAttempted) {
     return 'no-sandbox'
   }
 

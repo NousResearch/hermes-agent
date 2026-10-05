@@ -12,6 +12,7 @@ import {
   shouldEngageSilentGpuRetryFallback,
   shouldRelaunchForLinuxGpuCrash
 } from './linux-gpu-fallback'
+import { decideWindowsSandboxLaunch, type SandboxMarker } from './windows-sandbox-fallback'
 
 const LINUX = {
   platform: 'linux' as const,
@@ -353,6 +354,88 @@ describe('linuxGpuChildDeathPath', () => {
         details: { type: 'GPU', reason: 'oom', exitCode: 143, signalName: 'SIGTERM' }
       })
     ).toBe('no-sandbox')
+  })
+
+  // #131055: the boot-abort ladder leaves no marker on a userns host and
+  // hands the decision to this rung ("the GPU-child signature is the real
+  // witness"). If this rung then escalates, the gate only moved the
+  // --no-sandbox launch one boot later instead of preventing it.
+  it('keeps the sandbox signature off --no-sandbox on a userns host (#131055)', () => {
+    expect(
+      linuxGpuChildDeathPath({
+        platform: 'linux',
+        details: SIGTERM_DEATH,
+        userNamespaceSandbox: true
+      })
+    ).toBe('disable-gpu')
+
+    expect(
+      linuxGpuChildDeathPath({
+        platform: 'linux',
+        details: SIGTERM_DEATH,
+        userNamespaceSandbox: false
+      })
+    ).toBe('no-sandbox')
+  })
+
+  it('still spends its one shot on a userns host when software is already on', () => {
+    expect(
+      linuxGpuChildDeathPath({
+        platform: 'linux',
+        details: SIGTERM_DEATH,
+        userNamespaceSandbox: true,
+        alreadySoftware: true
+      })
+    ).toBeNull()
+
+    expect(
+      linuxGpuChildDeathPath({
+        platform: 'linux',
+        details: SIGTERM_DEATH,
+        userNamespaceSandbox: true,
+        softwareRelaunchAttempted: true
+      })
+    ).toBeNull()
+  })
+})
+
+// The gate is only real if the marker the reactive rung writes cannot
+// re-escalate on the next launch. This drives the real launch decision,
+// not the rung in isolation, because the two are separate call sites.
+describe('a userns host cannot be pinned to --no-sandbox by either rung (#131055)', () => {
+  const appVersion = '0.0.0'
+  const buildIdentity = '0.0.0+g273d55978253-@2026-10-04T20:00:00.000Z'
+
+  const escalates = (marker: SandboxMarker) =>
+    decideWindowsSandboxLaunch({
+      platform: 'linux',
+      argv: [],
+      env: {},
+      marker,
+      appVersion,
+      buildIdentity,
+      userNamespaceSandbox: true
+    })
+
+  it('holds for the marker the boot-abort ladder would have written', () => {
+    const decision = escalates({ state: 'booting', bootAborts: 1, version: appVersion, build: buildIdentity })
+
+    expect(decision.enable).toBe(false)
+    expect(decision.nextMarker).toEqual({ state: 'ok' })
+  })
+
+  it('holds for a gpu-breakpoint marker left by a previous --no-sandbox boot', () => {
+    // A host that escalated before this gate existed carries the marker
+    // forward. Sticky-fallback is not re-checked against the host, so the
+    // rung's own decision is what has to refuse to write it.
+    const path = linuxGpuChildDeathPath({
+      platform: 'linux',
+      details: { type: 'GPU', reason: 'crashed', exitCode: 143, signalName: 'SIGTERM' },
+      userNamespaceSandbox: true
+    })
+
+    expect(path).not.toBe('no-sandbox')
+    expect(path).toBe('disable-gpu')
   })
 })
 

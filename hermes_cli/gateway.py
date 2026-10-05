@@ -3602,7 +3602,7 @@ def _agent_timeout_setting(env_var: str, key: str, parse) -> float:
 
 
 def _get_cron_drain_timeout() -> float:
-    """Return the configured cron-only drain floor in seconds.
+    """Return the configured cron and api_server (/v1) drain floor in seconds.
 
     See #82161.
     """

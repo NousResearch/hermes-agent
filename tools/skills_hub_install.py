@@ -140,6 +140,37 @@ def _check_install_target(install_dir: Path) -> None:
                              f"Use a different --name or install into a subcategory.")
 
 
+def resolve_install_dir(skill_name: str, category: str) -> Path:
+    """The directory an install of ``skill_name`` into ``category`` replaces."""
+    safe_skill_name = _validate_skill_name(skill_name)
+    safe_category = _validate_install_parent_path(category) if category else ""
+    install_rel_path = f"{safe_category}/{safe_skill_name}" if safe_category else safe_skill_name
+    # Same validator the uninstaller uses, so a lock entry can never point at a
+    # symlink-redirected target.
+    return _resolve_lock_install_path(install_rel_path, safe_skill_name)
+
+
+def untracked_skill_at_install_dir(skill_name: str, category: str) -> Optional[Path]:
+    """The install target when it already holds a skill the hub lock does not own.
+
+    The lock-file check in ``do_install`` only sees hub installs, but
+    ``install_from_quarantine`` rmtrees whatever skill sits at the target: a
+    user's own skill, or their edited copy of a formerly bundled one that is
+    now an official optional skill (the provenance backfill skips edited copies).
+    """
+    from tools.skills_hub import HubLockFile, _skills_dir
+    try:
+        install_dir = resolve_install_dir(skill_name, category)
+    except ValueError:
+        return None  # install_from_quarantine refuses it with its own message
+    if not (install_dir / "SKILL.md").is_file():
+        return None
+    rel = install_dir.relative_to(_skills_dir().resolve()).as_posix()
+    if any(entry.get("install_path") == rel for entry in HubLockFile().list_installed()):
+        return None
+    return install_dir
+
+
 def install_from_quarantine(
     quarantine_path: Path, skill_name: str, category: str, bundle: SkillBundle, scan_result: ScanResult,
     scan_provenance: Optional[Dict[str, Any]] = None,
@@ -147,15 +178,11 @@ def install_from_quarantine(
     """Move a scanned skill from quarantine into the skills directory."""
     from tools.skills_hub import HubLockFile, _quarantine_dir, _skills_dir, append_audit_log
     safe_skill_name = _validate_skill_name(skill_name)
-    safe_category = _validate_install_parent_path(category) if category else ""
     quarantine_resolved = quarantine_path.resolve()
     if not quarantine_resolved.is_relative_to(_quarantine_dir().resolve()):
         raise ValueError(f"Unsafe quarantine path: {quarantine_path}")
 
-    install_rel_path = f"{safe_category}/{safe_skill_name}" if safe_category else safe_skill_name
-    # Same validator the uninstaller uses, so a lock entry can never point at a
-    # symlink-redirected target.
-    install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
+    install_dir = resolve_install_dir(safe_skill_name, category)
     _check_install_target(install_dir)
     if install_dir.exists():
         shutil.rmtree(install_dir)

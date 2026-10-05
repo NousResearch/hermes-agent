@@ -1447,6 +1447,7 @@ hermes skills opt-in --sync            # undo: remove marker and re-seed now
 Notes:
 - `--force` can override non-dangerous policy blocks for third-party/community skills.
 - `--force` does not override a `dangerous` scan verdict.
+- An install whose target directory already holds a skill the hub did not install (your own skill, or your edited copy of a formerly bundled one) is refused and the directory is left alone; `--force` replaces it.
 - `--source skills-sh` searches the public `skills.sh` directory.
 - `--source well-known` lets you point Hermes at a site exposing `/.well-known/skills/index.json`.
 - `--source browse-sh` searches [browse.sh](https://browse.sh)'s catalog of 200+ site-specific browser-automation skills. Identifiers look like `browse-sh/airbnb.com/search-listings-ddgioa`.

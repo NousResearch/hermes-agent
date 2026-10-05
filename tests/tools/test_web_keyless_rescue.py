@@ -11,6 +11,8 @@ Covers:
 - extract dispatcher: whole-batch failure rescues; partial failure passes
   through untouched
 - rescue failure: original backend error survives, rescue note appended
+- top-level ``degraded`` signal (#133473): a rescued/fallback-served response
+  must be distinguishable from a healthy one without reading nested keys
 """
 
 import json
@@ -287,3 +289,109 @@ class TestExtractRescue:
                 monkeypatch, _KeyedBoomProvider(), ["https://a", "https://b"]
             )
         assert all("HTTP 500" in r.get("error", "") for r in results)
+
+
+class TestDegradedSignal:
+    """#133473: a rescued/fallback-served call must be distinguishable at the TOP level.
+
+    Consumers gate on ``success`` (or read the extract top level only) and never look at
+    nested ``data.backend_error`` / per-entry ``metadata`` — without a top-level signal a
+    rescued call reports as fully healthy and outages read as "no results"."""
+
+    def test_search_rescue_mirrors_signal_to_top_level(self):
+        with patch.object(keyless_mcp, "search_with_failover", return_value=_ring_ok()):
+            out = web_tools_rescue._rescue_search("keenable", "HTTP 500 upstream exploded", "q", 5)
+        assert out["success"] is True
+        assert out["degraded"] is True
+        assert out["rescued_from"] == "keenable"
+        assert "HTTP 500" in out["backend_error"]
+        # data-level keys kept for existing consumers.
+        assert out["data"]["rescued_from"] == "keenable"
+
+    def test_search_rescue_signal_survives_full_dispatch(self, monkeypatch):
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_provider", lambda name: _KeyedBoomProvider()
+        )
+        with patch.object(keyless_mcp, "search_with_failover", return_value=_ring_ok()):
+            out = json.loads(web_tools.web_search_tool("q", limit=2))
+        assert out["success"] is True
+        assert out["degraded"] is True
+        assert out["rescued_from"] == "keenable"
+
+    def test_search_rescue_failure_has_no_degraded(self):
+        with patch.object(
+            keyless_mcp, "search_with_failover",
+            return_value={"success": False, "error": "all throttled"},
+        ):
+            out = web_tools_rescue._rescue_search("keenable", "HTTP 500", "q", 5)
+        assert out["success"] is False
+        assert "degraded" not in out
+
+    def test_managed_fallback_mirrors_signal_to_top_level(self, monkeypatch):
+        class _PerplexityBoom(_KeyedBoomProvider):
+            name = "perplexity"
+
+        class _FirecrawlOk:
+            def search(self, query, limit=5):
+                return {"success": True, "data": {"web": [{"url": "https://f.example"}]}}
+
+        monkeypatch.setattr(web_tools, "_managed_web_search", lambda: True)
+        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: True)
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_provider", lambda name: _FirecrawlOk()
+        )
+        out = web_tools_rescue._managed_search_fallback(
+            _PerplexityBoom(), "HTTP 429 quota exhausted", "q", 5
+        )
+        assert out is not None and out["success"] is True
+        assert out["degraded"] is True
+        assert out["fallback_from"] == "managed_primary"
+        assert "HTTP 429" in out["backend_error"]
+        assert out["data"]["fallback_from"] == "managed_primary"
+
+    @pytest.mark.asyncio
+    async def test_extract_rescue_sets_top_level_degraded(self, monkeypatch):
+        good = [
+            {"url": "https://a", "title": "A", "content": "x" * 50,
+             "raw_content": "x" * 50, "metadata": {"sourceURL": "https://a"}},
+        ]
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_provider", lambda name: _KeyedBoomProvider()
+        )
+
+        async def _allow_all(url, **kwargs):
+            return True
+
+        monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_all)
+        with patch.object(keyless_mcp, "extract_with_failover", return_value=good):
+            raw = await web_tools.web_extract_tool(["https://a"])
+        out = json.loads(raw)
+        assert out["degraded"] is True
+        assert isinstance(out["results"], list) and out["results"]
+
+    @pytest.mark.asyncio
+    async def test_healthy_extract_has_no_degraded(self, monkeypatch):
+        class _Ok(_KeyedBoomProvider):
+            def extract(self, urls, **kwargs):
+                return [
+                    {"url": u, "title": "T", "content": "c" * 50,
+                     "raw_content": "c" * 50, "metadata": {"sourceURL": u}}
+                    for u in urls
+                ]
+
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_provider", lambda name: _Ok()
+        )
+
+        async def _allow_all(url, **kwargs):
+            return True
+
+        monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_all)
+        with patch.object(keyless_mcp, "extract_with_failover") as ring:
+            raw = await web_tools.web_extract_tool(["https://a"])
+        out = json.loads(raw)
+        assert "degraded" not in out
+        ring.assert_not_called()

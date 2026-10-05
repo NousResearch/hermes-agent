@@ -134,6 +134,31 @@ def test_an_update_adopting_an_orphan_never_certifies_the_tree_it_left_torn(tmp_
     assert not whole and "a.py" in why, "adoption certified the torn tree as the pre-update baseline"
 
 
+def test_an_adopted_baseline_never_replaces_this_runs_own(tmp_path, monkeypatch):
+    """Review W1: the killed run moved HEAD X->Y; this run starts at Y and its git dies mid-checkout
+    without moving HEAD. The orphan's X baseline says nothing about Y — this run's own must still gate."""
+    root = tmp_path / "checkout"
+    root.mkdir()
+    _git(root, "init", "-q")
+    (root / "a.py").write_text("v1\n", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "X")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(pause_record, "install_root", lambda: root)
+    pause_record.write(pause_record.stamp_tree({"resume_needed": True, "profiles": {"default": 4242}}),
+                       owner=pause_record.UNOWNED)
+    (root / "a.py").write_text("v2\n", encoding="utf-8")
+    _git(root, "commit", "-qam", "Y")  # the killed update moved HEAD, synced Y's dependencies, then died
+    monkeypatch.setattr(pause_record, "_venv_is_current", lambda root: True)
+
+    adopted, claims = pause_record.adopt_orphans()
+    token = pause_record.record_pause({"resume_needed": True, "profiles": {"beta": 99}}, adopted, claims)
+    assert pause_record.tree_is_whole(token, root) == (True, ""), "a clean tree at this run's own HEAD must pass"
+    (root / "a.py").write_text("half-written\n", encoding="utf-8")  # this run's git died at HEAD Y
+    whole, why = pause_record.tree_is_whole(pause_record.read()["token"], root)
+    assert not whole and "a.py" in why, "this run's own baseline was dropped for the adopted one"
+
+
 def _orphan(tmp_path: Path, profiles: dict) -> None:
     """A record whose owner — a real ``hermes update`` stand-in — was SIGKILLed after writing it."""
     owner = _child("""

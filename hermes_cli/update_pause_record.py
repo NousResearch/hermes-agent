@@ -13,8 +13,10 @@ says nothing about the other tree.
 
 Resuming is gated on a whole tree: no interrupted-pull marker; at the pre-update HEAD, no tracked
 change beyond the ones present at pause time (git died before moving HEAD); at a moved HEAD,
-dependencies current for it (a build step may rewrite tracked files there). Otherwise the record
-stays for the next launch, which runs after the interrupted-pull restore and the dependency sync.
+dependencies current for it (a build step may rewrite tracked files there). Every pause folded into
+a record keeps its own baseline (``baselines``): each one taken at the current HEAD must hold.
+Otherwise the record stays for the next launch, which runs after the interrupted-pull restore and
+the dependency sync.
 
 Custody: every mutation (write, claim, retire, discharge) happens while holding a kernel lock on
 ``<record dir>/.hermes-update-paused-gateways.lock`` (flock / msvcrt, released by the kernel when
@@ -165,12 +167,13 @@ def tracked_changes(root: Path) -> list[str] | None:
 
 
 def stamp_tree(token: dict, root: Path | None = None) -> dict:
-    """Record what "the tree before this update" was, for the whole-tree gate."""
+    """Record what "the tree before this update" was, for the whole-tree gate: one baseline per
+    pause (idempotent for this token's ``pause_id``), next to the baselines of the pauses it absorbed."""
     root = root or install_root()
-    if (root / ".git").exists():
-        token.setdefault("pre_sha", head_sha(root))
-        token.setdefault("dirty_at_pause", tracked_changes(root))
-    token.setdefault("pause_id", uuid.uuid4().hex)
+    pause_id = token.setdefault("pause_id", uuid.uuid4().hex)
+    baselines = token.setdefault("baselines", [])
+    if (root / ".git").exists() and not any(b.get("pause_id") == pause_id for b in baselines):
+        baselines.append({"pause_id": pause_id, "pre_sha": head_sha(root), "dirty_at_pause": tracked_changes(root)})
     return token
 
 
@@ -192,14 +195,18 @@ def tree_is_whole(token: dict, root: Path | None = None) -> tuple[bool, str]:
         head = head_sha(root)
         if head is None:
             return False, "the checkout HEAD is unreadable"
-        if head == token.get("pre_sha"):
-            # HEAD never moved: a new tracked change is git's half-written checkout.
+        at_head = [b for b in token.get("baselines") or [] if b.get("pre_sha") == head]
+        if at_head:
+            # HEAD never moved for these pauses: a tracked change one of them did not see is git's
+            # half-written checkout. Each is judged on its own set — a killed run that moved HEAD
+            # elsewhere vouches for nothing here, and this run's set never certifies an older one's.
             changes = tracked_changes(root)
             if changes is None:
                 return False, "git cannot read the checkout state"
-            unexpected = sorted(set(changes) - set(token.get("dirty_at_pause") or []))
-            if unexpected:
-                return False, f"the checkout has {len(unexpected)} file(s) git left half-written (e.g. {unexpected[0]})"
+            for baseline in at_head:
+                unexpected = sorted(set(changes) - set(baseline.get("dirty_at_pause") or []))
+                if unexpected:
+                    return False, f"the checkout has {len(unexpected)} file(s) git left half-written (e.g. {unexpected[0]})"
             return True, ""
     if not _venv_is_current(root):
         return False, "dependencies are not current for the updated code yet"
@@ -514,7 +521,7 @@ def record_pause(token: dict, adopted: dict | None, claims: list[Path]) -> dict:
     return token
 
 
-_CARRIED = ("pause_id", "pre_sha", "dirty_at_pause", "identities", "stop_requested", "stop_sent", "stopper_pid",
+_CARRIED = ("pause_id", "baselines", "identities", "stop_requested", "stop_sent", "stopper_pid",
             "stop_markers", "absorbed")
 
 
@@ -533,7 +540,7 @@ def abandon_pause(intended: dict, adopted: dict | None) -> None:
     if adopted is None:
         discharge(intended)
         return
-    carried = {key: intended[key] for key in ("pause_id", "pre_sha", "dirty_at_pause", "absorbed") if key in intended}
+    carried = {key: intended[key] for key in ("pause_id", "baselines", "absorbed") if key in intended}
     write({**adopted, **carried}, owner=UNOWNED)
 
 
@@ -604,11 +611,11 @@ def merge_into(token: dict | None, adopted: dict) -> dict:
     obligation id (and every id it absorbed) is recorded so a leftover copy is never resumed twice."""
     token = token if token is not None else {"resume_needed": True, "profiles": {}, "unmapped_pids": [], "unmapped": []}
     token["resume_needed"] = True
-    # The oldest tree evidence wins: stamping the current tree instead would certify whatever a
-    # killed update left half-written as "dirty before the pause".
-    for key in ("pre_sha", "dirty_at_pause"):
-        if key in adopted:
-            token.setdefault(key, adopted[key])
+    # Every pause keeps its own tree evidence: the adopted baseline stops this run's stamp from
+    # certifying what a killed update left half-written as "dirty before the pause", and this
+    # run's own baseline still guards the HEAD a killed update moved to.
+    baselines = token.setdefault("baselines", [])
+    baselines.extend(b for b in adopted.get("baselines") or [] if b not in baselines)
     absorbed = token.setdefault("absorbed", [])
     absorbed.extend(i for i in [adopted.get("pause_id"), *(adopted.get("absorbed") or [])] if i and i not in absorbed)
     profiles = token.setdefault("profiles", {})

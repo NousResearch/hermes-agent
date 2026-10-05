@@ -66,6 +66,35 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text[len(prefix):] if message_text.startswith(prefix) else message_text
 
 
+def _plugin_command_session_id(runner, session_key: str) -> str:
+    """Live routing id for a plugin-command scope, healed the way the turn path heals it.
+
+    ``get_or_create_session`` re-checks every entry against the compression tip and
+    ``end_reason`` before routing (``_prune_stale_sessions_locked`` only runs at startup, so an
+    entry ended mid-run stays in ``_entries`` — #54878), and a raw ``_entries`` peek would hand a
+    plugin the stale id the next turn is about to heal away. This mirror is read-only: it returns
+    the compression tip when the lineage moved and nothing when the routed id is already ended in
+    state.db — the caller then falls back to the session key. Both lookups are blocking SQLite
+    reads, so the caller runs this on a worker thread, never the loop thread (#105279). It never
+    creates a session or touches the activity clock.
+    """
+    store = getattr(runner, "session_store", None)
+    if store is None:
+        return ""
+    with store._lock:  # noqa: SLF001 — same lock _entries is mutated under, snapshot only
+        store._ensure_loaded_locked()
+        entry = store._entries.get(session_key)
+        sid = entry.session_id if entry is not None else None
+    if not sid:
+        return ""
+    canonical = store._compression_tip_for_session_id(sid)
+    if canonical and canonical != sid:
+        return canonical
+    if store._is_session_ended_in_db(sid):
+        return ""
+    return sid
+
+
 class GatewayInboundMixin:
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
@@ -1085,11 +1114,23 @@ class GatewayInboundMixin:
                     # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
                     # sits before it, so a handler reading get_session_env() would see an empty or a
                     # foreign (cron agent's os.environ) session (#108698). No session_entry exists yet,
-                    # so session_key is derived from source. Sync handlers run on the gateway pool
-                    # (contextvars carried), never the loop thread: blocking I/O there starves the
-                    # liveness watchdog and the process exits 75 mid-handler (#105279).
+                    # so session_key is derived from source. The routing entry is peeked read-only to
+                    # bind HERMES_SESSION_ID too: a handler keying state by session id can then record
+                    # the id the next /new reports as old_session_id (#123245). Never get_or_create
+                    # here — a slash command must not mint a session or touch the activity clock.
+                    # The peek's SQLite heal lookups run on a worker thread (the loop thread must not
+                    # block — the liveness watchdog exits 75 mid-handler, #105279); a chat whose first
+                    # message is a command has no live route yet, and an ended one heals to nothing,
+                    # so the chat's own key stands in as the id — the same non-empty fallback
+                    # tui_gateway uses, keeping per-chat plugin state out of one shared "" bucket.
                     _plugin_context = build_session_context(source, self.config)
                     _plugin_context.session_key = self._session_key_for_source(source)
+                    _plugin_context.session_id = (
+                        await asyncio.to_thread(
+                            _plugin_command_session_id, self, _plugin_context.session_key
+                        )
+                        or _plugin_context.session_key
+                    )
                     user_args = event.get_command_args().strip()
                     with self._session_env_scope(_plugin_context):
                         if asyncio.iscoroutinefunction(plugin_handler):

@@ -602,59 +602,29 @@ class PluginContext:
     # manager's home, never the active profile's (#65593 constraint).
     def inject_message(
         self, content: str, role: str = "user", *, session_key: str | None = None,
+        origin: Mapping[str, Any] | None = None,
     ) -> bool:
         """Inject a message into a CLI, Ink TUI/desktop, or messaging-gateway conversation.
 
         CLI uses the attached REPL queues. Ink TUI and desktop use a separate injector
         from the messaging gateway and queue onto the live session named by ``session_key``
-        (the durable key, not the ephemeral UI session id). Non-CLI injection needs that
-        ``session_key`` plus ``plugins.entries.<plugin_id>.allow_gateway_injection``.
+        (the durable key, not the ephemeral UI session id). ``origin`` (a
+        ``SessionSource.to_dict()``-shaped mapping: platform, chat_id, chat_type, thread_id,
+        user_id, ...) instead names a messaging chat: the gateway starts (or continues) that
+        chat's session in THIS plugin's own profile and runs a turn there; the plugin cannot
+        target another profile. Non-CLI injection needs ``session_key`` or ``origin`` plus
+        ``plugins.entries.<plugin_id>.allow_gateway_injection`` in the plugin's profile config.
         ``True`` means a host accepted the request, not that the turn completed.
         """
-        cli = self._manager._cli_ref
-        msg = content if role == "user" else f"[{role}] {content}"
-        if cli is not None:
-            queue_ = cli._interrupt_queue if getattr(cli, "_agent_running", False) else cli._pending_input
-            queue_.put(msg)
-            return True
-        if not session_key:
-            logger.warning("inject_message: gateway mode requires an existing session_key")
-            return False
-        if not self._gateway_injection_allowed():
-            logger.warning("inject_message: gateway injection denied for plugin %s; set "
-                           "plugins.entries.%s.allow_gateway_injection: true to allow it",
-                           self.plugin_id, self.plugin_id)
-            return False
-        # TUI/desktop host is a different slot. It accepts only when it owns this
-        # session_key; a miss falls through so a co-resident messaging gateway
-        # still receives its own keys. An exception fails closed — do not also
-        # hand the same text to the gateway.
-        if self._manager.has_tui_message_injector:
-            try:
-                if self._manager.inject_tui_message(
-                    session_key=session_key, content=msg, plugin_id=self.plugin_id,
-                ):
-                    return True
-            except Exception:
-                logger.warning("inject_message: TUI scheduling failed for plugin %s", self.plugin_id,
-                               exc_info=True)
-                return False
-        if not self._manager.has_gateway_message_injector:
-            logger.warning("inject_message: no live gateway is available")
-            return False
-        try:
-            return bool(self._manager.inject_gateway_message(
-                session_key=session_key, content=msg, plugin_id=self.plugin_id,
-            ))
-        except Exception:
-            logger.warning("inject_message: gateway scheduling failed for plugin %s", self.plugin_id,
-                           exc_info=True)
-            return False
+        from hermes_cli.plugins_injection import inject_plugin_message
+        return inject_plugin_message(self, content, role, session_key=session_key, origin=origin)
 
     def _gateway_injection_allowed(self) -> bool:
-        """Return whether this plugin may trigger gateway session turns."""
+        """Return whether this plugin may trigger gateway session turns (read from the plugin's
+        own profile config, never the calling thread's ambient home)."""
         try:
-            cfg = load_config_readonly() or {}
+            with _plugin_home_scope(self._manager.home_path):
+                cfg = load_config_readonly() or {}
         except Exception:
             return False
         return (_plugin_settings_entry(cfg, self.plugin_id) or {}).get("allow_gateway_injection") is True

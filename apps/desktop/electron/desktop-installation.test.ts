@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -118,13 +118,19 @@ test('a repair lock whose holder died is reclaimed instead of bricking launch', 
     const gone = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' })
     fs.writeFileSync(`${filePath}.repair.lock`, `${gone.stdout}\n`)
 
-    assert.equal(loadOrCreateInstallationId(filePath, () => ID_A), ID_A)
+    assert.equal(
+      loadOrCreateInstallationId(filePath, () => ID_A),
+      ID_A
+    )
     assert.equal(fs.existsSync(`${filePath}.repair.lock`), false)
 
     // A pre-fix crash left an EMPTY lock (no owner to probe): reclaimed too.
     fs.rmSync(filePath)
     fs.writeFileSync(`${filePath}.repair.lock`, '')
-    assert.equal(loadOrCreateInstallationId(filePath, () => ID_B), ID_B)
+    assert.equal(
+      loadOrCreateInstallationId(filePath, () => ID_B),
+      ID_B
+    )
   }))
 
 // Review G5: reclaiming a dead repair lock by read/compare/unlink-by-name could
@@ -168,3 +174,48 @@ test('reclaiming a dead repair lock never deletes a lock a peer created meanwhil
       'no rename claim is left behind'
     )
   }))
+
+// Review 5411222842: the repair lock judged its holder with a second copy of
+// the marker identity rule that had no own-pid check and no v1 age ceiling, so
+// a lock naming our own pid (a previous incarnation reusing it) or a live
+// unrelated pid with no creation time wedged every launch. It now runs the
+// judge's rule (identityStateSync).
+test('a repair lock naming our pid without our creation time is a previous incarnation, reclaimed', () =>
+  withTempDir(directory => {
+    const filePath = path.join(directory, 'desktop-installation.json')
+    fs.writeFileSync(`${filePath}.repair.lock`, `${process.pid}\n`)
+
+    assert.equal(
+      loadOrCreateInstallationId(filePath, () => ID_A),
+      ID_A
+    )
+    assert.equal(fs.existsSync(`${filePath}.repair.lock`), false)
+  }))
+
+test('a live holder with no creation time is live only within the v1 ceiling', async () => {
+  const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+
+  try {
+    await new Promise(resolve => holder.once('spawn', resolve))
+
+    withTempDir(directory => {
+      const filePath = path.join(directory, 'desktop-installation.json')
+      const repairPath = `${filePath}.repair.lock`
+      fs.writeFileSync(repairPath, `${holder.pid}\n`)
+
+      // Fresh: a live unknown identity is waited on, never reclaimed.
+      assert.throws(() => loadOrCreateInstallationId(filePath, () => ID_A), /Could not repair/)
+      assert.equal(fs.readFileSync(repairPath, 'utf8'), `${holder.pid}\n`)
+
+      // Past the v1 ceiling the pid may be reused by anything: reclaimed.
+      const old = Date.now() / 1000 - 2 * 1200
+      fs.utimesSync(repairPath, old, old)
+      assert.equal(
+        loadOrCreateInstallationId(filePath, () => ID_B),
+        ID_B
+      )
+    })
+  } finally {
+    holder.kill()
+  }
+})

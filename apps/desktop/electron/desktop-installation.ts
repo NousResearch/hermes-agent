@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { formatCreateTime, processCreateTimeSync, processIsLiveSync } from './update-marker'
+import { formatCreateTime, lockHolderIsLiveSync, processCreateTimeSync } from './update-marker'
 
 const INSTALLATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -60,9 +60,11 @@ function repairLockBody(): string {
 
 function reclaimDeadRepairLock(repairPath: string, emptyPolls: number): boolean {
   let raw: Buffer
+  let writtenAtS: number
 
   try {
     raw = fs.readFileSync(repairPath)
+    writtenAtS = fs.statSync(repairPath).mtimeMs / 1000
   } catch {
     return false
   }
@@ -72,7 +74,9 @@ function reclaimDeadRepairLock(repairPath: string, emptyPolls: number): boolean 
   const ctMatch = /^ct:(\d+(?:\.\d+)?)$/.exec(lines[1] || '')
 
   const dead =
-    pid === null ? emptyPolls >= EMPTY_LOCK_RECLAIM_POLLS : !processIsLiveSync(pid, ctMatch ? Number(ctMatch[1]) : null)
+    pid === null
+      ? emptyPolls >= EMPTY_LOCK_RECLAIM_POLLS
+      : !lockHolderIsLiveSync(pid, ctMatch ? Number(ctMatch[1]) : null, writtenAtS)
 
   if (!dead) {
     return false

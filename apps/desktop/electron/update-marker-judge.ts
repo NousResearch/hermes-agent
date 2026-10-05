@@ -60,7 +60,10 @@ function u32(text: string): number | null {
 
 /** Positional parse, identical in every reader. Null = MALFORMED. */
 export function parseUpdateMarker(raw: string): UpdateMarker | null {
-  const lines = String(raw).replace(/^\uFEFF/, '').split('\n').map(cleanLine)
+  const lines = String(raw)
+    .replace(/^\uFEFF/, '')
+    .split('\n')
+    .map(cleanLine)
 
   if (lines.length < 2 || !INT_RE.test(lines[0]) || !INT_RE.test(lines[1])) {
     return null
@@ -131,12 +134,26 @@ export interface JudgeEnv {
   nowS: number
 }
 
-async function identityState(
+/** {@link JudgeEnv} whose process facts answer synchronously. */
+export interface SyncJudgeEnv {
+  ourPid: number
+  ourCt: () => number | null
+  isAlive: (pid: number) => boolean
+  createTime: (pid: number) => number | null
+  nowS: number
+}
+
+/**
+ * The identity rule itself, the one copy every Desktop reader runs: the
+ * async judge resolves the facts first, the module-init repair lock reads
+ * them synchronously. `startedAt` anchors the v1 ceiling.
+ */
+export function identityStateSync(
   pid: number,
   recordedCt: number | null,
   startedAt: number,
-  env: JudgeEnv
-): Promise<IdentityState> {
+  env: SyncJudgeEnv
+): IdentityState {
   if (pid === 0) {
     return 'dead'
   }
@@ -144,7 +161,7 @@ async function identityState(
   if (pid === env.ourPid) {
     // A7 rule 4: our pid is ours only at our exact incarnation; a no-ct claim
     // naming our pid is a previous incarnation, never live.
-    const ourCt = await env.ourCt()
+    const ourCt = env.ourCt()
 
     return recordedCt !== null && ourCt !== null && Math.abs(recordedCt - ourCt) <= OWN_CT_EPSILON_S ? 'ours' : 'dead'
   }
@@ -153,13 +170,34 @@ async function identityState(
     return 'dead'
   }
 
-  const actual = recordedCt === null ? null : await env.createTime(pid)
+  const actual = recordedCt === null ? null : env.createTime(pid)
 
   if (recordedCt === null || actual === null) {
     return env.nowS - startedAt <= V1_MAX_AGE_S ? 'unknown' : 'dead'
   }
 
   return Math.abs(recordedCt - actual) <= CREATE_TIME_TOLERANCE_S ? 'match' : 'dead'
+}
+
+/** Read exactly the facts {@link identityStateSync} consults, then apply it. */
+async function identityState(
+  pid: number,
+  recordedCt: number | null,
+  startedAt: number,
+  env: JudgeEnv
+): Promise<IdentityState> {
+  const own = pid !== 0 && pid === env.ourPid
+  const ourCt = own ? await env.ourCt() : null
+  const alive = pid !== 0 && !own && (await env.isAlive(pid))
+  const actual = alive && recordedCt !== null ? await env.createTime(pid) : null
+
+  return identityStateSync(pid, recordedCt, startedAt, {
+    ourPid: env.ourPid,
+    ourCt: () => ourCt,
+    isAlive: () => alive,
+    createTime: () => actual,
+    nowS: env.nowS
+  })
 }
 
 export function isLiveIdentity(state: IdentityState | null): boolean {

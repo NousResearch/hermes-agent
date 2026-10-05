@@ -29,8 +29,9 @@ import { randomBytes } from 'node:crypto'
 import path from 'path'
 
 import {
-  CREATE_TIME_TOLERANCE_S,
   hasForeignLiveIdentity,
+  identityStateSync,
+  isLiveIdentity,
   type JudgeEnv,
   judgeMarkerText,
   type MarkerJudgement,
@@ -127,7 +128,10 @@ let linuxClockTicks: number | null = null
 function linuxCreateTime(pid: number): number | null {
   try {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8')
-    const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)
+    const fields = stat
+      .slice(stat.lastIndexOf(')') + 1)
+      .trim()
+      .split(/\s+/)
     // Field 22 of /proc/<pid>/stat (starttime, clock ticks since boot) is index
     // 19 once pid and comm are stripped.
     const ticks = Number(fields[19])
@@ -139,7 +143,8 @@ function linuxCreateTime(pid: number): number | null {
 
     if (linuxClockTicks === null) {
       try {
-        linuxClockTicks = Number(execFileSync('getconf', ['CLK_TCK'], { encoding: 'utf8', timeout: 2000 }).trim()) || 100
+        linuxClockTicks =
+          Number(execFileSync('getconf', ['CLK_TCK'], { encoding: 'utf8', timeout: 2000 }).trim()) || 100
       } catch {
         linuxClockTicks = 100
       }
@@ -292,19 +297,22 @@ export function cachedCreateTimeProbe(probe: CreateTimeProbe = processCreateTime
   }
 }
 
-/** C1 rule 3 for a (pid, recorded ct) pair, synchronously. */
-export function processIsLiveSync(pid: number, recordedCt: number | null): boolean {
-  if (!isPidAlive(pid) || isZombieState(posixProcessState(pid))) {
-    return false
-  }
-
-  if (recordedCt === null) {
-    return true
-  }
-
-  const actual = processCreateTimeSync(pid)
-
-  return actual === null || Math.abs(actual - recordedCt) <= CREATE_TIME_TOLERANCE_S
+/**
+ * The judge's identity rule (A7 rule 4) for a lock holder, synchronously, for
+ * the module-init repair lock: our own pid is live only at this exact
+ * incarnation, and an identity with no comparable creation time is live only
+ * within the v1 ceiling counted from `writtenAtS` (the lock's mtime).
+ */
+export function lockHolderIsLiveSync(pid: number, recordedCt: number | null, writtenAtS: number): boolean {
+  return isLiveIdentity(
+    identityStateSync(pid, recordedCt, writtenAtS, {
+      ourPid: process.pid,
+      ourCt: () => processCreateTimeSync(process.pid),
+      isAlive: candidate => isPidAlive(candidate) && !isZombieState(posixProcessState(candidate)),
+      createTime: processCreateTimeSync,
+      nowS: Date.now() / 1000
+    })
+  )
 }
 
 export function formatCreateTime(seconds: number): string {
@@ -341,7 +349,14 @@ export type MarkerInspection =
    * Someone else's update is running (a live identity that is not this
    * process), or a 0-byte claim is being written (`judgement` null, A3).
    */
-  | { state: 'live'; raw: Buffer; marker: UpdateMarker | null; ageMs: number; livePid: number; judgement: MarkerJudgement | null }
+  | {
+      state: 'live'
+      raw: Buffer
+      marker: UpdateMarker | null
+      ageMs: number
+      livePid: number
+      judgement: MarkerJudgement | null
+    }
   /** A bridge of THIS process incarnation and nothing foreign alive in it. */
   | { state: 'ours'; raw: Buffer; marker: UpdateMarker; judgement: MarkerJudgement }
   /** Dead or malformed (`judgement` null for a stale 0-byte file). */

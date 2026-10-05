@@ -296,6 +296,17 @@ def _clean_request_string(value: Any) -> Optional[str]:
     return (value.strip() or None) if isinstance(value, str) else None
 
 
+def _override_selects_model(override: Any) -> bool:
+    """True when a session /model override is a MODEL selection.
+
+    A cap-only override — ``/model --list-by-provider`` with no switch, and what a ``--global``
+    switch leaves behind — sizes the /model list and pins no route, so it must not swallow a
+    request's own model/route or silence the route-conflict check."""
+    if not isinstance(override, dict):
+        return bool(override)
+    return bool(override.get("model") or override.get("provider"))
+
+
 def _request_reasoning_config(model_options: Any) -> Optional[Dict[str, Any]]:
     """Translate model_options (structured ``reasoning`` or legacy ``reasoning_effort``) into
     AIAgent reasoning_config; unknown effort values are ignored, never raised."""
@@ -2214,7 +2225,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         request_provider = _clean_request_string(requested_provider)
         if not request_provider or not isinstance(route, dict):
             return None
-        if self._session_model_override_for(gateway_session_key or session_id):
+        if _override_selects_model(self._session_model_override_for(gateway_session_key or session_id)):
             return None  # session /model wins over both, so nothing is ambiguous
         route_provider = _clean_request_string(route.get("provider"))
         route_api_key = _clean_request_string(route.get("api_key"))
@@ -2310,6 +2321,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session_row_model = _clean_request_string(session_model)
         current_provider = _clean_request_string(runtime_kwargs.get("provider"))
         session_override = None if confirmed_runtime_lock else self._session_model_override_for(session_key)
+        if not _override_selects_model(session_override):
+            # A cap-only override sizes the list; it is not a standing model selection, so the
+            # request's own model/route stays in charge.
+            session_override = None
         # Model-string precedence (override > session-persisted > global) is owned by
         # hermes_cli.model_switch.resolve_effective_model.
         from hermes_cli.model_switch import resolve_effective_model

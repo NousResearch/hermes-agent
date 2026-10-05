@@ -52,3 +52,10 @@ def test_the_rows_with_a_different_fix_still_win(text, expected):
 def test_it_does_not_claim_text_it_is_not_about(text):
     assert NOT_FOUND_REPLY not in _gateway_provider_error_reply(text)
     assert not _GATEWAY_MODEL_NOT_FOUND_RE.search(text)
+
+
+def test_the_unquoted_does_not_exist_form_is_a_known_gap():
+    """"does not exist" is claimed only in its quoted forms. Requiring quotes is what keeps
+    "the file does not exist" and "model directory does not exist" unclaimed, and the price is
+    this shape. Pinned as a gap so widening the pattern later is a decision, not a surprise."""
+    assert not _GATEWAY_MODEL_NOT_FOUND_RE.search("The model gpt-4o does not exist")

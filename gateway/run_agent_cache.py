@@ -159,7 +159,12 @@ class GatewayAgentCacheMixin:
             return
         if not persisted:
             return
-        override: Dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
+        # Only the route keys that carry a value. A cap-only override (``/model --list-by-provider``
+        # with no switch, and what a --global switch leaves behind) has no model to restore, and
+        # copying the keys as None would make the next turn read ``model=None`` — the key exists, so
+        # the configured default never gets its turn.
+        override: Dict[str, Any] = {k: v for k, v in persisted.items()
+                                     if k in ("model", "provider", "base_url") and v not in (None, "")}
         # The per-user list cap rides the same persisted dict; reading only the route keys here would
         # drop it on the first turn after a restart, which is the one thing the flag promises to survive.
         if persisted.get("list_by_provider") not in (None, ""):
@@ -205,7 +210,7 @@ class GatewayAgentCacheMixin:
         override = self._session_model_override(session_key)
         if not override:
             return model, runtime_kwargs
-        model = override.get("model", model)
+        model = override.get("model") or model
         for key in _OVERRIDE_APPLY_KEYS:
             val = override.get(key)
             if val is not None:

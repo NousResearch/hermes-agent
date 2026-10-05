@@ -310,6 +310,59 @@ def test_a_restart_rehydrates_the_stored_cap():
     assert state.conversation.model_override["model"] == "gpt-x"
 
 
+def test_a_cap_only_override_does_not_blank_the_configured_model():
+    """A cap with no switch (and what a --global switch leaves behind) persists as a cap-only
+    override. Rehydrating it must not write model=None: the key would then exist, and the next
+    turn's ``.get("model", default)`` would read None instead of the configured model."""
+    runner, _ = _make_runner()
+    state = SimpleNamespace(conversation=SimpleNamespace(model_override=None))
+    runner._session_state = lambda session_key: state
+    runner._peek_session_state = lambda session_key: None
+    runner.session_store = SimpleNamespace(get_model_override=lambda key: {"list_by_provider": "20"})
+
+    runner._rehydrate_session_model_override("telegram:12345")
+
+    override = state.conversation.model_override
+    assert override == {"list_by_provider": "20"}, override
+    assert "model" not in override
+
+    # The two readers that resolve the model must fall back, not return the absent key.
+    runner._session_model_override = lambda key: override
+    model, _kw = runner._apply_session_model_override("telegram:12345", "configured-model", {})
+    assert model == "configured-model", model
+
+
+def test_the_text_preview_slice_honours_the_cap():
+    """The text renderer slices the list itself. A cap applied to the listing call only is thrown
+    away by the code that prints the list."""
+    from gateway.slash_commands_model import _model_provider_listing_lines
+
+    providers = [{"slug": "llamacpp", "name": "llama.cpp", "is_current": True,
+                  "models": [f"m{i}" for i in range(10)], "total_models": 10}]
+
+    lines = "\n".join(_model_provider_listing_lines(providers, 7))
+    assert "`m5`" in lines and "`m6`" in lines          # 7 shown: m0..m6
+    assert "`m7`" not in lines and "`m9`" not in lines  # the tail the cap hides
+    assert "(+3 more)" in lines, lines
+
+    # The default is the built-in cap, not a second hardcoded 5.
+    from gateway.slash_commands_model import _DEFAULT_LIST_CAP
+    assert len("\n".join(_model_provider_listing_lines(providers)).split("`m")) - 1 == 10
+    assert _DEFAULT_LIST_CAP == DEFAULT_CAP
+
+
+def test_a_cap_only_override_is_not_a_model_selection_for_the_api_server():
+    """The API server treats a standing /model selection as outranking the request's own
+    model/route. A cap pins no route, so it must not swallow them."""
+    from gateway.platforms.api_server import _override_selects_model
+
+    assert _override_selects_model({"model": "gpt-x", "list_by_provider": "5"}) is True
+    assert _override_selects_model({"provider": "nous"}) is True
+    assert _override_selects_model({"list_by_provider": "5"}) is False
+    assert _override_selects_model(None) is False
+    assert _override_selects_model({}) is False
+
+
 def test_apply_override_reads_the_cap_from_a_string_and_ignores_junk():
     from gateway.slash_commands_model import _ModelSwitchContext
 

@@ -807,7 +807,8 @@ class TestSendTimeEmptyAssistantPad:
              and not m.get("tool_calls")),
             None,
         )
-        assert stub is not None and stub["content"] == "[response interrupted]"
+        from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+        assert stub is not None and stub["content"] == _INTERRUPTED_PLACEHOLDER
 
     def test_tool_call_turn_not_padded_on_send(self, loop_agent):
         history = [
@@ -895,7 +896,10 @@ class TestSendTimePadMultimodalSafety:
         """Unit-shape check against the REAL owner: multimodal list content
         (the exact AttributeError shape) passes through untouched; a textless
         str turn is repaired; tool-call turns are exempt."""
-        from agent.agent_runtime_helpers import repair_empty_non_final_messages
+        from agent.agent_runtime_helpers import (
+            _INTERRUPTED_PLACEHOLDER,
+            repair_empty_non_final_messages,
+        )
         api_messages = [
             {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
             {"role": "assistant", "content": ""},
@@ -904,7 +908,7 @@ class TestSendTimePadMultimodalSafety:
         ]
         out = repair_empty_non_final_messages(api_messages)
         assert out[0]["content"] == [{"type": "text", "text": "hi"}]
-        assert out[1]["content"] == "[response interrupted]"
+        assert out[1]["content"] == _INTERRUPTED_PLACEHOLDER
         assert out[2]["content"] == ""
         # input list untouched (repair is copy-on-write)
         assert api_messages[1]["content"] == ""

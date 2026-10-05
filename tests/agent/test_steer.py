@@ -774,7 +774,7 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
     """Projection-side half of #88955: rows persisted BEFORE the writer-side
     ``api_content`` stamp are ``content=""`` + ``display_kind="hidden"`` with
     no sidecar. The send-time projection must give the WIRE copy the neutral
-    ``[response interrupted]`` payload so legacy sessions converge instead of
+    interrupt-placeholder payload so legacy sessions converge instead of
     re-healing forever — while the durable row stays hidden and empty."""
 
     def _loop_agent(self):

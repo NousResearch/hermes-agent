@@ -1770,6 +1770,22 @@ class TestParallelTick:
         start_s2 = [t for action, jid, t in call_times if action == "start" and jid == "s2"][0]
         assert start_s2 >= end_s1, "Jobs ran concurrently despite max_parallel=1"
 
+class _ConfirmationTimesOut:
+    """The real ``run_coroutine_threadsafe`` future, except that ``result()`` raises
+    ``TimeoutError`` as soon as ``moment`` is set instead of after the confirmation bound."""
+
+    def __init__(self, future, moment):
+        self._future = future
+        self._moment = moment
+
+    def result(self, timeout=None):
+        assert self._moment.wait(5)
+        raise TimeoutError
+
+    def __getattr__(self, name):
+        return getattr(self._future, name)
+
+
 class TestDeliverResultTimeoutCancelsFuture:
     """When the live adapter's confirmation outlasts the wait, the outcome depends on whether the
     send had STARTED on the gateway loop. Started: it is in flight (a paced multi-chunk send can
@@ -1803,20 +1819,37 @@ class TestDeliverResultTimeoutCancelsFuture:
         import asyncio
         import logging
         import threading
-        import time
+        from cron import scheduler_delivery
 
         loop = asyncio.new_event_loop()
-        threading.Thread(target=loop.run_forever, daemon=True).start()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
         events = []
+        started, observed = threading.Event(), threading.Event()
+        release = asyncio.Event()
 
         async def slow_send(chat_id, content, **_kw):
             events.append("started")
-            await asyncio.sleep(0.6)  # outlasts the 0.3s confirmation wait
+            started.set()
+            await release.wait()  # held until the confirmation wait has timed out
             events.append("finished")
             if late_error:
                 raise late_error
             return MagicMock(success=True, message_id="m1", raw_response=None)
 
+        real_schedule = asyncio.run_coroutine_threadsafe
+
+        def schedule(coro, target_loop):
+            return _ConfirmationTimesOut(real_schedule(coro, target_loop), started)
+
+        real_observe = scheduler_delivery._observe_late_live_send
+
+        def observe(*args):
+            real_observe(*args)
+            observed.set()
+
+        monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", schedule)
+        monkeypatch.setattr(scheduler_delivery, "_observe_late_live_send", observe)
         adapter = MagicMock()
         adapter.send = slow_send
         update_job = MagicMock()
@@ -1824,9 +1857,13 @@ class TestDeliverResultTimeoutCancelsFuture:
         try:
             with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
                 result, standalone_send = self._deliver(monkeypatch, adapter, loop)
-                time.sleep(0.6)
+                loop.call_soon_threadsafe(release.set)
+                assert observed.wait(5), "the late outcome of the in-flight send was never observed"
         finally:
+            loop.call_soon_threadsafe(release.set)
             loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
         assert result is None, f"expected the in-flight send to count as delivered, got {result!r}"
         # The late outcome is still observed: a send that fails after the wait is logged.
         assert ("failed after confirmation timeout" in caplog.text) == bool(late_error)

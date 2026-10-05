@@ -327,6 +327,7 @@ class MattermostAdapter(BasePlatformAdapter):
     async def _send_url_as_file(self, chat_id: str, url: str, caption: Optional[str], reply_to: Optional[str],
                                 kind: str = "file", metadata: _Metadata = None) -> SendResult:
         """Download a URL and upload it as a file attachment (text fallback with the URL on failure)."""
+        from gateway.platforms.base import _read_httpx_body_with_limit
         from tools.url_safety import is_safe_url
 
         async def fallback() -> SendResult:
@@ -345,8 +346,13 @@ class MattermostAdapter(BasePlatformAdapter):
                     elif resp.status >= 400:
                         return await fallback()
                     else:
-                        file_data, ct = await resp.read(), resp.content_type or "application/octet-stream"
+                        file_data = await _read_httpx_body_with_limit(
+                            resp, media_type="image", body=resp.content.iter_chunked(65536))
+                        ct = resp.content_type or "application/octet-stream"
                         break
+            except ValueError as exc:  # over gateway.max_inbound_media_bytes; a retry would refetch it
+                logger.warning("Mattermost: refusing %s: %s", url[:80], exc)
+                return await fallback()
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 if attempt == 2:
                     logger.warning("Mattermost: failed to download %s after %d attempts: %s", url, attempt + 1, exc)
@@ -380,6 +386,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 logger.warning("Mattermost: skipping missing image %s", local_path)
                 return None
             return p.read_bytes(), p.name, mimetypes.guess_type(p.name)[0] or "image/png"
+        from gateway.platforms.base import _read_httpx_body_with_limit
         from tools.url_safety import is_safe_url
         if not is_safe_url(image_url):
             logger.warning("Mattermost: blocked unsafe image URL in batch")
@@ -389,7 +396,9 @@ class MattermostAdapter(BasePlatformAdapter):
                 if resp.status >= 400:
                     logger.warning("Mattermost: failed to download image (HTTP %d): %s", resp.status, image_url[:80])
                     return None
-                file_data, ct = await resp.read(), resp.content_type or "image/png"
+                file_data = await _read_httpx_body_with_limit(
+                    resp, media_type="image", body=resp.content.iter_chunked(65536))
+                ct = resp.content_type or "image/png"
         except Exception as dl_err:
             logger.warning("Mattermost: download failed for %s: %s", image_url[:80], dl_err)
             return None

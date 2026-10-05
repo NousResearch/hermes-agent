@@ -136,3 +136,35 @@ def test_process_handle_on_an_attribute_spans_the_class_methods():
     closure = ("import subprocess\n\n\ndef f(c):\n    proc = subprocess.Popen(c)\n\n"
                "    def reap():\n        return proc.wait()\n    return reap\n")
     assert _hits("HX006", closure) == [8]
+
+
+# --- HX006: a wait right after kill() is bounded, however its value is used ---
+
+_KILL = "import asyncio\nimport subprocess\n\n\ndef reap(cmd, other):\n    proc = subprocess.Popen(cmd)\n{}"
+
+
+@pytest.mark.parametrize("tail, flagged", [
+    ("    proc.kill()\n    proc.wait()\n", False),
+    ("    proc.kill()\n    rc = proc.wait()\n    return rc\n", False),
+    ("    proc.kill()\n    return proc.wait()\n", False),
+    ("    proc.kill()\n    rc: int = proc.wait()\n    return rc\n", False),
+    ("    proc.kill()\n    return proc.wait(timeout=5)\n", False),
+    ("    return proc.wait()\n", True),  # no preceding kill
+    ("    other.kill()\n    return proc.wait()\n", True),  # a different receiver was killed
+    ("    proc.kill()\n    return proc.communicate()\n", True),  # reads until grandchildren exit
+])
+def test_wait_after_kill(tail, flagged):
+    assert bool(_hits("HX006", _KILL.format(tail))) is flagged
+
+
+def test_async_wait_after_kill_stays_flagged():
+    src = ("import asyncio\n\n\nasync def f(c):\n    proc = await asyncio.create_subprocess_exec(*c)\n"
+           "    proc.kill()\n    return await proc.wait()\n")
+    assert _hits("HX006", src) == [7]
+
+
+def test_assignment_refactored_into_return_after_kill_passes(tmp_path, capsys):
+    base = _KILL.format("    proc.kill()\n    rc = proc.wait()\n    return rc\n")
+    head = _KILL.format("    proc.kill()\n    return proc.wait()\n")
+    code, out = _judge(tmp_path, capsys, {"pkg/k.py": base}, {"pkg/k.py": head})
+    assert code == 0, out

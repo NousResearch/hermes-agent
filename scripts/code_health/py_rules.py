@@ -633,6 +633,8 @@ def _process_kinds(tree: ast.Module) -> dict[int, str]:
 # Process methods that wait for the child, with the slot of their ``timeout`` (sync Popen);
 # the asyncio Process versions take no timeout and must be bounded by asyncio.
 _PROCESS_WAITS = {"communicate": 1, "wait": 0}
+# A reaping wait's value may be dropped, assigned (annotated or not) or returned.
+_WAIT_STATEMENTS = (ast.Expr, ast.Assign, ast.AnnAssign, ast.Return)
 
 
 def _reaped_after_kill(tree: ast.Module, kinds: dict[int, str]) -> set[int]:
@@ -647,7 +649,7 @@ def _reaped_after_kill(tree: ast.Module, kinds: dict[int, str]) -> set[int]:
                 continue
             for first, second in zip(stmts, stmts[1:]):
                 kill = first.value if isinstance(first, ast.Expr) else None
-                wait = second.value if isinstance(second, (ast.Expr, ast.Assign)) else None
+                wait = second.value if isinstance(second, _WAIT_STATEMENTS) else None
                 if not (isinstance(kill, ast.Call) and isinstance(wait, ast.Call)):
                     continue
                 head, _, leaf = _call_name(kill).rpartition(".")

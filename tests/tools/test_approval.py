@@ -1052,6 +1052,67 @@ class TestIFSWhitespaceBypass:
         assert dangerous is False
 
 
+class TestVariableIndirectionBypass:
+    """`x=rm; $x -rf /` runs as `rm -rf /`. A plain literal assigned earlier in the same command is
+    inlined before matching, so the hardline floor and the dangerous patterns see what actually runs.
+    A command word that stays an expansion names an unknown program and must prompt, never pass."""
+
+    @pytest.mark.parametrize("cmd", [
+        "x=rm; $x -rf /",
+        "x=rm; ${x} -rf /",
+        "export x=rm && $x -rf /",
+        "x=rm\n$x -rf /",
+        "x=rm # note\n$x -rf /",
+        "x=safe; x=rm; $x -rf /",
+        "a=r; b=m; $a$b -rf /",
+        'c="rm -rf /"; $c',
+        "x=r; x+=m; $x -rf /",
+        "readonly x=rm; $x -rf /",
+        "x=rm; y=$x; $y -rf /",
+        "x=rm; (x=safe); $x -rf /",
+        "x=safe; x=rm 2>/dev/null; $x -rf /",
+        "x=mkfs.ext4; $x /dev/sda",
+    ])
+    def test_indirection_reaches_hardline_floor(self, cmd):
+        assert detect_hardline_command(cmd)[0] is True, cmd
+
+    @pytest.mark.parametrize("cmd", [
+        # Command word left unresolved: the program is unknown.
+        "$x -rf /",
+        "x=rm; $x$y -rf /",
+        "for x in rm; do $x -rf /; done",
+        "read x; $x -rf /",
+        "x=abc$(echo rm); $x -rf /",
+        "x=rm; false && x=safe; $x -rf /",
+        "x=rm; x=safe | true; $x -rf /",
+        "x=rm; { x=safe; } | cat; $x -rf /",
+        "x=safe; eval x=rm; $x -rf /",
+        "x=safe; : ${x:=rm}; $x -rf /",
+        "x=safe; declare -l x=RM; $x -rf /",
+        "f() { x=rm; }; f; $x -rf /",
+        # Sensitive path reached through a variable argument.
+        "H=~/.bashrc; sed -i s/a/b/ $H",
+        "H=~/.bashrc; H=safe env true; sed -i s/a/b/ $H",
+        "F=~/.ssh/authorized_keys; echo x | tee $F",
+    ])
+    def test_unresolved_or_indirect_forms_need_approval(self, cmd):
+        assert detect_dangerous_command(cmd)[0] is True, cmd
+
+    @pytest.mark.parametrize("cmd", [
+        'NAME=world; echo "hello $NAME"',
+        "DIR=/tmp/build; mkdir -p $DIR && cd $DIR",
+        "x=ls; $x -la",
+        "x=rm; echo '$x -rf /'",
+        "unset H; H=~/.bashrc env true; sed -i s/a/b/ $H",
+        'H="~/.bashrc"; sed -i s/a/b/ $H',
+        "H=abc$(echo /etc/passwd); echo $H",
+        "VENV=.venv; $VENV/bin/python -m pytest",
+        "$HOME/.cargo/bin/cargo build",
+    ])
+    def test_benign_and_scoped_forms_not_flagged(self, cmd):
+        assert detect_dangerous_command(cmd)[0] is False, cmd
+        assert detect_hardline_command(cmd)[0] is False, cmd
+
 class TestHeredocScriptExecution:
     """Script execution via heredoc bypasses the -e/-c flag patterns.
 

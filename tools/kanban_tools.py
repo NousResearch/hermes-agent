@@ -921,7 +921,7 @@ def _handle_request_review(args: dict, **kw) -> str:
                 f"Your task is still in-flight (no state change) and its scratch workspace was "
                 f"kept. Fix the artifact path or storage error, then retry "
                 f"kanban_request_review with the same handoff.")
-        if not ok and fail_reason and "live claim" in fail_reason:
+        if not ok and isinstance(fail_reason, kb.LiveClaimRefusal):
             return _live_claim_tool_error("kanban_request_review", tid)
         _check(ok, f"could not request review for {tid}: "
                    f"{fail_reason or 'unknown id or not in running/ready'}")
@@ -937,7 +937,7 @@ def _handle_request_changes(args: dict, **kw) -> str:
     with _board(args.get("board")) as (kb, conn):
         ok, detail = kb.request_changes(
             conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
-        if not ok and detail and "live review claim" in detail:
+        if not ok and isinstance(detail, kb.LiveClaimRefusal):
             return _live_claim_tool_error("kanban_request_changes", tid, reviewer=True)
         _check(ok, f"could not request changes for {tid}: {detail or 'invalid review state'}")
         return _ok_landed(kb, conn, tid, "ready", implementer=detail)

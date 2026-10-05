@@ -87,7 +87,9 @@ def test_request_review_shares_the_live_worker_fence(conn):
 
     tid2, run2 = _claimed_running_task(conn)
     ok, reason = kb.request_review(conn, tid2, summary="steal", with_reason=True)
-    assert ok is False and "live claim" in reason
+    assert ok is False
+    assert isinstance(reason, kb.LiveClaimRefusal)
+    assert "live claim" in reason
     assert kb.request_review(conn, tid2, summary="own", expected_run_id=run2) is True
 
 
@@ -107,7 +109,9 @@ def test_request_changes_refuses_live_reviewer_until_forced(conn):
 
     ok, reason = kb.request_changes(conn, tid, reason="unbound verdict")
 
-    assert ok is False and "live review claim" in reason
+    assert ok is False
+    assert isinstance(reason, kb.LiveClaimRefusal)
+    assert "live review claim" in reason
     task = kb.get_task(conn, tid)
     assert (task.status, task.assignee, task.current_run_id) == (
         "running",

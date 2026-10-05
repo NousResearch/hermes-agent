@@ -1,0 +1,17 @@
+name: kimchi-acp-provider
+repo: https://github.com/getkimchi/kimchi-hermes
+subdir: model-providers/kimchi-acp
+sha: f3da18f16dff7220c909227f687b5885ab729f66
+description: The Kimchi coding harness (kimchi.dev) as a Hermes model provider over ACP stdio — spawns kimchi --mode acp --yolo so harness tools run without approval prompts (override via KIMCHI_ACP_ARGS), the harness owns its own auth, and completed tool calls surface as inline bullets in the reply.
+maintainer: getkimchi
+tier: community
+category: models
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/getkimchi/kimchi-hermes#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

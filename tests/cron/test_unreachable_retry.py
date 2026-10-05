@@ -191,3 +191,24 @@ def test_ladder_reruns_do_not_spend_extra_repeat_budget(tmp_cron_home, monkeypat
     assert held == [True, True, True, False]
     # But a rung whose limit was edited down to the count does retire the job: send its notice.
     assert not ur.will_retry(dict(runs[1], repeat={"times": 1, "completed": 1}))
+
+
+class _Agent:
+    def __init__(self, calls: int):
+        self.session_api_calls = calls
+
+
+def test_agent_reported_offline_failure_counts_as_unreachable():
+    """The agent's own retry loop swallows the ConnectError and returns only the friendly
+    "can't reach the model provider" summary, so the classification must ride on the
+    exception or an offline host never gets the re-run ladder."""
+    result = {"failed": True, "completed": False, "failure_reason": "timeout",
+              "error": "Hermes can't reach the model provider. You may be offline."}
+    with pytest.raises(ur.AgentReportedFailure) as caught:
+        sched._final_response_from_result(result, "j1", "Midday", object)
+    assert caught.value.failure_reason == "timeout"
+    assert ur.is_model_unreachable_failure(caught.value, _Agent(0)) is True
+    assert ur.is_model_unreachable_failure(caught.value, _Agent(1)) is False, \
+        "a run that reached the model may have side effects: no silent re-run"
+    billing = ur.AgentReportedFailure("credits exhausted", failure_reason="billing")
+    assert ur.is_model_unreachable_failure(billing, _Agent(0)) is False

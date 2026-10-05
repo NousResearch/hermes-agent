@@ -54,11 +54,22 @@ def retry_enabled(cfg: Optional[dict] = None) -> bool:
     return cron_cfg.get("retry_unreachable") is not False
 
 
+class AgentReportedFailure(RuntimeError):
+    """A run the agent ended with ``failed=True``. The agent's retry loop swallows the transport
+    exception and returns only a human summary, so ``failure_reason`` carries its classification."""
+
+    def __init__(self, message: str, failure_reason: Optional[str] = None):
+        super().__init__(message)
+        self.failure_reason = failure_reason
+
+
 def is_model_unreachable_failure(exc: BaseException, agent: Any = None) -> bool:
     """True when *exc* is a transient network/DNS failure and *agent* (may be ``None``)
     never completed a model call — the run consumed nothing and executed nothing."""
     if int(getattr(agent, "session_api_calls", 0) or 0) > 0:
         return False
+    if getattr(exc, "failure_reason", None) == "timeout":
+        return True
     from cron.scheduler_preflight import _is_transient_provider_resolve_error
 
     return _is_transient_provider_resolve_error(exc)

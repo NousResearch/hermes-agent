@@ -39,6 +39,7 @@ from cron.worker_bootstrap import WORKER_MARKER
 from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_cli.observability.shared_metrics_gateway import note_cron_execution, note_cron_skipped
 from cron.env_settings import cron_env_setting
+from cron.unreachable_retry import AgentReportedFailure
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     load_config, load_config_readonly)
@@ -326,7 +327,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
             return notice
 
     # Strip exception wrappers; bound input first so a multi-KB blob can't slow the regexes.
-    cleaned = re.sub(r"^(RuntimeError|Exception|ValueError|HTTPStatusError):\s*", "", text[:2000])
+    cleaned = re.sub(r"^(RuntimeError|AgentReportedFailure|Exception|ValueError|HTTPStatusError):\s*", "", text[:2000])
     cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(".")
     if len(cleaned) > 180:
         cleaned = cleaned[:177].rstrip() + "..."
@@ -2093,16 +2094,15 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     """Deliverable final response from a ``run_conversation`` result. Raises RuntimeError on
     `failed=True`/`completed=False`: the error text may sit in `final_response` and would otherwise
     be delivered as the reply with the job marked ok."""
-    # If the agent itself reported failure (e.g. all retries exhausted on API errors, model abort, mid-run
-    # interrupt), do not silently mark the job as successful. run_agent populates
-    # `failed=True`/`completed=False` on these paths and may put the error into `final_response`, which
-    # would otherwise be delivered as if it were the agent's reply and the job's `last_status` set to "ok".
-    # Raise so the except handler below builds the proper failure tuple. (issue #17855)
+    # The agent reported failure (retries exhausted, model abort, interrupt) and may have put the error in
+    # `final_response`: raise so the except handler builds the failure tuple instead of delivering it as a
+    # reply with last_status "ok" (issue #17855). failure_reason feeds the unreachable re-run ladder.
     turn_exit_reason = str(result.get("turn_exit_reason") or "")
     final_response_text = (result.get("final_response") or "").strip()
     max_iteration_summary = is_max_iteration_handoff(result)
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
-        raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
+        raise AgentReportedFailure(result.get("error") or final_response_text or "agent reported failure",
+                                   failure_reason=result.get("failure_reason"))
     if max_iteration_summary:
         logger.warning(
             "Job '%s' reached the iteration limit but produced a final fallback response; "

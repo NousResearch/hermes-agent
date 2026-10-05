@@ -192,7 +192,7 @@ def _convert_caf_to_wav(file_path: str, work_dir: str) -> Optional[str]:
 # saving. Command-type and plugin providers are NOT trimmed: they may wrap local
 # CLIs that want the original bytes.
 
-_CLOUD_TRIM_THRESHOLD_DB_DEFAULT = -40  # audio below this level counts as silence
+_CLOUD_TRIM_THRESHOLD_DB_DEFAULT = None  # only digital silence; numeric values opt into dB gating
 _CLOUD_TRIM_KEEP_MS_DEFAULT = 300  # how much of each pause survives the trim
 _CLOUD_TRIM_MIN_SAVING = 0.10  # use the trimmed file only when >=10% shorter
 _CLOUD_TRIM_MIN_RESULT_SECONDS = 0.3  # all-silence guard floor: never upload ~empty audio
@@ -216,7 +216,7 @@ def _probe_audio_duration(file_path: str) -> Optional[float]:
         return None
 
 
-def _cloud_trim_settings(stt_config: Dict[str, Any]) -> tuple[bool, int, int]:
+def _cloud_trim_settings(stt_config: Dict[str, Any]) -> tuple[bool, Optional[int], int]:
     """Resolve (enabled, threshold_db, keep_ms) for the cloud silence trim."""
     cfg = stt_config if isinstance(stt_config, dict) else {}
     # is_truthy_value: a YAML string "false" must disable, exactly like is_stt_enabled.
@@ -246,11 +246,22 @@ def _trim_silence_for_cloud_stt(file_path: str, stt_config: Dict[str, Any]) -> O
                      name, original_duration, _CLOUD_TRIM_MIN_INPUT_SECONDS)
         return None
     keep_seconds = keep_ms / 1000.0
+    # Amplitude cannot distinguish quiet speech from background noise. A global
+    # peak/RMS-derived threshold (or normalization) still loses quiet content
+    # after a loud transient. By default remove only runs of exact zero samples,
+    # without a rolling RMS window. Numeric overrides retain the legacy filter.
+    threshold = "0" if threshold_db is None else f"{threshold_db}dB"
     # start_periods=1 strips leading silence; stop_periods=-1 collapses every interior/trailing silence.
     filter_expr = (
         f"silenceremove="
-        f"start_periods=1:start_threshold={threshold_db}dB:start_silence={keep_seconds}:"
-        f"stop_periods=-1:stop_threshold={threshold_db}dB:stop_silence={keep_seconds}")
+        f"start_periods=1:start_threshold={threshold}:start_silence={keep_seconds}:"
+        f"stop_periods=-1:stop_threshold={threshold}:stop_silence={keep_seconds}")
+    if threshold_db is None:
+        # Do not treat waveform zero crossings as pauses, even with keep_ms=0.
+        # Require every channel to be zero before ending a retained segment.
+        filter_expr += (
+            f":detection=peak:window=0:stop_duration={max(keep_seconds, 0.02)}"
+            ":start_mode=any:stop_mode=all")
     work_dir = tempfile.mkdtemp(prefix="hermes-stt-trim-")
     trimmed_path = os.path.join(work_dir, f"{Path(file_path).stem or 'audio'}-trimmed.m4a")
     # Scale the all-silence guard with keep_ms: output that is solely kept pause must never upload as "speech".

@@ -360,8 +360,17 @@ class MemoryStore:
             return idx if idx is not None else _error(_stale_entry_message(matched_entry))
         idx, ambiguous = _find_unique_match(entries, old_text)
         if ambiguous:
+            # List both exact and normalized matches so the caller can see
+            # which entries caused the ambiguity — a raw byte filter would
+            # miss normalized-only matches and return an empty list.
+            matched = [e for e in entries if old_text in e]
+            if not matched:
+                needle = _normalize_for_match(old_text)
+                if needle and needle.strip("'"):
+                    matched = [e for e in entries
+                               if needle in _normalize_for_match(e)]
             return _error(f"Multiple entries matched '{old_text}'. Be more specific.",
-                          matches=[e[:80] + ("..." if len(e) > 80 else "") for e in entries if old_text in e])
+                          matches=[e[:80] + ("..." if len(e) > 80 else "") for e in matched])
         if idx is None:
             return self._consolidation_failure(_error(
                 f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text "

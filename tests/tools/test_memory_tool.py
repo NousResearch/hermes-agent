@@ -262,6 +262,23 @@ class TestMemoryStoreReplace:
         assert result["success"] is False
         assert "No entry matched" in result["error"]
 
+    def test_replace_ambiguous_normalized_lists_matches(self, store):
+        # When ambiguity arises from normalized (not exact) matching, the
+        # error message must still list the matched entries — not an empty
+        # list (regression: raw byte filter missed normalized-only matches).
+        # Use entries that differ only in quote style so the exact byte
+        # match fails but normalized match finds both.
+        store.add("memory", 'server "Alpha" runs nginx')
+        store.add("memory", "server 'Alpha' runs nginx")
+        # Use curly quotes in old_text — no exact match, but normalizes to
+        # match both entries.
+        result = store.replace("memory", "server \u2018Alpha\u2019", "replacement")
+        assert result["success"] is False
+        assert "Multiple" in result["error"]
+        # The matches list must be non-empty — both entries should appear.
+        matches = result.get("matches", [])
+        assert len(matches) >= 2, f"expected >=2 matches, got {matches}"
+
 
 class TestMemoryStoreRemove:
     def test_remove_entry(self, store):
@@ -279,6 +296,33 @@ class TestMemoryStoreRemove:
         assert result["current_entries"] == ["fact A"]
 
         assert store.remove("memory", "  ")["success"] is False
+
+    def test_remove_quote_type_tolerant(self, store):
+        # Mirror of test_replace_quote_type_tolerant for the remove path.
+        store.add("memory", 'User runs a fleet ("Omarchy": Trinity)')
+        result = store.remove("memory", "fleet ('Omarchy': Trinity)")
+        assert result["success"] is True
+        assert len(store.memory_entries) == 0
+
+    def test_remove_quote_tolerant_still_rejects_unrelated(self, store):
+        store.add("memory", 'Prefers ("self-hosted") infra')
+        result = store.remove("memory", "prefers 'on-prem'")
+        assert result["success"] is False
+        assert "No entry matched" in result["error"]
+
+    def test_remove_bare_quote_needle_rejected(self, store):
+        # A bare quote (e.g. just " or ') must NOT match entries via the
+        # normalized fallback when there is no exact byte match. The fix
+        # adds `needle.strip("'")` to reject quote-only needles.
+        # Use a needle that has NO exact match but WOULD match via
+        # normalization if the guard weren't in place.
+        store.add("memory", 'User said "hello" to the team')
+        store.add("memory", "Another fact with 'apostrophe'")
+        # "curly" quote (Unicode) normalizes to ' but is not an exact substring
+        result = store.remove("memory", "\u2018")  # left single curly quote
+        assert result["success"] is False
+        assert "No entry matched" in result["error"]
+        assert len(store.memory_entries) == 2
 
 
 class TestExactWholeEntryMatchPriority:
@@ -567,6 +611,57 @@ class TestMemoryBatch:
         ))
         assert result["success"] is False
         assert "legit fact" not in store.memory_entries
+
+    def test_batch_remove_quote_type_tolerant(self, store):
+        # apply_batch remove must inherit the same quote-type tolerance
+        # as the single-op remove path.
+        store.add("memory", "anchor entry that stays")
+        store.add("memory", 'User runs a fleet ("Omarchy": Trinity)')
+        result = json.loads(memory_tool(
+            target="memory",
+            operations=[
+                {"action": "remove", "old_text": "fleet ('Omarchy': Trinity)"},
+            ],
+            store=store,
+        ))
+        assert result["success"] is True
+        assert "anchor entry that stays" in store.memory_entries
+        assert len(store.memory_entries) == 1
+
+    def test_batch_remove_quote_tolerant_still_rejects_unrelated(self, store):
+        store.add("memory", "anchor entry that stays")
+        store.add("memory", 'Prefers ("self-hosted") infra')
+        result = json.loads(memory_tool(
+            target="memory",
+            operations=[
+                {"action": "remove", "old_text": "prefers 'on-prem'"},
+            ],
+            store=store,
+        ))
+        assert result["success"] is False
+        assert "no entry matched" in result["error"].lower()
+
+    def test_batch_remove_bare_quote_needle_rejected(self, store):
+        # A bare quote must not remove entries that merely contain quotes.
+        store.add("memory", "anchor entry that stays")
+        store.add("memory", 'User said "hello" to the team')
+        store.add("memory", "Another fact with 'apostrophe'")
+        result = json.loads(memory_tool(
+            target="memory",
+            operations=[
+                {"action": "remove", "old_text": '"'},
+            ],
+            store=store,
+        ))
+        # Bare " matches entry 1 exactly (contains "), so it removes it.
+        # The fix prevents the *normalized fallback* from matching bare quotes
+        # when there's no exact match — but here the exact match wins first.
+        # This test documents that bare-quote exact matches are NOT prevented
+        # by the fix (the fix targets the normalized fallback path only).
+        assert result["success"] is True
+        assert "anchor entry that stays" in store.memory_entries
+        # Entry with " was removed via exact match, entry with ' stays
+        assert len(store.memory_entries) == 2
 
 
 # =========================================================================

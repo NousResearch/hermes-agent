@@ -143,11 +143,11 @@ class SessionCreateParams(ProfileParams):
 class SessionCreationBinding(Result):
     """Authenticated origin of one create. Not current membership or control authority."""
 
-    session_id: str = Field(min_length=1, max_length=256)
-    stored_session_id: str = Field(min_length=1, max_length=256)
-    authenticated_owner: str = Field(min_length=1, max_length=256)
-    runtime_incarnation: str = Field(min_length=1, max_length=256)
-    profile_store_scope: str = Field(min_length=1, max_length=256)
+    session_id: str = Field(strict=True, min_length=1, max_length=256)
+    stored_session_id: str = Field(strict=True, min_length=1, max_length=256)
+    authenticated_owner: str = Field(strict=True, min_length=1, max_length=256)
+    runtime_incarnation: str = Field(strict=True, min_length=1, max_length=256)
+    profile_store_scope: str = Field(strict=True, min_length=1, max_length=256)
 
 
 class SessionCreateResult(Result):
@@ -226,6 +226,20 @@ class SessionActivateResult(LiveSessionSnapshot):
 
 method("session.activate", params=SessionActivateParams, result=SessionActivateResult,
        doc="Attach the frontend to a live session without closing the previously focused one.")
+
+
+class SessionActivateBoundParams(SessionParams):
+    session_id: str = Field(strict=True, min_length=1, max_length=256)
+    expected_binding: SessionCreationBinding
+
+
+class SessionActivateBoundResult(Result):
+    attached: bool
+    accepted_binding: SessionCreationBinding
+
+
+method("session.activate_bound", params=SessionActivateBoundParams, result=SessionActivateBoundResult,
+       doc="Conditionally subscribe to an exact authenticated creation binding; receipt is not recovery.")
 
 
 # ── listing ───────────────────────────────────────────────────────────────────────────────────

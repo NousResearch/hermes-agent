@@ -123,14 +123,43 @@ on the mutable runtime. Consequently its original `stored_session_id` may differ
 from a retry's current top-level `stored_session_id`; a client must not interpret
 that as permission to follow a descendant. Each response carries a fresh copy.
 
-This metadata establishes creation provenance only. It does **not** prove current
-registry membership, safe conditional subscription, complete replay/history,
-request outcomes, or writable recovery. Legacy `session.activate` is unchanged
-and does not compare these fields. Clients must not send invented preconditions
-to it or adopt a runtime from event/discovery metadata. A conditional activation
-contract still needs atomic owner/scope/segment/incarnation comparison, an
-accepted-binding receipt, and fencing of subsequent session-targeted operations
-when identity changes. Do not automatically replay prompts or responses.
+Creation metadata alone does not prove current membership or authorize recovery.
+Legacy `session.activate` is unchanged and does not compare these fields. Clients
+must not send invented preconditions to it or adopt a runtime from discovery.
+
+### Conditional subscription prerequisite
+
+`session.activate_bound` accepts `{session_id, expected_binding, profile?}`.
+`expected_binding` must contain **all five** creation-binding fields as bounded
+strings; unknown, missing, wrong-type or oversized values fail with `4000`.
+The gateway derives the caller principal from its authenticated transport. A
+well-formed mismatch, anonymous/foreign/dead peer, unavailable record, or unproven
+runtime fails with `4007`, without a session snapshot or fallback. An unavailable
+named profile retains the normal `4064` profile error.
+
+This bounded prerequisite currently supports **unbuilt idle creation records**
+only. Materialized agents, running/inflight sessions and compute-host-owned
+records are refused: engine-side compression/persistence can rotate identity
+before the gateway receives its new key. Supporting those runtimes requires
+those writers to join an enforceable identity boundary. Do not treat the presence
+of this method as support for reconnecting to a healthy running session.
+
+For a supported record, registry object membership, creator, requested and current
+resolved store, original exact stored segment, incarnation and scope are compared
+under resume/history/registry/transport guards before subscription. Copying origin
+metadata onto a replacement record cannot pass. Gateway compression key writes
+now use history_lock; compute-host key adoption already uses it. Existing
+subscribers remain attached, and only a successful transport attach adds a viewer
+and cancels orphan reap. Repeating the same successful request preserves one
+subscriber membership and starts no execution.
+
+Success returns `{attached: true, accepted_binding: {...}}`, captured within that
+comparison/subscription boundary. It contains no mutable history, inflight state
+or pending requests. The receipt certifies that historical cut, not future
+connection liveness, complete recovery or input authority. Engine-side identity
+fencing and fencing subsequent session-targeted operations remain prerequisites
+for writable recovery. Never automatically replay prompts or responses or fall
+back to legacy activation/cold resume after refusal or a lost receipt.
 
 ### Rebuilding the in-flight turn on reconnect
 

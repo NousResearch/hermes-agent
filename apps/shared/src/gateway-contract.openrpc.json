@@ -3103,6 +3103,24 @@
       }
     },
     {
+      "name": "session.activate_bound",
+      "summary": "Conditionally subscribe to an exact authenticated creation binding; receipt is not recovery.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionActivateBoundParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionActivateBoundResult"
+        }
+      }
+    },
+    {
       "name": "session.active_list",
       "summary": "Live sessions in this process, insertion order (not a DB browser).",
       "params": [
@@ -28729,6 +28747,56 @@
           "role"
         ],
         "title": "SeedMessage",
+        "type": "object"
+      },
+      "SessionActivateBoundParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "expected_binding": {
+            "$ref": "#/components/schemas/SessionCreationBinding"
+          }
+        },
+        "required": [
+          "session_id",
+          "expected_binding"
+        ],
+        "title": "SessionActivateBoundParams",
+        "type": "object"
+      },
+      "SessionActivateBoundResult": {
+        "additionalProperties": false,
+        "properties": {
+          "attached": {
+            "title": "Attached",
+            "type": "boolean"
+          },
+          "accepted_binding": {
+            "$ref": "#/components/schemas/SessionCreationBinding"
+          }
+        },
+        "required": [
+          "attached",
+          "accepted_binding"
+        ],
+        "title": "SessionActivateBoundResult",
         "type": "object"
       },
       "SessionActivateParams": {

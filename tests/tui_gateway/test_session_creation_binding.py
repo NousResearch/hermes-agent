@@ -118,3 +118,15 @@ def test_binding_is_creator_only_and_never_restamps_mutable_state(monkeypatch, t
             assert retry["stored_session_id"] != original["stored_session_id"]
         record[field] = old
     assert create(peer, idempotency_key="same")["creation_binding"] == original
+
+
+def test_creation_retry_preserves_profile_default_route(monkeypatch, tmp_path):
+    prepare(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "_session_default_route", lambda _session: ("profile-model", "profile-provider"))
+    peer = LoginPeer()
+    first = create(peer, idempotency_key="profile-route")
+    retry = create(LoginPeer(), idempotency_key="profile-route")
+    for response in (first, retry):
+        assert response["info"]["model"] == "profile-model"
+        assert response["info"]["provider"] == "profile-provider"
+    assert retry["creation_binding"] == first["creation_binding"]

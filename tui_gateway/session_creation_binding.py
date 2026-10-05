@@ -5,7 +5,7 @@ host path, credential, or a discovery key shared by independently created runtim
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import uuid4
 
 
@@ -17,14 +17,17 @@ class CreationBinding:
     store_path: str
     runtime_incarnation: str
     profile_store_scope: str
+    # Retain the actual registry object: copied metadata cannot bless replacement.
+    runtime_record: dict = field(repr=False, compare=False)
 
     @classmethod
-    def mint(cls, session_id: str, stored_session_id: str, owner: str | None, store_path: str) -> CreationBinding | None:
+    def mint(cls, session_id: str, stored_session_id: str, owner: str | None,
+             store_path: str, runtime_record: dict) -> CreationBinding | None:
         # Anonymous/legacy transports cannot supply authenticated creation provenance.
         if any(not isinstance(value, str) or not value.strip() or len(value) > 256
                for value in (session_id, stored_session_id, owner)):
             return None
-        return cls(session_id, stored_session_id, owner, store_path, uuid4().hex, uuid4().hex)
+        return cls(session_id, stored_session_id, owner, store_path, uuid4().hex, uuid4().hex, runtime_record)
 
     def fields_for(self, owner: str | None, store_path: str) -> dict[str, dict[str, str]]:
         if owner != self.authenticated_owner or store_path != self.store_path:

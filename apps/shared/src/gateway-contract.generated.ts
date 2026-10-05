@@ -3194,6 +3194,15 @@ export interface SessionActivateResult {
   todo_state?: TodoState | null
   auto_continue?: AutoContinue | null
 }
+export interface SessionActivateBoundParams {
+  session_id: string
+  profile?: string | null
+  expected_binding: SessionCreationBinding
+}
+export interface SessionActivateBoundResult {
+  attached: boolean
+  accepted_binding: SessionCreationBinding
+}
 export interface SessionListParams {
   profile?: string | null
   title?: string | null
@@ -5349,6 +5358,8 @@ export interface RpcMethods {
   'rollback.restore': { params: RollbackRestoreParams; result: RollbackRestoreResult }
   /** Attach the frontend to a live session without closing the previously focused one. */
   'session.activate': { params: SessionActivateParams; result: SessionActivateResult }
+  /** Conditionally subscribe to an exact authenticated creation binding; receipt is not recovery. */
+  'session.activate_bound': { params: SessionActivateBoundParams; result: SessionActivateBoundResult }
   /** Live sessions in this process, insertion order (not a DB browser). */
   'session.active_list': { params: SessionActiveListParams; result: SessionActiveListResult }
   /** Set/clear archived (soft-hide, messages kept) on a session + lineage; Desktop PATCH parity. */
@@ -5694,6 +5705,7 @@ export const RPC_METHODS = [
   'rollback.list',
   'rollback.restore',
   'session.activate',
+  'session.activate_bound',
   'session.active_list',
   'session.archive',
   'session.branch',

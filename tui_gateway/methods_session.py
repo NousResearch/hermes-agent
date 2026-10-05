@@ -335,14 +335,6 @@ def _seed_row(record: dict) -> None:
         logger.debug("seeded-session title write failed for %s; pending_title stays queued", key, exc_info=True)
 
 
-def _creation_binding_fields(session: dict, profile_home) -> dict:
-    origin = session.get("creation_binding")
-    if origin is None:
-        return {}
-    store_path = str((Path(profile_home or _hermes_home) / "state.db").resolve())
-    return origin.fields_for(_transport_auth_user_id(current_transport()), store_path)
-
-
 def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
     """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
     transcript server-side and omits it from the reply."""
@@ -371,23 +363,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
                 if session is not None:
                     # Refresh the TTL so back-to-back retries don't age out mid-flight.
                     _idempotency_keys[idem_key] = (existing_sid, now_for_gc)
-                    history = session["history"]
-                    override = session.get("model_override") or {}
-                    # Same result shape as the fresh-create path below: branch_stored
-                    # (copy_parent_history) answers messages_omitted and NEVER puts the
-                    # copied transcript on the wire — its result contract forbids
-                    # ``messages``, and serializing the parent's history through the
-                    # renderer is exactly what the method exists to avoid.
-                    return _ok(rid, {
-                        "session_id": existing_sid, "stored_session_id": session["session_key"],
-                        **_creation_binding_fields(session, profile_home),
-                        "message_count": len(history),
-                        **({"messages_omitted": True} if copy_parent_history
-                           else {"messages": _history_to_messages(history, profile_home=session.get("profile_home"))}),
-                        "info": {**_lazy_info_route(session, override), "tools": {}, "skills": {}, "cwd": session["cwd"], "branch": git_probe.branch(session["cwd"]),
-                                 "project": _project_info_for_cwd(session["cwd"]), "lazy": True,
-                                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-                                 "profile_name": _response_profile_name(profile)}})
+                    return _creation_retry_result(rid, existing_sid, session, profile, profile_home, copy_parent_history)
                 # The session was closed between the original create and the retry —
                 # fall through and create a fresh one under the same key.
                 _idempotency_keys.pop(idem_key, None)
@@ -453,7 +429,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         from .session_creation_binding import CreationBinding
         _sessions[sid]["creation_binding"] = CreationBinding.mint(
             sid, key, _sessions[sid]["auth_user_id"],
-            str((Path(profile_home or _hermes_home) / "state.db").resolve()))
+            str((Path(profile_home or _hermes_home) / "state.db").resolve()), _sessions[sid])
         created_session = _sessions[sid]
         _register_session_cwd(created_session)
         if idem_key is not None:

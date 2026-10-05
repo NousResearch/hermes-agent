@@ -779,8 +779,9 @@ def _error_object(body_text: str) -> Dict[str, Any]:
 
 def gemini_http_error(
     response: httpx.Response, *, body_text: Optional[str] = None, api_key: str = "", base_url: str = "",
+    status_code: Optional[int] = None,
 ) -> GeminiAPIError:
-    status = response.status_code
+    status = response.status_code if status_code is None else status_code
     body_text = (_response_text(response) if body_text is None else body_text) or ""
     err_obj = _error_object(body_text)
     err_status, err_message = (str(err_obj.get(k) or "").strip() for k in ("status", "message"))
@@ -883,6 +884,15 @@ class GeminiNativeClient:
                     )
                 tool_call_indices: Dict[str, Dict[str, Any]] = {}
                 for event in _iter_sse_events(response):
+                    if isinstance(event.get("error"), dict):
+                        status = event["error"].get("code")
+                        # The HTTP stream is already 200; the frame carries the failed operation's status.
+                        if not isinstance(status, int) or not 400 <= status <= 599:
+                            status = 500
+                        raise gemini_http_error(
+                            response, body_text=json.dumps(event), status_code=status,
+                            api_key=self.api_key, base_url=self.base_url,
+                        )
                     yield from translate_stream_event(event, model, tool_call_indices)
         except httpx.HTTPError as exc:
             raise GeminiAPIError(f"Gemini streaming request failed: {exc}", code="gemini_stream_error") from exc

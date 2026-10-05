@@ -115,7 +115,7 @@ class GatewayPendingDrainMixin:
                     self._restore_pending_dispatch(session_key, pending_event, adapter)
                 raise
 
-        # Leftover /steer (arrived after the last tool batch): deliver as the next user turn.
+        unadmitted_steer: Optional[str] = None
         leftover_steer = (result.get("pending_steer") or "").strip() if result else None
         if leftover_steer:
             if not pending and not pending_event:
@@ -124,28 +124,7 @@ class GatewayPendingDrainMixin:
                     "Delivering leftover /steer as next turn: '%s...'", pending[:40]
                 )
             elif pending_event and adapter and session_key:
-                # User steered during the turn, but a background event or queued message arrived.
-                # Deliver the user's steer first and restore the pending event to the head of the queue.
-                overflow = self._overflow_queue(session_key)
-                if hasattr(adapter, "_pending_messages") and isinstance(
-                    adapter._pending_messages, dict
-                ):
-                    promoted = adapter._pending_messages.get(session_key)
-                    if promoted is not None:
-                        if overflow is not None:
-                            overflow.insert(0, promoted)
-                        else:
-                            self._session_state(
-                                session_key
-                            ).conversation.queued_events.insert(0, promoted)
-                    adapter._pending_messages[session_key] = pending_event
-                else:
-                    if overflow is not None:
-                        overflow.insert(0, pending_event)
-                    else:
-                        self._session_state(
-                            session_key
-                        ).conversation.queued_events.insert(0, pending_event)
+                self._restore_pending_dispatch(session_key, pending_event, adapter)
                 pending_event = None
                 pending = leftover_steer
                 logger.debug(
@@ -154,8 +133,7 @@ class GatewayPendingDrainMixin:
                     pending[:40],
                 )
             elif pending and not pending_event:
-                from gateway.platforms.base import MessageEvent
-
+                from gateway.platforms.event import MessageEvent
                 # A deferred steer continues the active channel context, just like an
                 # eventless follow-up. Reuse its pins without marking the user as internal.
                 steer_prompt, steer_source = self._pinned_channel_inputs(
@@ -169,31 +147,43 @@ class GatewayPendingDrainMixin:
                     source=steer_source,
                     channel_prompt=steer_prompt,
                 )
-                if session_key:
-                    self._enqueue_fifo(session_key, steer_event, adapter)
-                logger.debug(
-                    "Enqueued leftover /steer behind pending message for session %s: '%s...'",
-                    session_key or "?",
-                    leftover_steer[:40],
-                )
+                if session_key and self._enqueue_fifo(
+                    session_key, steer_event, adapter
+                ):
+                    logger.debug(
+                        "Enqueued leftover /steer behind pending message for session %s: '%s...'",
+                        session_key, leftover_steer[:40],
+                    )
+                else:
+                    unadmitted_steer = leftover_steer
+
+        pending_parts = [pending]
+        if unadmitted_steer is not None:
+            pending_parts.append(unadmitted_steer)
 
         # Safety net: a pending slash command is never passed to the agent as user input.
-        if pending and pending.strip().startswith("/"):
-            _pending_cmd_word = pending.strip().split(None, 1)[0][1:].lower()
-            if _pending_cmd_word:
-                with suppress(Exception):
-                    from hermes_cli.commands import resolve_command as _rc_pending
+        for position, pending_part in enumerate(pending_parts):
+            if not pending_part or not pending_part.strip().startswith("/"):
+                continue
+            _pending_cmd_word = pending_part.strip().split(None, 1)[0][1:].lower()
+            if not _pending_cmd_word:
+                continue
+            with suppress(Exception):
+                from hermes_cli.commands import resolve_command as _rc_pending
+                if not _rc_pending(_pending_cmd_word):
+                    continue
+                logger.info(
+                    "Discarding command '/%s' from pending queue — "
+                    "commands must not be passed as agent input", _pending_cmd_word,
+                )
+                if pending_event is not None and session_key:
+                    release_pending_dispatch(adapter, session_key, pending_event)
+                pending_event = None
+                pending_parts[position] = None
 
-                    if _rc_pending(_pending_cmd_word):
-                        logger.info(
-                            "Discarding command '/%s' from pending queue — "
-                            "commands must not be passed as agent input",
-                            _pending_cmd_word,
-                        )
-                        if pending_event is not None and session_key:
-                            release_pending_dispatch(adapter, session_key, pending_event)
-                        pending_event = None
-                        pending = None
+        pending = pending_parts[0]
+        if unadmitted_steer is not None:
+            pending = "\n\n".join(part for part in pending_parts if part) or None
 
         if self._draining and (pending_event or pending):
             logger.info(

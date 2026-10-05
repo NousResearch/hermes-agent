@@ -1023,7 +1023,7 @@ def my_callback(session_id: str | None, platform: str, **kwargs):
 | `session_id` | `str` or `None` | The outgoing session ID. May be `None` if no active session existed. |
 | `platform` | `str` | `"cli"` or the messaging platform name (`"telegram"`, `"discord"`, etc.). |
 
-**Fires:** In CLI/TUI teardown and in gateway reset or shutdown paths. Gateway shutdown can finalize without a matching `on_session_reset`.
+**Fires:** In CLI/TUI teardown (including the end of a `hermes -z` one-shot run, success or failure) and in gateway reset or shutdown paths. Gateway shutdown can finalize without a matching `on_session_reset`.
 
 **Return value:** Ignored.
 
@@ -1315,7 +1315,7 @@ This hook is observer-only: it does **not** add raw-event access or adapter acce
 
 ### `pre_approval_request`
 
-Fires before an approval decision is requested. It covers prompted surfaces—interactive CLI, Ink TUI, gateway platforms, and ACP clients—and `approvals.mode=smart` decisions made without a human prompt (`surface="smart"`). In smart mode, the hook runs before the auxiliary LLM is called.
+Fires before an approval decision is requested. It covers prompted surfaces—interactive CLI, Ink TUI, gateway platforms, and ACP clients—including protected agent-instruction write prompts and MCP/vault consent prompts, plus `approvals.mode=smart` decisions made without a human prompt (`surface="smart"`). In smart mode, the hook runs before the auxiliary LLM is called.
 
 This is the right place to wire a custom notifier — for example, a macOS menu-bar app that pops an allow/deny notification, or an audit log that records every approval request with context.
 
@@ -1340,7 +1340,7 @@ def my_callback(
 | `pattern_key` | `str` | Primary pattern key that triggered the approval (e.g. `"rm_rf"`, `"sudo"`) |
 | `pattern_keys` | `list[str]` | All pattern keys that matched |
 | `session_key` | `str` | Session identifier, useful for scoping notifications per-chat |
-| `surface` | `str` | `"cli"` for interactive CLI/TUI prompts, `"gateway"` for async platform approvals, or `"smart"` for auxiliary-LLM auto approve/deny decisions |
+| `surface` | `str` | `"cli"` for classic interactive-CLI prompts (dangerous commands, protected agent-instruction writes, consent prompts), `"gateway"` for async platform approvals (the Ink TUI and Desktop app also report `"gateway"` today), `"smart"` for auxiliary-LLM auto approve/deny decisions, or the caller's consent surface for MCP/vault prompts (`"mcp-elicitation/<server>"`, `"mcp-trust/<server>"`, `"vault-payment"`) |
 
 **Return value:** ignored. Hooks here are observer-only; they cannot veto or pre-answer the approval. Use [`pre_tool_call`](#pre_tool_call) to block a tool before it reaches the approval system.
 
@@ -1767,7 +1767,7 @@ profile's `HERMES_HOME`. `tool_name` and `tool_input` are `null` for non-tool ev
 // Silent no-op — any empty / non-matching output is fine:
 ```
 
-Malformed JSON, non-zero exit codes, and timeouts log a warning but never abort the agent loop.
+Except for `pre_tool_call` exit code 2 described below, malformed JSON, ordinary non-zero exit codes, and timeouts fail open by default: they log a warning but do not abort the agent loop. A `fail_closed` hook changes the behavior as described below.
 
 ### Exit code 2 = block (Claude Code / Cursor compatible)
 
@@ -1808,6 +1808,7 @@ With `fail_closed: true`, each of these now **blocks** the tool call with `hook 
 |---------|--------------------|--------------------|
 | Command not found / not executable | warn, proceed | **block** |
 | Timeout | warn, proceed | **block** |
+| Non-zero exit with no recognized directive | warn, proceed | **block** |
 | Non-JSON stdout (e.g. a stack trace) | warn, proceed | **block** |
 | Clean exit, valid no-op JSON (`{}`) | proceed | proceed |
 

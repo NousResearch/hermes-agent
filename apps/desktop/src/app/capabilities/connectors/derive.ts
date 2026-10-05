@@ -195,7 +195,7 @@ export function hostedStateWord(way: ConnectorWayHosted): ConnectorStateWord {
   return way.offBy === 'org' ? 'offByYourOrganisation' : HOSTED_WORDS[way.state]
 }
 
-function localWord(way: ConnectorWayLocal): ConnectorStateWord {
+export function localWord(way: ConnectorWayLocal): ConnectorStateWord {
   if (way.reason?.key === 'serverNeedsAuth') {
     return 'serverNeedsAuth'
   }

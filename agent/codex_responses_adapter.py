@@ -165,7 +165,11 @@ def _neutralize_harmony_tokens(text: str) -> str:
     """Keep Harmony source readable without emitting reserved wire tokens."""
     if not text or "<" not in text or "|" not in text:
         return text
-    if not any(unicodedata.category(char) == "Cf" for char in text):
+    # No ASCII code point is a Unicode format control (Cf): str.isascii() is an O(1) flag
+    # check, and other text only needs each distinct non-ASCII character categorised once.
+    if text.isascii() or not any(
+        unicodedata.category(char) == "Cf" for char in set(text) if char > "\x7f"
+    ):
         return _HARMONY_CONTROL_TOKEN_RE.sub(rf"<{_FULLWIDTH_PIPE}\1{_FULLWIDTH_PIPE}>", text)
     # The backend strips Unicode format controls (e.g. U+200B) before its reserved-token
     # check, so match on the visible text and rewrite the original spans.
@@ -369,6 +373,19 @@ def _message_item(
     return item
 
 
+_ROLE_MESSAGE_PHASES = frozenset({"commentary", "final_answer"})
+
+
+def _role_message_item(role: str, content: Any, phase: Any = None) -> Dict[str, Any]:
+    """Plain ``message`` input item for ``role``. ``type`` is required: llama.cpp's ``/v1/responses``
+    parser rejects a typeless assistant item ("Cannot determine type of 'item'"). Assistant ``phase``
+    is forwarded only for values the API accepts on input messages; others would 400."""
+    item = {"type": "message", "role": role, "content": content}
+    if role == "assistant" and (cleaned := _lower_or_none(phase)) in _ROLE_MESSAGE_PHASES:
+        item["phase"] = cleaned
+    return item
+
+
 def _assistant_message_item(
     raw: Dict[str, Any], content: List[Dict[str, Any]], *, is_github_responses: bool,
     current_issuer_kind: Optional[str] = None,
@@ -541,7 +558,7 @@ def _chat_messages_to_responses_input(
 
     ``is_xai_responses``: signature compatibility only (xAI DOES replay encrypted reasoning).
     ``replay_encrypted_reasoning``: per-session kill switch, threaded False by
-    ``AIAgent._disable_codex_reasoning_replay`` after an ``invalid_encrypted_content`` 400.
+    ``AIAgent._disable_codex_reasoning_replay`` after a repeat ``invalid_encrypted_content`` 400.
     ``is_github_responses``: drops ``id`` from replayed message items (Copilot 401s on stale ids).
     ``current_issuer_kind`` / ``current_issuer_model``: provenance guard; items stamped by another issuer or
     model drop. Legacy items carrying only an endpoint stamp replay on a matching issuer.
@@ -610,7 +627,7 @@ def _chat_messages_to_responses_input(
         def wire_content(value: Any) -> Any:
             return [{"type": text_type, "text": value}] if typed_text_only and isinstance(value, str) else value
         if role == "user":
-            emit([{"role": role, "content": wire_content(content_parts or content_text)}], msg)
+            emit([_role_message_item(role, wire_content(content_parts or content_text))], msg)
             continue
         reasoning_items = [] if not replay_encrypted_reasoning else _replay_reasoning_items(
             msg, seen_item_ids=seen_item_ids, current_issuer_kind=current_issuer_kind,
@@ -631,7 +648,7 @@ def _chat_messages_to_responses_input(
         # non-empty: strict Responses-compatible providers reject "" with 400.
         if fallback is not None and not (fallback == "" and tool_items):
             follower = " " if fallback == "" else fallback
-            emit([{"role": "assistant", "content": wire_content(follower)}], msg)
+            emit([_role_message_item("assistant", wire_content(follower), msg.get("phase"))], msg)
         emit(tool_items, msg)
     # The server renders nothing placed before a compaction item, so pre-checkpoint history is
     # dead weight and plaintext asks / merged summaries silently vanish. Keep the newest checkpoint
@@ -801,11 +818,16 @@ def _preflight_encrypted(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> 
 
 
 def _preflight_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
-    if item.get("role") != "assistant":
-        raise ValueError(f"Codex Responses input[{idx}] message items must have role='assistant'.")
+    # Only replayed assistant output (a list-content item carrying id/status) takes the strict path
+    # below. Phase alone is no replay marker: the converter's plain role items carry it too, and
+    # preflight must not synthesize a status or reject user image parts for them.
     content = item.get("content")
-    if not isinstance(content, list):
-        raise ValueError(f"Codex Responses input[{idx}] message item must have content list.")
+    is_replayed_assistant = (
+        item.get("role") == "assistant" and isinstance(content, list)
+        and any(key in item for key in ("id", "status"))
+    )
+    if not is_replayed_assistant:
+        return _preflight_role_message(item, idx, ctx)
     normalized_content = []
     for part_idx, part in enumerate(content):
         if not isinstance(part, dict):
@@ -822,7 +844,7 @@ def _preflight_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Di
 
 
 def _preflight_role_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
-    """Untyped ``user``/``assistant`` role message — the only legal shape besides typed items."""
+    """``user``/``assistant`` role message, typed or untyped; string content or Responses parts."""
     role = item.get("role")
     if role not in {"user", "assistant"}:
         raise ValueError(
@@ -830,7 +852,7 @@ def _preflight_role_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) 
         )
     content = item.get("content", "")
     if not isinstance(content, list):
-        return {"role": role, "content": ctx.sanitize_text(_str_or_empty(content))}
+        return _role_message_item(role, ctx.sanitize_text(_str_or_empty(content)), item.get("phase"))
     # Parts are already Responses-shaped; validate and re-type text for the role.
     # Unlike history conversion, empty text / empty image urls are kept, not dropped.
     text_type = _text_type_for(role)
@@ -851,7 +873,7 @@ def _preflight_role_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) 
             raise ValueError(
                 f"Codex Responses input[{idx}].content[{part_idx}] has unsupported type {part.get('type')!r}."
             )
-    return {"role": role, "content": validated}
+    return _role_message_item(role, validated, item.get("phase"))
 
 
 _PREFLIGHT_ITEM_HANDLERS: Dict[str, Callable[..., Optional[Dict[str, Any]]]] = {

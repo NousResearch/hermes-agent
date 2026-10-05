@@ -56,9 +56,10 @@ def iter_plugin_dirs(root: Path) -> List[Path]:
 def read_plugin_description(plugin_dir: Path) -> str:
     """Return ``description`` from ``plugin.yaml`` (empty string if absent/unreadable)."""
     try:
-        import yaml
+        from utils import fast_safe_load
+
         with open(plugin_dir / "plugin.yaml", encoding="utf-8-sig") as f:
-            meta = yaml.safe_load(f) or {}
+            meta = fast_safe_load(f) or {}
         return meta.get("description", "")
     except Exception:
         return ""
@@ -98,6 +99,12 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
         return None
+    if synthetic_namespace:  # user code: never imported in-process under plugins.isolation: host
+        from hermes_cli.plugin_isolation import in_process_import_refusal
+        refusal = in_process_import_refusal(f"plugin {plugin_dir.name!r} (loaded as {module_name})")
+        if refusal:
+            logger.warning("%s", refusal)
+            return None
     # A synthetic package shell has no __file__; only reuse modules loaded from disk.
     cached = sys.modules.get(module_name)
     if cached is not None and getattr(cached, "__file__", None):

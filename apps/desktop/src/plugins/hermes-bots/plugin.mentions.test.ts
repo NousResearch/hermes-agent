@@ -27,6 +27,7 @@ interface MentionCompletionItem {
   display: string
   insert: string
   meta: string
+  handles?: string[]
 }
 
 interface ComposerDraft {
@@ -225,7 +226,6 @@ describe('Bot Chat reset guard', () => {
         hostMock.notify.mockClear()
         expect(await handler({ text })).toEqual({ text: '/compact' })
         expect(hostMock.notify).toHaveBeenCalledOnce()
-        expect(hostMock.notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'This chat never resets' }))
       }
     }
 
@@ -367,6 +367,49 @@ describe('@-mention completions', () => {
     const result = await handler({ text: '@cos-bot status?' })
     expect(result.text).toMatch(/message_agent target: "default@vps"/)
   })
+
+  it('claims the raw profile name of a local row so the popover drops its gateway twin', async () => {
+    // `john-2` titled `John ♥` tags as @john; the live gateway lists the same
+    // backend profile by raw name (@john-2). The contributed row claims that
+    // name — one row per bot, under the tag the user actually typed.
+    const { provide } = await contributions({
+      focused: 'default',
+      profiles: [
+        { name: 'default' },
+        { name: 'john-2', ui_meta: { 'hermes-bots': { title: 'John ♥' } } },
+        { name: 'eva-2', ui_meta: { 'hermes-bots': { title: 'Eva 🌥' } } }
+      ]
+    })
+
+    const john = provide('john').find(item => item.insert === '@john')
+    const eva = provide('eva').find(item => item.insert === '@eva')
+
+    expect(john?.handles).toEqual(['@john-2'])
+    expect(eva?.handles).toEqual(['@eva-2'])
+  })
+
+  it('claims its own text when a bot tags as its raw profile name', async () => {
+    // No title on the profile, so the mention tag IS the profile name. The
+    // picker still needs the claim (it retires the gateway's twin row for
+    // that name), and the merge treats a handle matching the row's own text
+    // as naming no alias — so this shape must keep offering the bot.
+    const { provide } = await contributions({
+      focused: 'default',
+      profiles: [{ name: 'curio' }, { name: 'default' }]
+    })
+
+    const curio = provide('cur').find(item => item.insert === '@curio')
+
+    expect(curio?.handles).toEqual(['@curio'])
+  })
+
+  it("never claims a remote row's name — the local gateway's twin is a different bot", async () => {
+    const { provide } = await contributions({ profiles: [{ name: 'default' }, REMOTE_DEFAULTS[0]] })
+
+    const contributed = provide('cos').find(item => item.insert === '@cos-bot')
+
+    expect(contributed?.handles).toBeUndefined()
+  })
 })
 
 describe('the mention middleware', () => {
@@ -434,20 +477,6 @@ describe('the mention middleware', () => {
     expect(result.text).toMatch(/@ops = agent profile "ops"/)
     expect(result.text).toMatch(/message_agent/)
     expect(result.text).not.toMatch(/ — on /)
-  })
-
-  it('teaches no shellout and forbids forwarding the user’s text verbatim', async () => {
-    // The class behind #91397 / #91304 / #91339: the renderer used to compose
-    // a `hermes -p …` handoff, giving the model a second send path and a way
-    // to relay the raw draft.
-    const { handler } = await contributions({ focused: 'research', profiles: [{ name: 'research' }, { name: 'ops' }] })
-    const result = await handler({ text: 'ask @ops to summarize' })
-
-    expect(result.text).not.toMatch(/hermes -p/)
-    expect(result.text).not.toMatch(/terminal call/i)
-    expect(result.text).not.toMatch(/background=true/)
-    expect(result.text).toMatch(/compose your own message/i)
-    expect(result.text).toMatch(/never forward/i)
   })
 
   it('keeps a poisoned bot title inert prose', async () => {

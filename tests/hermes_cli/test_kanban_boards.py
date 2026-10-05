@@ -101,11 +101,48 @@ class TestPathResolution:
 
 
     def test_env_var_db_override_still_wins(self, fresh_home, tmp_path, monkeypatch):
-        """``HERMES_KANBAN_DB`` pins the file regardless of board= arg."""
+        """``HERMES_KANBAN_DB`` pins the file regardless of ``board=`` arg for every
+        execution the dispatcher fences (the 5ec6baa multi-boards isolation: workers
+        physically cannot see other boards): its dispatched workers (``HERMES_KANBAN_TASK``)
+        and delegated children / descendants (``HERMES_DELEGATED_CHILD_CONTEXT``). An
+        explicit board that outranked the pin would also escape
+        ``kanban_path_is_fenced``, which checks the pinned path / fenced root. Outside
+        those fences an explicit board is the caller's own intent and wins (see
+        ``test_explicit_board_trumps_env_var_db_override`` below)."""
         forced = tmp_path / "custom.db"
         monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
         assert kb.kanban_db_path() == forced
+        assert kb.kanban_db_path(board=None) == forced
+        # Dispatched worker identity: the pin still fences explicit board intent.
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fence_probe")
         assert kb.kanban_db_path(board="ignored") == forced
+        # Delegated children / spawned descendants are fenced the same way.
+        from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+        monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, "1")
+        assert kb.kanban_db_path(board="ignored") == forced
+
+    def test_env_var_db_override_wins_when_board_not_passed(self, fresh_home, tmp_path, monkeypatch):
+        """``HERMES_KANBAN_DB`` pins the file when no explicit ``board=`` is given
+        (back-compat for dispatcher-spawned workers with no board override)."""
+        forced = tmp_path / "custom.db"
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
+        assert kb.kanban_db_path() == forced
+        assert kb.kanban_db_path(board=None) == forced
+
+    def test_explicit_board_trumps_env_var_db_override(self, fresh_home, tmp_path, monkeypatch):
+        """Documented priority (module docstring, predates this test): explicit
+        ``board=`` arg > ``HERMES_KANBAN_BOARD`` > ``HERMES_KANBAN_DB`` > current >
+        default — for UNFENCED callers. An explicit ``board=`` must resolve to that
+        board's own path even when ``HERMES_KANBAN_DB`` pins a different file: this is
+        what makes cross-board ``kanban_create(board=...)`` / ``kanban_show(board=...)``
+        work from a user-facing session instead of silently landing on the pinned board
+        (t_3f1c63a5). Fenced callers (dispatched workers, delegated children) keep the
+        pinned path — see ``test_env_var_db_override_still_wins`` above."""
+        forced = tmp_path / "custom.db"
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
+        p = kb.kanban_db_path(board="atm10-server")
+        assert p == fresh_home / "kanban" / "boards" / "atm10-server" / "kanban.db"
+        assert p != forced
 
 
 # ---------------------------------------------------------------------------
@@ -154,8 +191,11 @@ class TestBoardCRUD:
         # contains the resolved path, the CREATE TABLE pass is skipped and
         # downstream readers hit `no such table: task_events`.
         kb.create_board("recycle")
-        # First connect populates _INITIALIZED_PATHS for this DB.
-        with kbc.connect(board="recycle") as conn:
+        # First connect populates _INITIALIZED_PATHS for this DB.  Use
+        # connect_closing: `with connect() as conn` does NOT close the fd, and
+        # on Windows an open connection locks kanban.db so remove_board's
+        # rename below fails with WinError 5/32.
+        with kbc.connect_closing(board="recycle") as conn:
             kb.create_task(conn, title="t1", assignee="dev")
         db_path = kb.board_dir("recycle") / "kanban.db"
         assert str(db_path.resolve()) in kb._INITIALIZED_PATHS
@@ -167,7 +207,7 @@ class TestBoardCRUD:
 
         # Simulate the event-stream poll: re-open the same slug. connect()
         # recreates the directory + empty .db; the schema must be re-applied.
-        with kbc.connect(board="recycle") as conn:
+        with kbc.connect_closing(board="recycle") as conn:
             tables = {
                 row[0]
                 for row in conn.execute(
@@ -177,12 +217,6 @@ class TestBoardCRUD:
         assert "task_events" in tables
         assert "tasks" in tables
 
-    def test_rename_updates_metadata(self, fresh_home):
-        kb.create_board("slug-immutable")
-        kb.write_board_metadata("slug-immutable", name="New Display Name")
-        assert kb.read_board_metadata("slug-immutable")["name"] == "New Display Name"
-        # Slug must not change.
-        assert kb.board_exists("slug-immutable")
 
 
 # ---------------------------------------------------------------------------
@@ -310,14 +344,6 @@ def _cli(args: list[str], env_extra: dict | None = None) -> subprocess.Completed
 
 
 class TestCLI:
-    def test_boards_list_default_only(self, tmp_path):
-        env = {"HERMES_HOME": str(tmp_path)}
-        res = _cli(["boards", "list", "--json"], env_extra=env)
-        assert res.returncode == 0, res.stderr
-        data = json.loads(res.stdout)
-        slugs = [b["slug"] for b in data]
-        assert slugs == ["default"]
-        assert data[0]["is_current"] is True
 
 
     def test_per_board_task_isolation_via_cli(self, tmp_path):

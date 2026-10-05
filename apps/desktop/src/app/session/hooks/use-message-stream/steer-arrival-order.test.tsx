@@ -16,14 +16,16 @@ import type { GatewayEvent } from '@hermes/shared'
 // Both hooks share one state map, exactly as the desktop wires them: steering
 // mutates the same ClientSessionState the gateway events reduce into.
 import { QueryClient } from '@tanstack/react-query'
-import { act, cleanup, render } from '@testing-library/react'
+import { act, cleanup, render, renderHook } from '@testing-library/react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { useRuntimeMessageRepository } from '@/app/chat/runtime-repository'
 import { usePromptActions } from '@/app/session/hooks/use-prompt-actions'
 import type { ClientSessionState } from '@/app/types'
-import { chatMessageText } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { IncrementalExternalStoreRuntimeCore } from '@/lib/incremental-external-store-runtime'
 
 import { STREAM_DELTA_FLUSH_MS } from './utils'
 
@@ -274,5 +276,79 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
 
     emit({ payload: { text: 'streaming along — done' }, session_id: SID, type: 'message.complete' })
     expect(chatMessageText(states.get(SID)!.messages.at(-1)!)).toContain('done')
+  })
+
+  it('a redirect inside a regenerated turn keeps the partial reply and the correction on screen', async () => {
+    await mountHarness()
+
+    // Regenerate armed the turn: the old reply is a hidden branch variant and
+    // the live stream joins its branch group.
+    act(() => {
+      states.set(SID, {
+        ...createClientSessionState(),
+        busy: true,
+        messages: [
+          { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'the question' }] },
+          {
+            id: 'a-old',
+            role: 'assistant',
+            parts: [{ type: 'text', text: 'old answer' }],
+            branchGroupId: 'g1',
+            hidden: true
+          }
+        ],
+        pendingBranchGroup: 'g1'
+      })
+    })
+
+    // What the chat surface renders: the store projected through the runtime
+    // repository and the incremental external-store runtime.
+    const repository = renderHook(
+      ({ messages }: { messages: ChatMessage[] }) => useRuntimeMessageRepository(messages),
+      {
+        initialProps: { messages: [] as ChatMessage[] }
+      }
+    )
+
+    const runtime = new IncrementalExternalStoreRuntimeCore({ messages: [], onNew: async () => undefined })
+
+    const onScreen = () => {
+      const state = states.get(SID)!
+
+      repository.rerender({ messages: state.messages })
+      runtime.setAdapter({
+        isRunning: state.busy,
+        messageRepository: repository.result.current,
+        onNew: async () => undefined
+      })
+
+      return runtime.threads
+        .getMainThreadRuntimeCore()
+        .messages.map(
+          message => `${message.role}:${message.content.map(part => ('text' in part ? part.text : '')).join('')}`
+        )
+        .filter(row => row !== 'assistant:')
+    }
+
+    emit({ payload: {}, session_id: SID, type: 'message.start' })
+    emit({ payload: { text: 'partial regenerated reply' }, session_id: SID, type: 'message.delta' })
+    await flushDeltas()
+    expect(onScreen()).toEqual(['user:the question', 'assistant:partial regenerated reply'])
+
+    await steer('actually, shorter')
+    emit({ payload: { text: 'short answer' }, session_id: SID, type: 'message.delta' })
+    await flushDeltas()
+
+    const expected = [
+      'user:the question',
+      'assistant:partial regenerated reply',
+      'user:actually, shorter',
+      'assistant:short answer'
+    ]
+
+    expect(onScreen()).toEqual(expected)
+
+    emit({ payload: { text: 'short answer' }, session_id: SID, type: 'message.complete' })
+    expect(onScreen()).toEqual(expected)
   })
 })

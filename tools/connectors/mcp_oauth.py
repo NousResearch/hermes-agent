@@ -162,17 +162,21 @@ def run_worker(
             build_profile_secret_scope, reset_secret_scope, set_secret_scope)
         from tools.mcp_dashboard_oauth import dashboard_oauth_flow
         from tools.mcp_oauth import force_interactive_oauth
-        home_token = set_hermes_home_override(hermes_home)
-        secret_token = set_secret_scope({**build_profile_secret_scope(Path(hermes_home)), **(env or {})})
+        home_token = secret_token = None
         try:
+            home_token = set_hermes_home_override(hermes_home)
+            secret_token = set_secret_scope(
+                {**build_profile_secret_scope(Path(hermes_home)), **(env or {})}, profile_home=hermes_home)
             if not (reuse_saved and flow is not None
                     and _reuse_saved_authorization(server_name, cfg, flow, on_commit)):
                 with force_interactive_oauth(), dashboard_oauth_flow(flow):
                     probe_with_rollback(
                         server_name, cfg, hermes_home, flow, reconnect_live, on_commit=on_commit)
         finally:
-            reset_secret_scope(secret_token)
-            reset_hermes_home_override(home_token)
+            if secret_token is not None:
+                reset_secret_scope(secret_token)
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
     except Exception as exc:
         from tools.mcp_dashboard_oauth import exception_message
         msg = exception_message(exc)

@@ -326,11 +326,23 @@ def request_elicitation_consent(message: str, description: str, *,
             return "cancel"  # nobody answered (timeout / prompt withdrawn) — not a user refusal
         return _consent(decision.get("choice"), "decline")
 
-    # allow_permanent=False: elicitation is a per-call confirmation — no pattern to remember.
+    # Same observer payload as the gateway branch (#131876); post fires in a finally so the
+    # wait settles for observers on the early fail-closed return too.
+    hook_kwargs = dict(command=message, description=description, pattern_key="mcp_elicitation",
+                       pattern_keys=["mcp_elicitation"], session_key=session_key, surface=surface)
+    _ctx._fire_approval_hook("pre_approval_request", **hook_kwargs)
+    hook_choice = "cancelled"
     try:
+        from tools.terminal_tool import _get_approval_callback
+        # allow_permanent=False: elicitation is a per-call confirmation — no pattern to remember.
+        # Pass the agent thread's panel callback: without it prompt_toolkit fails the prompt closed unseen.
         choice = prompt_dangerous_approval(message, description, timeout_seconds=timeout_seconds,
-                                           allow_permanent=False, title=title)
+                                           allow_permanent=False, title=title,
+                                           approval_callback=_get_approval_callback())
+        hook_choice = choice
     except Exception as exc:
         logger.error("Elicitation CLI prompt failed: %s", exc, exc_info=True)
         return "decline"
+    finally:
+        _ctx._fire_approval_hook("post_approval_response", **hook_kwargs, choice=hook_choice)
     return _consent(choice, "cancel")  # timeout mirrors the gateway's unresolved outcome

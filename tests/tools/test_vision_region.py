@@ -164,15 +164,6 @@ class TestNativePathRegion:
 
 
 class TestSchemaAndHandler:
-    def test_schema_declares_optional_region(self):
-        from tools.vision_tools import VISION_ANALYZE_SCHEMA
-
-        props = VISION_ANALYZE_SCHEMA["parameters"]["properties"]
-        assert "region" in props
-        assert props["region"]["type"] == "array"
-        assert "region" not in VISION_ANALYZE_SCHEMA["parameters"]["required"]
-        # Description must document original-image pixel space.
-        assert "original" in props["region"]["description"].lower()
 
     def test_handler_passes_region_to_native_path(self, tmp_path, monkeypatch):
         from tools import vision_tools

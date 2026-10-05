@@ -381,10 +381,28 @@ def _fail_closed_block(spec: ShellHookSpec, reason: str) -> Dict[str, Any]:
     return {"action": "block", "message": f"hook {spec.command} failed closed: {reason}"}
 
 
-def _evaluate_result(spec: ShellHookSpec, r: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """``_spawn`` result → hook contribution (live callback and ``run_once``). Spawn error/timeout fail
-    open unless fail_closed; exit 2 on a blocking event blocks (message: stdout JSON, then stderr, then
-    default); other non-zero exits warn then parse stdout; unparseable stdout on a fail_closed hook blocks."""
+def _evaluate_result(
+    spec: ShellHookSpec, r: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Turn a :func:`_spawn` diagnostic dict into the hook's contribution.
+
+    Single place that encodes the failure semantics:
+
+    * spawn error / timeout — fail open (log + ``None``) unless the spec
+      is ``fail_closed`` on a blocking-capable event, in which case a
+      canonical block shape is returned;
+    * exit code 2 on a blocking-capable event — block, with the message
+      taken from stdout block JSON, then stderr, then a default
+      (Claude-Code / Cursor compatible);
+    * other non-zero exits — warn, then parse stdout normally; a
+      ``fail_closed`` hook blocks if no directive was produced;
+    * non-JSON / unparseable stdout on a ``fail_closed`` blocking hook —
+      block instead of silently contributing nothing.
+
+    Shared by the live callback path (:func:`_make_callback`) and the CLI
+    test helper (:func:`run_once`) so ``hermes hooks test`` reflects
+    production behaviour exactly.
+    """
     blocking_event = spec.event in _BLOCKING_EVENTS
     fail_closed = spec.fail_closed and blocking_event
     if r["error"]:
@@ -409,8 +427,15 @@ def _evaluate_result(spec: ShellHookSpec, r: Dict[str, Any]) -> Optional[Dict[st
                        r["returncode"], spec.event, spec.command, stderr[:_STDERR_MESSAGE_LIMIT])
     stdout = (r["stdout"] or "").strip()
     parsed = _parse_response(spec.event, stdout)
+    if parsed is None and fail_closed and r["returncode"] != 0:
+        return _fail_closed_block(
+            spec, f"hook exited {r['returncode']} with no directive",
+        )
+
     if parsed is None and fail_closed and stdout and not _is_json_object(stdout):
-        # A fail-closed gate must not silently allow on garbage stdout (e.g. a stack trace).
+        # The hook produced output we could not turn into a directive.
+        # A fail-closed gate must not silently allow the action on
+        # garbage output (e.g. a stack trace on stdout).
         return _fail_closed_block(spec, "unparseable stdout (expected a JSON object)")
     return parsed
 
@@ -497,7 +522,7 @@ def allowlist_path() -> Path:
 def load_allowlist() -> Dict[str, Any]:
     """Return the parsed allowlist, or an empty skeleton if absent."""
     try:
-        raw = json.loads(allowlist_path().read_text(encoding="utf-8"))
+        raw = json.loads(allowlist_path().read_text(encoding="utf-8-sig"))
     except (json.JSONDecodeError, OSError):
         raw = None
     if not isinstance(raw, dict):
@@ -531,7 +556,7 @@ def _locked_update_approvals() -> Iterator[Dict[str, Any]]:
         if fcntl is None:  # pragma: no cover — non-POSIX fallback
             stack.enter_context(_allowlist_write_lock)
         else:
-            lock_fh = stack.enter_context(open(p.with_suffix(p.suffix + ".lock"), "a+", encoding="utf-8"))
+            lock_fh = stack.enter_context(open(p.with_suffix(p.suffix + ".lock"), "a+", encoding="utf-8"))  # windows-footgun: ok (write/append mode, not a read)
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
             stack.callback(_flock_unlock, lock_fh)
         data = load_allowlist()
@@ -635,11 +660,3 @@ def run_once(spec: ShellHookSpec, kwargs: Dict[str, Any]) -> Dict[str, Any]:
     result = _spawn(spec, _serialize_payload(spec.event, kwargs))
     result["parsed"] = _evaluate_result(spec, result)
     return result
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import shlex  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

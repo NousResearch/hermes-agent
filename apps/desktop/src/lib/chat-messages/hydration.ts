@@ -1,10 +1,21 @@
 import { skillInvocationText } from '@hermes/shared'
 
+import { splitLeadingAttachmentRefs } from '@/components/assistant-ui/reference-kinds'
 import { extractImageRefs } from '@/lib/embedded-images'
+import { parseErrorSurface } from '@/lib/error-surface'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
+import { isTodoToolName } from '@/lib/todos'
 import type { MessageReaction, SessionMessage } from '@/types/hermes'
 
-import { assistantTextPart, chatMessageText, dedupeRepeatedTextInParts, reasoningPart, textPart } from './parts'
+import {
+  assistantTextPart,
+  chatMessageText,
+  dedupeRepeatedTextInParts,
+  reasoningPart,
+  reasoningTextFromDetails,
+  renderMediaTags,
+  textPart
+} from './parts'
 import {
   applyStoredToolResult,
   applyStoredToolResultToParts,
@@ -16,6 +27,10 @@ import {
 import type { ChatMessage, ChatMessagePart } from './types'
 
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
+// A background-process heartbeat wake persisted by a backend older than the
+// one that types those rows `display_kind=hidden`. It is model scaffolding,
+// not something the user wrote, so it never paints as a bubble.
+const LEGACY_HEARTBEAT_ROW_RE = /^\[Background process \S+ heartbeat #\d+ /
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
 
@@ -26,28 +41,31 @@ const DISCORD_TRIGGERING_NOTE_RE =
   /(^|\n)\[Triggering message id: `[^`\n]*` — use as `message_id` for reply\/react\/pin via the discord tools\.\]\n*/
 
 /**
- * Reply text from a Responses-API `codex_message_items` sidecar (#68321), for rows
- * whose `content` persisted empty. `commentary` / `analysis` items are mid-turn
- * narration the backend routes to the reasoning channel
- * (codex_responses_adapter `_OutputScan._message`); the remaining phases are the reply.
+ * Backend history projection authorizes/sanitizes public commentary before it
+ * reaches Desktop. Raw Responses sidecars are used only for final-answer fallback;
+ * phase=analysis and raw phase=commentary are never promoted to assistant text.
  */
-function codexMessageItemText(message: SessionMessage): string {
+function codexMessageItemText(message: SessionMessage): { commentary: string[]; reply: string } {
   let items = message.codex_message_items
+
+  const commentary = Array.isArray(message.display_commentary)
+    ? message.display_commentary.filter((part): part is string => typeof part === 'string' && Boolean(part.trim()))
+    : []
+
+  const replies: string[] = []
 
   // REST carries SQLite JSON text; RPC history carries the decoded list.
   if (typeof items === 'string') {
     try {
       items = JSON.parse(items)
     } catch {
-      return ''
+      return { commentary, reply: '' }
     }
   }
 
   if (!Array.isArray(items)) {
-    return ''
+    return { commentary, reply: '' }
   }
-
-  const texts: string[] = []
 
   for (const item of items) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) {
@@ -60,37 +78,34 @@ function codexMessageItemText(message: SessionMessage): string {
       continue
     }
 
-    if (record.phase === 'commentary' || record.phase === 'analysis') {
+    const phase = typeof record.phase === 'string' ? record.phase.trim().toLowerCase() : ''
+
+    if (phase === 'analysis' || phase === 'commentary' || !Array.isArray(record.content)) {
       continue
     }
 
-    const content = record.content
+    const chunks: string[] = []
 
-    if (!Array.isArray(content)) {
-      continue
-    }
-
-    for (const part of content) {
+    for (const part of record.content) {
       if (!part || typeof part !== 'object' || Array.isArray(part)) {
         continue
       }
 
       const partRecord = part as Record<string, unknown>
-      const partType = partRecord.type
 
-      if (partType !== 'output_text' && partType !== 'text') {
-        continue
+      if ((partRecord.type === 'output_text' || partRecord.type === 'text') && typeof partRecord.text === 'string') {
+        chunks.push(partRecord.text)
       }
+    }
 
-      const text = partRecord.text
+    const text = chunks.join('')
 
-      if (typeof text === 'string' && text.length > 0) {
-        texts.push(text)
-      }
+    if (text) {
+      replies.push(text)
     }
   }
 
-  return texts.join('')
+  return { commentary, reply: replies.join('') }
 }
 
 function displayContentForMessage(role: SessionMessage['role'], content: unknown): string {
@@ -129,8 +144,35 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
   return [missing.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
 }
 
-function transcriptContent(displayKind: SessionMessage['display_kind'], content: string): string | null {
-  return displayKind === 'hidden' ? null : content
+function transcriptContent(
+  displayKind: SessionMessage['display_kind'],
+  role: SessionMessage['role'],
+  content: string
+): string | null {
+  if (displayKind === 'hidden') {
+    return null
+  }
+
+  return role === 'user' && LEGACY_HEARTBEAT_ROW_RE.test(content.trim()) ? null : content
+}
+
+/**
+ * Backend-authored transcript notices. The gateway persists these itself and no
+ * view "sent" them, so they render as system rows but are not authored
+ * transcript content (see `ChatMessage.systemNotice`).
+ */
+const NOTICE_DISPLAY_KINDS = [
+  'model_switch',
+  'async_delegation_complete',
+  'process_complete',
+  'auto_continue',
+  'personality_switch',
+  // Hermes closing a failed turn, not the model speaking.
+  'failed_turn'
+] as const
+
+function isMachineNotice(displayKind: SessionMessage['display_kind']): boolean {
+  return displayKind !== undefined && (NOTICE_DISPLAY_KINDS as readonly string[]).includes(displayKind)
 }
 
 // A remote backend older than this app serves display_metadata as raw JSON text,
@@ -149,6 +191,23 @@ function parseDisplayMetadata(metadata: SessionMessage['display_metadata']): nul
   return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
 }
 
+// `agent/conversation_loop.py::_failed_turn_display_metadata`: the failed turn's error card,
+// kept on its boundary row so a reopened session shows it after the live frame is gone.
+function failedTurnError(
+  metadata: SessionMessage['display_metadata']
+): null | Pick<ChatMessage, 'error' | 'errorSurface'> {
+  const parsed = parseDisplayMetadata(metadata)
+  const errorSurface = parseErrorSurface(parsed?.error_surface)
+
+  if (!errorSurface) {
+    return null
+  }
+
+  const error = typeof parsed?.error === 'string' && parsed.error.trim() ? parsed.error : errorSurface.code
+
+  return { error, errorSurface }
+}
+
 function timelineTaskCount(metadata: SessionMessage['display_metadata']): number | undefined {
   const count = parseDisplayMetadata(metadata)?.task_count
 
@@ -159,6 +218,10 @@ function timelineDisplayText(metadata: SessionMessage['display_metadata']): stri
   const text = parseDisplayMetadata(metadata)?.display_text
 
   return typeof text === 'string' && text.trim() ? text : undefined
+}
+
+function messageInterrupted(metadata: SessionMessage['display_metadata']): boolean {
+  return parseDisplayMetadata(metadata)?.interrupted === true
 }
 
 function messageReactions(metadata: SessionMessage['display_metadata']): MessageReaction[] {
@@ -248,6 +311,37 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   // (see ChatMessage.serverRowSpan).
   let pendingToolRows = 0
   let activeAssistantIndex: null | number = null
+  // Todo history is stateful. Only a result from the nearest prior assistant
+  // call in this turn may update it; a display-only orphan can still render.
+  let nearestAssistant: null | SessionMessage = null
+
+  const pairedTodoResult = (toolMessage: SessionMessage): boolean => {
+    const id = toolMessage.tool_call_id
+
+    if (!id || !Array.isArray(nearestAssistant?.tool_calls)) {
+      return false
+    }
+
+    return nearestAssistant.tool_calls.some((call, index) => {
+      const part = toolPartFromStoredCall(call, index)
+
+      if (part.type !== 'tool-call' || part.toolCallId !== id) {
+        return false
+      }
+
+      if (isTodoToolName(part.toolName)) {
+        return true
+      }
+
+      const args = part.args as { calls?: unknown }
+
+      return (
+        part.toolName === 'tool_call' &&
+        Array.isArray(args?.calls) &&
+        args.calls.some(inner => inner && typeof inner === 'object' && isTodoToolName(inner.name))
+      )
+    })
+  }
 
   const clearPendingTools = () => {
     pendingToolParts = []
@@ -310,7 +404,21 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   }
 
   messages.forEach((message, index) => {
+    if (message.role === 'assistant') {
+      nearestAssistant = message
+    } else if (message.role === 'user' || message.role === 'system') {
+      nearestAssistant = null
+    }
+
     if (message.role === 'tool') {
+      if (isTodoToolName(message.tool_name) && !pairedTodoResult(message)) {
+        pendingToolParts = [...pendingToolParts, storedToolMessagePart(message, index)]
+        pendingToolTimestamp ??= message.timestamp
+        pendingToolRows += 1
+
+        return
+      }
+
       const updatedPendingToolParts = applyStoredToolResultToParts(pendingToolParts, message)
 
       if (updatedPendingToolParts) {
@@ -338,17 +446,11 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     const rawDisplayContent = transcriptContent(
       message.display_kind,
+      message.role,
       timelineDisplayContent(message, displayContentForMessage(message.role, content))
     )
 
-    const displayRole =
-      message.display_kind === 'model_switch' ||
-      message.display_kind === 'async_delegation_complete' ||
-      message.display_kind === 'process_complete' ||
-      message.display_kind === 'auto_continue' ||
-      message.display_kind === 'personality_switch'
-        ? 'system'
-        : message.role
+    const displayRole = isMachineNotice(message.display_kind) ? 'system' : message.role
 
     // Persisted user turns carry `@image:<path>` directive lines inline in
     // the text (see tui_gateway/server.py's persist-time rewrite). The
@@ -356,41 +458,51 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     // thumbnail pushes any caption text below the clamp's visible area — so
     // pull image refs out into `attachmentRefs` (same shape the local
     // optimistic composer already uses) and render them via the dedicated
-    // attachments row below the bubble instead.
+    // attachments row below the bubble instead. The leading `@file:` block
+    // (attached files, large pastes) moves there too, for the same parity.
     const imageRefExtraction = displayRole === 'user' && rawDisplayContent ? extractImageRefs(rawDisplayContent) : null
-    const displayContent = imageRefExtraction ? imageRefExtraction.cleanedText : rawDisplayContent
-    const extractedAttachmentRefs = imageRefExtraction?.refs.length ? imageRefExtraction.refs : undefined
+    const fileRefExtraction = imageRefExtraction ? splitLeadingAttachmentRefs(imageRefExtraction.cleanedText) : null
+    const displayContent = fileRefExtraction ? fileRefExtraction.text : rawDisplayContent
+    const liftedRefs = [...(fileRefExtraction?.refs ?? []), ...(imageRefExtraction?.refs ?? [])]
+    const extractedAttachmentRefs = liftedRefs.length ? liftedRefs : undefined
 
     const parts: ChatMessagePart[] = []
     const rowId = message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)
     const sourceHasTools = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
     const durableComplete = sourceHasTools ? false : rowId !== undefined ? true : undefined
 
-    const reasoning =
-      message.reasoning ||
-      message.reasoning_content ||
-      (typeof message.reasoning_details === 'string' ? message.reasoning_details : '')
+    const codexText =
+      displayRole === 'assistant' && message.display_kind !== 'hidden' ? codexMessageItemText(message) : null
+
+    const commentary = codexText?.commentary ?? []
+
+    const rawReasoning =
+      message.reasoning || message.reasoning_content || reasoningTextFromDetails(message.reasoning_details)
+
+    const reasoning = message.display_reasoning !== undefined ? message.display_reasoning : rawReasoning
 
     if (reasoning && message.role === 'assistant') {
       parts.push(reasoningPart(reasoning, message.timestamp))
     }
 
-    if (displayContent) {
-      parts.push(
-        displayRole === 'assistant'
-          ? assistantTextPart(displayContent, message.timestamp)
-          : textPart(displayContent, message.timestamp)
-      )
+    const reply = message.display_content !== undefined ? displayContent : displayContent || codexText?.reply
+    // Some providers also persist the joined commentary as canonical content.
+    // Keep that authoritative copy once, without treating unrelated final text
+    // as a reason to discard the earlier public messages.
+    const normalized = (value: string) => renderMediaTags(value).replace(/\s+/g, ' ').trim()
+
+    const commentaryIsReply = Boolean(
+      reply && commentary.length && normalized(commentary.join('\n\n')) === normalized(reply)
+    )
+
+    if (!commentaryIsReply) {
+      parts.push(...commentary.map(text => assistantTextPart(text, message.timestamp)))
     }
 
-    // Reply text can live only in the sidecar alongside reasoning or tool parts.
-    // Those parts are not a substitute for the answer; canonical content still wins.
-    if (message.role === 'assistant' && message.display_kind !== 'hidden' && !displayContent) {
-      const codexText = codexMessageItemText(message)
-
-      if (codexText) {
-        parts.push(assistantTextPart(codexText, message.timestamp))
-      }
+    if (reply) {
+      parts.push(
+        displayRole === 'assistant' ? assistantTextPart(reply, message.timestamp) : textPart(reply, message.timestamp)
+      )
     }
 
     if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
@@ -465,6 +577,21 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       flushPendingTools(index)
     }
 
+    const failure = message.display_kind === 'failed_turn' ? failedTurnError(message.display_metadata) : null
+
+    if (failure) {
+      // Stands for no backend row of its own; the boundary row below counts itself.
+      result.push({
+        id: `${message.timestamp || Date.now()}-${index}-failed-turn-error`,
+        role: 'assistant',
+        parts: [],
+        pending: false,
+        serverRowSpan: 0,
+        ...failure,
+        ...(message.timestamp ? { timestamp: message.timestamp } : {})
+      })
+    }
+
     const reactions = messageReactions(message.display_metadata)
     // Gateway resume names the durable row id `row_id`; the REST transcript
     // prefetch ships the same messages.id as a numeric `id`. Either one lets
@@ -478,10 +605,12 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
         : {}),
       ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
+      ...(isMachineNotice(message.display_kind) ? { systemNotice: true } : {}),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),
       ...(reactions.length ? { reactions } : {}),
+      ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),
       ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {})
     })
 
@@ -497,7 +626,8 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
   return withUniqueToolCallIds(
     withoutGeneratedImageEchoes.filter(
-      m => chatMessageText(m).trim() || m.parts.some(part => part.type !== 'text') || m.attachmentRefs?.length
+      m =>
+        chatMessageText(m).trim() || m.parts.some(part => part.type !== 'text') || m.attachmentRefs?.length || m.error
     )
   )
 }

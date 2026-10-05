@@ -16,6 +16,7 @@
 //! writes to one place and the installer reads from another, breaking
 //! the bootstrap-complete check.
 
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::Command;
@@ -193,6 +194,110 @@ pub fn init_logging() -> Option<WorkerGuard> {
 }
 
 // ---------------------------------------------------------------------------
+// Path validation
+// ---------------------------------------------------------------------------
+
+/// Reject path-traversal payloads in a user/env-controlled path string.
+///
+/// Checked twice: once as the native OS parses it, once with backslashes
+/// normalized to `/` so a Windows-style `..\` payload cannot slip through a
+/// Unix (or otherwise non-NTFS) parser. `.` components are harmless (they
+/// normalize away); any `..` component is a traversal attempt. Windows NTFS
+/// alternate data streams (`name:ads`) and NUL bytes are rejected outright —
+/// neither can be a legitimate Hermes home.
+pub(crate) fn contains_traversal(path: &str) -> bool {
+    contains_traversal_parsed(path) || contains_traversal_parsed(&path.replace('\\', "/"))
+}
+
+fn contains_traversal_parsed(path: &str) -> bool {
+    // A Windows drive prefix ("C:") is only a prefix when it is a single
+    // ASCII letter followed by ':' — anything longer ("foo:stream") is an
+    // NTFS ADS name and stays inside the component scan below.
+    let path = if path.len() >= 2
+        && path.as_bytes()[0].is_ascii_alphabetic()
+        && path.as_bytes()[1] == b':'
+    {
+        &path[2..]
+    } else {
+        path
+    };
+
+    for raw in Path::new(path).components() {
+        match raw {
+            // "." only survives parsing when it is the whole input.
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => return true,
+            std::path::Component::Normal(part) => {
+                // Reject Windows ADS separators anywhere in a normal
+                // component ("foo:stream"), plus NUL (truncation attacks).
+                let part = part.to_string_lossy();
+                if part.contains(':') || part.contains('\0') {
+                    return true;
+                }
+            }
+            // Root prefix (e.g. `/` on unix, `C:\`-prefix or UNC server on
+            // windows) is fine in itself; the `..`/ADS checks above cover the
+            // dangerous parts.
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {}
+        }
+    }
+    false
+}
+
+/// Resolve a path to its canonical absolute form, creating the directory if
+/// needed, and reject symlink escapes.
+///
+/// Symlinks are resolved by `canonicalize()`, so a link pointing outside
+/// `base` is caught by the prefix check below (a lexical join alone would
+/// miss it).
+fn canonicalize_within(dir: &Path, base: &Path) -> Result<PathBuf> {
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("could not create directory {}", dir.display()))?;
+    let canonical_dir = dir
+        .canonicalize()
+        .with_context(|| format!("could not canonicalize {}", dir.display()))?;
+    let canonical_base = base
+        .canonicalize()
+        .with_context(|| format!("could not canonicalize {}", base.display()))?;
+    if !canonical_dir.starts_with(&canonical_base) {
+        anyhow::bail!(
+            "path {} resolves outside the allowed base directory {}",
+            canonical_dir.display(),
+            canonical_base.display()
+        );
+    }
+    Ok(canonical_dir)
+}
+
+/// Validate a user/env-supplied Hermes home directory and return the
+/// canonical `install_root` (`<hermes_home>/hermes-agent`) for the bootstrap.
+///
+/// Defense in depth against path traversal:
+///   1. Lexical check: reject `..` components, NTFS ADS separators, NULs.
+///   2. Canonical check: `create_dir_all` + `canonicalize` both the install
+///      root and the base, then require the root to stay within the base.
+///      This defeats symlink redirection that the lexical check cannot see.
+///
+/// The base is `crate::paths::hermes_home()` when no explicit override is
+/// supplied (the env-var default), or the override string itself — an
+/// operator may legitimately install to a custom root, so the requirement is
+/// only that the final path stays *within* the requested base after
+/// canonicalization, never that it equals the OS default.
+pub(crate) fn validate_install_root(hermes_home_override: &str) -> Result<PathBuf> {
+    let trimmed = hermes_home_override.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("hermes home override is empty");
+    }
+    if contains_traversal(trimmed) {
+        anyhow::bail!("hermes home override contains a path traversal sequence: {trimmed:?}");
+    }
+
+    let base = PathBuf::from(trimmed);
+    let install_root = base.join("hermes-agent");
+    canonicalize_within(&install_root, &base)
+}
+
+// ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
 
@@ -213,4 +318,112 @@ pub fn open_log_dir(app: tauri::AppHandle) -> Result<(), String> {
     app.opener()
         .open_path(path.to_string_lossy(), None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Tests ()
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod path_validation_tests {
+    use super::*;
+
+    #[test]
+    fn contains_traversal_rejects_parent_components() {
+        assert!(contains_traversal(".."));
+        assert!(contains_traversal("../etc/passwd"));
+        assert!(contains_traversal("a/../b"));
+        assert!(contains_traversal("..\\windows\\system32"));
+        assert!(contains_traversal("C:\\..\\..\\Windows"));
+        assert!(contains_traversal("foo:stream"));
+        assert!(contains_traversal("C:\\foo:ads"));
+        assert!(contains_traversal("foo\0bar"));
+    }
+
+    #[test]
+    fn contains_traversal_allows_ordinary_paths() {
+        assert!(!contains_traversal("/home/user/.hermes"));
+        assert!(!contains_traversal(".hermes"));
+        assert!(!contains_traversal("./hermes"));
+        assert!(!contains_traversal("C:\\Users\\dev\\.hermes"));
+        assert!(!contains_traversal("~/.hermes"));
+    }
+
+    #[test]
+    fn validate_install_root_accepts_normal_override() {
+        let dir =
+            std::env::temp_dir().join(format!("hermes-validate-ok-test-{}", std::process::id()));
+        let result = validate_install_root(dir.to_string_lossy().as_ref())
+            .expect("plain override must validate");
+        let canonical_dir = dir.canonicalize().unwrap();
+        assert_eq!(result, canonical_dir.join("hermes-agent"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn validate_install_root_accepts_dot_components() {
+        // `.` components normalize away and must not be rejected (the OS
+        // default path form itself can contain none, but a hand-typed
+        // override might).
+        let dir =
+            std::env::temp_dir().join(format!("hermes-validate-dot-test-{}", std::process::id()));
+        let with_dots = format!("{}/./sub", dir.to_string_lossy());
+        let result = validate_install_root(&with_dots).expect("dot components must validate");
+        let expected = dir.join("sub").canonicalize().unwrap();
+        assert_eq!(result, expected.join("hermes-agent"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn validate_install_root_rejects_traversal() {
+        // Lexical rejection: must fire before any directory is created.
+        for evil in [
+            "/tmp/hermes-evil-base/../../etc",
+            "..",
+            "C:\\..\\..\\Windows",
+            "foo:stream",
+        ] {
+            let err = validate_install_root(evil)
+                .expect_err(&format!("traversal payload {evil:?} must be rejected"));
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("path traversal sequence"),
+                "unexpected error for {evil:?}: {msg}"
+            );
+        }
+        // Nothing outside tmp may have been created by the rejected inputs.
+    }
+
+    #[test]
+    fn validate_install_root_rejects_symlink_escape() {
+        // Canonical containment: a symlinked base whose target lives outside
+        // must still pass only if the install root stays within the resolved
+        // base; here the *install root* escapes via symlink.
+        let base = std::env::temp_dir().join(format!("hermes-validate-sym-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let link = base.join("hermes-agent");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/etc", &link).unwrap();
+        #[cfg(not(unix))]
+        {
+            let _ = &link;
+            std::fs::remove_dir_all(&base).unwrap();
+            return;
+        }
+
+        let err = validate_install_root(base.to_string_lossy().as_ref())
+            .expect_err("symlink escaping the base must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("outside the allowed base directory"),
+            "unexpected error: {msg}"
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn validate_install_root_rejects_empty_override() {
+        let err = validate_install_root("   ").expect_err("empty override must be rejected");
+        assert!(format!("{err:#}").contains("empty"));
+    }
 }

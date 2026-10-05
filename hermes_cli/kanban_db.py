@@ -3409,6 +3409,12 @@ def complete_task(
     ``resolved_route_provenance``).
     """
     now = int(time.time())
+    # P3b round 2: clear any stale per-connection gate-contract stash BEFORE the
+    # gate runs, so a leaked entry keyed by ``id(conn)`` (a prior completion on a
+    # since-garbage-collected connection reusing this address) can never feed
+    # ``_peek_gate_contract`` a contract this call did not enforce. The gate
+    # re-stashes the fresh value below.
+    _GATE_CONTRACT_STASH.pop(id(conn), None)
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
@@ -3473,14 +3479,28 @@ def complete_task(
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
         return False
-    # P3b external-artifact durability (audit 2026-10-04): a contract artifact
-    # OUTSIDE managed scratch is not ours to copy in-txn, so capture + publish a
-    # managed copy NOW — before the write lock and before the in-txn recheck —
-    # so the closing txn binds the EXACT bytes the contract validated. This is
-    # what closes the delete-after-recheck race: the durable copy, not the
-    # external pathname, is the proof; the original may vanish at any moment.
-    captured_external = _kea.capture_external_artifacts(conn, task_id)
+    # P3b external-artifact durability (audit 2026-10-04, round 2 2026-10-05): a
+    # contract artifact OUTSIDE managed scratch is not ours to copy in-txn, so
+    # capture + publish a managed copy NOW — before the write lock and before
+    # the in-txn recheck — so the closing txn binds the EXACT bytes the contract
+    # validated. Capture rides the SAME contract version the gate enforced
+    # (``_peek_gate_contract``), so a concurrent A→B→A swap can never make it
+    # preserve a version the transaction will not validate. This is what closes
+    # the delete-after-recheck race: the durable copy, not the external
+    # pathname, is the proof; the original may vanish at any moment.
+    _gate_snapshot = _peek_gate_contract(conn)
+    _capture_snapshot = (
+        _kea._NO_SNAPSHOT if _gate_snapshot is _CONTRACT_STASH_MISSING
+        else _gate_snapshot
+    )
+    captured_external = _kea.capture_external_artifacts(
+        conn, task_id, contract_snapshot=_capture_snapshot,
+    )
     published_external = _kea.publish_external_artifacts(captured_external, task_id)
+    # Set True inside the txn body (below) once the fence WILL commit: the
+    # copies are then bound and must never be discarded — a post-commit failure
+    # (e.g. ``_check_file_length_invariant`` after COMMIT) rolls nothing back.
+    committed = False
     try:
         with write_txn(conn):
             # Hard invariant even for human review approval: a parent may have
@@ -3537,6 +3557,26 @@ def complete_task(
             )
             if _txn_served is not None and isinstance(metadata, dict):
                 metadata["served_model"] = _txn_served
+            # P3b round 2 HIGH #2: the captured/published set must COVER every
+            # external requirement of the contract IN FORCE (the same snapshot
+            # capture rode). A requirement the set does not cover — e.g. an
+            # A→B→A swap left the txn validating B while capture preserved A —
+            # rolls the txn back with the existing divergence mechanism instead
+            # of closing onto an incomplete proof set.
+            uncovered = _kea.uncaptured_external_requirements(
+                conn, task_id, published_external, _capture_snapshot,
+            )
+            if uncovered:
+                raise _ContractSwappedInTxn(
+                    {
+                        "missing_artifacts": uncovered,
+                        "gate_contract": str(_gate_snapshot or "")[:200],
+                        "in_txn_contract": str(_gate_snapshot or "")[:200],
+                        "reason": "external_artifact_not_preserved",
+                    },
+                    f"completion blocked: {task_id} external contract artifacts "
+                    f"were not preserved in this transaction: {', '.join(uncovered)}",
+                )
             # P3b: bind the captured external copies INSIDE this txn — attachment
             # row + auditable event + run-metadata binding — so the fence and the
             # proof commit together. The bytes were captured before the lock;
@@ -3579,12 +3619,20 @@ def complete_task(
                     {"served_model": (metadata or {}).get("served_model")},
                     run_id=run_id,
                 )
+        # ``committed`` is set INSIDE the ``with`` body: ``write_txn`` runs
+        # COMMIT in its ``__exit__``, so reaching the end of the body means the
+        # fence WILL commit. A post-commit failure from the context manager
+        # itself (e.g. ``_check_file_length_invariant``) then can neither
+        # suppress the commit nor let the handlers below delete bound copies.
+        committed = True
     except _ContractSwappedInTxn as exc:
         # The completion txn rolled back (card keeps its prior status). The
         # divergence marker must SURVIVE the rollback: separate txn, like the
         # other auditable refusal paths (+ then raise ContractSpecError). The
-        # published copies never got bound — discard them (recoverable orphan).
-        _kea.discard_published_artifacts(published_external)
+        # published copies never got bound — discard only copies WITHOUT a
+        # committed binding (recoverable orphan).
+        if not committed:
+            _kea.discard_published_artifacts(published_external, conn)
         with write_txn(conn):
             _append_event(
                 conn, task_id, "completion_blocked_contract_changed", exc.payload,
@@ -3595,18 +3643,29 @@ def complete_task(
         # concurrent origin write / run swap). The rollback already restored
         # the card; record the durable refusal in its own txn, then raise the
         # typed, recoverable OffBoardOriginError.
-        _kea.discard_published_artifacts(published_external)
+        if not committed:
+            _kea.discard_published_artifacts(published_external, conn)
         with write_txn(conn):
             _append_event(
                 conn, task_id, "completion_blocked_off_board_origin", exc.payload,
             )
         raise OffBoardOriginError(task_id) from exc
     except BaseException:
-        # Any other failure (e.g. an in-txn staging refusal) rolled the txn
-        # back: the published external copies have no binding — discard them so
-        # a retry does not stage a duplicate next to an orphan.
-        _kea.discard_published_artifacts(published_external)
+        # Any other failure: if the fence did NOT commit, the published external
+        # copies have no binding — discard them so a retry does not stage a
+        # duplicate next to an orphan. ``discard`` also cross-checks the DB
+        # (round-2 HIGH #3): a copy already bound by a COMMITTED txn is KEPT, so
+        # a post-commit failure can never delete a durable proof.
+        if not committed:
+            _kea.discard_published_artifacts(published_external, conn)
         raise
+    finally:
+        # MEDIUM #4: uniform cleanup on EVERY exit that did not commit — the
+        # ``return False`` refusals (parents reopened / acceptance CAS lost /
+        # status CAS lost) exit through no ``except`` and used to leave orphan
+        # copies. ``committed`` is False on all those paths.
+        if not committed:
+            _kea.discard_published_artifacts(published_external, conn)
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)
@@ -4304,6 +4363,15 @@ def _stash_gate_contract(conn: sqlite3.Connection, text: Optional[str]) -> None:
         pass
 
 
+def _peek_gate_contract(conn: sqlite3.Connection) -> object:
+    """The raw contract text the gate just stashed for THIS connection, WITHOUT
+    popping it (``_recheck_contract_in_txn`` owns the pop). Returns
+    ``_CONTRACT_STASH_MISSING`` when no gate ran on this conn, or ``None`` when
+    the gate enforced nothing. Used by ``complete_task`` so P3b capture rides
+    the exact contract version the gate validated (round-2 HIGH #2)."""
+    return _GATE_CONTRACT_STASH.get(id(conn), _CONTRACT_STASH_MISSING)
+
+
 class _OffBoardGateChangedInTxn(Exception):
     """INTERNAL: the in-txn off-board recheck refused the completion (review
     2026-10-05 HIGH #2/#3). Raised INSIDE the completion write txn so the
@@ -4748,6 +4816,21 @@ def _persist_scratch_completion_artifacts(
 
     attachment_dir = task_attachments_dir(task_id, board=board)
     persisted: list[str] = []
+    # P3b round 2 (MEDIUM #6): only the files THIS scratch step actually copies
+    # may be re-staged as attachment rows. A contract mixing a scratch artifact
+    # with an external one has the external copy already bound (and named in
+    # ``metadata['artifacts']``) by ``bind_external_artifacts``; blindly
+    # staging every path under the attachments dir would insert a SECOND row
+    # and a SECOND ``attached`` event for the same file.
+    scratch_copies: list[str] = []
+    # Stored paths already bound as preserved external copies (present only for
+    # mixed contracts): re-processing one would emit a spurious
+    # ``external_artifact_recorded`` for our own managed copy.
+    bound_external: set[str] = {
+        str(b.get("stored_path"))
+        for b in (metadata.get("external_artifacts_preserved") or [])
+        if isinstance(b, dict) and b.get("stored_path")
+    }
     used_destinations: set[Path] = set()
     changed = False
 
@@ -4763,6 +4846,12 @@ def _persist_scratch_completion_artifacts(
             resolved_src = src.resolve()
         except OSError:
             persisted.append(artifact)
+            continue
+
+        if str(resolved_src) in bound_external:
+            # Already bound by bind_external_artifacts: keep the path in the
+            # payload but do NOT copy/re-stage/record it again.
+            persisted.append(str(resolved_src))
             continue
 
         if not resolved_src.is_relative_to(workspace_root):
@@ -4810,13 +4899,12 @@ def _persist_scratch_completion_artifacts(
             ) from exc
         used_destinations.add(dest)
         persisted.append(str(dest.resolve()))
+        scratch_copies.append(str(dest.resolve()))
         changed = True
 
     if changed:
         metadata["artifacts"] = persisted
-        metadata["_staged_artifacts"] = [
-            path for path in persisted if path.startswith(str(attachment_dir.resolve()))
-        ]
+        metadata["_staged_artifacts"] = scratch_copies
 
 
 def _discard_staged_copies(copies: Iterable[Path], attachment_dir: Path) -> None:

@@ -316,3 +316,37 @@ def test_a_timed_out_child_never_waits_on_a_grandchild_holding_its_pipes(monkeyp
     with pytest.raises(subprocess.TimeoutExpired):
         update_custody.run(["sh", "-c", "sleep 20 & sleep 20"], capture_output=True, timeout=0.5)
     assert time.monotonic() - started < 15, "run() waited on a grandchild after the timeout"
+
+
+def _held_lock_recorder(tmp_path: Path, name: str, body: str) -> Path:
+    """An executable on a fresh PATH dir that records whether it holds the checkout lock fd."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    exe = bin_dir / name
+    exe.write_text(_RECORDER.replace('exec "$@"', body), encoding="utf-8")
+    exe.chmod(0o755)
+    return exe
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="needs /proc fd listing")
+def test_no_build_descendant_outlives_the_build_call(repo, tmp_path, monkeypatch):
+    """N13: node marks the donated lock fd close-on-exec, so npm/esbuild under it never hold the
+    checkout; custody rested on node alone. A node that dies leaving a writer behind must not
+    leave it running once the build call returns: the next lock owner would share the checkout."""
+    from hermes_cli.source_build import run_source_script
+
+    late = tmp_path / "late"
+    writer = f"import os, time; os.closerange(3, 4096); time.sleep(2); __import__('pathlib').Path({str(late)!r}).touch()"
+    node = _held_lock_recorder(tmp_path, "node", f"{sys.executable} -c \"{writer}\" >/dev/null 2>&1 &\nexit 1")
+    monkeypatch.setenv("HERMES_TEST_LOCK", os.path.realpath(ul.checkout_lock_path(repo)))
+    monkeypatch.setenv("HERMES_TEST_OUT", str(tmp_path / "node.out"))
+    lock = ul.UpdateLock(path=tmp_path / "marker", install_root=repo)
+    assert lock.acquire()
+    try:
+        with pytest.raises(subprocess.CalledProcessError):
+            run_source_script(repo, "build.mjs", env={**os.environ, "PATH": f"{node.parent}{os.pathsep}{os.environ['PATH']}"}, label="probe")
+    finally:
+        lock.release()
+    time.sleep(3)
+    assert not late.exists(), "a build descendant kept writing after the build call returned"
+

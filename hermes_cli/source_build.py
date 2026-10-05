@@ -46,25 +46,25 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False) ->
     return ensure("npm", base_env=env, explicit=explicit).env
 
 
-def run_source_script(project_root: Path, script: str, *args: str, env: dict, label: str) -> None:
+def run_in_custody(project_root: Path, command: list, label: str, **kwargs):
+    """``pm.progress.run_contained`` for a build command that writes the checkout (node, npm):
+    it and everything it starts stay in the update's custody (POSIX: the checkout lock fd and
+    its own process group, killed when it exits; Windows: the owner's kill-on-close job), so the
+    checkout is never handed to a contender while one of them still writes. Outside an update it
+    is ``run_contained`` as is."""
     from pm.progress import run_contained
     from hermes_cli.update_custody import contained_command
-    from hermes_cli.update_lock import checkout_lock_fds
 
-    # The build writes the checkout: node (and npm/esbuild under it) stays in the update's custody
-    # (POSIX: the checkout lock fd; Windows: the owner's kill-on-close job), so the checkout is
-    # never handed to a contender while it still writes.
-    fds = checkout_lock_fds(project_root)
+    with contained_command(command, root=project_root) as (argv, custody):
+        return run_contained(argv, label, **kwargs, **custody)
+
+
+def run_source_script(project_root: Path, script: str, *args: str, env: dict, label: str) -> None:
     command = [shutil.which("node", path=env["PATH"]), str(project_root / script), *args]
-    with contained_command(command) as (argv, custody):
-        if fds and "pass_fds" not in custody:  # an inherited lock fd this process did not take
-            custody = {**custody, "pass_fds": fds}
-        # npm's deprecation warnings are the loudest lines and never actionable
-        # here; they still land in the failure tail.
-        run_contained(
-            argv, label, hide=lambda line: line.lower().startswith("npm warn"), indent="  ",
-            cwd=project_root, env=env, **custody,
-        )
+    # npm's deprecation warnings are the loudest lines and never actionable
+    # here; they still land in the failure tail.
+    run_in_custody(project_root, command, label, hide=lambda line: line.lower().startswith("npm warn"),
+                   indent="  ", cwd=project_root, env=env)
 
 
 def prepare_source_dependencies(project_root: Path, workspaces: tuple[str, ...], *, env: dict,

@@ -447,16 +447,40 @@ def _join_launcher_python() -> str:
     return sys.executable
 
 
+# POSIX twin of the launcher: Node marks the donated lock fd close-on-exec, so nothing node
+# starts (npm, esbuild, sh) keeps the checkout locked. The command runs as its own process group
+# under this stdlib parent, which holds the fd too and, once the command exits (or this parent is
+# interrupted), kills the whole group: no descendant outlives the custodial command (N13).
+_OWN_GROUP = (
+    "import os, signal, subprocess, sys\n"
+    "fds = tuple(int(fd) for fd in sys.argv[1].split(','))\n"
+    "p = subprocess.Popen(sys.argv[2:], pass_fds=fds, start_new_session=True)\n"
+    "try:\n"
+    "    code = p.wait()\n"
+    "finally:\n"
+    "    try:\n"
+    "        os.killpg(p.pid, signal.SIGKILL)\n"  # windows-footgun: ok — POSIX-only launcher
+    "    except OSError:\n"
+    "        pass\n"
+    "sys.exit(code if code >= 0 else 128 - code)\n"
+)
+
+
 @contextlib.contextmanager
-def contained_command(argv: Sequence[str], *, inherit_lock: bool = True):
+def contained_command(argv: Sequence[str], *, inherit_lock: bool = True, root=None):
     """``(argv, kwargs)`` for a checkout writer started by a runner that hides its Popen (the Node
-    build in ``pm.progress.run_contained``). POSIX: the lock fd. Windows inside an update: the
-    command runs under a launcher that joins the update's kill-on-close job first; when the job
-    cannot be handed over or the join is refused, the command never runs and
-    :class:`CustodyRefused` is raised (D2)."""
+    build in ``pm.progress.run_contained``). POSIX: the lock fd (this process's, or one it
+    inherited for checkout ``root``), with the command's process group killed when it exits.
+    Windows inside an update: the command runs under a launcher that joins the update's
+    kill-on-close job first; when the job cannot be handed over or the join is refused, the
+    command never runs and :class:`CustodyRefused` is raised (D2)."""
     argv = list(argv)
     if not (sys.platform == "win32" and _held() is not None):
-        fds = _lock_fds(inherit_lock)
+        from hermes_cli.update_lock import checkout_lock_fds
+
+        fds = tuple(checkout_lock_fds(root)) if inherit_lock and root is not None else _lock_fds(inherit_lock)
+        if fds:
+            argv = [sys.executable, "-I", "-S", "-c", _OWN_GROUP, ",".join(map(str, fds)), *argv]
         yield argv, ({"pass_fds": fds} if fds else {})
         return
     try:

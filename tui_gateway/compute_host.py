@@ -330,6 +330,10 @@ class ComputeHost:
         # _apply_pending_model_switch — in the child the live agent exists.
         if frame.get("pending_model_switch"):
             session["pending_model_switch"] = dict(frame["pending_model_switch"])
+        if frame.get("service_tier_override") is not None:
+            # Empty string pins normal; None inherits. Apply after model sync
+            # on the turn thread, never while another turn could still run.
+            session["create_service_tier_override"] = frame["service_tier_override"]
         return session
 
     def _build_server_session(self, server: Any, frame: dict[str, Any], sid: str) -> dict:

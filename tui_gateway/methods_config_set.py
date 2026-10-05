@@ -167,6 +167,33 @@ _FAST_WORDS = {"fast": "fast", "on": "fast", "normal": "normal", "off": "normal"
                "auto": "auto", "cold": "cold", "ultrafast": "ultrafast"}
 
 
+def _apply_session_fast_override(session):
+    """Apply the session pin to the live route, including a reused compute-host agent."""
+    from agent.fast_mode import STATIC_TIERS
+    from hermes_cli.models import resolve_fast_mode_overrides
+
+    agent = session.get("agent")
+    tier = session.get("create_service_tier_override")
+    if agent is None or tier is None:
+        return
+    base_url = getattr(agent, "base_url", None)
+    if getattr(agent, "api_mode", None) == "anthropic_messages":
+        base_url = getattr(agent, "_anthropic_base_url", None) or base_url
+    overrides = {}
+    if tier in STATIC_TIERS:
+        overrides = resolve_fast_mode_overrides(getattr(agent, "model", None),
+                    provider=getattr(agent, "provider", None), base_url=base_url, tier=tier) or {}
+    current_overrides = {k: v for k, v in (getattr(agent, "request_overrides", {}) or {}).items()
+                         if k not in ("service_tier", "speed")}
+    request_overrides = {**current_overrides, **overrides}
+    if (getattr(agent, "service_tier", None) == (tier or None)
+            and getattr(agent, "request_overrides", None) == request_overrides):
+        return
+    agent.service_tier = tier or None
+    agent.request_overrides = request_overrides
+    _persist_live_session_runtime(session)
+
+
 def _set_fast(rid, params, key, value, session):
     raw = _word(value)
     agent = session.get("agent") if session else None
@@ -174,6 +201,8 @@ def _set_fast(rid, params, key, value, session):
         current_tier = getattr(agent, "service_tier", None)
     elif session is not None and session.get("create_service_tier_override") is not None:
         current_tier = session["create_service_tier_override"] or None  # pre-build pin beats global
+    elif "service_tier" in _metadata_mirror(session):
+        current_tier = _metadata_mirror(session)["service_tier"] or None
     else:
         current_tier = _load_service_tier()
     from agent.fast_mode import STATIC_TIERS, service_tier_word
@@ -185,15 +214,20 @@ def _set_fast(rid, params, key, value, session):
     overrides = None
     if nv in ("fast", "ultrafast"):
         from hermes_cli.models import resolve_fast_mode_overrides
-        if agent is not None:
-            target_model = getattr(agent, "model", None)
-        else:  # a pre-build session may carry a picked model (desktop draft): validate against THAT
-            session_override = (session or {}).get("model_override") or {}
-            target_model = (isinstance(session_override, dict) and session_override.get("model")) or _resolve_model()
+        if session is not None:
+            # Isolated sessions keep their live identity in the child's metadata mirror.
+            # Match the selected identity shown by session.info, including queued switches.
+            target_model, target_provider = _live_session_identity(session)
+        else:
+            target_model, target_provider = _resolve_model(), None
         if not target_model:
             return _err(rid, 4002, "fast mode is not available without a selected model")
-        overrides = resolve_fast_mode_overrides(target_model, provider=getattr(agent, "provider", None),
-                                                base_url=getattr(agent, "base_url", None),
+        base_url = getattr(agent, "base_url", None)
+        if getattr(agent, "api_mode", None) == "anthropic_messages":
+            base_url = getattr(agent, "_anthropic_base_url", None) or base_url
+        if (session or {}).get("pending_model_switch"):
+            base_url = None  # the live agent's endpoint still belongs to the old model
+        overrides = resolve_fast_mode_overrides(target_model, provider=target_provider or None, base_url=base_url,
                                                 tier="ultrafast" if nv == "ultrafast" else None)
         if overrides is None:
             return _err(rid, 4002, f"{nv} mode is not available for this model")
@@ -204,11 +238,7 @@ def _set_fast(rid, params, key, value, session):
     else:
         _write_config_key("agent.service_tier", nv)
     if agent is not None:
-        agent.service_tier = {"fast": "priority", "normal": None}.get(nv, nv)
-        current_overrides = {k: v for k, v in (getattr(agent, "request_overrides", {}) or {}).items()
-                             if k not in ("service_tier", "speed")}
-        agent.request_overrides = {**current_overrides, **(overrides or {})}
-        _persist_live_session_runtime(session)
+        _apply_session_fast_override(session)
         _emit_session_info(params.get("session_id", ""), session)
     return _kv(rid, key, nv)
 

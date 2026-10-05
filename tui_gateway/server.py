@@ -2348,6 +2348,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
         # Disabled must differ from unset ("" = provider default) or the desktop loses "thinking off" after turn 1.
         reasoning_effort = "none" if reasoning_config.get("enabled") is False else str(reasoning_config.get("effort", "") or "")
     service_tier = getattr(agent, "service_tier", None) or mirror.get("service_tier") or ""
+    if agent is None and sess.get("create_service_tier_override") is not None:
+        service_tier = sess["create_service_tier_override"]  # requested tier beats an older child snapshot
     # yolo ORs the same three sources check_all_command_guards() does (approvals.mode=off, the process
     # --yolo env, the per-session flag): the session flag alone would show "off" while config auto-approves.
     try:

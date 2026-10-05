@@ -563,6 +563,7 @@ const StatusRulePane = memo(function StatusRulePane({
         status={ui.status}
         statusBarFields={ui.statusBarFields}
         statusColor={status.statusColor}
+        storedSid={ui.storedSid}
         t={ui.theme}
         turnStartedAt={status.turnStartedAt}
         usage={ui.usage}

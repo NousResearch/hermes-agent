@@ -6354,7 +6354,7 @@ def _compression_fast_lane_controls(
 
 def _get_task_no_progress_timeout(task: str) -> Optional[float]:
     """``auxiliary.<task>.no_progress_timeout`` from config, or None when unset/invalid
-    (the Codex stream guard then keeps its built-in ``_AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS``
+    (the Codex and chat-stream watchdogs then keep the built-in ``_AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS``
     default). Lets an operator widen the substantive-progress window independently of the
     overall request timeout — see #108104."""
     if not task:
@@ -7211,7 +7211,20 @@ def _create_with_progress_once(
     if hasattr(chunks, "choices"):
         _notify_aux_provider_response()
         return chunks
-    return _aggregate_chat_stream(chunks, model=model, total_ceiling=total_ceiling)
+    return _aggregate_chat_stream(
+        chunks, model=model, total_ceiling=total_ceiling, no_progress=_chat_stream_no_progress(client, kwargs, task))
+
+
+def _chat_stream_no_progress(client: Any, kwargs: Dict[str, Any], task: Optional[str]) -> "Tuple[float, bool]":
+    """(window, enforce before the first token) for a streamed chat-completions attempt: the Codex
+    guard's window (``auxiliary.<task>.no_progress_timeout``, 60s default, capped at the request
+    timeout). Local servers keep their silent prefill on the request timeout, as the main loop does."""
+    window = _get_task_no_progress_timeout(task or "") or _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS
+    timeout = kwargs.get("timeout")
+    if isinstance(timeout, (int, float)) and timeout > 0:
+        window = min(window, float(timeout))
+    from agent.model_metadata import is_local_endpoint
+    return window, not is_local_endpoint(str(getattr(client, "base_url", "") or ""))
 
 
 def _close_chunk_stream(chunks: Any, *, allow_aclose: bool = False) -> Any:
@@ -7228,17 +7241,30 @@ def _close_chunk_stream(chunks: Any, *, allow_aclose: bool = False) -> Any:
 
 
 def _aggregate_chat_stream(
-    chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None
+    chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None,
+    no_progress: "Optional[Tuple[float, bool]]" = None,
 ) -> Any:
     """Consume a chunk stream into a complete response; TimeoutError (phrased "timed out" so
-    ``_is_timeout_error`` matches) when *total_ceiling* elapses."""
+    ``_is_timeout_error`` matches) when *total_ceiling* elapses, or when the stream is silent for
+    the *no_progress* ``(window, first_token)`` window (#100501)."""
+    from agent.auxiliary_stream_watchdog import ChatStreamWatchdog
     acc = _ChatStreamAccumulator(
         model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline())
+    watchdog = ChatStreamWatchdog(chunks, no_progress[0], first_token=no_progress[1]) if no_progress else None
     try:
         for chunk in chunks:
-            acc.feed(chunk)
+            if acc.feed(chunk) and watchdog is not None:
+                watchdog.progress()
+    except Exception as exc:
+        if watchdog is not None and watchdog.fired:
+            raise watchdog.timeout_error() from exc
+        raise
     finally:
+        if watchdog is not None:
+            watchdog.finish()
         _close_chunk_stream(chunks)
+    if watchdog is not None and watchdog.fired:
+        raise watchdog.timeout_error()
     return acc.finish()
 
 
@@ -7316,9 +7342,9 @@ class _ChatStreamAccumulator:
                     made_progress = True
         return made_progress
 
-    def feed(self, chunk: Any) -> None:
+    def feed(self, chunk: Any) -> bool:
         # Every frame records transport timing (TTFP); only a substantive payload ticks the
-        # forward-progress hook that keeps compression alive.
+        # forward-progress hook that keeps compression alive (and is reported as True).
         _notify_aux_timing_response()
         self._check_deadlines()
         self.resp_id = getattr(chunk, "id", None) or self.resp_id
@@ -7328,12 +7354,12 @@ class _ChatStreamAccumulator:
             self.usage = chunk_usage
         choices = getattr(chunk, "choices", None) or []
         if not choices:
-            return
+            return False
         choice = choices[0]
         self.finish_reason = getattr(choice, "finish_reason", None) or self.finish_reason
         delta = getattr(choice, "delta", None)
         if delta is None:
-            return
+            return False
         made_progress = False
         from agent.message_content import flatten_message_text
 
@@ -7353,6 +7379,7 @@ class _ChatStreamAccumulator:
         made_progress |= self._feed_tool_calls(delta)
         if made_progress:
             _notify_aux_progress()
+        return made_progress
 
     def finish(self) -> Any:
         tool_calls = None
@@ -7908,10 +7935,12 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     if reason == "request timed out":
         # WARNING, naming the endpoint, the budget and the knob: the only other trace of a slow
         # local model is the fallback provider's complaint about a model it never had (#89445).
-        logger.warning("Auxiliary %s%s: request to %s timed out after %ss (raise auxiliary.%s.timeout "
-                       "for slow or reasoning models) on %s, trying fallback",
-                       task or "call", tag, route.base_info or resolved_provider, route.timeout,
-                       task or "call", resolved_provider)
+        # A no-progress stall names its own window; the request budget is the wrong knob for it.
+        stalled = "Auxiliary chat stream" in str(first_err)
+        logger.warning("Auxiliary %s%s: request to %s %s (raise auxiliary.%s.%s for slow or reasoning "
+                       "models) on %s, trying fallback", task or "call", tag, route.base_info or resolved_provider,
+                       first_err if stalled else f"timed out after {route.timeout}s", task or "call",
+                       "no_progress_timeout" if stalled else "timeout", resolved_provider)
     else:
         logger.info("Auxiliary %s%s: %s on %s (%s), trying fallback",
                     task or "call", tag, reason, resolved_provider, first_err)

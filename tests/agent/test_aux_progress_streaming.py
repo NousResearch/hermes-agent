@@ -8,6 +8,7 @@ liveness. Without a hook, behavior is byte-for-byte the old non-streaming call.
 """
 
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -264,6 +265,53 @@ class TestAggregateChatStream:
         result = _aggregate_chat_stream(_Stream())
         assert result.choices[0].message.content == "ok"
         assert closed == [True]
+
+    def test_silent_stream_fails_fast_through_the_real_transport(self, monkeypatch):
+        """#100501: an endpoint that sends one chunk then goes silent must fail at the no-progress
+        window as a timeout (so retry/fallback run), not block until the request read timeout."""
+        import http.server
+        import json
+
+        import openai
+
+        from agent.auxiliary_client import _should_skip_same_provider_retry
+
+        release = threading.Event()
+
+        class _Silent(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.0"
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                chunk = {"id": "c1", "object": "chat.completion.chunk", "created": 0, "model": "m",
+                         "choices": [{"index": 0, "delta": {"content": "partial"}, "finish_reason": None}]}
+                self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+                self.wfile.flush()
+                release.wait(30)
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Silent)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        monkeypatch.setattr("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.5)
+        # Loopback stands in for a remote endpoint: the first-token window applies to non-local ones.
+        monkeypatch.setattr("agent.model_metadata.is_local_endpoint", lambda _url: False)
+        client = openai.OpenAI(api_key="k", base_url=f"http://127.0.0.1:{server.server_port}/v1", max_retries=0)
+        started = time.monotonic()
+        try:
+            with aux_progress_hook(lambda: None), pytest.raises(TimeoutError) as excinfo:
+                _create_with_progress(client, {"model": "m", "messages": [], "timeout": 20.0}, "compression")
+        finally:
+            release.set()
+            server.shutdown()
+            client.close()
+        assert time.monotonic() - started < 5.0
+        assert "stalled" in str(excinfo.value)
+        assert _should_skip_same_provider_retry("compression", excinfo.value)
 
 
 

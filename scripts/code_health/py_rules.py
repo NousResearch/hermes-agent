@@ -39,40 +39,150 @@ class Ctx:
     known_env: set[str] = field(default_factory=set)
 
 
+@dataclass
+class _Scope:
+    """One lexical scope's bindings: names an import binds, and names anything else binds."""
+
+    parent: _Scope | None = None
+    kind: str = "function"  # "module" | "class" | "function" | "comprehension"
+    imports: dict[str, str] = field(default_factory=dict)
+    others: set[str] = field(default_factory=set)
+
+    def resolve(self, name: str) -> str | None:
+        """Import target ``name`` means here: the innermost scope binding it decides, and a
+        scope that binds it any other way (or by two imports) makes it a plain local. Class
+        bodies are invisible to the functions and comprehensions nested in them."""
+        scope: _Scope | None = self
+        while scope is not None:
+            if scope is self or scope.kind != "class":
+                if name in scope.others:
+                    return None
+                if name in scope.imports:
+                    return scope.imports[name]
+            scope = scope.parent
+        return None
+
+
+class _Binder(ast.NodeVisitor):
+    """Records each scope's bindings and the scope every loaded name is read in."""
+
+    def __init__(self) -> None:
+        self.module = self.scope = _Scope(kind="module")
+        self.loads: dict[int, _Scope] = {}
+
+    def _bind(self, name: str) -> None:
+        self.scope.others.add(name)
+
+    def _import(self, name: str, target: str) -> None:
+        if self.scope.imports.get(name, target) != target:
+            self._bind(name)
+        self.scope.imports[name] = target
+
+    def _enter(self, kind: str, nodes: Iterable[ast.AST]) -> None:
+        outer, self.scope = self.scope, _Scope(self.scope, kind)
+        for node in nodes:
+            self.visit(node)
+        self.scope = outer
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            top = alias.name.split(".")[0]
+            self._import(alias.asname or top, alias.name if alias.asname else top)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        # A relative import keeps its module path minus the dots: rules match the leaf.
+        for alias in node.names:
+            if alias.name != "*":
+                target = f"{node.module}.{alias.name}" if node.module else alias.name
+                self._import(alias.asname or alias.name, target)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Load):
+            self.loads[id(node)] = self.scope
+        else:
+            self._bind(node.id)
+
+    def visit_Global(self, node: ast.Global) -> None:
+        self.scope.others.update(node.names)
+        self.module.others.update(node.names)
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        scope: _Scope | None = self.scope
+        while scope is not None and scope.kind != "module":
+            scope.others.update(node.names)
+            scope = scope.parent
+
+    def generic_visit(self, node: ast.AST) -> None:
+        # except-as, match captures and **rest bind a plain string attribute.
+        for attr in ("name", "rest"):
+            value = getattr(node, attr, None)
+            if isinstance(value, str) and not isinstance(node, ast.alias):
+                self._bind(value)
+        super().generic_visit(node)
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> None:
+        """Decorators, defaults and annotations run in the enclosing scope; the body does not."""
+        args = node.args
+        every = [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]
+        params = [a for a in every if a is not None]
+        returns = getattr(node, "returns", None)
+        outer = [*getattr(node, "decorator_list", []), *args.defaults,
+                 *(d for d in args.kw_defaults if d is not None),
+                 *(a.annotation for a in params if a.annotation), *([returns] if returns else [])]
+        for expr in outer:
+            self.visit(expr)
+        if not isinstance(node, ast.Lambda):
+            self._bind(node.name)
+        self._enter("function", [*params, *(node.body if isinstance(node.body, list) else [node.body])])
+
+    visit_FunctionDef = visit_AsyncFunctionDef = visit_Lambda = _visit_function
+
+    def visit_arg(self, node: ast.arg) -> None:
+        self._bind(node.arg)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for expr in (*node.decorator_list, *node.bases, *node.keywords):
+            self.visit(expr)
+        self._bind(node.name)
+        self._enter("class", node.body)
+
+    def _visit_comprehension(self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp) -> None:
+        """The first iterable runs outside; targets, conditions and elements run inside."""
+        first, *rest = node.generators
+        self.visit(first.iter)
+        elements = [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
+        inner = [first.target, *first.ifs, *(n for g in rest for n in (g.iter, g.target, *g.ifs))]
+        self._enter("comprehension", [*inner, *elements])
+
+    visit_ListComp = visit_SetComp = visit_DictComp = visit_GeneratorExp = _visit_comprehension
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        # A walrus in a comprehension binds in the enclosing function (PEP 572).
+        scope = self.scope
+        while scope.kind == "comprehension" and scope.parent is not None:
+            scope = scope.parent
+        scope.others.add(node.target.id)
+        self.visit(node.value)
+
+
 def canonical_tree(tree: ast.Module) -> ast.Module:
     """``tree`` with every import-bound name spelled out: ``sp.run`` -> ``subprocess.run``,
     ``execute`` (``from subprocess import run as execute``) -> ``subprocess.run``.
 
     Rules then match canonical API names, so an alias neither hides a call nor lets a local
-    helper that merely shares a leaf name (``def wait_for``) pass as the real API. A name the
-    module also rebinds (def, class, assignment, parameter) is left alone: it is ambiguous.
+    helper that merely shares a leaf name (``def wait_for``) pass as the real API. Each read is
+    resolved in its own scope: a parameter or local of the same name shadows the import only
+    in the function that binds it, and a scope that rebinds the name itself (def, class,
+    assignment, parameter) leaves it alone there, since the name is ambiguous.
     """
-    bound: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.asname:
-                    bound[alias.asname] = alias.name
-                else:
-                    top = alias.name.split(".")[0]
-                    bound[top] = top
-        elif isinstance(node, ast.ImportFrom):
-            # A relative import keeps its module path minus the dots: rules match the leaf.
-            for alias in node.names:
-                if alias.name != "*":
-                    target = f"{node.module}.{alias.name}" if node.module else alias.name
-                    bound[alias.asname or alias.name] = target
-    rebound = {
-        n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and not isinstance(n.ctx, ast.Load)
-    } | {n.arg for n in ast.walk(tree) if isinstance(n, ast.arg)} | {
-        n.name for n in ast.walk(tree) if isinstance(n, (*_FUNCS, ast.ClassDef))
-    }
-    names = {k: v for k, v in bound.items() if k not in rebound and k != v}
+    binder = _Binder()
+    binder.visit(tree)
 
     class _Spell(ast.NodeTransformer):
         def visit_Name(self, node: ast.Name) -> ast.AST:
-            target = names.get(node.id)
-            if target is None or not isinstance(node.ctx, ast.Load):
+            scope = binder.loads.get(id(node))
+            target = scope.resolve(node.id) if scope else None
+            if target is None or target == node.id:
                 return node
             parts = target.split(".")
             expr: ast.expr = ast.Name(parts[0], ast.Load())
@@ -80,7 +190,7 @@ def canonical_tree(tree: ast.Module) -> ast.Module:
                 expr = ast.Attribute(expr, part, ast.Load())
             return ast.copy_location(expr, node)
 
-    return ast.fix_missing_locations(_Spell().visit(tree)) if names else tree
+    return ast.fix_missing_locations(_Spell().visit(tree))
 
 
 def _dotted(node: ast.AST) -> str:

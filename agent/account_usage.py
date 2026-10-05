@@ -677,13 +677,19 @@ def _call_plugin_usage_hook(profile, base_url: Optional[str], api_key: Optional[
 def fetch_account_usage(
     provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
+    from agent.account_usage_cache import remember_account_usage
+
     fetcher = _USAGE_FETCHERS.get(str(provider or "").strip().lower())
     try:
         if fetcher:
-            return fetcher(base_url, api_key)
-        from providers import get_provider_profile
+            snapshot = fetcher(base_url, api_key)
+        else:
+            from providers import get_provider_profile
 
-        profile = get_provider_profile(str(provider or "").strip().lower())
-        return _call_plugin_usage_hook(profile, base_url, api_key) if profile else None
+            profile = get_provider_profile(str(provider or "").strip().lower())
+            snapshot = _call_plugin_usage_hook(profile, base_url, api_key) if profile else None
     except Exception:
         return None
+    # Every fetch (``/usage``, the per-turn ``session.usage``) keeps the picker's cache current.
+    remember_account_usage(provider, snapshot)
+    return snapshot

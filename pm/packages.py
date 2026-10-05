@@ -19,6 +19,7 @@ from pm.package import (
     StatePackage,
     _entry_listing,
     _probe_reason,
+    unpack_deb,
 )
 from pm.registry import register
 from pm.store import ALL_TARGETS, MUSL_TARGETS, Store, current_target, flatten_single_dir, merge_tree
@@ -481,6 +482,24 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
         # lags nodejs.org, the later artifact pin/download fails before the
         # lockfile is written rather than selecting glibc bytes on musl.
         return node_latest_versions()
+
+    def repair_staged_verification(self, entry: Path, target: str, reason: str) -> tuple[str, str]:
+        """Repair the host library needed by official Linux Node, then re-probe.
+
+        Keep this out of verify(): doctor/status checks call verify and must
+        never gain permission to install host packages.
+        """
+        if target != current_target() or not target.startswith("linux") or "libatomic.so.1" not in reason:
+            return reason, ""
+        from pm.libatomic import try_install_libatomic
+
+        installed, remedy = try_install_libatomic()
+        if not installed:
+            return reason, remedy
+        retried = self.verify(entry, target)
+        if "libatomic.so.1" in retried:
+            return retried, "the libatomic package installed, but Node still cannot load libatomic.so.1; check the loader path"
+        return retried, ""
 
 
 @register
@@ -1039,10 +1058,10 @@ class Chromium(Package):
 
 class LlamaCpp(BinaryPackage):
     """One llama.cpp backend build. Backends are dlopen'd plugins, so a
-    usable engine is one archive per (target, backend) — plus, for Windows
-    CUDA, the cudart archive: end users have no CUDA toolkit, and Windows
-    resolves a DLL from the loading executable's own directory, so those
-    DLLs must land beside llama-server.exe rather than in a second entry.
+    usable engine is one archive per (target, backend) — plus, for CUDA, the
+    cudart archive (end users have no CUDA toolkit), and on Linux the libgomp
+    .deb. Every library lands beside llama-server: Windows resolves DLLs from
+    the executable's directory, and the Linux builds' RUNPATH is $ORIGIN.
 
     Backend is a HARDWARE choice, not a target, so each backend is its own
     optional package and the runtime asks for the one this machine can
@@ -1061,6 +1080,18 @@ class LlamaCpp(BinaryPackage):
     backend: str = ""
     # Release-asset infix per target, or absent where upstream ships none.
     assets: dict[str, str] = {}
+    # Upstream's Linux builds (CPU included) link the system OpenMP runtime,
+    # which minimal hosts (WSL, containers) lack, and a normal install never
+    # touches the system package manager. The $ORIGIN RUNPATH loads this copy
+    # ahead of the host's, so its glibc floor must stay at or below every
+    # engine's. Ubuntu 22.04's needs glibc 2.34, the floor of the x64 CPU and
+    # Vulkan builds, and provides every GOMP version the builds reference. The
+    # release-pocket file stays in the pool until 22.04's EOL; the artifact
+    # mirror serves the pinned bytes after that.
+    _LIBGOMP = {
+        "linux-x64": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-12/libgomp1_12-20220319-1ubuntu1_amd64.deb",
+        "linux-arm64": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-12/libgomp1_12-20220319-1ubuntu1_arm64.deb",
+    }
 
     @property
     def gaps(self) -> dict[str, str]:  # type: ignore[override]
@@ -1078,7 +1109,7 @@ class LlamaCpp(BinaryPackage):
         return [
             f"https://github.com/ggml-org/llama.cpp/releases/download/b{version}/{asset}"
             for asset in self._asset_names(version, target)
-        ]
+        ] + ([self._LIBGOMP[target]] if target in self._LIBGOMP else [])
 
     def fetch_url(self, version: str, target: str) -> str:
         return self.fetch_urls(version, target)[0]
@@ -1103,15 +1134,29 @@ class LlamaCpp(BinaryPackage):
             url.rsplit("/", 1)[-1]
         )
 
+    def unpack(self, archive: Path, staged: Path, target: str) -> None:
+        if archive.name.endswith(".deb"):
+            unpack_deb(self.name, archive, staged)
+        else:
+            super().unpack(archive, staged, target)
+
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         """Some archives nest the binaries under build/bin; hoist them so
-        binary_rel is one path for every target."""
-        if (staged / self.binary(staged, target).name).is_file():
-            return
-        found = sorted(staged.rglob(self.binary(staged, target).name))
-        if not found:
-            raise InstallError(self.name, "archive contains no llama-server")
-        merge_tree(found[0].parent, staged)
+        binary_rel is one path for every target. The libgomp .deb unpacks
+        in its filesystem layout (usr/lib/<triplet>/); only the library
+        itself moves beside llama-server."""
+        server = self.binary(staged, target).name
+        if not (staged / server).is_file():
+            found = sorted(staged.rglob(server))
+            if not found:
+                raise InstallError(self.name, "archive contains no llama-server")
+            merge_tree(found[0].parent, staged)
+        # The pin decides whether the .deb arrives (test_llamacpp_pins); verify()'s --version
+        # probe is what proves the libraries resolve.
+        libs = sorted((staged / "usr" / "lib").glob("*/libgomp.so.1"))
+        if libs:
+            shutil.copyfile(libs[0], staged / "libgomp.so.1")
+            shutil.rmtree(staged / "usr")
 
 
 def _github_release_digests(repo: str, tag: str) -> dict[str, str]:
@@ -1139,23 +1184,43 @@ _release_digest_cache: dict[tuple, dict] = {}
 
 @register
 class LlamaCppCuda(LlamaCpp):
-    """Windows only: upstream publishes no prebuilt Linux CUDA archive at
-    current tags, so NVIDIA Linux users run the vulkan build."""
+    """CUDA 13.4 everywhere upstream builds it: 13.x drivers run any 13.x
+    runtime (minor-version compatibility), and 13.4 is the only line upstream
+    ships for win-arm64. Linux archives first appeared after b10964, and
+    upstream dropped win-cuda-13.3 at the same time.
+
+    The engine archive carries no CUDA libraries (end users have no toolkit),
+    so each target pins a second cudart archive too."""
 
     name = "llamacpp-cuda"
     backend = "cuda"
-    # CUDA 13.3 verified against 13.1/13.2 drivers; arm64 prebuilts landed
-    # on 13.4 (the only CUDA line upstream builds for win-arm64).
     assets = {
-        "win32-x64": "win-cuda-13.3-x64",
+        "win32-x64": "win-cuda-13.4-x64",
         "win32-arm64": "win-cuda-13.4-arm64",
+        "linux-x64": "ubuntu-cuda-13.4-x64",
+        "linux-arm64": "ubuntu-cuda-13.4-arm64",
     }
-    _CUDART = {"win32-x64": "13.3-x64", "win32-arm64": "13.4-arm64"}
 
     def _asset_names(self, version: str, target: str) -> list[str]:
-        return super()._asset_names(version, target) + [
-            f"cudart-llama-bin-win-cuda-{self._CUDART[target]}.zip"
-        ]
+        # Upstream names the Windows cudart zip without the build tag and the
+        # Linux one with it.
+        infix = self.assets[target]
+        cudart = (
+            f"cudart-llama-bin-{infix}.zip"
+            if target.startswith("win32")
+            else f"cudart-llama-b{version}-bin-{infix}.tar.gz"
+        )
+        return super()._asset_names(version, target) + [cudart]
+
+    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
+        """The Linux cudart tarball unpacks into its own top-level dir, but the
+        engine's RUNPATH is $ORIGIN, so its libraries must sit beside
+        llama-server. The Windows zip is flat and needs no hoist."""
+        super().stage(store, staged, version, target)
+        for extra in sorted(staged.glob("cudart-*")):
+            if extra.is_dir():
+                merge_tree(extra, staged)
+                shutil.rmtree(extra)
 
 
 @register
@@ -1201,3 +1266,16 @@ class LlamaCppCpu(LlamaCpp):
         "darwin-x64": "macos-x64",
         "darwin-arm64": "macos-arm64",
     }
+
+
+@register
+class WhisperCppCpu(BinaryPackage):
+    """Native local STT for Windows ARM64, where faster-whisper has no wheel."""
+
+    name = "whispercpp-cpu"
+    optional = True
+    gaps = {target: "uses the existing faster-whisper provider" for target in ALL_TARGETS
+            if target != "win32-arm64"}
+    binary_rel = {"win32-arm64": "whisper-cli.exe"}
+    probe_args = ["--help"]
+    url = "https://github.com/ggml-org/whisper.cpp/releases/download/{version}/whisper-bin-win-cpu-arm64.zip"

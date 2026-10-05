@@ -82,6 +82,65 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_show_bare_call_outside_worker_returns_orientation_not_error(monkeypatch, worker_env):
+    """#91431: chat profiles with the kanban toolset call kanban_show bare to orient
+    themselves; with no dispatcher task in scope there is nothing to show, so the
+    answer must be a pointer to kanban_list — not an error naming an env var no
+    chat caller can set."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from tools import kanban_tools as kt
+    out = json.loads(kt._handle_show({}))
+    assert "error" not in out, out
+    assert out.get("current_task") is None
+    assert "kanban_list" in out["hint"]
+
+
+def test_comment_bare_call_outside_worker_names_kanban_list(monkeypatch, worker_env):
+    """#91431 sibling: a comment cannot post without a target task, so a bare call
+    stays an error — but the error must point at kanban_list instead of the env."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from tools import kanban_tools as kt
+    out = json.loads(kt._handle_comment({"body": "hello"}))
+    assert out.get("error"), out
+    assert "kanban_list" in out["error"]
+    assert "set HERMES_KANBAN_TASK" not in out["error"]
+
+
+def test_worker_tool_bare_call_outside_worker_error_is_actionable(monkeypatch, worker_env):
+    """#91431 sibling: the mutation/lifecycle tools still require a target, but the
+    rejection a non-worker receives must name what it can do (kanban_list), not the
+    env var it cannot set."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from tools import kanban_tools as kt
+    for handler, name in ((kt._handle_heartbeat, "kanban_heartbeat"),
+                           (kt._handle_attachments, "kanban_attachments")):
+        out = json.loads(handler({}))
+        assert out.get("error"), (name, out)
+        assert "kanban_list" in out["error"], (name, out)
+        assert "set HERMES_KANBAN_TASK" not in out["error"], (name, out)
+
+
+def test_kanban_task_id_descriptions_state_the_non_worker_case():
+    """#91431 contract: any task_id description that promises the HERMES_KANBAN_TASK
+    default must also say the default only exists for dispatcher-spawned workers —
+    an unqualified invite to omit the argument is what made chat profiles call bare."""
+    from tools import kanban_tools_schemas as kts
+
+    seen = []
+    for attr, schema in vars(kts).items():
+        if not (attr.startswith("KANBAN_") and attr.endswith("_SCHEMA")):
+            continue
+        desc = (schema["parameters"]["properties"].get("task_id") or {}).get("description") or ""
+        if "HERMES_KANBAN_TASK" not in desc:
+            continue
+        assert "worker" in desc, (
+            schema["name"], "env default promised without the non-worker case (#91431)")
+        assert "no default" in desc or "orientation" in desc, (
+            schema["name"], "must state what a non-worker bare call does (#91431)")
+        seen.append(schema["name"])
+    assert "kanban_show" in seen
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
@@ -1128,6 +1187,83 @@ def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):
     assert _list_subs_for_task(d["task_id"]) == []
 
 
+def test_create_tui_subscription_binds_to_live_session_after_compaction_fork(monkeypatch, worker_env, tmp_path):
+    """#110068: the inherited HERMES_SESSION_KEY can name a session already superseded
+    by a compaction fork. Auto-subscribe must bind to the live continuation tip resolved
+    from the session store, not the stale key the process was launched with."""
+    import hermes_state
+    from hermes_state import SessionDB
+    from tools import kanban_tools as kt
+
+    stale, live = "20260912_231110_stale", "20260913_000649_live"
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session(stale, source="tui")
+    db.append_message(stale, role="user", content="pre-fork turn")
+    db.end_session(stale, "compression")
+    db.create_session(live, source="tui", parent_session_id=stale)
+    db.append_message(live, role="assistant", content="post-fork turn")
+
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.setenv("HERMES_SESSION_KEY", stale)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setenv("HERMES_PROFILE", "default")
+
+    out = kt._handle_create({
+        "title": "auto-sub tui post-fork",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["subscribed"] is True, d
+
+    subs = _sub_index(_list_subs_for_task(d["task_id"]))
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "tui"
+    assert subs[0]["chat_id"] == live
+
+
+def test_live_tui_session_key_uses_profile_store(monkeypatch, tmp_path):
+    """A named-profile session's lineage lives in profiles/<x>/state.db, not the default
+    store: resolution must open THAT store."""
+    from hermes_cli import profiles as profiles_mod
+    from hermes_state import SessionDB
+    from tools import kanban_tools as kt
+
+    stale, live = "stale-teamx", "live-teamx"
+    store = tmp_path / "profiles" / "teamx"
+    store.mkdir(parents=True)
+    db = SessionDB(store / "state.db")
+    db.create_session(stale, source="tui")
+    db.append_message(stale, role="user", content="pre-fork turn")
+    db.end_session(stale, "compression")
+    db.create_session(live, source="tui", parent_session_id=stale)
+    db.append_message(live, role="user", content="post-fork turn")
+
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda name: name == "teamx")
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda name: str(store))
+    assert kt._live_tui_session_key(stale, "teamx") == live
+
+
+def test_live_tui_session_key_fails_open_to_original_key(monkeypatch):
+    """Store unavailability must degrade to current behaviour (subscribe to the inherited
+    key), never fail the kanban_create call."""
+    import hermes_state_registry as registry
+    from tools import kanban_tools as kt
+
+    def _boom(db_path=None):
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(registry, "acquire", _boom)
+    assert kt._live_tui_session_key("stale-key", "default") == "stale-key"
+    assert kt._live_tui_session_key("stale-key", None) == "stale-key"
+    # An unresolvable profile also falls through to the default store path.
+    import hermes_cli.profiles as profiles_mod
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda name: False)
+    assert kt._live_tui_session_key("stale-key", "ghost-profile") == "stale-key"
+
+
 def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env, tmp_path):
     """The config gate kanban.auto_subscribe_on_create=false must
     suppress auto-subscription even when the session has a delivery
@@ -1375,3 +1511,23 @@ def test_create_created_by_uses_the_home_key(worker_env, tmp_path):
         assert task.created_by == "home-profile"
     finally:
         conn.close()
+
+
+class TestDefaultTaskId:
+    def test_numeric_task_id_is_coerced(self, monkeypatch):
+        from tools import kanban_tools as kt
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        assert kt._default_task_id(12345) == "12345"
+        assert kt._default_task_id(0) == "0"
+
+    def test_whitespace_task_id_is_stripped(self, monkeypatch):
+        from tools import kanban_tools as kt
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        assert kt._default_task_id("  task-99  ") == "task-99"
+
+    def test_blank_task_id_falls_back(self, monkeypatch, worker_env):
+        from tools import kanban_tools as kt
+        monkeypatch.setattr(kt, "_is_dispatcher_owned_worker", lambda: True)
+        assert kt._default_task_id("") == worker_env
+        assert kt._default_task_id("   ") == worker_env
+        assert kt._default_task_id(None) == worker_env

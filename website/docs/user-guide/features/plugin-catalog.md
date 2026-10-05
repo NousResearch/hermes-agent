@@ -17,7 +17,7 @@ hermes plugins install <name>
 Browse it visually at **[/docs/plugins](/plugins)** — entries are shelved by
 category (Memory, Desktop, Platforms, Web & Browser, Tools, Voice, Automation,
 Models), with search, tier filters (Official / Community), capability chips, and
-**Open in Hermes Desktop** buttons and copyable CLI commands for every entry.
+copyable install commands for every entry.
 
 Every entry also has its own page at `/docs/plugins/<name>` (click a card):
 the full description and any disclosure, the pinned commit, tools, hooks and
@@ -26,12 +26,6 @@ screenshots and the README from the reviewed commit, plus a **More by this
 author** shelf. Authors have a page at `/docs/plugins/by/<maintainer>` listing
 everything they maintain in the catalog. Both are generated at build time from
 the same catalog files, so a merged PR is the only way a page changes.
-
-In Desktop, open **Capabilities → Plugins → Browse** for the native catalog
-view. It is not an embedded website. **Installed** is a separate tab backed
-by the app's desktop-plugin registry and the selected profile's agent-plugin
-state, rather than catalog metadata. Skills uses the same **Installed / Browse**
-layout; search stays at the top and the tab switch and actions share one row.
 
 The catalog complements — it does not replace — the existing
 [plugin system](plugins.md). Anything you can install from the catalog is a
@@ -42,20 +36,6 @@ During desktop onboarding, the setup guide can also offer catalog plugins and sk
 approval card. Each row installs into your `default` profile only when you click Install, at the
 same reviewed commit this page describes.
 
-### Published browse data
-
-The website and Desktop read the same generated CDN snapshot:
-[`https://hermes-agent.nousresearch.com/docs/api/plugins.json`](https://hermes-agent.nousresearch.com/docs/api/plugins.json).
-Desktop fetches it through
-`https://nousresearch.github.io/hermes-agent/docs/api/plugins.json`; the public
-docs alias serves the same data. The docs build reads `plugin-catalog/*.yaml`
-and adds cached repository star counts. It also publishes the installer's
-removed-entry list. Neither Browse view crawls source repositories or queries
-the GitHub API live.
-
-This browse snapshot is distinct from the installer's
-[`plugin-catalog.json`](#live-refresh), which resolves catalog names and pins.
-
 ## What's in an entry
 
 Each catalog entry is a small YAML file in the
@@ -65,6 +45,7 @@ directory of the hermes-agent repository, declaring:
 | Field | Meaning |
 |---|---|
 | `name` | The catalog key you pass to `hermes plugins install` |
+| `description` | One-line summary shown on cards and in the install prompt, including any reviewer disclosure |
 | `repo` | The plugin's public git repository |
 | `sha` | The **exact 40-hex commit** that was reviewed — installs check out this pin, not a branch tip |
 | `subdir` | Path to the plugin inside the repo for monorepos — a plain relative path matching `[A-Za-z0-9._/-]+` (no `..`, `.`, empty segments, absolute or backslash forms) (optional, default repo root) |
@@ -77,6 +58,7 @@ directory of the hermes-agent repository, declaring:
 | `title` | Human name shown on cards, e.g. `NVIDIA App` (optional; defaults to `name`) |
 | `onboarding` | `true` offers the plugin on the desktop onboarding card, beside the hosted connectors, on the platforms it lists. Curated: official entries only (optional, default `false`) |
 | `docs_url` | External documentation link (optional) |
+| `known_issues` | Short notes shown at the install prompt, e.g. an unsupported install mode. Informational; they never block the install (optional) |
 | `version` | Human-readable label for the pinned sha, e.g. `"1.4.0"`; shown as `1.4.0 @ abcd1234` in the CLI, on the catalog card and on the Desktop **Update to** button (optional, cosmetic) |
 | `image` | Banner image for the catalog card and the plugin page hero, shown at 2:1 (1200×600 works; other shapes are centre-cropped); an `https` URL on `raw.githubusercontent.com`, `github.com` or `*.githubusercontent.com` (optional). Pin it to the entry's commit (`raw.githubusercontent.com/owner/repo/<sha>/...`) so it never changes under the review |
 | `screenshots` | Up to 6 images shown as a gallery on the plugin page, same host rule as `image` (optional). Pin them to the entry's commit too |
@@ -147,22 +129,6 @@ repository. Review the code of anything you give credentials to.
 :::
 
 ## Installing from the catalog
-
-On the website, **Open in Hermes Desktop** opens a protocol link of this form:
-
-```text
-hermes://plugin/install?catalog=example-plugin
-```
-
-Desktop resolves the name against the published catalog and asks you to review
-the source, destination and components before confirming. The link does not
-auto-install or supply its own repository or commit. An unknown name or failed
-lookup shows an error; it never falls back to a repository install. For the
-agent-plugin component, the backend resolves the catalog name to its reviewed pin.
-
-Use an updated Desktop build for catalog links and the Skills Hub's
-`hermes://skill/install?identifier=...` route. The cards retain CLI commands,
-so you can install by catalog name without Desktop:
 
 ```bash
 # Install a reviewed catalog entry by name (checks out the pinned SHA)

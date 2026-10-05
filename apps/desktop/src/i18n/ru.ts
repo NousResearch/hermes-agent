@@ -1,6 +1,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
+import { ruModelMenu } from './ru_model_menu'
 
 // RU_PLURAL: (count, one, few, many) — русские формы сущ. падежа
 // RU_NOUN: (count, one, few, many) — формы род. множественного
@@ -59,66 +60,6 @@ export const ru = defineLocale({
     stripBody: 'Только ограниченные счётчики, никаких промптов и файлов.',
     stripChoices: { share: 'Отправлять в Nous', local: 'Только локально', off: 'Нет, спасибо' },
     stripDetails: 'Подробнее'
-  },
-  catalog: {
-    add: 'Добавить',
-    added: 'Добавлено',
-    discover: 'Открывайте новое',
-    featured: 'Рекомендуемые',
-    explorePlugins: 'Обзор плагинов',
-    exploreSkills: 'Обзор навыков',
-    mostStarred: 'Больше всего звёзд',
-    newest: 'Новинки',
-    recentlyUpdated: 'Недавно обновлённые',
-    alphabetical: 'Название',
-    sortBy: 'Сортировать по',
-    seeAll: 'Показать все',
-    related: 'Похожие',
-    tags: 'Теги',
-    screenshots: 'Снимки экрана',
-    listView: 'Список',
-    cardView: 'Карточки',
-    installTitle: (name: string) => `Установить «${name}»?`,
-    installDescription: 'Навык будет доступен в новых сессиях. Устанавливайте только из источников, которым доверяете.',
-    installTo: 'Установить в',
-    thisComputer: 'Этот компьютер',
-    installing: 'Установка…',
-    installComplete: (name: string) => `«${name}» установлен`,
-    destinationChanged: 'Место установки изменилось. Закройте диалог и снова откройте ссылку установки.',
-    installed: 'Установленные',
-    searchSkills: 'Поиск навыков',
-    searchPlugins: 'Поиск плагинов',
-    allSources: 'Все источники',
-    allCategories: 'Все категории',
-    about: 'Описание',
-    author: 'Автор',
-    source: 'Источник',
-    category: 'Категория',
-    version: 'Версия',
-    platforms: 'Платформы',
-    requires: 'Требования',
-    tools: 'Инструменты',
-    hooks: 'Хуки',
-    middleware: 'Промежуточное ПО',
-    commands: 'Команды',
-    license: 'Лицензия',
-    addedDate: 'Добавлено',
-    updatedDate: 'Обновлено',
-    repository: 'Репозиторий',
-    documentation: 'Документация',
-    noResults: 'Совпадений нет',
-    tryAnother: 'Попробуйте другой запрос или сбросьте фильтры.',
-    clearFilters: 'Сбросить фильтры',
-    filters: 'Фильтры',
-    loadFailed: 'Не удалось загрузить каталог',
-    retry: 'Попробовать снова',
-    more: 'Показать ещё',
-    pinned: 'Проверенный коммит',
-    snapshotHint: 'Из каталога Hermes. При просмотре нет обращений к исходным репозиториям.',
-    installHint: 'Проверьте исходный код перед установкой. Изменения применяются к новым сессиям.',
-    results: (count: number) =>
-      `${count.toLocaleString('ru')} ${RU_PLURAL(count, 'результат', 'результата', 'результатов')}`,
-    back: 'Назад к результатам'
   },
   sessionImport: {
     title: 'Продолжить из другого приложения',
@@ -1166,7 +1107,10 @@ export const ru = defineLocale({
         'Удалить все включённые наборы инструментов? Это отключит память, терминал, веб-поиск, делегирование и большинство других инструментов, пока вы не включите их снова.',
       keepAwakeTitle: 'Не давать компьютеру засыпать',
       keepAwakeDesc:
-        'Не даёт этой машине засыпать, чтобы долгие или ночные прогоны продолжались. Экран при этом может гаснуть.',
+        'Не давать этому компьютеру засыпать. «Во время работы» держит его только пока выполняется ход — ночные запуски переживут сон, а ноутбук не останется включённым всю неделю. Экран по‑прежнему может гаснуть.',
+      keepAwakeOff: 'Выкл',
+      keepAwakeWhileWorking: 'Во время работы',
+      keepAwakeAlways: 'Всегда',
       disableF12Title: 'Отключить F12 DevTools',
       disableF12Desc:
         'Блокирует открытие Developer Tools по F12. Ctrl+Shift+I (на Mac — Cmd+Opt+I) продолжает работать.',
@@ -1551,6 +1495,8 @@ export const ru = defineLocale({
       defaultsLabel: 'По умолчанию',
       reasoning: 'Рассуждения',
       reasoningOff: 'Выкл',
+      speed: 'Скорость',
+      speedStandard: 'Стандартная',
       defaultsFailed: 'Не удалось сохранить модель по умолчанию',
       auxiliaryTitle: 'Вспомогательные модели',
       resetAllToMain: 'Сбросить всё на основную',
@@ -1725,6 +1671,17 @@ export const ru = defineLocale({
         needsSetupConfirmAction: 'Выбрать всё равно'
       }
     }
+  },
+  skillDeepLink: {
+    installTitle: (name: string) => `Установить «${name}»?`,
+    installDescription: 'Навык будет доступен в новых сессиях. Устанавливайте только из источников, которым доверяете.',
+    installTo: 'Установить в',
+    thisComputer: 'Этот компьютер',
+    installing: 'Установка…',
+    installComplete: (name: string) => `«${name}» установлен`,
+    destinationChanged: 'Место установки изменилось. Закройте диалог и снова откройте ссылку установки.',
+    installed: 'Установленные',
+    source: 'Источник'
   },
   skills: {
     plugins: {
@@ -2142,6 +2099,9 @@ export const ru = defineLocale({
     replaceValue: 'Заменить текущее значение',
     openDocs: 'Открыть документацию',
     clearField: key => `Очистить ${key}`,
+    addListEntry: 'Добавить ещё',
+    removeListEntry: 'Удалить',
+    listEntryPlaceholder: 'Введите ID',
     enableAria: name => `Включить ${name}`,
     disableAria: name => `Отключить ${name}`,
     platformEnabled: name => `${name} включено`,
@@ -2217,7 +2177,7 @@ export const ru = defineLocale({
       },
       TELEGRAM_ALLOWED_USERS: {
         label: 'Разрешённые ID пользователей Telegram',
-        help: 'Рекомендуется. Числовые ID через @userinfobot через запятую. Без этого писать вашему боту может кто угодно.'
+        help: 'Рекомендуется. Числовые ID через @userinfobot (по одному в поле). Без этого писать вашему боту может кто угодно.'
       },
       TELEGRAM_PROXY: { label: 'URL прокси', help: 'Нужен только в сетях, где Telegram заблокирован.' },
       DISCORD_BOT_TOKEN: {
@@ -2226,7 +2186,7 @@ export const ru = defineLocale({
       },
       DISCORD_ALLOWED_USERS: {
         label: 'Разрешённые ID пользователей Discord',
-        help: 'Рекомендуется. ID пользователей Discord через запятую.'
+        help: 'Рекомендуется. ID пользователей Discord (по одному в поле).'
       },
       DISCORD_REPLY_TO_MODE: { label: 'Стиль ответов', help: 'first, all или off.' },
       DISCORD_ALLOW_ALL_USERS: {
@@ -2262,20 +2222,20 @@ export const ru = defineLocale({
       },
       SLACK_ALLOWED_USERS: {
         label: 'Разрешённые ID пользователей Slack',
-        help: 'Рекомендуется. ID пользователей Slack через запятую.'
+        help: 'Рекомендуется. ID пользователей Slack (по одному в поле).'
       },
       MATTERMOST_URL: { label: 'URL сервера', placeholder: 'https://mattermost.example.com' },
       MATTERMOST_TOKEN: { label: 'Токен бота' },
       MATTERMOST_ALLOWED_USERS: {
         label: 'Разрешённые ID пользователей',
-        help: 'Рекомендуется. ID пользователей Mattermost через запятую.'
+        help: 'Рекомендуется. ID пользователей Mattermost (по одному в поле).'
       },
       MATRIX_HOMESERVER: { label: 'URL homeserver', placeholder: 'https://matrix.org' },
       MATRIX_ACCESS_TOKEN: { label: 'Токен доступа' },
       MATRIX_USER_ID: { label: 'ID пользователя бота', placeholder: '@hermes:example.org' },
       MATRIX_ALLOWED_USERS: {
         label: 'Разрешённые ID пользователей Matrix',
-        help: 'Рекомендуется. ID пользователей через запятую в формате @user:server.'
+        help: 'Рекомендуется. ID пользователей (по одному в поле) в формате @user:server.'
       },
       SIGNAL_HTTP_URL: {
         label: 'URL моста Signal',
@@ -2285,7 +2245,7 @@ export const ru = defineLocale({
       SIGNAL_ACCOUNT: { label: 'Номер телефона', help: 'Номер, зарегистрированный в вашем мосте signal-cli.' },
       SIGNAL_ALLOWED_USERS: {
         label: 'Разрешённые пользователи Signal',
-        help: 'Рекомендуется. Идентификаторы Signal через запятую.'
+        help: 'Рекомендуется. Идентификаторы Signal (по одному в поле).'
       },
       WHATSAPP_ENABLED: {
         label: 'Включить мост WhatsApp',
@@ -2294,7 +2254,7 @@ export const ru = defineLocale({
       WHATSAPP_MODE: { label: 'Режим моста' },
       WHATSAPP_ALLOWED_USERS: {
         label: 'Разрешённые пользователи WhatsApp',
-        help: 'Рекомендуется. Номера телефонов или ID WhatsApp через запятую.'
+        help: 'Рекомендуется. Номера телефонов или ID WhatsApp (по одному в поле).'
       }
     },
     platformIntro: {}
@@ -3010,7 +2970,7 @@ export const ru = defineLocale({
       '/init': 'Просканировать репозиторий и создать или обновить инструкции AGENTS.md',
       '/suggestions': 'Просмотреть, принять или отклонить предложенные автоматизации',
       '/blueprint': 'Настроить автоматизацию по шаблону',
-      '/browser': 'Управлять CDP-подключением браузера [connect|disconnect|status] (только локальный шлюз)',
+      '/browser': 'Управлять браузером агента [connect|disconnect|status|use]',
       '/palette': 'Открыть палитру команд',
       '/usage': 'Показать расход токенов и лимиты; reset использует накопленный сброс лимита Codex',
       '/subscription': 'Показать план Nous и изменить его в браузере',
@@ -3612,27 +3572,14 @@ export const ru = defineLocale({
     windowControls: 'Управление окном',
     paneControls: 'Управление панелями',
     appControls: 'Управление приложением',
-    modelMenu: {
-      search: 'Поиск моделей',
-      noModels: 'Модели не найдены',
-      editModels: 'Изменить модели…',
-      followDefault: 'Использовать модель по умолчанию из настроек',
-      refreshModels: 'Обновить модели',
-      favorites: 'Избранное',
-      addFavorite: 'Добавить в избранное',
-      removeFavorite: 'Убрать из избранного',
-      favoriteShortcut: '⇧ Клик',
-      fast: 'Быстрая',
-      free: 'бесплатно',
-      cacheRead: 'чтение из кэша',
-      priceTitle: (input: string, output: string, cache: string) =>
-        `Вход ${input}/Mtok · Выход ${output}/Mtok` + (cache ? ` · Чтение из кэша ${cache}/Mtok` : '')
-    },
+    modelMenu: ruModelMenu,
     modelOptions: {
       noOptions: 'Для этой модели нет опций',
       options: 'Опции',
       thinking: 'Размышление',
       fast: 'Быстрая',
+      ultrafast: 'Ultrafast',
+      useStandardSpeed: 'Использовать стандартную скорость',
       effort: 'Усилия',
       minimal: 'Минимально',
       low: 'Низкое',
@@ -4250,9 +4197,6 @@ export const ru = defineLocale({
     sessionUnavailable: 'Сеанс недоступен',
     createSessionFailed: 'Не удалось создать новый сеанс',
     promptFailed: 'Промпт не удался',
-    staleSessionTitle: 'Чат устарел',
-    staleSessionBody:
-      'Это окно отставало от другого вида того же чата. Загружены последние сообщения. Отправьте снова, если всё ещё хотите.',
     providerCredentialRequired: 'Добавьте учётные данные провайдера перед отправкой первого сообщения.',
     emptySlashCommand: 'пустая слэш-команда',
     desktopCommands: 'Команды desktop',

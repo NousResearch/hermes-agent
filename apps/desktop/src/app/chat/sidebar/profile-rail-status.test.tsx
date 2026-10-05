@@ -66,6 +66,7 @@ vi.mock('@/store/profile', () => ({
   $showAllProfiles: atom(false),
   ALL_PROFILES: '*',
   normalizeProfileKey: (name: string) => name,
+  prewarmProfilePick: vi.fn(),
   profileLabel: (profile: { display_name?: string; name: string }) =>
     (profile.display_name ?? '').trim() || profile.name,
   refreshActiveProfile: vi.fn().mockResolvedValue(undefined),

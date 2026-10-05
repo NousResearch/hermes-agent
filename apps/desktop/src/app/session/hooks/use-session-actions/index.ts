@@ -39,6 +39,7 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { $connectionRequests } from '@/store/connection-request'
 import {
   $gateway,
+  isActivePrimary,
   openGatewayForAgent,
   openGatewayForProfile,
   pendingSessionReplay,
@@ -77,6 +78,7 @@ import {
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
+  $currentServiceTier,
   $messages,
   $newChatWorkspaceTarget,
   $sessions,
@@ -96,7 +98,6 @@ import {
   setCurrentCwd,
   setCurrentCwdExplicit,
   setCurrentCwdTransient,
-  setCurrentServiceTier,
   setCurrentUsage,
   setFreshDraftReady,
   setIntroSeed,
@@ -358,6 +359,7 @@ async function desktopSessionCreateParams(
   const selection = {
     effort: $currentReasoningEffort.get().trim(),
     fast: $currentFastMode.get(),
+    serviceTier: $currentServiceTier.get().trim(),
     model: isManualSelection ? $currentModel.get().trim() : '',
     provider: isManualSelection ? $currentProvider.get().trim() : ''
   }
@@ -390,7 +392,10 @@ async function desktopSessionCreateParams(
             ? { model: selection.model, ...(selection.provider ? { provider: selection.provider } : {}) }
             : {}),
           ...(selection.effort ? { reasoning_effort: selection.effort } : {}),
-          fast: selection.fast
+          fast: selection.fast,
+          // Only Ultrafast needs the tier: `fast` already pins Priority/normal, and a
+          // pre-Ultrafast backend rejects the field (createGatewaySession drops it).
+          ...(selection.serviceTier === 'ultrafast' ? { service_tier: 'ultrafast' } : {})
         }
       : {})
   }
@@ -742,9 +747,8 @@ export function useSessionActions({
       // localStorage) — a new chat FOLLOWS your last pick instead of snapping
       // back to the profile default, so we deliberately don't reset it here. The
       // profile default still owns first-run seeding and profile switches (see
-      // refreshCurrentModel). Only $currentServiceTier (a live-session mirror)
-      // is cleared.
-      setCurrentServiceTier('')
+      // refreshCurrentModel). Keep the canonical service tier too: clearing
+      // it while retaining fast=true would silently downgrade Ultrafast.
       setYoloActive(false)
       setNewChatWorkspaceTarget(hasWorkspaceTarget ? workspaceTarget : undefined)
       // #52589 provenance: only a deliberate string workspace target is an explicit
@@ -1436,8 +1440,13 @@ export function useSessionActions({
       // wrong machine ("resume failed: session not found").
       const ambientConnection = $connection.get()
 
+      // Keep the legacy primary-local profile door: main may resolve a named
+      // profile to its own remote override (#94166). A registry secondary is
+      // already an explicit source, even when it is This device under Home.
       const ambientConnectionId =
-        ambientConnection?.mode === 'remote' ? ambientConnection.connectionId?.trim() || '' : ''
+        ambientConnection?.mode === 'remote' || (ambientConnection?.registryScoped && !isActivePrimary())
+          ? ambientConnection.connectionId?.trim() || ''
+          : ''
 
       const provisional = provisionalTranscriptPaint(
         storedSessionId,
@@ -1489,6 +1498,21 @@ export function useSessionActions({
               profile: sessionProfile || 'default'
             }
           : sessionProfile)
+
+      // Preserve this resolved source for later prompt/approval RPCs too;
+      // otherwise an untagged row falls back to its bare profile after resume.
+      // Only for a row the ambient source actually returned: an id that did not
+      // resolve (deep link, routed restore) proves nothing about its owner, and
+      // a persisted hint would pin it to whichever source was in front.
+      if (
+        !ownerRoute &&
+        storedForProfile &&
+        !storedForProfile.connection_id &&
+        sessionOwner &&
+        typeof sessionOwner === 'object'
+      ) {
+        setSessionOwnerHint(storedSessionId, sessionOwner)
+      }
 
       const sessionRestScope = transcriptRestScope(ownerRoute, storedForProfile, ambientConnectionId)
       provisional.paint(sessionRestScope)

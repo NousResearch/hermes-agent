@@ -6,11 +6,11 @@ existing Hermes-facing JSON contract and falls back to the Python client
 libraries if `gws` is not installed.
 
 Usage:
-  python google_api.py gmail search "is:unread" [--max 10]
+  python google_api.py gmail search "is:unread" [--max 10] [--page-token TOKEN] [--page-info]
   python google_api.py gmail get MESSAGE_ID
   python google_api.py gmail send --to user@example.com --subject "Hi" --body "Hello"
   python google_api.py gmail reply MESSAGE_ID --body "Thanks"
-  python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
+  python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary] [--page-token TOKEN] [--page-info]
   python google_api.py calendar create --summary "Meeting" --start DATETIME --end DATETIME
   python google_api.py drive search "budget report" [--max 10]
   python google_api.py contacts list [--max 20]
@@ -275,52 +275,32 @@ def build_service(api, version):
 # =========================================================================
 
 
-def gmail_search(args: argparse.Namespace) -> None:
-    if _gws_binary():
-        results = _run_gws(
-            ["gmail", "users", "messages", "list"],
-            params={"userId": "me", "q": args.query, "maxResults": args.max},
-        )
-        messages = results.get("messages", [])
-        output = []
-        for msg_meta in messages:
-            msg = _run_gws(
-                ["gmail", "users", "messages", "get"],
-                params={
-                    "userId": "me",
-                    "id": msg_meta["id"],
-                    "format": "metadata",
-                    "metadataHeaders": ["From", "To", "Subject", "Date"],
-                },
-            )
-            headers = _headers_dict(msg)
-            output.append(
-                {
-                    "id": msg["id"],
-                    "threadId": msg["threadId"],
-                    "from": headers.get("from", ""),
-                    "to": headers.get("to", ""),
-                    "subject": headers.get("subject", ""),
-                    "date": headers.get("date", ""),
-                    "snippet": msg.get("snippet", ""),
-                    "labels": msg.get("labelIds", []),
-                }
-            )
-        print(json.dumps(output, indent=2, ensure_ascii=False))
-        return
+def _print_page(items: list, response: dict, args: argparse.Namespace, **echo: str) -> None:
+    """Print *items*; with ``--page-info`` wrap them with ``nextPageToken`` (None on the last page)."""
+    if args.page_info:
+        items = {"results": items, "nextPageToken": response.get("nextPageToken"), **echo}
+    print(json.dumps(items, indent=2, ensure_ascii=False))
 
-    service = build_service("gmail", "v1")
-    results = service.users().messages().list(
-        userId="me", q=args.query, maxResults=args.max
-    ).execute()
-    messages = results.get("messages", [])
+
+def gmail_search(args: argparse.Namespace) -> None:
+    params = {"userId": "me", "q": args.query, "maxResults": args.max}
+    if args.page_token:
+        params["pageToken"] = args.page_token
+    meta = {"format": "metadata", "metadataHeaders": ["From", "To", "Subject", "Date"]}
+    # gws params and the Python client's keyword arguments share the API's parameter names.
+    if _gws_binary():
+        results = _run_gws(["gmail", "users", "messages", "list"], params=params)
+        fetch = lambda message_id: _run_gws(  # noqa: E731
+            ["gmail", "users", "messages", "get"], params={"userId": "me", "id": message_id, **meta})
+    else:
+        service = build_service("gmail", "v1")
+        results = service.users().messages().list(**params).execute()
+        fetch = lambda message_id: service.users().messages().get(  # noqa: E731
+            userId="me", id=message_id, **meta).execute()
 
     output = []
-    for msg_meta in messages:
-        msg = service.users().messages().get(
-            userId="me", id=msg_meta["id"], format="metadata",
-            metadataHeaders=["From", "To", "Subject", "Date"],
-        ).execute()
+    for msg_meta in results.get("messages", []):
+        msg = fetch(msg_meta["id"])
         headers = _headers_dict(msg)
         output.append({
             "id": msg["id"],
@@ -332,8 +312,7 @@ def gmail_search(args: argparse.Namespace) -> None:
             "snippet": msg.get("snippet", ""),
             "labels": msg.get("labelIds", []),
         })
-    print(json.dumps(output, indent=2, ensure_ascii=False))
-
+    _print_page(output, results, args)
 
 
 def gmail_get(args):
@@ -526,39 +505,21 @@ def calendar_list(args):
     now = datetime.now(timezone.utc)
     time_min = _datetime_with_timezone(args.start or now.isoformat())
     time_max = _datetime_with_timezone(args.end or (now + timedelta(days=7)).isoformat())
+    params = {
+        "calendarId": args.calendar,
+        "timeMin": time_min,
+        "timeMax": time_max,
+        "maxResults": args.max,
+        "singleEvents": True,
+        "orderBy": "startTime",
+    }
+    if args.page_token:
+        params["pageToken"] = args.page_token
 
     if _gws_binary():
-        results = _run_gws(
-            ["calendar", "events", "list"],
-            params={
-                "calendarId": args.calendar,
-                "timeMin": time_min,
-                "timeMax": time_max,
-                "maxResults": args.max,
-                "singleEvents": True,
-                "orderBy": "startTime",
-            },
-        )
-        events = []
-        for e in results.get("items", []):
-            events.append({
-                "id": e["id"],
-                "summary": e.get("summary", "(no title)"),
-                "start": e.get("start", {}).get("dateTime", e.get("start", {}).get("date", "")),
-                "end": e.get("end", {}).get("dateTime", e.get("end", {}).get("date", "")),
-                "location": e.get("location", ""),
-                "description": e.get("description", ""),
-                "status": e.get("status", ""),
-                "htmlLink": e.get("htmlLink", ""),
-            })
-        print(json.dumps(events, indent=2, ensure_ascii=False))
-        return
-
-    service = build_service("calendar", "v3")
-    results = service.events().list(
-        calendarId=args.calendar, timeMin=time_min, timeMax=time_max,
-        maxResults=args.max, singleEvents=True, orderBy="startTime",
-    ).execute()
+        results = _run_gws(["calendar", "events", "list"], params=params)
+    else:
+        results = build_service("calendar", "v3").events().list(**params).execute()
 
     events = []
     for e in results.get("items", []):
@@ -572,7 +533,8 @@ def calendar_list(args):
             "status": e.get("status", ""),
             "htmlLink": e.get("htmlLink", ""),
         })
-    print(json.dumps(events, indent=2, ensure_ascii=False))
+    # A token only continues the same time range, so the resolved range is echoed for the next call.
+    _print_page(events, results, args, timeMin=time_min, timeMax=time_max)
 
 
 
@@ -1144,6 +1106,12 @@ def _docs_insert_text(doc_id: str, text: str, index: int, tab_id: str | None = N
 # =========================================================================
 
 
+def _add_page_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--page-token", default="", help="Continue from a previous page's nextPageToken")
+    parser.add_argument("--page-info", action="store_true",
+                        help="Print {results, nextPageToken} instead of a bare array; nextPageToken is null on the last page")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Google Workspace API for Hermes Agent")
     sub = parser.add_subparsers(dest="service", required=True)
@@ -1155,6 +1123,7 @@ def main():
     p = gmail_sub.add_parser("search")
     p.add_argument("query", help="Gmail search query (e.g. 'is:unread')")
     p.add_argument("--max", type=int, default=10)
+    _add_page_args(p)
     p.set_defaults(func=gmail_search)
 
     p = gmail_sub.add_parser("get")
@@ -1195,6 +1164,7 @@ def main():
     p.add_argument("--end", default="", help="End time (ISO 8601)")
     p.add_argument("--max", type=int, default=25)
     p.add_argument("--calendar", default="primary")
+    _add_page_args(p)
     p.set_defaults(func=calendar_list)
 
     p = cal_sub.add_parser("create")

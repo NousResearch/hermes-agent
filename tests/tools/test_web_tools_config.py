@@ -689,11 +689,10 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
-    def test_xai_only_env_end_to_end_toolset_gate(self, monkeypatch, tmp_path):
-        """E2e through the registry: a real XAI_API_KEY env var -> the real
-        has_xai_credentials probe -> check_fn -> get_tool_definitions. The web
-        toolset must serve zero tools (xai can never be dispatched to), and it
-        must light up once a real web key joins."""
+    def test_xai_only_env_keeps_providerless_direct_extract_available(self, monkeypatch, tmp_path):
+        """E2e through the registry: XAI alone cannot expose web_search, but
+        web_extract remains available for its public direct routes. A real web
+        key then exposes both tools."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # isolate auth.json / credential pool
         monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
         for k in ("PERPLEXITY_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY"):
@@ -705,7 +704,7 @@ class TestCheckWebApiKey:
             invalidate_check_fn_cache()
             names = {d["function"]["name"]
                      for d in model_tools.get_tool_definitions(enabled_toolsets=["web"])}
-            assert names == set()
+            assert names == {"web_extract"}
 
             monkeypatch.setenv("TAVILY_API_KEY", "tavily-test-key")
             invalidate_check_fn_cache()

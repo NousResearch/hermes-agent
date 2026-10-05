@@ -194,7 +194,7 @@ def _map_ssl_cert_file_for_git(git_cmd) -> None:
 
 
 def _no_prompt_git_kwargs() -> dict:
-    """``subprocess.run`` kwargs for the updater's network git calls.
+    """``Popen`` kwargs for the updater's network git calls.
 
     GitHub answers anonymous fetches with HTTP 401 during outages (and for
     unreachable repos); git then prompts ``Username for 'https://github.com':``
@@ -202,10 +202,16 @@ def _no_prompt_git_kwargs() -> dict:
     prompt so the fetch fails fast into ``_classify_fetch_failure``. Only the
     *prompt* is disabled — a configured credential helper / askpass still
     runs, so a private-fork origin keeps authenticating non-interactively.
+
+    ``GIT_NO_LAZY_FETCH`` stops the nested promisor lazy-fetch recursion on a
+    partial (tree:0) clone before it starts (#124794) — honoured by git >= 2.44;
+    older git ignores it, which is why ``_git_run(network=True)`` additionally
+    reaps the process group on timeout.
     """
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "Never"
+    env["GIT_NO_LAZY_FETCH"] = "1"
     # Every network git spawn (fetch/pull/shallow heal) runs under a console-less
     # desktop backend on Windows; hide the per-spawn console (#117781).
     from hermes_cli._subprocess_compat import windows_hide_flags
@@ -229,6 +235,97 @@ def _record_update_step(step: str, ok: bool, detail: str = "") -> None:
 # otherwise leaves `hermes update` on "Fetching updates..." forever (#93759, #95777). Five
 # minutes is generous for a scoped single-branch fetch and still ends in a real error.
 NETWORK_GIT_TIMEOUT_SECONDS = 300
+
+
+def _hardened_spawn_server():
+    """Return the hardened spawner, or ``None`` where it cannot load.
+
+    ``local_runtime.processes`` imports psutil at module scope and pyproject pins psutil for
+    Python >= 3.14 only, while ``requires-python`` still admits 3.11-3.13 exactly so old
+    installs can run ``hermes update`` (pyproject's updater note). On those the import fails;
+    the updater must fall back to a plain bounded run there instead of dying.
+    """
+    try:
+        from hermes_cli.local_runtime.processes import spawn_server
+    except Exception:
+        return None
+    return spawn_server
+
+
+def _bounded_plain_run(argv, *, timeout, cwd, env):
+    """``subprocess.run`` shape whose timeout cleanup is bounded — and needs no psutil.
+
+    ``run()`` kills only the direct child and then calls an *unbounded* ``communicate()``;
+    a descendant holding duplicates of the captured pipe write-ends keeps the pipes from
+    EOF and blocks the reader join forever — the stall class this PR removes (see
+    ``bounded_probe_run``'s docstring, #87134 / #68609). Here the child leads its own
+    process group and the timeout path tree-kills it (``kill_process_tree``'s legacy leg
+    needs no psutil) followed by a bounded 1s drain, abandoning the pipes rather than
+    waiting on them. Returns a ``CompletedProcess``, or ``None`` on timeout.
+    """
+    from hermes_cli._subprocess_compat import kill_process_tree
+
+    popen_kwargs = {} if os.name == "nt" else {"process_group": 0}
+    proc = subprocess.Popen(
+        list(argv), stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+        text=True, encoding="utf-8", errors="replace",
+        env=env, cwd=cwd, **popen_kwargs)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except Exception:
+        kill_process_tree(proc)
+        try:
+            proc.communicate(timeout=1)
+        except Exception:
+            pass
+        return None
+    return subprocess.CompletedProcess(list(argv), proc.returncode, stdout, stderr)
+
+
+def _git_run_network(git_cmd, args, cwd, *, check):
+    """The updater's network git calls, hardened for a stall (#124794).
+
+    A stalled network git call is a process *tree*, not a process: on a tree:0 partial clone
+    with git < 2.44 (which ignores ``GIT_NO_LAZY_FETCH``) each hung promisor lazy-fetch spawns
+    the next, and the tree grew unbounded until the host died under it. ``subprocess.run``'s
+    timeout kills only the direct child and orphans that tree, so the call runs through
+    ``bounded_probe_run`` — the child leads its own process group (``process_group=0``) and
+    the timeout tree-kills the entire group (``kill_process_tree``) with a bounded drain. The
+    checkout stays consistent: fetch writes to tmp_pack_* and only renames on success.
+
+    Where the hardened spawner can't load (Python < 3.14 carries no psutil), the call keeps
+    a psutil-free bounded run with the same tree-kill cleanup: the child leads its own
+    process group and a timeout reaps the whole group with a bounded drain (see
+    ``_bounded_plain_run``) — never ``run()``'s unbounded post-timeout ``communicate()``.
+    """
+    argv = [*git_cmd, *args]
+    kwargs = _no_prompt_git_kwargs()
+    if _hardened_spawn_server() is not None:
+        from hermes_cli._subprocess_compat import bounded_probe_run
+        result = bounded_probe_run(
+            argv, timeout=NETWORK_GIT_TIMEOUT_SECONDS, cwd=cwd,
+            env=kwargs["env"], raise_on_spawn_failure=True)
+        if result is None:
+            # Report the timeout as a failed run so every caller's existing stderr path prints
+            # one clear line.
+            result = subprocess.CompletedProcess(
+                argv, 124, stdout="",
+                stderr=f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s with no response from the remote")
+        if check and result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode, argv, output=result.stdout, stderr=result.stderr)
+        return result
+    result = _bounded_plain_run(
+        argv, timeout=NETWORK_GIT_TIMEOUT_SECONDS, cwd=cwd, env=kwargs["env"])
+    if result is None:
+        # Same failed-run shape as the hardened path above: one clear stderr line.
+        return subprocess.CompletedProcess(
+            argv, 124, stdout="",
+            stderr=f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s with no response from the remote")
+    if check and result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode, argv, output=result.stdout, stderr=result.stderr)
+    return result
 
 
 def _record_update_skip(step: str, reason: str) -> None:
@@ -267,30 +364,19 @@ def _record_snapshot_stage(args, snapshot_id) -> None:
 
 def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     """Run git capturing utf-8 text (default cwd: checkout); ``network=True`` disables the
-    terminal prompt so an HTTP 401 fails fast instead of hanging, and bounds the wait.
+terminal prompt so an HTTP 401 fails fast instead of hanging, bounds the wait, and
+    reaps a stalled fetch's whole process tree instead of orphaning it (#124794).
 
     Every spawn carries ``windows_hide_flags()``: the updater's git children run under the
     console-less desktop backend, and a bare spawn flashes a console window each (#117781)."""
+    if network:
+        return _git_run_network(git_cmd, args, _m().PROJECT_ROOT if cwd is None else cwd, check=check)
     from hermes_cli._subprocess_compat import windows_hide_flags
-    # ``_no_prompt_git_kwargs()`` already carries the hide flags for network
-    # calls, so layer them instead of passing the keyword twice.
-    spawn_kwargs = {"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()} if network else {}
-    spawn_kwargs.setdefault("creationflags", windows_hide_flags())
-    try:
-        return subprocess.run(
-            git_cmd + args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
-            text=True, encoding="utf-8", errors="replace", check=check,
-            **spawn_kwargs)
-    except subprocess.TimeoutExpired as exc:
-        # subprocess.run already killed the child; the checkout stays consistent because
-        # fetch writes to tmp_pack_* and only renames on success. Report as a failed run
-        # so every caller's existing stderr path prints one clear line.
-        result = subprocess.CompletedProcess(
-            exc.cmd, 124, stdout="",
-            stderr=f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s (a stalled remote, or a transfer too large for the limit)")
-        if check:
-            raise subprocess.CalledProcessError(124, exc.cmd, output="", stderr=result.stderr) from exc
-        return result
+    argv = [*git_cmd, *args]
+    return subprocess.run(
+        argv, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
+        text=True, encoding="utf-8", errors="replace", check=check,
+        creationflags=windows_hide_flags())
 
 
 def _heal_stale_shallow_checkout(repo_root: Path, branch: str) -> None:

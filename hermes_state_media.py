@@ -174,7 +174,10 @@ def prepare_media_content(db_path, content: Any, media_content: Any = None, *, d
             return content, None
     if not has_images(original):
         return content, None
-    text = _durable_content(original)
+    # Direct structured writers displayed only text parts (e.g. the SQL timeline);
+    # only the agent flush historically inserted [screenshot] placeholders.
+    from agent.message_content import flatten_message_text
+    text = flatten_message_text(original) if display and isinstance(original, list) else _durable_content(original)
     try:
         refs: list = []
         skeleton = _externalize(original, _media_root(db_path), refs)

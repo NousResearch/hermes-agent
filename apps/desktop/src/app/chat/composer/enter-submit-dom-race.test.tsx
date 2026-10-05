@@ -1476,4 +1476,82 @@ describe('composer Enter — a deliberate gesture outranks the pause rule', () =
 
     expect(onSubmit).toHaveBeenCalledWith('a tap, not a hold')
   })
+
+  it('gives the hold its own window when the user asked that gesture to wait', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness
+        enterSends={false}
+        onCancel={vi.fn()}
+        onDrain={vi.fn()}
+        onQueue={vi.fn()}
+        onSubmit={onSubmit}
+        sendGraceFor={['hold']}
+        sendOnHold
+      />
+    )
+
+    const editor = getByTestId('editor')
+
+    editor.textContent = 'held, then waits'
+
+    act(() => {
+      fireEvent.keyDown(editor, { key: 'Enter' })
+      vi.advanceTimersByTime(HOLD_MS)
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    act(() => {
+      vi.advanceTimersByTime(GRACE_MS)
+    })
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).toHaveBeenCalledWith('held, then waits')
+  })
+
+  it('waits the gesture own window even after a pause handed it the press, and commits once', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness
+        enterSends={false}
+        onCancel={vi.fn()}
+        onDrain={vi.fn()}
+        onQueue={vi.fn()}
+        onSubmit={onSubmit}
+        sendGraceFor={['pause', 'hold']}
+        sendOnHold
+        sendOnPause
+        typedIdleMsAgo={5000}
+        typingIdleMs={1000}
+      />
+    )
+
+    const editor = getByTestId('editor')
+
+    editor.textContent = 'pause, then hold'
+
+    // The pause hands the press to the hold, which fires at its threshold and
+    // then waits out its own window.
+    act(() => {
+      fireEvent.keyDown(editor, { key: 'Enter' })
+      vi.advanceTimersByTime(HOLD_MS)
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    // The release must not also run the pause rule the hold superseded.
+    fireEvent.keyUp(editor, { key: 'Enter' })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    act(() => {
+      vi.advanceTimersByTime(GRACE_MS)
+    })
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).toHaveBeenCalledWith('pause, then hold')
+  })
 })

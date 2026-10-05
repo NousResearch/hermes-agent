@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Union
 
 from cron.jobs import effective_job_state
-from cron.jobs import _skill_list_items
+from cron.skill_lists import _skill_list_items
 
 import hermes_time
 

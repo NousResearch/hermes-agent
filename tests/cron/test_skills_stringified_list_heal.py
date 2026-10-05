@@ -62,6 +62,27 @@ class TestSchedulerJobSkillNamesHeals:
         assert _job_skill_names({}) == []
 
 
+class TestHealHasNoStoreDependency:
+    """``_job_skill_names`` is reached from prompt assembly, which entrypoints import standalone
+    (the desktop gateway). Healing must therefore come from a stdlib-only leaf: a lazy
+    ``cron.jobs`` import made an unavailable store raise ImportError out of skill loading,
+    where names used to be returned best-effort (#132674 review)."""
+
+    def test_job_skill_names_survive_unimportable_store(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "cron.jobs", None)
+        assert _job_skill_names({"skills": ["['x']"]}) == ["x"]
+        assert _job_skill_names({"skill": "['x', 'y']"}) == ["x", "y"]
+
+    def test_leaf_module_imports_without_the_store(self, monkeypatch):
+        import importlib
+
+        monkeypatch.delitem(sys.modules, "cron.skill_lists", raising=False)
+        monkeypatch.setitem(sys.modules, "cron.jobs", None)
+        leaf = importlib.import_module("cron.skill_lists")
+        assert leaf._normalize_skill_list(None, "['x']") == ["x"]
+        assert leaf._normalize_skill_list(None, [["x", "y"], "z"]) == ["x", "y", "z"]
+
+
 class TestStoredRecordHealsOnRead:
     """End-to-end: a malformed record in jobs.json reads back healed (create_job →
     hand-corrupt → list_jobs), without rewriting storage on read."""

@@ -22,6 +22,7 @@ from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.base import build_auto_tts_output_path
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.helpers import bounded_put
 from gateway.session import SessionSource
 
 logger = logging.getLogger("gateway.run")  # log-record parity with the origin module
@@ -362,17 +363,18 @@ class GatewayVoiceMixin:
     def _should_echo_stt_transcripts(self) -> bool:
         return bool(getattr(self.config, "stt_echo_transcripts", True))
 
-    async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
+    async def _send_voice_reply(self, event: MessageEvent, text: str) -> Optional[str]:
         """Generate TTS audio and send as a voice message before the text reply. The TTS tool
         may return one combined file or several separately valid ones (combination unavailable /
-        over a platform limit); legacy single-file results keep working."""
+        over a platform limit); legacy single-file results keep working. Returns a short failure
+        reason when TTS failed (e.g. a paid provider's 402/401/429 envelope), None otherwise."""
         audio_path, actual_paths = None, []
         try:
             from tools.tts_text_normalize import _strip_markdown_for_tts
             from tools.tts_tool import text_to_speech_tool
             tts_text = _strip_markdown_for_tts(text)
             if not tts_text:
-                return
+                return None
             # Platforms whose native voice bubbles require Ogg/Opus (OPUS_VOICE_PLATFORMS) get an
             # explicit .ogg path; the TTS tool's container repair guarantees real Ogg/Opus bytes.
             audio_path = build_auto_tts_output_path(event.source.platform)
@@ -383,20 +385,49 @@ class GatewayVoiceMixin:
             except (json.JSONDecodeError, TypeError):
                 logger.warning("Auto voice reply TTS returned invalid JSON: %s",
                                raw[:200] if raw else raw)
-                return
+                return "TTS returned an invalid response"
             candidates = result.get("file_paths") or [result.get("file_path", audio_path)]
             paths = [str(p) for p in candidates if p and os.path.isfile(p)]
             if not result.get("success") or not paths:
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
-                return
+                return str(result.get("error") or "TTS failed")
             actual_paths = paths
             await self._deliver_voice_reply(event, actual_paths)
+            # A delivered voice reply re-arms the failure note for this chat (#133134).
+            self._voice_fail_noted.pop(self._voice_key_for_source(event.source), None)
+            return None
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
+            # Fixed phrase only: str(e) can carry httpx/SDK internals (request URLs, internal
+            # hostnames, tracebacks) into what may be a group chat (#133134, review feedback).
+            return "voice synthesis failed"
         finally:
             for p in ({audio_path, *actual_paths} - {None}):
                 with suppress(OSError):
                     os.unlink(p)
+
+    def _voice_unavailable_note(self, event: MessageEvent, error: str) -> Optional[str]:
+        """One-line note appended to the text reply when auto TTS failed, so paid-provider errors
+        (402/401/429) stop being log-only (#133134). Fires once per failure streak per chat: a
+        persistent outage must not annotate every message, and the next successful voice reply
+        re-arms the note via ``_send_voice_reply``. Chats that opted out of warning notifications
+        (``BasePlatformAdapter.warning_notifications_enabled``) never see it — the note is a
+        gateway notice, not message content."""
+        # Warning-notification opt-out covers this note too. A failed/absent probe reads as
+        # "notifications on": the issue was exactly that these failures stayed invisible.
+        enabled = True
+        with suppress(Exception):
+            gate = getattr(self._delivery_adapter_for(event.source),
+                          "warning_notifications_enabled", None)
+            enabled = not callable(gate) or bool(gate(chat_id=event.source.chat_id))
+        if not enabled:
+            return None
+        key = self._voice_key_for_source(event.source)
+        if key in self._voice_fail_noted:
+            return None
+        bounded_put(self._voice_fail_noted, key, None, 2000)
+        reason = " ".join(str(error or "unknown error").split())[:200]
+        return f"(Voice reply unavailable: {reason})"
 
     async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: List[str]) -> None:
         """Play the files in the connected voice channel, else send them as voice messages."""

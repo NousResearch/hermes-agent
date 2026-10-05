@@ -1932,10 +1932,15 @@ class GatewayTurnMixin:
         _streaming_tts_done = adapter is not None and bool(
             getattr(adapter, "_streaming_tts_turn_completed", lambda *_a, **_k: False)(session_key, run_generation)
         )
+        _voice_note = None
         if not _streaming_tts_done and self._should_send_voice_reply(
             event, response, agent_messages, already_sent=bool(agent_result.get("already_sent")),
         ):
-            await self._send_voice_reply(event, response)
+            _voice_error = await self._send_voice_reply(event, response)
+            if _voice_error:
+                # TTS failed (e.g. paid provider 402/401/429): tell the user once per failure
+                # streak instead of letting voice silently stop (#133134).
+                _voice_note = self._voice_unavailable_note(event, _voice_error)
 
         # Streamed responses still need MEDIA: files delivered (chunks carry the tags verbatim). Never
         # skip when the agent failed: the error text is new content streaming didn't show.
@@ -1950,12 +1955,20 @@ class GatewayTurnMixin:
                     await adapter.send(source.chat_id, _footer_line, metadata=self._event_thread_metadata(event, source))
                 except Exception as _e:
                     logger.debug("trailing footer send failed: %s", _e)
+            # The streamed body can't be amended, so the voice note goes out as its own line.
+            if _voice_note and adapter:
+                try:
+                    await adapter.send(source.chat_id, _voice_note, metadata=self._event_thread_metadata(event, source))
+                except Exception as _e:
+                    logger.debug("voice unavailable note send failed: %s", _e)
             # Return None so the body isn't sent twice; stash the delivered text on the event for the
             # /loop and /goal hooks that read the return value.
             with suppress(Exception):
                 event._streamed_final_response = str(response or "")
             return None
 
+        if _voice_note:
+            response = f"{response}\n\n{_voice_note}"
         return response
 
     # Chat-side next steps keyed by HTTP status; Hermes commands only (/login is the gateway's own

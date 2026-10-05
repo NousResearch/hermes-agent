@@ -429,9 +429,14 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
     from hermes_cli.model_normalize import normalize_model_for_provider
     from hermes_cli.providers import resolve_custom_provider, resolve_user_provider
 
+    from hermes_cli import provider_seam
+
     prov_in = (provider or "").strip()
     model_in = (model or "").strip()
     canonical = normalize_provider(prov_in)
+    # A provider published by a refresh callback must be known before the membership checks
+    # below, or a late provider's ``vendor/model`` pick is reassigned to an aggregator.
+    provider_seam.refresh("typed", canonical)
 
     try:
         cfg = load_config()

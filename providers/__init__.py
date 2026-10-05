@@ -46,13 +46,14 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from hermes_cli.provider_seam import GuardedDict
 from providers.base import ProviderProfile
 
 logger = logging.getLogger(__name__)
 
 # Process-wide layer: bundled plugins, pip entry points, legacy ``providers/<name>.py``.
-_REGISTRY: dict[str, ProviderProfile] = {}
-_ALIASES: dict[str, str] = {}
+_REGISTRY: dict[str, ProviderProfile] = GuardedDict(__name__, "_REGISTRY", {})
+_ALIASES: dict[str, str] = GuardedDict(__name__, "_ALIASES", {})
 # Where the CURRENT registration of each name came from: "bundled" / "user" (a
 # ``$HERMES_HOME`` plugin dir) / "runtime" (entry point, legacy module, direct call).
 _SOURCES: dict[str, str] = {}

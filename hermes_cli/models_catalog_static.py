@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
+from hermes_cli import provider_seam
+from hermes_cli.provider_seam import GuardedDict, GuardedList
+
 
 class CuratedFallbackModels(list[str]):
     """A curated list served because the provider's live catalog was unavailable. The disk cache
@@ -167,7 +170,7 @@ _ALIBABA_TOKEN_PLAN_MODELS = [
 _XAI_MODELS = _xai_curated_models()
 
 # Curated per-provider lists. ``-cn`` twins share the international catalog on a domestic endpoint.
-_PROVIDER_MODELS: dict[str, list[str]] = {
+_PROVIDER_MODELS: dict[str, list[str]] = GuardedDict(__name__, "_PROVIDER_MODELS", {
     "moa": ["default"],
     "nous": [mid for mid, _ in OPENROUTER_MODELS if mid not in _OPENROUTER_ONLY and not mid.endswith(":free")],
     # Used by /model counts and provider_model_ids fallback when /v1/models is unavailable.
@@ -305,7 +308,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     # Bare ids derived from the picker snapshot so both stay in sync.
     "ai-gateway": [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS],
-}
+})
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +324,7 @@ class ProviderEntry(NamedTuple):
     tui_desc: str
 
 
-CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
+CANONICAL_PROVIDERS: list[ProviderEntry] = GuardedList(__name__, "CANONICAL_PROVIDERS", [ProviderEntry(*row) for row in (
     ("nous", "Nous Portal", "Nous Portal (Everything your agent needs, 300+ models with bundled tool use)"),
     ("fireworks", "Fireworks AI", "Fireworks AI (OpenAI-compatible direct model API)"),
     ("openrouter", "OpenRouter", "OpenRouter (Pay-per-use API aggregator)"),
@@ -360,7 +363,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
     ("azure-foundry", "Azure Foundry", "Azure Foundry (OpenAI-style or Anthropic-style endpoint, your Azure AI deployment)"),
     ("ai-gateway", "Vercel AI Gateway", "Vercel AI Gateway (Multi-model aggregator)"),
     ("qwen-oauth", "Qwen OAuth (Portal)", "Qwen OAuth (Reuses local Qwen CLI login)"),
-)]
+)])
 
 
 # Auto-extend CANONICAL_PROVIDERS with providers registered under plugins/model-providers/<name>/
@@ -371,12 +374,15 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
 # credentials, not here: ``models._provider_has_credentials`` / ``_lap_canonical_rows`` route
 # through ``auth.get_auth_status`` (external_process → the binary resolves; OAuth → auth.json /
 # credential-pool entry), so an admitted row reads authenticated=False until the user signs in.
-_canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
-
-
 def _plugin_provider_enters_picker(pp) -> bool:
-    """Picker admission for a plugin model-provider profile: any slug without a built-in row."""
-    return pp.name not in _canonical_slugs
+    """Picker admission for a plugin model-provider profile: any slug without a canonical row.
+
+    Read from the committed ``CANONICAL_PROVIDERS`` generation, not a side set, so the guard
+    cannot disagree with the list after ``provider_seam.restore`` reverts it. Read through
+    ``provider_seam.current()`` rather than the module global: a rebound global (a test's
+    ``monkeypatch.setattr``) must not let a built-in slug be re-admitted into the generation.
+    """
+    return all(p.slug != pp.name for p in provider_seam.current().CANONICAL_PROVIDERS)
 
 
 def sync_plugin_provider_catalog() -> int:
@@ -394,19 +400,30 @@ def sync_plugin_provider_catalog() -> int:
         profiles = list_providers()
     except Exception:
         return 0
-    added = 0
+    entries: list[ProviderEntry] = []
     for pp in profiles:
-        if not _plugin_provider_enters_picker(pp):
+        if not _plugin_provider_enters_picker(pp) or any(e.slug == pp.name for e in entries):
             continue
         label = pp.display_name or pp.name
-        CANONICAL_PROVIDERS.append(ProviderEntry(pp.name, label, pp.description or f"{label} (direct API)"))
-        _canonical_slugs.add(pp.name)
-        _PROVIDER_LABELS[pp.name] = label
-        added += 1
-    return added
+        entries.append(ProviderEntry(pp.name, label, pp.description or f"{label} (direct API)"))
+    if not entries:
+        return 0
+    # ONE generation swap for every provider-identity surface, so a reader never sees a plugin
+    # provider on the canonical list without its label, or recognised by ``provider:model`` parsing
+    # (``models._KNOWN_PROVIDER_NAMES``, bound once ``hermes_cli.models`` is imported) without being
+    # listed. That set used to be computed once at import, so a provider registered later was listed
+    # in the picker yet ``/model <provider>:<model>`` fell through to the current aggregator.
+    delta: dict = {"CANONICAL_PROVIDERS": entries}
+    if "_PROVIDER_LABELS" in globals():
+        labels = provider_seam.current()._PROVIDER_LABELS
+        delta["_PROVIDER_LABELS"] = {e.slug: e.label for e in entries if e.slug not in labels}
+    if "_KNOWN_PROVIDER_NAMES" in provider_seam.FACADES:
+        delta["_KNOWN_PROVIDER_NAMES"] = {e.slug for e in entries}
+    provider_seam.publish(delta)
+    return len(entries)
 
 
-_PROVIDER_LABELS: dict[str, str] = {p.slug: p.label for p in CANONICAL_PROVIDERS}
+_PROVIDER_LABELS: dict[str, str] = GuardedDict(__name__, "_PROVIDER_LABELS", {p.slug: p.label for p in CANONICAL_PROVIDERS})
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
 sync_plugin_provider_catalog()
 
@@ -480,7 +497,7 @@ def group_providers(slugs):
     return rows
 
 
-_PROVIDER_ALIASES = dict((
+_PROVIDER_ALIASES = GuardedDict(__name__, "_PROVIDER_ALIASES", dict((
     ("glm", "zai"), ("z-ai", "zai"), ("z.ai", "zai"), ("zhipu", "zai"), ("github", "copilot"),
     ("github-copilot", "copilot"), ("github-models", "copilot"), ("github-model", "copilot"),
     ("github-copilot-acp", "copilot-acp"), ("copilot-acp-agent", "copilot-acp"), ("google", "gemini"),
@@ -515,7 +532,7 @@ _PROVIDER_ALIASES = dict((
     # aliases stay unmapped: they are the managed local runtime's picker id, and the model
     # validator must reach its staged-library branch before the custom one.
     ("local", "custom"), ("vllm", "custom"),
-))
+)))
 
 
 # Offline/fresh-install fallback for the model Hermes silently lands on when the user never picked

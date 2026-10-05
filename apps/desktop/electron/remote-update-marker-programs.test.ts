@@ -132,3 +132,29 @@ test.skipIf(process.platform === 'win32')(
     }
   }
 )
+
+// macOS/BSD remotes read creation time from `ps -o lstart=`. Python's judge asks
+// for it in UTC (TZ=UTC0 + calendar.timegm); a local-time parse of the repeated
+// DST hour lands an hour off and judges a live owner dead (review G2).
+test.skipIf(process.platform === 'win32')('the remote judge reads ps lstart in UTC, not local time', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'hermes-remote-lstart-'))
+
+  try {
+    // Started 01:30 EST on 2026-11-01 (06:30 UTC): New York local time repeats 01:30.
+    writeFileSync(
+      path.join(root, 'ps'),
+      '#!/bin/sh\nif [ "$TZ" = UTC0 ]; then echo "Sun Nov  1 06:30:00 2026"; else echo "Sun Nov  1 01:30:00 2026"; fi\n',
+      { mode: 0o755 }
+    )
+
+    const driver = `${REMOTE_MARKER_JUDGE_PY}\nsys.platform='darwin'\nprint(repr(marker_ct(4242)))`
+
+    const { stdout } = await execFile('python3', ['-c', driver], {
+      env: { ...process.env, PATH: `${root}:${process.env.PATH}`, TZ: 'America/New_York' }
+    })
+
+    assert.equal(Number(stdout.trim()), Date.UTC(2026, 10, 1, 6, 30) / 1000)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

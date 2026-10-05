@@ -89,9 +89,10 @@ def marker_ct(pid):
         if sys.platform.startswith('linux'):
             with open('/proc/stat') as stat:btime=next(int(line.split()[1]) for line in stat if line.startswith('btime '))
             return btime+int(marker_stat(pid)[19])/os.sysconf('SC_CLK_TCK')
-        import subprocess
-        out=subprocess.check_output(['ps','-o','lstart=','-p',str(pid)],env=dict(os.environ,LC_ALL='C'),universal_newlines=True)
-        return time.mktime(time.strptime(out.strip(),'%a %b %d %H:%M:%S %Y'))
+        # UTC like update_lock._stdlib_create_time: a local-time lstart is ambiguous in the repeated DST hour.
+        import calendar,subprocess
+        out=subprocess.check_output(['ps','-o','lstart=','-p',str(pid)],env=dict(os.environ,LC_ALL='C',TZ='UTC0'),universal_newlines=True)
+        return float(calendar.timegm(time.strptime(' '.join(out.split()),'%a %b %d %H:%M:%S %Y')))
     except Exception:return None
 
 MARKER_ENV={'our_pid':os.getpid(),'our_ct':lambda:marker_ct(os.getpid()),'alive':marker_alive,'ct':marker_ct,'now':time.time()}

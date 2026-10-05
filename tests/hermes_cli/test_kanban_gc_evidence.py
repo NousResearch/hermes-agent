@@ -1,8 +1,10 @@
 """Every ``kanban gc`` event sweep must leave first-party evidence in the same
 event stream it prunes (#133284): a board-level ``gc_pruned`` event carrying
-the cutoff, deleted count, and pruned id window, so an auditor can tell a
-recorded retention prune from an unexplained deletion."""
+the cutoff, deleted count, pruned id window, and a sha256 fingerprint of the
+deleted ids, so an auditor can tell a recorded retention prune from an
+unexplained deletion."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -42,22 +44,31 @@ def test_gc_events_prune_leaves_matching_evidence(board):
         max_id_before = conn.execute(
             "SELECT COALESCE(MAX(id), 0) FROM task_events"
         ).fetchone()[0]
+        # Auditor's baseline: the id list before the sweep (what an external
+        # export / hash chain would hold). The fingerprint must reconcile
+        # against it, not against the post-DELETE visible space.
+        pre_ids = [r[0] for r in conn.execute(
+            "SELECT id FROM task_events ORDER BY id ASC"
+        ).fetchall()]
         deleted = kb.gc_events(conn, older_than_seconds=1)
         assert deleted > 0
-        assert conn.execute(
-            "SELECT count(*) FROM task_events WHERE task_id=?", (tid,)
-        ).fetchone()[0] == 0  # the seed task's plain 'created' row is prunable
+        assert deleted == 1, "the seed task's lone 'created' event is its only event and is prunable"
         rows = _gc_evidence_rows(conn)
         assert len(rows) == 1, "prune without a gc_pruned evidence row is an unexplained deletion"
         payload = json.loads(rows[0]["payload"])
         assert payload["deleted_count"] == deleted
         assert payload["retention_seconds"] == 1
         assert payload["run_at"] >= payload["cutoff"] > 0
-        # Deleted ids must fall inside the recorded window, and the window must
-        # predate the evidence row itself (recorded after the DELETE).
+        # Deleted ids must fall inside the recorded window, the window must
+        # predate the evidence row itself, and the fingerprint must match an
+        # independent recomputation over the surviving-visible id space.
         assert payload["min_event_id"] is not None
         assert 1 <= payload["min_event_id"] <= payload["max_event_id"] < rows[0]["id"]
         assert payload["max_event_id"] <= max_id_before
+        expected = hashlib.sha256(
+            ",".join(str(i) for i in pre_ids).encode("utf-8")
+        ).hexdigest()
+        assert payload["deleted_ids_sha256"] == expected
         # A second sweep appends its own evidence; earlier evidence survives gc
         # (board sentinel is not a done/archived task, so it is never pruned).
         kb.gc_events(conn, older_than_seconds=1)

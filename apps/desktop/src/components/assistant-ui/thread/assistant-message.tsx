@@ -301,9 +301,9 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
       onDoubleClick={collapsedNotice ? undefined : onDoubleClick}
       ref={enterRef}
     >
+      <h2 className="sr-only">{t.assistant.thread.assistantMessageHeading}</h2>
       {collapsedNotice ?? (
         <>
-          <h2 className="sr-only">{t.assistant.thread.assistantMessageHeading}</h2>
           <div
             className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
             data-slot="aui_assistant-message-content"

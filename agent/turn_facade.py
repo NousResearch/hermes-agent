@@ -178,8 +178,7 @@ class TurnFacadeMixin:
             return result
         except BaseException as exc:
             if lease is not None:
-                lease.finish_observation("interrupted" if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or
-                                         type(exc).__name__ == "CancelledError" else "error")
+                lease.finish_observation_exception(exc)
             if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (
                 type(exc).__name__ == "CancelledError"
             ):

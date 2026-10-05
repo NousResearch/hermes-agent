@@ -89,6 +89,10 @@ class DurableTurnLease:
         elif result.get("completed") is True:
             self.finish_observation("complete")
 
+    def finish_observation_exception(self, exc: BaseException) -> None:
+        interrupted = isinstance(exc, (KeyboardInterrupt, InterruptedError)) or type(exc).__name__ == "CancelledError"
+        self.finish_observation("interrupted" if interrupted else "error")
+
     def _current_session_id(self) -> str:
         return getattr(self.agent, "session_id", None) or self.session_id
 

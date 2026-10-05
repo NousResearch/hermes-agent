@@ -27,7 +27,9 @@ from .shared_metrics_contract import (
     MODEL_ROUTE_METRIC,
     SUM_METRICS,
     client_resource_is_valid,
+    conform_counter_dimensions,
     counter_dimensions_are_valid,
+    counter_dimensions_shape_is_known,
 )
 
 
@@ -645,10 +647,21 @@ class SharedMetricsStore:
     def _package_metric(row: sqlite3.Row) -> dict[str, Any]:
         metric_name = str(row["metric_name"])
         dimensions = json.loads(row["dimensions_json"])
-        if not isinstance(dimensions, dict) or not counter_dimensions_are_valid(
-            metric_name, dimensions
-        ):
+        # An unknown field set is tamper evidence and fails closed (must-not-be-exported). A known
+        # shape whose values fell out of the contract is catalog drift between the recording and
+        # packaging processes (#133017): re-bucket inside the closed enum rather than abort the
+        # whole period's package; un-rebucketable value drift still fails closed.
+        if not isinstance(dimensions, dict) or not counter_dimensions_shape_is_known(metric_name, dimensions):
             raise ValueError(f"Unsupported dimensions for shared metric: {metric_name}")
+        if not counter_dimensions_are_valid(metric_name, dimensions):
+            conformed = conform_counter_dimensions(metric_name, dimensions)
+            if conformed is None:
+                raise ValueError(f"Unsupported dimensions for shared metric: {metric_name}")
+            logger.warning(
+                "Shared-metric %s row drifted out of the contract since it was recorded; "
+                "packaged with bucketed dimensions %s", metric_name, _compact_json(conformed),
+            )
+            dimensions = conformed
         return {
             "name": metric_name, "type": "counter", "dimensions": dimensions,
             "value": row["value"] - row["packaged_value"],

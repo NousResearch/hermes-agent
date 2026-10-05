@@ -129,14 +129,11 @@ def reap_foreground_scopes() -> bool:
     construction and a dead one's are stopped without needing any record at all.
 
     Returns True when at least one unit was stopped. Best effort by construction: an
-    unreachable manager, an unnameable unit, or a liveness answer that cannot be resolved
-    means no stop, and enqueuing a stop is not proof that the scope is gone before
-    ``Restart=`` starts the next gateway.
+    unreachable manager or an unnameable unit means no stop, and enqueuing a stop is
+    not proof that the scope is gone before ``Restart=`` starts the next gateway.
     """
-    try:
-        from tools.environments.local import sweep_dead_foreground_scopes
-    except Exception:
-        return False
+    from tools.environments.local import sweep_dead_foreground_scopes
+
     return sweep_dead_foreground_scopes(no_block=True) > 0
 
 

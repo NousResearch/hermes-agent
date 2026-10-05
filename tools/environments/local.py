@@ -1045,21 +1045,6 @@ def foreground_scope_pid(unit_name: str) -> int | None:
     return int(head) if head.isdigit() else None
 
 
-def _scope_pid_is_alive(pid: int) -> bool:
-    """True when the PID a scope is named after still exists.
-
-    Fails closed: if liveness cannot be determined the scope is left alone — a stale unit
-    outliving a restart is the lesser harm than stopping a live gateway's commands.
-    """
-    try:
-        from gateway.status import _pid_exists
-    except Exception:
-        return True
-    with contextlib.suppress(Exception):
-        return bool(_pid_exists(pid))
-    return True
-
-
 def sweep_dead_foreground_scopes(*, no_block: bool = False) -> int:
     """Stop every loaded foreground scope whose gateway PID is gone; returns how many.
 
@@ -1068,38 +1053,33 @@ def sweep_dead_foreground_scopes(*, no_block: bool = False) -> int:
     can clean a stale one, and a ``--replace`` unlink no-ops when it already names the new
     process), while the PID embedded in each unit name says exactly which gateway issued
     it — so a live gateway keeps its scopes by construction rather than by timing. Best
-    effort: an unreachable manager, an unnameable unit, or a liveness answer that cannot be
-    resolved means no stop, and enqueuing a stop is not proof the scope is gone.
+    effort: an unreachable manager or an unnameable unit means no stop, and enqueuing a
+    stop is not proof the scope is gone.
     """
+    from gateway.status import _pid_exists
     from tools.process_registry import _stop_systemd_unit, list_systemd_user_scope_units
 
     swept = 0
     for unit in list_systemd_user_scope_units(f"{_FOREGROUND_SCOPE_PREFIX}-*.scope"):
         pid = foreground_scope_pid(unit)
-        if pid is None or _scope_pid_is_alive(pid):
+        if pid is None or _pid_exists(pid):
             continue
         if _stop_systemd_unit(unit, no_block=no_block):
             swept += 1
     return swept
 
 
-def stop_foreground_scopes(pid: int | None = None, *, no_block: bool = False) -> None:
-    """Stop foreground scopes: this process's at host exit, or a dead gateway's (crash sweep).
+def stop_foreground_scopes() -> None:
+    """Stop this process's foreground scopes at host exit, once any was issued.
 
-    ``pid`` names the gateway that *issued* the scopes. The host-exit funnel passes
-    nothing and therefore only runs once a scope was issued; the ExecStopPost sweep
-    passes the PID of the gateway that just died, because systemd unsets ``$MAINPID``
-    before that hook runs (``man systemd.service``: it is unset if the main process
-    exited by the time the stop commands are called). The PID stays in the glob either
-    way, so profiles sharing one user manager never stop each other's commands, and a
-    glob that matches nothing is a no-op (``systemctl stop`` exits 0).
+    The PID stays in the glob, so profiles sharing one user manager never stop each
+    other's commands, and a glob that matches nothing is a no-op (``systemctl stop``
+    exits 0). A dead gateway's scopes are swept by ``sweep_dead_foreground_scopes``.
     """
-    if pid is None:
-        if not _foreground_scope_issued:
-            return
-        pid = os.getpid()
+    if not _foreground_scope_issued:
+        return
     from tools.process_registry import _stop_systemd_unit
-    _stop_systemd_unit(f"{_FOREGROUND_SCOPE_PREFIX}-{pid}-*.scope", no_block=no_block)
+    _stop_systemd_unit(f"{_FOREGROUND_SCOPE_PREFIX}-{os.getpid()}-*.scope")
 
 
 class LocalEnvironment(BaseEnvironment):

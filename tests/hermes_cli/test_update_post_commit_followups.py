@@ -284,3 +284,36 @@ def test_completion_child_interrupted_after_verification_answers_its_success(tmp
     assert answer["exit_code"] == 0 and answer["receipt"]["outcome"] == "success"
     assert not (tmp_path / ".update_exit_code").exists() or \
         (tmp_path / ".update_exit_code").read_text(encoding="utf-8").strip() == "0"
+
+
+def test_both_completion_children_run_in_utf8_mode(tmp_path, monkeypatch):
+    """-I drops PYTHONIOENCODING, and both completion children print the ✓/⚠ follow-up protocol
+    into a pipe: each argv carries -X utf8 (win-utf8 review; the bootstrap child got it first)."""
+    import pm
+    from pm import client, environments, receipt
+    from hermes_cli import update_completion, venv_sync
+
+    calls = []
+
+    def popen(command, **kwargs):
+        calls.append(command)
+        raise OSError("stop after capturing the argv")
+
+    monkeypatch.setattr(subprocess, "call", lambda command, **kw: calls.append(command) or 0)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    for module, name in ((venv_sync, "refuse_foreign_owned_venv"), (venv_sync, "arm_completion"),
+                         (venv_sync, "collect_superseded_generations"), (client, "ensure_tools_for_sync"),
+                         (pm, "sync_venv")):
+        monkeypatch.setattr(module, name, lambda *a, **k: None)
+    monkeypatch.setattr(receipt, "last_for_update", lambda *a, **k: None)
+    monkeypatch.setattr(environments, "project_python", lambda root: "python")
+    monkeypatch.setattr(environments, "activation_environment", lambda root: {})
+    monkeypatch.setattr(update_completion, "_settle_after_commit", lambda *a: 0)
+    request = {"source": str(tmp_path), "receipt": {"update_id": "u1"}, "bytecode_cache": str(tmp_path / "bc")}
+    update_completion._prepare(request, tmp_path / "request.json", tmp_path / "result.json")
+    monkeypatch.setattr(update_completion.sys, "platform", "win32")  # skip the Linux libatomic pre-install
+    with pytest.raises(OSError):
+        update_completion.run_completion({**request, "home": str(tmp_path)})
+    assert len(calls) == 2
+    for command in calls:
+        assert command[command.index("-I"):].count("utf8") == 1 and "-X" in command, command

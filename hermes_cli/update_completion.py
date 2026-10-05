@@ -315,8 +315,10 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
         finally:
             request["pm_receipt"] = receipt.last_for_update(update_id)
             _write_json(request_path, request)
+    # -X utf8 like the bootstrap child: -I ignores PYTHONIOENCODING, and this child prints ✓/⚠
+    # (the follow-up protocol) into the parent's pipe, whatever the console code page.
     command = [str(project_python(root)),
-               "-I", "-S", "-u", "-X", f"pycache_prefix={request['bytecode_cache']}",
+               "-I", "-S", "-u", "-X", "utf8", "-X", f"pycache_prefix={request['bytecode_cache']}",
                str(root / "hermes_cli/update_completion.py"),
                str(request_path), str(result_path), "--prepared"]
     # A second interpreter is mandatory: PM may have selected a different Python

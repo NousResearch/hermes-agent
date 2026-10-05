@@ -100,7 +100,7 @@ import { CodingStatusRow } from './status-stack/coding-row'
 import { StatusDrawerContent, StatusDrawerToggle } from './status-stack/drawer'
 import { SuggestionPills } from './suggestion-pills'
 import { extractClipboardImageBlobs, openDirectiveScope } from './text-utils'
-import { ComposerTriggerPopover } from './trigger-popover'
+import { completionOptionId, ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { isRedoShortcut, isUndoShortcut } from './undo-history'
 import { UrlDialog } from './url-dialog'
@@ -210,6 +210,8 @@ export function ChatBar({
   const { collapsed: statusDrawerCollapsed, toggle: toggleStatusDrawer } = useStatusDrawer(activeQueueSessionKey)
   const statusDrawerId = useId()
   const codingDrawerId = useId()
+  const completionListboxId = useId()
+  const completionOptionIdPrefix = useId()
 
   // Status items (subagents, background processes) are keyed by the RUNTIME
   // session id — gateway events and process.list both speak that id. Only the
@@ -1167,12 +1169,24 @@ export function ChatBar({
   )
 
   const inputWidthClass = composerInputWidthClass(stacked)
+  const completionOpen = Boolean(trigger && !argStageEmpty)
+  const activeCompletionItem = completionOpen ? triggerItems[triggerActive] : undefined
+
+  const activeCompletionOptionId = activeCompletionItem
+    ? completionOptionId(completionOptionIdPrefix, activeCompletionItem)
+    : undefined
 
   const input = (
     <div className={cn('relative', inputWidthClass)}>
       <div
+        aria-activedescendant={activeCompletionOptionId}
+        aria-autocomplete="list"
+        aria-controls={completionOpen ? completionListboxId : undefined}
         aria-disabled={inputDisabled ? true : undefined}
+        aria-expanded={completionOpen}
+        aria-haspopup="listbox"
         aria-label={t.composer.message}
+        aria-multiline="true"
         autoCapitalize="off"
         // Chromium's macOS text-replacement path shares the autocorrect gate.
         // Keeping spellcheck off below still excludes smart quotes and dashes.
@@ -1415,9 +1429,11 @@ export function ChatBar({
                 activeIndex={triggerActive}
                 items={triggerItems}
                 kind={trigger.kind}
+                listboxId={completionListboxId}
                 loading={triggerLoading}
                 onHover={setTriggerActive}
                 onPick={replaceTriggerWithChip}
+                optionIdPrefix={completionOptionIdPrefix}
                 scope={trigger.scope}
               />
             )}

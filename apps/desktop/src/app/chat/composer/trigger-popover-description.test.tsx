@@ -17,13 +17,15 @@ it('reveals the complete slash description on hover without intercepting selecti
         activeIndex={0}
         items={[item]}
         kind="/"
+        listboxId="composer-description-listbox"
         loading={false}
         onHover={vi.fn()}
         onPick={onPick}
+        optionIdPrefix="composer-description-option"
       />
     </I18nProvider>
   )
-  const row = screen.getByRole('button')
+  const row = screen.getByRole('option')
   fireEvent.pointerMove(row, { pointerType: 'mouse' })
   expect((await screen.findByRole('tooltip')).textContent).toBe(description)
   fireEvent.click(row)

@@ -9,6 +9,7 @@ import {
   type DragEvent as ReactDragEvent,
   useCallback,
   useEffect,
+  useId,
   useRef,
   useState
 } from 'react'
@@ -48,7 +49,7 @@ import {
   RICH_INPUT_SLOT
 } from '@/app/chat/composer/rich-editor'
 import { detectTrigger, openDirectiveScope, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
-import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
+import { completionOptionId, ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { isRedoShortcut, isUndoShortcut } from '@/app/chat/composer/undo-history'
 import { chipTypedUrlOnSpace, linkifyUrls } from '@/app/chat/composer/url-refs'
 import {
@@ -108,6 +109,8 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
   const [triggerActive, setTriggerActive] = useState(0)
   const [triggerItems, setTriggerItems] = useState<readonly Unstable_TriggerItem[]>([])
+  const completionListboxId = useId()
+  const completionOptionIdPrefix = useId()
   // See index.tsx: set in keydown when the open popover consumes a nav/control
   // key so the matching keyup skips refreshTrigger (timing-immune vs reading
   // `trigger`, which keyup sees as already-null after Escape).
@@ -833,6 +836,12 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   }
 
   const handleKeyUp = triggerKeyUpHandler(triggerKeyConsumedRef, refreshTrigger)
+  const completionOpen = Boolean(trigger)
+  const activeCompletionItem = completionOpen ? triggerItems[triggerActive] : undefined
+
+  const activeCompletionOptionId = activeCompletionItem
+    ? completionOptionId(completionOptionIdPrefix, activeCompletionItem)
+    : undefined
 
   return (
     <ComposerPrimitive.Root className="contents" data-slot="aui_edit-composer-root">
@@ -854,9 +863,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               activeIndex={triggerActive}
               items={triggerItems}
               kind={trigger.kind}
+              listboxId={completionListboxId}
               loading={triggerLoading}
               onHover={setTriggerActive}
               onPick={replaceTriggerWithChip}
+              optionIdPrefix={completionOptionIdPrefix}
               placement={triggerPlacement}
             />
           )}
@@ -870,7 +881,13 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
             data-expanded={expanded ? 'true' : undefined}
           >
             <div
+              aria-activedescendant={activeCompletionOptionId}
+              aria-autocomplete="list"
+              aria-controls={completionOpen ? completionListboxId : undefined}
+              aria-expanded={completionOpen}
+              aria-haspopup="listbox"
               aria-label={copy.editMessage}
+              aria-multiline="true"
               autoCapitalize="off"
               // Match the main composer: allow macOS replacements, not spellcheck.
               autoCorrect={isMacPlatform() ? 'on' : 'off'}

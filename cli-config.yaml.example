@@ -1411,7 +1411,6 @@ gateway:
 #   whatsapp:      hermes-whatsapp       (same as telegram)
 #   slack:         hermes-slack          (same as telegram)
 #   signal:        hermes-signal         (same as telegram)
-#   homeassistant: hermes-homeassistant  (same as telegram)
 #   qqbot:            hermes-qqbot            (same as telegram)
 #   teams:            hermes-teams            (same as telegram)
 #   google_chat:      hermes-google_chat      (same as telegram)
@@ -1423,7 +1422,6 @@ platform_toolsets:
   whatsapp: [hermes-whatsapp]
   slack: [hermes-slack]
   signal: [hermes-signal]
-  homeassistant: [hermes-homeassistant]
   qqbot: [hermes-qqbot]
   yuanbao: [hermes-yuanbao]
   teams: [hermes-teams]

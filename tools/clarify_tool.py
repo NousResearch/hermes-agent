@@ -169,7 +169,7 @@ CLARIFY_SCHEMA = {
                         "question": {"type": "string"},
                         "choices": {
                             "type": "array",
-                            "items": {"type": "string", "maxLength": MAX_CHOICE_CHARS},
+                            "items": {"type": "string"},  # no maxLength: llama.cpp's grammar converter rejects >=2000 (#131278); the limit is enforced above
                             "maxItems": MAX_CHOICES,
                         },
                         "multi_select": {"type": "boolean"},

@@ -1736,6 +1736,16 @@ DEFAULT_CONFIG = {
         # Opt-in unattended apply for the cadence check. Git-row plugins ONLY; every apply runs the
         # same security scan / consent pipeline as the manual update command.
         "auto_apply": False,
+        # Where third-party Python plugins run. in_process: imported into Hermes (default).
+        # host: one plugin-host process per profile runs them and they reach Hermes only through
+        # ctx (a crashing or hanging plugin takes down its host, which restarts; Hermes keeps
+        # running). Bundled plugins stay in-process; `hermes plugins validate` says whether a
+        # plugin can run in the host.
+        "isolation": "in_process",
+        "host": {
+            # argv prefix the plugin host runs under, e.g. a sandbox runner. [] = plain subprocess.
+            "launcher": [],
+        },
     },
     # Shell-script hooks: event name (pre_tool_call, post_tool_call, pre_llm_call, subagent_stop,
     # ...) -> list of {matcher, command, timeout}. First run of a new command prompts for consent;

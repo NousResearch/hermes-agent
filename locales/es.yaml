@@ -1448,8 +1448,6 @@ platform:
   irc:
     quit_message: "Hermes Agent se está apagando"
     standalone_quit: "entregado"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Aprobar una vez"
     confirm_always_approve: "Aprobar siempre"
@@ -2355,6 +2353,7 @@ cli:
     removed: "Se eliminó el elemento {index} de la cola: {preview}"
     item_not_found: "No se encontró el elemento {index} de la cola. Tamaño actual: {size}"
     usage_edit: "Uso: /queue edit <número> <nuevo prompt>"
+    usage_remove: "Uso: /queue rm <número>"
     updated: "Se actualizó el elemento {index} de la cola: {preview}"
     usage_move: "Uso: /queue move <desde> <hasta>"
     move_out_of_range: "Movimiento fuera de rango en la cola. Tamaño actual: {size}"
@@ -2720,6 +2719,7 @@ cli:
       restored: "Estado restaurado desde: {snapshot_id}"
       restart_recommended: "Se recomienda reiniciar los procesos del gateway/dashboard para que apliquen los cambios de state.db."
       not_found: "Instantánea no encontrada: {snapshot_id}"
+      restore_incomplete: "La instantánea {snapshot_id} no se restauró por completo; algunos archivos fueron rechazados (consulta los registros)"
       usage_prune: "Uso: /snapshot prune [keep-count]"
       pruned: "Se eliminaron {deleted} instantánea(s) antigua(s) (conservando {keep})."
     export:

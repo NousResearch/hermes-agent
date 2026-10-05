@@ -13,7 +13,7 @@ import logging
 from typing import Any, Dict, Optional, Tuple
 
 from agent.message_metadata import append_message
-from agent.message_sanitization import coalesce_tool_call_id
+from agent.message_sanitization import coalesce_tool_call_id, normalize_provider_tool_call_ids
 from agent.turn_preflight import compress_after_tool_results
 from agent.turn_tool_validation import validate_tool_calls
 
@@ -94,6 +94,9 @@ def run_tool_round(
     assistant_message.tool_calls = agent._deduplicate_tool_calls(
         agent._cap_delegate_task_calls(assistant_message.tool_calls)
     )
+    # Filtering can turn a mixed batch into an all-provider one; re-check the final batch
+    # before it is staged (idempotent for already-normalized ids).
+    normalize_provider_tool_call_ids(assistant_message.tool_calls)
 
     # Mixed batch: the assistant message keeps EVERY emitted call (each tool_call needs a
     # matching result) while only valid ones dispatch.

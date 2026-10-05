@@ -1,0 +1,24 @@
+name: vornik-companion
+repo: https://github.com/EaseIT-cz/vornik
+sha: 3e6a0bde5ff163511e5a9786e7842775d807eacf
+subdir: contrib/hermes-companion
+description: "Vornik as Hermes's hardened broker and long-term memory: Hermes holds no credentials; privileged work runs in operator-approved workflows on your own Vornik daemon. Disclosure — talks only to the self-hosted Vornik daemon at VORNIK_URL with VORNIK_BROKER_TOKEN; broker tools let the agent start operator-approved workflows on that daemon (writes are approved by a person in Vornik); when selected as memory provider it sends each turn's user query for recall and mirrors MEMORY.md and USER.md writes to the daemon; hermes vornik connect runs the local vornikctl, which adds an MCP entry to Hermes config."
+maintainer: EaseIT Labs
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://docs.vornik.io/features/companion/
+version: "0.4.0"
+capabilities:
+  provides_tools:
+    - vornik_catalog
+    - vornik_delegate
+    - vornik_result
+    - vornik_status
+    - vornik_cancel
+    - vornik_recall
+    - vornik_remember
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

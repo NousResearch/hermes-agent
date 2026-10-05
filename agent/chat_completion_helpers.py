@@ -1556,6 +1556,10 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     # One-shot continuation override — consumed exactly once, on the FIRST
     # request this call builds (only one api_mode branch runs per invocation).
     reasoning_config = _reasoning_config_for_wire(agent)
+    # effort_overrides: {xhigh: max} for an endpoint that rejects a level the
+    # OpenAI-compat set still includes. Session config stays as configured.
+    from agent.agent_init import _apply_custom_provider_effort_overrides
+    reasoning_config = _apply_custom_provider_effort_overrides(agent, reasoning_config)
     if tools_for_api is None:
         tools_for_api = agent.tools
     # The one place request_overrides are consumed: static /fast values are already pinned
@@ -2042,7 +2046,11 @@ def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_b
     config injected — a caller override of the same key won at init and differs, so it survives;
     keys the new provider redefines are re-added by the merge."""
     try:
-        from agent.agent_init import _custom_provider_extra_body_for_agent, _merge_custom_provider_extra_body
+        from agent.agent_init import (
+            _custom_provider_extra_body_for_agent,
+            _merge_custom_provider_extra_body,
+            _store_custom_provider_effort_overrides,
+        )
         custom_providers = getattr(agent, "_custom_providers", None) or []
         old_provider_eb = _custom_provider_extra_body_for_agent(provider=old_provider, model=old_model, base_url=old_base_url, custom_providers=custom_providers) or {}
         overrides = dict(getattr(agent, "request_overrides", {}) or {})
@@ -2055,6 +2063,7 @@ def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_b
                 overrides.pop("extra_body", None)
             agent.request_overrides = overrides
         _merge_custom_provider_extra_body(agent, custom_providers)
+        _store_custom_provider_effort_overrides(agent, custom_providers)
         logger.info("Fallback %s: extra_body resolved: %s", agent.model, (getattr(agent, "request_overrides", {}) or {}).get("extra_body"))
     except Exception as _eb_err:
         logger.debug("Failed to resolve extra_body for fallback %s; keeping current: %s", agent.model, _eb_err)

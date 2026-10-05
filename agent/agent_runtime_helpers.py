@@ -1511,6 +1511,11 @@ def restore_primary_runtime(agent) -> bool:
         # Undo the fallback's identity rewrite so the prompt is byte-identical to the stored copy
         # again (prefix cache match).
         rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
+        with contextlib.suppress(Exception):
+            from agent.agent_init import _store_custom_provider_effort_overrides
+            _store_custom_provider_effort_overrides(
+                agent, getattr(agent, "_custom_providers", None) or [],
+            )
         logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
         agent._provider_fallback_active = False
         agent._provider_fallback_route = None
@@ -2130,7 +2135,9 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
     Matches by provider key, base_url AND model (same rule as
     ``agent_init._merge_custom_provider_extra_body``) so a different model at the same endpoint
     never inherits another's ``extra_body``. Stale ``extra_body`` cleared; ``service_tier``/``speed`` kept."""
-    from agent.agent_init import _custom_provider_extra_body_for_agent
+    from agent.agent_init import (
+        _custom_provider_extra_body_for_agent, _store_custom_provider_effort_overrides,
+    )
     # Prefer the init-time cache (agent._custom_providers); reload only if absent.
     custom_providers = getattr(agent, "_custom_providers", None)
     if custom_providers is None:
@@ -2148,6 +2155,7 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
     if new_extra_body:
         overrides["extra_body"] = dict(new_extra_body)
     agent.request_overrides = overrides
+    _store_custom_provider_effort_overrides(agent, custom_providers or [], provider=new_provider)
 
 
 # Pool reload is part of the switch and must be reversible on rollback, hence the pool fields.

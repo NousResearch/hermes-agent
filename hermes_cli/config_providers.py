@@ -108,7 +108,8 @@ _CAMEL_ALIASES: Dict[str, str] = {
     "defaultModel": "default_model",
     "contextLength": "context_length",
     "rateLimitDelay": "rate_limit_delay",
-    "sessionAffinityHeader": "session_affinity_header"}
+    "sessionAffinityHeader": "session_affinity_header",
+    "effortOverrides": "effort_overrides"}
 
 
 _KNOWN_PROVIDER_KEYS = {
@@ -119,7 +120,22 @@ _KNOWN_PROVIDER_KEYS = {
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
     "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify",
-    "catalog_provider", "session_affinity_header"}
+    "catalog_provider", "session_affinity_header", "effort_overrides"}
+
+
+def _normalize_effort_overrides(raw: Any) -> Optional[Dict[str, str]]:
+    """Lowercased ``{requested: wire}`` map, or None when nothing usable remains."""
+    if not isinstance(raw, dict) or not raw:
+        return None
+    normalized: Dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        requested = key.strip().lower()
+        wire = value.strip().lower()
+        if requested and wire:
+            normalized[requested] = wire
+    return normalized or None
 
 
 def _pick_provider_base_url(entry: Dict[str, Any], provider_key: str) -> str:
@@ -267,6 +283,9 @@ def _normalize_custom_provider_entry(
             normalized[field] = entry[field]
     if isinstance(entry.get("extra_body"), dict):
         normalized["extra_body"] = dict(entry["extra_body"])
+    effort_overrides = _normalize_effort_overrides(entry.get("effort_overrides"))
+    if effort_overrides:
+        normalized["effort_overrides"] = effort_overrides
 
     # Per-provider extra HTTP headers may carry credentials — never log them downstream.
     _put("extra_headers", normalize_extra_headers(entry.get("extra_headers")))
@@ -293,7 +312,8 @@ def _custom_provider_entry_to_provider_config(
     for field in (
         "name", "api_key", "key_env", "key_cmd", "models", "models_discovered", "context_length",
         "rate_limit_delay", "discover_models", "extra_body", "extra_headers",
-        "session_affinity_header", "ssl_ca_cert", "ssl_verify", "catalog_provider"):
+        "session_affinity_header", "ssl_ca_cert", "ssl_verify", "catalog_provider",
+        "effort_overrides"):
         if field in normalized:
             provider_entry[field] = normalized[field]
     if "model" in normalized:

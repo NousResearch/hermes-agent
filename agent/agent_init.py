@@ -317,6 +317,86 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _normalize_effort_overrides(raw: Any) -> Optional[Dict[str, str]]:
+    """Lowercased ``{requested: wire}`` map. Defined next to provider config parsing."""
+    from hermes_cli.config_providers import _normalize_effort_overrides as _normalize
+    return _normalize(raw)
+
+
+def _custom_provider_effort_overrides_for_agent(
+    *, provider: str, model: str, base_url: str, custom_providers: List[Dict[str, Any]]
+) -> Optional[Dict[str, str]]:
+    """Read ``effort_overrides`` from the matching custom provider config entry.
+
+    Same route match as ``_custom_provider_extra_body_for_agent`` (provider key,
+    base URL, then model). Returns a normalized ``{requested: wire}`` mapping, or
+    None when this is not a custom route or no matching entry declares the key.
+    """
+    provider_norm = (provider or "").strip().lower()
+    if provider_norm != "custom" and not provider_norm.startswith("custom:"):
+        return None
+    provider_key_filter = provider_norm.partition(":")[2].strip()
+    target_url = _normalized_custom_base_url(base_url)
+    if not target_url:
+        return None
+    fallback: Optional[Dict[str, str]] = None
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        entry_keys = {
+            str(entry.get("provider_key", "") or "").strip().lower(),
+            str(entry.get("name", "") or "").strip().lower(),
+        }
+        if provider_key_filter and provider_key_filter not in entry_keys:
+            continue
+        if _normalized_custom_base_url(entry.get("base_url")) != target_url:
+            continue
+        normalized = _normalize_effort_overrides(entry.get("effort_overrides"))
+        if not normalized:
+            continue
+        if str(entry.get("model", "") or "").strip():
+            if _custom_provider_model_matches(model, entry):
+                return normalized
+        elif fallback is None:
+            fallback = normalized
+    return fallback
+
+
+def _store_custom_provider_effort_overrides(
+    agent, custom_providers: List[Dict[str, Any]], *, provider: Optional[str] = None,
+) -> None:
+    """Cache the active custom provider's ``effort_overrides`` on the agent.
+
+    Empty dict when absent, so ``_apply_custom_provider_effort_overrides`` does not
+    rescan the provider list on every request. ``provider`` overrides ``agent.provider``
+    for the ``/model`` switch helper, which passes the destination before the
+    attribute is always the named key.
+    """
+    overrides = _custom_provider_effort_overrides_for_agent(
+        provider=agent.provider if provider is None else provider,
+        model=getattr(agent, "model", "") or "",
+        base_url=getattr(agent, "base_url", "") or "",
+        custom_providers=custom_providers,
+    )
+    agent._custom_provider_effort_overrides = overrides or {}
+
+
+def _apply_custom_provider_effort_overrides(agent, reasoning_config):
+    """Copy ``reasoning_config`` with its effort rewritten through the cached map.
+
+    The session config is left alone: only the dict handed to the wire builder
+    changes. Lookup is case-insensitive because the cached map is lowercased.
+    """
+    effort_map = getattr(agent, "_custom_provider_effort_overrides", None)
+    if not isinstance(effort_map, dict) or not effort_map or not isinstance(reasoning_config, dict):
+        return reasoning_config
+    effort = str(reasoning_config.get("effort") or "").strip().lower()
+    mapped = effort_map.get(effort) if effort else None
+    if not mapped or mapped == effort:
+        return reasoning_config
+    return {**reasoning_config, "effort": mapped}
+
+
 def _normalize_run_budget_seconds(value) -> Optional[float]:
     """Positive float or None (feature off). ``bool`` rejected: YAML ``true`` → 1s budget."""
     if value is None or isinstance(value, bool):
@@ -1894,6 +1974,7 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
     # Reused by _check_compression_model_feasibility (aux compression model detection).
     agent._custom_providers = _custom_providers
     _merge_custom_provider_extra_body(agent, _custom_providers)
+    _store_custom_provider_effort_overrides(agent, _custom_providers)
 
     if _config_context_length is None and _custom_providers:
         with suppress(Exception):

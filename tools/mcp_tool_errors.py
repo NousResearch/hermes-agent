@@ -448,7 +448,7 @@ def _format_connect_error(exc: BaseException, redaction_values: Iterable[str] = 
 
     abi = next((node for node in nodes if isinstance(node, NodeAbiMismatchError)), None)
     if abi is not None:  # already the whole story, remedy included; the SDK's "Connection closed" adds nothing
-        return _sanitize_error(str(abi))
+        return _sanitize_error(str(abi), redaction_values)
     missing = _find_missing()
     if not missing:
         return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages()))[:3]), redaction_values)

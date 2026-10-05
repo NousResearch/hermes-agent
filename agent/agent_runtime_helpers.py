@@ -3418,10 +3418,16 @@ def tool_results_this_turn(messages: List[Dict[str, Any]]) -> int:
 
 # Narrow "trailing continue-intent" detector for the stall guard (agent.stall_guards): only the
 # message TAIL announcing a next action, so mid-sentence "I will" never trips it.
+# Includes German ("Ich werde jetzt ...", "Jetzt werde/mache ich ...") and Serbian
+# ("Sada ću ...", "Idem sada ...") intent phrasings so the stall guard also fires
+# for non-English sessions (issue #105163).
 _TRAILING_CONTINUE_INTENT_RE = re.compile(
     r"(?:\blet me now\b|\bi(?:['\u2019])?ll now\b|\bi will now\b"
-    r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b)"
-    r"[^.!?\n]{0,100}[.:\u2026]?\s*$", re.IGNORECASE,
+    r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b"
+    r"|\bich werde (?:jetzt|nun|gleich)\b|\bjetzt werde ich\b"
+    r"|\b(?:nun|jetzt) mache ich\b|\bals n[äa]chstes werde ich\b"
+    r"|\bsada (?:[ćc]u|idem)\b|\bidem sada\b)"
+    r"[^.!?\n]{0,100}[:.\u2026]?\s*$", re.IGNORECASE,
 )
 
 # Content longer than this is a substantive reply, not a dangling ack.

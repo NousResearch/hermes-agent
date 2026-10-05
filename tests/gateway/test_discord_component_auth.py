@@ -93,8 +93,9 @@ def test_component_check_explicit_allow_all_passes(monkeypatch, env_name, env_va
 # ── user allowlist ─────────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("snapshot", [{"11111"}, {"*"}])
 @pytest.mark.parametrize(("verdict", "expected"), [(None, True), (True, True), (False, False)])
-def test_snapshot_user_is_confirmed_with_the_live_check(verdict, expected):
+def test_snapshot_user_is_confirmed_with_the_live_check(snapshot, verdict, expected):
     # The user set is the adapter's connect-time snapshot; None means no live check is wired.
     seen = []
 
@@ -102,7 +103,7 @@ def test_snapshot_user_is_confirmed_with_the_live_check(verdict, expected):
         seen.append(interaction.user.id)
         return verdict
 
-    assert _component_check_auth(_interaction(11111), {"11111"}, set(), live_auth=live_auth) is expected
+    assert _component_check_auth(_interaction(11111), snapshot, set(), live_auth=live_auth) is expected
     assert seen == [11111]
 
 

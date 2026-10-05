@@ -5100,13 +5100,8 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         }
 
     def _component_live_auth(self, interaction) -> Optional[bool]:
-        """The gateway's live allowlist verdict for a component click, or None when no check is wired.
-        Views hold the connect-time ``_allowed_user_ids``; a revoke run in another process
-        (``hermes pairing revoke`` from the CLI or dashboard, a hand edit of .env) never reaches it,
-        while the gateway check re-reads the allowlist on every call (Matrix approval reactions use
-        the same check, #130920)."""
-        if getattr(self, "_authorization_check", None) is None:
-            return None
+        """The gateway's live allowlist verdict for a component click (None when no check is wired):
+        an out-of-process revoke never reaches the connect-time ``_allowed_user_ids`` snapshot."""
         user_id = str(getattr(getattr(interaction, "user", None), "id", "") or "")
         channel_id = getattr(interaction, "channel_id", None)
         chat_type = "dm" if getattr(interaction, "guild", None) is None else "group"
@@ -6394,7 +6389,7 @@ def _component_check_auth(
     """Shared user-or-role OR authorization for component button clicks.
     Allow on: DISCORD/GATEWAY_ALLOW_ALL_USERS, user in DISCORD/GATEWAY_ALLOWED_USERS, a role in the
     role allowlist, or pairing-store approval. Role allowlist with no ``roles`` (DM) rejects (fail closed).
-    ``allowed_user_ids`` is the adapter's connect-time snapshot: a user found only there is confirmed
+    ``allowed_user_ids`` is the adapter's connect-time snapshot: a user (or ``*``) admitted only there is confirmed
     with ``live_auth`` (the gateway's per-call check), and an explicit False falls through to the role
     and pairing grants.
     """
@@ -6425,9 +6420,8 @@ def _component_check_auth(
     except AttributeError:
         uid = ""
     if has_users:
-        if "*" in user_set:
-            return True
-        if uid and uid in user_set and (live_auth is None or live_auth(interaction) is not False):
+        if ("*" in user_set or (uid and uid in user_set)) and (
+                live_auth is None or live_auth(interaction) is not False):
             return True
     if has_roles:
         roles_attr = getattr(user, "roles", None)

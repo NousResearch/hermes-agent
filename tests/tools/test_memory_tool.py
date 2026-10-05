@@ -643,6 +643,29 @@ class TestExternalDriftGuard:
         result = store.replace("memory", "Entry two", "Entry two replaced.")
         assert result["success"] is True
 
+    def test_entries_stay_removable_after_the_limit_is_lowered(self, store):
+        """An entry written under a larger limit is no external drift: pruning stays the way back
+        under a lowered limit."""
+        roomy = MemoryStore(memory_char_limit=2200, user_char_limit=1375)
+        background = "Background:" + " firmware and vision pipelines;" * 16  # > the fixture's 300
+        assert roomy.add("user", background)["success"] and roomy.add("user", "Prefers metric.")["success"]
+
+        assert store.remove("user", "Prefers metric")["success"] is True
+        removed = store.remove("user", "Background")
+        assert removed["success"] is True and removed["removed_entry"] == background
+        assert MemoryStore._read_file(store._path_for("user")) == []
+
+    def test_removing_an_entry_with_glued_free_text_keeps_a_snapshot(self, store):
+        """Free text appended without a delimiter rides on the last entry; deleting that entry
+        must never take the text with it unless a snapshot holds it."""
+        store.add("memory", "User likes brevity.")
+        drifted = self._plant_drift(store).read_text(encoding="utf-8")
+
+        result = store.remove("memory", "User likes")
+
+        assert result["success"] is True
+        assert Path(result["drift_backup"]).read_text(encoding="utf-8") == drifted
+
     def test_drift_guard_also_protects_user_target(self, store):
         """USER.md gets the same guarantee as MEMORY.md."""
         store.add("user", "Some preference.")

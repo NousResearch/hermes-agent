@@ -247,7 +247,8 @@ class MemoryStore:
         or an error dict, then persist and return the success response. The reload aborts
         on an existing-but-unreadable file (even append-only ``add`` rewrites the whole
         file) and, unless *skip_drift*, on external drift (flushing would discard
-        un-roundtrippable content). Drift check and parse use the SAME raw snapshot —
+        un-roundtrippable content; an oversized entry refuses only a write that adds or
+        rewrites text). Drift check and parse use the SAME raw snapshot —
         a failed second read used to count as "no drift". The closure may return a
         third value, a dict merged into the success payload (``_error``'s ``**extra``
         convention) — e.g. the full text a replace overwrote (#117952). ANY dict the closure
@@ -258,19 +259,30 @@ class MemoryStore:
             raw, read_ok = self._read_raw_checked(path)
             if not read_ok:
                 return _read_failed_error(path)
-            bak = None if skip_drift else self._detect_external_drift(target, raw)
-            self._set_entries(target, list(dict.fromkeys(self._parse_entries(raw))))
-            if bak:
-                return _drift_error(path, bak)
+            drift = None if skip_drift else self._external_drift(target, raw)
+            before = list(dict.fromkeys(self._parse_entries(raw)))
+            self._set_entries(target, before)
+            if drift == "roundtrip":
+                return _drift_error(path, self._drift_backup(target, raw))
             result = mutate(self._entries_for(target), self._char_limit(target))
             if isinstance(result, dict):
                 return result
+            extra_fields = dict(result[2]) if len(result) > 2 else {}
+            # An oversized entry in a file that round-trips is either free text appended without
+            # a delimiter or an entry written before the limit was lowered. Pruning is the way
+            # back under a lowered limit, so a write that only deletes entries proceeds; one that
+            # drops an oversized entry keeps the snapshot first, as it may hold appended text.
+            if drift == "oversized":
+                if not set(result[0]) <= set(before):
+                    return _drift_error(path, self._drift_backup(target, raw))
+                limit = self._char_limit(target)
+                if any(len(e) > limit for e in before if e not in result[0]):
+                    extra_fields["drift_backup"] = self._drift_backup(target, raw)
             self._set_entries(target, result[0])
             from hermes_constants import mkdir_under_hermes_home
 
             mkdir_under_hermes_home(path.parent)
             self._write_file(path, result[0])
-            extra_fields = result[2] if len(result) > 2 else {}
             return self._success_response(target, result[1], **extra_fields)
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
@@ -527,14 +539,19 @@ class MemoryStore:
         except OSError as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
-    def _detect_external_drift(self, target: str, raw: str) -> Optional[str]:
-        """``.bak.<ts>`` snapshot path if *raw* shows external drift, else None. Signals:
-        round-trip mismatch, or one entry over the whole-file limit (no tool-written
-        entry can be — an external writer appended free-form text)."""
+    def _external_drift(self, target: str, raw: str) -> Optional[str]:
+        """``"roundtrip"`` when *raw* would not survive parse + re-serialize, ``"oversized"``
+        when it would but one entry exceeds the whole-file limit (external free-form text, or
+        a limit lowered after the entry was written), else None."""
         parsed = self._parse_entries(raw)
-        if not raw.strip() or (raw.strip() == ENTRY_DELIMITER.join(parsed)
-                               and max(map(len, parsed), default=0) <= self._char_limit(target)):
+        if not raw.strip():
             return None
+        if raw.strip() != ENTRY_DELIMITER.join(parsed):
+            return "roundtrip"
+        return "oversized" if max(map(len, parsed), default=0) > self._char_limit(target) else None
+
+    def _drift_backup(self, target: str, raw: str) -> str:
+        """``.bak.<ts>`` snapshot of *raw* before a drift refusal."""
         path = self._path_for(target)
         bak_path = path.with_suffix(path.suffix + f".bak.{int(time.time())}")
         try:

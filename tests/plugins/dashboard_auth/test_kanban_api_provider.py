@@ -192,6 +192,16 @@ class TestRegister:
         ctx.register_dashboard_auth_provider.assert_not_called()
         assert "rejected" in plugin.LAST_SKIP_REASON
 
+    def test_config_min_secret_chars_can_admit_a_shorter_secret(self, plugin, monkeypatch):
+        s = _strong_secret()[:36]  # too short by default, fine at 32
+        monkeypatch.setenv("HERMES_KANBAN_API_SECRET", s)
+        monkeypatch.setattr(
+            plugin, "_load_config_kanban_api_auth_section", lambda: {"min_secret_chars": 32})
+        ctx = MagicMock()
+        plugin.register(ctx)
+        provider = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert provider.verify_token(token=s) is not None
+
 
 # ---------------------------------------------------------------------------
 # E2E through the mounted dashboard app (gated deployment)

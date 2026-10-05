@@ -301,7 +301,7 @@ def shared_secret_settings(
     reason = assess_secret_strength(secret, min_chars=min_chars)
     if reason is not None:
         raise SkipRegistration(f"{env} rejected — {reason}. {purpose} stays disabled (fail-closed).", level="warning")
-    return {"secret": secret, "scope": scope}
+    return {"secret": secret, "scope": scope, "min_secret_chars": min_chars}
 
 
 class SharedSecretProvider(NonInteractiveMixin, DashboardAuthProvider):
@@ -313,10 +313,12 @@ class SharedSecretProvider(NonInteractiveMixin, DashboardAuthProvider):
     _principal: str = ""
     _default_scope: str = ""
 
-    def __init__(self, *, secret: str, scope: str = "") -> None:
+    def __init__(
+        self, *, secret: str, scope: str = "", min_secret_chars: int = DEFAULT_MIN_SECRET_CHARS,
+    ) -> None:
         # Construction enforces the same checks, so a caller bypassing register()
         # still can't build a provider around a degenerate secret.
-        reason = assess_secret_strength(secret)
+        reason = assess_secret_strength(secret, min_chars=min_secret_chars)
         if reason is not None:
             raise ValueError(f"{self.name} secret rejected: {reason}")
         self._secret = secret

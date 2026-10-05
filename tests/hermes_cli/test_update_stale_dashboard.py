@@ -986,3 +986,104 @@ class TestUpdateCleanupScope:
         scope = seen["scope_home"]
         assert not isinstance(scope, str), "the update must pass every home it owns, not one"
         assert {Path(h).resolve() for h in scope} == {root.resolve(), milo.resolve()}
+
+    def test_empty_scope_matches_nothing_and_none_matches_everything(self, monkeypatch):
+        """Only ``None`` means "no filter"; an empty set of homes is a scope that owns nothing."""
+        monkeypatch.setattr(dashboard_procs, "_scan_dashboard_processes",
+                            lambda exclude_pids=None: [(11, "hermes dashboard --port 9119")])
+        monkeypatch.setattr(dashboard_procs, "_caller_ancestor_pids", lambda: set())
+        monkeypatch.setattr(dashboard_procs, "_is_caller_wrapper_shell", lambda pid, ancestors: False)
+        monkeypatch.setattr(dashboard_procs, "_hermes_home_for_pid", lambda pid: "/somewhere/else")
+        assert _find_stale_dashboard_pids(scope_home=[]) == []
+        assert _find_stale_dashboard_pids(scope_home=set()) == []
+        assert _find_stale_dashboard_pids(scope_home=None) == [11]
+
+    def test_update_cleanup_with_no_owned_home_stops_nothing(self, monkeypatch):
+        """``update_scope_homes()`` swallows its errors and can come back empty: the cleanup must
+        then stop nothing (and say so in the receipt), never sweep the whole machine."""
+        monkeypatch.setattr("hermes_cli.update_fleet_scope.update_scope_homes", lambda: set())
+        from types import SimpleNamespace
+        from hermes_cli import update_cmd
+
+        calls = []
+        steps = []
+        monkeypatch.setattr(update_cmd, "_m", lambda: SimpleNamespace(
+            _kill_stale_dashboard_processes=lambda **kw: calls.append(kw) or {"unrecovered": []}))
+        monkeypatch.setattr(update_cmd, "_record_update_step", lambda *a, **k: steps.append(a))
+        assert update_cmd_maint._refresh_dashboard_after_update(already_restarted_units=set()) == set()
+        assert calls == [], "cleanup ran with an empty scope"
+        assert [(name, ok) for name, ok, *_ in steps] == [("dashboard_cleanup", False)]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+class TestSiblingHomeBackends:
+    """The update's kill scope spans every home it owns, but only a supervisor can bring a sibling
+    home's backend back: the argv respawn replays under the invoking home and the respawn filter
+    drops foreign-home argv. A sibling profile's manual backend is left running and named, never
+    killed and silently dropped; a supervised one is still refreshed."""
+
+    ARGV = ["hermes", "dashboard", "--isolated", "--port", "9200"]
+
+    def _run(self, tmp_path, monkeypatch, pid_homes, *, launchd_jobs=(), launchd_pids=()):
+        milo = tmp_path / "profiles" / "milo"
+        milo.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(milo))
+        signalled: list[tuple[int, int]] = []
+
+        def fake_kill(pid, sig):
+            signalled.append((pid, sig))
+            if sig == 0:
+                raise ProcessLookupError
+
+        def owner(pid, cmdline, jobs, ancestors=None):
+            return ("gui/501", "ai.hermes.dashboard", pid) if pid in launchd_pids else None
+
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(main_dashboard, "_find_stale_dashboard_pids", return_value=list(pid_homes)), \
+             patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=list(self.ARGV)), \
+             patch.object(main_dashboard, "_loaded_launchd_backend_jobs", return_value=list(launchd_jobs)), \
+             patch.object(main_dashboard, "_launchd_job_owning_backend", side_effect=owner), \
+             patch.object(main_dashboard, "_restart_launchd_job", return_value=True) as kickstart, \
+             patch("hermes_cli.dashboard_procs._process_ancestors", return_value=[]), \
+             patch("hermes_cli.dashboard_procs._hermes_home_for_pid",
+                   side_effect=lambda pid: pid_homes[pid](milo) if pid_homes[pid] else None), \
+             patch.object(main_dashboard, "_respawn_dashboard_processes", return_value=[]) as respawn, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+        return result, {pid for pid, _sig in signalled}, respawn, kickstart
+
+    def test_sibling_manual_backend_is_left_running_and_named(self, tmp_path, monkeypatch, capsys):
+        nina = tmp_path / "profiles" / "nina"
+        result, signalled, respawn, _ = self._run(
+            tmp_path, monkeypatch, {7001: lambda milo: str(milo), 7002: lambda milo: str(nina)})
+        assert 7002 not in signalled, "a backend nothing can bring back must not be killed"
+        assert result["spared"] == [7002] and result["killed"] == [7001]
+        assert 7002 not in result["unrecovered"]
+        respawn.assert_called_once_with([self.ARGV])
+        out = capsys.readouterr().out
+        assert "PID 7002" in out and str(nina) in out
+
+    def test_only_sibling_manual_backends_stops_nothing(self, tmp_path, monkeypatch):
+        nina = tmp_path / "profiles" / "nina"
+        result, signalled, respawn, _ = self._run(tmp_path, monkeypatch, {7002: lambda milo: str(nina)})
+        assert signalled == set() and result["killed"] == [] and result["spared"] == [7002]
+        respawn.assert_not_called()
+
+    def test_sibling_launchd_backend_is_still_refreshed(self, tmp_path, monkeypatch):
+        """The case this PR exists for: the machine dashboard (default home) under a launchd job,
+        updated from a named profile, is stopped and kickstarted."""
+        result, signalled, respawn, kickstart = self._run(
+            tmp_path, monkeypatch, {7003: lambda milo: str(tmp_path)},
+            launchd_jobs=[object()], launchd_pids={7003})
+        assert 7003 in signalled and result["killed"] == [7003] and result["spared"] == []
+        kickstart.assert_called_once()
+        respawn.assert_not_called()
+
+    def test_unreadable_home_keeps_todays_behaviour(self, tmp_path, monkeypatch):
+        """Ownership unknown (environment unreadable) is not evidence of a sibling: the scope
+        filter upstream already spares those, so anything reaching here is treated as before."""
+        result, signalled, respawn, _ = self._run(tmp_path, monkeypatch, {7004: None})
+        assert 7004 in signalled and result["spared"] == []

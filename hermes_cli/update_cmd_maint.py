@@ -283,11 +283,18 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
     # The code swap touched every profile sharing this checkout, so a dashboard/serve of any
     # of them is stale — not only the invoking profile's. A named profile's `hermes dashboard`
     # re-execs as `-p default` (machine dashboard), so scoping to the invoking home alone left
-    # that backend unaccounted and the update exit 1 on every run.
+    # that backend on pre-update code and unaccounted.
+    scope = [str(home) for home in update_scope_homes()]
+    if not scope:
+        # update_scope_homes() swallows its own errors; an empty scope must stop nothing rather
+        # than fall through to an unfiltered, machine-wide sweep of other installs' backends.
+        logger.warning("Post-update dashboard cleanup skipped: no owned Hermes home resolved")
+        _record_update_step("dashboard_cleanup", False, "no owned Hermes home resolved")
+        return set()
     try:
         stop_result = _m()._kill_stale_dashboard_processes(
             restart_managed=True, already_restarted_units=already_restarted_units,
-            scope_home=[str(home) for home in update_scope_homes()],
+            scope_home=scope,
         )
     except Exception as exc:
         # Isolated like every sibling post-update step: a failure here (#112604) used to abort

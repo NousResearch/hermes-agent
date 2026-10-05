@@ -164,6 +164,17 @@ def _bash_safe_path(path: str) -> str:
     return _windows_to_msys_path(path).replace("\\", "/") if _IS_WINDOWS and path else path
 
 
+def _is_unc_bash_path(path: str) -> bool:
+    """True when ``path`` keeps a ``//`` root through ``_bash_safe_path``: a UNC share
+    path has no drive letter to translate to, so the double-backslash root survives as
+    ``//server/share/...``. MSYS programs disagree about that form — bash's own open,
+    mktemp, test and mv reach the share, but GNU ``mkdir`` reads the leading ``//`` as
+    its own read-only POSIX root and dies with "Read-only file system", aborting any
+    ``set -e`` script that calls it. Parents under such a path must be created from
+    Python instead (see ``ShellFileOperations._atomic_write``). No-op off Windows."""
+    return bool(path) and _IS_WINDOWS and _bash_safe_path(path).startswith("//")
+
+
 def _quote_bash_path(path: str) -> str:
     """Quote *path* for safe interpolation into a Git Bash script on Windows."""
     import shlex

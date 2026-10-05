@@ -56,7 +56,10 @@ export interface HostBackendAttachDeps {
    * install): the token-only handshake, as before.
    */
   expectedCodeIdentity?: () => Promise<string | null>
-  /** Boot commit a backend reports; defaults to {@link fetchBackendCodeIdentity}. */
+  /**
+   * Boot commit a backend reports; defaults to {@link fetchBackendCodeIdentity}.
+   * Null = the backend answered without one; a rejection = it could not be read.
+   */
   backendCodeIdentity?: (baseUrl: string) => Promise<string | null>
   log: (message: string) => void
 }
@@ -64,19 +67,24 @@ export interface HostBackendAttachDeps {
 /**
  * The commit a backend booted from: `commit` on the public `GET /api/health`,
  * resolved once at import (`get_version_info` is cached), so an update moving
- * the checkout underneath the process does not change it. Null when the
- * backend predates the field or does not answer.
+ * the checkout underneath the process does not change it. Null only when the
+ * backend answered and predates the field; a timeout, network error, non-2xx
+ * or unparsable body rejects, because a slow backend is not a different one.
  */
 export async function fetchBackendCodeIdentity(baseUrl: string, timeoutMs = 3000): Promise<string | null> {
-  try {
-    const response = await fetch(`${baseUrl}/api/health`, { signal: AbortSignal.timeout(timeoutMs) })
-    const body: unknown = response.ok ? await response.json() : null
+  const response = await fetch(`${baseUrl}/api/health`, { signal: AbortSignal.timeout(timeoutMs) })
 
-    return body && typeof body === 'object' && 'commit' in body ? nonemptyToken(String(body.commit ?? '')) : null
-  } catch {
-    return null
+  if (!response.ok) {
+    throw new Error(`/api/health answered ${response.status}`)
   }
+
+  const body: unknown = await response.json()
+
+  return body && typeof body === 'object' && 'commit' in body ? nonemptyToken(String(body.commit ?? '')) : null
 }
+
+/** A ready backend whose identity could not be read yet: neither attach nor spawn beside it. */
+const UNCONFIRMED = 'unconfirmed'
 
 export function spawnLedgerPath(hermesHomeRoot: string, join: (...parts: string[]) => string): string {
   return join(hermesHomeRoot, SPAWN_LEDGER_FILENAME)
@@ -103,7 +111,7 @@ async function validate(
   record: HostBackendRecord,
   deps: HostBackendAttachDeps,
   expectedCommit: string | null
-): Promise<AttachedBackend | null> {
+): Promise<AttachedBackend | null | typeof UNCONFIRMED> {
   const baseUrl = recordBaseUrl(record)
   const servedToken = nonemptyToken(await deps.resolveServedToken(baseUrl).catch(() => null))
   let publishedToken: string | null = null
@@ -136,7 +144,17 @@ async function validate(
     // Unknown backend identity is a mismatch: a backend predating the field is
     // older code by construction.
     const resolve = deps.backendCodeIdentity ?? fetchBackendCodeIdentity
-    const theirs = nonemptyToken(await resolve(baseUrl).catch(() => null))
+    let theirs: string | null
+
+    try {
+      theirs = nonemptyToken(await resolve(baseUrl))
+    } catch (error) {
+      deps.log(
+        `[attach] ${baseUrl} (pid ${record.pid}) is ready but its code identity is unreadable: ${(error as Error).message}`
+      )
+
+      return UNCONFIRMED
+    }
 
     if (theirs?.toLowerCase() !== expectedCommit.toLowerCase()) {
       deps.log(
@@ -167,9 +185,18 @@ async function validate(
  * the caller's signal to spawn exactly one.
  */
 export async function attachToHostBackend(
-  { isolated, ledgerPath }: { isolated: boolean; ledgerPath: string },
+  options: { isolated: boolean; ledgerPath: string },
   deps: HostBackendAttachDeps
 ): Promise<AttachedBackend | null> {
+  const found = await findHostBackend(options, deps)
+
+  return found === UNCONFIRMED ? null : found
+}
+
+async function findHostBackend(
+  { isolated, ledgerPath }: { isolated: boolean; ledgerPath: string },
+  deps: HostBackendAttachDeps
+): Promise<AttachedBackend | null | typeof UNCONFIRMED> {
   const records = parseSpawnLedger(deps.readLedger(ledgerPath))
   const decision = spawnOrAttach({ isolated, records, isPidAlive: deps.isPidAlive })
 
@@ -192,11 +219,14 @@ export async function attachToHostBackend(
   ]
 
   const expectedCommit = nonemptyToken(await deps.expectedCodeIdentity?.().catch(() => null))
+  let unconfirmed = false
 
   for (const record of ordered) {
     const attached = await validate(record, deps, expectedCommit)
 
-    if (attached) {
+    if (attached === UNCONFIRMED) {
+      unconfirmed = true
+    } else if (attached) {
       deps.log(
         `[attach] attached to the running Hermes backend on ${attached.baseUrl} ` +
           `(pid ${attached.pid}, registered by profile "${record.profile || 'default'}"); spawning nothing`
@@ -206,7 +236,7 @@ export async function attachToHostBackend(
     }
   }
 
-  return null
+  return unconfirmed ? UNCONFIRMED : null
 }
 
 export interface HostSpawnGateDeps {
@@ -240,10 +270,10 @@ export async function attachOrReserveSpawn(
   gate: HostSpawnGateDeps,
   { pollMs = 500, waitBudgetMs = HOST_SPAWN_GATE_STALE_MS }: { pollMs?: number; waitBudgetMs?: number } = {}
 ): Promise<{ attached: AttachedBackend } | { reservation: SpawnReservation }> {
-  const attached = await attachToHostBackend(options, deps)
+  let found = await findHostBackend(options, deps)
 
-  if (attached) {
-    return { attached }
+  if (found && found !== UNCONFIRMED) {
+    return { attached: found }
   }
 
   if (options.isolated) {
@@ -255,7 +285,10 @@ export async function attachOrReserveSpawn(
   while (gate.now() < deadline) {
     const gateState = gate.read()
 
+    // A ready backend we could not identify may well be ours: re-read it
+    // instead of spawning a second one beside it.
     if (
+      found !== UNCONFIRMED &&
       classifyHostSpawnGate(gateState, {
         now: gate.now(),
         staleAfterMs: HOST_SPAWN_GATE_STALE_MS
@@ -268,13 +301,17 @@ export async function attachOrReserveSpawn(
       }
     }
 
-    deps.log('[attach] another app is starting the host backend; waiting for it instead of spawning a second one')
+    deps.log(
+      found === UNCONFIRMED
+        ? '[attach] retrying the running backend whose code identity was unreadable before spawning another'
+        : '[attach] another app is starting the host backend; waiting for it instead of spawning a second one'
+    )
     await gate.sleep(pollMs)
 
-    const late = await attachToHostBackend(options, deps)
+    found = await findHostBackend(options, deps)
 
-    if (late) {
-      return { attached: late }
+    if (found && found !== UNCONFIRMED) {
+      return { attached: found }
     }
   }
 

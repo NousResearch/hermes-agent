@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { type ChildProcess, spawn } from 'node:child_process'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -548,9 +549,68 @@ test('no backend on this checkout means spawn; unknown own identity keeps token-
   const refused = await attachAmongRealBackends(mismatched, NEW_COMMIT)
 
   assert.equal(refused.attached, null)
-  assert.ok(refused.logs.some(line => line.includes('runs code of unknown version')), refused.logs.join('\n'))
+  assert.ok(
+    refused.logs.some(line => line.includes('runs code of unknown version')),
+    refused.logs.join('\n')
+  )
 
   const unknownOwn = await attachAmongRealBackends(mismatched, null)
 
   assert.equal(unknownOwn.attached?.pid, unknownOwn.started[0].pid)
+})
+
+/**
+ * A ready backend on this checkout whose /api/health is briefly unavailable is
+ * still ours: startup retries it and attaches, never spawning a second one.
+ */
+test('a transient identity read failure retries the running backend instead of spawning beside it', async () => {
+  let healthReads = 0
+
+  const server = http.createServer((req, res) => {
+    if (req.url !== '/api/health') {
+      return res.end('<script>window.__HERMES_SESSION_TOKEN__ = "tok-slow"</script>')
+    }
+
+    healthReads += 1
+    res.statusCode = healthReads <= 2 ? 503 : 200
+    res.end(JSON.stringify({ commit: NEW_COMMIT }))
+  })
+
+  const port = await new Promise<number>(resolve =>
+    server.listen(0, '127.0.0.1', () => resolve((server.address() as { port: number }).port))
+  )
+
+  let takes = 0
+
+  try {
+    const ledger = JSON.stringify([{ host: '127.0.0.1', pid: process.pid, port, purpose: 'serve', registered_at: 1 }])
+
+    const outcome = await attachOrReserveSpawn(
+      { isolated: false, ledgerPath: '/ledger.json' },
+      {
+        expectedCodeIdentity: async () => NEW_COMMIT,
+        log: () => {},
+        probeWebSocket: async () => ({ ok: true }),
+        readLedger: () => ledger,
+        resolveServedToken: baseUrl => resolveServedDashboardToken(baseUrl, ''),
+        waitForReady: async () => undefined
+      },
+      {
+        now: () => 0,
+        read: () => null,
+        take: () => {
+          takes += 1
+
+          return () => {}
+        },
+        sleep: async () => {}
+      },
+      { pollMs: 0, waitBudgetMs: 1 }
+    )
+
+    assert.equal('attached' in outcome && outcome.attached.token, 'tok-slow')
+    assert.equal(takes, 0, 'no spawn reservation may be taken beside a ready backend')
+  } finally {
+    server.close()
+  }
 })

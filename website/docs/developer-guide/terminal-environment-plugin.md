@@ -70,10 +70,11 @@ class AcmeBoxProvider(TerminalEnvironmentProvider):
         return frozenset({"ACMEBOX_TOKEN"})
 
     def is_available(self):
-        import importlib.util, os
+        import importlib.util
+        from agent.secret_scope import get_secret
         return (
             importlib.util.find_spec("acmebox") is not None
-            and bool(os.getenv("ACMEBOX_TOKEN"))
+            and bool(get_secret("ACMEBOX_TOKEN"))
         )
 
     def create_environment(self, *, cwd, timeout, task_id="default",

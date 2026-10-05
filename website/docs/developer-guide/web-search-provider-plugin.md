@@ -49,8 +49,9 @@ Subclass `agent.web_search_provider.WebSearchProvider`. The only required member
 # plugins/web/my-backend/provider.py
 from __future__ import annotations
 
-import os
 from typing import Any, Dict, List
+
+from agent.secret_scope import get_secret, get_secret_str
 
 from agent.web_search_provider import WebSearchProvider
 
@@ -72,7 +73,7 @@ class MyBackendWebSearchProvider(WebSearchProvider):
     def is_available(self) -> bool:
         # Cheap check — env var present, optional dep importable, etc.
         # MUST NOT make network calls (runs on every `hermes tools` paint).
-        return bool(os.getenv("MY_BACKEND_API_KEY", "").strip())
+        return bool(get_secret_str("MY_BACKEND_API_KEY").strip())
 
     def supports_search(self) -> bool:
         return True
@@ -83,7 +84,7 @@ class MyBackendWebSearchProvider(WebSearchProvider):
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         import httpx
 
-        api_key = os.environ["MY_BACKEND_API_KEY"]
+        api_key = get_secret_str("MY_BACKEND_API_KEY")
         try:
             resp = httpx.get(
                 "https://api.example.com/search",

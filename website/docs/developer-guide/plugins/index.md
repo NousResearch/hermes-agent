@@ -705,7 +705,12 @@ config_schema:
 **Secrets never touch `config.yaml`.** A `secret` field carries only the `.env`
 name and whether a value is set; the Desktop stores the value through the same
 credential route as provider API keys (`PUT /api/env`), and your plugin reads it
-with `os.environ.get("MY_PLUGIN_API_KEY")` — exactly like a `requires_env` entry.
+with `agent.secret_scope.get_secret("MY_PLUGIN_API_KEY")` — exactly like a
+`requires_env` entry. The process environment belongs to the launch profile;
+`get_secret()` resolves the profile currently served by the hook, tool, or provider.
+Read credentials inside those callbacks, rather than at import or registration
+time. Background callbacks must preserve the owning profile’s context as described
+in [Thread-safe lazy singletons](#thread-safe-lazy-singletons).
 The `plugins.manage settings` action refuses secret keys and any value whose type
 or `choices` disagree with the schema.
 
@@ -1659,12 +1664,12 @@ class MyPlatformAdapter(BasePlatformAdapter):
     async def disconnect(self): ...
 
 def check_requirements():
-    import os
-    return bool(os.environ.get("MYPLATFORM_TOKEN"))
+    from agent.secret_scope import get_secret
+    return bool(get_secret("MYPLATFORM_TOKEN"))
 
 def _env_enablement():
-    import os
-    tok = os.getenv("MYPLATFORM_TOKEN", "").strip()
+    from agent.secret_scope import get_secret_str
+    tok = get_secret_str("MYPLATFORM_TOKEN").strip()
     if not tok:
         return None
     return {"token": tok}
@@ -1719,8 +1724,8 @@ class MyMemoryProvider(MemoryProvider):
         return "my-memory"
 
     def is_available(self) -> bool:
-        import os
-        return bool(os.environ.get("MY_MEMORY_API_KEY"))
+        from agent.secret_scope import get_secret
+        return bool(get_secret("MY_MEMORY_API_KEY"))
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = session_id

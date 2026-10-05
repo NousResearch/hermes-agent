@@ -65,6 +65,7 @@ Implement `agent.browser_provider.BrowserProvider`. Three lifecycle methods plus
 
 ```python
 from agent.browser_provider import BrowserProvider
+from agent.secret_scope import get_secret
 
 
 class MyBackendProvider(BrowserProvider):
@@ -80,7 +81,7 @@ class MyBackendProvider(BrowserProvider):
         """Cheap check only — env var present, dep importable.
         NO network calls: runs at tool-registration time and on every
         `hermes tools` paint."""
-        return bool(os.environ.get("MY_BACKEND_API_KEY"))
+        return bool(get_secret("MY_BACKEND_API_KEY"))
 
     def create_session(self, task_id: str) -> dict:
         """Create a remote browser session; return the session-metadata contract."""

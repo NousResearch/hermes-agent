@@ -46,7 +46,8 @@ Subclass `agent.video_gen_provider.VideoGenProvider`. Required: `name` property 
 ```python
 # plugins/video_gen/my-backend/__init__.py
 from typing import Any, Dict, List, Optional
-import os
+
+from agent.secret_scope import get_secret
 
 from agent.video_gen_provider import (
     VideoGenProvider,
@@ -65,7 +66,7 @@ class MyVideoGenProvider(VideoGenProvider):
         return "My Backend"
 
     def is_available(self) -> bool:
-        return bool(os.environ.get("MY_API_KEY"))
+        return bool(get_secret("MY_API_KEY"))
 
     def list_models(self) -> List[Dict[str, Any]]:
         # Each entry is a model FAMILY — a name the user picks once.

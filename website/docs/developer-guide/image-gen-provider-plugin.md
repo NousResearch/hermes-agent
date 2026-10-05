@@ -41,7 +41,8 @@ Subclass `agent.image_gen_provider.ImageGenProvider`. The only required members 
 ```python
 # plugins/image_gen/my-backend/__init__.py
 from typing import Any, Dict, List, Optional
-import os
+
+from agent.secret_scope import get_secret, get_secret_str
 
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
@@ -68,7 +69,7 @@ class MyBackendImageGenProvider(ImageGenProvider):
     def is_available(self) -> bool:
         # Return False if credentials or deps are missing.
         # The tool's availability gate calls this before dispatch.
-        if not os.environ.get("MY_BACKEND_API_KEY"):
+        if not get_secret("MY_BACKEND_API_KEY"):
             return False
         try:
             import my_backend_sdk  # noqa: F401
@@ -160,7 +161,7 @@ class MyBackendImageGenProvider(ImageGenProvider):
 
         try:
             import my_backend_sdk
-            client = my_backend_sdk.Client(api_key=os.environ["MY_BACKEND_API_KEY"])
+            client = my_backend_sdk.Client(api_key=get_secret_str("MY_BACKEND_API_KEY"))
             if modality == "image":
                 result = client.edit(
                     prompt=prompt,

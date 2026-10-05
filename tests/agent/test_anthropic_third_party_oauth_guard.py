@@ -18,6 +18,7 @@ This test class covers all FIVE sites that assign ``_is_anthropic_oauth``:
 
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -147,6 +148,7 @@ class TestOAuthFlagOnRefresh:
         """Production order: the turn publishes its aux runtime BEFORE the first request triggers
         the silent refresh, so same-turn `auto` aux calls must still pick up the new token."""
         from agent import auxiliary_client as aux
+        from agent.chat_completion_helpers import _context_thread_target
         from agent.turn_context import _publish_runtime_main
 
         old, new = "sk-ant...aaaa", "sk-ant...bbbb"
@@ -161,13 +163,19 @@ class TestOAuthFlagOnRefresh:
             seen["api_key"] = explicit_api_key
             return MagicMock(), model
 
+        refreshed = []
         try:
             _publish_runtime_main(agent)
             with (
                 patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
                 patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
             ):
-                assert agent._try_refresh_anthropic_client_credentials() is True
+                # The refresh runs in the request worker's copied Context; the turn thread reads after.
+                worker = threading.Thread(target=_context_thread_target(
+                    lambda: refreshed.append(agent._try_refresh_anthropic_client_credentials())))
+                worker.start()
+                worker.join()
+            assert refreshed == [True]
             runtime = aux._normalize_main_runtime(None)
             assert runtime.get("api_key") == new
             with (

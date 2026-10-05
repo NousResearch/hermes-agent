@@ -2786,6 +2786,18 @@ def set_runtime_main(
     return token
 
 
+def rotate_runtime_main_api_key(old: Any, new: Any) -> None:
+    """Swap a revoked main key for its replacement in the published runtime, IN PLACE.
+
+    A refresh can run inside a request worker's copied Context, where rebinding the ContextVar
+    would stay invisible to the turn thread; the published dict is shared, so mutating it is not.
+    """
+    runtime = _RUNTIME_MAIN_CONTEXT.get()
+    if isinstance(runtime, dict) and runtime.get("api_key") == old:
+        runtime["api_key"] = _normalize_api_key(new)
+        _publish_runtime_main_mirrors(tuple(runtime[field] for field in _MAIN_RUNTIME_FIELDS))
+
+
 def reset_runtime_main(token: contextvars.Token) -> None:
     """Restore the runtime binding that preceded one scoped turn."""
     if token is None:

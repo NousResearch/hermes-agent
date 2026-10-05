@@ -492,7 +492,7 @@ stage_repository() {
             git -C "$INSTALL_DIR" config fetch.writeCommitGraph false \
                 || log_warn "could not disable fetch.writeCommitGraph in $INSTALL_DIR"
         fi
-        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
+        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch --no-recurse-submodules origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
             || fail "git fetch failed"
         local stamp
         stamp="$(date -u +%Y%m%d-%H%M%S)"

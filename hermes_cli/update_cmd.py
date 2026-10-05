@@ -202,10 +202,21 @@ def _no_prompt_git_kwargs() -> dict:
     prompt so the fetch fails fast into ``_classify_fetch_failure``. Only the
     *prompt* is disabled — a configured credential helper / askpass still
     runs, so a private-fork origin keeps authenticating non-interactively.
+
+    Hermes ships no submodules, so these calls never look for any. A checkout that once had
+    one keeps ``.git/modules/<name>`` after upstream drops it, and git's default
+    ``fetch.recurseSubmodules=on-demand`` then diffs every fetched commit against its parents
+    for changed gitlinks, after the refs have already moved. A ``--filter=tree:0`` clone holds
+    none of those trees, so the walk lazy-fetched them one commit at a time and a routine
+    update of a few hundred commits ran into ``NETWORK_GIT_TIMEOUT_SECONDS`` on every attempt.
     """
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "Never"
+    idx = int(env.get("GIT_CONFIG_COUNT", "0") or 0)
+    env[f"GIT_CONFIG_KEY_{idx}"] = "fetch.recurseSubmodules"
+    env[f"GIT_CONFIG_VALUE_{idx}"] = "false"
+    env["GIT_CONFIG_COUNT"] = str(idx + 1)
     # Every network git spawn (fetch/pull/shallow heal) runs under a console-less
     # desktop backend on Windows; hide the per-spawn console (#117781).
     from hermes_cli._subprocess_compat import windows_hide_flags

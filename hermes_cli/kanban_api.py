@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from agent.redact import redact_sensitive_text
 from hermes_cli import kanban_db
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_edit
 
 log = logging.getLogger(__name__)
 
@@ -489,7 +490,7 @@ def update_task(
         # mid-request rolls back every field, so a 409 never leaves the assignee
         # applied (and announced) while the title/body edit was refused.
         try:
-            applied = kanban_db.update_task_fields(
+            applied = kanban_db_edit.update_task_fields(
                 conn,
                 task_id,
                 assign="assignee" in fields,

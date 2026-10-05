@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_edit
 from hermes_cli.kanban_api import router
 
 
@@ -834,7 +835,7 @@ def test_patch_never_echoes_an_unrecognised_storage_error(
     def boom(*args, **kwargs):
         raise kbc.KanbanDbCorruptError(Path("/srv/hermes/kanban.db"), None, "damaged header")
 
-    monkeypatch.setattr(kanban_db, "update_task_fields", boom)
+    monkeypatch.setattr(kanban_db_edit, "update_task_fields", boom)
     rejected = client.patch(f"/api/plugins/kanban/v1/tasks/{task_id}", json={"priority": 1})
     assert rejected.status_code == 409
     assert rejected.json()["detail"] == "task could not be updated"

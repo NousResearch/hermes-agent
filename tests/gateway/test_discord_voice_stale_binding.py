@@ -6,6 +6,7 @@ rewrote the binding, and the old utterance became a turn in the new conversation
 skills and replies. The listen loop transcribes a poll batch serially, so a later utterance of the
 same batch must keep the binding of the batch, not one set during an earlier utterance's STT.
 """
+from __future__ import annotations
 
 import asyncio
 import threading
@@ -22,10 +23,10 @@ _GUILD, _USER = 1, 42
 class _OneBatchReceiver:
     """One check_silence() batch of two utterances, both completed while bound to channel 700."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._running = True
 
-    def check_silence(self):
+    def check_silence(self) -> list[tuple[int, bytes]]:
         self._running = False
         return [(_USER, b"\x00" * 9600), (_USER + 1, b"\x00" * 9600)]
 
@@ -35,7 +36,7 @@ class _OneBatchReceiver:
     (700, 2),    # unchanged binding (also leave + rejoin from the same channel)
     (800, 0),    # /voice join from another text channel during the first utterance's STT
 ])
-async def test_transcribed_utterance_keeps_its_captured_binding(bound_after, dispatched):
+async def test_transcribed_utterance_keeps_its_captured_binding(bound_after: int, dispatched: int) -> None:
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fake"))
     adapter._voice_text_channels = {_GUILD: 700}
     adapter._voice_receivers[_GUILD] = _OneBatchReceiver()
@@ -44,7 +45,7 @@ async def test_transcribed_utterance_keeps_its_captured_binding(bound_after, dis
     adapter._reset_voice_timeout = lambda *a: None
     started, release = threading.Event(), threading.Event()
 
-    def transcribe(_path):
+    def transcribe(_path: str) -> dict[str, object]:
         started.set()
         release.wait(5)
         return {"success": True, "transcript": "what broke on the ingest box"}

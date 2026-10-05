@@ -1159,11 +1159,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                                   daemon=True, name=reader_name)
         session._reader_thread = reader
         with self._lock:
-            self._prune_if_needed()
+            pruned = self._prune_if_needed()
             # Completion takes this lock too. Starting here also leaves no
             # ghost entry if the interpreter cannot start another thread.
             reader.start()
             self._running[session.id] = session
+        self._release_pruned(pruned)
         self._write_checkpoint()
 
     def _spawn_local_pty(self, session: ProcessSession, safe_command: str, env_vars: dict) -> ProcessSession:
@@ -1322,7 +1323,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             session.output_buffer = f"Failed to start: {e}"
         if session.exited:
             with self._lock:
-                self._prune_if_needed()
+                pruned = self._prune_if_needed()
+            self._release_pruned(pruned)
         else:
             self._track_started(
                 session, self._env_poller_loop, f"proc-poller-{session.id}", (env, log_path, pid_path, exit_path))
@@ -2586,29 +2588,26 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
 
     # ----- Cleanup / Pruning -----
 
-    def _prune_if_needed(self):
-        """Drop expired finished sessions, then the oldest survivor while over
-        MAX_PROCESSES. Must hold _lock."""
+    def _prune_if_needed(self) -> list[ProcessSession]:
+        """Drop expired finished sessions, returning them for handle release.
+
+        Must hold _lock. Releasing process handles is deliberately left to the
+        caller so a blocked stream.close() cannot starve registry users.
+        """
         now = time.time()
         expired = [sid for sid, s in self._finished.items() if (now - s.started_at) > FINISHED_TTL_SECONDS]
         over_cap = len(self._running) + len(self._finished) - len(expired) >= MAX_PROCESSES
         if over_cap and (survivors := [sid for sid in self._finished if sid not in expired]):
             expired.append(min(survivors, key=lambda sid: self._finished[sid].started_at))
-        for sid in expired:
-            # Belt-and-suspenders handle release: sessions normally arrive in
-            # _finished via _move_to_finished(), which already released their
-            # Popen/PTY handles — but any session inserted into _finished
-            # directly (defensive paths, historical checkpoints) would
-            # otherwise carry its OS handles to the grave unreleased. The
-            # release is idempotent, so double-closing is safe.
-            self._release_finished_handles(self._finished[sid])
-            del self._finished[sid]
-        # Belt-and-suspenders against module-lifetime growth: forget consumed /
-        # poll-observed marks for any session no longer tracked at all.
+        pruned = [self._finished.pop(sid) for sid in expired]
         tracked = self._running.keys() | self._finished.keys()
         self._completion_consumed &= tracked
         self._poll_observed &= tracked
+        return pruned
 
+    def _release_pruned(self, sessions: list[ProcessSession]) -> None:
+        for session in sessions:
+            self._release_finished_handles(session)
 
 
 

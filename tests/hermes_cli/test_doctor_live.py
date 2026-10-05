@@ -6,6 +6,7 @@ All probes are mocked at the HTTP/client layer; no real network calls are made.
 from __future__ import annotations
 
 import argparse
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -152,6 +153,27 @@ class TestConfiguredOnlySelection:
             lambda timeout: (True, "about:blank ok"))
         results = {r.name: r for r in run_live_checks([])}
         assert results["Browser"].status == "pass"
+
+    def test_browser_probe_skips_when_playwright_module_absent(self, monkeypatch):
+        # Regression (#128759): a healthy agent-browser setup was reported as a
+        # failed doctor probe solely because the optional Python playwright
+        # module (declared only under the google-meet extra) is not installed.
+        # The missing optional module must skip the direct-Playwright probe,
+        # not fail it.
+        monkeypatch.setattr(doctor_live, "_browser_available", lambda: True)
+        monkeypatch.setitem(sys.modules, "playwright", None)
+        monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
+        results = {r.name: r for r in run_live_checks([])}
+        assert results["Browser"].status == "skip"
+        assert "playwright" in results["Browser"].detail
+
+    def test_browser_probe_still_fails_on_launch_error(self, monkeypatch):
+        monkeypatch.setattr(doctor_live, "_browser_available", lambda: True)
+        monkeypatch.setattr(
+            doctor_live, "_launch_browser_probe",
+            lambda timeout: (False, "launch blew up"))
+        results = {r.name: r for r in run_live_checks([])}
+        assert results["Browser"].status == "fail"
 
 
 class TestBrowserAvailable:

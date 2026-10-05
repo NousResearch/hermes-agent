@@ -1222,3 +1222,45 @@ def test_prune_never_evicts_live_records():
 
     assert {"live-stalling", "live-finalizing", "live-running"} <= survivors
     assert "done-0" not in survivors and len(survivors - {"live-stalling", "live-finalizing", "live-running"}) == ad._MAX_RETAINED_COMPLETED
+
+
+def test_recovery_leaves_a_drifted_owner_with_live_workers_running_until_quiet(tmp_path, monkeypatch):
+    """#127918: when the start-time liveness check fails but the owner pid is still on the host and
+    the unit's workers are still writing their live transcripts, recovery must NOT classify the
+    record outcome-unknown — the probe rejected a live owner (start-time drift), and a false terminal
+    verdict invites replacement workers onto a still-owned worktree. The record stays running and is
+    only classified once worker activity stops."""
+    monkeypatch.setattr(ad, "_owner_liveness", lambda: (lambda pid, started: False))
+    transcript = tmp_path / "task-0.log"
+    transcript.write_text("worker still going\n", encoding="utf-8")
+    ad._persist_dispatch({
+        "delegation_id": "deleg_live_workers", "session_key": "sess", "dispatched_at": time.time(),
+        "goal": "long task", "task_transcripts": {"0": str(transcript)},
+    })
+
+    assert ad.recover_abandoned_delegations() == 0
+    with ad._transaction() as conn:
+        state = conn.execute(
+            "SELECT state FROM async_delegations WHERE delegation_id='deleg_live_workers'").fetchone()[0]
+    assert state == "running"  # observer-lost, still-running: non-terminal and recoverable
+
+    # Worker goes quiet: its transcript ages out of the activity window and the next sweep
+    # classifies the record as outcome unknown, as before.
+    quiet = time.time() - (ad._WORKER_ACTIVITY_WINDOW_S + 60)
+    os.utime(transcript, (quiet, quiet))
+    assert ad.recover_abandoned_delegations() == 1
+    with ad._transaction() as conn:
+        state = conn.execute(
+            "SELECT state FROM async_delegations WHERE delegation_id='deleg_live_workers'").fetchone()[0]
+    assert state == "unknown"
+
+
+def test_recovery_ignores_unreadable_transcript_paths(tmp_path, monkeypatch):
+    """A transcript path that cannot be statted carries no liveness evidence and must not block
+    recovery — otherwise a deleted log would pin every abandoned record as running forever."""
+    monkeypatch.setattr(ad, "_owner_liveness", lambda: (lambda pid, started: False))
+    ad._persist_dispatch({
+        "delegation_id": "deleg_no_log", "session_key": "sess", "dispatched_at": time.time(),
+        "goal": "long task", "task_transcripts": {"0": str(tmp_path / "missing" / "task-0.log")},
+    })
+    assert ad.recover_abandoned_delegations() == 1

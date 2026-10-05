@@ -1080,8 +1080,13 @@ class GatewayInboundMixin:
         if command:
             try:
                 from hermes_cli.plugins import get_plugin_command_handler
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
+
+                async def _dispatch_plugin_command() -> Tuple[bool, Optional[str], Optional[str]]:
+                    # Both the lookup and the run sit under the chat's own profile scope on the
+                    # multiplexed path (see below); everything here is that scoped body.
+                    plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
+                    if not plugin_handler:
+                        return False, None, command
                     # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
                     # sits before it, so a handler reading get_session_env() would see an empty or a
                     # foreign (cron agent's os.environ) session (#108698). No session_entry exists yet,
@@ -1099,6 +1104,20 @@ class GatewayInboundMixin:
                             if asyncio.iscoroutine(result):
                                 result = await result
                     return True, str(result) if result else None, command
+
+                if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                    # Resolve AND run the command under the chat's own profile (#133244). The
+                    # command table follows get_hermes_home(), so a bare lookup consults the launch
+                    # profile's registry — a plugin enabled only there fires in another profile's
+                    # chat, and its handler runs with no secret scope, so every credential read
+                    # fails closed. The agent-turn path scopes itself from the source
+                    # (_prepare_profile_scoped_inbound_message_text); this earlier dispatch must not
+                    # depend on the caller having wrapped the handler.
+                    from gateway.run import _async_profile_runtime_scope
+                    async with _async_profile_runtime_scope(
+                            self._resolve_profile_home_for_source(source)):
+                        return await _dispatch_plugin_command()
+                return await _dispatch_plugin_command()
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)
         return False, None, command

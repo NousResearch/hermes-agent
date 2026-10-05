@@ -14,6 +14,7 @@ auxiliary task) must ignore these auxiliary-failure markers; auxiliary reads
 must keep skipping unhealthy providers.
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -71,11 +72,15 @@ class TestAuxUnhealthyCacheLaneIsolation:
         assert client is main_client
 
     def test_aux_marked_provider_skipped_for_auxiliary_task(self):
-        """Auxiliary task reads are unchanged: a provider marked unhealthy by an
-        aux failure is still skipped on the aux task route (the isolation must
-        not un-skip it there)."""
+        """Auxiliary task reads are unchanged: providers marked unhealthy by an
+        aux failure are still skipped on the aux task route — at the
+        main-provider step AND in the fallback chain — so the route falls
+        through to the first healthy chain entry (the isolation must not
+        un-skip markers on aux lanes)."""
         from agent.auxiliary_client import (
+            _is_provider_unhealthy,
             _mark_provider_unhealthy,
+            _normalize_chain_label,
             _resolve_auto_route,
         )
 
@@ -83,10 +88,20 @@ class TestAuxUnhealthyCacheLaneIsolation:
         resolved_providers = []
 
         def fake_resolve(provider, model=None, **kw):
+            # Defer to the REAL health gate so this fake only stands in for the
+            # credential-resolving half of the router — the lane mechanism under
+            # test stays live on the aux route (an implementation that wrongly
+            # disabled the gate globally fails here).
+            if _is_provider_unhealthy(_normalize_chain_label(provider)):
+                return None, None
             resolved_providers.append(provider)
             return aux_client, model or "fallback/model"
 
-        _mark_provider_unhealthy("local/custom")
+        # Mark the aux task's own main provider AND the first chain entry: both
+        # read sites (Step-1 main-provider route, fallback chain) must honor the
+        # markers and land on the healthy tail ("nous").
+        _mark_provider_unhealthy("openrouter")
+        _mark_provider_unhealthy("custom")
         with patch(
             "agent.auxiliary_client._read_main_provider", return_value="openrouter"
         ), patch(
@@ -108,8 +123,57 @@ class TestAuxUnhealthyCacheLaneIsolation:
         ):
             client, _model, _label = _resolve_auto_route(main_runtime=None, task="session_search")
         assert client is aux_client
-        # The quarantined entry was skipped without a resolve attempt.
-        assert "custom" not in resolved_providers
+        # The quarantined entry was skipped without a resolve attempt; only the
+        # healthy tail of the chain was consulted.
+        assert resolved_providers == ["nous"]
+
+    def test_init_wire_passes_main_lane_optout_to_router(self):
+        """Wire-level: the agent-init production path (``_routed_client_kwargs``)
+        wraps its router calls in the main-lane opt-out, so an aux-written
+        marker cannot divert main-init routing to the fallback chain. The fake
+        router defers to the REAL health gate, so this locks the ``with
+        _MainLaneOptOut()`` wrapping itself: drop the context manager and init
+        resolution silently switches to the fallback entry."""
+        import agent.agent_init as agent_init
+        from agent.auxiliary_client import (
+            _is_provider_unhealthy,
+            _mark_provider_unhealthy,
+            _normalize_chain_label,
+        )
+
+        main_client = MagicMock(name="main-client", api_key="main-key")
+        main_client.base_url = "http://main.example"
+        main_client._custom_headers = None
+        main_client.default_headers = None
+        main_client._default_headers = None
+        fb_client = MagicMock(name="fb-client", api_key="fb-key")
+        fb_client.base_url = "http://fallback.example"
+        fb_client._custom_headers = None
+        fb_client.default_headers = None
+        fb_client._default_headers = None
+
+        def lane_aware_router(provider, model=None, **kw):
+            # Production oracle: the real gate must observe the main-lane
+            # opt-out that agent_init is expected to activate around its calls.
+            if _is_provider_unhealthy(_normalize_chain_label(provider)):
+                return None, None
+            return (
+                (main_client, model or "main/model") if provider == "openrouter"
+                else (fb_client, model or "fb/model")
+            )
+
+        agent = SimpleNamespace(provider="openrouter", model="main/model", quiet_mode=True)
+        _mark_provider_unhealthy("openrouter")
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            side_effect=lane_aware_router,
+        ), patch.object(
+            agent_init, "_fallback_entries",
+            return_value=[{"provider": "custom", "model": "qwen3.5:4b"}],
+        ):
+            kwargs = agent_init._routed_client_kwargs(agent, fallback_model=None, _provider_timeout=None)
+        # Main route served the main provider despite the aux-written marker.
+        assert kwargs["api_key"] == "main-key"
 
     def test_fallback_providers_entry_marked_by_aux_still_serves_main_route(self):
         """A ``fallback_providers`` entry quarantined by an auxiliary failure must

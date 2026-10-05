@@ -524,19 +524,23 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     # The tail's progress lines go to stderr: this is an automatic repair in
     # front of whatever command the user ran, and that command may be
     # emitting machine-readable stdout (a JSON probe, a piped query).
-    from hermes_cli.update_lock import checkout_lock_fds
+    from hermes_cli.update_custody import CustodyRefused, run
 
-    # The completion child stays in this launch's checkout custody (POSIX: it inherits the
-    # lock fd), so a contender never sees the checkout free while it builds.
-    fds = checkout_lock_fds(root)
-    code = subprocess.call(
-        [sys.executable, "-I", "-B", "-u",
-         str(root / "hermes_cli/source_completion.py"),
-         "--source", str(root), "--finish-update",
-         *(("--desktop",) if desktop else ())],
-        cwd=root, env=activation_environment(root), stdout=sys.__stderr__,
-        **({"pass_fds": fds} if fds else {}),
-    )
+    # The completion child stays in this launch's checkout custody (POSIX: it inherits the lock
+    # fd; Windows: created suspended and bound to the lock owner's kill-on-close job), so a
+    # contender never sees the checkout free while it builds. A child the job refuses never runs:
+    # the tail stays owed.
+    try:
+        code = run(
+            [sys.executable, "-I", "-B", "-u",
+             str(root / "hermes_cli/source_completion.py"),
+             "--source", str(root), "--finish-update",
+             *(("--desktop",) if desktop else ())],
+            inherit_lock=True, cwd=root, env=activation_environment(root), stdout=sys.__stderr__,
+        ).returncode
+    except CustodyRefused as exc:
+        print(f"hermes: {exc.reason}", file=sys.stderr, flush=True)
+        code = 1
     if code != 0:
         _record_completion_attempt(root, failed=True)
         raise RuntimeError(

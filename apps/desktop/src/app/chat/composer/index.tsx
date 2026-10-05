@@ -306,6 +306,10 @@ export function ChatBar({
   // Timestamp of the last plain Enter. A second press inside
   // DOUBLE_ENTER_SEND_MS commits the draft; a lone press just breaks the line.
   const lastEnterAtRef = useRef(0)
+  // Timestamp of the last plain Shift+Enter, for the steer chord's own double
+  // press. A separate stamp from `lastEnterAtRef` so a send pair and a steer
+  // pair cannot complete each other.
+  const lastSteerAtRef = useRef(0)
 
   const { availableThemes, themeName } = useTheme()
   const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null })
@@ -1243,7 +1247,40 @@ export function ChatBar({
     // actually steerable — otherwise the chord keeps its native meaning and
     // breaks the line, which is what a bare Enter already does in this mode.
     if (!enterSends && event.key === 'Enter' && event.shiftKey && canSteer) {
+      // With the double tap armed the chord takes the same guard as every other
+      // send: two presses. Shift is held for capitals, so a lone Shift+Enter is
+      // exactly the press that arrives by accident, and it must not redirect a
+      // live turn.
+      if (sendOnDoubleTap) {
+        const steeredAt = Date.now()
+
+        if (steeredAt - lastSteerAtRef.current > doubleEnterMs) {
+          lastSteerAtRef.current = steeredAt
+
+          // The first press of the pair. It breaks the line only when the user
+          // kept the line break on, the same rule a bare press follows.
+          if (!enterNewline) {
+            event.preventDefault()
+          }
+
+          return
+        }
+
+        lastSteerAtRef.current = 0
+      }
+
       event.preventDefault()
+
+      // Drop the break the first press of the pair inserted, the way the
+      // double-tap send does, so a steered message carries no trailing newline.
+      if (enterNewline && editorRef.current) {
+        const inserted = composerPlainText(editorRef.current)
+
+        if (inserted.endsWith('\n')) {
+          renderComposerContents(editorRef.current, inserted.replace(/\n+$/, ''))
+        }
+      }
+
       // Source the just-typed text from the DOM before redirecting, so a fast
       // keypress cannot steer a stale draft.
       flushEditorToDraft(event.currentTarget)

@@ -514,7 +514,9 @@ export const esOverrides = {
       signInFailed: 'No se pudo iniciar sesión',
       signInToRemoteGateway: 'Iniciar sesión en el gateway remoto',
       signInWithProvider: provider => `Iniciar sesión con ${provider}`,
-      identityProvider: 'tu proveedor de identidad'
+      identityProvider: 'tu proveedor de identidad',
+      bundledReinstallHint: 'Esta instalación incluida no puede repararse desde dentro de la app: reinstala la app para recuperar su backend.',
+      reinstallApp: 'Reinstalar la app'
     }
   },
   notifications: {
@@ -617,7 +619,10 @@ export const esOverrides = {
       backgroundDoneTitle: 'Tarea en segundo plano finalizada',
       backgroundFailedTitle: 'La tarea en segundo plano falló',
       creditsTitle: 'Créditos'
-    }
+    },
+    sharedProfileWarning: 'Hay otra instalación de Hermes usando este perfil. Las dos comparten sus ajustes y sus datos, así que los cambios pueden entrar en conflicto. Puedes continuar, o cerrar la otra instalación antes de hacer cambios.',
+    compressDeferredDone: 'La compresión del contexto ha terminado',
+    updateReadyMessageAppInstaller: 'Hay una versión nueva de Hermes lista. Actualiza ahora y Windows la terminará por ti.'
   },
   remoteDisplayBanner: {
     message: reason =>
@@ -793,8 +798,16 @@ export const esOverrides = {
       'composer.slash': 'Paleta de comandos slash',
       'composer.help': 'Ayuda rápida',
       'composer.history': 'Recorrer popover / historial',
-      'composer.cancel': 'Cerrar popover · cancelar ejecución'
-    }
+      'composer.cancel': 'Cerrar popover · cancelar ejecución',
+      conversation: {
+        scrollPageUp: 'Subir una página en la conversación',
+        scrollPageDown: 'Bajar una página en la conversación',
+      },
+      composer: {
+        dictate: 'Empezar / parar el dictado',
+      }
+    },
+    clear: 'Quitar'
   },
   findInPage: {
     next: 'Siguiente coincidencia',
@@ -1707,7 +1720,11 @@ export const esOverrides = {
         'Tamaño máximo de archivo local que el escritorio cargará para vistas previas y adjuntos de imagen, en MB. El valor por defecto es 16. Los adjuntos remotos no-imagen usan un límite separado de 256 MB. Un valor muy alto carga el archivo completo en memoria y puede congelar o bloquear la app.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Tamaño máximo de vista previa / carga de imagen en megabytes',
-      showOptions: 'Mostrar opciones'
+      showOptions: 'Mostrar opciones',
+      alwaysExternalLinksTitle: 'Abrir siempre los enlaces en el navegador externo',
+      alwaysExternalLinksDesc: 'Abrir en tu navegador del sistema todos los enlaces en los que hagas clic, en vez de en el navegador integrado. «Abrir en el navegador integrado» del menú contextual sigue funcionando.',
+      voiceShortcutHintTitle: 'Atajo de grabación de voz',
+      voiceShortcutHintDesc: 'Configura el atajo de grabación de voz en Ajustes → Atajos de teclado («Empezar / parar la conversación por voz»). El valor voice.record_key de la configuración solo se aplica a la CLI y al TUI.'
     },
     hudModifier: {
       title: 'Pulsar para mostrar el HUD',
@@ -2294,7 +2311,18 @@ export const esOverrides = {
       deleteAction: 'Eliminar modelo',
       deleteConfirm: (model: string) => `¿Eliminar ${model} del disco?`,
       deleted: (model: string) => `${model} eliminado.`,
-      deleteFailed: 'Error al eliminar'
+      deleteFailed: 'Error al eliminar',
+      downloadStatusRunning: 'Descargando',
+      downloadSpeed: rate => `${rate}`,
+      downloadEta: time => `quedan ~${time}`,
+      downloadEtaSeconds: count => `${count} s`,
+      downloadEtaMinutes: count => `${count} min`,
+      downloadEtaHours: (hours, minutes) => (minutes ? `${hours} h ${minutes} min` : `${hours} h`),
+      downloadPausedLabel: 'En pausa',
+      downloadPauseAction: 'Pausar',
+      downloadResumeAction: 'Reanudar',
+      downloadPauseFailed: model => `No se pudo pausar la descarga de ${model}`,
+      downloadResumeFailed: model => `No se pudo reanudar la descarga de ${model}`
     },
     billing: {
       perMonth: (amount: string) => `${amount}/mes`,
@@ -3729,7 +3757,8 @@ export const esOverrides = {
     failedLoadSoul: 'No se pudo cargar SOUL.md',
     failedSaveSoul: 'No se pudo guardar SOUL.md',
     failedCreate: 'No se pudo crear el perfil',
-    failedRename: 'No se pudo renombrar el perfil'
+    failedRename: 'No se pudo renombrar el perfil',
+    soulMissing: 'Todavía no hay ningún archivo SOUL.md para este perfil. Añade instrucciones aquí abajo y guarda para crear uno. Los preajustes de personalidad de config.yaml se gestionan aparte.'
   },
   modelAssignment: {
     saveFailed: 'Hermes no guardó ese cambio de modelo.',
@@ -4836,7 +4865,11 @@ export const esOverrides = {
     copiedOutput: '¡Copiado!',
     copyOutput: 'Copiar salida',
     reloadRetry: 'Recargar y reintentar',
-    openLogs: 'Abrir registros'
+    openLogs: 'Abrir registros',
+    setupChoiceDescLocal: 'Instala Hermes en este equipo, o conéctate a un gateway de Hermes que ya tengas en marcha.',
+    useLocalTitle: 'Usar Hermes en este equipo',
+    useLocalDesc: 'Aquí ya hay un entorno de Hermes instalado: arráncalo con un clic. No se descarga nada.',
+    bundledLocalDesc: 'Usa el entorno de Hermes que viene con esta app: el backend incluido es la instalación local.'
   },
   onboarding: {
     headerTitle: 'Vamos a configurar Hermes Agent',
@@ -5189,7 +5222,8 @@ export const esOverrides = {
       openModelPicker: 'Abrir selector de modelo',
       modelPinned: 'fijado por ti; los chats nuevos lo usan en lugar del predeterminado de Configuración',
       modelTitle: (provider, model) => `Modelo · ${provider}: ${model}`,
-      providerModelTitle: (provider, model) => `${provider} · ${model}`
+      providerModelTitle: (provider, model) => `${provider} · ${model}`,
+      releaseAvailable: (tag: string) => `La versión ${tag} ya está disponible.`
     }
   },
   rightSidebar: {
@@ -5707,7 +5741,8 @@ export const esOverrides = {
       alwaysTitle: '¿Permitir siempre este comando?',
       alwaysDescription: pattern =>
         `Esto añade el patrón “${pattern}” a tu allowlist permanente (~/.hermes/config.yaml). Hermes no volverá a preguntar por comandos como este, ni en esta sesión ni en futuras.`,
-      alwaysAllow: 'Permitir siempre'
+      alwaysAllow: 'Permitir siempre',
+      commandDetails: 'Detalles del comando'
     },
     clarify: {
       notReady: 'La solicitud de aclaración aún no está lista',
@@ -6175,6 +6210,75 @@ export const esOverrides = {
       description: 'Muestra la barra lateral móvil.',
       toggle: open => `${open ? 'Mostrar' : 'Ocultar'} barra lateral`
     }
+  },
+  externalOpenFailed: {
+    title: 'No se pudo abrir este enlace',
+    message: 'No hay ningún navegador registrado para abrir esta dirección. Copia el enlace y ábrelo a mano.',
+    copyUrl: 'Copiar enlace',
+    close: 'Cerrar',
+    missing: {
+      title: 'Archivo no encontrado',
+      message: 'Este archivo no existe: puede que se haya eliminado, que se haya movido o que esté en otro equipo.',
+    },
+  },
+  catalog: {
+    add: 'Añadir',
+    added: 'Añadido',
+    discover: 'Descubrir',
+    featured: 'Destacados',
+    explorePlugins: 'Explorar plugins',
+    exploreSkills: 'Explorar skills',
+    mostStarred: 'Con más estrellas',
+    newest: 'Más recientes',
+    recentlyUpdated: 'Actualizados hace poco',
+    alphabetical: 'Nombre',
+    sortBy: 'Ordenar por',
+    seeAll: 'Ver todo',
+    related: 'Parecidos a este',
+    tags: 'Etiquetas',
+    screenshots: 'Capturas',
+    listView: 'Vista de lista',
+    cardView: 'Vista de tarjetas',
+    installTitle: (name: string) => `¿Instalar “${name}”?`,
+    installDescription: 'Esta skill estará disponible en las sesiones nuevas. Instala solo fuentes en las que confíes.',
+    installTo: 'Instalar en',
+    thisComputer: 'Este equipo',
+    installing: 'Instalando…',
+    installComplete: (name: string) => `“${name}” instalada`,
+    destinationChanged: 'El destino ha cambiado. Cierra este diálogo y vuelve a abrir el enlace de instalación.',
+    installed: 'Instalado',
+    searchSkills: 'Buscar skills',
+    searchPlugins: 'Buscar plugins',
+    allSources: 'Todas las fuentes',
+    allCategories: 'Todas las categorías',
+    about: 'Acerca de',
+    author: 'Autor',
+    source: 'Fuente',
+    category: 'Categoría',
+    version: 'Versión',
+    platforms: 'Plataformas',
+    requires: 'Requiere',
+    tools: 'Herramientas',
+    hooks: 'Hooks',
+    middleware: 'Middleware',
+    commands: 'Comandos',
+    license: 'Licencia',
+    addedDate: 'Añadido',
+    updatedDate: 'Actualizado',
+    repository: 'Repositorio',
+    documentation: 'Documentación',
+    noResults: 'Sin resultados',
+    tryAnother: 'Prueba otra búsqueda o quita los filtros.',
+    clearFilters: 'Quitar filtros',
+    filters: 'Filtros',
+    loadFailed: 'No se pudo cargar el catálogo',
+    retry: 'Reintentar',
+    more: 'Ver más',
+    pinned: 'Commit revisado',
+    snapshotHint: 'Desde el catálogo de Hermes. Explorar no contacta con los repositorios de origen.',
+    installHint: 'Revisa la fuente antes de instalar. Los cambios se aplican a las sesiones nuevas.',
+    results: (count: number) => `${count.toLocaleString()} resultado${count === 1 ? '' : 's'}`,
+    back: 'Volver a los resultados',
   }
 } satisfies TranslationOverrides
 

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Run every blocking lint check CI runs, locally, with the same pinned tools.
+"""Run every blocking lint check CI runs, locally, with the same pinned tools: the lint
+workflow's guards, ruff and the code-health ratchet, plus the case-collision, lazy-deps and
+profile-archive guards that CI runs in workflows of their own.
 
     python scripts/check                # everything, against the merge-base with origin/main
     python scripts/check --only health  # just the code-health ratchet
@@ -55,13 +57,18 @@ exit $status
 """,
 }
 
-# name -> argv (relative to the repo root); mirrors the blocking steps in lint.yml.
+# name -> argv (relative to the repo root); mirrors the blocking steps in lint.yml, plus the
+# unconditional guards CI runs in their own workflows (case-collision-check.yml,
+# lazy-deps-guard.yml, profile-artifact-check.yml).
 _GUARDS = {
     "footguns": ["scripts/check-windows-footguns.py", "--all"],
     "shebangs": ["scripts/check_bash_shebangs.py"],
     "no-tmp": ["scripts/check_no_tmp_literals.py"],
     "config-writers": ["scripts/check_config_yaml_writers.py"],
     "os-marker-fakes": ["scripts/ci/check_os_marker_fakes.py"],
+    "case-collisions": ["scripts/check-case-collisions.py"],
+    "lazy-deps": ["scripts/ci/check_lazy_deps_imports.py"],
+    "profile-archives": ["scripts/ci/check_profile_archive_boundary.py"],
 }
 _CHECKS = (*_GUARDS, "ruff", "health")
 

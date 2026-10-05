@@ -203,6 +203,24 @@ def test_a_branch_cannot_relax_its_own_switch(tmp_path, monkeypatch, capsys):
     assert cli.main([]) == 1, capsys.readouterr().out
 
 
+# --- m4: the CI guards that ran outside the lint workflow --------------------------------------
+
+
+@pytest.mark.parametrize("job, files", [
+    ("case-collisions", {"pkg/Notes.md": "a\n", "pkg/NOTES.md": "b\n"}),
+    ("lazy-deps", {"pkg/uses.py": "import tools.lazy_deps\n"}),
+    ("profile-archives", {"pkg/export.tar.gz": "not really\n"}),
+])
+def test_ci_only_guards_run_in_scripts_check(tmp_path, job, files):
+    repo = _engine_repo(tmp_path)
+    clean = _check(repo, "--staged", "--only", job, "--base", "HEAD")
+    assert clean.returncode == 0 and "1 checks, ok" in clean.stdout, clean.stdout + clean.stderr
+    _write(repo, files)
+    _git(repo, "add", "--", *files)
+    proc = _check(repo, "--staged", "--only", job, "--base", "HEAD")
+    assert proc.returncode == 1 and f"FAILED: {job}" in proc.stdout, proc.stdout + proc.stderr
+
+
 # --- F21: profile regex rules see executable code, not prose -----------------------------------
 
 

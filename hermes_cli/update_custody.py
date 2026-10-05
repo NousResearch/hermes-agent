@@ -566,8 +566,12 @@ def _join_launcher_python() -> str:
 # so nothing node starts (npm, esbuild, sh) keeps the checkout locked: custody of them rests on
 # this stdlib parent, which holds the fd until no descendant of the command is left.
 # * The command stays in the CALLER's process group: every group kill that stops a build (a
-#   Ctrl-C'd completion child's ``killpg``, Desktop's ``kill(-pid)``) reaches this launcher,
-#   node and everything under it that did not start a session of its own.
+#   Ctrl-C'd completion child's ``killpg``, Desktop's ``kill(-pid)``) reaches node and everything
+#   under it that did not start a session of its own. This launcher leaves that group (E): a
+#   SIGKILL of the group would otherwise kill the custodian too, and a descendant in a session of
+#   its own would go on writing with the checkout lock free. It outlives the kill, settles the
+#   tree as below, and only then exits (releasing the fd). A launcher started as its group's
+#   leader (a caller that gave it a session) cannot leave it; that group is then its own.
 # * Linux: the launcher is a child subreaper, so a descendant orphaned by node's exit (or by any
 #   intermediate's) is re-parented to it, never to init. Once node exits it SIGKILLs and reaps
 #   its children until none is left; it only signals its own unreaped children, so no pid it
@@ -641,7 +645,10 @@ def kill(pids):
         except OSError:
             pass
 
-p = subprocess.Popen(sys.argv[2:], pass_fds=fds)
+caller = os.getpgrp()
+if caller != me:
+    os.setpgid(0, 0)
+p = subprocess.Popen(sys.argv[2:], pass_fds=fds, process_group=caller)
 got = []
 
 def forward(signum, frame):

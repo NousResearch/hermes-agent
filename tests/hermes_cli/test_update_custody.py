@@ -463,6 +463,53 @@ def test_a_group_kill_of_the_caller_stops_the_whole_build(repo, tmp_path):
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="POSIX sessions + /proc")
+@pytest.mark.live_system_guard_bypass  # the caller's group kill is the scenario under test
+def test_a_group_kill_of_the_caller_keeps_custody_until_a_detached_writer_is_gone(repo, tmp_path):
+    """E: the completion child ``killpg``s its own group on interruption; the launcher holding
+    the lock fd for node's tree was in that group and died with it, so a descendant in a session
+    of its own kept writing while a contender owned the checkout. A contender must only acquire
+    once that writer has stopped."""
+    import contextlib
+    import signal
+
+    beat = tmp_path / "beat"
+    writer = (f"import os, pathlib, time; os.setsid(); os.closerange(3, 4096); p = pathlib.Path({str(beat)!r})\n"  # windows-footgun: ok - Linux-only test
+              "for i in range(300):\n    p.write_text(f'{os.getpid()} {i}'); time.sleep(0.1)")
+    caller = textwrap.dedent(f"""
+        import subprocess, sys
+        sys.path.insert(0, {str(REPO_ROOT)!r})
+        from pathlib import Path
+        from hermes_cli import update_lock as ul
+        from hermes_cli.update_custody import contained_command
+        repo = Path({str(repo)!r})
+        lock = ul.UpdateLock(path=Path({str(tmp_path / "marker")!r}), install_root=repo)
+        assert lock.acquire()
+        with contained_command({_node_starting(writer, then="time.sleep(60)")!r}, root=repo) as (argv, custody):
+            subprocess.Popen(argv, stdin=subprocess.DEVNULL, **custody).wait()
+    """)
+    owner = subprocess.Popen([sys.executable, "-c", caller], start_new_session=True)
+    deadline = time.monotonic() + 20
+    while not beat.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert beat.exists(), "the detached writer never started"
+    os.killpg(owner.pid, signal.SIGKILL)  # windows-footgun: ok - Linux-only test
+    owner.wait(timeout=10)
+    contender = ul.UpdateLock(path=tmp_path / "next-marker", install_root=repo)
+    deadline = time.monotonic() + 20
+    while not contender.acquire():
+        assert time.monotonic() < deadline, "the checkout stayed locked after the group kill"
+        time.sleep(0.1)
+    try:
+        seen = beat.read_text(encoding="utf-8")
+        time.sleep(1)
+        assert beat.read_text(encoding="utf-8") == seen, "a detached build writer kept writing under the next owner"
+    finally:
+        contender.release()
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(int(beat.read_text(encoding="utf-8").split()[0]), signal.SIGKILL)  # windows-footgun: ok - Linux-only test
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="POSIX sessions + /proc")
 @pytest.mark.parametrize("platform", [None, "darwin"], ids=["subreaper", "ps-walk"])
 def test_a_detached_grandchild_outliving_node_dies_before_the_build_returns(repo, tmp_path, platform):
     """N13/L1: a descendant that left node's process group (its own session) and outlives node

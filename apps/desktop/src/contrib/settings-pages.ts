@@ -12,6 +12,12 @@
  *    unified package that does both shows ONE entry; the schema form becomes
  *    its "Agent settings" sub-page.
  *
+ * The two feeds live in disjoint identity namespaces. A desktop plugin picks
+ * any id it likes, so no string an agent key can form is safe to share with
+ * `<pluginId>:<pageId>`: entries carry their `kind`, routes carry it as the
+ * query param (`?plugin=` vs `?agent=`), and the automatic schema form is
+ * addressed by its agent key, never by a sub-page id a plugin could also pick.
+ *
  * Pure: no React, no stores. The Settings view feeds it the live registry
  * area and the agent plugin list.
  */
@@ -26,11 +32,9 @@ import type { Contribution } from './types'
  *  proposed in #91935, so a plugin written against that draft registers here. */
 export const SETTINGS_PLUGINS_AREA = 'settings.plugins'
 
-/** Entry-key prefix for automatic config_schema pages (`agent:<key>`). */
-export const AGENT_SETTINGS_PREFIX = 'agent:'
-
-/** Sub-page id the schema form takes when folded under a desktop page. */
-export const AGENT_SETTINGS_SUBPAGE = 'config'
+/** One-shot hand-off: the profile a deep link (the Capabilities gear) wants
+ *  Settings to edit. Settings adopts it into its scope and drops the param. */
+export const PLUGIN_SETTINGS_PROFILE_PARAM = 'profile'
 
 export interface PluginSettingsSubpage {
   /** Unique within the page; becomes the `ppage` URL param. */
@@ -56,6 +60,8 @@ export interface PluginSettingsPage {
 }
 
 export interface PluginSettingsNode {
+  /** Plugin-chosen sub-page id (`ppage`). Schema-form nodes are addressed by
+   *  `agentKey` instead, so they never take an id a plugin could choose. */
   id: string
   title: string
   /** Plugin-rendered content. Absent on schema-form nodes. */
@@ -64,9 +70,16 @@ export interface PluginSettingsNode {
   agentKey?: string
 }
 
+/** Which feed produced an entry; part of its identity. */
+export type PluginSettingsEntryKind = 'agent' | 'desktop'
+
 export interface PluginSettingsEntry extends PluginSettingsNode {
-  /** URL key: the contribution id (`<pluginId>:<pageId>`) or `agent:<key>`. */
+  kind: PluginSettingsEntryKind
+  /** Route value within `kind`: the contribution id (`<pluginId>:<pageId>`)
+   *  for desktop pages, the agent plugin key for automatic pages. */
   key: string
+  /** Collision-free identity across both kinds: `<kind>:<key>`. */
+  uid: string
   icon?: string
   order: number
   /** Registering desktop plugin id, when contributed by one. */
@@ -77,6 +90,47 @@ export interface PluginSettingsEntry extends PluginSettingsNode {
 export interface PluginSettingsTarget {
   entry: PluginSettingsEntry
   child?: PluginSettingsNode
+}
+
+/** Where Settings ▸ Plugins should land: a desktop entry (by contribution id
+ *  or plugin id, optionally a sub-page) or an agent plugin's schema form
+ *  (standalone or folded under its package's desktop page). */
+export type PluginSettingsRoute = { agent: string } | { page?: string; plugin: string }
+
+/** The route that reaches `child` (or the entry's landing page). */
+export function pluginSettingsRouteOf(entry: PluginSettingsEntry, child?: PluginSettingsNode): PluginSettingsRoute {
+  if (child?.agentKey) {
+    return { agent: child.agentKey }
+  }
+
+  if (entry.kind === 'agent') {
+    return { agent: entry.key }
+  }
+
+  return child ? { page: child.id, plugin: entry.key } : { plugin: entry.key }
+}
+
+/** Read the route from Settings' query string (`null` = the overview). */
+export function pluginSettingsRouteFrom(params: URLSearchParams): null | PluginSettingsRoute {
+  const agent = params.get('agent')
+
+  if (agent) {
+    return { agent }
+  }
+
+  const plugin = params.get('plugin')
+
+  return plugin ? { page: params.get('ppage') ?? undefined, plugin } : null
+}
+
+/** Rail identity of a node: disjoint across kinds, and a folded schema form
+ *  keeps the identity its standalone page would have had. */
+export function pluginSettingsNavId(entry: PluginSettingsEntry, child?: PluginSettingsNode): string {
+  if (child?.agentKey) {
+    return `plugins:agent:${child.agentKey}`
+  }
+
+  return child ? `plugins:${entry.uid}:${child.id}` : `plugins:${entry.uid}`
 }
 
 /** Shape a registration into a registry contribution (the plugin context
@@ -109,7 +163,7 @@ function subpagesOf(data: unknown): PluginSettingsNode[] {
       continue
     }
 
-    if (seen.has(child.id) || child.id === AGENT_SETTINGS_SUBPAGE) {
+    if (seen.has(child.id)) {
       continue
     }
 
@@ -155,10 +209,12 @@ export function pluginSettingsEntries({
       icon,
       id: contribution.id,
       key: contribution.id,
+      kind: 'desktop',
       order: typeof contribution.order === 'number' ? contribution.order : 0,
       pluginId: pluginIdOf(contribution.source),
       render: contribution.render,
-      title: contribution.title
+      title: contribution.title,
+      uid: `desktop:${contribution.id}`
     })
   }
 
@@ -179,7 +235,7 @@ export function pluginSettingsEntries({
 
     if (owner) {
       if (!owner.children.some(child => child.agentKey)) {
-        owner.children.push({ agentKey: row.key, id: AGENT_SETTINGS_SUBPAGE, title: configTitle })
+        owner.children.push({ agentKey: row.key, id: row.key, title: configTitle })
       }
 
       continue
@@ -188,66 +244,87 @@ export function pluginSettingsEntries({
     entries.push({
       agentKey: row.key,
       children: [],
-      id: `${AGENT_SETTINGS_PREFIX}${row.key}`,
-      key: `${AGENT_SETTINGS_PREFIX}${row.key}`,
+      id: row.key,
+      key: row.key,
+      kind: 'agent',
       order: 0,
-      title: row.name || row.key
+      title: row.name || row.key,
+      uid: `agent:${row.key}`
     })
   }
 
   return entries.sort((a, b) => a.order - b.order || a.title.localeCompare(b.title))
 }
 
-/** Resolve `?plugin=&ppage=` to an entry (+ sub-page). `plugin` may be the
- *  entry key, the registering plugin id, or `agent:<key>` (the Capabilities
- *  gear) — which also finds a schema form folded under a desktop page.
- *  Null = show the overview. */
+/** Resolve a route to an entry (+ sub-page). `plugin` matches desktop
+ *  entries only (by contribution id, then plugin id) and `page` only their
+ *  plugin-chosen sub-pages; `agent` matches the agent key's schema form,
+ *  standalone or folded under a desktop page. Null = show the overview. */
 export function resolvePluginSettingsTarget(
   entries: readonly PluginSettingsEntry[],
-  plugin: null | string,
-  page: null | string
+  route: null | PluginSettingsRoute
 ): null | PluginSettingsTarget {
-  if (!plugin) {
+  if (!route) {
     return null
   }
 
-  const pick = (entry: PluginSettingsEntry): PluginSettingsTarget => ({
-    child: page ? entry.children.find(child => child.id === page) : undefined,
-    entry
-  })
+  if ('agent' in route) {
+    const standalone = entries.find(entry => entry.kind === 'agent' && entry.key === route.agent)
 
-  const direct = entries.find(entry => entry.key === plugin) ?? entries.find(entry => entry.pluginId === plugin)
-
-  if (direct) {
-    return pick(direct)
-  }
-
-  if (plugin.startsWith(AGENT_SETTINGS_PREFIX)) {
-    const agentKey = plugin.slice(AGENT_SETTINGS_PREFIX.length)
+    if (standalone) {
+      return { entry: standalone }
+    }
 
     for (const entry of entries) {
-      const child = entry.children.find(node => node.agentKey === agentKey)
+      const child = entry.kind === 'desktop' ? entry.children.find(node => node.agentKey === route.agent) : undefined
 
       if (child) {
         return { child, entry }
       }
     }
+
+    return null
   }
 
-  return null
+  const desktop = entries.filter(entry => entry.kind === 'desktop')
+
+  const entry =
+    desktop.find(candidate => candidate.key === route.plugin) ??
+    desktop.find(candidate => candidate.pluginId === route.plugin)
+
+  if (!entry) {
+    return null
+  }
+
+  return {
+    child: route.page ? entry.children.find(child => !child.agentKey && child.id === route.page) : undefined,
+    entry
+  }
+}
+
+/** Settings ▸ Plugins href for a route, optionally handing Settings the
+ *  profile to edit (`PLUGIN_SETTINGS_PROFILE_PARAM`). */
+export function pluginSettingsRouteHref(route: null | PluginSettingsRoute, profile?: null | string): string {
+  const params = new URLSearchParams({ tab: 'plugins' })
+
+  if (route && 'agent' in route) {
+    params.set('agent', route.agent)
+  } else if (route) {
+    params.set('plugin', route.plugin)
+
+    if (route.page) {
+      params.set('ppage', route.page)
+    }
+  }
+
+  if (profile) {
+    params.set(PLUGIN_SETTINGS_PROFILE_PARAM, profile)
+  }
+
+  return `/settings?${params}`
 }
 
 /** Hash-route path to Settings ▸ Plugins (▸ entry (▸ sub-page)). */
 export function pluginSettingsHref(plugin?: string, page?: string): string {
-  const params = new URLSearchParams({ tab: 'plugins' })
-
-  if (plugin) {
-    params.set('plugin', plugin)
-  }
-
-  if (plugin && page) {
-    params.set('ppage', page)
-  }
-
-  return `/settings?${params}`
+  return pluginSettingsRouteHref(plugin ? { page, plugin } : null)
 }

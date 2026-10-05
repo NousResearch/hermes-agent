@@ -10,8 +10,14 @@ import { $pluginRecords } from '@/contrib/plugins-store'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import {
+  PLUGIN_SETTINGS_PROFILE_PARAM,
   pluginSettingsEntries,
   type PluginSettingsEntry,
+  pluginSettingsNavId,
+  type PluginSettingsNode,
+  type PluginSettingsRoute,
+  pluginSettingsRouteFrom,
+  pluginSettingsRouteOf,
   type PluginSettingsTarget,
   resolvePluginSettingsTarget,
   SETTINGS_PLUGINS_AREA
@@ -21,13 +27,14 @@ import type { IconComponent } from '@/lib/icons'
 import {
   $agentPluginBusy,
   $agentPlugins,
+  $agentPluginsProfile,
   $agentPluginsStatus,
   isDesktopRelevantPlugin,
   loadAgentPlugins,
   saveAgentPluginSettings
 } from '@/store/agent-plugins'
-import { notify } from '@/store/notifications'
-import { $settingsRequestProfile } from '@/store/settings-scope'
+import { notify, notifyError } from '@/store/notifications'
+import { $settingsRequestProfile, setSettingsScope } from '@/store/settings-scope'
 
 import { desktopPackageName } from '../capabilities/plugins/plugin-packages'
 import type { OverlayNavLink } from '../overlays/overlay-split-layout'
@@ -37,9 +44,8 @@ import { PluginSettingsForm } from './plugin-settings-form'
 import { EmptyState, ListRowSkeleton, SectionHeading, SettingsContent } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 
-/** Opens Settings ▸ Plugins at an entry (by key) and optional sub-page;
- *  `null` = the overview. */
-export type OpenPluginSettings = (plugin: null | string, page?: string) => void
+/** Opens Settings ▸ Plugins at a route; `null` = the overview. */
+export type OpenPluginSettings = (route: null | PluginSettingsRoute) => void
 
 const MANAGE_PLUGINS_HREF = `#${CAPABILITIES_ROUTE}?tab=plugins`
 
@@ -74,47 +80,87 @@ export const PAGE_SCOPED_PARAMS = [
   'label',
   'origin',
   'plugin',
-  'ppage'
+  'ppage',
+  'agent',
+  PLUGIN_SETTINGS_PROFILE_PARAM
 ] as const
 
-/** Settings ▸ Plugins routing: `?tab=plugins&plugin=<entry key | plugin id |
- *  agent:<key>>&ppage=<sub-page>`. `active` = the Plugins view is showing. */
+/** The profile the Settings plugin pages edit, as `plugins.manage` and the
+ *  agent-plugin store key it (`null` = the backend's launch profile). */
+const ownerKey = (scope: string | undefined): null | string => scope ?? null
+
+/** The agent plugin rows loaded for `owner`, or none while the shared list
+ *  still holds another profile's rows (a switch in flight, or Capabilities
+ *  loaded a different profile). */
+function useOwnedAgentPlugins(owner: null | string) {
+  const rows = useStore($agentPlugins)
+  const loadedFor = useStore($agentPluginsProfile)
+  const status = useStore($agentPluginsStatus)
+  const owned = loadedFor === owner
+
+  return { owned, rows: owned ? rows : [], settled: status === 'error' || (status === 'ready' && owned), status }
+}
+
+/** Settings ▸ Plugins routing: `?tab=plugins&plugin=<entry key | plugin id>
+ *  &ppage=<sub-page>` for desktop pages, `?tab=plugins&agent=<key>` for an
+ *  agent plugin's schema form. A `&profile=` hand-off (the Capabilities gear)
+ *  is adopted into the Settings scope, then dropped from the URL. `active` =
+ *  the Plugins view is showing. */
 export function usePluginSettingsRoute(active: boolean) {
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
   const entries = usePluginSettingsEntries()
-  const status = useStore($agentPluginsStatus)
+  const { settled } = useOwnedAgentPlugins(ownerKey(useStore($settingsRequestProfile)))
   const params = new URLSearchParams(search)
-  const requested = params.get('plugin')
-  const target = active ? resolvePluginSettingsTarget(entries, requested, params.get('ppage')) : null
-  // A deep link to an agent plugin's page can't resolve until the list loads;
-  // only call it missing once the load has settled.
-  const settled = status !== 'idle' && status !== 'loading'
+  const route = pluginSettingsRouteFrom(params)
+  const handoff = active ? params.get(PLUGIN_SETTINGS_PROFILE_PARAM) : null
+  // Until the hand-off is adopted, the current scope is not the one the link
+  // asked for: resolve nothing, so no page renders against the wrong profile.
+  const target = active && !handoff ? resolvePluginSettingsTarget(entries, route) : null
+
+  useEffect(() => {
+    if (!handoff) {
+      return
+    }
+
+    setSettingsScope(handoff)
+
+    const next = new URLSearchParams(search)
+
+    next.delete(PLUGIN_SETTINGS_PROFILE_PARAM)
+    navigate({ hash, pathname, search: `?${next}` }, { replace: true })
+  }, [handoff, hash, navigate, pathname, search])
 
   const open = useCallback<OpenPluginSettings>(
-    (plugin, page) => {
-      const next = new URLSearchParams(search)
+    next => {
+      const query = new URLSearchParams(search)
 
       for (const key of PAGE_SCOPED_PARAMS) {
-        next.delete(key)
+        query.delete(key)
       }
 
-      next.set('tab', 'plugins')
+      query.set('tab', 'plugins')
 
-      if (plugin) {
-        next.set('plugin', plugin)
+      if (next && 'agent' in next) {
+        query.set('agent', next.agent)
+      } else if (next) {
+        query.set('plugin', next.plugin)
+
+        if (next.page) {
+          query.set('ppage', next.page)
+        }
       }
 
-      if (plugin && page) {
-        next.set('ppage', page)
-      }
-
-      navigate({ hash, pathname, search: `?${next}` }, { replace: true })
+      navigate({ hash, pathname, search: `?${query}` }, { replace: true })
     },
     [hash, navigate, pathname, search]
   )
 
-  return { entries, missing: Boolean(requested) && !target && settled, open, target }
+  // A deep link to an agent plugin's page can't resolve until the scope's
+  // list loads; only call it missing once that load has settled.
+  const waiting = Boolean(route) && !target && (Boolean(handoff) || !settled)
+
+  return { entries, missing: Boolean(route) && !target && !waiting, open, pending: active && waiting, target }
 }
 
 /** Every plugin settings page, live: Desktop plugins' registered pages plus an
@@ -124,14 +170,22 @@ export function usePluginSettingsEntries(): PluginSettingsEntry[] {
   const { t } = useI18n()
   const { requestGateway } = useGatewayRequest()
   const contributions = useContributions(SETTINGS_PLUGINS_AREA)
-  const rows = useStore($agentPlugins)
   const records = useStore($pluginRecords)
-  const scope = useStore($settingsRequestProfile)
+  const owner = ownerKey(useStore($settingsRequestProfile))
+  const { owned, rows, status } = useOwnedAgentPlugins(owner)
 
   // Cheap backend disk scan; the same loader Capabilities ▸ Plugins uses.
   useEffect(() => {
-    void loadAgentPlugins(requestGateway, scope ?? null)
-  }, [requestGateway, scope])
+    void loadAgentPlugins(requestGateway, owner)
+  }, [requestGateway, owner])
+
+  // The list is shared: if another surface replaced it with a different
+  // profile's rows, fetch this scope's again rather than show none.
+  useEffect(() => {
+    if (status === 'ready' && !owned) {
+      void loadAgentPlugins(requestGateway, owner)
+    }
+  }, [owned, owner, requestGateway, status])
 
   const configTitle = t.settings.pluginPages.agentSettings
 
@@ -151,6 +205,12 @@ export function usePluginSettingsEntries(): PluginSettingsEntry[] {
   )
 }
 
+const isActiveNode = (target: null | PluginSettingsTarget, entry: PluginSettingsEntry, child: PluginSettingsNode) =>
+  target?.entry.uid === entry.uid &&
+  (child.agentKey
+    ? target.child?.agentKey === child.agentKey
+    : !target.child?.agentKey && target.child?.id === child.id)
+
 /** The Settings rail's children under "Plugins": one row per entry, its
  *  sub-pages folded beneath it while it is selected. */
 export function pluginSettingsNavChildren(
@@ -159,21 +219,21 @@ export function pluginSettingsNavChildren(
   open: OpenPluginSettings
 ): OverlayNavLink[] {
   return entries.map(entry => {
-    const active = target?.entry.key === entry.key
+    const active = target?.entry.uid === entry.uid
 
     return {
       active,
       children: entry.children.map(child => ({
-        active: active && target?.child?.id === child.id,
+        active: isActiveNode(target, entry, child),
         icon: iconFor(child.agentKey ? 'settings-gear' : 'list-flat'),
-        id: `plugins:${entry.key}:${child.id}`,
+        id: pluginSettingsNavId(entry, child),
         label: child.title,
-        onSelect: () => open(entry.key, child.id)
+        onSelect: () => open(pluginSettingsRouteOf(entry, child))
       })),
       icon: entryIcon(entry),
-      id: `plugins:${entry.key}`,
+      id: pluginSettingsNavId(entry),
       label: entry.title,
-      onSelect: () => open(entry.key)
+      onSelect: () => open(pluginSettingsRouteOf(entry))
     }
   })
 }
@@ -196,6 +256,9 @@ function PluginSettingsOverview({
 
   return (
     <SettingsContent>
+      {/* The agent half of this list is per profile: keep the selector here
+          too, or a profile without the plugin strands the user (no way back). */}
+      <SettingsProfileScope className="mb-5" />
       <SectionHeading
         aside={
           // Page-level action on the heading row, like Passwords & Logins' Add.
@@ -212,7 +275,10 @@ function PluginSettingsOverview({
       />
       <p className={BLURB_CLASS}>{copy.blurb}</p>
       {missing && (
-        <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)" role="status">
+        <p
+          className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)"
+          role="status"
+        >
           {copy.missing}
         </p>
       )}
@@ -228,9 +294,9 @@ function PluginSettingsOverview({
             return (
               <button
                 className="flex min-h-11 items-center gap-3 border-b border-(--ui-stroke-tertiary) px-3 text-left transition-colors last:border-b-0 hover:bg-(--chrome-action-hover)"
-                data-testid={`plugin-settings-row-${entry.key}`}
-                key={entry.key}
-                onClick={() => onOpen(entry.key)}
+                data-testid={`plugin-settings-row-${entry.uid}`}
+                key={entry.uid}
+                onClick={() => onOpen(pluginSettingsRouteOf(entry))}
                 type="button"
               >
                 <Icon className="size-4 shrink-0 text-(--ui-text-tertiary)" />
@@ -252,51 +318,73 @@ function PluginSettingsOverview({
   )
 }
 
+function PluginSettingsLoading() {
+  return (
+    <SettingsContent>
+      <SettingsProfileScope className="mb-5" />
+      <div className="grid gap-1">
+        <ListRowSkeleton />
+        <ListRowSkeleton />
+        <ListRowSkeleton />
+      </div>
+    </SettingsContent>
+  )
+}
+
 /** Automatic page for an agent plugin's manifest `config_schema`: the schema
- *  form, saved through `plugins.manage settings` (+ `.env` for secrets) for
- *  the profile the Settings scope selector targets. */
-function PluginSchemaSettingsPage({ agentKey }: { agentKey: string }) {
+ *  form, saved through `plugins.manage settings` (+ `.env` for secrets).
+ *
+ *  Bound to ONE profile for its whole life: the pane keys it by
+ *  (profile, plugin) so a scope switch remounts it (the draft goes with the
+ *  old profile), it renders only rows loaded for that profile, and its save
+ *  writes that profile or nothing. */
+function PluginSchemaSettingsPage({ agentKey, owner }: { agentKey: string; owner: null | string }) {
   const { t } = useI18n()
   const p = t.skills.plugins
   const { requestGateway } = useGatewayRequest()
-  const row = useStore($agentPlugins).find(candidate => candidate.key === agentKey)
+  const { rows } = useOwnedAgentPlugins(owner)
+  const row = rows.find(candidate => candidate.key === agentKey)
   const busy = useStore($agentPluginBusy) === agentKey
-  const scope = useStore($settingsRequestProfile)
+
+  if (!row?.settings_schema?.length) {
+    return <PluginSettingsLoading />
+  }
 
   return (
     <SettingsContent>
       <SettingsProfileScope className="mb-5" />
-      {row?.settings_schema?.length ? (
-        <PluginSettingsForm
-          disabled={busy}
-          fields={row.settings_schema}
-          idPrefix={`plugin-settings-${agentKey}`}
-          intro={row.description ? <p className={BLURB_CLASS}>{row.description}</p> : undefined}
-          onSave={async changes => {
-            const ok = await saveAgentPluginSettings(requestGateway, {
-              failMessage: p.settingsForm.saveFailed(row.name),
-              key: agentKey,
-              profile: scope ?? null,
-              secrets: changes.secrets,
-              values: changes.values,
-              writeSecret: (env, value) => setEnvVar(env, value, scope)
-            })
+      <PluginSettingsForm
+        disabled={busy}
+        fields={row.settings_schema}
+        idPrefix={`plugin-settings-${agentKey}`}
+        intro={row.description ? <p className={BLURB_CLASS}>{row.description}</p> : undefined}
+        onSave={async changes => {
+          // Belt and braces: the key remount already discards a draft when
+          // the scope moves, but a submit must never write a profile other
+          // than the one these values were loaded from.
+          if (ownerKey($settingsRequestProfile.get()) !== owner || $agentPluginsProfile.get() !== owner) {
+            notifyError(null, p.settingsForm.saveFailed(row.name))
 
-            if (ok) {
-              notify({ kind: 'success', message: p.settingsForm.saved(row.name) })
-            }
+            return false
+          }
 
-            return ok
-          }}
-          title={row.name}
-        />
-      ) : (
-        <div className="grid gap-1">
-          <ListRowSkeleton />
-          <ListRowSkeleton />
-          <ListRowSkeleton />
-        </div>
-      )}
+          const ok = await saveAgentPluginSettings(requestGateway, {
+            failMessage: p.settingsForm.saveFailed(row.name),
+            key: agentKey,
+            profile: owner,
+            secrets: changes.secrets,
+            values: changes.values,
+            writeSecret: (env, value) => setEnvVar(env, value, owner ?? undefined)
+          })
+
+          if (ok) {
+            notify({ kind: 'success', message: p.settingsForm.saved(row.name) })
+          }
+
+          return ok
+        }}
+        title={row.name}
+      />
     </SettingsContent>
   )
 }
@@ -308,22 +396,35 @@ export function PluginSettingsPane({
   entries,
   missing = false,
   onOpen,
+  pending = false,
   target
 }: {
   entries: readonly PluginSettingsEntry[]
-  /** A `?plugin=` was requested but matches no page (disabled/uninstalled). */
+  /** A page was requested but matches none (disabled/uninstalled). */
   missing?: boolean
   onOpen: OpenPluginSettings
+  /** A page was requested and the scope's plugin list is still loading. */
+  pending?: boolean
   target: null | PluginSettingsTarget
 }) {
+  const owner = ownerKey(useStore($settingsRequestProfile))
+
   if (!target) {
-    return <PluginSettingsOverview entries={entries} missing={missing} onOpen={onOpen} />
+    return pending ? (
+      <PluginSettingsLoading />
+    ) : (
+      <PluginSettingsOverview entries={entries} missing={missing} onOpen={onOpen} />
+    )
   }
 
   const node = target.child ?? target.entry
 
   if (node.agentKey) {
-    return <PluginSchemaSettingsPage agentKey={node.agentKey} key={node.agentKey} />
+    // Keyed by (profile, plugin): a scope switch remounts the form, so a
+    // draft never outlives the profile it was typed against.
+    return (
+      <PluginSchemaSettingsPage agentKey={node.agentKey} key={JSON.stringify([owner, node.agentKey])} owner={owner} />
+    )
   }
 
   const render = node.render
@@ -335,7 +436,7 @@ export function PluginSettingsPane({
   // Keyed per page so a sub-page switch remounts the plugin's tree (fresh
   // hook state, fresh error boundary) instead of reconciling across pages.
   return (
-    <SettingsContent key={`${target.entry.key}:${target.child?.id ?? ''}`}>
+    <SettingsContent key={JSON.stringify([target.entry.uid, target.child?.id ?? null])}>
       <ContribBoundary id={target.entry.key}>
         <ContribRender render={render} />
       </ContribBoundary>

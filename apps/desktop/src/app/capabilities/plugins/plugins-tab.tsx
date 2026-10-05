@@ -18,7 +18,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { discoverRuntimePlugins, uninstallDiskPlugin } from '@/contrib/runtime-loader'
-import { pluginSettingsHref, SETTINGS_PLUGINS_AREA } from '@/contrib/settings-pages'
+import { pluginSettingsRouteHref, SETTINGS_PLUGINS_AREA } from '@/contrib/settings-pages'
 import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { DESKTOP_PLUGIN_TOOLSETS } from '@/lib/desktop-toolsets'
@@ -274,8 +274,12 @@ function PackageRow({
 
   const openSettings = () => {
     // A desktop page absorbs the package's schema form as a sub-page, so its
-    // plugin id is the one entry that covers both halves.
-    window.location.hash = `#${pluginSettingsHref(desktopSettings ? desktop!.id : `agent:${agent!.key}`)}`
+    // plugin id is the one entry that covers both halves. The link carries
+    // the profile THIS page has selected: Settings keeps its own scope, and
+    // without the hand-off the page would open (and save) that one instead.
+    const route = desktopSettings ? { plugin: desktop!.id } : { agent: agent!.key! }
+
+    window.location.hash = `#${pluginSettingsRouteHref(route, scope)}`
   }
 
   const [desktopBusy, setDesktopBusy] = useState(false)

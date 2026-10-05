@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createPluginContext } from '@/contrib/plugin'
-import { resolvePluginSettingsTarget } from '@/contrib/settings-pages'
+import { type PluginSettingsRoute, resolvePluginSettingsTarget } from '@/contrib/settings-pages'
 import { $agentPlugins, $agentPluginsStatus, type AgentPluginRow } from '@/store/agent-plugins'
 
 import { OverlayNav } from '../overlays/overlay-split-layout'
@@ -40,12 +40,9 @@ const Icon = () => null
 
 function Harness() {
   const entries = usePluginSettingsEntries()
-  const [selection, setSelection] = useState<{ page: null | string; plugin: null | string }>({
-    page: null,
-    plugin: null
-  })
-  const target = resolvePluginSettingsTarget(entries, selection.plugin, selection.page)
-  const open = (plugin: null | string, page?: string) => setSelection({ page: page ?? null, plugin })
+  const [route, setRoute] = useState<null | PluginSettingsRoute>(null)
+  const target = resolvePluginSettingsTarget(entries, route)
+  const open = setRoute
 
   return (
     <>
@@ -99,15 +96,15 @@ describe('Settings ▸ Plugins', () => {
 
     // The automatic config_schema page arrives with the agent plugin list.
     await waitFor(() => expect(railItem('plugins:agent:notes')).toBeTruthy())
-    expect(railItem('plugins:weather:main')?.textContent).toBe('Weather')
+    expect(railItem('plugins:desktop:weather:main')?.textContent).toBe('Weather')
     // Sub-pages stay folded until their plugin is selected.
-    expect(railItem('plugins:weather:main:units')).toBeNull()
+    expect(railItem('plugins:desktop:weather:main:units')).toBeNull()
 
-    fireEvent.click(railItem('plugins:weather:main')!)
+    fireEvent.click(railItem('plugins:desktop:weather:main')!)
     expect(screen.getByText('Weather home')).toBeTruthy()
-    expect(railItem('plugins:weather:main:alerts')?.textContent).toBe('Alerts')
+    expect(railItem('plugins:desktop:weather:main:alerts')?.textContent).toBe('Alerts')
 
-    fireEvent.click(railItem('plugins:weather:main:units')!)
+    fireEvent.click(railItem('plugins:desktop:weather:main:units')!)
     expect(screen.getByText('Units content')).toBeTruthy()
     expect(screen.queryByText('Weather home')).toBeNull()
   })
@@ -145,11 +142,11 @@ describe('Settings ▸ Plugins', () => {
 
     ctx.registerSettingsPage({ id: 'main', render: () => <p>Weather home</p>, title: 'Weather' })
     render(<Harness />)
-    expect(railItem('plugins:weather:main')).toBeTruthy()
+    expect(railItem('plugins:desktop:weather:main')).toBeTruthy()
 
     // Disable = the loader runs every tracked disposer.
     disposers.splice(0).forEach(dispose => dispose())
-    await waitFor(() => expect(railItem('plugins:weather:main')).toBeNull())
+    await waitFor(() => expect(railItem('plugins:desktop:weather:main')).toBeNull())
   })
 
   it('shows an overview with an empty state when no plugin has settings', async () => {

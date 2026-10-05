@@ -739,7 +739,7 @@ describe('PluginsTab catalog UX', () => {
     render(<PluginsTab profile={null} />)
     fireEvent.click(screen.getByRole('button', { name: 'Settings: notes' }))
 
-    expect(window.location.hash).toBe('#/settings?tab=plugins&plugin=agent%3Anotes')
+    expect(window.location.hash).toBe('#/settings?tab=plugins&agent=notes')
     expect(screen.queryByTestId('plugin-settings-notes-settings-form')).toBeNull()
   })
 

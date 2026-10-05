@@ -826,14 +826,16 @@ ctx.registerSettingsPage?.({
   hosts. On those hosts, `ctx.register({ area: SETTINGS_PLUGINS_AREA, id, title,
   render, data: { icon, children } })` is the same thing spelled out.
 - Deep link: `host.navigate(pluginSettingsHref('<your-plugin-id>', 'units'))`
-  (`/settings?tab=plugins&plugin=<id>&ppage=<sub-page>`).
+  (`/settings?tab=plugins&plugin=<id>&ppage=<sub-page>`). Sub-page ids are
+  yours: none is reserved.
 - **Agent plugins get a page automatically.** A `config_schema` in
   `plugin.yaml` renders as a form under Settings → Plugins, saved through
-  `plugins.manage settings` for the profile the Settings scope selector targets.
-  The gear on the plugin's Capabilities → Plugins row opens that page. In a
-  unified package (agent half plus `desktop/plugin.js`), when the desktop half
-  also registers a page, the schema form shows up as that entry's
-  **Agent settings** sub-page, so the package has one entry.
+  `plugins.manage settings` for the profile the Settings scope selector targets
+  (`/settings?tab=plugins&agent=<key>`). The gear on the plugin's
+  Capabilities → Plugins row opens that page for the profile Capabilities has
+  selected. In a unified package (agent half plus `desktop/plugin.js`), when
+  the desktop half also registers a page, the schema form shows up as that
+  entry's **Agent settings** sub-page, so the package has one entry.
 
 `src/plugins/hello-runtime/plugin.runtime.js` is a complete runtime example: one
 page and two sub-pages, backed by `ctx.storage`.

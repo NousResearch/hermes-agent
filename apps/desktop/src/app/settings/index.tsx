@@ -565,6 +565,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       entries={plugins.entries}
       missing={plugins.missing}
       onOpen={plugins.open}
+      pending={plugins.pending}
       target={plugins.target}
     />
   ) : activeView === 'vault' ? (

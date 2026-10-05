@@ -82,6 +82,18 @@ export interface HandoffPlan {
 const STILL_RUNNING_VERDICTS = new Set(['held', 'busy', 'live'])
 
 /**
+ * Withdraw answers after which no script can adopt this run any more: the
+ * bridge was removed (`withdrawn`), is gone (`absent`), or is not this
+ * Desktop's bridge for the run (`foreign`). `busy` / `error` / `unsupported`
+ * leave the bridge in place.
+ */
+const WITHDRAW_SETTLED_VERDICTS = new Set(['withdrawn', 'absent', 'foreign'])
+
+/** Withdraw attempts before an unsettled answer stands (a busy lock is usually brief). */
+const WITHDRAW_ATTEMPTS = 3
+const WITHDRAW_RETRY_MS = 250
+
+/**
  * The manual command card for a checkout with no staged updater: the exact
  * `hermes update` line to run, branch-pinned to the checkout's current branch
  * for non-main (bare `hermes update` would silently switch the install
@@ -123,6 +135,25 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       runId,
       isWindows: deps.isWindows
     })
+  }
+
+  /** `withdraw`, re-asked while the answer leaves the bridge in place; `taken` ends it at once. */
+  async function withdrawBridge(runId: string): Promise<MarkerHelperVerdict> {
+    let verdict: MarkerHelperVerdict = { kind: 'error' }
+
+    for (let attempt = 0; attempt < WITHDRAW_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        await new Promise(resolve => setTimeout(resolve, WITHDRAW_RETRY_MS))
+      }
+
+      verdict = await markerHelper('withdraw', runId)
+
+      if (verdict.kind === 'taken' || WITHDRAW_SETTLED_VERDICTS.has(verdict.kind)) {
+        break
+      }
+    }
+
+    return verdict
   }
 
   function refuse(message: string, error: string): { refusal: UpdaterApplyResultWire } {
@@ -225,10 +256,24 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     // `taken` means a live script adopted our run at the deadline — the
     // update IS running.
     if (plan.runId) {
-      const verdict = await markerHelper('withdraw', plan.runId)
+      const verdict = await withdrawBridge(plan.runId)
 
       if (verdict.kind === 'taken') {
         deps.rememberLog(`[updates] hand-off script took the update marker at the deadline (pid ${verdict.pid})`)
+
+        return null
+      }
+
+      // Not withdrawn means the bridge may still be there, and the daemon
+      // (setsid, out of killHandoffTree's reach) adopts it whenever it starts.
+      // Reporting "did not start" and restarting the backend would then run
+      // `hermes update` beside it. Quit instead: the next boot's update gate
+      // judges the bridge or the script's claim under the script's lock.
+      if (!WITHDRAW_SETTLED_VERDICTS.has(verdict.kind)) {
+        deps.rememberLog(
+          `[updates] bridge withdraw stayed ${verdict.kind}: a late hand-off script can still adopt run ${plan.runId}, ` +
+            'so this Desktop quits instead of restarting its backend beside it'
+        )
 
         return null
       }

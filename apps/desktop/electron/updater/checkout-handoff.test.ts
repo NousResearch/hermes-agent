@@ -372,18 +372,46 @@ describe.skipIf(IS_WINDOWS)('protocol 2 hand-off', () => {
     }
   })
 
-  it('a timeout withdraws the bridge through the script helper (never by unlinking it)', async (): Promise<void> => {
+  // Review 5411223284 regression 1: a bridge the helper could not withdraw
+  // stays adoptable by a late (setsid, unkillable) daemon. Reporting "did not
+  // start" and restarting the backend would run `hermes update` beside it.
+  it.each(['busy', 'error'])(
+    'a withdraw that stays `%s` keeps the bridge and quits instead of restarting the backend',
+    async (answer: string): Promise<void> => {
+      const { root, deps } = handoffFixture(false, fakeHelperScript())
+      fs.writeFileSync(path.join(deps.hermesHome, 'helper-verdict'), answer === 'error' ? 'garbage' : answer)
+      const runs = mockProtocol2Spawn(deps.hermesHome, 'never')
+      const kill = vi.spyOn(updaterProcess, 'killHandoffTree')
+
+      try {
+        const result = await createCheckoutStrategy({ ...deps, handoffClaimTimeoutMs: 400 }).apply()
+
+        expect(result).toMatchObject({ ok: true, handedOff: true })
+        expect(deps.startHermes).not.toHaveBeenCalled()
+        expect(kill).not.toHaveBeenCalled()
+        expect(deps.markQuittingForHandoff).toHaveBeenCalled()
+        // Asked again while unsettled, and Electron left the bytes alone.
+        expect(helperCalls(deps.hermesHome)).toHaveLength(3)
+        expect(fs.readFileSync(markerPath(deps.hermesHome), 'utf8')).toBe(runs[0]!.bridgeAtSpawn)
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it('a definitive `withdrawn` reports the failure and kills the spawned tree', async (): Promise<void> => {
     const { root, deps } = handoffFixture(false, fakeHelperScript())
-    fs.writeFileSync(path.join(deps.hermesHome, 'helper-verdict'), 'busy')
-    const runs = mockProtocol2Spawn(deps.hermesHome, 'never')
+    fs.writeFileSync(path.join(deps.hermesHome, 'helper-verdict'), 'withdrawn')
+    mockProtocol2Spawn(deps.hermesHome, 'never')
+    const kill = vi.spyOn(updaterProcess, 'killHandoffTree').mockImplementation(() => {})
 
     try {
       const result = await createCheckoutStrategy({ ...deps, handoffClaimTimeoutMs: 400 }).apply()
 
       expect(result).toMatchObject({ ok: false, error: 'updater-spawn-failed' })
+      expect(kill).toHaveBeenCalledTimes(1)
       expect(helperCalls(deps.hermesHome)).toHaveLength(1)
-      // The helper answered `busy` and kept it: Electron left the bytes alone.
-      expect(fs.readFileSync(markerPath(deps.hermesHome), 'utf8')).toBe(runs[0]!.bridgeAtSpawn)
+      expect(deps.quit).not.toHaveBeenCalled()
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }

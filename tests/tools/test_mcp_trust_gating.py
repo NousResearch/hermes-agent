@@ -267,6 +267,32 @@ class TestTrustGateApprovalRouting:
         assert gateway_waits == []
 
 
+    @pytest.mark.parametrize("context", ["single_query", "cron", "webhook"])
+    def test_cli_panel_callback_is_never_asked_without_a_user(self, monkeypatch, context):
+        """`hermes chat -q`, cron and unattended platforms can keep the CLI panel callback registered, but
+        nobody answers it: consent declines at once instead of waiting the approval timeout (the e2e
+        hang after ef1faa4cf8)."""
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools import approval_prompt
+        from tools.terminal_tool import set_approval_callback
+
+        if context == "single_query":  # cli_single_query exports the marker into the process env
+            monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+            tokens = set_session_vars()
+        elif context == "cron":  # the cron scheduler binds it per job
+            tokens = set_session_vars(cron_session="1")
+        else:  # an unattended platform: no adapter can carry an approval prompt
+            tokens = set_session_vars(platform="webhook")
+        asked = []
+        set_approval_callback(lambda *args, **kwargs: asked.append(args) or "once")
+        try:
+            assert approval_prompt.request_elicitation_consent("write", "Approve once or deny.") == "decline"
+        finally:
+            set_approval_callback(None)
+            clear_session_vars(tokens)
+        assert asked == []
+
+
 class TestTrustNormalization:
     def test_unknown_trust_value_treated_as_untrusted(self):
         """Garbage trust strings fail closed to untrusted."""

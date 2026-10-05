@@ -483,6 +483,24 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
         # lockfile is written rather than selecting glibc bytes on musl.
         return node_latest_versions()
 
+    def repair_staged_verification(self, entry: Path, target: str, reason: str) -> tuple[str, str]:
+        """Repair the host library needed by official Linux Node, then re-probe.
+
+        Keep this out of verify(): doctor/status checks call verify and must
+        never gain permission to install host packages.
+        """
+        if target != current_target() or not target.startswith("linux") or "libatomic.so.1" not in reason:
+            return reason, ""
+        from pm.libatomic import try_install_libatomic
+
+        installed, remedy = try_install_libatomic()
+        if not installed:
+            return reason, remedy
+        retried = self.verify(entry, target)
+        if "libatomic.so.1" in retried:
+            return retried, "the libatomic package installed, but Node still cannot load libatomic.so.1; check the loader path"
+        return retried, ""
+
 
 @register
 class TermuxDocker(Package):
@@ -1064,12 +1082,15 @@ class LlamaCpp(BinaryPackage):
     assets: dict[str, str] = {}
     # Upstream's Linux builds (CPU included) link the system OpenMP runtime,
     # which minimal hosts (WSL, containers) lack, and a normal install never
-    # touches the system package manager. Ubuntu 24.04's needs glibc 2.38, the
-    # floor those builds already set. The release-pocket file stays in the pool
-    # until 24.04's EOL; the artifact mirror serves the pinned bytes after that.
+    # touches the system package manager. The $ORIGIN RUNPATH loads this copy
+    # ahead of the host's, so its glibc floor must stay at or below every
+    # engine's. Ubuntu 22.04's needs glibc 2.34, the floor of the x64 CPU and
+    # Vulkan builds, and provides every GOMP version the builds reference. The
+    # release-pocket file stays in the pool until 22.04's EOL; the artifact
+    # mirror serves the pinned bytes after that.
     _LIBGOMP = {
-        "linux-x64": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/libgomp1_14-20240412-0ubuntu1_amd64.deb",
-        "linux-arm64": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/libgomp1_14-20240412-0ubuntu1_arm64.deb",
+        "linux-x64": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-12/libgomp1_12-20220319-1ubuntu1_amd64.deb",
+        "linux-arm64": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-12/libgomp1_12-20220319-1ubuntu1_arm64.deb",
     }
 
     @property

@@ -19,9 +19,10 @@ from pm.package import (
     StatePackage,
     _entry_listing,
     _probe_reason,
+    unpack_deb,
 )
 from pm.registry import register
-from pm.store import ALL_TARGETS, Store, current_target, flatten_single_dir, merge_tree
+from pm.store import ALL_TARGETS, MUSL_TARGETS, Store, current_target, flatten_single_dir, merge_tree
 from pm.update import (
     btbn_index,
     btbn_versions,
@@ -42,6 +43,8 @@ _RUST_TRIPLE = {
     "win32-arm64": "aarch64-pc-windows-msvc",
     "linux-x64": "x86_64-unknown-linux-gnu",
     "linux-arm64": "aarch64-unknown-linux-gnu",
+    "linux-x64-musl": "x86_64-unknown-linux-musl",
+    "linux-arm64-musl": "aarch64-unknown-linux-musl",
     "darwin-x64": "x86_64-apple-darwin",
     "darwin-arm64": "aarch64-apple-darwin",
 }
@@ -51,6 +54,8 @@ _NODE_PLAT = {
     "win32-arm64": "win-arm64",
     "linux-x64": "linux-x64",
     "linux-arm64": "linux-arm64",
+    "linux-x64-musl": "linux-x64-musl",
+    "linux-arm64-musl": "linux-arm64-musl",
     "darwin-x64": "darwin-x64",
     "darwin-arm64": "darwin-arm64",
 }
@@ -184,7 +189,7 @@ class _BionicDebArm:
 
 @register
 class Uv(_BionicDebArm, BinaryPackage, DebPackage):
-    """astral's prebuilt tarballs for glibc/mac/win; the Termux main-repo
+    """astral's prebuilt tarballs for glibc/musl/mac/win; the Termux main-repo
     uv .deb for bionic (termux builds uv from source -- no astral bionic
     artifact exists). The bionic arm is a runtime tool on the phone (lazy
     plugin installs) and the wheelhouse's resolver in the build container."""
@@ -446,8 +451,8 @@ class Venv(StatePackage):
 
 @register
 class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
-    """nodejs.org tarballs for glibc/mac/win; the Termux main-repo nodejs
-    .deb for bionic (same major line, termux-built)."""
+    """nodejs.org tarballs for glibc/mac/win, unofficial-builds for musl;
+    the Termux main-repo nodejs .deb for bionic (same major line, termux-built)."""
 
     name = "node"
     binary_rel = {"win32": "node.exe", "posix": "bin/node"}
@@ -465,10 +470,36 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
             return f"https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/nodejs_{version}-1_aarch64.deb"
         plat = _NODE_PLAT[target]
         ext = "zip" if target.startswith("win32") else "tar.xz"
-        return f"https://nodejs.org/dist/v{version}/node-v{version}-{plat}.{ext}"
+        base = (
+            "https://unofficial-builds.nodejs.org/download/release"
+            if target in MUSL_TARGETS
+            else "https://nodejs.org/dist"
+        )
+        return f"{base}/v{version}/node-v{version}-{plat}.{ext}"
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
+        # Keep one Node version across targets. If unofficial musl publication
+        # lags nodejs.org, the later artifact pin/download fails before the
+        # lockfile is written rather than selecting glibc bytes on musl.
         return node_latest_versions()
+
+    def repair_staged_verification(self, entry: Path, target: str, reason: str) -> tuple[str, str]:
+        """Repair the host library needed by official Linux Node, then re-probe.
+
+        Keep this out of verify(): doctor/status checks call verify and must
+        never gain permission to install host packages.
+        """
+        if target != current_target() or not target.startswith("linux") or "libatomic.so.1" not in reason:
+            return reason, ""
+        from pm.libatomic import try_install_libatomic
+
+        installed, remedy = try_install_libatomic()
+        if not installed:
+            return reason, remedy
+        retried = self.verify(entry, target)
+        if "libatomic.so.1" in retried:
+            return retried, "the libatomic package installed, but Node still cannot load libatomic.so.1; check the loader path"
+        return retried, ""
 
 
 @register
@@ -602,11 +633,19 @@ class Npm(BinaryPackage):
         return [latest] if latest else []
 
 
+# The pinned git artifact is a self-extracting 7z: only hosts where PE images
+# execute can stage it (tests patch this flag).
+_HOST_IS_WINDOWS = os.name == "nt"
+
+
 @register
 class Git(BinaryPackage):
     """Windows only: Git for Windows carries the bash.exe contract. POSIX
-    uses the system git — a deliberate gap, not an oversight. The tar.bz2
-    release asset extracts with stdlib tarfile: no self-extractor, no GUI."""
+    uses the system git - a deliberate gap, not an oversight. The pin is the
+    PortableGit self-extracting 7z: it carries its own extractor (stock
+    Windows 10 tar.exe has no bzip2), shows a progress window (-y only drops
+    prompts), and runs the vendor post-install, so the staged tree is
+    post-install output."""
 
     name = "git"
     optional = True
@@ -615,6 +654,8 @@ class Git(BinaryPackage):
     gaps = {
         "linux-x64": "POSIX uses system git by choice",
         "linux-arm64": "POSIX uses system git by choice",
+        "linux-x64-musl": "POSIX uses system git by choice",
+        "linux-arm64-musl": "POSIX uses system git by choice",
         "darwin-x64": "POSIX uses system git by choice",
         "darwin-arm64": "POSIX uses system git by choice",
     }
@@ -624,7 +665,7 @@ class Git(BinaryPackage):
         arch = "arm64" if target.endswith("arm64") else "64-bit"
         return (
             f"https://github.com/git-for-windows/git/releases/download/"
-            f"v{tag}.windows.{build}/Git-{tag}.{build}-{arch}.tar.bz2"
+            f"v{tag}.windows.{build}/PortableGit-{tag}.{build}-{arch}.7z.exe"
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
@@ -637,9 +678,44 @@ class Git(BinaryPackage):
         return out
 
     def unpack(self, archive: Path, staged: Path, target: str) -> None:
-        from pm.store import extract_tar
-
-        extract_tar(archive, staged, git_msys=True)
+        if not _HOST_IS_WINDOWS:
+            raise InstallError(
+                self.name,
+                "the pinned artifact is a PortableGit self-extracting 7z, which "
+                "only runs on Windows",
+                "stage win32 git on a Windows host; POSIX hosts use the system git",
+            )
+        shutil.rmtree(staged, ignore_errors=True)
+        staged.mkdir(parents=True)
+        # Execute a scratch copy, never the cached fetch-<sha> bytes: an executed
+        # PE can stay handle-held (on-execute AV scan, the RunProgram children)
+        # past pm's download-cleanup retry and fail the install (WinError 32).
+        with tempfile.TemporaryDirectory(
+            prefix=".sfx-", dir=staged.parent, ignore_cleanup_errors=True
+        ) as work:
+            exe = Path(work) / archive.name
+            shutil.copy2(archive, exe)
+            # No pipes: RunProgram children would inherit them and hold run()
+            # open past the stub's exit. Under -y the stub prints nothing anyway.
+            try:
+                proc = subprocess.run(
+                    [str(exe), f"-o{staged}", "-y"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=600,
+                )
+            except subprocess.TimeoutExpired:
+                raise InstallError(
+                    self.name, "PortableGit self-extractor did not finish in 600 s"
+                ) from None
+        if proc.returncode:
+            raise InstallError(
+                self.name,
+                f"PortableGit self-extractor exited {proc.returncode} (it reports "
+                "nothing under -y; usual causes: disk full, path-length limit, "
+                "antivirus lock)",
+            )
 
     def env(self, entry: Path, target: str) -> dict:
         return {"PATH": [str(entry / "cmd"), str(entry / "usr" / "bin")]}
@@ -652,7 +728,10 @@ class Gh(BinaryPackage):
     binary_rel = {"win32": "bin/gh.exe", "posix": "bin/gh"}
 
     def fetch_url(self, version: str, target: str) -> str:
-        osname, arch = target.split("-")
+        # GitHub CLI's Linux release matrix is built with CGO_ENABLED=0,
+        # so the generic Linux archive is libc-independent.
+        lookup_target = target.removesuffix("-musl") if target in MUSL_TARGETS else target
+        osname, arch = lookup_target.split("-")
         plat = {"win32": "windows", "linux": "linux", "darwin": "macOS"}[osname]
         arch = {"x64": "amd64", "arm64": "arm64"}[arch]
         ext = "zip" if osname in ("win32", "darwin") else "tar.gz"
@@ -667,12 +746,12 @@ class Gh(BinaryPackage):
 
 @register
 class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
-    """Static ffmpeg. GPLv3 builds; always bundled.
-    optional=False: ffmpeg is a required runtime tool. Sealed bundles ship
+    """FFmpeg builds for supported targets; BtbN Linux archives require glibc.
+    optional=False: ffmpeg is a required runtime tool where supported. Sealed bundles ship
     it baked into the payload; every `hermes update` and `hermes pm install`
     re-ensures it from the new lockfile before the venv sync
     (pm.client.ensure_tools_for_sync), so a pin bump lands. Windows + Linux:
-    BtbN/FFmpeg-Builds (dated autobuild tag; ships ffprobe too).
+    BtbN/FFmpeg-Builds (month-end autobuild tag, kept two years; ships ffprobe too).
     macOS: ffmpeg.martin-riedl.de (uniform ZIP, published sha256;
     single-binary — no ffprobe).
 
@@ -683,6 +762,7 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     name = "ffmpeg"
     deb_package = "ffmpeg"
     optional = False
+    gaps = {target: "BtbN Linux builds link glibc dynamically" for target in MUSL_TARGETS}
 
     def main_rel(self, target: str) -> str:
         return "bin/ffmpeg"
@@ -710,6 +790,8 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":
             return f"https://packages.termux.dev/apt/termux-main/pool/main/f/ffmpeg/ffmpeg_{version}_aarch64.deb"
+        if target in MUSL_TARGETS:
+            raise InstallError(self.name, f"unavailable on {target}: {self.missing_reason(target)}")
         osname, arch = target.split("-")
         if osname in ("win32", "linux"):
             artifact = btbn_index().get(target, {}).get(version)
@@ -727,6 +809,8 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
                            "retry when the upstream index is available, or keep the existing pin")
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
+        if target in MUSL_TARGETS:
+            return []
         if target in ("win32-x64", "win32-arm64", "linux-x64", "linux-arm64"):
             return btbn_versions(target)
         return martin_riedl_versions(target)
@@ -783,6 +867,10 @@ class Ripgrep(BinaryPackage):
 class CuaDriver(BinaryPackage):
     name = "cua-driver"
     optional = True
+    # Computer use's only OS path, so the default install carries it.
+    default = True
+    gaps = {**{target: "cua-driver does not publish a musl build" for target in MUSL_TARGETS},
+            "linux-arm64-bionic": "cua-driver does not publish an Android build"}
     binary_rel = {
         "darwin-arm64": "CuaDriver.app/Contents/MacOS/cua-driver",
         "darwin-x64": "CuaDriver.app/Contents/MacOS/cua-driver",
@@ -840,7 +928,10 @@ class AgentBrowser(BinaryPackage):
     deps = ("chromium",)
     # Termux owns its browser stack (`npm install -g agent-browser`; see
     # tools/browser_tool_install.py), and PM has no bionic Chromium to drive.
-    gaps = {"linux-arm64-bionic": "Termux installs agent-browser through npm"}
+    gaps = {
+        "linux-arm64-bionic": "Termux installs agent-browser through npm",
+        **{target: "agent-browser has no musl Chromium runtime" for target in MUSL_TARGETS},
+    }
     flatten = True
     probe_version = False
     url = "https://registry.npmjs.org/agent-browser/-/agent-browser-{version}.tgz"
@@ -901,7 +992,10 @@ class Chromium(Package):
     optional = True
     on_path = False
     # Neither Chrome-for-Testing nor Playwright's mirror builds for Android.
-    gaps = {"linux-arm64-bionic": "no Chromium build for Android/Termux"}
+    gaps = {
+        "linux-arm64-bionic": "no Chromium build for Android/Termux",
+        **{target: "Playwright/Chrome-for-Testing publishes no musl build" for target in MUSL_TARGETS},
+    }
     emulated_arch_targets = frozenset({"win32-arm64"})
     _CDN = "https://cdn.playwright.dev"
 
@@ -964,10 +1058,10 @@ class Chromium(Package):
 
 class LlamaCpp(BinaryPackage):
     """One llama.cpp backend build. Backends are dlopen'd plugins, so a
-    usable engine is one archive per (target, backend) — plus, for Windows
-    CUDA, the cudart archive: end users have no CUDA toolkit, and Windows
-    resolves a DLL from the loading executable's own directory, so those
-    DLLs must land beside llama-server.exe rather than in a second entry.
+    usable engine is one archive per (target, backend) — plus, for CUDA, the
+    cudart archive (end users have no CUDA toolkit), and on Linux the libgomp
+    .deb. Every library lands beside llama-server: Windows resolves DLLs from
+    the executable's directory, and the Linux builds' RUNPATH is $ORIGIN.
 
     Backend is a HARDWARE choice, not a target, so each backend is its own
     optional package and the runtime asks for the one this machine can
@@ -986,6 +1080,15 @@ class LlamaCpp(BinaryPackage):
     backend: str = ""
     # Release-asset infix per target, or absent where upstream ships none.
     assets: dict[str, str] = {}
+    # Upstream's Linux builds (CPU included) link the system OpenMP runtime,
+    # which minimal hosts (WSL, containers) lack, and a normal install never
+    # touches the system package manager. Ubuntu 24.04's needs glibc 2.38, the
+    # floor those builds already set. The release-pocket file stays in the pool
+    # until 24.04's EOL; the artifact mirror serves the pinned bytes after that.
+    _LIBGOMP = {
+        "linux-x64": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/libgomp1_14-20240412-0ubuntu1_amd64.deb",
+        "linux-arm64": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/libgomp1_14-20240412-0ubuntu1_arm64.deb",
+    }
 
     @property
     def gaps(self) -> dict[str, str]:  # type: ignore[override]
@@ -1003,7 +1106,7 @@ class LlamaCpp(BinaryPackage):
         return [
             f"https://github.com/ggml-org/llama.cpp/releases/download/b{version}/{asset}"
             for asset in self._asset_names(version, target)
-        ]
+        ] + ([self._LIBGOMP[target]] if target in self._LIBGOMP else [])
 
     def fetch_url(self, version: str, target: str) -> str:
         return self.fetch_urls(version, target)[0]
@@ -1028,15 +1131,29 @@ class LlamaCpp(BinaryPackage):
             url.rsplit("/", 1)[-1]
         )
 
+    def unpack(self, archive: Path, staged: Path, target: str) -> None:
+        if archive.name.endswith(".deb"):
+            unpack_deb(self.name, archive, staged)
+        else:
+            super().unpack(archive, staged, target)
+
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         """Some archives nest the binaries under build/bin; hoist them so
-        binary_rel is one path for every target."""
-        if (staged / self.binary(staged, target).name).is_file():
-            return
-        found = sorted(staged.rglob(self.binary(staged, target).name))
-        if not found:
-            raise InstallError(self.name, "archive contains no llama-server")
-        merge_tree(found[0].parent, staged)
+        binary_rel is one path for every target. The libgomp .deb unpacks
+        in its filesystem layout (usr/lib/<triplet>/); only the library
+        itself moves beside llama-server."""
+        server = self.binary(staged, target).name
+        if not (staged / server).is_file():
+            found = sorted(staged.rglob(server))
+            if not found:
+                raise InstallError(self.name, "archive contains no llama-server")
+            merge_tree(found[0].parent, staged)
+        # The pin decides whether the .deb arrives (test_llamacpp_pins); verify()'s --version
+        # probe is what proves the libraries resolve.
+        libs = sorted((staged / "usr" / "lib").glob("*/libgomp.so.1"))
+        if libs:
+            shutil.copyfile(libs[0], staged / "libgomp.so.1")
+            shutil.rmtree(staged / "usr")
 
 
 def _github_release_digests(repo: str, tag: str) -> dict[str, str]:
@@ -1064,23 +1181,43 @@ _release_digest_cache: dict[tuple, dict] = {}
 
 @register
 class LlamaCppCuda(LlamaCpp):
-    """Windows only: upstream publishes no prebuilt Linux CUDA archive at
-    current tags, so NVIDIA Linux users run the vulkan build."""
+    """CUDA 13.4 everywhere upstream builds it: 13.x drivers run any 13.x
+    runtime (minor-version compatibility), and 13.4 is the only line upstream
+    ships for win-arm64. Linux archives first appeared after b10964, and
+    upstream dropped win-cuda-13.3 at the same time.
+
+    The engine archive carries no CUDA libraries (end users have no toolkit),
+    so each target pins a second cudart archive too."""
 
     name = "llamacpp-cuda"
     backend = "cuda"
-    # CUDA 13.3 verified against 13.1/13.2 drivers; arm64 prebuilts landed
-    # on 13.4 (the only CUDA line upstream builds for win-arm64).
     assets = {
-        "win32-x64": "win-cuda-13.3-x64",
+        "win32-x64": "win-cuda-13.4-x64",
         "win32-arm64": "win-cuda-13.4-arm64",
+        "linux-x64": "ubuntu-cuda-13.4-x64",
+        "linux-arm64": "ubuntu-cuda-13.4-arm64",
     }
-    _CUDART = {"win32-x64": "13.3-x64", "win32-arm64": "13.4-arm64"}
 
     def _asset_names(self, version: str, target: str) -> list[str]:
-        return super()._asset_names(version, target) + [
-            f"cudart-llama-bin-win-cuda-{self._CUDART[target]}.zip"
-        ]
+        # Upstream names the Windows cudart zip without the build tag and the
+        # Linux one with it.
+        infix = self.assets[target]
+        cudart = (
+            f"cudart-llama-bin-{infix}.zip"
+            if target.startswith("win32")
+            else f"cudart-llama-b{version}-bin-{infix}.tar.gz"
+        )
+        return super()._asset_names(version, target) + [cudart]
+
+    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
+        """The Linux cudart tarball unpacks into its own top-level dir, but the
+        engine's RUNPATH is $ORIGIN, so its libraries must sit beside
+        llama-server. The Windows zip is flat and needs no hoist."""
+        super().stage(store, staged, version, target)
+        for extra in sorted(staged.glob("cudart-*")):
+            if extra.is_dir():
+                merge_tree(extra, staged)
+                shutil.rmtree(extra)
 
 
 @register

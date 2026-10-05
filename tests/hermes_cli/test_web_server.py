@@ -931,15 +931,16 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             return real_run(command, **kwargs)
 
         monkeypatch.setattr(web_server.subprocess, "run", guarded_run)
+        self._install_flatprov()
 
-        resp = self.client.post("/api/memory/providers/honcho/setup", json={"values": {}})
+        resp = self.client.post("/api/memory/providers/flatprov/setup", json={"values": {}})
 
         assert resp.status_code == 200
         data = resp.json()
         pip_rows = [row for row in data["results"] if row["kind"] == "pip"]
         assert pip_rows and pip_rows[0]["status"] == "installed"
         assert pip_rows[0]["command"] == "hermes pm install"
-        assert prepared == ["honcho"]
+        assert prepared == ["flatprov"]
 
 
     def test_put_memory_provider_config_writes_config_and_secret(self):
@@ -999,42 +1000,103 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert "secret-value" not in json.dumps(data)
 
 
-    # ── Memory provider config (Honcho host-block backend) ──────────────
+    # ── Memory provider config (host-block backend) ─────────────────────
+    # ``honcho_host_block`` storage is a host contract a catalog provider opts into. The core
+    # router reaches four names in the provider's own modules; this fixture is that contract.
 
-    @pytest.fixture(autouse=True)
-    def _isolate_honcho_config(self):
-        # Honcho tests write the suite-wide HERMES_HOME honcho.json; snapshot and
-        # restore it so provider status/config state never leaks across tests.
+    _HOSTPROV_INIT = """
+from agent.memory_provider import MemoryProvider
+
+
+class HostProv(MemoryProvider):
+    name = "hostprov"
+
+    def is_available(self):
+        return True
+
+    def initialize(self, session_id, **kwargs):
+        pass
+
+    def get_tool_schemas(self):
+        return []
+
+
+def register(ctx):
+    ctx.register_memory_provider(HostProv())
+"""
+    _HOSTPROV_CLIENT = """
+from hermes_constants import get_hermes_home
+
+
+def resolve_active_host():
+    return "hermes"
+
+
+def resolve_config_path():
+    return get_hermes_home() / "hostprov.json"
+
+
+def _host_block(cfg, host):
+    return (cfg.get("hosts") or {}).get(host) or {}
+"""
+    _HOSTPROV_OAUTH = """
+import contextlib
+import json
+import threading
+
+ACCESS_TOKEN_PREFIX = "oat_"
+_refresh_lock = threading.Lock()
+
+
+@contextlib.contextmanager
+def _config_refresh_lock(path):
+    yield
+
+
+def _read_config_strict(path):
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+"""
+    _HOSTPROV_SCHEMA = """
+from plugins.memory.config_schema import (
+    KIND_SECRET, KIND_SELECT, KIND_TEXT, STORAGE_HONCHO_HOST_BLOCK, ProviderConfigSchema, ProviderField,
+    ProviderFieldOption,
+)
+
+CONFIG_SCHEMA = ProviderConfigSchema(
+    name="hostprov",
+    label="Host-block Provider",
+    storage=STORAGE_HONCHO_HOST_BLOCK,
+    fields=(
+        ProviderField(key="apiKey", label="API key", kind=KIND_SECRET, description="", env_key="HOSTPROV_API_KEY"),
+        ProviderField(key="baseUrl", label="Base URL", kind=KIND_TEXT, description="", scope="root"),
+        ProviderField(key="environment", label="Environment", kind=KIND_SELECT, description="", default="production",
+                      options=(ProviderFieldOption("production", "Cloud"), ProviderFieldOption("local", "Local"))),
+        ProviderField(key="workspace", label="Workspace", kind=KIND_TEXT, description=""),
+        ProviderField(key="peerName", label="Peer name", kind=KIND_TEXT, description=""),
+        ProviderField(key="aiPeer", label="AI peer", kind=KIND_TEXT, description=""),
+        ProviderField(key="sessionStrategy", label="Session strategy", kind=KIND_TEXT, description=""),
+    ),
+)
+"""
+
+    def _install_hostprov(self):
         from hermes_constants import get_hermes_home
 
-        path = get_hermes_home() / "honcho.json"
-        before = path.read_bytes() if path.exists() else None
-        yield
-        if before is None:
-            path.unlink(missing_ok=True)
-        else:
-            path.write_bytes(before)
+        plugin_dir = get_hermes_home() / "plugins" / "hostprov"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        for module, source in (("__init__", self._HOSTPROV_INIT), ("client", self._HOSTPROV_CLIENT),
+                               ("oauth", self._HOSTPROV_OAUTH), ("config_schema", self._HOSTPROV_SCHEMA)):
+            (plugin_dir / f"{module}.py").write_text(source, encoding="utf-8")
+        config_path = get_hermes_home() / "hostprov.json"
+        config_path.write_text("{}", encoding="utf-8")
+        return config_path
 
-    @staticmethod
-    def _seed_local_honcho(cfg=None):
-        from hermes_constants import get_hermes_home
-
-        path = get_hermes_home() / "honcho.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(cfg if cfg is not None else {}), encoding="utf-8")
-        return path
-
-
-    def test_put_honcho_writes_host_block_root_and_secret(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("HONCHO_API_KEY", "guard")
-        monkeypatch.delenv("HONCHO_API_KEY")
-        self._seed_local_honcho()
-        from hermes_constants import get_hermes_home
+    def test_put_host_block_writes_host_block_root_and_secret(self):
         from hermes_cli.config import load_config, load_env
 
+        config_path = self._install_hostprov()
         resp = self.client.put(
-            "/api/memory/providers/honcho/config?surface=declared",
+            "/api/memory/providers/hostprov/config?surface=declared",
             json={
                 "values": {
                     "apiKey": "hch-test-key",
@@ -1050,10 +1112,10 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
-        assert load_config()["memory"]["provider"] == "honcho"
-        assert load_env()["HONCHO_API_KEY"] == "hch-test-key"
+        assert load_config()["memory"]["provider"] == "hostprov"
+        assert load_env()["HOSTPROV_API_KEY"] == "hch-test-key"
 
-        cfg = json.loads((get_hermes_home() / "honcho.json").read_text(encoding="utf-8"))
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
         # baseUrl is root-scoped; the rest live in the active host block.
         assert cfg["baseUrl"] == "https://honcho.example.dev"
         assert cfg["hosts"]["hermes"]["workspace"] == "myws"
@@ -1064,18 +1126,14 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert cfg["hosts"]["hermes"]["apiKey"] == "hch-test-key"
 
 
-    def test_get_honcho_config_does_not_return_secret(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("HONCHO_API_KEY", "guard")
-        monkeypatch.delenv("HONCHO_API_KEY")
-        self._seed_local_honcho()
-
+    def test_get_host_block_config_does_not_return_secret(self):
+        self._install_hostprov()
         self.client.put(
-            "/api/memory/providers/honcho/config?surface=declared",
+            "/api/memory/providers/hostprov/config?surface=declared",
             json={"values": {"apiKey": "secret-value"}},
         )
 
-        resp = self.client.get("/api/memory/providers/honcho/config?surface=declared")
+        resp = self.client.get("/api/memory/providers/hostprov/config?surface=declared")
 
         assert resp.status_code == 200
         data = resp.json()
@@ -1083,6 +1141,30 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert fields["apiKey"]["is_set"] is True
         assert fields["apiKey"]["value"] == ""
         assert "secret-value" not in json.dumps(data)
+
+
+    @pytest.mark.parametrize("corrupt", [True, False], ids=["unparseable-file-is-left-alone", "parseable-file-is-merged"])
+    def test_put_host_block_never_replaces_an_unparseable_config(self, corrupt):
+        # The router reads the provider's config strictly: a file that exists but does not parse must
+        # not be replaced by this host's block alone (that would wipe every other host's keys).
+        from hermes_cli.config import load_config
+
+        config_path = self._install_hostprov()
+        before = "{not json" if corrupt else json.dumps({"hosts": {"other": {"apiKey": "keep-me"}}})
+        config_path.write_text(before, encoding="utf-8")
+
+        resp = self.client.put("/api/memory/providers/hostprov/config?surface=declared",
+                               json={"values": {"workspace": "myws"}})
+
+        if corrupt:
+            assert resp.status_code == 400
+            assert config_path.read_text(encoding="utf-8") == before
+            assert (load_config().get("memory") or {}).get("provider") != "hostprov"
+            return
+        assert resp.status_code == 200
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+        assert cfg["hosts"]["other"]["apiKey"] == "keep-me"
+        assert cfg["hosts"]["hermes"]["workspace"] == "myws"
 
 
     # ── GET /api/media (remote image display) ───────────────────────────
@@ -1097,6 +1179,100 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             headers={_SESSION_HEADER_NAME: "wrong-token"},
         )
         assert resp.status_code == 401
+
+    # ── GET /api/media/proxy (client-blocked CDN fallback, #74564) ──────
+
+
+    def test_media_proxy_requires_auth(self):
+        from hermes_cli.web_server import _SESSION_HEADER_NAME
+
+        resp = self.client.get(
+            "/api/media/proxy",
+            params={"url": "https://v3.fal.media/x.png"},
+            headers={_SESSION_HEADER_NAME: "wrong-token"},
+        )
+        assert resp.status_code == 401
+
+    def test_media_proxy_rejects_disallowed_hosts_and_schemes(self):
+        for bad, expected_status in (
+            ("https://evil.example.com/img.png", 403),
+            ("https://sub.fal.media.evil.com/img.png", 403),
+            ("file:///etc/passwd", 400),
+            ("not a url", 400),
+            ("", 400),
+            ("https://[::1/img.png", 400),
+            ("https://[not-an-ip]:80/img.png", 400),
+        ):
+            resp = self.client.get("/api/media/proxy", params={"url": bad})
+            assert resp.status_code == expected_status, (bad, resp.status_code)
+
+    def test_media_proxy_fetches_allowlisted_image_and_returns_data_url(self, monkeypatch):
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"0" * 8
+
+        class _Resp:
+            status_code = 200
+            headers = {"content-type": "image/png"}
+            content = png_bytes
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url):
+                assert url == "https://v3.fal.media/media/abc123"
+                return _Resp()
+
+        import hermes_cli.web_routers.files as files_router
+
+        monkeypatch.setattr(files_router, "_require_token", lambda request: None, raising=False)
+        # The route imports httpx locally; patch the module it resolves from.
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client, raising=False)
+
+        resp = self.client.get(
+            "/api/media/proxy", params={"url": "https://v3.fal.media/media/abc123"}
+        )
+        assert resp.status_code == 200
+        import base64
+
+        assert resp.json()["data_url"] == (
+            "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
+        )
+
+    def test_media_proxy_rejects_non_image_content_type(self, monkeypatch):
+        class _Resp:
+            status_code = 200
+            headers = {"content-type": "text/html"}
+            content = b"<html>nope</html>"
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url):
+                return _Resp()
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client, raising=False)
+
+        resp = self.client.get(
+            "/api/media/proxy", params={"url": "https://fal.media/media/abc123"}
+        )
+        assert resp.status_code == 415
 
     # ── POST /api/chat/image-upload (browser clipboard/drop images) ─────
 
@@ -1414,7 +1590,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         broadcasts = []
         monkeypatch.setattr(fb, "_broadcast", broadcasts.append)
         with fb._lock:
-            fb._record = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier=False,
+            fb._record = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier_account=False,
                                         has_identity=False, other_providers=False)
             fb._started = True
             fb._done.set()
@@ -1551,7 +1727,8 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         _web_server_gateway._ACTION_PROCS.pop("gateway-restart", None)
 
         def fail_spawn_action(subcommand, name):
-            assert subcommand == ["gateway", "restart"]
+            # The default home is named explicitly: a bare child would re-read the sticky active_profile.
+            assert subcommand == ["-p", "default", "gateway", "restart"]
             assert name == "gateway-restart"
             raise RuntimeError("supervisor unavailable")
 
@@ -1880,6 +2057,27 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         default_list = self.client.get("/api/providers/custom-endpoints").json()
         assert not any(e["id"] == "worker-proxy" for e in default_list["endpoints"])
 
+
+    def test_custom_endpoint_rejects_malformed_url_without_changing_saved_state(self):
+        from hermes_cli.config import get_config_path, get_env_path
+
+        assert self.client.post("/api/providers/custom-endpoints", json={
+            "id": "proxy", "name": "Proxy", "base_url": "https://llm.example.com/v1",
+            "model": "m", "api_key": "sk-original-fixture", "make_default": True,
+        }).status_code == 200
+        saved = {path: path.read_bytes() for path in (get_config_path(), get_env_path())}
+
+        for base_url in (
+            "https://[::1/v1",
+            "https://[not-an-ip]:80/v1",
+        ):
+            response = self.client.post("/api/providers/custom-endpoints", json={
+                "id": "proxy", "name": "Changed Proxy", "base_url": base_url,
+                "model": "replacement", "api_key": "sk-replacement-fixture", "make_default": True,
+            })
+            assert response.status_code == 400, (base_url, response.text)
+            for path, data in saved.items():
+                assert path.read_bytes() == data
 
     def test_custom_endpoint_save_keeps_the_api_key_out_of_config(self):
         """The key belongs in .env behind key_env, never in config.yaml (#69449)."""
@@ -2231,6 +2429,46 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         self.client.post("/api/providers/custom-endpoints/legacy/activate", json={})
         model_cfg = load_config()["model"]
         assert model_cfg["api_key"] == "sk-legacy"
+
+    def test_saving_legacy_custom_provider_keeps_key_env(self):
+        """Save on a legacy row must carry key_env onto providers and drop the list row.
+
+        The panel omits api_key (it only shows ${KEY_ENV}). Resolving only inside
+        providers forked a keyless entry and left the legacy row, so the next
+        request 401s (#126589).
+        """
+        from hermes_cli.config import load_config, save_config, save_env_value
+
+        save_env_value("HERMES_CUSTOM_127_0_0_1_8001_API_KEY", "secret-value")
+        cfg = load_config()
+        cfg["custom_providers"] = [{
+            "name": "Qwen Local",
+            "base_url": "http://127.0.0.1:8001/v1",
+            "key_env": "HERMES_CUSTOM_127_0_0_1_8001_API_KEY",
+            "model": "qwen",
+            "api_mode": "chat_completions",
+        }]
+        save_config(cfg)
+
+        listed = {e["id"]: e for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]}
+        assert listed["qwen-local"]["source"] == "custom_providers"
+        assert listed["qwen-local"]["has_api_key"] is True
+
+        response = self.client.post("/api/providers/custom-endpoints", json={
+            "id": "qwen-local",
+            "name": "Qwen Local",
+            "base_url": "http://127.0.0.1:8001/v1",
+            "model": "qwen",
+        })
+        assert response.status_code == 200, response.text
+
+        cfg = load_config()
+        assert cfg.get("custom_providers") == []
+        assert cfg["providers"]["qwen-local"]["key_env"] == "HERMES_CUSTOM_127_0_0_1_8001_API_KEY"
+        rows = {e["id"]: e for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]}
+        assert rows["qwen-local"]["source"] == "providers"
+        assert rows["qwen-local"]["has_api_key"] is True
+        assert rows["qwen-local"]["api_key_preview"] == "${HERMES_CUSTOM_127_0_0_1_8001_API_KEY}"
 
     def test_legacy_custom_providers_entries_get_a_row_and_can_be_deleted(self):
         """A post-migration ``custom_providers:`` list entry is still routed by the
@@ -3165,6 +3403,56 @@ class TestNewEndpoints:
         assert top_skill["manage_count"] == 0
         assert top_skill["total_count"] == 1
         assert top_skill["last_used_at"] is not None
+
+    def _daily_for_local_starts(self, tz_name, local_starts):
+        """Seed one session per naive local start in ``tz_name``; return the daily buckets."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for i, local in enumerate(local_starts):
+                db.create_session(session_id=f"day-bucket-{i}", source="cli")
+                db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?",
+                                 (local.replace(tzinfo=ZoneInfo(tz_name)).timestamp(), f"day-bucket-{i}"))
+            db._conn.commit()
+        finally:
+            db.close()
+        original_tz = os.environ.get("TZ")
+        try:
+            os.environ["TZ"] = tz_name
+            time.tzset()
+            resp = self.client.get("/api/analytics/usage?days=365")
+        finally:
+            if original_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = original_tz
+            time.tzset()
+        assert resp.status_code == 200
+        return {row["day"]: row["sessions"] for row in resp.json()["daily"]}
+
+    @pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs a POSIX process timezone switch")
+    def test_analytics_daily_buckets_use_local_day(self):
+        """A session at 02:00 IST is counted on that local day, as /insights counts it (not the UTC day before)."""
+        from datetime import datetime, timedelta
+
+        yesterday = (datetime.now() - timedelta(days=1)).replace(hour=2, minute=0, second=0, microsecond=0)
+        daily = self._daily_for_local_starts("Asia/Kolkata", [yesterday])
+        assert daily == {yesterday.strftime("%Y-%m-%d"): 1}
+
+    @pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs a POSIX process timezone switch")
+    def test_analytics_daily_buckets_follow_dst_offset_per_session(self):
+        """23:30 local stays on its own day in both EST and EDT; one fixed offset for the range misplaces one."""
+        from datetime import datetime, timedelta
+
+        # The latest past day in January (EST) and in July (EDT), both inside the 365-day window.
+        recent = [(datetime.now() - timedelta(days=n)).replace(hour=23, minute=30, second=0, microsecond=0) for n in range(2, 360)]
+        starts = [next(d for d in recent if d.month == m) for m in (1, 7)]
+        daily = self._daily_for_local_starts("America/New_York", starts)
+        assert daily == {s.strftime("%Y-%m-%d"): 1 for s in starts}
 
 
 # ---------------------------------------------------------------------------
@@ -4123,6 +4411,76 @@ class TestDeleteSessionEndpoint:
         assert resp.status_code == 200
         assert resp.json().get("ok") is True
 
+    def test_delete_existing_session_scrubs_row_and_disk(self):
+        # The CLI delete path threads the sessions dir so transcript
+        # artifacts are removed with the row; the endpoint historically
+        # didn't, leaving secret-bearing session_<id>.json snapshots and
+        # request dumps orphaned on disk after a UI delete.
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            db.create_session("disk-scrub", source="cli")
+        finally:
+            db.close()
+
+        sessions_dir = get_hermes_home() / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        for name, body in (
+            ("session_disk-scrub.json", '{"messages": [{"content": "secret-token"}]}'),
+            ("disk-scrub.jsonl", "{}\n"),
+            ("request_dump_disk-scrub_001.json", "{}"),
+        ):
+            (sessions_dir / name).write_text(body, encoding="utf-8")
+        # Another session's artifacts must survive.
+        (sessions_dir / "session_disk-scrub-neighbour.json").write_text("{}", encoding="utf-8")
+
+        resp = self.auth_client.delete("/api/sessions/disk-scrub")
+
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db.get_session("disk-scrub") is None
+        finally:
+            db.close()
+        assert not (sessions_dir / "session_disk-scrub.json").exists()
+        assert not (sessions_dir / "disk-scrub.jsonl").exists()
+        assert not (sessions_dir / "request_dump_disk-scrub_001.json").exists()
+        assert (sessions_dir / "session_disk-scrub-neighbour.json").exists()
+
+    def test_delete_named_profile_session_scrubs_profile_disk(self):
+        from hermes_cli import profiles as profiles_mod
+        from hermes_state import SessionDB
+
+        profile_home = profiles_mod.get_profile_dir("worker")
+        profile_home.mkdir(parents=True)
+        (profile_home / "config.yaml").touch()  # identity marker: bare dirs are not profiles
+        sessions_dir = profile_home / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        db_path = profile_home / "state.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            db.create_session("profile-scrub", source="cli")
+        finally:
+            db.close()
+        (sessions_dir / "session_profile-scrub.json").write_text(
+            '{"messages": [{"content": "secret-token"}]}', encoding="utf-8"
+        )
+
+        resp = self.auth_client.delete("/api/sessions/profile-scrub?profile=worker")
+
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db.get_session("profile-scrub") is None
+        finally:
+            db.close()
+        assert not (sessions_dir / "session_profile-scrub.json").exists()
+
 
 class TestBulkDeleteSessionsEndpoint:
     """Tests for ``POST /api/sessions/bulk-delete`` — backs the
@@ -4178,7 +4536,7 @@ class TestBulkDeleteSessionsEndpoint:
             "/api/sessions/bulk-delete", json={"ids": ["a", "b"]}
         )
         assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "deleted": 2}
+        assert resp.json() == {"ok": True, "deleted": 2, "skipped_active": []}
 
         db = SessionDB()
         try:
@@ -4293,6 +4651,25 @@ class TestDeleteEmptySessionsEndpoint:
         finally:
             db.close()
 
+    def test_delete_removes_on_disk_files_of_deleted_sessions_only(self):
+        """Deleting an empty session also removes its files in ``sessions/``.
+        A kept session's files stay."""
+        from hermes_constants import get_hermes_home
+
+        self._seed()
+        sessions_dir = get_hermes_home() / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        deleted_files = [sessions_dir / "session_empty1.json", sessions_dir / "request_dump_empty2_1.json"]
+        kept_file = sessions_dir / "session_hasmsg.json"
+        for path in (*deleted_files, kept_file):
+            path.write_text("{}", encoding="utf-8")
+
+        resp = self.auth_client.delete("/api/sessions/empty")
+
+        assert resp.json() == {"ok": True, "deleted": 2}
+        assert [p for p in deleted_files if p.exists()] == []
+        assert kept_file.exists()
+
 
 class TestPluginAPIAuth:
     """Tests that plugin API routes require the session token (issue #19533)."""
@@ -4371,6 +4748,92 @@ class TestPluginAPIAuth:
         # attacker can't fingerprint plugin names by status codes.
         resp = self.client.get("/api/plugins/_definitely_not_a_plugin_/anything")
         assert resp.status_code == 401
+
+
+class TestPluginAPISecretScopeProductionMount:
+    """#120310: a plugin API handler's ``get_secret()`` must resolve the *requested*
+    profile's credentials under multi-profile hosting, verified through the REAL mount
+    path — discovery → import → ``_mount_plugin_api_routes()`` (which attaches
+    ``_plugin_route_secret_scope``) → a live request against ``app`` — not a hand-built
+    ``include_router``. The dedicated ``test_plugin_api_secret_scope.py`` suite proves the
+    dependency in isolation; this closes the actual reported surface end-to-end and pins
+    that the launch profile and a ``?profile=`` request read distinct secrets, that the
+    request profile does not leak back into the launch profile, and that an unknown
+    profile is rejected in the dependency before the handler runs.
+    """
+
+    _PROBE_KEY = "EXAMPLE_PLUGIN_PROBE_KEY"
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, _isolate_hermes_home, _install_example_plugin):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli import profiles
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        default_home = get_hermes_home()
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", default_home / "state.db")
+
+        # Anchor the named-profiles root to the isolated home so ``?profile=workerb``
+        # resolves inside the test sandbox (mirrors test_web_server_skills_profiles).
+        profiles_root = default_home / "profiles"
+        monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
+        monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
+
+        # Named profile B: a live profile (``.env`` is both an identity marker and the
+        # secret source) with its OWN value for the probe key.
+        worker_home = profiles_root / "workerb"
+        worker_home.mkdir(parents=True, exist_ok=True)
+        (worker_home / ".env").write_text(f"{self._PROBE_KEY}=sk-workerb\n", encoding="utf-8")
+
+        # Launch profile A: an env-only credential (systemd ``Environment=`` style), frozen
+        # into the launch scope when multi-profile hosting activates.
+        monkeypatch.setenv(self._PROBE_KEY, "sk-launch-a")
+
+        import tui_gateway.launch_profile_policy as lpp
+        from agent.secret_scope import is_multiplex_active, set_multiplex_active
+
+        monkeypatch.setattr(lpp, "_snapshot", None)  # freeze the launch env fresh
+        self._previous_multiplex = is_multiplex_active()
+        lpp.activate_multi_profile_hosting()  # freezes os.environ + flips multiplex on
+
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        try:
+            yield
+        finally:
+            set_multiplex_active(self._previous_multiplex)
+
+    def _probe(self, profile=None):
+        params = {"profile": profile} if profile is not None else None
+        return self.client.get("/api/plugins/example/whoami", params=params)
+
+    def test_launch_and_requested_profile_read_distinct_secrets(self):
+        # No ``?profile=`` → the launch profile's frozen env-only credential.
+        resp = self._probe()
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "key": "sk-launch-a"}
+
+        # ``?profile=workerb`` → that profile's own credential, through the real mount.
+        resp = self._probe("workerb")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "key": "sk-workerb"}
+
+        # Back to the launch profile: the request scope reset, so B never leaks into A.
+        resp = self._probe()
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "key": "sk-launch-a"}
+
+    def test_unknown_profile_rejected_before_handler(self):
+        # The dependency raises HTTPException(404) before the handler runs, so this is a
+        # 404 — NOT the handler's folded ``{"ok": False}`` no-data contract.
+        resp = self._probe("ghost")
+        assert resp.status_code == 404
 
 
 class TestDashboardPluginManifestExtensions:

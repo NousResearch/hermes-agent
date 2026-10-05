@@ -39,7 +39,7 @@ from hermes_cli.plugins_cmd_install import (  # noqa: F401
     _read_manifest_for_install, cmd_install, dashboard_install_plugin,
 )
 from hermes_cli.plugins_cmd_listing import (  # noqa: F401
-    _filter_plugin_entries, cmd_compat, cmd_list, cmd_show,
+    _filter_plugin_entries, cmd_list, cmd_show,
 )
 from hermes_cli.plugins_cmd_remove import (  # noqa: F401
     _remove_plugin_core, cmd_remove, dashboard_remove_user_plugin,
@@ -209,6 +209,33 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
             scan_result=result)
     logger.info("plugin scan passed for %s: %s", plugin_dir.name, reason)
     return result
+
+
+def _preserved_files_note(exc: PluginScanBlocked, merged: list[str]) -> str:
+    """Scan-block text for a tree that also holds user files preserved from the installed copy."""
+    preserved = set(merged)
+    findings = exc.scan_result.findings if exc.scan_result is not None else ()
+    hits = sorted({f.file for f in findings if f.file in preserved})
+    if hits:
+        note = ("These findings come from user files preserved from the installed copy: "
+                f"{', '.join(hits)}. Move or remove them and retry the update.")
+    else:
+        note = "The scanned tree included user files preserved from the installed copy."
+    return f"{exc}\n\n{note}"
+
+
+def _scan_merged_tree(plugin_dir: Path, identifier: str, merged: Optional[list[str]], **kwargs):
+    """:func:`_scan_plugin_tree` for a candidate that may hold carried user files (*merged*).
+
+    A block then names the findings that sit in those files, so user data does not read as a
+    malicious upstream revision; the original block stays chained as the cause.
+    """
+    try:
+        return _scan_plugin_tree(plugin_dir, identifier, **kwargs)
+    except PluginScanBlocked as exc:
+        if not merged:
+            raise
+        raise PluginScanBlocked(_preserved_files_note(exc, merged), scan_result=exc.scan_result) from exc
 
 
 def _plugins_dir() -> Path:
@@ -620,7 +647,8 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         if plugin in LEGACY_RELAY_PLUGIN_KEYS:
             _fail(console, (
                 f"[red]Plugin '{plugin}' was removed.[/red] Relay lifecycle is owned "
-                f"by Hermes core; configure {RELAY_PLUGINS_CONFIG_ENV} instead."))
+                "by Hermes core; configure a standard user or system Relay plugins.toml, or use "
+                f"{RELAY_PLUGINS_CONFIG_ENV} for an explicit user-file override."))
 
     _refuse_legacy_relay(name)
     resolved = _resolve_plugin_key_and_source(name)
@@ -710,17 +738,18 @@ def _is_portable_plugin_dir(dir_path) -> bool:
 _BUNDLED_DEFAULT_ON_KINDS = frozenset({"backend", "platform", "model-provider"})
 
 
-def _bundled_default_on(dir_path) -> bool:
-    """True when a bundled plugin is active without a ``plugins.enabled`` entry (portable
-    ``plugin.json`` packages have no kind, so never)."""
+def _default_on(dir_path, source: str) -> bool:
+    """True when a plugin is active without a ``plugins.enabled`` entry (portable ``plugin.json``
+    packages have no kind, so never). Model providers load through providers/ discovery from any
+    source (``gate_manifest``); the other default-on kinds only when bundled."""
     manifest_file = _native_manifest_file(Path(dir_path))
     if manifest_file is None:
         return False
     try:
         kind = str(_load_yaml_manifest(manifest_file).get("kind", "standalone")).strip().lower()
-        return kind in _BUNDLED_DEFAULT_ON_KINDS
     except Exception:
         return False
+    return kind == "model-provider" or (source == "bundled" and kind in _BUNDLED_DEFAULT_ON_KINDS)
 
 
 def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: int, seen: dict) -> None:
@@ -782,14 +811,14 @@ def _plugin_status(name: str, enabled: set, disabled: set, key: str = "", *, sou
                    dir_path=None, active: "frozenset | set" = frozenset()) -> str:
     """User-facing activation state for a plugin name or key. Mirrors ``gate_manifest``: an explicit
     disable wins, then the allow-list, then the activations that need no list entry — bundled
-    backends/platforms/model providers (*source* + *dir_path*) and category-selected providers
+    backends/platforms and model providers from any source (*source* + *dir_path*) and category-selected providers
     (*active*, see :func:`_category_active_names`)."""
     names = {name, key}
     if names & disabled:
         return "disabled"
     if names & enabled or names & active:
         return "enabled"
-    if source == "bundled" and dir_path is not None and _bundled_default_on(dir_path):
+    if dir_path is not None and _default_on(dir_path, source):
         return "enabled"
     return "not enabled"
 
@@ -940,7 +969,8 @@ _PLUGIN_ACTIONS = {
         enable=_tri_state_flag(args, "enable", "no_enable"),
         ref=getattr(args, "ref", None),
         allow_removed=getattr(args, "allow_removed", False),
-        no_deps=getattr(args, "no_deps", False)),
+        no_deps=getattr(args, "no_deps", False),
+        yes_deps=getattr(args, "yes_deps", False)),
     "search": lambda args: _catalog().cmd_search(
         getattr(args, "term", "") or "", json_output=getattr(args, "json", False)),
     "browse": lambda args: _catalog().cmd_search(""),
@@ -962,7 +992,6 @@ _PLUGIN_ACTIONS = {
     "list": lambda args: cmd_list(args),
     "ls": lambda args: cmd_list(args),
     "doctor": lambda args: cmd_plugin_doctor(args.target, ci=getattr(args, "ci", False)),
-    "compat": lambda args: cmd_compat(args),
     "pack": _action_pack,
     "show": lambda args: cmd_show(args.name),
     "info": lambda args: _catalog().cmd_info(args.name),
@@ -977,11 +1006,3 @@ def plugins_command(args) -> None:
     if handler is None:
         _fail(_console(), f"[red]Unknown plugins action: {action}[/red]")
     handler(args)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import importlib.metadata  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

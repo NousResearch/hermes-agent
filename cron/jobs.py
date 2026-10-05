@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 import json
 import logging
 import shutil
-import tempfile
+import sys
 import threading
 import time
 import os
@@ -36,24 +36,36 @@ logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
 from hermes_time import get_timezone
-from utils import atomic_replace, atomic_write_text
+from hermes_cli.observability.shared_metrics_gateway import record_cron_missed
+from utils import atomic_replace, atomic_write_text, fsync_directory, mkstemp_beside
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
-# module attribute: a monkeypatched value wins because _ensure_croniter only probes while None.
+# module attribute: a monkeypatched value wins because _ensure_croniter only probes while None
+# (and past `_croniter_retry_at`).
 croniter = None
 HAS_CRONITER: Optional[bool] = None
+# Monotonic deadline before the next croniter import probe after an ImportError (not latched).
+_CRONITER_RETRY_SECONDS = 60.0
+_croniter_retry_at: float = 0.0
 
 
 def _ensure_croniter() -> bool:
-    """Import croniter on first use; honor a pre-set HAS_CRONITER override."""
-    global croniter, HAS_CRONITER
-    if HAS_CRONITER is None:
+    """Import croniter on first use; honor a pre-set HAS_CRONITER override.
+
+    An ImportError is NOT latched: caching False would pin a single transient failure
+    (wrong interpreter, shadowed path) for the whole process lifetime, leaving every
+    recurring job's next_run_at None until a gateway restart (#127182). Stay None and
+    re-probe once ``_CRONITER_RETRY_SECONDS`` have passed (so a genuinely absent package does
+    not cost a finder walk per call on every due-scan tick), and due-scan recovery re-arms the
+    schedules as soon as the import succeeds. An explicit True/False override always wins."""
+    global croniter, HAS_CRONITER, _croniter_retry_at
+    if HAS_CRONITER is None and time.monotonic() >= _croniter_retry_at:
         try:
             from croniter import croniter as _croniter
             croniter = _croniter
             HAS_CRONITER = True
         except ImportError:
-            HAS_CRONITER = False
+            _croniter_retry_at = time.monotonic() + _CRONITER_RETRY_SECONDS
     return bool(HAS_CRONITER)
 
 
@@ -1185,8 +1197,9 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
             logger.warning(
                 "Cannot compute next run for cron schedule %r: 'croniter' is "
                 "not installed. croniter is a core dependency as of v0.9.x; "
-                "reinstall hermes-agent or run 'pip install croniter' in your runtime env.",
-                expr)
+                "reinstall hermes-agent or run 'pip install croniter' in your runtime env "
+                "(interpreter: %s).",
+                expr, sys.executable)
             return None
         # Anchor cron matching to the CONFIGURED IANA timezone's WALL CLOCK,
         # not to the UTC offset carried by ``base_time``. croniter ignores
@@ -1245,18 +1258,37 @@ def record_ticker_heartbeat(success: bool = False) -> None:
     Resolution uses ``_current_cron_store()`` so the heartbeat is correctly scoped to the active profile's
     store — critical under multiplex_profiles where each profile needs its own liveness signal (#69377).
     """
-    _write_marker("ticker_heartbeat", str(time.time()), ".hb_")
+    # ``<epoch> <pid>``: a killed ticker's last stamp reads fresh for ~3 minutes, so a reader with no
+    # other proof of the scheduler (the in-process serve/Desktop ticker) checks the writer is alive.
+    _write_marker("ticker_heartbeat", f"{time.time()} {os.getpid()}", ".hb_")
     if success:
         _write_marker("ticker_last_success", str(time.time()), ".hb_")
+
+
+def _read_marker_fields(name: str) -> List[str]:
+    try:
+        return (_current_cron_store().cron_dir / name).read_text(encoding="utf-8-sig").split()
+    except Exception:
+        return []
 
 
 def _epoch_file_age(name: str) -> Optional[float]:
     """Seconds since the epoch stamp stored in ``<cron_dir>/<name>``; None = missing/unreadable."""
     try:
-        raw = (_current_cron_store().cron_dir / name).read_text(encoding="utf-8-sig").strip()
-        return max(0.0, time.time() - float(raw))
+        return max(0.0, time.time() - float(_read_marker_fields(name)[0]))
     except Exception:
         return None
+
+
+def ticker_heartbeat_writer_alive() -> bool:
+    """True when the process that wrote this store's ticker heartbeat is still running. A legacy
+    bare-epoch stamp names no writer and is NOT proof of a live scheduler by itself."""
+    fields = _read_marker_fields("ticker_heartbeat")
+    try:
+        from hermes_cli._subprocess_compat import pid_exists_stdlib
+        return len(fields) >= 2 and pid_exists_stdlib(int(fields[1]))
+    except Exception:
+        return False
 
 
 def get_ticker_heartbeat_age() -> Optional[float]:
@@ -1357,11 +1389,13 @@ def load_jobs() -> List[Dict[str, Any]]:
     # under the lock below), so each warning is emitted once per repair.
     repair = "had invalid control characters" if _strict_retry else None
     notes: List[str] = []
+    unmergeable = False  # disk shape _peek_jobs_unlocked cannot read: only a replace save fixes it
     if isinstance(data, dict):
         jobs = data.get("jobs", [])
         if isinstance(jobs, dict):
             # ID-keyed map from external tools: flatten (inline "id" wins, else the key), skip junk.
-            # _peek_jobs_unlocked deliberately does NOT flatten, so saves never merge against it.
+            # _peek_jobs_unlocked deliberately does NOT flatten, so a merging save refuses this
+            # shape; the repair below rewrites it with replace=True.
             skipped = [k for k, v in jobs.items() if not isinstance(v, dict)]
             if skipped:
                 notes.append("Skipping %d non-dict entr%s in id-keyed jobs map: %s" % (
@@ -1369,11 +1403,13 @@ def load_jobs() -> List[Dict[str, Any]]:
                     ", ".join(map(repr, skipped))))
             jobs = [{**v, "id": v.get("id") or k} for k, v in jobs.items() if isinstance(v, dict)]
             repair = "id-keyed jobs map flattened to list"
+            unmergeable = True
         elif not isinstance(jobs, list):
             notes.append("Replacing invalid jobs.json 'jobs' field (%s) with an empty list"
                          % type(jobs).__name__)
             jobs = []
             repair = "invalid jobs field replaced with list"
+            unmergeable = True
     elif isinstance(data, list):
         jobs = data
         repair = "bare list wrapped as dict"
@@ -1391,14 +1427,16 @@ def load_jobs() -> List[Dict[str, Any]]:
         jobs = [j for j in jobs if isinstance(j, dict)]
         repair = repair or "non-object entries dropped"
     for job in jobs:
-        # A hand-edited "completed" that is not an int (null, "2", 1.0) would crash every counter
-        # reader (None += 1, "2" + 1) or render as "None/3" / "2.0/3"; normalize it once here so
-        # readers can trust an int.
+        # A hand-edited "completed" that is not a non-negative int (null, "2", 1.0, -5, Infinity)
+        # would crash every counter reader (None += 1, "2" + 1), render as "None/3" / "2.0/3", or
+        # grant extra runs; normalize it once here so readers can trust a non-negative int.
+        # OverflowError: json.loads turns Infinity / 1e999 into float inf, and int(inf) raises.
         rep = job.get("repeat")
-        if isinstance(rep, dict) and "completed" in rep and type(rep["completed"]) is not int:
+        if isinstance(rep, dict) and "completed" in rep and (
+                type(rep["completed"]) is not int or rep["completed"] < 0):
             try:
-                rep["completed"] = max(int(rep["completed"] or 0), 0)
-            except (TypeError, ValueError):
+                rep["completed"] = max(int(rep["completed"]), 0)
+            except (TypeError, ValueError, OverflowError):
                 rep["completed"] = 0
             repair = repair or "invalid repeat.completed normalized"
     # Persist even an empty result, or an all-junk store repeats the repair on every tick.
@@ -1410,7 +1448,9 @@ def load_jobs() -> List[Dict[str, Any]]:
                 return load_jobs()
         for note in notes:
             logger.warning("%s", note)
-        save_jobs(jobs)
+        # Keep the shrink-merge (a degraded-lock sibling's create may have landed since the read)
+        # unless disk is STILL a shape the merge would refuse: a sibling may have rewritten it.
+        save_jobs(jobs, replace=unmergeable and _peek_jobs_unlocked() is None)
         logger.warning("Auto-repaired jobs.json (%s)", repair)
     _record_load_stamp(pre_read_stamp)
     return jobs
@@ -1460,14 +1500,15 @@ def _unmerged_disk_jobs(
     jobs: List[Dict[str, Any]], removed_ids: Optional[Collection[str]]
 ) -> List[Dict[str, Any]]:
     """On-disk jobs missing from *jobs* and not intentionally removed. Stamp match => nothing
-    landed, return without parsing; unreadable store => ``[]`` (never merge against an unknown
-    baseline)."""
+    landed, return without parsing; unreadable store => raise RuntimeError (fail closed: writing
+    over an unknown baseline would silently drop every job in it)."""
     stamp = getattr(_jobs_lock_state, "load_stamp", None)
     if stamp is not None and _jobs_file_stamp(_current_cron_store().jobs_file) == stamp:
         return []
     disk_jobs = _peek_jobs_unlocked()
     if disk_jobs is None:
-        return []
+        raise RuntimeError(
+            f"Cron database corrupted; refusing to overwrite {_current_cron_store().jobs_file}")
     seen = {str(j["id"]) for j in jobs if isinstance(j, dict) and j.get("id")}
     seen |= {str(i) for i in (removed_ids or ()) if i}
     recovered: List[Dict[str, Any]] = []
@@ -1505,8 +1546,8 @@ def _unlink_quiet(path: Optional[str]) -> None:
 
 
 def _stage_jobs_payload(jobs_file: Path, jobs: List[Dict[str, Any]]) -> str:
-    """Serialize the store payload to a fsynced temp file next to *jobs_file*; return its path."""
-    fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix=".tmp", prefix=".jobs_")
+    """Serialize the store payload to a fsynced temp file beside the resolved *jobs_file*; return its path."""
+    fd, tmp_path = mkstemp_beside(jobs_file, suffix=".tmp", prefix=".jobs_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(
@@ -1528,8 +1569,8 @@ def _save_jobs_unlocked(
     replace: bool = False,
 ):
     """Save all jobs; caller must hold _jobs_lock(). ``removed_ids`` = intentional deletes;
-    ``replace=True`` skips the shrink-merge guard (wholesale rewrite for tests/disaster
-    recovery)."""
+    ``replace=True`` skips the shrink-merge guard and the corrupt-store refusal (wholesale
+    rewrite for tests, disaster recovery and load_jobs' auto-repair of unmergeable shapes)."""
     jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
     # Owner snapshot BEFORE replace so a root writer can hand the file back to the gateway user.
@@ -1555,8 +1596,10 @@ def _save_jobs_unlocked(
                 _unlink_quiet(tmp_path)
                 tmp_path = None
                 continue
-            atomic_replace(tmp_path, jobs_file)
+            # fsync the directory the rename actually landed in (atomic_replace resolves symlinks).
+            replaced = Path(atomic_replace(tmp_path, jobs_file))
             tmp_path = None
+            fsync_directory(replaced.parent)
             _secure_file(jobs_file)
             _preserve_file_ownership(jobs_file, _stat_before)
             # Invalidate (never refresh) the stamp: a refresh would let a nested save certify disk
@@ -1713,11 +1756,13 @@ _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "no_agent": bool,
     "context_from": _normalize_context_from,
     "failure_deliver": _normalize_failure_deliver,
+    "interpreter": _normalize_job_optional_text,
 }
 _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "workdir": lambda v: None if v in {None, "", False} else _normalize_workdir(v),
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,
+    "interpreter": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
 }
 
@@ -1789,6 +1834,7 @@ def create_job(
     paused: bool = False,
     paused_reason: Optional[str] = None,
     pinned: bool = False,
+    interpreter: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1797,7 +1843,9 @@ def create_job(
     delivered verbatim, requires ``script``). context_from: job id(s) whose latest output is
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
-    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
+    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
+    interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
+    (a venv can be rebuilt or moved after creation)."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1871,6 +1919,8 @@ def create_job(
         "last_delivery_error": None,
         # Targets acked without message_id/raw_response (accepted but UNVERIFIED).
         "last_delivery_unverified": None,
+        # Most recent failed run ({at, detail}); NOT cleared by a later success (#118354).
+        "last_failure": None,
         "failure_streak": 0,
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
@@ -1882,7 +1932,7 @@ def create_job(
     # jobs.
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
-        ("failure_deliver", f["failure_deliver"]),
+        ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
     ):
         if value is not None:
             job[key] = value
@@ -2348,6 +2398,12 @@ def _record_run_outcome(
         # Consecutive agent-failure streak; delivery failures do NOT count
         # (scheduler._failure_streak_nudge).
         job["failure_streak"] = int(job.get("failure_streak") or 0) + 1
+        # Sticky last-failure stamp (#118354): the next success resets last_status and
+        # failure_streak, which erases the only job-level trace that a run ever failed —
+        # a monitor sampling jobs.json then sees a permanently green job. last_failure
+        # survives success (latest failure wins); the recency window is the consumer's
+        # call. Delivery failures keep their own sticky last_delivery_error.
+        job["last_failure"] = {"at": now, "detail": error or (status or "run failed")}
     job["last_delivery_error"] = delivery_error
     # Clear both claims: the run is over, so the job is claimable again.
     job["fire_claim"] = None
@@ -2356,9 +2412,12 @@ def _record_run_outcome(
         job["run_claim"] = None
 
 
-def _advance_after_run(job: Dict[str, Any], now: str) -> None:
+def _advance_after_run(job: Dict[str, Any], now: str, *, ladder_rung: bool = False) -> None:
     """Bump ``repeat.completed`` and recompute ``next_run_at``; retire the record as a terminal
-    completion when the repeat limit is reached or a one-shot has no further run."""
+    completion when the repeat limit is reached or a one-shot has no further run.
+
+    ``ladder_rung``: this run re-ran an occurrence that already counted (an unreachable-model
+    re-run, ``cron.unreachable_retry.is_retry_run``), so ``repeat.completed`` is left as is."""
     # If no next run, decide whether this is terminal completion (one-shot) or a transient failure
     # (recurring schedule couldn't compute — e.g. 'croniter' missing from the runtime env). Recurring jobs
     # must NEVER be silently disabled: that turns a missing runtime dep into "job completed" and the user's
@@ -2372,9 +2431,10 @@ def _advance_after_run(job: Dict[str, Any], now: str) -> None:
         times = repeat.get("times")
         finite = times is not None and times > 0
         completed = repeat.get("completed", 0)
-        # Finite one-shots were pre-claimed by claim_dispatch() (completed already incremented) —
-        # do not double-count; recurring jobs and direct callers still get the increment.
-        if not (kind == "once" and finite and completed > 0):
+        # Count each occurrence once. A ladder re-run's occurrence already counted, and finite
+        # one-shots were pre-claimed by claim_dispatch() (completed already incremented); every
+        # other run, recurring or direct, gets the increment.
+        if not ladder_rung and not (kind == "once" and finite and completed > 0):
             completed += 1
             repeat["completed"] = completed
         if finite and completed >= times:
@@ -2412,6 +2472,7 @@ def mark_job_run(
     *,
     expected_fire_owner: Optional[str] = None,
     model_unreachable: bool = False,
+    ladder_rung: bool = False,
     quota_hold_seconds: Optional[float] = None,
     recover_consumed_fire: bool = False,
 ) -> bool:
@@ -2426,7 +2487,9 @@ def mark_job_run(
     ``model_unreachable``: this failed run never reached the model (transient network/DNS error,
     zero API calls). Recurring jobs then get a bounded automatic re-run — ``next_run_at`` is pulled
     earlier per ``cron.unreachable_retry.RETRY_DELAYS_SECONDS`` — instead of waiting a full period
-    (Cowork-style; see cron/unreachable_retry.py).
+    (Cowork-style; see cron/unreachable_retry.py). ``ladder_rung``: this run IS one of those
+    re-runs (``is_retry_run``); its occurrence already counted, so ``repeat.completed`` is not
+    bumped again.
 
     ``quota_hold_seconds``: the provider said it stays closed for this long (a quota 429 with
     ``retry after <N>s``). Recurring jobs are parked through the window instead of re-firing into
@@ -2444,7 +2507,7 @@ def mark_job_run(
                 return False
         now = _hermes_now().isoformat()
         _record_run_outcome(job, success, error, delivery_error, status, now)
-        _advance_after_run(job, now)
+        _advance_after_run(job, now, ladder_rung=ladder_rung)
         from cron import quota_hold
         from cron.unreachable_retry import clear_state, plan_retry
 
@@ -2907,8 +2970,9 @@ def _self_disable_half_paused(job: Dict[str, Any], scan: _DueScan) -> None:
 
 def _recover_missing_next_run(job: Dict[str, Any], scan: _DueScan) -> Optional[str]:
     """Recompute and persist a missing ``next_run_at``; None when unrecoverable. One-shots use the
-    grace window; recurring jobs only get here after a direct jobs.json edit bypassed add_job(),
-    and would otherwise be silently skipped forever."""
+    grace window; recurring jobs get here after a direct jobs.json edit bypassed add_job() or a
+    transient croniter ImportError left them in state 'error' (#127182) — re-armed ones go back
+    to 'scheduled', otherwise they would be silently skipped forever."""
     schedule = job.get("schedule", {})
     kind = schedule.get("kind")
     recovered_next = _recoverable_oneshot_run_at(
@@ -2920,11 +2984,14 @@ def _recover_missing_next_run(job: Dict[str, Any], scan: _DueScan) -> Optional[s
             recovery_kind = kind
     if not recovered_next:
         return None
-    job["next_run_at"] = recovered_next
     logger.info(
         "Job '%s' had no next_run_at; recovering %s run at %s",
         job.get("name", job.get("id", "?")), recovery_kind, recovered_next)
-    scan.persist(job["id"], next_run_at=recovered_next)
+    fields: Dict[str, Any] = {"next_run_at": recovered_next}
+    if _is_recoverable_error_job(job):
+        fields["state"] = "scheduled"
+    job.update(fields)
+    scan.persist(job["id"], **fields)
     return recovered_next
 
 
@@ -3077,6 +3144,7 @@ def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
             "Job '%s' missed its scheduled time (%s, grace=%ds). "
             "Skipping missed occurrence because cron.catch_up_missed is false; next run: %s",
             d.label, d.next_run, grace, new_next)
+        record_cron_missed(d.job)
         return True
     logger.info(
         "Job '%s' missed its scheduled time (%s, grace=%ds). "
@@ -3098,6 +3166,7 @@ def _retire_expired_oneshot(d: _DueJob) -> bool:
     if not (d.job.get("run_claim") or d.job.get("fire_claim")):
         _write_missed_oneshot_diagnostic(d.job, d.next_run)
         d.scan.retire(d.job["id"])
+        record_cron_missed(d.job)
     return True
 
 
@@ -3424,14 +3493,3 @@ def rewrite_skill_refs(
             save_jobs(jobs)
             logger.info("Curator rewrote skill references in %d cron job(s)", len(rewrites))
         return {"rewrites": rewrites, "jobs_updated": len(rewrites), "jobs_scanned": len(jobs)}
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def clear_drift_alerted(job_id: str) -> None:
-    """Clear the drift alert-dedup marker (resolution matches again)."""
-    _set_alert_flag(job_id, "drift_alerted", False)
-# ---- END PLUGIN-COMPAT ----

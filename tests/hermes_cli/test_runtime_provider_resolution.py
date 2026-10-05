@@ -670,26 +670,49 @@ def test_openrouter_key_takes_priority_over_openai_key(monkeypatch):
 
 
 def test_openai_key_used_when_no_openrouter_key(monkeypatch):
-    """OPENAI_API_KEY is used as fallback when OPENROUTER_API_KEY is not set."""
+    """A legacy OpenRouter key (sk-or-) kept in OPENAI_API_KEY is the fallback when
+    OPENROUTER_API_KEY is not set."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-fallback")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-or-v1-legacy-fallback")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
     resolved = rp.resolve_runtime_provider(requested="openrouter")
 
-    assert resolved["api_key"] == "sk-openai-fallback"
+    assert resolved["api_key"] == "sk-or-v1-legacy-fallback"
+
+
+def test_real_openai_key_is_never_routed_or_sent_to_openrouter(monkeypatch):
+    """A non-OpenRouter OPENAI_API_KEY with OPENAI_BASE_URL unset neither auto-selects OpenRouter
+    nor becomes the bearer for openrouter.ai; auto-detection lands on openai-api as documented."""
+    from hermes_cli.auth import resolve_provider
+    from hermes_cli.runtime_provider_backends import _resolve_openrouter_runtime
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {}})
+    monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
+    for var in ("OPENAI_BASE_URL", "OPENROUTER_BASE_URL", "OPENROUTER_API_KEY", "CUSTOM_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-real-openai-key")
+
+    assert resolve_provider("auto") == "openai-api"
+    resolved = _resolve_openrouter_runtime(requested_provider="openrouter")
+    assert resolved["base_url"] == "https://openrouter.ai/api/v1"
+    assert resolved["api_key"] == ""
 
 
 @pytest.mark.parametrize("openai_base_url, expected_key", [
     ("https://proxy.corp.example/v1", ""),
     ("proxy.corp.example:8080/v1", ""),  # scheme-less still names a foreign host
     ("https://openrouter.ai/api/v1", "sk-openai-fallback"),
+    ("http://openrouter.ai/api/v1", ""),  # same host, http: another origin
+    ("https://openrouter.ai:8443/api/v1", ""),  # same host, another port
+    ("https://openrouter.ai:443/api/v1", "sk-openai-fallback"),  # default port spelled out: same origin
 ])
 def test_openai_key_bound_to_another_host_never_reaches_openrouter(monkeypatch, openai_base_url, expected_key):
-    """OPENAI_API_KEY is an OpenRouter fallback only while OPENAI_BASE_URL doesn't bind it elsewhere."""
+    """OPENAI_API_KEY is an OpenRouter fallback only while OPENAI_BASE_URL doesn't bind it elsewhere:
+    a bound key follows its exact origin, so the same hostname over http:// or on another port is elsewhere."""
     from hermes_cli.runtime_provider_backends import _resolve_openrouter_runtime
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("OPENAI_BASE_URL", openai_base_url)

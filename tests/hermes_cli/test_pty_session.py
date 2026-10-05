@@ -32,6 +32,7 @@ class FakeBridge:
         self.write_result = write_result
         self.closed = False
         self.resized = None
+        self.dead = False
 
     def read(self, timeout):
         if not self._chunks:
@@ -48,6 +49,9 @@ class FakeBridge:
 
     def close(self):
         self.closed = True
+
+    def is_alive(self):
+        return not self.dead
 
 
 class FakeWS:
@@ -427,3 +431,96 @@ async def test_close_all_survives_key_popped_by_concurrent_reap():
 
     assert not reg._sessions
     assert all(b.closed for b in bridges)
+
+
+@pytest.mark.asyncio
+async def test_close_all_does_not_wait_on_one_slow_close_before_the_next():
+    """Each close() can wait out its helpers' SIGHUP grace, and the backend's teardown runs under
+    a SIGKILL budget, so sessions close concurrently rather than one after another."""
+    reg = make_registry(ttl=60.0)
+    bridges, entered, release = await _two_idle_sessions_first_close_gated(reg)
+
+    closer = asyncio.create_task(reg.close_all())
+    await entered.wait()                      # k0's close() is parked
+    for _ in range(50):
+        if bridges[1].closed:
+            break
+        await asyncio.sleep(0.01)
+    assert bridges[1].closed                  # k1 closed while k0 still waits
+    release.set()
+    await closer
+    assert all(b.closed for b in bridges)
+
+
+@pytest.mark.asyncio
+async def test_close_all_waits_for_closes_already_running_in_the_background():
+    """A dead remnant or evicted session leaves the registry before its close() finishes; the
+    backend's teardown must still wait for it, or its helpers outlive the backend."""
+    reg = make_registry(ttl=60.0)
+    bridges, entered, release = await _two_idle_sessions_first_close_gated(reg)
+    reg._close_in_background(reg._sessions.pop("k0"))
+    await entered.wait()                      # k0 is closing outside the registry
+
+    closer = asyncio.create_task(reg.close_all())
+    await asyncio.sleep(0.05)
+    assert not closer.done()                  # still waiting on k0
+    release.set()
+    await closer
+    assert all(b.closed for b in bridges)
+
+
+@pytest.mark.asyncio
+async def test_close_other_sessions_removes_old_profile_session():
+    from hermes_cli.pty_session import WS_CLOSE_SUPERSEDED, PtySession
+
+    reg = make_registry()
+    old_bridge = FakeBridge([b""])
+    current_bridge = FakeBridge([b""])
+    old = PtySession("token\0alpha\0session-a", old_bridge, buffer_cap=1024, read_timeout=0.01)
+    current = PtySession("token\0beta\0session-b", current_bridge, buffer_cap=1024, read_timeout=0.01)
+    await old.start()
+    await current.start()
+    # A sibling tab (same attach token, other profile) is still viewing the old PTY.
+    old_ws = FakeWS()
+    assert await old.attach(old_ws)
+    reg._sessions[old.key] = old
+    reg._sessions[current.key] = current
+
+    await reg.close_other_sessions("token", keep_key=current.key)
+
+    assert old_bridge.closed
+    assert old.key not in reg._sessions
+    assert reg._sessions[current.key] is current
+    # The displaced viewer gets the documented supersede code rather than going silent.
+    assert old_ws.close_code == WS_CLOSE_SUPERSEDED
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_reap_reaps_dead_process_even_when_attached():
+    # Child killed externally (OOM killer / cgroup SIGKILL) while a grandchild
+    # holds the PTY slave, so the drain never sees EOF: the session must still
+    # be reaped, otherwise its bridge and registry slot leak forever (#76759).
+    reg = make_registry(ttl=3600.0)
+    b = FakeBridge([b"", b"", b""])
+    s, _ = await reg.attach_or_spawn("tok", spawn=lambda: b)
+    await s.attach(FakeWS())
+    b.dead = True
+    await reg.reap_idle()
+    assert "tok" not in reg._sessions
+    assert b.closed is True
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_reap_keeps_live_attached_session():
+    # A session with a live child and an attached viewer is never reaped,
+    # even past the detached TTL.
+    reg = make_registry(ttl=1.0)
+    b = FakeBridge([b"", b""])
+    s, _ = await reg.attach_or_spawn("tok", spawn=lambda: b)
+    await s.attach(FakeWS())
+    await reg.reap_idle(now=time.monotonic() + 10)
+    assert "tok" in reg._sessions
+    assert b.closed is False
+    await reg.close_all()

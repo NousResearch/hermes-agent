@@ -614,6 +614,8 @@ export interface Translations extends NoticeTranslations {
       graceTitle: string
       graceDescription: string
       gracePopoverHint: string
+      gracePressHint: string
+      gracePressCommit: string
       graceReasonEnter: string
       graceReasonDoubleTap: string
       graceReasonPause: string

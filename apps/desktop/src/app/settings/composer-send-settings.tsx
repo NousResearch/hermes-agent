@@ -360,6 +360,18 @@ export function ComposerSendSettings() {
                   </label>
                 ))}
               </div>
+              {/* Not a situation like the four above: it answers what a press
+                  does while a send is already waiting, not which sends wait. */}
+              <p className="mt-3 border-t border-(--ui-stroke-tertiary) pt-3 text-xs text-(--ui-text-tertiary)">
+                {k.gracePressHint}
+              </p>
+              <label className="mt-2 flex items-center gap-2 text-sm">
+                <Checkbox
+                  checked={prefs.commitOnPress}
+                  onCheckedChange={checked => save({ commitOnPress: checked === true })}
+                />
+                {k.gracePressCommit}
+              </label>
             </PopoverContent>
           </Popover>
         }

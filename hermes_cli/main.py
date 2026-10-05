@@ -3562,8 +3562,10 @@ def main():
             _warn_pending_fleet_restart_on_startup()
         except Exception:
             pass
-        from hermes_cli.update_pause_record import recover as _recover_paused_gateways
-        _recover_paused_gateways()  # a killed `hermes update` left gateways paused (Windows)
+    from hermes_cli.update_pause_record import recover as _recover_paused_gateways
+    # Unconditional: recover() itself skips the PARSED `update`/`gateway run` commands; a raw argv
+    # value equal to "update" (`--resume update`) is no reason to strand paused gateways.
+    _recover_paused_gateways()  # a killed `hermes update` left gateways paused (Windows)
 
     if _first_positional_argv() != "update":
         from hermes_cli.boot_bootstrap import maybe_run_boot_bootstrap

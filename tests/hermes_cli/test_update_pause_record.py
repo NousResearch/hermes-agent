@@ -213,6 +213,26 @@ def test_recovery_never_starts_gateways_under_an_update_that_took_the_checkout(t
     assert out.splitlines()[:1] == ["resume ['default']"], f"the handed-back set was stranded: {out}"
 
 
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.parametrize("argv, recovers", [
+    (["--resume", "update", "--version"], True),  # "update" is a session name here, not the command
+    (["update", "--help"], False),  # the update adopts the set itself
+])
+def test_startup_recovery_follows_the_parsed_command_not_raw_argv(tmp_path, argv, recovers):
+    _orphan(tmp_path, {})  # nothing to start: a recovering launch just retires it
+    cli = _child("""
+        import sys
+        from hermes_cli.main import main
+        sys.argv = ["hermes", *sys.argv[1:]]
+        try:
+            main()
+        except SystemExit:
+            pass
+    """, *argv, env={"HERMES_HOME": str(tmp_path), "HOME": str(tmp_path / "home")})
+    out, _ = cli.communicate(timeout=120)
+    assert (_record_files(tmp_path) == []) is recovers, out
+
+
 _HOLDER = """
     import subprocess, sys, time
     from hermes_cli.update_lock import UpdateLock

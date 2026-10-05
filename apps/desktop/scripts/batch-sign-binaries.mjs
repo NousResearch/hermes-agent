@@ -66,10 +66,13 @@ const TIMESTAMP_URL = 'http://timestamp.digicert.com'
  */
 function execFileAsync(cmd, args, options) {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, options, (error) => {
+    const child = execFile(cmd, args, options, (error) => {
       if (error) reject(error)
       else resolve()
     })
+    // execFile captures output even when passed stdio: 'inherit'.
+    child.stdout?.pipe(process.stdout, { end: false })
+    child.stderr?.pipe(process.stderr, { end: false })
   })
 }
 

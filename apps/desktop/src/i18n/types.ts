@@ -3521,9 +3521,9 @@ export interface Translations {
       notAvailable: string
       failed: string
       noReturn: string
+      owed: (steps: string) => string
     }
-    /** Update-status overlay + version-details (mechanism-aware update UI):
-     * the overlay reads these off t.updates directly. */
+    /** Update-status overlay + version-details (mechanism-aware update UI), read off t.updates directly. */
     appName: string
     version: (value: string) => string
     versionUnavailable: string

@@ -29,6 +29,11 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 
 type ManagedUpdateOutcome = 'updated' | 'update-failed' | 'restore-failed' | 'update-and-restore-failed' | 'refused'
 
+interface ManagedUpdateOwedStep {
+  step: string
+  reason: string
+}
+
 interface ManagedUpdateReceiptSummary {
   correlationId: string
   outcome: string
@@ -39,6 +44,9 @@ interface ManagedUpdateReceiptSummary {
   preVersion?: string
   postVersion?: string
   stopReason?: string
+  // Post-commit steps a successful update still owes (contract C3).
+  followups?: ManagedUpdateOwedStep[]
+  userAction?: ManagedUpdateOwedStep | null
 }
 
 interface ManagedUpdateScopeResult {
@@ -57,6 +65,8 @@ interface ManagedConnectionUpdateResult {
   exitCode: null | number
   receipt: ManagedUpdateReceiptSummary | null
   scopes: ManagedUpdateScopeResult[]
+  // Every step a committed update still owes; set only when non-empty.
+  owed?: ManagedUpdateOwedStep[]
   error?: string
   message?: string
   // Set when the connection was deliberately not attempted (a known safety
@@ -427,12 +437,15 @@ def receipt():
         if payload.get('outcome')=='running' or not payload.get('finished_at'):continue
         pre=payload.get('pre_update') if isinstance(payload.get('pre_update'),dict) else {}
         post=payload.get('post_update') if isinstance(payload.get('post_update'),dict) else {}
+        action=payload.get('user_action')
         return {
             'correlationId':correlation,'outcome':str(payload.get('outcome') or 'unknown'),
             'startedAt':payload.get('started_at'),'finishedAt':payload.get('finished_at'),
             'preSha':pre.get('sha'),'postSha':post.get('sha'),
             'preVersion':pre.get('version'),'postVersion':post.get('version'),
             'stopReason':payload.get('stop_reason'),
+            'followups':[{'step':str(f.get('step')),'reason':str(f.get('reason') or '')} for f in payload.get('followups') or [] if isinstance(f,dict)],
+            'userAction':{'step':str(action.get('step')),'reason':str(action.get('reason') or '')} if isinstance(action,dict) else None,
         }
     return None
 
@@ -481,6 +494,50 @@ function buildRemoteUpdateObservationCommand(target: RemoteUpdateTarget, correla
   return `python3 -c ${shq(OBSERVATION_SCRIPT)} ${shq(home)} ${shq(correlation)}`
 }
 
+function owedStep(value: any): ManagedUpdateOwedStep | null {
+  return value && typeof value === 'object' ? { step: String(value.step), reason: String(value.reason ?? '') } : null
+}
+
+// An older remote observer omits the debt fields: read them as none.
+function withReceiptDebt(receipt: any): ManagedUpdateReceiptSummary {
+  const followups = Array.isArray(receipt.followups) ? receipt.followups.map(owedStep).filter(Boolean) : []
+
+  return { ...receipt, followups, userAction: owedStep(receipt.userAction) }
+}
+
+// C3: a committed update is a success even when post-commit steps are owed;
+// name each one and its remedy instead of claiming everything is ready.
+function managedUpdateMessage(
+  outcome: ManagedUpdateOutcome,
+  restoreOk: boolean,
+  receipt: ManagedUpdateReceiptSummary | undefined
+): { owed?: ManagedUpdateOwedStep[]; message: string } {
+  if (outcome !== 'updated') {
+    return {
+      message: restoreOk
+        ? 'The remote update failed, but every managed SSH profile was restored.'
+        : 'The remote update transaction could not restore every managed SSH profile.'
+    }
+  }
+
+  const followups = receipt?.followups ?? []
+  const userAction = receipt?.userAction
+  const owed = [...followups, ...(userAction ? [userAction] : [])]
+
+  if (!owed.length) {
+    return { message: 'Remote Hermes updated and every managed SSH profile is ready.' }
+  }
+
+  const message =
+    'Remote Hermes updated, but these steps are still owed: ' +
+    owed.map(step => (step.reason ? `${step.step} (${step.reason})` : step.step)).join('; ') +
+    '.' +
+    (followups.length ? ' Re-run `hermes update` on the remote to finish them.' : '') +
+    (userAction?.reason ? ` ${userAction.reason}` : '')
+
+  return { owed, message }
+}
+
 function parseRemoteUpdateObservation(raw: string, correlationId: string): RemoteUpdateObservation {
   const correlation = validateCorrelationId(correlationId)
   let parsed: any
@@ -526,7 +583,7 @@ function parseRemoteUpdateObservation(raw: string, correlationId: string): Remot
       throw new Error('Remote update receipt did not match this transaction.')
     }
 
-    receipt = parsed.receipt as ManagedUpdateReceiptSummary
+    receipt = withReceiptDebt(parsed.receipt)
   }
 
   let coordinatorReady: RemoteUpdateObservation['coordinatorReady'] = null
@@ -938,12 +995,7 @@ async function runManagedSshUpdate<TScope extends ManagedSshScope>(
     receipt: proof?.receipt ?? null,
     scopes: restoreResults,
     ...(error ? { error } : {}),
-    message:
-      outcome === 'updated'
-        ? 'Remote Hermes updated and every managed SSH profile is ready.'
-        : restoreOk
-          ? 'The remote update failed, but every managed SSH profile was restored.'
-          : 'The remote update transaction could not restore every managed SSH profile.'
+    ...managedUpdateMessage(outcome, restoreOk, proof?.receipt)
   }
 }
 
@@ -1180,6 +1232,7 @@ export {
   managedSshUpdateAllRow,
   type ManagedUpdateDeps,
   type ManagedUpdateOutcome,
+  type ManagedUpdateOwedStep,
   type ManagedUpdateReceiptSummary,
   type ManagedUpdateScopeResult,
   markerIsClear,

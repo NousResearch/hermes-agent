@@ -1487,6 +1487,58 @@ describe('applyBackendUpdate recovery', () => {
     expect(result.ok).toBe(false)
     expect($backendUpdateApply.get().stage).toBe('error')
   }, 10000)
+
+  it('reports a committed update with owed follow-ups as success plus an owed-step warning', async () => {
+    updateHermesSpy.mockResolvedValue({ action_id: 'e'.repeat(32), ok: true, name: 'hermes-update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue({
+      exit_code: 0,
+      lines: ['Update complete!'],
+      name: 'hermes-update',
+      pid: null,
+      running: false,
+      receipt: { outcome: 'success', followups: [{ step: 'dependencies', reason: 'sync failed' }], user_action: null }
+    })
+    notifySpy.mockClear()
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+    const result = await promise
+
+    expect(result).toMatchObject({ ok: true })
+    expect(result.message).toContain('dependencies (sync failed)')
+    expect(notifySpy).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'warning', message: expect.stringContaining('dependencies (sync failed)') })
+    )
+  })
+
+  it("never lets another action's receipt certify this update", async () => {
+    const receipt = (actionId: string) => ({
+      exit_code: null,
+      lines: [],
+      name: 'hermes-update',
+      pid: null,
+      running: false,
+      receipt: {
+        action_id: actionId,
+        outcome: 'success',
+        started_at: new Date().toISOString(),
+        finished_at: new Date().toISOString(),
+        followups: [],
+        user_action: null
+      }
+    })
+
+    updateHermesSpy.mockResolvedValue({ action_id: 'b'.repeat(32), ok: true, name: 'hermes-update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue(receipt('a'.repeat(32)))
+    const foreign = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(6 * 60 * 1000 + 1500)
+    await expect(foreign).resolves.toMatchObject({ ok: false })
+
+    getActionStatusSpy.mockResolvedValue(receipt('b'.repeat(32)))
+    const own = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+    await expect(own).resolves.toMatchObject({ ok: true })
+  })
 })
 
 describe('startUpdatePoller', () => {

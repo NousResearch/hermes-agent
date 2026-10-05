@@ -22,7 +22,7 @@ import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connec
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $connection } from '@/store/session'
-import type { BackendUpdateCheckResponse } from '@/types/hermes'
+import type { BackendUpdateCheckResponse, UpdateReceiptSummary } from '@/types/hermes'
 
 /** Keyed per retired-channel revision: a new retirement (or a revision bump on
  *  the same channel) re-shows the notice, a plain re-check never does. */
@@ -747,7 +747,15 @@ const BACKEND_ACTION_POLL_MS = 1500
 const BACKEND_ACTION_MAX_MS = 6 * 60 * 1000
 const BACKEND_RETURN_MAX_MS = 4 * 60 * 1000
 
-function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
+// C3: a committed update succeeds even when post-commit steps are still owed.
+// Name every owed step (and its reason) instead of reporting plain success.
+function owedSteps(receipt: UpdateReceiptSummary | undefined): string {
+  return [...(receipt?.followups ?? []), ...(receipt?.user_action ? [receipt.user_action] : [])]
+    .map(step => (step.reason ? `${step.step} (${step.reason})` : step.step))
+    .join('; ')
+}
+
+function finishBackendApply(returned: boolean, receipt?: UpdateReceiptSummary): DesktopUpdateApplyResult {
   if (returned) {
     $backendUpdateApply.set(IDLE)
     setUpdateOverlayOpen(false)
@@ -765,6 +773,14 @@ function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
     // affordance in remote mode targets the backend, so nothing ever told
     // them the app itself was stale). Nudge with a one-click client update.
     void maybeNudgeClientAfterBackendUpdate()
+    const owed = owedSteps(receipt)
+
+    if (owed) {
+      const message = translateNow('updates.applyStatus.owed', owed)
+      notify({ durationMs: 0, kind: 'warning', message })
+
+      return { ok: true, message }
+    }
 
     return { ok: true, message: 'Backend update applied.' }
   }
@@ -813,7 +829,11 @@ function completedAfterRestart(
  *  run started at-or-after we kicked the update off counts — an older
  *  receipt describes a previous update, and a still-running one proves
  *  nothing yet. The 60s slack absorbs client/backend clock skew. */
-function receiptProvesOutcome(status: Awaited<ReturnType<typeof getActionStatus>>, applyStartedAtMs: number): boolean {
+function receiptProvesOutcome(
+  status: Awaited<ReturnType<typeof getActionStatus>>,
+  applyStartedAtMs: number,
+  actionId: string | undefined
+): boolean {
   const receipt = status.receipt
 
   if (!receipt || !receipt.finished_at || !receipt.started_at) {
@@ -822,6 +842,12 @@ function receiptProvesOutcome(status: Awaited<ReturnType<typeof getActionStatus>
 
   if (receipt.outcome !== 'success' && receipt.outcome !== 'partial' && receipt.outcome !== 'failed') {
     return false
+  }
+
+  // A backend that records the writing action (null for a CLI run) proves
+  // identity directly: another action's success cannot certify this one.
+  if (actionId && receipt.action_id !== undefined) {
+    return receipt.action_id === actionId
   }
 
   const startedMs = Date.parse(receipt.started_at)
@@ -929,15 +955,15 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       }
 
       if (last.exit_code === 0 || (last.exit_code === null && completedAfterRestart(last, started.action_id))) {
-        return finishBackendApply(true)
+        return finishBackendApply(true, last.receipt)
       }
 
       // #91277 bullet 3: the backend now attaches the durable update
       // receipt to the status. A receipt whose run STARTED after we kicked
       // this update off is authoritative — read its outcome instead of
       // inferring from log markers or timing out across the restart gap.
-      if (last.exit_code === null && receiptProvesOutcome(last, applyStartedAtMs)) {
-        return finishBackendApply(last.receipt!.outcome === 'success')
+      if (last.exit_code === null && receiptProvesOutcome(last, applyStartedAtMs, started.action_id)) {
+        return finishBackendApply(last.receipt!.outcome === 'success', last.receipt)
       }
 
       if (!started.action_id && last.exit_code === null) {

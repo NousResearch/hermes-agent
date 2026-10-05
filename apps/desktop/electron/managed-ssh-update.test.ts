@@ -508,6 +508,69 @@ test.runIf(process.platform !== 'win32')(
 )
 
 test.runIf(process.platform !== 'win32')(
+  'a committed update that still owes a step stays a success but names the owed step',
+  async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-owed-'))
+
+    const run = async (followups: unknown[]) => {
+      const receipts = path.join(home, 'logs', 'update_receipts')
+      await mkdir(receipts, { recursive: true })
+      await writeFile(path.join(home, `.update_exit_code.${CORRELATION}`), '0')
+      await writeFile(
+        path.join(receipts, 'update_x.json'),
+        JSON.stringify({
+          correlation_id: CORRELATION,
+          outcome: 'success',
+          started_at: '2026-08-23T00:00:00Z',
+          finished_at: '2026-08-23T00:01:00Z',
+          followups
+        })
+      )
+
+      const command = buildRemoteUpdateObservationCommand(
+        { ssh: { exec: async () => '' }, platform: 'Linux', hermesPath: '/opt/hermes/hermes', hermesHome: home },
+        CORRELATION
+      )
+
+      const observed = parseRemoteUpdateObservation((await exec(command, { shell: 'sh' })).stdout, CORRELATION)
+
+      return runManagedSshUpdate({
+        connectionId: 'home',
+        correlationId: CORRELATION,
+        scopes: [{ key: 'conn:home::default', profile: 'default' }],
+        preflightRemote: async () => {},
+        drainScope: async () => {},
+        updateRemote: async () => ({ exitCode: observed.exitCode!, receipt: observed.receipt! }),
+        awaitRestoreClearance: async () => {},
+        closeTransports: async () => {},
+        restoreScope: async () => {},
+        releaseGate: () => {}
+      })
+    }
+
+    try {
+      const owed = await run([{ step: 'dependencies', reason: 'sync failed', at: '2026-08-23T00:01:00Z' }])
+
+      assert.equal(owed.ok, true)
+      assert.equal(owed.updateOk, true)
+      assert.equal(owed.restoreOk, true)
+      assert.deepEqual(owed.owed, [{ step: 'dependencies', reason: 'sync failed' }])
+      assert.match(owed.message || '', /still owed: dependencies \(sync failed\)/)
+      assert.match(owed.message || '', /hermes update/)
+      assert.match(managedSshUpdateAllRow({ id: 'home' }, owed).detail || '', /dependencies/)
+
+      const clean = await run([])
+
+      assert.equal(clean.ok, true)
+      assert.equal(clean.owed, undefined)
+      assert.equal(clean.message, 'Remote Hermes updated and every managed SSH profile is ready.')
+    } finally {
+      await rm(home, { force: true, recursive: true })
+    }
+  }
+)
+
+test.runIf(process.platform !== 'win32')(
   'managed observer unwraps a named profile home for the install-wide marker',
   async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-profile-marker-'))

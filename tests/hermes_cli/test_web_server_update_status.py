@@ -119,3 +119,35 @@ class TestUpdateStatusRootLog:
         # The attached receipt names its writer: B's own when it exists, else A's (never B's).
         assert data["receipt"]["action_id"] == (b_id if b_outcome else a_id)
         assert data["receipt"]["outcome"] == (b_outcome or "success")
+
+    @pytest.mark.parametrize("debt", ["none", "followups", "user_action"])
+    def test_status_receipt_carries_owed_steps_of_a_committed_update(self, monkeypatch, tmp_path, debt):
+        # C3: owed post-commit steps keep the run a success (exit 0); the summary must still name
+        # them so the dashboard and Desktop report the debt instead of plain success.
+        from hermes_cli import update_receipt
+
+        root, action_id = tmp_path / "root", "c" * 32
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "coder"))
+        monkeypatch.setenv("HERMES_ACTION_ID", action_id)
+        update_receipt.begin_update_receipt()
+        if debt == "followups":
+            update_receipt.record_followup("dependencies", "synthetic selected-interpreter sync failed")
+            update_receipt.record_followup("config_migration", "disk full")
+        elif debt == "user_action":
+            update_receipt.record_user_action("autostash", "re-apply the parked stash")
+        update_receipt.finalize_update_receipt("success")
+        (tmp_path / "hermes-update.log").write_text(
+            f"=== hermes-update started 2026-08-17 11:19:34 {action_id} ===\n", encoding="utf-8")
+        monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path)
+        for registry in ("_ACTION_PROCS", "_ACTION_RESULTS", "_ACTION_COMMANDS", "_ACTION_IDS"):
+            monkeypatch.setattr(_web_server_gateway, registry, {})
+
+        data = self.client.get("/api/actions/hermes-update/status?lines=2000").json()
+
+        receipt = data["receipt"]
+        assert [f["step"] for f in receipt["followups"]] == (
+            ["dependencies", "config_migration"] if debt == "followups" else [])
+        assert receipt["user_action"] == (
+            {"step": "autostash", "reason": "re-apply the parked stash"} if debt == "user_action" else None)
+        # Debt never changes the C3 exit mapping: owed follow-ups stay exit 0, a user action is partial.
+        assert data["exit_code"] == (1 if debt == "user_action" else 0)

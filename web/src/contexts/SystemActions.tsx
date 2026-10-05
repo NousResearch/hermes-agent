@@ -9,6 +9,13 @@ import {
   type SystemAction,
 } from "./system-actions-context";
 
+// hermes-update status only: the receipt summary's owed post-commit steps (a committed update is
+// exit 0 even while they are owed).
+interface ReceiptDebt {
+  followups?: { step: string; reason: string }[];
+  user_action?: { step: string; reason: string } | null;
+}
+
 const ACTION_NAMES: Record<SystemAction, string> = {
   restart: "gateway-restart",
   update: "hermes-update",
@@ -51,12 +58,20 @@ export function SystemActionsProvider({
               ? sharedGatewayProfiles(await api.getStatus().catch(() => null))
               : null;
           if (cancelled) return;
+          // C3: exit 0 with owed post-commit steps is still a success, but name what is owed.
+          const receipt = (resp as ActionStatusResponse & { receipt?: ReceiptDebt }).receipt;
+          const owed = [
+            ...(receipt?.followups ?? []),
+            ...(receipt?.user_action ? [receipt.user_action] : []),
+          ].map((step) => step.step);
           setToast({
-            type: ok ? "success" : "error",
+            type: ok && !owed.length ? "success" : "error",
             message: ok
               ? shared
                 ? sharedGatewayRestartedMessage(shared.length)
-                : t.status.actionFinished
+                : owed.length
+                  ? `${t.status.actionFinishedOwed}: ${owed.join(", ")}`
+                  : t.status.actionFinished
               : `${t.status.actionFailed} (exit ${resp.exit_code ?? "?"})`,
           });
           return;
@@ -71,7 +86,7 @@ export function SystemActionsProvider({
     return () => {
       cancelled = true;
     };
-  }, [activeAction, t.status.actionFinished, t.status.actionFailed]);
+  }, [activeAction, t.status.actionFinished, t.status.actionFinishedOwed, t.status.actionFailed]);
 
   const runAction = useCallback(
     async (action: SystemAction) => {

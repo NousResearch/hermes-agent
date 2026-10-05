@@ -450,6 +450,11 @@ def _latest_update_receipt_summary(action_id: Optional[str] = None) -> Optional[
             "pre_sha": (receipt.get("pre_update") or {}).get("sha"),
             "post_sha": post.get("sha"), "post_version": post.get("version"),
             "fleet_states": sorted({str(e.get("state")) for e in receipt.get("fleet") or [] if isinstance(e, dict)}),
+            # C3: a committed run is ``success`` even while post-commit steps are owed; carry them
+            # so a client reports the owed step and its remedy instead of plain success.
+            "followups": [{"step": str(f.get("step")), "reason": str(f.get("reason") or "")}
+                          for f in receipt.get("followups") or [] if isinstance(f, dict)],
+            "user_action": receipt.get("user_action") if isinstance(receipt.get("user_action"), dict) else None,
         }
     except Exception:
         return None

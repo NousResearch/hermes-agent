@@ -1232,6 +1232,8 @@ export interface DesktopManagedUpdateReceipt {
   preVersion?: string
   postVersion?: string
   stopReason?: string
+  followups?: Array<{ step: string; reason: string }>
+  userAction?: { step: string; reason: string } | null
 }
 
 export interface DesktopManagedConnectionUpdateResult {
@@ -1244,6 +1246,8 @@ export interface DesktopManagedConnectionUpdateResult {
   exitCode: number | null
   receipt: DesktopManagedUpdateReceipt | null
   scopes: Array<{ profile: string; restored: boolean; error?: string }>
+  /** Post-commit steps a successful update still owes (named in `message`). */
+  owed?: Array<{ step: string; reason: string }>
   error?: string
   message?: string
 }

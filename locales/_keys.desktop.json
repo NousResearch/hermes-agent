@@ -4697,6 +4697,7 @@
     "updates.applyStatus.failed",
     "updates.applyStatus.noReturn",
     "updates.applyStatus.notAvailable",
+    "updates.applyStatus.owed",
     "updates.applyStatus.preparing",
     "updates.applyStatus.pulling",
     "updates.applyStatus.restarting",

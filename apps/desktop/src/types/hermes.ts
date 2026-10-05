@@ -1557,6 +1557,11 @@ export interface UpdateReceiptSummary {
   post_sha: string | null
   post_version: string | null
   fleet_states: string[]
+  /** Post-commit steps a committed (successful) update still owes. */
+  followups?: Array<{ step: string; reason: string }>
+  user_action?: { step: string; reason: string } | null
+  /** Dashboard action that wrote the receipt; null for a CLI-run update. */
+  action_id?: string | null
 }
 
 export interface ActionStatusResponse {

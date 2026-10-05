@@ -4384,14 +4384,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Drop merged prior-tail content up to the delimiter so it never leaks into the next prompt.
         if _MERGED_SUMMARY_DELIMITER in text:
             text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].strip()
-        for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES):
+        # Exact prefixes first; the bare marker last catches an adopted paraphrased echo (#132934).
+        for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES, _HANDOFF_MARKER_PREFIX):
             if text.startswith(prefix):
                 text = text[len(prefix):].lstrip()
                 break
-        else:
-            # Paraphrased echo adopted as a summary: drop the bare marker so it is not re-wrapped.
-            if text.startswith(_HANDOFF_MARKER_PREFIX):
-                text = text[len(_HANDOFF_MARKER_PREFIX):].lstrip()
         # Strip the end marker (re-appended on insertion); forced merged summaries may keep
         # live tail content after it, so truncate at the marker wherever it sits.
         marker_idx = text.find(_SUMMARY_END_MARKER)

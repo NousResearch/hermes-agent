@@ -82,3 +82,35 @@ def test_merges_down_to_the_target_without_losing_objects(clone: tuple[Path, str
     assert _packs(repo)[0].with_suffix(".promisor").exists()
     assert _git("cat-file", "-t", side, cwd=repo, env=_OFFLINE) == "commit"
     assert _git("cat-file", "-p", "HEAD:f3.txt", cwd=repo, env=_OFFLINE) == "v3"
+
+
+def test_a_pack_that_will_not_unlink_stays_whole_or_is_finished_later(clone: tuple[Path, str],
+                                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    repo, side = clone
+    pack_dir = repo / ".git" / "objects" / "pack"
+    _git("multi-pack-index", "write", cwd=repo)
+    real_unlink = Path.unlink
+    locked = {".pack"}  # a reader holds the payload (Windows refuses to unlink a mapped file)
+
+    def unlink(self: Path, missing_ok: bool = False) -> None:
+        if self.parent == pack_dir and self.suffix in locked:
+            raise PermissionError(13, "in use", str(self))
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    before = _packs(repo)
+    assert tidy.tidy_partial_clone_packs(repo).erased == 0
+    assert _packs(repo) == before and all(p.with_suffix(".idx").exists() for p in before), "a failed unlink changed a pack"
+
+    locked.clear()
+    locked.add(".promisor")  # now the payload goes and a later part sticks
+    tidy.tidy_partial_clone_packs(repo)
+    assert not list(pack_dir.glob("multi-pack-index*")), "the multi-pack-index still names erased packs"
+    assert _git("cat-file", "-t", side, cwd=repo, env=_OFFLINE) == "commit"
+    assert _git("rev-list", "--count", "HEAD", cwd=repo, env=_OFFLINE) == "6"
+    assert any(not p.with_suffix(".pack").exists() for p in pack_dir.glob("pack-*.promisor"))
+
+    locked.clear()
+    tidy.tidy_partial_clone_packs(repo)
+    assert all(p.with_suffix(".pack").exists() for p in pack_dir.glob("pack-*.*") if p.suffix != ".pack"), \
+        "leftovers of an interrupted erase survived the retry"

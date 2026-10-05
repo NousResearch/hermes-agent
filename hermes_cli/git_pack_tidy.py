@@ -46,7 +46,9 @@ _MERGE_BATCH_BYTES = 256 * 1024 * 1024
 # goes stale) and the merge batch size, halved after a merge that ran out of time. Remembering both
 # is what guarantees progress: no update repeats work an earlier one could not finish.
 _STATE_FILE = "hermes-pack-tidy.json"
-_PACK_SUFFIXES = (".idx", ".pack", ".rev", ".bitmap", ".mtimes", ".promisor", ".keep")
+# Payload first: git loads a pack only when both .idx and .pack exist, so once .pack is gone the pack is
+# gone for git, and a failure on .pack itself (a reader still maps it on Windows) changes nothing.
+_PACK_SUFFIXES = (".pack", ".idx", ".rev", ".bitmap", ".mtimes", ".promisor", ".keep")
 
 
 @dataclass
@@ -95,7 +97,10 @@ def _holds_commits(repo_root: Path, pack: Path, timeout: float) -> bool:
 
 
 def _remove_pack(pack: Path) -> int:
-    """Delete one pack's files, index first so git stops seeing it; returns the bytes freed."""
+    """Delete one pack's files, payload first; returns the bytes freed.
+
+    Raises on the first part that will not go. Leftovers after the payload are invisible to git and
+    :func:`_sweep_remnants` retries them on a later run."""
     freed = 0
     for suffix in _PACK_SUFFIXES:
         part = pack.with_suffix(suffix)
@@ -108,6 +113,18 @@ def _remove_pack(pack: Path) -> int:
         except FileNotFoundError:
             continue
     return freed
+
+
+def _sweep_remnants(pack_dir: Path) -> None:
+    """Finish deletions an earlier run could not complete: pack files whose payload is already gone."""
+    cutoff = time.time() - _MIN_PACK_AGE_SECONDS  # index-pack writes .promisor/.keep before its .pack
+    for part in pack_dir.glob("pack-*.*"):
+        try:
+            if part.suffix in _PACK_SUFFIXES[1:] and not part.with_suffix(".pack").exists() \
+                    and part.stat().st_mtime < cutoff:
+                _remove_pack(part)
+        except OSError:
+            logger.debug("pack remnant %s still in use", part.name, exc_info=True)
 
 
 def _load_state(pack_dir: Path) -> dict:
@@ -156,7 +173,7 @@ def _erase_on_demand_packs(repo_root: Path, pack_dir: Path, deadline: float, res
             result.freed_bytes += _remove_pack(pack)
             result.erased += 1
         except OSError as exc:
-            logger.warning("Could not erase on-demand pack %s (skipping): %s", pack.name, exc)
+            logger.warning("Could not erase on-demand pack %s (a later update retries): %s", pack.name, exc)
 
 
 def _merge_smallest_packs(repo_root: Path, pack_dir: Path, deadline: float, result: TidyResult,
@@ -201,7 +218,10 @@ def _merge_smallest_packs(repo_root: Path, pack_dir: Path, deadline: float, resu
                     os.replace(new.with_suffix(suffix), pack_dir / (new.name + suffix))
             for pack in batch:
                 if pack.stem != new.name:
-                    _remove_pack(pack)
+                    try:
+                        _remove_pack(pack)
+                    except OSError as exc:  # its objects are in the merged pack; a later run retries
+                        logger.warning("Could not retire merged pack %s: %s", pack.name, exc)
             result.merged += len(batch)
         finally:
             shutil.rmtree(staging, ignore_errors=True)
@@ -218,16 +238,18 @@ def tidy_partial_clone_packs(repo_root: Path, *, budget_seconds: float = TIDY_BU
             return result
         deadline = time.monotonic() + budget_seconds
         state = _load_state(pack_dir)
+        before = {p.name for p in pack_dir.glob("pack-*.pack")}
         try:
+            _sweep_remnants(pack_dir)
             _erase_on_demand_packs(repo_root, pack_dir, deadline, result, state["commits"])
             if not result.out_of_time:
                 _merge_smallest_packs(repo_root, pack_dir, deadline, result, state)
         finally:
             _save_state(pack_dir, state)
-        if result.erased or result.merged:
-            # A multi-pack-index names the packs it covers; git rebuilds one on its own maintenance.
-            for midx in pack_dir.glob("multi-pack-index*"):
-                midx.unlink(missing_ok=True)
+            if before - {p.name for p in pack_dir.glob("pack-*.pack")}:
+                # A multi-pack-index names the packs it covers; git rebuilds one on its own maintenance.
+                for midx in pack_dir.glob("multi-pack-index*"):
+                    midx.unlink(missing_ok=True)
         result.packs_left = len(list(pack_dir.glob("pack-*.pack")))
     except Exception:
         logger.warning("partial-clone pack tidy failed in %s", repo_root, exc_info=True)

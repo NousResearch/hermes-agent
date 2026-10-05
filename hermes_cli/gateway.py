@@ -5246,7 +5246,7 @@ def _install_systemd_from_cli(args, *, force: bool, system: bool, run_as_user) -
 def _cmd_install(args):
     if is_managed():
         managed_error("install gateway service")
-        return
+        sys.exit(1)
     if getattr(args, "if_missing", False) and _is_service_installed():
         print("✓ Gateway service already installed")
         return
@@ -5279,7 +5279,7 @@ def _cmd_uninstall(args):
     _refuse_from_inside_gateway("uninstall", "the gateway from terminating itself")
     if is_managed():
         managed_error("uninstall gateway service")
-        return
+        sys.exit(1)
     system = getattr(args, "system", False)
     if _service_mgmt_blocked():
         _no_backend_exit("uninstall", "termux")

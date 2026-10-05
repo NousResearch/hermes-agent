@@ -348,9 +348,17 @@ for _provider, _alias, _canonical in (
 del _provider, _alias, _canonical
 
 
+_CURRENCY_PREFIX_RE = re.compile(r"^\s*[$€£¥]\s*")
+
+
 def _to_decimal(value: Any) -> Optional[Decimal]:
     try:
-        return None if value is None else Decimal(str(value))
+        if value is None:
+            return None
+        # Strip a leading currency symbol: OpenAI-compatible ``/models`` endpoints may publish
+        # rates as "$0.0000006", which Decimal() rejects outright. A comma is deliberately left
+        # in place so a malformed quote fails to parse (→ None) rather than reading as another number.
+        return Decimal(_CURRENCY_PREFIX_RE.sub("", str(value)).strip())
     except Exception:
         return None
 

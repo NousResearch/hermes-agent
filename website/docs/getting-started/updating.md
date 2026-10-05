@@ -182,9 +182,10 @@ downloads every one of their trees. Leave those settings alone, and leave `gc.au
 default so git's own automatic gc can still fold packs.
 
 Each `hermes update` also spends at most 60 seconds cleaning those packs up, picking up where the
-previous update stopped. It first deletes on-demand packs that hold no commits (git downloads
-anything it needs from them again), then merges the smallest remaining packs while there are more
-than 50. A pack that holds commits is never deleted, because a branch may point into it. To fold
+previous update stopped. It deletes packs whose every object is also stored in another pack, then
+merges the smallest remaining packs while there are more than 50. Nothing stored locally is ever
+lost, and nothing depends on GitHub still serving it. Packs that a killed `git fetch` left pinned
+with a `.keep` file are included; git's own repack never touches those. To fold
 everything at once by hand instead (with Hermes closed; on a large checkout this is a full repack
 that can run for many minutes):
 

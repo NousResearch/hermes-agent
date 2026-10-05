@@ -736,12 +736,10 @@ def _slash_args(cmd: str) -> str:
 
 
 def _ensure_skill_commands() -> dict:
-    global _skill_commands
-    if _skill_commands is None:
-        from agent.skill_commands import scan_skill_commands
-
-        _skill_commands = scan_skill_commands()
-    return _skill_commands
+    if _skill_commands is not None:
+        return _skill_commands
+    from agent.skill_commands import get_interactive_skill_commands
+    return get_interactive_skill_commands()
 
 
 def get_skill_commands() -> dict:
@@ -1044,8 +1042,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             return
         skills_prompt, loaded_skills, missing_skills = result
         if missing_skills:
-            missing_display = ", ".join(missing_skills)
-            from agent.skill_commands import is_advisory_skill
+            from agent.skill_commands import format_missing_skills, is_advisory_skill
 
             # A typo'd name must not crash a kanban worker; only a fully-missing set fails loudly.
             # An ADVISORY name (an injected review skill, or a card skill the dispatcher could not
@@ -1055,14 +1052,13 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             fatal_missing = [name for name in missing_skills if not is_advisory_skill(name)]
             if loaded_skills or not fatal_missing:
                 logger.warning(
-                    "Unknown skill(s) requested, skipping: %s. "
-                    "Continuing with: %s. "
+                    "Skipping %s. Continuing with: %s. "
                     "List available skills with `hermes skills list`.",
-                    missing_display,
+                    format_missing_skills(missing_skills),
                     ", ".join(loaded_skills) or "no preloaded skills",
                 )
             else:
-                raise ValueError(f"Unknown skill(s): {missing_display}")
+                raise ValueError(format_missing_skills(fatal_missing))
         if skills_prompt:
             self.system_prompt = "\n\n".join(p for p in (self.system_prompt, skills_prompt) if p).strip()
         self.preloaded_skills += [name for name in loaded_skills if name not in self.preloaded_skills]
@@ -1341,7 +1337,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         """``/<skill> ...``; stacked ``/skill-a /skill-b do XYZ`` loads every leading skill (up to 5)."""
         from agent.skill_commands import build_stacked_skill_invocation_message, split_stacked_skill_commands
 
-        extra_keys, user_instruction = split_stacked_skill_commands(rest)
+        # Interactive surface: stacked tokens resolve against the interactive
+        # map so plugin skills stack in the CLI like native skills.
+        extra_keys, user_instruction = split_stacked_skill_commands(rest, interactive=True)
         if extra_keys:
             stacked_result = build_stacked_skill_invocation_message(
                 [base_cmd, *extra_keys], user_instruction, task_id=self.session_id,

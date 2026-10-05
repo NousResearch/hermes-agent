@@ -78,13 +78,16 @@ def build_models_payload(
     capabilities: bool = False, featured: bool = False, force_fresh_nous_tier: bool = False,
     refresh: bool = False, probe_custom_providers: bool = True, probe_current_custom_provider: bool = False,
     for_picker: bool = False, max_models: int | None = None, non_blocking_catalogs: bool = False,
+    fast_custom_probe: bool | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer needs. ``explicit_only`` keeps
     only providers the user explicitly configured — hides ambient/auto-seeded credentials from
     desktop chat pickers. ``pricing_cache_only``: with ``pricing``, use only values already resident
     in process caches (normal picker opens, while a background worker warms cold endpoints).
     ``non_blocking_catalogs``: provider catalogs come from the disk cache only — a degraded provider
-    cannot stall the response (GUI picker opens)."""
+    cannot stall the response (GUI picker opens). ``fast_custom_probe`` overrides the
+    custom-endpoint discovery budget ``for_picker`` otherwise implies (1.5s vs 5s) — ``None`` keeps
+    the coupling, ``False`` retains the full 5s budget (#103843)."""
     from hermes_cli.model_switch import list_authenticated_providers
 
     rows = list_authenticated_providers(
@@ -94,7 +97,7 @@ def build_models_payload(
         max_models=max_models, refresh=refresh, probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider, for_picker=for_picker,
         excluded_providers=ctx.excluded_providers or [],
-        non_blocking_catalogs=non_blocking_catalogs,
+        non_blocking_catalogs=non_blocking_catalogs, fast_custom_probe=fast_custom_probe,
     )
 
     # Managed local runtime: staged GGUFs are selectable like any provider's models, but
@@ -228,19 +231,81 @@ def build_model_options_payload(
 
     A normal open (``refresh=False``) is a READ path: provider catalogs come from the disk cache
     only and stale/missing ones warm in the background, so a degraded provider (hanging endpoint,
-    failed auth probe) delays neither the other providers' rows nor the response (#114215)."""
+    failed auth probe) delays neither the other providers' rows nor the response (#114215).
+
+    ``for_picker=True`` keeps providers whose credential pool is entirely rate-limited visible:
+    these are human-facing pickers, and hiding a temporarily exhausted pool makes providers vanish
+    mid-session even though another model under the same provider may still work (same contract
+    as ``/model`` and the aux pickers, #66584 / #66624). Visibility only: ``fast_custom_probe=False``
+    keeps the live probe of the current custom endpoint on its full 5s discovery budget."""
     refresh = bool(refresh)
     payload = build_models_payload(
         ctx, explicit_only=bool(explicit_only), include_unconfigured=bool(include_unconfigured),
         picker_hints=True, canonical_order=True, pricing=True, pricing_cache_only=not refresh,
-        capabilities=True, featured=True,
+        capabilities=True, featured=True, for_picker=True, fast_custom_probe=False,
         refresh=refresh, probe_custom_providers=refresh, probe_current_custom_provider=not refresh,
         non_blocking_catalogs=not refresh,
     )
+    _apply_limits(payload["providers"])
+    _apply_usage(payload["providers"])
     if not refresh:
         _prewarm_pricing_async(payload["providers"], current_provider=ctx.current_provider,
                                current_base_url=ctx.current_base_url)
     return payload
+
+
+def _apply_limits(rows: list[dict]) -> None:
+    """Attach ``limit`` to rows whose credential pool is rate-limited, so a picker can say why and until
+    when instead of the row just looking broken. Only providers with a persisted pool are read (no
+    seeding), and a pool that fails to load says nothing rather than failing the whole catalog."""
+    import logging
+    from datetime import datetime, timezone
+
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import read_credential_pool
+
+    def iso(epoch: float) -> str:
+        return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+
+    pooled = {slug for slug, entries in read_credential_pool().items() if entries}
+    for row in rows:
+        slug = str(row.get("slug") or "")
+        if slug not in pooled or row.get("is_user_defined"):
+            continue
+        try:
+            state = load_pool(slug).limit_state(row.get("models") or [])
+        except Exception:  # an unreadable pool must not fail the whole catalog
+            logging.getLogger(__name__).debug("Pool limit read failed for %s", slug, exc_info=True)
+            continue
+        if state is None:
+            continue
+        if state["scope"] == "account":
+            row["limit"] = {"scope": "account", "resets_at": iso(state["resets_at"])}
+        else:
+            row["limit"] = {"scope": "models", "models": {m: iso(at) for m, at in state["models"].items()}}
+
+
+def _apply_usage(rows: list[dict]) -> None:
+    """Attach ``usage`` (subscription windows: % spent + reset) to signed-in rows that can report it,
+    from the cache only, and ask for a background refresh, so the picker never waits on a usage API
+    and a chip can warn before the wall instead of at it."""
+    from agent.account_usage_cache import cached_account_usage, has_account_usage, refresh_account_usage_async
+
+    wanted: list[str] = []
+    for row in rows:
+        slug = str(row.get("slug") or "")
+        if not slug or row.get("is_user_defined") or row.get("authenticated") is False or not has_account_usage(slug):
+            continue
+        wanted.append(slug)
+        snapshot = cached_account_usage(slug)
+        windows = [
+            {"label": w.label, "used_percent": float(w.used_percent),
+             "resets_at": w.reset_at.isoformat() if w.reset_at else None}
+            for w in (snapshot.windows if snapshot else ()) if w.used_percent is not None
+        ]
+        if windows:
+            row["usage"] = {"windows": windows}
+    refresh_account_usage_async(wanted)
 
 
 # ─── Public: auxiliary-task pickers ─────────────────────────────────────
@@ -319,7 +384,7 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
     serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
     is deliberately NOT forwarded — it under-reports levels that work."""
-    from hermes_cli.models import model_supports_fast_mode
+    from hermes_cli.models import model_supports_ultrafast, resolve_fast_mode_overrides
 
     try:
         from agent.models_dev import get_model_capabilities
@@ -330,7 +395,6 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
         slug = row.get("slug") or ""
         caps: dict[str, dict[str, Any]] = {}
         read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
-
         for model in row.get("models") or []:
             reasoning = True
             if get_model_capabilities is not None and slug:
@@ -341,7 +405,11 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
                 except Exception:
                     reasoning = True
 
-            entry: dict[str, Any] = {"fast": bool(model_supports_fast_mode(model)), "reasoning": reasoning}
+            fast = resolve_fast_mode_overrides(
+                model, provider=slug, base_url=row.get("api_url")) is not None
+            entry: dict[str, Any] = {"fast": fast, "reasoning": reasoning}
+            if fast and model_supports_ultrafast(model):
+                entry["ultrafast"] = True
 
             if reasoning and read_reasoning_catalog is not None:
                 try:
@@ -366,17 +434,32 @@ _FEATURED_PER_LAB = 5
 
 
 def _apply_featured(rows: list[dict], *, metadata_config: dict | None = None) -> None:
-    """Attach a ``featured_models`` shortlist to each aggregator row: newest ``_FEATURED_PER_LAB`` per
-    vendor by models.dev ``release_date`` (ranked within the row, never vs. today, so it is stable);
-    ties keep curated order. Non-aggregators get an empty list and keep top-N behaviour."""
+    """Attach a ``featured_models`` shortlist to each routing-aggregator row: newest
+    ``_FEATURED_PER_LAB`` per vendor by models.dev ``release_date`` (ranked within the row, never vs.
+    today, so it is stable); ties keep curated order. Non-aggregators — including every user-defined
+    row, whose ``models:`` list is an explicit allow-list — get an empty list and keep top-N
+    behaviour (#120217)."""
     try:
         from agent.models_dev import get_model_info
     except Exception:
         get_model_info = None  # type: ignore[assignment]
 
+    # "Is this row an aggregator?" is answered canonically by is_routing_aggregator() — the same
+    # predicate _strip_aggregator_overlaps() uses. Deriving it from model-id spelling (does any id
+    # contain "/" and span >= 2 prefixes?) misread every Org/Model-shaped user provider as a
+    # multi-lab aggregator and hid the models its owner configured by hand (#120217).
+    try:
+        from hermes_cli.providers import is_routing_aggregator
+    except Exception:
+        is_routing_aggregator = None  # type: ignore[assignment]
+
     for row in rows:
         slug = str(row.get("slug") or "").strip().lower()
         models = row.get("models") or []
+
+        if row.get("is_user_defined") or not (is_routing_aggregator and is_routing_aggregator(slug)):
+            row["featured_models"] = []
+            continue
 
         by_lab: dict[str, list[tuple[int, str, str]]] = {}  # only multi-lab aggregators get a shortlist
         for pos, model in enumerate(models):

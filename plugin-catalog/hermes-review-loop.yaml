@@ -1,21 +1,7 @@
 name: hermes-review-loop
 repo: https://github.com/coe0718/hermes-review-loop
 sha: 59eab1f0070ff9671682c975ad58c172d0245ead
-description: >-
-  Unattended GitHub pull-request review between two Hermes agents: one pushes fixes, a different one
-  reviews, rounds are capped in verdicts, a watchdog reports silent stalls, and the loop never
-  merges. Disclosure — runs Hermes agent turns unattended, each inside bubblewrap with terminal and
-  file tools but no credentials, no network and none of your secret files; only a host-side broker
-  writes to GitHub, with repo-scope tokens you provide in separate files; spawns host processes
-  (bwrap, git, hermes workers); downloads PR source archives and pinned Rust crates on the host;
-  creates webhook routes on your gateway and one cron watchdog job; deletes its own local review
-  artifacts for merged or closed PRs. Nothing runs until you arm a loop, and fixer pushes stay off
-  until you opt in. Opt-in extras — an observer that posts transition notices to the chat you name;
-  issue triage that labels issues; issue fixes a maintainer hands over with a label (a new branch
-  and PR, capped per day); the reviewer filing its non-blocking findings as issues; an experimental
-  seat on your own Claude subscription, which needs the claude-subscription-directsdk plugin and the
-  claude CLI installed and logged in (OAuth seats refresh through Hermes's own resolver). Linux
-  only.
+description: "Unattended GitHub pull-request review between two Hermes agents: one pushes fixes, a different one reviews, rounds are capped in verdicts, a watchdog reports silent stalls, and the loop never merges. Disclosure — runs unattended Hermes agent turns inside bubblewrap (terminal and file tools, no network, no credentials); a host-side broker and the CLI write to GitHub (reviews, comments, labels, issues, repo webhooks, opt-in fixer pushes) with repo-scope PAT files you provide; edits Hermes's webhook_subscriptions.json directly and its watchdog re-adds this loop's routes while armed; writes gate scripts into the seat profiles' scripts/ folders and creates one hermes cron job; downloads PR archives from codeload.github.com and Rust crates from crates.io on the host; deletes its own state and closed-PR review dirs in roots you configure; on OAuth seats its host proxy may force Hermes token refreshes that rewrite ~/.claude, ~/.qwen and profile auth.json credentials, and on Claude subscription logins it identifies as Claude Code (Claude Code user-agent, x-app and OAuth beta headers). Nothing runs until you arm a loop. Linux only."
 maintainer: coe0718
 tier: community
 category: automation

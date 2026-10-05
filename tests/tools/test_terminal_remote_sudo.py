@@ -1,10 +1,20 @@
 """Per-call SSH sudo uses the same masked prompt without changing local terminal state."""
 import json
 import os
+import re
 import subprocess
+from pathlib import Path
 
 import tools.terminal_tool as terminal
 from tools.environments import ssh
+
+
+def _native_pwd_path(value, *, windows=os.name == "nt"):
+    """MSYS pwd spells a Windows drive path /c/..., unlike Python's C:\\...."""
+    value = value.strip()
+    if windows and re.match(r"^/[a-zA-Z](?:/|$)", value):
+        value = f"{value[1]}:{value[2:]}"
+    return value
 
 
 def test_remote_ssh_sudo_prompt_and_local_isolation(monkeypatch, tmp_path):
@@ -52,7 +62,7 @@ def test_remote_ssh_sudo_prompt_and_local_isolation(monkeypatch, tmp_path):
         assert terminal._active_environments["remote-ssh-default"].host == "test-host"
         local = json.loads(terminal._handle_terminal({"command": "pwd"}, task_id="remote-test"))
         assert local["exit_code"] == 0, local
-        assert str(tmp_path) in local["output"]
+        assert Path(_native_pwd_path(local["output"])).resolve() == tmp_path.resolve()
         assert terminal._active_environments["default"].is_local
     finally:
         terminal.set_sudo_password_callback(None)
@@ -60,6 +70,60 @@ def test_remote_ssh_sudo_prompt_and_local_isolation(monkeypatch, tmp_path):
         terminal._active_environments.pop("default", None)
         from tools.terminal_tool_sudo import _reset_cached_sudo_passwords
         _reset_cached_sudo_passwords()
+
+
+def test_msys_pwd_drive_shape():
+    assert _native_pwd_path("/c/Users/test/work\n", windows=True) == "c:/Users/test/work"
+    assert _native_pwd_path("/tmp/work\n", windows=False) == "/tmp/work"
+
+
+def test_ssh_preparation_keeps_macos_open_ladder(monkeypatch):
+    from tools import terminal_tool_macos_open as macos_open
+    transform = macos_open._transform_macos_open_command
+    monkeypatch.setattr(macos_open, "_transform_macos_open_command",
+                        lambda command: transform(command, system="Darwin"))
+    env = ssh.SSHEnvironment.__new__(ssh.SSHEnvironment)
+    env.user, env.host, env.port = "operator", "target", 22
+    prepared, stdin = env._prepare_command("open x.pdf")
+    assert stdin is None
+    assert prepared.startswith("open x.pdf; ")
+    assert "osascript" in prepared and "lsappinfo" in prepared
+
+
+def test_degraded_remote_evicts_cached_connection_before_retry(monkeypatch):
+    from tools.environments.base import EnvironmentConnectionError
+    monkeypatch.setattr(terminal, "_get_env_config", lambda: {
+        "env_type": "local", "cwd": "/", "timeout": 30,
+        "ssh_host": "test-host", "ssh_user": "tester", "ssh_port": 22,
+        "ssh_key": "", "ssh_persistent": False,
+    })
+    monkeypatch.setattr(terminal, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal, "_run_approval_guards", lambda *a, **kw: terminal._ApprovalVerdict())
+    created = []
+
+    class FakeEnv:
+        def cleanup(self):
+            pass
+
+    def create(*args, **kwargs):
+        env = FakeEnv()
+        created.append(env)
+        return env
+
+    monkeypatch.setattr(terminal, "_create_configured_env", create)
+    def fail_guard(*args, **kwargs):
+        raise EnvironmentConnectionError("link down", retry_hint="retry")
+    monkeypatch.setattr(terminal, "_pre_exec_block", fail_guard)
+    key = "remote-ssh-default"
+    observed = []
+    try:
+        for attempt in range(2):
+            result = json.loads(terminal._handle_terminal({"command": "pwd", "remote": "ssh"}, task_id="remote-test"))
+            assert result["status"] == "degraded", result
+            observed.append((sorted(terminal._active_environments), len(created)))
+        assert observed == [([], 1), ([], 2)], observed
+    finally:
+        terminal._active_environments.pop(key, None)
 
 
 def test_remote_rejects_unconfigured_or_background_and_sudo_stdin_guard(monkeypatch):

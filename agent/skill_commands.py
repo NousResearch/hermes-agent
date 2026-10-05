@@ -531,47 +531,42 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     return scan_skill_commands()
 
 
-# Plugin projection cache, keyed on the resolved Hermes home like the filesystem
-# scan above (``_plugin_managers_by_home`` in hermes_cli/plugins.py is home-keyed,
-# so two profiles never share a registry). The projection re-parses every plugin
-# SKILL.md frontmatter and sits on the per-keystroke completion path; without the
-# cache each Tab paid full discovery + disk I/O (94 ms measured with 60 plugin
-# skills). Invalidate with ``invalidate_plugin_skill_commands()`` (``reload_skills``
-# and plugin lifecycle changes route through it); a profile switch self-heals via
-# the home tag.
+# Plugin projection cache. The projection re-parses every plugin SKILL.md and sits on the
+# per-keystroke completion path (94 ms per Tab measured with 60 plugin skills), so it is reused
+# while its tag holds: the resolved Hermes home (plugin managers are home-keyed, so profiles never
+# share a registry) plus the registered qualified names (a plugin enable/disable/install changes
+# them). ``reload_skills()`` drops it explicitly to pick up edited SKILL.md files.
 _plugin_skill_commands: Dict[str, Dict[str, Any]] = {}
-_plugin_skill_commands_home: Optional[str] = None
+_plugin_skill_commands_tag: Optional[tuple] = None
 
 
 def invalidate_plugin_skill_commands() -> None:
-    """Drop the cached plugin skill projection (config or plugin registry changed)."""
-    global _plugin_skill_commands, _plugin_skill_commands_home
+    """Drop the cached plugin skill projection."""
+    global _plugin_skill_commands, _plugin_skill_commands_tag
     with _publish_lock:
         _plugin_skill_commands = {}
-        _plugin_skill_commands_home = None
+        _plugin_skill_commands_tag = None
 
 
 def get_plugin_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Project enabled plugin skills into the interactive-only slash namespace.
+    """Project enabled plugin skills into the interactive-only slash namespace (``/plugin:skill``).
 
-    Cached on the resolved Hermes home: the projection re-parses every plugin
-    SKILL.md and runs discovery, so it must not run per completion RPC. Config
-    disable lists (``skills.disabled``, ``plugins.disabled``) are applied to the
-    cached snapshot on EVERY call — a config-only disable takes effect without a
-    rescan, preserving the live lifecycle behavior the cache replaced. Registry
-    changes (enable/install of a plugin) rebuild the projection via
-    ``invalidate_plugin_skill_commands()``, which ``reload_skills()`` and every
-    plugin activation path call.
+    Config disable lists (``skills.disabled``, ``plugins.disabled``) are applied on EVERY call, so a
+    config-only disable takes effect without a rescan.
     """
     from agent.skill_utils import get_disabled_skill_names
+    from hermes_cli.plugins import discover_plugins, get_plugin_manager
     from hermes_cli.plugins_discovery import _get_disabled_plugins
     from hermes_constants import get_hermes_home
-    home = str(get_hermes_home())
+
+    discover_plugins()  # no-op once this home is discovered
+    manager = get_plugin_manager()
+    metadata = manager.list_plugin_skill_metadata()
+    tag = (str(get_hermes_home()), tuple(str(m.get("name") or "") for m in metadata))
     with _publish_lock:
-        cached = _plugin_skill_commands
-        is_fresh = _plugin_skill_commands_home == home
+        cached, is_fresh = _plugin_skill_commands, _plugin_skill_commands_tag == tag
     if not is_fresh:
-        cached = _scan_plugin_skill_commands()
+        cached = _scan_plugin_skill_commands(manager, metadata, tag)
     disabled = get_disabled_skill_names()
     disabled_plugins = _get_disabled_plugins()
     if not disabled and not disabled_plugins:
@@ -583,27 +578,18 @@ def get_plugin_skill_commands() -> Dict[str, Dict[str, Any]]:
     }
 
 
-def _scan_plugin_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Build the plugin skill projection and publish it with its home tag atomically."""
-    global _plugin_skill_commands, _plugin_skill_commands_home
-    from agent.skill_utils import get_disabled_skill_names
-    from hermes_cli.plugins import discover_plugins, get_plugin_manager
-    from hermes_cli.plugins_discovery import _get_disabled_plugins
+def _scan_plugin_skill_commands(manager, metadata: list, tag: tuple) -> Dict[str, Dict[str, Any]]:
+    """Build the plugin skill projection and publish it with its tag atomically."""
+    global _plugin_skill_commands, _plugin_skill_commands_tag
     from tools.skills_tool import (
         _parse_frontmatter, skill_matches_apps, skill_matches_environment,
         skill_matches_platform,
     )
 
-    discover_plugins()
-    disabled = get_disabled_skill_names()
-    disabled_plugins = _get_disabled_plugins()
     commands: Dict[str, Dict[str, Any]] = {}
-    manager = get_plugin_manager()
-    for metadata in manager.list_plugin_skill_metadata():
-        qualified = str(metadata.get("name") or "").strip()
-        if not qualified or ":" not in qualified or qualified in disabled or qualified.split(":", 1)[1] in disabled:
-            continue
-        if metadata.get("plugin_key") in disabled_plugins or qualified.split(":", 1)[0] in disabled_plugins:
+    for entry in metadata:
+        qualified = str(entry.get("name") or "").strip()
+        if ":" not in qualified:
             continue
         skill_md = manager.find_plugin_skill(qualified)
         if skill_md is None or not skill_md.is_file():
@@ -613,24 +599,20 @@ def _scan_plugin_skill_commands() -> Dict[str, Dict[str, Any]]:
         except OSError:
             continue
         # Offer from the file we will actually load, not registration-time hints.
-        frontmatter = parsed
-        if not (skill_matches_platform(frontmatter) and skill_matches_environment(frontmatter)
-                and skill_matches_apps(frontmatter)):
+        if not (skill_matches_platform(parsed) and skill_matches_environment(parsed) and skill_matches_apps(parsed)):
             continue
         key = f"/{qualified.lower()}"
         if skill_command_collision_note(qualified) is not None or key in commands:
             logger.warning("Plugin skill %r collides with an existing slash command; skipping", qualified)
             continue
         commands[key] = {
-            "name": qualified, "description": str(parsed.get("description") or metadata.get("description")
+            "name": qualified, "description": str(parsed.get("description") or entry.get("description")
                                                   or f"Invoke the {qualified} plugin skill").strip(),
             "skill_identifier": qualified, "skill_md_path": str(skill_md),
             "skill_dir": str(skill_md.parent), "source": "plugin",
         }
     with _publish_lock:
-        _plugin_skill_commands = commands
-        from hermes_constants import get_hermes_home
-        _plugin_skill_commands_home = str(get_hermes_home())
+        _plugin_skill_commands, _plugin_skill_commands_tag = commands, tag
     return commands
 
 
@@ -688,7 +670,7 @@ def reload_skills() -> Dict[str, Any]:
         # no before-state, so discoveries correctly appear as additions.
         with _publish_lock:
             before_commands = dict(_skill_commands_by_key.get(key, {}))
-            if _plugin_skill_commands_home == key[1]:
+            if _plugin_skill_commands_tag and _plugin_skill_commands_tag[0] == key[1]:
                 for command, info in _plugin_skill_commands.items():
                     if command not in before_commands:
                         before_commands[command] = info

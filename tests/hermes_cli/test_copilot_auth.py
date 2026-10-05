@@ -157,7 +157,8 @@ class TestCopilotDefaultHeaders:
             headers = copilot_default_headers(is_agent_turn=is_agent)
             assert headers["x-initiator"] == expected, (
                 f"is_agent_turn={is_agent} should produce x-initiator={expected!r}, "
-                f"got {headers['x-initiator']!r}")
+                f"got {headers['x-initiator']!r}"
+            )
 
 
     def test_models_headers_do_not_send_rest_api_version(self):

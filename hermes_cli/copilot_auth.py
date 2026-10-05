@@ -220,6 +220,7 @@ _JWT_REFRESH_MARGIN_SECONDS = 120  # refresh 2 min before expiry
 _TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token"
 _EDITOR_VERSION = "vscode/1.104.1"
 _EXCHANGE_USER_AGENT = "GitHubCopilotChat/0.26.7"
+
 # Transient-failure hardening: gateway startup races network readiness, and a single-shot
 # exchange failing there silently degrades to the RAW GitHub token, whose integrator allowlist
 # omits enterprise-only models → HTTP 400 every turn until restart. Retry, and persist the last

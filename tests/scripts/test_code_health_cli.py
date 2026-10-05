@@ -386,8 +386,12 @@ def test_ci_only_guards_run_in_scripts_check(tmp_path, job, files):
     repo = _engine_repo(tmp_path)
     clean = _check(repo, "--staged", "--only", job, "--base", "HEAD")
     assert clean.returncode == 0 and "1 checks, ok" in clean.stdout, clean.stdout + clean.stderr
-    _write(repo, files)
-    _git(repo, "add", "--", *files)
+    # Staged as blobs, never written to disk: a case-insensitive filesystem holds one of
+    # Notes.md / NOTES.md, but the index (what --staged judges) holds both.
+    for rel, text in files.items():
+        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=repo, env=_env(),
+                              input=text.encode("utf-8"), capture_output=True, timeout=60, check=True)
+        _git(repo, "update-index", "--add", "--cacheinfo", f"100644,{blob.stdout.decode().strip()},{rel}")
     proc = _check(repo, "--staged", "--only", job, "--base", "HEAD")
     assert proc.returncode == 1 and f"FAILED: {job}" in proc.stdout, proc.stdout + proc.stderr
 

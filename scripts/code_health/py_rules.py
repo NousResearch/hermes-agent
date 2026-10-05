@@ -618,14 +618,24 @@ class _HandleScope:
         return None
 
 
+# A parameter annotated as a process is one (``proc: subprocess.Popen[str]``).
+_PROCESS_TYPES = {"subprocess.Popen": "sync", "asyncio.subprocess.Process": "async"}
+
+
+def _annotated_kind(annotation: ast.expr | None) -> str | None:
+    if isinstance(annotation, ast.Subscript):
+        annotation = annotation.value
+    return _PROCESS_TYPES.get(_dotted(annotation)) if annotation is not None else None
+
+
 def _record_bindings(scope: _HandleScope, node: ast.AST, attrs: dict[tuple[int, str], str]) -> None:
-    """Any binding of a plain name clears it (a parameter, a loop variable, ``proc = None``);
-    a spawn makes it a handle once the value is computed. An attribute handle is shared by
+    """Any binding of a plain name clears it (a loop variable, ``proc = None``, a parameter
+    not annotated as a process); a spawn makes it a handle once the value is computed. An attribute handle is shared by
     the class's methods, so it is keyed by the class, not by the function that assigns it."""
     if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
         scope.names.setdefault(node.id, []).append((_pos(node), None))
     elif isinstance(node, ast.arg):
-        scope.names.setdefault(node.arg, []).append((_pos(node), None))
+        scope.names.setdefault(node.arg, []).append((_pos(node), _annotated_kind(node.annotation)))
     for target, value in _binding_pairs(node):
         kind = _spawn_kind(value)
         if kind is None or value is None:

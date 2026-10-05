@@ -126,6 +126,12 @@ def test_process_handle_follows_reassignment():
     # a parameter that merely shares the spelling is not the other function's process
     param = unbounded + "\n\ndef stop(proc):\n    return proc.wait()\n"
     assert _hits("HX006", param) == [6]
+    # ...but one annotated as a process is a process
+    typed = param.replace("def stop(proc):", "def stop(proc: subprocess.Popen[str]):")
+    assert _hits("HX006", typed) == [6, 10]
+    typed_async = ("import asyncio\n\n\nasync def stop(proc: asyncio.subprocess.Process):\n"
+                   "    return await proc.wait()\n")
+    assert _hits("HX006", typed_async) == [5]
 
 
 def test_process_handle_on_an_attribute_spans_the_class_methods():

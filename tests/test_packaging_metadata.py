@@ -29,35 +29,20 @@ def test_core_and_optional_speech_dependencies():
     }
 
 
-def test_excluded_override_keeps_its_thinc_branch_off_spacy_3():
-    """An override-dependency is dropped by its marker, but the resolver still
-    walks the excluded package's own requirements while backtracking. Left
-    unpinned, `spacy-curated-transformers` floats to a 2.x release that demands
-    `thinc>=9`, which no spacy 3.x can satisfy; the resolver then walks spacy
-    itself down the whole 3.x line to 2.0.17, whose setup.py imports
-    `msvccompiler` from the distutils that setuptools no longer vendors, so
-    `uv lock --upgrade` dies building a 2017 sdist instead of resolving the
-    3.8.16 that is already locked. Pinning the override keeps the excluded
-    branch at the one release whose thinc range spacy 3.x can share."""
+def test_excluded_override_stays_off_spacys_thinc_branch():
+    # The marker drops the requirement but not the excluded package's own
+    # dependencies, so an unpinned override floats to a thinc only spacy 2.x
+    # accepts and walks spacy down to a 2017 sdist. pyproject tells it longer.
     metadata = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
-
-    excluded = next(
-        requirement for requirement in map(Requirement, metadata["tool"]["uv"]["override-dependencies"])
-        if requirement.name == "spacy-curated-transformers"
-    )
+    excluded = next(r for r in map(Requirement, metadata["tool"]["uv"]["override-dependencies"])
+                    if r.name == "spacy-curated-transformers")
     assert list(excluded.specifier), "an unpinned override re-opens the spacy 2.x backtrack"
-
-    locked = next(
-        row for row in lock["manifest"]["overrides"]
-        if row["name"] == "spacy-curated-transformers"
-    )
+    locked = next(r for r in lock["manifest"]["overrides"] if r["name"] == excluded.name)
     assert locked.get("specifier") == "==0.3.1", locked
-
-    spacy = next(row for row in lock["package"] if row["name"] == "spacy")
-    assert Version(spacy["version"]) >= Version("3.8"), spacy["version"]
-    thinc = next(row for row in lock["package"] if row["name"] == "thinc")
-    assert Version(thinc["version"]) < Version("9"), thinc["version"]
+    versions = {r["name"]: Version(r["version"]) for r in lock["package"]}
+    assert versions["spacy"] >= Version("3.8"), versions["spacy"]
+    assert versions["thinc"] < Version("9"), versions["thinc"]
 
 
 def test_starlette_server_pins_and_lock_exclude_cve_2026_48710():

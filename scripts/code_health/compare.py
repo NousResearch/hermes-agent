@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from difflib import SequenceMatcher
 
 from scripts.code_health.config import RULES_BY_ID, TARGETS
@@ -68,10 +68,26 @@ def _span(unit: Unit) -> range | None:
     return None if end is None else range(unit.line, end + 1)
 
 
+def _code_rows(fm: FileMeasure, lines: Iterable[int]) -> list[tuple[int, str]]:
+    """(line, code) for the lines that have code. Blank and comment-only lines carry no hit and
+    are the most frequent element: matched with autojunk off they make a diff quadratic."""
+    return [(n, code) for n in lines if (code := fm.code_line(n))]
+
+
+def _matched(old_rows: list[tuple[int, str]],
+             new_rows: list[tuple[int, str]]) -> tuple[set[int], set[int]]:
+    """(new lines, old lines) the line diff keeps unchanged."""
+    # autojunk off: `except Exception:` and `pass` are frequent lines, never noise here.
+    blocks = SequenceMatcher(None, [c for _, c in old_rows], [c for _, c in new_rows],
+                             autojunk=False).get_matching_blocks()
+    return ({new_rows[b.b + i][0] for b in blocks for i in range(b.size)},
+            {old_rows[b.a + i][0] for b in blocks for i in range(b.size)})
+
+
 def _code(fm: FileMeasure, unit: Unit) -> tuple[str, ...] | None:
     """The unit's code lines (comments and whitespace dropped), for similarity only."""
     span = _span(unit)
-    return None if span is None else tuple(code for n in span if (code := fm.code_line(n)))
+    return None if span is None else tuple(code for _, code in _code_rows(fm, span))
 
 
 def _similarity(old: tuple[str, ...] | None, new: tuple[str, ...] | None) -> float | None:
@@ -286,16 +302,8 @@ def _line_survival(hf: FileMeasure | None, bf: FileMeasure | None) -> tuple[set[
     # Line matching only places hits; without any on either side it is pure cost.
     if hf is None or bf is None or not (hf.hit_lines or bf.hit_lines):
         return set(), set()
-    # Blank and comment-only lines carry no hit, and with autojunk off they are by far the most
-    # frequent element: kept in, they make the match quadratic (minutes on a 23k-line file).
-    old_rows = [(n, code) for n in range(1, len(bf.lines) + 1) if (code := bf.code_line(n))]
-    new_rows = [(n, code) for n in range(1, len(hf.lines) + 1) if (code := hf.code_line(n))]
-    old, new = [code for _, code in old_rows], [code for _, code in new_rows]
-    # autojunk off: `except Exception:` and `pass` are frequent lines, never noise here.
-    blocks = SequenceMatcher(None, old, new, autojunk=False).get_matching_blocks()
-    kept = {new_rows[b.b + i][0] for b in blocks for i in range(b.size)}
-    survived = {old_rows[b.a + i][0] for b in blocks for i in range(b.size)}
-    return kept, survived
+    return _matched(_code_rows(bf, range(1, len(bf.lines) + 1)),
+                    _code_rows(hf, range(1, len(hf.lines) + 1)))
 
 
 _CONTINUATION = re.compile(r"(?:except|else|elif|finally)\b|[)\]}]")
@@ -363,10 +371,7 @@ def _moved_unit_lines(base: dict[str, FileMeasure], head: dict[str, FileMeasure]
         new_span, old_span = _span(hf.units[qual]), _span(origin)
         if new_span is None or old_span is None:
             continue
-        old = [bf.code_line(n) for n in old_span]
-        new = [hf.code_line(n) for n in new_span]
-        for block in SequenceMatcher(None, old, new, autojunk=False).get_matching_blocks():
-            kept[hpath].update(new_span[block.b + i] for i in range(block.size))
+        kept[hpath] |= _matched(_code_rows(bf, old_span), _code_rows(hf, new_span))[0]
     return kept
 
 

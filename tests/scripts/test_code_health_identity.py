@@ -282,7 +282,7 @@ def test_line_survival_on_a_large_file_with_scattered_edits_is_fast():
     base = [line for i in range(6000) for line in (f"def f{i}():", f"    return {i}", "")]
     head = [line + "  ;pass" if n % 50 == 0 and line else line for n, line in enumerate(base)]
     bf, hf = FileMeasure("a.py", lines=base), FileMeasure("a.py", lines=head)
-    hf.hit_lines = {"x": [1]}  # type: ignore[dict-item]  # any hit enables the matcher
+    hf.add_hit("BLE001", "<module>", 1)  # any hit enables the matcher
     started = time.monotonic()
     kept, survived = _line_survival(hf, bf)
     assert time.monotonic() - started < 20

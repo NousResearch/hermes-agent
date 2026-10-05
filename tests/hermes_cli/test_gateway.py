@@ -1136,7 +1136,10 @@ def test_install_if_missing_only_installs_when_no_service_exists(monkeypatch, in
     monkeypatch.setattr(gateway, "_guard_named_profile_under_multiplexer", lambda force: None)
     monkeypatch.setattr(gateway, "_service_mgmt_blocked", lambda: False)
     monkeypatch.setattr(gateway, "_service_backend", lambda: "launchd")
-    monkeypatch.setattr(gateway, "launchd_install", lambda force, start_now: installs.append(force))
+    # The sandbox HERMES_HOME is a scratch home, which `gateway install` refuses by design.
+    monkeypatch.setattr("hermes_cli.gateway_service_owner.home_may_install_service", lambda home: True)
+    monkeypatch.setattr(gateway, "launchd_install",
+                        lambda force, start_now, force_unit_path=False: installs.append(force))
 
     gateway._cmd_install(SimpleNamespace(if_missing=True, force=False, system=False, run_as_user=None))
 

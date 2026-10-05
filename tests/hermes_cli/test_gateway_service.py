@@ -2071,6 +2071,8 @@ class TestDockerAwareGateway:
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_container", lambda: True)
+        # The sandbox HERMES_HOME is a scratch home, which `gateway install` refuses by design.
+        monkeypatch.setattr("hermes_cli.gateway_service_owner.home_may_install_service", lambda home: True)
         calls = []
         monkeypatch.setattr(
             gateway_cli,

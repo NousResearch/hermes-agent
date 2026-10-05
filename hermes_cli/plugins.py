@@ -136,16 +136,15 @@ VALID_HOOKS: Set[str] = {
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
-    "pre_gateway_dispatch",
+    "pre_gateway_dispatch", "post_gateway_admission",  # post_*: fail-open consume, gateway/run_inbound_consumer.py
     # agent_loop_stopped: an agent turn was interrupted mid-run (/stop, or the running-agent
     # fast-path of /new; see gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key,
     # platform, reason, invalidation_reason. Return values are ignored.
     "agent_loop_stopped",
-    # Approval observers (tools/approval.py); returns ignored — plugins cannot veto or pre-answer
-    # (use pre_tool_call). Kwargs: command, description, pattern_key, pattern_keys, session_key,
-    # surface: "cli"|"gateway"|"smart"; post_approval_response adds choice ("once"|"session"|
-    # "always"|"deny"|"timeout"|"smart_approve"|"smart_deny") and decided_by.
-    "pre_approval_request", "post_approval_response",
+    # Approval observers (returns ignored; veto via pre_tool_call). Kwargs: command, description, pattern_key,
+    # pattern_keys, session_key, surface ("cli"|"gateway"|"smart"|"mcp-elicitation/<server>"|"mcp-trust/<server>"|
+    # "vault-payment"); post_approval_response adds choice/decided_by. on_human_input_*: tools/human_input_hooks.py.
+    "pre_approval_request", "post_approval_response", "on_human_input_request", "on_human_input_resolved",
     # on_room_member_activity: a hosted Group Chat member's live runtime events (tool.started/completed,
     # request.opened, message.delta, reasoning.delta, turn.error, ...) stamped with room_id, thread_id,
     # member_id, turn_id, task_id, execution_generation. Observer, queued per consumer off the token
@@ -250,10 +249,7 @@ class PluginContext:
 
     def has_plugin(self, plugin_id: str) -> bool:
         """Return True when another plugin is loaded and enabled (runtime probe for advisory
-        ``requires_plugins``). Matches on registry key or manifest name.
-
-        See #64165.
-        """
+        ``requires_plugins``, #64165). Matches on registry key or manifest name."""
         return any(
             loaded.enabled and (key == plugin_id or loaded.manifest.name == plugin_id)
             for key, loaded in self._manager._plugins.items()
@@ -312,8 +308,7 @@ class PluginContext:
     def _track(
         self, kind: str, key: str, release: Callable[[], None], *, persistent: bool = False,
     ) -> PluginRegistration:
-        """Record host-owned cleanup for a successful registration (see
-        :meth:`PluginManager._track_registration` for ``persistent``)."""
+        """Record host-owned cleanup for a registration (``persistent``: see ``_track_registration``)."""
         return self._manager._track_registration(self.manifest, kind, key, release, persistent=persistent)
 
     def _track_replacement(
@@ -342,8 +337,7 @@ class PluginContext:
         self, kind: str, key: str, mapping: Dict[str, Any], entry: Any, log_fmt: str, *log_args: Any,
         previous: Any = _UNSET,
     ) -> PluginRegistration:
-        """Shared tail of the manager-mapping registrars: store + lease the entry, then log
-        ``log_fmt % (plugin name, *log_args)`` at debug."""
+        """Store + lease a manager-mapping entry, then debug-log ``log_fmt % (plugin name, *log_args)``."""
         handle = self._track_mapping_entry(kind, key, mapping, entry, previous)
         logger.debug(log_fmt, self.manifest.name, *log_args)
         return handle
@@ -406,6 +400,11 @@ class PluginContext:
             return get_active_profile_name()
         except Exception:
             return "default"
+
+    def current_cron_execution(self) -> Any:
+        """The cron run executing now (``cron.execution_identity.CronExecution``), else ``None``."""
+        from cron.execution_identity import current_cron_execution
+        return current_cron_execution()
 
     def on_unload(self, callback: Callable[[], None]) -> PluginRegistration:
         """Register a cleanup callback for unload: runs in reverse acquisition order interleaved
@@ -815,7 +814,9 @@ class PluginContext:
         it freely); an ACTIVE installer goes in ``ensure_deps_fn`` (called from ``create_adapter()`` when
         ``check_fn`` is False). Extra kwargs (``setup_fn``, ``emoji``, ``allowed_users_env``,
         ``platform_hint``, ``ensure_deps_fn``) forward to ``PlatformEntry``; unknown keys raise TypeError."""
-        from gateway.platform_registry import platform_registry, PlatformEntry
+        from gateway.platform_registry import core_ships_platform, platform_registry, PlatformEntry
+        if entry_kwargs.get("trusted_inbound") and self.manifest.source != "bundled" and core_ships_platform(name):
+            raise self._refuse(f"core platform '{name}' with trusted_inbound (it would waive allowlists and pairing)")
         entry_kwargs.setdefault("plugin_name", self.manifest.name)
         entry = PlatformEntry(
             name=name, label=label, adapter_factory=adapter_factory, check_fn=check_fn,

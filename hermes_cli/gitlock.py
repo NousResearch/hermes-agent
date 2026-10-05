@@ -24,8 +24,6 @@ logger = logging.getLogger(__name__)
 # Folding ~100 small packs takes seconds, but the checkouts this exists for (thousands of packs,
 # tens of GiB) need a full repack. A killed fold restarts from scratch on every update and never
 # converges, so the bound is generous and a timeout is reported, not swallowed.
-LAZY_FETCH_GC_TIMEOUT_SECONDS = 20 * 60
-_GC_AUTO_PACK_LIMIT_DEFAULT = 50
 
 # Files younger than this are presumed live (a fetch may be in flight) and are never removed. Lock
 # files live for seconds and a healthy fetch completes in minutes; 10 minutes is abandoned.
@@ -144,7 +142,7 @@ def mark_unmarked_packs_promisor(repo_root: Path) -> int:
 # 2.50.1, 2.53.0 and 2.55.0 alike). So a promisor checkout never writes the graph. Automatic
 # maintenance itself stays on: on git <= 2.53 its post-fetch ``gc --auto`` is what keeps the
 # lazy-fetch packs folded between updates. ``gc.auto`` stays at its default for the same reason
-# (``gc.auto=0`` turns consolidate_lazy_fetch_packs into a no-op).
+# (``gc.auto=0`` turns that fold into a no-op).
 _TREE0_MAINTENANCE_OFF = (
     ("maintenance.commit-graph.enabled", "false"),
     ("gc.writeCommitGraph", "false"),
@@ -610,49 +608,13 @@ def fetch_with_partial_clone_recovery(runner: Callable[..., subprocess.Completed
     return runner(git_cmd, fetch_args)
 
 
-def _gc_auto_pack_limit(repo_root: Path) -> int:
-    lines = _git_stdout_lines(repo_root, ["config", "--int", "--get", "gc.autoPackLimit"])
-    return int(lines[0]) if lines else _GC_AUTO_PACK_LIMIT_DEFAULT
+def settle_partial_clone_maintenance(repo_root: Path) -> None:
+    """Persist the commit-graph-off keys on a partial clone; a full clone keeps stock maintenance.
 
-
-def consolidate_lazy_fetch_packs(repo_root: Path, *,
-                                 on_fold_start: Optional[Callable[[int], None]] = None) -> Optional[int]:
-    """Fold a partial clone's lazy-fetch packfiles back into one; returns how many packs went away.
-
-    Every on-demand fetch a promisor remote serves writes its own small packfile, and nothing in
-    the update workflow ever consolidates them — a ``tree:0`` installer checkout lazy-fetches
-    blob by blob, so ``.git`` grows without bound (2,475 packs / 39 GiB observed for a ~1 GiB
-    repo, #129712). ``git gc --auto`` already knows when this is worth doing: it exits in
-    milliseconds while the small-pack count sits under ``gc.autoPackLimit`` (default 50) and
-    repacks them into one pack once past it, keeping the ``.promisor`` marker. The gc must not
-    write a commit-graph (see ``_TREE0_MAINTENANCE_OFF``): over a Bloom-carrying graph that is a
-    lazy fetch per unseen commit, so the same call that folds 100 packs would leave 30 new ones.
-    Runs under ``bounded_probe_run`` because ``subprocess.run(timeout=)`` kills only ``git gc``
-    and leaves its ``pack-objects`` child running. ``on_fold_start(pack_count)`` fires just before
-    a fold gc will actually do (pack count past the limit), so the caller can say why the update
-    went quiet. Best-effort like every helper here: never raises, returns 0 for a non-partial
-    checkout or when nothing folded, and ``None`` when the fold hit its time limit.
+    Runs on every update so checkouts that predate the installer change converge. Never raises.
     """
     try:
-        if _partial_clone_filter(repo_root, creationflags=windows_hide_flags()) is None:
-            return 0  # only a promisor remote's on-demand fetches write these packs
-        disable_tree0_auto_maintenance(repo_root)
-        before = len(list(_pack_dir(repo_root).glob("pack-*.pack")))
-        limit = _gc_auto_pack_limit(repo_root)
-        if on_fold_start is not None and 0 < limit < before:
-            on_fold_start(before)
-        if bounded_probe_run(
-            ["git", "-c", "gc.autoDetach=false", "-c", "gc.writeCommitGraph=false", "gc", "--auto"],
-            timeout=LAZY_FETCH_GC_TIMEOUT_SECONDS, cwd=str(repo_root),
-            env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV},
-        ) is None:
-            logger.warning("Folding %d lazy-fetch pack(s) in %s timed out after %ds",
-                           before, repo_root, LAZY_FETCH_GC_TIMEOUT_SECONDS)
-            return None
-        folded = before - len(list(_pack_dir(repo_root).glob("pack-*.pack")))
-        if folded > 0:
-            logger.info("Folded %d lazy-fetch pack(s) in %s", folded, repo_root)
-        return max(folded, 0)
+        if _partial_clone_filter(repo_root, creationflags=windows_hide_flags()) is not None:
+            disable_tree0_auto_maintenance(repo_root)
     except Exception:
-        logger.debug("lazy-fetch pack consolidation failed for %s", repo_root, exc_info=True)
-        return 0
+        logger.debug("partial-clone maintenance settings failed for %s", repo_root, exc_info=True)

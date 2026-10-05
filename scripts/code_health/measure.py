@@ -57,6 +57,55 @@ def _python_comments(text: str) -> dict[int, str]:
     return comments
 
 
+# Characters str.splitlines() breaks on; never blanked, so the blanked text keeps its line numbers.
+_LINE_BREAKS = frozenset("\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029")
+
+
+def _string_statements(tree: ast.Module):
+    """Docstrings and other bare string statements: prose, never executed."""
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            yield node
+
+
+def _executable_lines(text: str, tree: ast.Module) -> list[str]:
+    """``text.splitlines()`` with comments and string statements blanked out.
+
+    The profile regex rules describe operations (`env = os.environ.copy()`), so a comment or a
+    docstring that mentions one must not count as doing it. String literals inside code stay:
+    `os.getenv("DISCORD_TOKEN")` is matched by its argument.
+    """
+    rows = [list(line) for line in io.StringIO(text).readlines()]  # ast/tokenize line numbering
+
+    def blank(line: int, start: int, end: int | None = None) -> None:
+        row = rows[line - 1]
+        for col in range(start, len(row) if end is None else end):
+            if row[col] not in _LINE_BREAKS:
+                row[col] = " "
+
+    def char_col(line: int, byte_col: int) -> int:  # ast columns are UTF-8 byte offsets
+        return len("".join(rows[line - 1]).encode("utf-8")[:byte_col].decode("utf-8", "ignore"))
+
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type == tokenize.COMMENT:
+                blank(tok.start[0], tok.start[1], tok.end[1])
+    except (tokenize.TokenError, SyntaxError):
+        return text.splitlines()  # fail closed: every line stays visible to the rules
+    for node in _string_statements(tree):
+        last = node.end_lineno or node.lineno
+        end = char_col(last, node.end_col_offset or 0)
+        if last == node.lineno:
+            blank(node.lineno, char_col(node.lineno, node.col_offset), end)
+            continue
+        blank(node.lineno, char_col(node.lineno, node.col_offset))
+        for line in range(node.lineno + 1, last):
+            blank(line, 0)
+        blank(last, 0, end)
+    return "".join("".join(row) for row in rows).splitlines()
+
+
 class Measurer:
     def __init__(self, repo: Path, ruff: list[str], known_env: set[str]) -> None:
         self.repo = repo
@@ -116,15 +165,18 @@ class Measurer:
             if rule_applies(RULES_BY_ID[rule_id], fm.path):
                 for row in sorted(set(checker(rules_tree, self.ctx))):
                     fm.add_hit(rule_id, scopes.scope(row), row)
-        self._regex(fm, scopes)
+        self._regex(fm, scopes, text, tree)
 
-    def _regex(self, fm: FileMeasure, scopes) -> None:
+    def _regex(self, fm: FileMeasure, scopes, text: str, tree: ast.Module) -> None:
+        code_lines: list[str] | None = None
         for rule_id, pattern, path_re in self.regex_rules:
             if not rule_applies(RULES_BY_ID[rule_id], fm.path):
                 continue
             if path_re and not path_re.search(fm.path):
                 continue
-            for index, line in enumerate(fm.lines, start=1):
+            if code_lines is None:
+                code_lines = _executable_lines(text, tree)
+            for index, line in enumerate(code_lines, start=1):
                 if pattern.search(line):
                     fm.add_hit(rule_id, scopes.scope(index), index)
 

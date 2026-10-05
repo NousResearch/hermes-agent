@@ -153,6 +153,33 @@ def test_json_stdout_is_json_on_every_path(tmp_path, capsys, case, switch, files
         assert "code health:" in err  # the human explanation moves to stderr
 
 
+# --- F21: profile regex rules see executable code, not prose -----------------------------------
+
+
+_FUNC = "import os\n\n\ndef build(cmd):\n{}    return cmd\n"
+
+
+@pytest.mark.parametrize("body, blocks", [
+    ("    # Avoid env = os.environ.copy(); use the scoped builder.\n", False),
+    ('    """Avoid env = os.environ.copy(); use the scoped builder."""\n', False),
+    ('    """Builder.\n\n    Never env = os.environ.copy() here.\n    """\n', False),
+    ("    # don't read os.getenv(\"DISCORD_TOKEN\") directly\n", False),
+    ("    cmd = [cmd]  # not os.environ.get('SLACK_TOKEN')\n", False),
+    ("    'inert example: env = os.environ.copy()'\n", False),
+    # positive controls: the real operations, including a literal env-key argument
+    ("    env = os.environ.copy()\n    cmd = (cmd, env)\n", True),
+    ("    token = os.getenv(\"DISCORD_TOKEN\")\n    cmd = (cmd, token)\n", True),
+    ("    env = dict(os.environ)  # copy it\n    cmd = (cmd, env)\n", True),
+])
+def test_profile_regex_rules_ignore_comments_and_docstrings(tmp_path, capsys, body, blocks):
+    repo, base = _ratchet_repo(tmp_path)
+    head = _commit(repo, {"pkg/c.py": _FUNC.format(body)})
+    code = cli.run(repo, base, head)
+    out = capsys.readouterr().out
+    assert code == (1 if blocks else 0), out
+    assert ("PS-P05" in out or "PS-P06" in out) == blocks, out
+
+
 # --- allow comments may list several rules ----------------------------------------------------
 
 

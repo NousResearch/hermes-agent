@@ -2398,12 +2398,84 @@ def _(rid, params: dict) -> dict:
                     return _ok(rid, {"status": "not_interrupted", "interrupted": False})
         sid = str(params.get("session_id") or "")
         if _session_uses_compute_host(session):
+            # A host that is gone (broken pipe, respawn exhausted) can never deliver
+            # the turn.end that clears `running`, so returning an error here left the
+            # session permanently busy: every later prompt.submit fell into the
+            # busy path and queued forever, with no way back short of a backend
+            # restart (#82603). Recover instead — the same safety net the
+            # in-process branch applies when the run thread is already gone.
+            host_unreachable = False
+            with session["history_lock"]:
+                inflight_at_interrupt = session.get("inflight_turn")
             try:
+                # Unconditional, as before: `_interrupt_session_turn` itself gates the
+                # host dial on (running or _compute_host_active) — the host owns the
+                # live turn and the parent's mirrored `running` can lag it.
                 _interrupt_session_turn(sid, session, request_id=f"interrupt-{rid}")
             except Exception as exc:
-                return _err(rid, 5019, f"compute-host interrupt failed: {exc}")
+                host_unreachable = True
+                logger.warning("session.interrupt: compute-host interrupt failed for %s: %s", sid, exc)
+            # Probe BEFORE taking history_lock: the surrounding code holds the
+            # invariant that a compute-host call is never made under that lock, since
+            # an interrupt can wait behind the very operation it is cancelling.
+            pending_for_sid = True
+            if host_unreachable:
+                try:
+                    pending_for_sid = _get_compute_host_supervisor().has_pending_turn(sid)
+                except Exception as exc:
+                    # Fail closed. An unreadable supervisor is not evidence the turn
+                    # is over, and force-clearing on a guess would drop a live turn's
+                    # own teardown on the floor.
+                    logger.warning(
+                        "session.interrupt: compute-host pending-turn probe failed for %s: %s", sid, exc
+                    )
+                    pending_for_sid = True
+            with session["history_lock"]:
+                # The failed `_interrupt_session_turn` call raised BEFORE its own
+                # cancel/queue-purge block, so record the cancellation here. A
+                # successful call already did this under the same lock — the
+                # operations are idempotent.
+                session["_turn_cancel_requested"] = True
+                session["queued_prompt"] = None
+                session.pop("queued_prompts", None)
+                session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
+                # Re-checked under the lock: a completion callback may have landed
+                # since the probe, and a successor submit/drain may already own
+                # `running` with a fresh inflight dict. Only clear the turn this Stop
+                # actually observed.
+                inflight_now = session.get("inflight_turn")
+                if (
+                    host_unreachable
+                    and not pending_for_sid
+                    and session.get("running")
+                    and inflight_now is not None
+                    and inflight_now is inflight_at_interrupt
+                ):
+                    session["running"] = False
+                    _clear_inflight_turn(session)
+            _clear_pending(sid)
+            try:
+                from tools.approval import resolve_gateway_approval
+                resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
+            except Exception:
+                pass
             return _ok(rid, {"status": "interrupted", "turn_isolation": True})
-        session, err = _sess(params, rid)
+        # Resolve WITHOUT waiting on the deferred agent build (#82603): `_sess`
+        # calls `_wait_agent`, which blocks up to 30s on the very `agent_ready`
+        # Event the build being cancelled is holding — so Stop waited on its own
+        # target. Two ways that hurt, both on the default path (`session.create`
+        # always seeds `agent: None` + an unset `agent_ready`, and
+        # `prompt.submit` returns before the build finishes):
+        #   * build completes under 30s -> Stop is merely late, but `session.interrupt`
+        #     is not in `_LONG_HANDLERS`, so it runs inline on the socket reader
+        #     thread and every RPC queued behind it stalls too.
+        #   * build outlives 30s -> `_wait_agent` returns 5032 and we bail out HERE,
+        #     before `_turn_cancel_requested` is ever set. `_wait_agent_for_prompt`
+        #     then polls that unset flag up to `agent.build_wait_timeout` (600s) and
+        #     starts the turn anyway: the cancelled message runs.
+        # Nothing above needs a built agent, so resolve the record and let the build
+        # keep warming in the background.
+        session, err = _sess_building(params, rid)
         if err:
             return err
         _interrupt_session_turn(sid, session)

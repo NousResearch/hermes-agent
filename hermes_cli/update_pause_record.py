@@ -647,6 +647,21 @@ def _has_work(token: dict) -> bool:
 
 
 def _resume_claimed(claim_path: Path, body: dict) -> None:
+    """Resume under the checkout lock, so no update mutates the tree between the gate and the
+    verified start; an update that took the checkout after our claim gets the set back untouched."""
+    from hermes_cli.update_lock import UpdateLock
+    fence = UpdateLock()
+    if not fence.acquire_checkout(install_root()):
+        with suppress(OSError), _mutex():
+            _atomic_write(claim_path, {**(read(claim_path) or body), "claimer": UNOWNED})
+        return
+    try:
+        _resume_fenced(claim_path, body)
+    finally:
+        fence.release()
+
+
+def _resume_fenced(claim_path: Path, body: dict) -> None:
     with _mutex():
         # A live consumer may have checkpointed after claim() returned its snapshot.
         body = read(claim_path) or body

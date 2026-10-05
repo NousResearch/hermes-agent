@@ -183,6 +183,36 @@ def test_a_launch_killed_mid_recovery_leaves_the_set_to_the_next_launch(tmp_path
     assert out.strip() == "done", f"a resumed set was resumed again: {out}"
 
 
+# An update takes the checkout right after this launch claimed the set (the race window).
+_UPDATE_AFTER_CLAIM = """
+    import subprocess, sys
+    from hermes_cli import update_pause_record as r
+    hold = ("import time; from hermes_cli import update_lock as l; from hermes_cli.update_pause_record import install_root;"
+            "print(l.UpdateLock().acquire_checkout(install_root()), flush=True); time.sleep(120)")
+    real_claim, updates = r.claim, []
+    def claim(src):
+        won = real_claim(src)
+        updates.append(subprocess.Popen([sys.executable, "-c", hold], stdout=subprocess.PIPE, text=True))
+        assert updates[-1].stdout.readline().strip() == "True"
+        return won
+    r.claim = claim
+""" + _RECOVER + """
+    for update in updates:
+        update.kill()
+        update.wait()
+"""
+
+
+@pytest.mark.live_system_guard_bypass
+def test_recovery_never_starts_gateways_under_an_update_that_took_the_checkout(tmp_path):
+    _orphan(tmp_path, {"default": 4242})
+    env = {"HERMES_HOME": str(tmp_path)}
+    out, _ = _child(_UPDATE_AFTER_CLAIM, "ok", env=env).communicate(timeout=60)
+    assert out.strip() == "done", f"gateways restarted while an update owned the checkout: {out}"
+    out, _ = _child(_RECOVER, "ok", env=env).communicate(timeout=60)
+    assert out.splitlines()[:1] == ["resume ['default']"], f"the handed-back set was stranded: {out}"
+
+
 _HOLDER = """
     import subprocess, sys, time
     from hermes_cli.update_lock import UpdateLock

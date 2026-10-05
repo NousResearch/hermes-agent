@@ -29,10 +29,7 @@ can still write the checkout, and must NOT leak into processes that outlive the 
 
 Every updater git runner (``update_cmd._git_run``, ``update_cmd_git._git_run``,
 ``update_cmd_stash``, ``update_cmd_check``, ``gitlock``, ``update_cmd_commit``,
-``_early_recovery``'s restore) calls :func:`run_git`. One exception keeps its own runner: the
-lazy-fetch pack fold (``gitlock.consolidate_lazy_fetch_packs``) needs ``bounded_probe_run``'s
-tree-kill on timeout, so it takes the same custody through :func:`spawn_kwargs` (``gc`` writes
-packed refs: it is a local mutator and holds the fd, with its repack/pack-objects children).
+``_early_recovery``'s restore) calls :func:`run_git`.
 Not covered, on purpose: the read-only release/check readers (``source_releases``,
 ``source_check``: ``ls-remote``, ``cherry``, ``rev-parse``) run their own probes; they never get
 the lock fd and write nothing, so they cannot leak or outlive custody of the checkout.

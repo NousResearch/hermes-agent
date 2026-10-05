@@ -2,15 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages/types'
 import { setBusy, setMessages } from '@/store/session'
+import { $sessionStates } from '@/store/session-states'
 
 import {
   initPetOverlayBridge,
+  petCompanionSessionId,
   type PetOverlayControl,
   type PetOverlayStatePayload,
   popInPet,
   popOutPet,
+  setPetCompanionSessionId,
   setPetOverlayDictateHandler,
-  setPetOverlayNewChatHandler,
   setPetOverlaySubmitHandler
 } from './pet-overlay'
 
@@ -24,11 +26,19 @@ let disposeBridge: () => void = () => {}
 
 const lastPayload = () => pushed[pushed.length - 1]
 
+// The companion's own session, as the session-state cache holds it.
+const companionSession = (messages: ChatMessage[], busy = false) => {
+  setPetCompanionSessionId('companion-stored')
+  $sessionStates.set({ 'companion-rt': { busy, messages, storedSessionId: 'companion-stored' } } as never)
+}
+
 beforeEach(() => {
   pushed = []
   window.localStorage.clear()
   setBusy(false)
   setMessages([])
+  $sessionStates.set({})
+  setPetCompanionSessionId(null)
   window.hermesDesktop = {
     petOverlay: {
       close: vi.fn(async () => undefined),
@@ -52,42 +62,49 @@ afterEach(() => {
   disposeBridge()
   setPetOverlaySubmitHandler(null)
   setPetOverlayDictateHandler(null)
-  setPetOverlayNewChatHandler(null)
 })
 
 describe('pet overlay companion thread', () => {
   it('keeps one final answer per question, dropping mid-turn narration', () => {
-    setMessages([
-      text('u1', 'user', 'any mail about X?'),
-      text('a1', 'assistant', 'Let me check the inbox.'),
-      text('a2', 'assistant', 'Two messages about X, both from Ana.'),
-      text('u2', 'user', 'thanks')
-    ])
-    setBusy(true)
+    companionSession(
+      [
+        text('u1', 'user', 'any mail about X?'),
+        text('a1', 'assistant', 'Let me check the inbox.'),
+        text('a2', 'assistant', 'Two messages about X, both from Ana.'),
+        text('u2', 'user', 'thanks')
+      ],
+      true
+    )
 
-    const thread = lastPayload().thread
-
-    expect(thread.map(turn => turn.id)).toEqual(['u1', 'a2', 'u2'])
+    expect(lastPayload().thread.map(turn => turn.id)).toEqual(['u1', 'a2', 'u2'])
   })
 
   it('withholds the running turn answer until the turn ends', () => {
-    setMessages([text('u1', 'user', 'hi'), text('a1', 'assistant', 'Checking…')])
-    setBusy(true)
+    companionSession([text('u1', 'user', 'hi'), text('a1', 'assistant', 'Checking…')], true)
     expect(lastPayload().thread.map(turn => turn.role)).toEqual(['user'])
 
-    setBusy(false)
+    companionSession([text('u1', 'user', 'hi'), text('a1', 'assistant', 'Checking…')], false)
     expect(lastPayload().thread.map(turn => turn.id)).toEqual(['u1', 'a1'])
+  })
+
+  it('never mirrors the chat open in the main window', () => {
+    companionSession([text('u1', 'user', 'mine')])
+    setMessages([text('x1', 'user', 'another agent'), text('x2', 'assistant', 'not for the pet')])
+    setBusy(true)
+
+    expect(lastPayload().thread.map(turn => turn.id)).toEqual(['u1'])
+    expect(lastPayload().busy).toBe(false)
   })
 })
 
 describe('pet overlay companion controls', () => {
-  it('routes new-chat to the registered handler', () => {
-    const newChat = vi.fn()
-    setPetOverlayNewChatHandler(newChat)
+  it('new-chat drops the companion session so the next question starts fresh', () => {
+    companionSession([text('u1', 'user', 'old')])
 
     sendControl?.({ type: 'new-chat' })
 
-    expect(newChat).toHaveBeenCalledTimes(1)
+    expect(petCompanionSessionId()).toBeNull()
+    expect(lastPayload().thread).toEqual([])
   })
 
   it('transcribes dictation, echoes what was heard, then sends it', async () => {

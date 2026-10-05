@@ -571,7 +571,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     selectSidebarItem,
     startFreshSessionDraft,
     submitTextToNewSession,
-    unarchiveSession
+    unarchiveSession,
+    createDetachedSession
   } = useSessionActions({
     activeSessionId,
     activeSessionIdRef,
@@ -806,7 +807,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   // The popped-out pet overlay's bridge back into the app.
   usePetBridge({
-    newChat: () => startFreshSessionDraft(),
+    createDetachedSession,
     requestGateway,
     resumeSession,
     submitText,

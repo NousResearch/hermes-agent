@@ -1,7 +1,7 @@
 import { atom } from 'nanostores'
 
-import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { chatMessageText } from '@/lib/chat-messages/parts'
+import type { ChatMessage } from '@/lib/chat-messages/types'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
 import {
   $petActivity,
@@ -12,6 +12,7 @@ import {
   type PetActivity,
   type PetInfo
 } from '@/store/pet'
+import { $sessionStates } from '@/store/session-states'
 
 /**
  * Controller for the pop-out pet overlay (main-renderer side).
@@ -178,7 +179,46 @@ let submitHandler: ((text: string) => void) | null = null
 let openAppHandler: (() => void) | null = null
 let scaleHandler: ((scale: number) => void) | null = null
 let dictateHandler: ((audio: Blob) => Promise<string>) | null = null
-let newChatHandler: (() => void) | null = null
+// The companion's OWN conversation: a backend session no view shows, so the
+// balloon never mirrors whatever chat or agent the main window has open.
+// Persisted so a relaunch can keep talking to it; "new chat" drops it.
+const COMPANION_SESSION_KEY = 'hermes.desktop.pet-companion-session.v1'
+let companionStoredId: string | null = storedString(COMPANION_SESSION_KEY) || null
+
+export function petCompanionSessionId(): string | null {
+  return companionStoredId
+}
+
+export function setPetCompanionSessionId(storedId: string | null): void {
+  companionStoredId = storedId
+  persistString(COMPANION_SESSION_KEY, storedId ?? '')
+  pushNow()
+}
+
+/** Live runtime id currently bound to the companion's stored session, if any. */
+export function petCompanionRuntimeId(): string | null {
+  if (!companionStoredId) {
+    return null
+  }
+
+  let found: string | null = null
+
+  for (const [runtimeId, state] of Object.entries($sessionStates.get())) {
+    if (state?.storedSessionId === companionStoredId) {
+      found = runtimeId
+    }
+  }
+
+  return found
+}
+
+function companionState(): { busy: boolean; messages: ChatMessage[] } {
+  const runtimeId = petCompanionRuntimeId()
+  const state = runtimeId ? $sessionStates.get()[runtimeId] : undefined
+
+  return { busy: Boolean(state?.busy), messages: state?.messages ?? [] }
+}
+
 let lastHeard: PetOverlayHeard | null = null
 let lastNotice: PetOverlayNotice | null = null
 
@@ -191,7 +231,7 @@ function recentThread(): PetOverlayTurn[] {
   // tool-round chatter are dropped; each user turn keeps only the LAST
   // assistant text that followed it. While the turn is still running there is
   // no answer yet, and the balloon shows "Pensando…" instead.
-  const messages = PRIMARY_SESSION_VIEW.$messages.get()
+  const { busy, messages } = companionState()
   const turns: PetOverlayTurn[] = []
   let pendingAnswer: PetOverlayTurn | null = null
 
@@ -219,7 +259,7 @@ function recentThread(): PetOverlayTurn[] {
     }
   }
 
-  if (pendingAnswer && !PRIMARY_SESSION_VIEW.$busy.get()) {
+  if (pendingAnswer && !busy) {
     turns.push(pendingAnswer)
   }
 
@@ -231,8 +271,8 @@ function currentPayload(): PetOverlayStatePayload {
   return {
     info: $petInfo.get(),
     activity: $petActivity.get(),
-    busy: PRIMARY_SESSION_VIEW.$busy.get(),
-    awaiting: PRIMARY_SESSION_VIEW.$awaitingResponse.get(),
+    busy: companionState().busy,
+    awaiting: false,
     unread: $petUnread.get(),
     reaction: $petReaction.get(),
     thread: recentThread(),
@@ -271,11 +311,9 @@ function openOverlay(request: PetOverlayOpenRequest): void {
   stateUnsubs = [
     $petInfo.subscribe(pushNow),
     $petActivity.subscribe(pushNow),
-    PRIMARY_SESSION_VIEW.$busy.subscribe(pushNow),
-    PRIMARY_SESSION_VIEW.$awaitingResponse.subscribe(pushNow),
     $petUnread.subscribe(pushNow),
     $petReaction.subscribe(pushNow),
-    PRIMARY_SESSION_VIEW.$messages.subscribe(pushNow)
+    $sessionStates.subscribe(pushNow)
   ]
 }
 
@@ -345,14 +383,15 @@ export function setPetOverlaySubmitHandler(fn: ((text: string) => void) | null):
   submitHandler = fn
 }
 
-/** Register the handler that starts a fresh conversation from the overlay. */
-export function setPetOverlayNewChatHandler(fn: (() => void) | null): void {
-  newChatHandler = fn
-}
 
 /** Register the handler that turns overlay dictation audio into text. */
 export function setPetOverlayDictateHandler(fn: ((audio: Blob) => Promise<string>) | null): void {
   dictateHandler = fn
+}
+
+/** Surface a failure (send, dictation) in the companion card. */
+export function reportPetOverlayError(message: string): void {
+  setHeard(message, true)
 }
 
 function setHeard(text: string, error = false): void {
@@ -424,9 +463,10 @@ export function initPetOverlayBridge(): () => void {
       // Envelope opened in the companion balloon instead of the app.
       clearPetUnread()
     } else if (payload?.type === 'new-chat') {
+      // Next question opens a fresh companion session; the main window is
+      // left exactly where it is.
       lastHeard = null
-      newChatHandler?.()
-      pushNow()
+      setPetCompanionSessionId(null)
     } else if (payload?.type === 'dictate' && typeof payload.dataUrl === 'string') {
       void handleDictation(payload.dataUrl)
     } else if (payload?.type === 'bounds' && payload.bounds) {

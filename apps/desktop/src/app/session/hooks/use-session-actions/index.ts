@@ -1069,6 +1069,29 @@ export function useSessionActions({
     [navigate, startFreshSessionDraft]
   )
 
+  /** Create a backend session that no view shows — the popped-out pet's own
+   *  conversation. Unlike submitTextToNewSession it never navigates, so the
+   *  main window stays on whatever the user has open (and is not raised).
+   *  `profile` pins the owning profile; the main window's route is ignored. */
+  const createDetachedSession = useCallback(
+    async (profile?: string): Promise<{ runtimeSessionId: string; sessionId: string }> => {
+      const params = await desktopSessionCreateParams(resolveNewSessionCwd(), null, profile, false, false)
+      const created = await requestGateway<SessionCreateResponse>('session.create', params)
+      const stored = created.stored_session_id
+
+      if (!stored) {
+        throw new Error('The new session did not return a stored id.')
+      }
+
+      markSessionCreatedThisRun(stored)
+      runtimeIdByStoredSessionIdRef.current.set(stored, created.session_id)
+      ensureSessionState(created.session_id, stored)
+
+      return { runtimeSessionId: created.session_id, sessionId: stored }
+    },
+    [ensureSessionState, requestGateway, runtimeIdByStoredSessionIdRef]
+  )
+
   /** Create a fresh session and open it as a tile — leaves the primary chat alone.
    *  Used by the New session row's "Open in split" menu and the tab-strip "+".
    *
@@ -3509,6 +3532,7 @@ export function useSessionActions({
     branchStoredSession,
     closeSettings,
     createBackendSessionForSend,
+    createDetachedSession,
     openNewSessionTile,
     openSettings,
     removeSession,

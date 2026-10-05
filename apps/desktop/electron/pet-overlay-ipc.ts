@@ -1,7 +1,6 @@
 // IPC surface for the pop-out pet overlay (mascot window). Extracted from
 // main.ts; window handles stay injected because main.ts owns their lifecycle.
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 
 import { type BrowserWindow, ipcMain, screen } from 'electron'
@@ -10,6 +9,8 @@ import { petOverlayClickThrough, resolvePetOverlayBounds } from './pet-overlay'
 
 export interface PetOverlayIpcDeps {
   getMainWindow: () => BrowserWindow | null
+  /** HERMES_HOME root; the notices file lives at `<hermesHome>/pet-notices.json`. */
+  hermesHome: string
   getPetOverlayWindow: () => BrowserWindow | null
   openPetOverlay: (bounds: unknown) => void
   closePetOverlay: () => void
@@ -34,6 +35,7 @@ export function placePetOverlay(bounds, mainWindow: BrowserWindow | null) {
 
 export function registerPetOverlayIpc({
   getMainWindow,
+  hermesHome,
   getPetOverlayWindow,
   openPetOverlay,
   closePetOverlay
@@ -212,18 +214,16 @@ export function registerPetOverlayIpc({
     mainWindow.webContents.send('hermes:pet-overlay:control', payload)
   })
 
-  watchPetNotices(getMainWindow)
+  watchPetNotices(path.join(hermesHome, 'pet-notices.json'), getMainWindow)
 }
 
 // Notices for the companion balloon: any process (a cron job, a script) writes
-// `{ id, text }` to ~/.hermes/pet-notices.json; a new id is forwarded to the
+// `{ id, text }` to <HERMES_HOME>/pet-notices.json; a new id is forwarded to the
 // main renderer, which surfaces it on the popped-out pet. The notice present at
 // startup counts as already seen, so a relaunch never replays an old one.
-const PET_NOTICES_PATH = path.join(os.homedir(), '.hermes', 'pet-notices.json')
-
-function readPetNotice(): { id: string; text: string } | null {
+function readPetNotice(file: string): { id: string; text: string } | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(PET_NOTICES_PATH, 'utf8'))
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
 
     if (parsed && typeof parsed.id === 'string' && typeof parsed.text === 'string' && parsed.text.trim()) {
       return { id: parsed.id, text: parsed.text.trim() }
@@ -235,11 +235,11 @@ function readPetNotice(): { id: string; text: string } | null {
   return null
 }
 
-function watchPetNotices(getMainWindow: () => BrowserWindow | null) {
-  let lastId = readPetNotice()?.id ?? null
+function watchPetNotices(file: string, getMainWindow: () => BrowserWindow | null) {
+  let lastId = readPetNotice(file)?.id ?? null
 
-  fs.watchFile(PET_NOTICES_PATH, { interval: 3000 }, () => {
-    const notice = readPetNotice()
+  fs.watchFile(file, { interval: 3000 }, () => {
+    const notice = readPetNotice(file)
 
     if (!notice || notice.id === lastId) {
       return

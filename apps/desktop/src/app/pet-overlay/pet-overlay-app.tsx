@@ -113,6 +113,7 @@ export function PetOverlayApp() {
   // (without taking the keyboard) and stays until dismissed.
   const [notice, setNotice] = useState<PetOverlayNotice | null>(null)
   const lastNoticeIdRef = useRef<string | null>(null)
+  const lastHeardIdRef = useRef<number | null>(null)
   // Turns hidden by "New chat": the balloon starts clean even if the app
   // keeps the old session around.
   const [clearedIds, setClearedIds] = useState<ReadonlySet<string>>(() => new Set())
@@ -160,16 +161,15 @@ export function PetOverlayApp() {
         setComposerOpen(true)
       }
 
-      setHeard(prev => {
-        const next = payload.heard ?? null
+      const nextHeard = payload.heard ?? null
 
-        // A fresh dictation result (or error) unfolds the companion.
-        if (next && next.id !== prev?.id) {
-          setComposerOpen(true)
-        }
+      // A fresh dictation result (or error) unfolds the companion.
+      if (nextHeard && nextHeard.id !== lastHeardIdRef.current) {
+        lastHeardIdRef.current = nextHeard.id
+        setComposerOpen(true)
+      }
 
-        return next
-      })
+      setHeard(nextHeard)
 
       // Play a reaction on a new id (ignore the first sync, which just primes it).
       const reaction = payload.reaction ?? null

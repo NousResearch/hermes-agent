@@ -3,14 +3,18 @@ import { useEffect, useRef } from 'react'
 import { setPetActivity } from '@/store/pet'
 import { setPetScale } from '@/store/pet-gallery'
 import {
+  petCompanionRuntimeId,
+  petCompanionSessionId,
+  reportPetOverlayError,
+  setPetCompanionSessionId,
   setPetOverlayDictateHandler,
-  setPetOverlayNewChatHandler,
   setPetOverlayOpenAppHandler,
   setPetOverlayScaleHandler,
   setPetOverlaySubmitHandler
 } from '@/store/pet-overlay'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $sessions } from '@/store/session'
-import { $attentionSessionIds, $workingSessionIds } from '@/store/session-states'
+import { $attentionSessionIds, $workingSessionIds, sessionTileDelegate } from '@/store/session-states'
 import { isAuxiliaryWindow } from '@/store/windows'
 
 import type { GatewayRequester } from '../types'
@@ -38,7 +42,7 @@ interface PetBridgeParams {
   resumeSession: (sessionId: string) => Promise<unknown> | unknown
   submitText: (text: string) => Promise<unknown> | unknown
   transcribeAudio: (audio: Blob) => Promise<string>
-  newChat: () => unknown
+  createDetachedSession: (profile?: string) => Promise<{ runtimeSessionId: string; sessionId: string }>
 }
 
 /**
@@ -49,7 +53,7 @@ interface PetBridgeParams {
  * window that can drop a submit. Primary window only.
  */
 export function usePetBridge({
-  newChat,
+  createDetachedSession,
   requestGateway,
   resumeSession,
   submitText,
@@ -63,20 +67,53 @@ export function usePetBridge({
   requestGatewayRef.current = requestGateway
   const transcribeAudioRef = useRef(transcribeAudio)
   transcribeAudioRef.current = transcribeAudio
-  const newChatRef = useRef(newChat)
-  newChatRef.current = newChat
+  const createDetachedRef = useRef(createDetachedSession)
+  createDetachedRef.current = createDetachedSession
 
   useEffect(() => {
     if (isAuxiliaryWindow()) {
       return
     }
 
-    setPetOverlaySubmitHandler(text => void submitTextRef.current(text))
+    // The overlay talks to its OWN session (created on the first question,
+    // dropped by "new chat"), submitted in the background through the
+    // session-tile delegate — never to whatever the main window shows, and
+    // without navigating or raising it. Falls back to the main composer only
+    // when the delegate is not wired yet.
+    setPetOverlaySubmitHandler(text => {
+      void (async () => {
+        const delegate = sessionTileDelegate()
+
+        if (!delegate) {
+          await submitTextRef.current(text)
+
+          return
+        }
+
+        try {
+          let runtimeId = petCompanionRuntimeId()
+
+          if (!petCompanionSessionId()) {
+            const created = await createDetachedRef.current(normalizeProfileKey($activeGatewayProfile.get()))
+            setPetCompanionSessionId(created.sessionId)
+            runtimeId = created.runtimeSessionId
+          } else if (!runtimeId) {
+            runtimeId = await delegate.resumeTile(petCompanionSessionId() as string)
+          }
+
+          const accepted = await delegate.submitToSession(runtimeId as string, text)
+
+          if (accepted.storedSessionId && accepted.storedSessionId !== petCompanionSessionId()) {
+            setPetCompanionSessionId(accepted.storedSessionId)
+          }
+        } catch (error) {
+          reportPetOverlayError(error instanceof Error && error.message ? error.message : 'Could not send.')
+        }
+      })()
+    })
     // Overlay dictation: the overlay has no gateway, so its audio is
     // transcribed here through the same STT path the main composer uses.
     setPetOverlayDictateHandler(audio => transcribeAudioRef.current(audio))
-    // Pencil in the companion toolbar: start a clean conversation.
-    setPetOverlayNewChatHandler(() => void newChatRef.current())
     // Alt+wheel resize from the popped-out pet — persist through this window's
     // gateway (the overlay has none) so it survives restart.
     setPetOverlayScaleHandler(scale => setPetScale(requestGatewayRef.current, scale))
@@ -93,7 +130,6 @@ export function usePetBridge({
     return () => {
       setPetOverlaySubmitHandler(null)
       setPetOverlayDictateHandler(null)
-      setPetOverlayNewChatHandler(null)
       setPetOverlayOpenAppHandler(null)
       setPetOverlayScaleHandler(null)
     }

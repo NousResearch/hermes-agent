@@ -226,6 +226,20 @@ def _note_connect_failure(name: str, exc: BaseException) -> str:
     return message
 
 
+def _stderr_tail_note(name: str) -> str:
+    """Operator-facing stderr tail for a connect-failure log line (#125300).
+
+    ``Connection closed`` alone hides why the child died — the reason sits in the shared
+    mcp-stderr.log. The stored status message stays single-line; only the log line quotes
+    the child's output."""
+    from tools.mcp_tool_config import _tail_server_stderr
+    tail = _tail_server_stderr(name)
+    if not tail:
+        return ""
+    indented = "\n".join(f"    {line}" for line in tail.splitlines())
+    return f"\n  child stderr tail (full log: mcp-stderr.log):\n{indented}"
+
+
 def _note_connect_success(name: str) -> None:
     """Clear connecting/error/cooldown state after a successful connect (under ``_lock``)."""
     with _core._lock:
@@ -268,7 +282,8 @@ def _ensure_lazy_server_connected(server_name: str) -> bool:
         _loop._run_on_mcp_loop(lambda: _discover_and_register_server(server_name, config),
                                timeout=float(connect_timeout) + 30.0)
     except BaseException as exc:
-        logger.warning("Lazy MCP connect failed for '%s': %s", server_name, _note_connect_failure(server_name, exc))
+        logger.warning("Lazy MCP connect failed for '%s': %s%s",
+                       server_name, _note_connect_failure(server_name, exc), _stderr_tail_note(server_name))
         return False
     _note_connect_success(server_name)
     with _core._lock:
@@ -438,8 +453,9 @@ async def _discover_all(new_servers: Dict[str, dict]) -> None:
         if isinstance(result, BaseException):
             command = new_servers.get(name, {}).get("command")
             message = _note_connect_failure(name, result)
-            logger.warning("Failed to connect to MCP server '%s'%s: %s",
-                           name, f" (command={command})" if command else "", message)
+            logger.warning("Failed to connect to MCP server '%s'%s: %s%s",
+                           name, f" (command={command})" if command else "", message,
+                           _stderr_tail_note(name))
         else:
             _note_connect_success(name)
 

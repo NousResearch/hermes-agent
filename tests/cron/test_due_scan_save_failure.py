@@ -79,14 +79,18 @@ def test_due_jobs_are_returned_when_the_store_cannot_be_saved(cron_store, full_d
 
 
 def test_tick_on_unwritable_store_returns_cleanly_without_dispatch(cron_store, monkeypatch, caplog):
-    """Real tick(): the advance cannot be persisted, so the recurring job is NOT run (at-most-once)
-    and the tick neither raises nor alters the store; a WARNING names the unwritable store."""
-    from cron import scheduler, scheduler_tick
+    """Real tick(): the advance cannot be persisted, so the recurring job is NOT run (at-most-once);
+    the one-shot still reaches its fire claim, which fails closed with a ``failed`` execution row.
+    The tick neither raises nor alters the store; a WARNING names the unwritable store."""
+    from cron import executions, scheduler, scheduler_tick
 
-    save_jobs([_due_job(), _half_paused_job()])
+    once = dict(_due_job("once"), schedule={"kind": "once", "run_at": FIXED_NOW.isoformat(), "display": "once"},
+                repeat={"times": 1, "completed": 0})
+    save_jobs([_due_job(), _half_paused_job(), once])
     before = load_jobs()
     ran = []
-    monkeypatch.setattr(scheduler, "_process_due_job", lambda job, *a, **k: ran.append(job["id"]) or True)
+    monkeypatch.setattr(executions, "EXECUTIONS_FILE", cron_store / "cron" / "executions.db")
+    monkeypatch.setattr(scheduler, "run_one_job", lambda job, **k: ran.append(job["id"]) or True)
     monkeypatch.setattr(scheduler, "_should_yield_tick_to_fresh_gateway", lambda: None)
     monkeypatch.setattr(scheduler_tick, "_last_store_warning", {})
 
@@ -100,3 +104,5 @@ def test_tick_on_unwritable_store_returns_cleanly_without_dispatch(cron_store, m
     assert ran == []
     assert "Cron store is unwritable" in caplog.text
     assert load_jobs() == before
+    row = executions.latest_execution("once")
+    assert row["status"] == "failed" and "Cron store unwritable" in row["error"]

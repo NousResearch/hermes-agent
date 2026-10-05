@@ -412,6 +412,49 @@ class TestReconnectKeepsInboundDedup:
         assert new._dedup.is_duplicate("m1") is True
         assert new._dedup.is_duplicate("m2") is False
 
+    @pytest.mark.asyncio
+    async def test_held_telegram_inbound_reaches_published_replacement_once(self):
+        """PTB already acked a held update, so the queue on the retired Telegram adapter must be
+        delivered exactly once by the replacement the watcher publishes, not by a failed candidate (#132829)."""
+        from gateway.platforms.event import MessageEvent
+        from gateway.session import SessionSource
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        class _Telegram(TelegramAdapter):
+            def __init__(self, succeed):
+                super().__init__(PlatformConfig(enabled=True, token="123:abc"))
+                self.succeed, self.handle_message = succeed, AsyncMock()
+
+            async def connect(self, *, is_reconnect=False):
+                if self.succeed:
+                    self._mark_connected()
+                return self.succeed
+
+            async def disconnect(self):
+                return None
+
+        runner = _make_runner()
+        runner.stop = AsyncMock()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+        old, failed, new = _Telegram(True), _Telegram(False), _Telegram(True)
+        runner.adapters[Platform.TELEGRAM] = old
+        old._set_fatal_error("telegram_network_error", "stall", retryable=True)
+        event = MessageEvent(text="held", source=SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm"))
+        old._hold_inbound_event(event, where="text-enqueue")
+        await runner._handle_adapter_fatal_error(old)
+        for candidate in (failed, new):
+            runner._failed_platforms[Platform.TELEGRAM]["next_retry"] = 0
+            with patch.object(runner, "_create_adapter", return_value=candidate):
+                await runner._reconnect_failed_platform(Platform.TELEGRAM, time.monotonic() + 1)
+        await asyncio.sleep(0)
+        await new._held_inbound_redispatch_task
+
+        assert runner.adapters[Platform.TELEGRAM] is new
+        failed.handle_message.assert_not_called()
+        new.handle_message.assert_awaited_once_with(event)
+        assert event.source._transport_adapter_ref() is new
+        assert old._held_inbound_events == [] and new._held_inbound_events == []
+
 
 # --- Pause / resume circuit breaker ---
 

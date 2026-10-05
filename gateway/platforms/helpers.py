@@ -72,16 +72,26 @@ def inbound_dedup_caches(adapter: Any) -> dict[str, MessageDeduplicator]:
     return {name: v for name, v in vars(adapter).items() if isinstance(v, MessageDeduplicator)}
 
 
-def carry_inbound_dedup(caches: Optional[dict], adapter: Any) -> None:
-    """Seed a rebuilt adapter's dedup caches from the instance it replaces.
+def carry_inbound_dedup(predecessor: Any, adapter: Any) -> None:
+    """Seed a rebuilt adapter's dedup caches from the instance it replaces (call before connect).
 
     The runner's reconnect path builds a NEW adapter; without this a platform replaying a recent
     inbound ID after the reconnect (websocket resume, webhook retry, unacked poll batch) is
     admitted and answered a second time."""
-    for name, previous in (caches or {}).items():
+    for name, previous in (inbound_dedup_caches(predecessor) if predecessor is not None else {}).items():
         current = getattr(adapter, name, None)
         if isinstance(current, MessageDeduplicator) and current is not previous:
             current.absorb(previous)
+
+
+def hand_over_held_inbound(predecessor: Any, adapter: Any) -> None:
+    """Move inbound the retired instance is holding to its now-published replacement (#132829).
+
+    Runs at publish time, not before connect: a candidate that fails to connect never owns the
+    queue, and the predecessor keeps holding until a replacement is registered."""
+    adopt = getattr(adapter, "adopt_held_inbound", None)
+    if predecessor is not None and callable(adopt):
+        adopt(predecessor)
 
 
 # Worker-thread handoff used by the off-loop persist paths.  A module attribute

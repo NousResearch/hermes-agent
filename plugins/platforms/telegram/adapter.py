@@ -10,6 +10,7 @@ import os
 import html as _html
 import re
 import time
+import weakref
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
@@ -818,6 +819,10 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning(
                 "[Telegram] Discarding inbound under non-retryable fatal (%s, %d chars)", where, len(getattr(event, "text", None) or ""))
             return
+        successor = getattr(self, "_held_inbound_successor", None)
+        if successor is not None and successor() is not None:  # retired by a runner rebuild (#132829)
+            successor()._adopt_held_event(event, where=f"{where}-forwarded", schedule=schedule)
+            return
         held = getattr(self, "_held_inbound_events", None)
         if held is None:
             self._held_inbound_events = held = []
@@ -836,6 +841,24 @@ class TelegramAdapter(BasePlatformAdapter):
         # A live-path hold must not orphan the event waiting for a reconnect that never comes.
         if schedule and not self._should_drop_delayed_delivery():
             self._schedule_held_inbound_redispatch()
+
+    def adopt_held_inbound(self, predecessor: "TelegramAdapter") -> None:
+        """Take over the hold queue of the instance the runner just replaced with us (#132829): it only
+        drains on its own ``_mark_connected``, which never comes; later holds there forward here."""
+        if predecessor is self or not isinstance(predecessor, TelegramAdapter):
+            return
+        predecessor._held_inbound_successor = weakref.ref(self)
+        held = getattr(predecessor, "_held_inbound_events", None) or []
+        events, held[:] = list(held), []
+        for event in events:
+            self._adopt_held_event(event, where="adopted", schedule=False)
+        self._schedule_held_inbound_redispatch()
+
+    def _adopt_held_event(self, event: "MessageEvent", *, where: str, schedule: bool) -> None:
+        """Hold a predecessor's event here; only the transport ref moves (profile/authz stay as resolved)."""
+        if getattr(event, "source", None) is not None:
+            event.source._transport_adapter_ref = weakref.ref(self)
+        self._hold_inbound_event(event, where=where, schedule=schedule)
 
     def _rehold_from(self, events: list, idx: int, where: str) -> None:
         """Re-hold ``events[idx:]`` without rescheduling (drain interrupted / failed / cancelled)."""

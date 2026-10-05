@@ -128,6 +128,8 @@ export const zhHantSettings = {
       originPlaceholder: 'https://github.com',
       originPlaceholderCheckout: 'https://shop.example.com',
       originInvalid: '請輸入有效的 URL，例如 https://example.com。',
+      originAnySiteHint: '留空則此地址可用於任何網站；代理每次填寫前都會向你確認網站。',
+      anySite: '任何網站',
       identifierTypeField: '識別碼類型',
       identifierTypes: { email: '電子郵件', phone: '電話', username: '使用者名稱' },
       identifierField: '識別碼',

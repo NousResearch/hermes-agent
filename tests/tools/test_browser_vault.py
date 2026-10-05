@@ -591,6 +591,140 @@ class TestBrowserVaultTools:
         finally:
             redact.clear_vault_redaction_values()
 
+    def test_unbound_address_fill_asks_for_the_page_origin_then_fills_there(self, store):
+        """An address saved without a site fills on the page the user confirms: the prompt names that page's
+        origin, the fill script re-asserts the very same origin, and the result reports it."""
+        meta = store.add_item(kind="address", label="Home", secret=_ADDRESS)
+        out, secret_exprs, consent = _fill_on_page(store, meta.id, "https://shop.test/checkout", "accept")
+        assert out["success"] is True and out["origin"] == "https://shop.test"
+        assert out["fields"] == ["address-level2", "address-line1", "country-name", "postal-code"]
+        message = consent.call_args.args[0]
+        assert "Home" in message and "https://shop.test" in message
+        assert len(secret_exprs) == 1 and '"https://shop.test"' in secret_exprs[0]
+
+    def test_unbound_address_fill_declined_or_off_the_web_writes_nothing(self, store):
+        meta = store.add_item(kind="address", label="Home", secret=_ADDRESS)
+        out, secret_exprs, _ = _fill_on_page(store, meta.id, "https://shop.test/checkout", "decline")
+        assert out["success"] is False and out["error_type"] == "address_declined"
+        assert secret_exprs == []
+        # Only a web page can be confirmed: a browser-internal page is refused before anyone is asked.
+        out, secret_exprs, consent = _fill_on_page(store, meta.id, "chrome://settings", "accept")
+        assert out["success"] is False and secret_exprs == [] and not consent.called
+
+    def test_bound_address_fill_needs_no_prompt_and_keeps_its_origin_binding(self, store):
+        """Binding an address to a site keeps today's contract: exact origin, no confirmation, refused elsewhere."""
+        meta = store.add_item(kind="address", label="Home", origin="https://home.test", secret=_ADDRESS)
+        out, secret_exprs, consent = _fill_on_page(store, meta.id, "https://home.test/checkout", "decline")
+        assert out["success"] is True and len(secret_exprs) == 1 and not consent.called
+        out, secret_exprs, consent = _fill_on_page(store, meta.id, "https://other.test/checkout", "accept")
+        assert out["error_type"] == "origin_mismatch" and secret_exprs == [] and not consent.called
+
+    def test_payment_without_origin_stays_refused(self, store):
+        """Loosening addresses must not loosen cards: a card with no bound site is written nowhere, and
+        nobody is even asked."""
+        meta = store.add_item(kind="payment", label="Visa", secret=_CARD)
+        out, secret_exprs, consent = _fill_on_page(store, meta.id, "https://shop.test/checkout", "accept")
+        assert out["success"] is False and out["error_type"] == "no_origin"
+        assert secret_exprs == [] and not consent.called
+
+    def test_unbound_address_fill_names_the_tab_the_session_is_on_when_it_holds_an_address_form(self, store):
+        """Another open tab whose fields happen to match the address probe (a newsletter's email_address)
+        must not become the page the user is asked to confirm while the session's own tab holds the form;
+        the search across tabs runs only when that tab has no address form."""
+        from tools import browser_vault_tool
+
+        meta = store.add_item(kind="address", label="Home", secret=_ADDRESS)
+        page = ["https://shop.test/checkout"]
+
+        def search_lands_on_another_tab(task_id, origin, kind):
+            page[0] = "https://newsletter.test/subscribe"
+
+        with patch.object(browser_vault_tool, "_focus_bound_origin", side_effect=search_lands_on_another_tab):
+            _, _, consent = _fill_on_page(store, meta.id, lambda: page[0], "accept")
+            assert "https://shop.test" in consent.call_args.args[0]
+            page[0] = "https://shop.test/checkout"
+            _, _, consent = _fill_on_page(store, meta.id, lambda: page[0], "accept", has_form=False)
+            assert "https://newsletter.test" in consent.call_args.args[0]
+
+    def test_unbound_address_fill_names_the_page_of_the_session_it_writes_through(self, store):
+        """A local browser session has no supervisor until a vault op attaches one, and the write only ever goes
+        through the supervisor's page session. The tab probed and the origin the user confirms must come from
+        that same session, not from whichever tab the CLI happens to be on, or the user confirms one site and
+        the write re-asserts another."""
+        meta = store.add_item(kind="address", label="Home", secret=_ADDRESS)
+        attached = []
+        out, secret_exprs, consent = _fill_on_page(
+            store, meta.id, lambda: "https://shop.test/checkout" if attached else "https://cli-tab.test/", "accept",
+            on_attach=attached.append)
+        assert "https://shop.test" in consent.call_args.args[0]
+        assert out["origin"] == "https://shop.test" and '"https://shop.test"' in secret_exprs[0]
+
+    def test_unbound_address_fill_in_an_unattended_session_writes_nothing(self, store, monkeypatch):
+        """Real approval routing, no consent mock. A -q session (likewise cron or a webhook) has nobody to
+        confirm the page, so whatever is piped to stdin must never count as the user's answer."""
+        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+        monkeypatch.setattr("builtins.input", lambda prompt="": "o")  # stdin answering "once"
+        meta = store.add_item(kind="address", label="Home", secret=_ADDRESS)
+        out, secret_exprs, _ = _fill_on_page(store, meta.id, "https://shop.test/checkout")
+        assert out["success"] is False and out["error_type"] == "address_declined"
+        assert secret_exprs == []
+
+    def test_list_marks_an_unbound_address_available_but_not_an_unbound_card(self, store):
+        from tools import browser_vault_tool
+
+        store.add_item(kind="address", label="Home", secret=_ADDRESS)
+        store.add_item(kind="payment", label="Visa", secret=_CARD)
+        with patch("agent.vault_store.get_vault_store", return_value=store):
+            items = {i["label"]: i for i in json.loads(browser_vault_tool.browser_vault_list())["items"]}
+        assert items["Home"]["available"] is True and items["Visa"]["available"] is False
+
+
+_ADDRESS_CONTROLS = [
+    {"autocomplete": "address-line1", "index": 0, "type": "text"},
+    {"autocomplete": "address-level2", "index": 1, "type": "text"},
+    {"autocomplete": "postal-code", "index": 2, "type": "text"},
+    {"autocomplete": "country", "index": 3, "type": "text"},
+]
+
+
+def _fill_on_page(store, handle, href, consent=None, has_form=True, on_attach=None):
+    """browser_vault_fill dispatched through the registry against a fake page at ``href`` (a string, or a
+    callable read at each origin check) whose inputs are ``_ADDRESS_CONTROLS``; ``has_form`` is what the
+    address-form tab probe sees there. ``consent`` scripts the user's answer to a confirmation prompt; None
+    leaves the real approval routing in place. The supervisor attach is stubbed (``on_attach`` observes it) so
+    no test starts a real browser session. Returns (result, secret fill expressions, consent mock)."""
+    from contextlib import ExitStack
+    from unittest.mock import Mock
+
+    import model_tools
+    from tools import browser_vault_tool
+
+    def fake_eval(task_id, expression):
+        if "location.href" in expression:
+            return {"success": True, "result": href() if callable(href) else href}
+        if expression == browser_vault_tool._TAB_PROBES["address"]:
+            return {"success": True, "result": has_form}
+        return {"success": True, "result": json.dumps(_ADDRESS_CONTROLS)}
+
+    secret_exprs = []
+
+    def fake_eval_secret(task_id, expression):
+        secret_exprs.append(expression)
+        return {"success": True, "result": json.dumps({"filled": len(_ADDRESS_CONTROLS)})}
+
+    consent_mock = Mock(return_value=consent)
+    with ExitStack() as stack:
+        stack.enter_context(patch("agent.vault_store.get_vault_store", return_value=store))
+        stack.enter_context(patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval))
+        stack.enter_context(patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret))
+        # No supervisor reachable, as on a host without a local browser daemon.
+        stack.enter_context(patch.object(browser_vault_tool, "_ensure_supervisor",
+                                         side_effect=lambda task_id: on_attach and on_attach(task_id)))
+        if consent:
+            stack.enter_context(patch("tools.approval_prompt.request_elicitation_consent", consent_mock))
+        out = json.loads(model_tools.handle_function_call("browser_vault_fill", {"handle": handle}))
+    return out, secret_exprs, consent_mock
+
 
 class TestVaultHardening:
     """Read-deny, backup perms-tightening, canonical dir securing.

@@ -87,10 +87,15 @@ def _cmd_add(args) -> None:
             from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, REQUIRED_FIELDS
 
             fields = PAYMENT_FIELDS if kind == "payment" else ADDRESS_FIELDS
-            origin = ""
-            while not origin:
-                origin = input("Site origin the item may be filled on (e.g. https://shop.example.com): ").strip()
-            c.print(f"[dim]{kind} fields are filled only on that origin; card values are read hidden.[/]")
+            if kind == "payment":
+                origin = ""
+                while not origin:
+                    origin = input("Site origin the card may be filled on (e.g. https://shop.example.com): ").strip()
+                c.print("[dim]Card fields are filled only on that origin and are read hidden.[/]")
+            else:
+                # An address is not a secret like a card: blank binds it to no site, and the agent then asks
+                # the user to confirm each page before filling it there.
+                origin = input("Site origin (e.g. https://shop.example.com; Enter = any site, confirmed at each fill): ").strip()
             secret = {}
             for field in fields:
                 required = field in REQUIRED_FIELDS[kind]
@@ -106,7 +111,12 @@ def _cmd_add(args) -> None:
         c.print(f"[red]Error:[/] {exc}")
         return
 
-    c.print(f"[green]Stored.[/] handle=[bold]{meta.id}[/] kind={meta.kind} origin={meta.origin or '-'}")
+    c.print(f"[green]Stored.[/] handle=[bold]{meta.id}[/] kind={meta.kind} origin={_origin_label(meta)}")
+
+
+def _origin_label(meta) -> str:
+    """A blank origin means "any site" for an address (confirmed at each fill) and "none" for anything else."""
+    return meta.origin or ("any site" if meta.kind == "address" else "-")
 
 
 def _cmd_list(args) -> None:
@@ -131,7 +141,7 @@ def _cmd_list(args) -> None:
         for col in ("Handle", "Source", "Kind", "Label", "Identifier", "Origin"):
             table.add_column(col, style="bold" if col == "Handle" else None)
         for source, meta in rows:
-            table.add_row(meta.id, source, meta.kind, meta.label, meta.identifier or "-", meta.origin or "-")
+            table.add_row(meta.id, source, meta.kind, meta.label, meta.identifier or "-", _origin_label(meta))
         c.print(table)
         c.print("[dim]Passwords are never shown; the agent fills them server-side from the handle.[/]")
     for name in locked:

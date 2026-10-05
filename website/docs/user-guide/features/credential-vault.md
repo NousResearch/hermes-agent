@@ -69,13 +69,23 @@ or the switch in **Settings → Passwords & Logins**.
 
 ## Paying and filling addresses
 
-Cards and addresses work the same way as logins: saved once (**Settings →
-Passwords & Logins → Add**, or `hermes vault add`), bound to the checkout site,
-and filled by the agent on that site only. **Every card fill asks you first**,
-with the same approval prompt as a dangerous command; declining writes nothing.
-Headless sessions (cron, webhooks, the API server) cannot confirm and are
+Cards work the same way as logins: saved once (**Settings → Passwords & Logins
+→ Add**, or `hermes vault add`), bound to the checkout site, and filled by the
+agent on that site only. **Every card fill asks you first**, with the same
+approval prompt as a dangerous command; declining writes nothing. A session
+nobody can answer (cron, webhooks, `hermes chat -q`) cannot confirm and is
 refused, so a prompt injection that reaches a checkout page can ask, but it
-cannot spend. Address fills need no confirmation.
+cannot spend.
+
+An address can be bound to a site the same way, and then fills there with no
+prompt. But an address is not a secret, and you usually want the agent to have
+yours for any shop, so the site is optional: leave it blank and the address
+fills on the page the prompt names (the agent's tab, or another open tab with
+an address form), **after you confirm that page** ("Fill address 'Home' on
+https://shop.example.com"). That confirmation is the guard for an unbound
+address: declining writes nothing, a session nobody can answer is refused, and
+the site you confirmed is re-checked inside the page immediately before the
+write, so moving to a different site in between writes nothing.
 
 ## Managing what's saved
 
@@ -113,10 +123,12 @@ vault:
 tool results, logs, the session database, or the CLI arguments of any process.
 Fills happen over the supervised browser session's direct CDP socket and are
 refused unless the page origin exactly matches the saved origin, checked again
-inside the page immediately before the write.
+inside the page immediately before the write. An address saved without a site
+has no saved origin to match; there the origin you confirmed in the prompt is
+the one checked inside the page.
 
 **Does not:** protect against the page itself. Once a password is typed into a
 site, that site (and any script it runs) has it, exactly as when you type it
 yourself. On a cloud browser backend the vendor's browser sees the page like any
-other. The origin binding is the guard against filling on the wrong site, not
-against a compromised right one.
+other. The origin binding (or, for an unbound address, your confirmation) is the
+guard against filling on the wrong site, not against a compromised right one.

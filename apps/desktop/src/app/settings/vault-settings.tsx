@@ -14,7 +14,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { EmptyState } from '@/components/ui/empty-state'
-import { Field } from '@/components/ui/field'
+import { Field, FieldHint } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
@@ -153,6 +153,31 @@ function buildSecret(form: VaultForm): Record<string, string> {
 
 interface VaultSettingsProps {
   subpage?: string
+}
+
+interface VaultOriginFieldProps {
+  kind: VaultKind
+  onChange: (value: string) => void
+  value: string
+}
+
+/** The site an item is bound to: required for a login or card, optional for an address, which is then
+ *  filled on whichever page the user confirms at fill time. */
+function VaultOriginField({ kind, onChange, value }: VaultOriginFieldProps) {
+  const v = useI18n().t.settings.vault
+
+  return (
+    <Field htmlFor="vault-origin" label={v.originField} optional={kind === 'address'} optionalLabel={v.optional}>
+      <Input
+        id="vault-origin"
+        inputMode="url"
+        onChange={e => onChange(e.target.value)}
+        placeholder={kind === 'login' ? v.originPlaceholder : v.originPlaceholderCheckout}
+        value={value}
+      />
+      {kind === 'address' && <FieldHint>{v.originAnySiteHint}</FieldHint>}
+    </Field>
+  )
 }
 
 export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
@@ -343,10 +368,11 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
       return
     }
 
-    // Every kind is filled only on the origin it was saved for; a card without an origin is unfillable.
+    // A login or card is filled only on the site it was saved for (a card without one is unfillable). An
+    // address is not a secret: saved without a site, it fills on whichever page the user confirms at fill time.
     const origin = form.origin.trim()
 
-    if (!isValidOrigin(origin)) {
+    if ((origin || form.kind !== 'address') && !isValidOrigin(origin)) {
       setFormError(v.originInvalid)
 
       return
@@ -447,6 +473,7 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
                       <span className="truncate">{item.origin}</span>
                     </>
                   )}
+                  {!item.origin && item.kind === 'address' && <span className="truncate">{v.anySite}</span>}
                   <span aria-hidden className="text-(--ui-text-tertiary)">
                     ·
                   </span>
@@ -603,7 +630,14 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
           >
             <div className="grid items-start gap-4 sm:grid-cols-2">
               <Field htmlFor="vault-kind" label={v.kindField}>
-                <Select onValueChange={value => setForm(f => ({ ...f, kind: value as VaultKind }))} value={form.kind}>
+                <Select
+                  onValueChange={value => {
+                    // An error from the previous kind may no longer apply (an address accepts a blank site).
+                    setFormError(null)
+                    setForm(f => ({ ...f, kind: value as VaultKind }))
+                  }}
+                  value={form.kind}
+                >
                   <SelectTrigger className={CONTROL_TEXT} id="vault-kind">
                     <SelectValue />
                   </SelectTrigger>
@@ -627,15 +661,11 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
               </Field>
             </div>
 
-            <Field htmlFor="vault-origin" label={v.originField}>
-              <Input
-                id="vault-origin"
-                inputMode="url"
-                onChange={e => setForm(f => ({ ...f, origin: e.target.value }))}
-                placeholder={form.kind === 'login' ? v.originPlaceholder : v.originPlaceholderCheckout}
-                value={form.origin}
-              />
-            </Field>
+            <VaultOriginField
+              kind={form.kind}
+              onChange={origin => setForm(f => ({ ...f, origin }))}
+              value={form.origin}
+            />
 
             {form.kind === 'login' && (
               <>

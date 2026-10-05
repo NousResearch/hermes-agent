@@ -134,6 +134,72 @@ describe('VaultSettings', () => {
     )
   })
 
+  // An address is not a secret like a card, and the agent asks the user to confirm each site before
+  // filling an unbound one, so the site is optional for addresses only.
+  it('saves an address without a site', async () => {
+    requestGateway.mockImplementation(async (method: string) =>
+      method === 'vault.list' ? { items: [] } : { id: 'vault_new' }
+    )
+    renderVault('/settings?tab=vault&kind=address')
+
+    fireEvent.change(await screen.findByLabelText('Label'), { target: { value: 'Home' } })
+    fireEvent.change(screen.getByLabelText('Address line 1'), { target: { value: '1 Main St' } })
+    fireEvent.change(screen.getByLabelText('City'), { target: { value: 'Springfield' } })
+    fireEvent.change(screen.getByLabelText('Postal code'), { target: { value: '12345' } })
+    fireEvent.change(screen.getByLabelText('Country'), { target: { value: 'US' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('vault.add', {
+        kind: 'address',
+        label: 'Home',
+        secret: { address_line1: '1 Main St', city: 'Springfield', postal_code: '12345', country: 'US' }
+      })
+    )
+  })
+
+  it('drops a site error once the kind switches to address, where a blank site is valid', async () => {
+    // Radix Select calls these on open; jsdom doesn't implement them.
+    Element.prototype.scrollIntoView = vi.fn()
+    Element.prototype.hasPointerCapture = vi.fn(() => false)
+    Element.prototype.releasePointerCapture = vi.fn()
+    requestGateway.mockResolvedValue({ items: [] })
+    renderVault('/settings?tab=vault&kind=login')
+
+    fireEvent.change(await screen.findByLabelText('Label'), { target: { value: 'Home' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(screen.getByText('Enter a valid URL like https://example.com.')).toBeTruthy())
+
+    fireEvent.pointerDown(screen.getByLabelText('Kind'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(await screen.findByRole('option', { name: 'Address' }))
+
+    await waitFor(() => expect(screen.queryByText('Enter a valid URL like https://example.com.')).toBeNull())
+  })
+
+  it('still rejects a payment card without a site', async () => {
+    requestGateway.mockResolvedValue({ items: [] })
+    renderVault('/settings?tab=vault&kind=payment')
+
+    fireEvent.change(await screen.findByLabelText('Label'), { target: { value: 'Visa' } })
+    fireEvent.change(screen.getByLabelText('Card number'), { target: { value: '4111111111111111' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(screen.getByText('Enter a valid URL like https://example.com.')).toBeTruthy())
+    expect(requestGateway).not.toHaveBeenCalledWith('vault.add', expect.anything())
+  })
+
+  it('lists an address saved without a site as usable on any site', async () => {
+    requestGateway.mockResolvedValue({
+      items: [
+        { id: 'vault_addr', kind: 'address', label: 'Home', origin: null, created_at: '2026-08-01T12:00:00+00:00' }
+      ]
+    })
+    renderVault()
+
+    await waitFor(() => expect(screen.getByText('Home')).toBeTruthy())
+    expect(screen.getByText('Any site')).toBeTruthy()
+  })
+
   it('deletes an item through the confirm dialog', async () => {
     requestGateway.mockImplementation(async (method: string) =>
       method === 'vault.list' ? { items: [LOGIN_ITEM] } : { removed: true }

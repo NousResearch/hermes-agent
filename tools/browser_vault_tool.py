@@ -12,8 +12,10 @@ tools):
   handle: the password field for logins, card fields for payment items (after
   the user confirms), address fields for address items. The secret is
   resolved locally, the page origin must EXACTLY match the item's bound
-  origin (pre-checked AND re-asserted synchronously inside the fill script),
-  the field is chosen by the ported login-control classifier, injection runs
+  origin (pre-checked AND re-asserted synchronously inside the fill script;
+  an address saved without a site is instead bound, for that one fill, to the
+  page origin the user confirms in a prompt), the field is chosen by the
+  ported login-control classifier, injection runs
   exclusively over the supervisor CDP WebSocket (never argv), and the tool
   result reports only ``{filled_fields, kind, origin, success}`` — the
   password never appears in tool results, logs, or the session DB, and its
@@ -239,7 +241,7 @@ def browser_vault_list() -> str:
             continue
         for meta in metas:
             entry = {"handle": meta.id, "backend": backend.name, "label": meta.label, "kind": meta.kind,
-                     "origin": meta.origin, "available": meta.kind == "login" or bool(meta.origin)}
+                     "origin": meta.origin, "available": meta.kind != "payment" or bool(meta.origin)}
             if len(meta.allowed_origins) > 1:
                 entry["allowed_origins"] = list(meta.allowed_origins)
             if meta.has_otp or backend.needs_unlock:
@@ -442,41 +444,18 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
                 ),
             }
         )
-    if meta.kind != "login" and not meta.origin:
+    if meta.kind == "payment" and not meta.origin:
         return json.dumps({"success": False, "error_type": "no_origin",
-                           "error": f"Vault item {handle!r} has no bound origin; {meta.kind} items are filled only on the site they were saved for."})
+                           "error": f"Vault item {handle!r} has no bound origin; payment items are filled only on the site they were saved for."})
     if meta.kind == "payment" and not _confirm_payment_fill(meta.label, str(meta.origin)):
         return json.dumps({"success": False, "error_type": "payment_declined",
                            "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
 
-    # ── Origin binding pre-check (cheap early exit; the authoritative check
-    # runs synchronously inside the fill script itself) ──────────────────────
-    # Manager items can bind several websites (e.g. amazon.co.uk + www.amazon.co.uk);
-    # every saved origin is a valid fill target. Matching stays exact-origin —
-    # nothing wildcard/parent-domain is ever inferred.
-    allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
-    page_origin = None
-    for candidate in allowed:
-        page_origin = _focus_bound_origin(effective_task_id, candidate, meta.kind)
-        if page_origin:
-            break
-    page_origin = page_origin or _current_page_origin(effective_task_id)
-    if not page_origin:
-        return json.dumps(
-            {"success": False, "error": "Could not determine the current page origin. Navigate to the login page first."}
-        )
-    if page_origin not in allowed:
-        return json.dumps(
-            {
-                "success": False,
-                "error_type": "origin_mismatch",
-                "error": (
-                    f"Refused: current page origin ({page_origin}) does not match "
-                    f"the vault item's bound origin(s) ({', '.join(allowed)}). Vault fills "
-                    "only run on the exact origin(s) the credential was saved for."
-                ),
-            }
-        )
+    # Resolves the origin this fill may write to (an unbound address asks the user here); the fill script
+    # re-asserts it synchronously before writing.
+    page_origin, refused = _resolve_fill_origin(effective_task_id, meta)
+    if refused:
+        return json.dumps(refused)
 
     # ── Inspect + classify page controls ────────────────────────────────────
     nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps
@@ -550,7 +529,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
                 "success": False,
                 "error_type": "origin_changed",
                 "error": (
-                    "Refused: the page navigated away from the bound origin "
+                    "Refused: the page navigated away from the expected origin "
                     f"({page_origin}) before the fill could run "
                     f"(now on {parsed.get('found') or 'unknown'}). "
                     "Nothing was written."
@@ -582,6 +561,62 @@ def _confirm_payment_fill(label: str, origin: str) -> bool:
         surface="vault-payment", title="Confirm payment card fill?") == "accept"
 
 
+def _resolve_fill_origin(task_id: str, meta) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """The origin this fill may write to, or ``(None, refusal)``; the fill script re-asserts it at write time.
+
+    A bound item fills only on one of its saved origins (manager items can bind several websites, e.g.
+    amazon.co.uk + www.amazon.co.uk). Matching stays exact-origin: nothing wildcard/parent-domain is ever
+    inferred. An address saved without a site fills on the page the user confirms instead."""
+    allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
+    if meta.kind == "address" and not allowed:
+        return _confirm_unbound_address_fill(task_id, meta.label)
+    page_origin = None
+    for candidate in allowed:
+        page_origin = _focus_bound_origin(task_id, candidate, meta.kind)
+        if page_origin:
+            break
+    page_origin = page_origin or _current_page_origin(task_id)
+    if not page_origin:
+        return None, {"success": False, "error": "Could not determine the current page origin. Navigate to the login page first."}
+    if page_origin not in allowed:
+        return None, {"success": False, "error_type": "origin_mismatch",
+                      "error": (f"Refused: current page origin ({page_origin}) does not match the vault item's bound "
+                                f"origin(s) ({', '.join(allowed)}). Vault fills only run on the exact origin(s) the "
+                                "credential was saved for.")}
+    return page_origin, None
+
+
+def _confirm_unbound_address_fill(task_id: str, label: str) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """An address with no bound site is not unfillable the way a card is: it is not a secret, and the user wants
+    it for any shop. It fills on the page the user confirms, and only there: the prompt names that page's origin
+    and the caller re-asserts the same origin inside the fill script, so moving to another site between confirm
+    and write writes nothing. Sessions nobody can answer (cron, -q, unattended platforms) are declined by the
+    consent routing itself, exactly as for a card."""
+    from tools.approval_prompt import request_elicitation_consent
+
+    # The write goes through the supervisor's page session, and a local session has none until a vault op attaches
+    # one: attach first, so the tab probed, the origin the user confirms and the origin re-asserted at the write are
+    # all read from that one session rather than from whichever tab the CLI is on.
+    _ensure_supervisor(task_id)
+    # The tab the session is on wins when it holds an address form: the any-site tab search takes the first tab
+    # whose probe matches, and the address probe is broad enough to match a newsletter's email_address field.
+    if not _parse_json_result(_eval_js(task_id, _TAB_PROBES["address"]).get("result")):
+        _focus_bound_origin(task_id, "", "address")
+    page_origin = _current_page_origin(task_id)
+    if not page_origin or not page_origin.startswith(("http://", "https://")):
+        return None, {"success": False, "error": ("Open the page with the address form first; an address saved "
+                                                  "without a site is filled on the page the user confirms.")}
+    confirmed = request_elicitation_consent(
+        f"Fill address '{label}' on {page_origin}",
+        "The agent wants to enter your saved address into this page. The address is not tied to a site, so it "
+        "is filled only where you confirm.",
+        surface="vault-address", title="Confirm address fill?") == "accept"
+    if not confirmed:
+        return None, {"success": False, "error_type": "address_declined",
+                      "error": f"The user did not confirm filling this address on {page_origin}. Do not retry; ask them instead."}
+    return page_origin, None
+
+
 # ---------------------------------------------------------------------------
 # Schemas + registration
 # ---------------------------------------------------------------------------
@@ -590,8 +625,9 @@ BROWSER_VAULT_LIST_SCHEMA = {
     "name": "browser_vault_list",
     "description": (
         "ALWAYS call this first when a page asks for a password, card or address. Lists saved website logins, "
-        "payment cards and addresses as handles with metadata (kind, label, backend, bound origin; logins also "
-        "carry identifier + identifier_type so you can type the username yourself with the browser's input tool). "
+        "payment cards and addresses as handles with metadata (kind, label, backend, bound origin; an address with no "
+        "bound origin can be filled on any site once the user confirms the page; logins also carry identifier + "
+        "identifier_type so you can type the username yourself with the browser's input tool). "
         "Secret values are NEVER returned. Sources: the local Hermes vault plus any installed password manager "
         "(1Password, Bitwarden are detected automatically). A locked manager appears under `locked`; call "
         "browser_vault_unlock (the user is prompted for their master password, you never see it) or, when it says "
@@ -624,10 +660,12 @@ BROWSER_VAULT_FILL_SCHEMA = {
         "Fill the CURRENT browser page from a vault handle (see browser_vault_list): a login item fills ONLY "
         "the password field (type the identifier/username yourself first with the browser's input tool); a "
         "payment item fills card number/name/expiry/CVC after the user confirms in their UI; an address item "
-        "fills the address fields. Values are resolved server-side and never appear in the conversation. "
+        "fills the address fields. "
+        "Values are resolved server-side and never appear in the conversation. "
         "Refused unless the page origin exactly matches the item's bound origin (re-checked atomically at "
-        "fill time). If a password manager is locked the user is prompted to unlock first. Never retry a "
-        "payment_declined result."
+        "fill time); an address with no bound origin is instead filled only on the page the user confirms. If a "
+        "password manager is locked the user is prompted to unlock first. Never retry a payment_declined or "
+        "address_declined result."
     ),
     "parameters": {
         "type": "object",

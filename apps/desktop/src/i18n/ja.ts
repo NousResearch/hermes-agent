@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
 import { introJa } from './intro-ja'
+import { jaVault } from './ja_vault'
 
 export const ja = defineLocale({
   externalOpenFailed: {
@@ -481,82 +482,7 @@ export const ja = defineLocale({
       notifications: '通知',
       vault: 'パスワードとログイン'
     },
-    vault: {
-      title: 'パスワードとログイン',
-      blurb:
-        '「GitHub にログインして」と言えば、エージェントが代わりにサインインします。初めてサインインページに出会ったときにその場でログイン情報を尋ね、以降は自動で処理します。パスワードはこのマシン上で暗号化され、ページに直接入力されます。モデルは一切見ません。',
-      count: n => `${n} 件保存済み`,
-      loadFailed: 'ボールト項目を読み込めませんでした',
-      empty: 'まだ何も保存されていません',
-      emptyDesc:
-        'ここで何かを追加する必要はありません。エージェントにサイトへのサインインを頼むと、その場で一度だけログイン情報を尋ねます。事前に登録したい場合は「追加」を使ってください。',
-      add: '追加',
-      addTitle: 'ログイン情報・カード・住所を追加',
-      addDescription: 'このマシン上に暗号化して保存されます。エージェントがパスワードを見ることはありません。',
-      added: '保存しました。',
-      adding: '保存中…',
-      addConfirm: '保存',
-      kindField: '種類',
-      kinds: { login: 'ログイン', payment: '支払いカード', address: '住所' },
-      labelField: 'ラベル',
-      labelPlaceholder: '例: GitHub 仕事用アカウント',
-      labelRequired: 'ラベルは必須です。',
-      originField: 'サイトのオリジン',
-      originPlaceholder: 'https://github.com',
-      originPlaceholderCheckout: 'https://shop.example.com',
-      originInvalid: 'https://example.com のような有効な URL を入力してください。',
-      identifierTypeField: '識別子の種類',
-      identifierTypes: { email: 'メール', phone: '電話番号', username: 'ユーザー名' },
-      identifierField: '識別子',
-      identifierShown: identifier => identifier,
-      passwordField: 'パスワード',
-      loginFieldsRequired: '識別子とパスワードは必須です。',
-      cardNumberField: 'カード番号',
-      cardNameField: 'カード名義',
-      expMonthField: '有効期限（月）',
-      expYearField: '有効期限（年）',
-      cvcField: 'CVC',
-      postalField: '郵便番号',
-      addressLine1Field: '住所 1 行目',
-      addressLine2Field: '住所 2 行目',
-      cityField: '市区町村',
-      stateField: '都道府県 / 地域',
-      countryField: '国',
-      optional: '（任意）',
-      createdOn: date => `追加日 ${date}`,
-      deleteAction: '保存済み項目を削除',
-      otpField: '認証キー',
-      otpPlaceholder: 'Base32 シークレットまたは otpauth:// リンク',
-      otpHint: '2FA を有効にするときにサイトが表示する「セットアップキー」。保存すると Hermes がコードを生成します。',
-      twoFactorBadge: '2FA 自動',
-      deleteTitle: 'この項目を削除しますか？',
-      deleteDescription: label => `「${label}」は暗号化ボールトから削除されます。元に戻せません。`,
-      deleteConfirm: '削除',
-      sources: {
-        title: 'パスワードマネージャー',
-        blurb:
-          'インストール済みのパスワードマネージャーは自動的に検出されます。エージェントがそこからログイン情報を初めて必要とするときにロック解除を求めます（セッションごとに一度）。メモリに残るのはセッショントークンのみで、エージェントはマスターパスワードやログイン情報を一切見ません。',
-        toggleFailed: 'パスワードマネージャーの設定を更新できませんでした',
-        notInstalled: name =>
-          `未検出です。${name} のコマンドラインツールをインストールしてサインインすると、Hermes が自動的に検出します。`,
-        disabledDesc: '検出済みですが、Hermes では無効になっています。',
-        lockedDesc:
-          '検出済み。エージェントがログイン情報を必要とするときにロック解除を求めます。今すぐ解除することもできます。',
-        unlockedDesc: 'このセッションでロック解除済み。30分間操作がないか Hermes を閉じると自動的にロックされます。',
-        statusLocked: 'ロック中',
-        statusNotDetected: '未検出',
-        statusOff: 'オフ',
-        statusUnlocked: 'ロック解除済み',
-        unlock: 'ロック解除',
-        unlocking: 'ロック解除中…',
-        lock: 'ロック',
-        unlocked: name => `${name} をこのセッションでロック解除しました。`,
-        unlockTitle: name => `${name} のロックを解除`,
-        unlockDescription:
-          'マスターパスワードを入力してください。このマシン上のパスワードマネージャーに渡された後に破棄され、保存・記録されることも、エージェントに表示されることもありません。',
-        masterPasswordPlaceholder: 'マスターパスワード'
-      }
-    },
+    vault: jaVault,
     notifications: {
       title: '通知',
       intro: 'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',

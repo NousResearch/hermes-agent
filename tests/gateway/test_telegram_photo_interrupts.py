@@ -154,13 +154,17 @@ async def test_busy_coalescing_preserves_independent_pending_events(path, bounda
         runner._enqueue_fifo(key, queued, adapter)
     expected = deepcopy([pending] + ([queued] if boundary == "queued" else []) + [incoming])
     if boundary == "same":
-        expected = [replace(
-            deepcopy(pending), text="first\n\nsecond" if path == "photo" else "first\nsecond",
-            media_urls=pending.media_urls + incoming.media_urls,
-            media_types=pending.media_types + incoming.media_types,
-            media_text_inlined=pending.media_text_inlined + incoming.media_text_inlined,
-            merged_message_ids=[*pending.merged_message_ids, incoming.message_id],
-        )]
+        expected = [
+            replace(
+                deepcopy(pending),
+                text="first\n\nsecond" if path == "photo" else "first\nsecond",
+                media_urls=pending.media_urls + incoming.media_urls,
+                media_types=pending.media_types + incoming.media_types,
+                media_text_inlined=pending.media_text_inlined
+                + incoming.media_text_inlined,
+                merged_message_ids=[*pending.merged_message_ids, incoming.message_id],
+            )
+        ]
 
     await runner._handle_message(incoming)
 

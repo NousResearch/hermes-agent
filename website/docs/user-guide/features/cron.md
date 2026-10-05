@@ -14,6 +14,7 @@ Cron jobs can:
 
 - schedule one-shot or recurring tasks
 - pause, resume, edit, trigger, and remove jobs
+- stop a run that is already in flight, without touching the job's schedule
 - attach zero, one, or multiple skills to a job
 - deliver results back to the origin chat, local files, or configured platform targets
 - run in fresh agent sessions with the normal static tool list
@@ -254,6 +255,7 @@ hermes cron list
 hermes cron pause <job_id_or_name>
 hermes cron resume <job_id_or_name>
 hermes cron run <job_id_or_name>
+hermes cron cancel <job_id_or_name>
 hermes cron remove <job_id_or_name>
 hermes cron edit <job_id_or_name> [...flags]
 hermes cron status
@@ -265,14 +267,44 @@ What they do:
 - `pause` — keep the job but stop scheduling it
 - `resume` — re-enable the job. A recurring job whose slot came due while it was paused keeps that slot due, so the next tick fires one catch-up run (or logs the skip when `cron.catch_up_missed: false`) instead of silently jumping to the next occurrence; otherwise the next future run is computed
 - `run` — trigger the job on the next scheduler tick
+- `cancel` — stop the job's **current** run (see [Stopping a run in flight](#stopping-a-run-in-flight))
 - `remove` — delete it entirely
 - `edit` — modify schedule, prompt, delivery, etc.
 
-**Name-based lookup.** All four mutating verbs (`pause`, `resume`, `run`, `remove`, `edit`) plus the agent's `cronjob_manage` tool now accept a job **name** (case-insensitive) in place of the hex ID. The agent and CLI both prefer an exact ID match if one exists; ambiguous name matches (multiple jobs sharing the same name) are refused with the full list of candidate IDs so you can pick one explicitly. Names are not unique, so this guard is load-bearing — it prevents silently mutating the wrong job when two share a name.
+**Name-based lookup.** The mutating verbs (`pause`, `resume`, `run`, `cancel`, `remove`, `edit`) plus the agent's `cronjob_manage` tool now accept a job **name** (case-insensitive) in place of the hex ID. The agent and CLI both prefer an exact ID match if one exists; ambiguous name matches (multiple jobs sharing the same name) are refused with the full list of candidate IDs so you can pick one explicitly. Names are not unique, so this guard is load-bearing — it prevents silently mutating the wrong job when two share a name.
 
 ### Pausing everything: `hermes pause`
 
 `hermes pause [--reason ...]` is the global emergency stop (`hermes resume` lifts it). While it is engaged no scheduled cron fire starts, whichever door it arrives through: the built-in ticker skips its dispatch, the managed-cron (hosted scheduler) fire webhook answers `503` with `Retry-After: 60` so the scheduler redelivers the fire after you resume, and the [misfire catch-up](#misfire-catch-up) sweep stays idle instead of force-firing everything that was held back. Runs already in flight are never killed, and nothing is lost: due work catches up on the first tick or sweep after `hermes resume`. Explicit manual runs (`hermes cron run`, the dashboard's Trigger button) are an operator override and still execute while paused.
+
+### Stopping a run in flight: `hermes cron cancel`
+
+`pause` only suppresses future fires — a run that is already executing keeps going until it
+finishes or hits a timeout. When a run is wedged (a script blocked on network I/O, an agent
+turn that will not end), stop just that run:
+
+```bash
+hermes cron cancel <job_id_or_name>
+hermes cron cancel <job_id_or_name> --reason "wedged on the staging API"
+```
+
+The schedule is untouched: the job stays enabled and its next fire happens as planned. What
+changes is the current run.
+
+- **Script jobs** (`--script`, including [no-agent mode](#no-agent-mode-script-only-jobs)) get the
+  whole process tree terminated — `SIGTERM` to the script's process group, escalating to
+  `SIGKILL` after a grace period, and backgrounded grandchildren included. This is the same
+  teardown a script timeout already performs, so nothing new is left running behind the job.
+- **Agent jobs** have the in-flight turn interrupted at its next checkpoint.
+
+The cancel is a *request*, not a kill: it is recorded against that run's execution id and picked
+up at the run's next cancel check (well under a second for a script). The run then records why
+it stopped, so `hermes cron runs <job_id>` shows the cancel reason instead of an unexplained
+timeout or a bare failure.
+
+Cancelling a job with nothing running is a safe no-op that says so, and a cancel that arrives
+after the run has already finished changes nothing. A cancel cannot undo side effects the run
+already performed — it stops the run, it does not roll it back.
 
 ### Creating a job paused (safe canary)
 

@@ -952,11 +952,22 @@ def _action_update(job: Dict[str, Any], a: Dict[str, Any]) -> str:
 
 
 _JOBLESS_ACTIONS = {"create": _action_create, "list": _action_list}
+
+
+def _action_cancel(job: Dict[str, Any], a: Dict[str, Any]) -> str:
+    """Stop the job's LIVE run. Per-run, not per-schedule: the job keeps its next fire."""
+    from cron.cancellation import cancel_run
+
+    # The schedule is untouched, so no provider notification — nothing about future fires moved.
+    return _dumps({"job": _format_job(job), **cancel_run(job["id"], reason=a.get("reason"))})
+
+
 _JOB_ACTIONS = {
     "remove": _action_remove, "update": _action_update,
     "run": _action_run, "run_now": _action_run, "trigger": _action_run,
     "pause": lambda job, a: _job_state_result(pause_job(job["id"], reason=a["reason"])),
     "resume": lambda job, a: _job_state_result(resume_job(job["id"])),
+    "cancel": _action_cancel,
 }
 
 
@@ -1052,7 +1063,7 @@ def _cronjob_schema_overrides() -> dict:
 
 CRONJOB_SCHEMA = {
     "name": "cronjob_manage",
-    "description": """Manage scheduled cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only).
+    "description": """Manage scheduled cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only); 'cancel' stops a job's LIVE run without touching its schedule (use when a run is wedged — a no-op when nothing is in flight).
 
 Jobs run on the main agent model (whatever `hermes model` is set to when they fire) unless pinned.
 
@@ -1064,11 +1075,11 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             "paused_reason": {"type": "string", "description": "Create only: auditable reason; requires paused=true."},
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+                "description": "One of: create, list, update, pause, resume, remove, run, cancel. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
             },
             "job_id": {
                 "type": "string",
-                "description": "Required for update/pause/resume/remove/run."
+                "description": "Required for update/pause/resume/remove/run/cancel."
             },
             "pinned": {
                 "type": "boolean",

@@ -73,7 +73,7 @@ def clone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return repo
 
 
-def test_erases_only_packs_whose_every_object_has_another_copy(clone: Path) -> None:
+def test_erases_only_packs_whose_every_object_has_another_copy(clone: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     before = _packs(clone)
     for pack in before:  # what killed fetches leave behind; git's own repack never frees these
         pack.with_suffix(".keep").write_text("fetch-pack 4242 on host\n", encoding="utf-8")
@@ -83,6 +83,9 @@ def test_erases_only_packs_whose_every_object_has_another_copy(clone: Path) -> N
     clone_pack.with_suffix(".keep").write_text("pinned by hand\n", encoding="utf-8")
     _age(clone)
     held = _objects(clone)
+    with monkeypatch.context() as patched:  # an index that cannot be read this time is retried next time
+        patched.setattr(tidy._Index, "__init__", lambda self, idx: (_ for _ in ()).throw(OSError("busy")))
+        assert tidy.tidy_partial_clone_packs(clone).erased == 0
 
     result = tidy.tidy_partial_clone_packs(clone)
 
@@ -128,10 +131,11 @@ tidy.tidy_partial_clone_packs(Path(sys.argv[1]))
 """
 
 
+@pytest.mark.parametrize("midx_layout", [[], ["--incremental"]])
 def test_a_refused_or_killed_erase_leaves_git_reading_and_is_finished_later(
-        clone: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        clone: Path, monkeypatch: pytest.MonkeyPatch, midx_layout: list) -> None:
     pack_dir = clone / ".git" / "objects" / "pack"
-    _git("multi-pack-index", "write", cwd=clone)
+    _git("multi-pack-index", "write", *midx_layout, cwd=clone)
     held, before = _objects(clone), _packs(clone)
     real_unlink = Path.unlink
 
@@ -145,7 +149,8 @@ def test_a_refused_or_killed_erase_leaves_git_reading_and_is_finished_later(
         assert tidy.tidy_partial_clone_packs(clone).erased == 0
     assert _packs(clone) == before and all(p.with_suffix(".idx").exists() for p in before)
 
-    _git("multi-pack-index", "write", cwd=clone)
+    _git("multi-pack-index", "write", *midx_layout, cwd=clone)
+    assert list(pack_dir.glob("multi-pack-index*"))
     child = subprocess.run([sys.executable, "-c", _KILLED_MID_ERASE, str(clone)], capture_output=True, text=True, encoding="utf-8",
                            env={**_GIT_ENV, "PYTHONPATH": str(Path(tidy.__file__).resolve().parents[1])})
     assert child.returncode == 9, child.stderr

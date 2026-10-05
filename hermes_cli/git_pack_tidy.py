@@ -27,7 +27,7 @@ import struct
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, Iterator, List, Optional
 
 from hermes_cli._subprocess_compat import (
     NO_LAZY_FETCH_ENV,
@@ -78,8 +78,9 @@ class _Index:
             raise ValueError(f"{idx.name}: not a v2 SHA-1 pack index")
         self.count = struct.unpack_from(">I", self._map, _FANOUT + 255 * 4)[0]
 
-    def oids(self) -> List[bytes]:
-        return [self._map[_NAMES + i * 20: _NAMES + i * 20 + 20] for i in range(self.count)]
+    def oids(self) -> Iterator[bytes]:
+        for i in range(self.count):  # lazily: a big index must not run past the deadline before its first check
+            yield self._map[_NAMES + i * 20: _NAMES + i * 20 + 20]
 
     def __contains__(self, oid: bytes) -> bool:
         lo = struct.unpack_from(">I", self._map, _FANOUT + (oid[0] - 1) * 4)[0] if oid[0] else 0
@@ -124,9 +125,14 @@ def _pinned(pack: Path, cutoff: float) -> bool:
 
 def _drop_midx(pack_dir: Path) -> None:
     """A multi-pack-index names the packs it covers; dropping it before any pack goes means no crash
-    can leave one naming a deleted pack. git rebuilds it on its own maintenance."""
-    for midx in pack_dir.glob("multi-pack-index*"):
-        midx.unlink(missing_ok=True)
+    can leave one naming a deleted pack. git rebuilds it on its own maintenance.
+
+    The incremental layout (``multi-pack-index.d/``) is read through its chain file, so once the chain
+    is gone git ignores the layers and removing them is only tidying."""
+    (pack_dir / "multi-pack-index").unlink(missing_ok=True)
+    layers = pack_dir / "multi-pack-index.d"
+    (layers / "multi-pack-index-chain").unlink(missing_ok=True)
+    shutil.rmtree(layers, ignore_errors=True)
 
 
 def _remove_pack(pack: Path) -> int:
@@ -182,7 +188,7 @@ def _save_state(pack_dir: Path, state: dict) -> None:
         logger.debug("could not record pack tidy state in %s", pack_dir, exc_info=True)
 
 
-def _is_redundant(oids: List[bytes], others: List[_Index], deadline: float) -> Optional[bool]:
+def _is_redundant(oids: Iterable[bytes], others: List[_Index], deadline: float) -> Optional[bool]:
     """Whether every oid is in one of ``others``; None when the deadline passed first."""
     hit = 0
     for n, oid in enumerate(oids):
@@ -218,8 +224,8 @@ def _erase_redundant_packs(pack_dir: Path, deadline: float, result: TidyResult, 
         for pack in sizes:
             try:
                 indexes[pack.stem] = _Index(pack.with_suffix(".idx"))
-            except (OSError, ValueError):
-                state["kept"].add(pack.stem)  # unreadable: never a candidate, never counted as a copy
+            except (OSError, ValueError):  # unreadable now: neither a candidate nor a copy, retried next run
+                logger.debug("pack index %s unreadable", pack.name, exc_info=True)
         by_size = sorted(sizes, key=lambda p: sizes[p], reverse=True)  # big packs hold most copies
         for pack in sorted(candidates, key=lambda p: sizes[p]):  # small first: cheapest to prove, likeliest copies
             if pack.stem not in indexes:

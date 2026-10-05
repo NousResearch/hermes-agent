@@ -156,6 +156,18 @@ def _set_routing_metadata(conn, task_id: str, mapping: dict) -> None:
     conn.commit()
 
 
+def _declare_clean(conn, ap, tid, tmp_path):
+    """Declare a card dependency-free and in-scope so gate-focused tests
+    isolate the gate semantics (gaps plan 2026-10-05: zero links and a
+    missing scope declaration now FAIL preflight by design — unknown is
+    never treated as satisfied)."""
+    ap.record_dependencies_none(conn, tid, claim="root", reason="guard test root")
+    src = tmp_path / "scope_evidence.yaml"
+    src.write_text("decision: TEST_SCOPE\n", encoding="utf-8")
+    ap.record_scope_evidence(conn, tid, mode="no-program-scope", source=str(src),
+                             claim="guard test")
+
+
 def _status(conn, task_id: str) -> str:
     return conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()[0]
 
@@ -319,10 +331,11 @@ def test_preflight_card_state_fails_blocked(conn, ap_env, ap):
     assert res.failure_reason.endswith("CARD_STATE: " + card.reason) or "CARD_STATE" in res.failure_reason
 
 
-def test_preflight_card_state_passes_ready(conn, ap_env, ap):
+def test_preflight_card_state_passes_ready(conn, ap_env, ap, tmp_path):
     """ready/running/review must NOT be lumped together with blocked: a normal
     ready card passes the full preflight."""
     tid = kb.create_task(conn, title="normal card", assignee="orchestrator")
+    _declare_clean(conn, ap, tid, tmp_path)
     assert _status(conn, tid) == "ready"
 
     res = ap.preflight(
@@ -358,8 +371,9 @@ def test_preflight_human_gate_pending_without_artifact_fails(conn, ap_env, ap):
     assert res.passed is False
 
 
-def test_preflight_human_gate_pending_with_artifact_passes(conn, ap_env, ap):
+def test_preflight_human_gate_pending_with_artifact_passes(conn, ap_env, ap, tmp_path):
     tid = kb.create_task(conn, title="approved gate card", assignee="orchestrator")
+    _declare_clean(conn, ap, tid, tmp_path)
     _set_routing_metadata(conn, tid, {
         "human_gate_pending": "INDEPENDENT_POC_REVIEW_APPROVAL",
         "approval_artifact": "/approvals/independent_poc_review_approved.yaml",
@@ -398,6 +412,7 @@ def test_gate_writer_cycle_end_to_end(conn, ap_env, ap, tmp_path):
     an artifact-less or wrong-gate approval is refused; a second gate can be
     armed after the first is discharged."""
     tid = kb.create_task(conn, title="gated card", assignee="orchestrator")
+    _declare_clean(conn, ap, tid, tmp_path)
 
     assert ap.mark_human_gate_pending(conn, tid, "INDEPENDENT_POC_REVIEW_APPROVAL") is True
 

@@ -43,6 +43,7 @@ test runs against an isolated tmp HERMES_HOME with its own kanban DB.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -168,6 +169,18 @@ def _gate_check(res, name="human_gate_pending"):
     return [c for c in res.checks if c.name == name]
 
 
+def _declare_clean(conn, ap, tid, tmp_path):
+    """Declare a card dependency-free and in-scope so gate-focused tests
+    isolate the gate semantics (gaps plan 2026-10-05: zero links and a
+    missing scope declaration now FAIL preflight by design — unknown is
+    never treated as satisfied)."""
+    ap.record_dependencies_none(conn, tid, claim="root", reason="gate test root")
+    src = tmp_path / "scope_evidence.yaml"
+    src.write_text("decision: TEST_SCOPE\n", encoding="utf-8")
+    ap.record_scope_evidence(conn, tid, mode="no-program-scope", source=str(src),
+                             claim="gate test")
+
+
 def _preflight(conn, ap, tid, dry_run=True):
     return ap.preflight(
         conn, tid,
@@ -209,10 +222,11 @@ class TestPendingMarkerFailsPreflight:
         assert checks
         assert checks[0].passed is False
 
-    def test_no_marker_no_gate_check(self, conn, ap_env, ap):
+    def test_no_marker_no_gate_check(self, conn, ap_env, ap, tmp_path):
         """A card with no gate markers carries no human_gate_pending check."""
         tid = kb.create_task(conn, title="plain card", assignee="orchestrator")
         _add_comment(conn, tid, "worker", "progress: half done")
+        _declare_clean(conn, ap, tid, tmp_path)
 
         res = _preflight(conn, ap, tid)
         assert _gate_check(res) == []
@@ -234,6 +248,7 @@ class TestApprovalWithExistingArtifactPasses:
         _add_comment(
             conn, tid, "human-operator", f"{APPROVAL} GATE_A artifact={artifact}"
         )
+        _declare_clean(conn, ap, tid, tmp_path)
 
         res = _preflight(conn, ap, tid)
         # The matching approval released the only gate: no pending check.
@@ -250,6 +265,7 @@ class TestApprovalWithExistingArtifactPasses:
         artifact.write_text("decision: APPROVE\n", encoding="utf-8")
         _add_comment(conn, tid, "autopilot", f"{PENDING} GATE_X")
         _add_comment(conn, tid, "some-worker", f"{APPROVAL} GATE_X artifact={artifact}")
+        _declare_clean(conn, ap, tid, tmp_path)
 
         res = _preflight(conn, ap, tid)
         assert _gate_check(res) == []
@@ -511,12 +527,13 @@ class TestRoutingMetadataBranchPinned:
         assert "META_GATE" in checks[0].reason
         assert res.passed is False
 
-    def test_metadata_pending_with_artifact_passes(self, conn, ap_env, ap):
+    def test_metadata_pending_with_artifact_passes(self, conn, ap_env, ap, tmp_path):
         tid = kb.create_task(conn, title="meta approved", assignee="orchestrator")
         _set_routing_metadata(conn, tid, {
             "human_gate_pending": "META_GATE",
             "approval_artifact": "/approvals/independent_poc_review_approved.yaml",
         })
+        _declare_clean(conn, ap, tid, tmp_path)
 
         res = _preflight(conn, ap, tid)
         checks = _gate_check(res)
@@ -570,3 +587,183 @@ class TestWritersUnchanged:
         armed, err = ap._latest_pending_human_gate(conn, tid)
         assert err is None
         assert armed == ["G2"]
+
+
+# ---------------------------------------------------------------------------
+# (f) Gaps plan 2026-10-05 phase 4 — dependency tri-state: verified /
+#     declared-none / unknown. Zero links is no longer a silent pass.
+# ---------------------------------------------------------------------------
+
+class TestDependencyTriState:
+    def test_empty_graph_without_declaration_fails_unknown(self, conn, ap_env, ap):
+        """The 12-boards bug: no parents AND no DEPENDENCIES_NONE marker ->
+        dependencies_unknown, refused even in dry-run."""
+        tid = kb.create_task(conn, title="undeclared", assignee="orchestrator")
+
+        res = _preflight(conn, ap, tid)
+        check = [c for c in res.checks if c.name == "dependencies_satisfied"]
+        assert check and check[0].passed is False
+        assert check[0].detail.get("kind") == "dependencies_unknown"
+        assert res.passed is False
+
+    def test_declared_root_passes_with_reason(self, conn, ap_env, ap, tmp_path):
+        tid = kb.create_task(conn, title="declared root", assignee="orchestrator")
+        ap.record_dependencies_none(conn, tid, claim="root", reason="pipeline head")
+
+        res = _preflight(conn, ap, tid)
+        check = [c for c in res.checks if c.name == "dependencies_satisfied"]
+        assert check and check[0].passed is True
+        assert check[0].detail.get("kind") == "declared_no_dependencies"
+        assert "pipeline head" in check[0].reason
+
+    def test_malformed_claim_fails(self, conn, ap_env, ap):
+        tid = kb.create_task(conn, title="bogus claim", assignee="orchestrator")
+        _add_comment(conn, tid, "autopilot", "DEPENDENCIES_NONE: maybe reason=trust me")
+
+        res = _preflight(conn, ap, tid)
+        check = [c for c in res.checks if c.name == "dependencies_satisfied"]
+        assert check and check[0].passed is False
+        assert "malformed" in check[0].reason
+
+    def test_writer_rejects_invalid_claim(self, conn, ap):
+        tid = kb.create_task(conn, title="writer guard", assignee="orchestrator")
+        with pytest.raises(ValueError):
+            ap.record_dependencies_none(conn, tid, claim="maybe")
+
+    def test_incomplete_parent_fails_verified_kind(self, conn, ap_env, ap):
+        parent = kb.create_task(conn, title="parent running", assignee="orchestrator",
+                                initial_status="running")
+        tid = kb.create_task(conn, title="child", assignee="orchestrator")
+        conn.execute("INSERT INTO task_links (parent_id, child_id) VALUES (?, ?)",
+                     (parent, tid))
+        conn.commit()
+
+        res = _preflight(conn, ap, tid)
+        check = [c for c in res.checks if c.name == "dependencies_satisfied"]
+        assert check and check[0].passed is False
+        assert check[0].detail.get("kind") == "verified"
+        assert parent in str(check[0].detail.get("incomplete"))
+
+    def test_done_parent_verified_pass(self, conn, ap_env, ap, tmp_path):
+        parent = kb.create_task(conn, title="parent done", assignee="orchestrator")
+        kb.complete_task(conn, parent, result="ok") if hasattr(kb, "complete_task") else \
+            conn.execute("UPDATE tasks SET status='done' WHERE id=?", (parent,))
+        tid = kb.create_task(conn, title="child2", assignee="orchestrator")
+        conn.execute("INSERT INTO task_links (parent_id, child_id) VALUES (?, ?)",
+                     (parent, tid))
+        conn.commit()
+
+        res = _preflight(conn, ap, tid)
+        check = [c for c in res.checks if c.name == "dependencies_satisfied"]
+        assert check and check[0].passed is True
+        assert check[0].detail.get("kind") == "verified"
+
+
+# ---------------------------------------------------------------------------
+# (g) Gaps plan 2026-10-05 phase 5 — scope_valid is a real check: the old
+#     hardcoded "Immunefi scope (default)" pass is retired, dry_run does NOT
+#     bypass it, and mode-b-study evidence must not demand Immunefi machinery.
+# ---------------------------------------------------------------------------
+
+class TestScopeEvidence:
+    def test_missing_marker_fails(self, conn, ap_env, ap):
+        tid = kb.create_task(conn, title="no scope", assignee="orchestrator")
+        ap.record_dependencies_none(conn, tid, claim="root")
+
+        res = _preflight(conn, ap, tid)
+        check = [c for c in res.checks if c.name == "scope_valid"]
+        assert check and check[0].passed is False
+        assert "never verified" in check[0].reason
+        assert res.passed is False
+
+    def test_no_program_scope_marker_passes(self, conn, ap_env, ap, tmp_path):
+        tid = kb.create_task(conn, title="clean scope", assignee="orchestrator")
+        ap.record_dependencies_none(conn, tid, claim="root")
+        src = tmp_path / "boundary.yaml"
+        src.write_text("boundary: control-plane test\n", encoding="utf-8")
+        ap.record_scope_evidence(conn, tid, mode="no-program-scope", source=str(src))
+
+        res = _preflight(conn, ap, tid)
+        assert res.passed is True, res.to_dict()
+
+    def test_vanished_artifact_fails(self, conn, ap_env, ap, tmp_path):
+        tid = kb.create_task(conn, title="stale scope", assignee="orchestrator")
+        ap.record_dependencies_none(conn, tid, claim="root")
+        gone = tmp_path / "gone.yaml"
+        gone.write_text("x\n", encoding="utf-8")
+        ap.record_scope_evidence(conn, tid, mode="no-program-scope", source=str(gone))
+        gone.unlink()
+
+        res = _preflight(conn, ap, tid)
+        check = [c for c in res.checks if c.name == "scope_valid"]
+        assert check and check[0].passed is False
+        assert "vanished" in check[0].reason
+
+    def test_immunefi_mode_requires_intake_packet(self, conn, ap_env, ap, tmp_path):
+        tid = kb.create_task(conn, title="mode a", assignee="orchestrator")
+        ap.record_dependencies_none(conn, tid, claim="root")
+        junk = tmp_path / "junk.json"
+        junk.write_text("[1,2,3]", encoding="utf-8")
+        _add_comment(conn, tid, "autopilot",
+                     f"SCOPE_EVIDENCE: mode=immunefi-program source={junk}")
+
+        res = _preflight(conn, ap, tid)
+        check = [c for c in res.checks if c.name == "scope_valid"]
+        assert check and check[0].passed is False
+        assert "intake packet" in check[0].reason
+
+    def test_immunefi_mode_valid_packet_passes(self, conn, ap_env, ap, tmp_path):
+        tid = kb.create_task(conn, title="mode a ok", assignee="orchestrator")
+        ap.record_dependencies_none(conn, tid, claim="root")
+        packet = tmp_path / "INTAKE_PACKET.json"
+        packet.write_text(json.dumps({"primary_program": "Immunefi X", "schema_version": 2}),
+                          encoding="utf-8")
+        ap.record_scope_evidence(conn, tid, mode="immunefi-program", source=str(packet))
+
+        res = _preflight(conn, ap, tid)
+        check = [c for c in res.checks if c.name == "scope_valid"]
+        assert check and check[0].passed is True
+        assert res.passed is True, res.to_dict()
+
+    def test_mode_b_study_passes_without_immunefi_machinery(self, conn, ap_env, ap, tmp_path):
+        """Mode B private studies carry their own durable authorization; the
+        scope check must not demand an Immunefi intake packet for them."""
+        tid = kb.create_task(conn, title="mode b", assignee="orchestrator")
+        ap.record_dependencies_none(conn, tid, claim="root")
+        auth = tmp_path / "MODE_B_AUTHORIZATION.yaml"
+        auth.write_text("workflow_id: protocol-study-mode-b\n", encoding="utf-8")
+        ap.record_scope_evidence(conn, tid, mode="mode-b-study", source=str(auth),
+                                 claim="study-08")
+
+        res = _preflight(conn, ap, tid)
+        check = [c for c in res.checks if c.name == "scope_valid"]
+        assert check and check[0].passed is True
+        assert "mode-b-study" in check[0].reason
+        assert "study-08" in check[0].reason
+
+    def test_dry_run_does_not_bypass_scope_refusal(self, conn, ap_env, ap):
+        """A scope refusal is an authorization claim, not dispatch mechanics:
+        dry_run must still surface it as a failure (plan: 'no usar dry_run
+        para contornar a recusa')."""
+        tid = kb.create_task(conn, title="dry scope", assignee="orchestrator")
+        ap.record_dependencies_none(conn, tid, claim="root")
+
+        res = _preflight(conn, ap, tid, dry_run=True)
+        check = [c for c in res.checks if c.name == "scope_valid"]
+        assert check and check[0].passed is False
+        assert res.passed is False
+
+    def test_writer_requires_existing_source(self, conn, ap, tmp_path):
+        tid = kb.create_task(conn, title="writer scope guard", assignee="orchestrator")
+        with pytest.raises(ValueError):
+            ap.record_scope_evidence(conn, tid, mode="no-program-scope",
+                                     source=str(tmp_path / "nowhere.yaml"))
+
+    def test_malformed_marker_fails(self, conn, ap_env, ap):
+        tid = kb.create_task(conn, title="bad scope marker", assignee="orchestrator")
+        ap.record_dependencies_none(conn, tid, claim="root")
+        _add_comment(conn, tid, "autopilot", "SCOPE_EVIDENCE: mode=whatever source=/tmp/x")
+
+        res = _preflight(conn, ap, tid)
+        check = [c for c in res.checks if c.name == "scope_valid"]
+        assert check and check[0].passed is False

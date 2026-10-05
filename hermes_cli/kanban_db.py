@@ -5457,8 +5457,14 @@ def request_review(
         raise TypeError("metadata must be a dict or None")
     metadata = redact_review_value(metadata)
     # A review handoff carries UNTRUSTED caller metadata; it must never clobber
-    # or forge the trusted launch origin (review round-2 residual of MEDIUM #5).
-    metadata = _strip_keys(metadata, _LAUNCH_KEY)
+    # or forge the trusted launch origin (review round-2 residual of MEDIUM #5),
+    # NOR the other trusted run-metadata keys (R5-04, review 5 2026-10-05): a
+    # worker that never spawned a dispatcher could otherwise forge
+    # ``resolved_route_provenance`` onto the closing run, or pre-stage
+    # ``external_artifacts_preserved``. Same policy as complete_task
+    # (_strip_protected_run_metadata); ``edit_task`` keeps its narrower
+    # launch-only strip deliberately (operator corrections are auditable).
+    metadata = _strip_protected_run_metadata(metadata)
     # Declared (metadata["artifacts"]) and prose-referenced files
     # must be durable BEFORE anything can clean the scratch workspace up: for a
     # review-bound card the reviewer's completion is the cleanup trigger.

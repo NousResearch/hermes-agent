@@ -3209,8 +3209,13 @@ def _mark_provider_unhealthy(
 
 
 def _is_provider_unhealthy(label: str, base_url: Optional[str] = None) -> bool:
-    """True iff this provider endpoint is unhealthy and unexpired; lazily evicts expired entries."""
-    if not label:
+    """True iff this provider endpoint is unhealthy and unexpired; lazily evicts expired entries.
+
+    Main-conversation route resolution opts out (``_main_lane_active()``): the cache is
+    written from auxiliary lanes (task 402 quarantines, missing aux credentials, fallback
+    candidate dead-ends), so an aux-written marker must never hide a provider from main
+    resolution/fallback chains (#133196) — aux-task readers keep honoring it."""
+    if not label or _main_lane_active():
         return False
     key = _unhealthy_cache_key(label, base_url)
     expires_at = _aux_unhealthy_until.get(key)
@@ -3245,6 +3250,33 @@ def _reset_aux_unhealthy_cache() -> None:
     _aux_unhealthy_until.clear()
     _aux_unhealthy_logged_at.clear()
     _aux_unhealthy_reason.clear()
+
+
+# Lane isolation for the shared unhealthy cache (#133196): the markers are written by auxiliary
+# lanes only, so main-conversation route resolution (agent init, mid-turn fallback) must not
+# honor them — an aux task's 402 otherwise hides the provider from the main session's routing
+# and fallback_providers for the whole TTL, surfacing as ``No LLM provider configured``.
+_MAIN_LANE_OPTOUT: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "hermes_main_lane_optout", default=False)
+
+
+def _main_lane_active() -> bool:
+    """True while a main-conversation route/fallback resolution is in progress."""
+    return _MAIN_LANE_OPTOUT.get()
+
+
+class _MainLaneOptOut:
+    """Context manager: provider-unhealthy markers written by auxiliary lanes are
+    invisible to provider resolution inside the block."""
+
+    __slots__ = ("_token",)
+
+    def __enter__(self) -> "_MainLaneOptOut":
+        self._token = _MAIN_LANE_OPTOUT.set(True)
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        _MAIN_LANE_OPTOUT.reset(self._token)
 
 
 def _contains_any(text: str, needles: Tuple[str, ...]) -> bool:

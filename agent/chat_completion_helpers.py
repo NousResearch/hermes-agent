@@ -2094,7 +2094,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             continue
 
         try:
-            from agent.auxiliary_client import resolve_provider_client
+            from agent.auxiliary_client import _MainLaneOptOut, resolve_provider_client
             from hermes_cli.fallback_config import resolve_entry_api_key
             # Pass the entry's base_url/api_key so custom endpoints (Ollama Cloud) resolve instead
             # of falling through to OpenRouter defaults.
@@ -2107,8 +2107,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
                 from agent.secret_scope import get_secret
                 fb_api_key_hint = get_secret("OLLAMA_API_KEY") or None
             # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
-            fb_client, _resolved_fb_model = resolve_provider_client(
-                fb_provider, model=fb_model, raw_codex=True, explicit_base_url=fb_base_url_hint, explicit_api_key=fb_api_key_hint, api_mode=fb_api_mode)
+            # Main-lane opt-out: aux-written unhealthy markers must not hide a configured
+            # fallback entry from the main conversation's own failover (#133196).
+            with _MainLaneOptOut():
+                fb_client, _resolved_fb_model = resolve_provider_client(
+                    fb_provider, model=fb_model, raw_codex=True, explicit_base_url=fb_base_url_hint, explicit_api_key=fb_api_key_hint, api_mode=fb_api_mode)
             if fb_client is None:
                 logger.warning("Fallback to %s failed: provider not configured", fb_provider)
                 unavailable.add(fb_key)

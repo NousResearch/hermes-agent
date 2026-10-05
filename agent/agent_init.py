@@ -850,9 +850,12 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     no-provider diagnostic. ``None`` when the chain landed on a MoA preset: the facade is
     already bound and there is no OpenAI client to construct.
     """
-    from agent.auxiliary_client import resolve_provider_client
-    _routed_client, _ = resolve_provider_client(
-        agent.provider or "auto", model=agent.model, raw_codex=True)
+    from agent.auxiliary_client import _MainLaneOptOut, resolve_provider_client
+    # Main-conversation provider resolution: auxiliary-written unhealthy markers must not
+    # hide a provider from the main session's own route or init fallback chain (#133196).
+    with _MainLaneOptOut():
+        _routed_client, _ = resolve_provider_client(
+            agent.provider or "auto", model=agent.model, raw_codex=True)
     if _routed_client is not None:
         from hermes_cli.providers import is_actual_route, normalize_provider
         effective_provider = getattr(_routed_client, "_hermes_aux_effective_provider", "")
@@ -872,10 +875,13 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
         try:
             from hermes_cli.fallback_config import resolve_entry_api_key
             _fb_explicit_key = resolve_entry_api_key(_fb)
-            _fb_client, _fb_model = resolve_provider_client(
-                _fb["provider"], model=_fb["model"], raw_codex=True,
-                explicit_base_url=_fb.get("base_url"), explicit_api_key=_fb_explicit_key,
-            )
+            # Main-lane opt-out: aux-written unhealthy markers must not hide a
+            # configured fallback entry from init resolution (#133196).
+            with _MainLaneOptOut():
+                _fb_client, _fb_model = resolve_provider_client(
+                    _fb["provider"], model=_fb["model"], raw_codex=True,
+                    explicit_base_url=_fb.get("base_url"), explicit_api_key=_fb_explicit_key,
+                )
         except Exception as _fb_exc:
             logger.debug("Init-time fallback entry %s failed: %s", _fb_provider, _fb_exc)
             # A bare exception (``KeyError()``) stringifies empty; name its type instead.

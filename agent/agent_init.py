@@ -1443,6 +1443,15 @@ def _apply_agent_section(agent, _agent_cfg):
         _verbosity = ""
     agent.text_verbosity = _verbosity or None
 
+    # Responses encrypted-reasoning replay window for proxy/aggregator routes (`other:*`): at most
+    # this many of the most recent assistant turns carry their sealed blobs on the wire, so a
+    # rejected blob costs that many turns instead of the whole session. 0 = replay none for proxy
+    # issuers; first-party issuers always replay in full. See agent/codex_proxy_replay_window.py.
+    from agent.codex_proxy_replay_window import proxy_replay_turns_from_config
+    agent.codex_proxy_replay_turns = proxy_replay_turns_from_config(
+        _agent_section.get("codex_proxy_replay_turns")
+    )
+
     # Default-on boolean gates: anti-stall guards (notice-only), universal guidance toggles
     # (ALL models, unlike enforcement), the local toolchain probe, Bot Mode protocol section.
     for _key in (

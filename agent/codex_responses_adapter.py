@@ -549,10 +549,34 @@ def _tool_output_items(msg: Dict[str, Any], *, wire_ids: Optional[_WireCallIds] 
     return [{"type": "function_call_output", "call_id": wire_call_id, "output": output_value}]
 
 
+def _proxy_replay_turn_indices(
+    messages: List[Dict[str, Any]], *, current_issuer_kind: Optional[str], proxy_replay_max_turns: Optional[int],
+) -> Optional[set]:
+    """Message indices whose encrypted reasoning may replay, or None for "no cap".
+
+    A proxy/aggregator issuer (its ``issuer_kind`` starts with ``other:``) can rotate the backend
+    identity that seals its blobs between turns or across a gateway restart. Only the
+    ``proxy_replay_max_turns`` most recent assistant turns that carry reasoning items keep them, so
+    one rejected blob costs at most that many turns rather than the whole session. A turn's
+    assistant TEXT is never affected, only the encrypted sidecar drops. First-party issuers, and
+    every caller that passes no cap, replay in full.
+    """
+    cap = proxy_replay_max_turns
+    if cap is None or not isinstance(current_issuer_kind, str) or not current_issuer_kind.startswith("other:"):
+        return None
+    candidates = [
+        idx for idx, msg in enumerate(messages)
+        if isinstance(msg, dict) and msg.get("role") == "assistant"
+        and isinstance(msg.get("codex_reasoning_items"), list) and msg.get("codex_reasoning_items")
+    ]
+    return set(candidates[len(candidates) - cap:]) if cap > 0 else set()
+
+
 def _chat_messages_to_responses_input(
     messages: List[Dict[str, Any]], *, is_xai_responses: bool = False, is_github_responses: bool = False,
     replay_encrypted_reasoning: bool = True, current_issuer_kind: Optional[str] = None,
     current_issuer_model: Optional[str] = None, native_compaction_eligible: bool = False,
+    proxy_replay_max_turns: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
 
@@ -562,6 +586,8 @@ def _chat_messages_to_responses_input(
     ``is_github_responses``: drops ``id`` from replayed message items (Copilot 401s on stale ids).
     ``current_issuer_kind`` / ``current_issuer_model``: provenance guard; items stamped by another issuer or
     model drop. Legacy items carrying only an endpoint stamp replay on a matching issuer.
+    ``proxy_replay_max_turns``: for proxy issuers (``other:*``), replay encrypted reasoning for at most
+    that many of the most recent assistant turns carrying it (see :func:`_proxy_replay_turn_indices`).
     ``native_compaction_eligible``: THIS request carries ``context_management``; gates both replaying ``compaction``
     checkpoints and ``prune_pre_checkpoint_items``. Checkpoints persist across model swaps / compression flips / resume,
     so without the gate one checkpoint would erase pre-checkpoint history on a model that cannot decrypt it (lossless:
@@ -605,10 +631,13 @@ def _chat_messages_to_responses_input(
     # (#51512). It accepts only typed parts, so string text goes out as ``input_text``/``output_text``
     # there; other Responses routes keep the string shorthand they have always received.
     typed_text_only = current_issuer_kind == "codex_backend"
+    replay_turn_indices = _proxy_replay_turn_indices(
+        messages, current_issuer_kind=current_issuer_kind, proxy_replay_max_turns=proxy_replay_max_turns,
+    )
     def emit(new_items: List[Dict[str, Any]], msg: Dict[str, Any]) -> None:
         items.extend(new_items)
         item_sources.extend([msg] * len(new_items))
-    for msg in messages:
+    for msg_index, msg in enumerate(messages):
         if not isinstance(msg, dict):
             continue
         role = msg.get("role")
@@ -633,6 +662,8 @@ def _chat_messages_to_responses_input(
             msg, seen_item_ids=seen_item_ids, current_issuer_kind=current_issuer_kind,
             current_issuer_model=current_issuer_model, native_compaction_eligible=native_compaction_eligible,
         )
+        if reasoning_items and replay_turn_indices is not None and msg_index not in replay_turn_indices:
+            reasoning_items = []
         emit(reasoning_items, msg)
         message_items = _replay_message_items(
             msg, is_github_responses=is_github_responses, current_issuer_kind=current_issuer_kind,

@@ -160,6 +160,11 @@ DEFAULT_CONFIG = {
         # Responses API final-answer length (`text.verbosity`): "" = not sent (provider default),
         # or low | medium | high. Responses-family transports only; chat_completions never sends it.
         "text_verbosity": "",
+        # Encrypted-reasoning replay window for proxy/aggregator Responses routes (those whose
+        # issuer kind starts with "other:"). Only this many of the most recent assistant turns send
+        # their sealed reasoning blobs, so one rejected blob costs that many turns instead of the
+        # whole session. 0 = send none. First-party issuers always replay in full.
+        "codex_proxy_replay_turns": 2,
         # System-prompt guidance telling the model to call tools instead of describing actions.
         # "auto" = gpt/codex models; true/false = force for all models; or a list of model-name
         # substrings (e.g. ["gpt", "codex", "gemini", "qwen"]).

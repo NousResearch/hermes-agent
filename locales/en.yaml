@@ -30,6 +30,8 @@ approval:
     notify_failed: "The approval request could not be delivered — the {noun} did not run."
     cancelled: "The approval prompt was withdrawn or never reached you — the {noun} did not run."
     blocked: "This {noun} is not allowed in an unattended session — it did not run."
+    callback_error: "The approval request could not be delivered — the {noun} did not run."
+    no_channel: "No approval channel could show the prompt — the {noun} did not run."
     default: "This {noun} did not run."
   noun:
     command: "command"

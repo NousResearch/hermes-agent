@@ -1322,7 +1322,11 @@ class TestFailClosedUnderPromptToolkit:
                 "prompt_dangerous_approval deadlocked under prompt_toolkit "
                 "with no callback -- fail-closed guard is broken"
             )
-            assert result == ["cancelled"]  # unanswered, not a user denial (#22992)
+            # #130272: the guard returns a distinct "no_channel" (not a user
+            # denial, not generic "cancelled") so the agent message can say no
+            # channel was reachable. Still fail-closed.
+            assert [str(r) for r in result] == ["no_channel"]
+            assert str(getattr(result[0], "cause", "")) != ""
         finally:
             ptc.get_app_or_none = orig
 

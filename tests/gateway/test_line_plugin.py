@@ -416,8 +416,10 @@ class TestAdapterInit:
         assert ad.channel_access_token == "tok"
         assert ad.channel_secret == "sec"
         # A whitespace-only secret reads as unset, so connect fails closed instead of keying HMAC with blanks.
-        assert LineAdapter(PlatformConfig(enabled=True, extra={"channel_access_token": "tok",
-                                                               "channel_secret": "   "})).channel_secret == ""
+        # So does an explicit null (an empty YAML value), which must not become the string "None".
+        for blank in ("   ", None):
+            assert LineAdapter(PlatformConfig(enabled=True, extra={"channel_access_token": "tok",
+                                                                   "channel_secret": blank})).channel_secret == ""
         assert ad.webhook_port == 7777
         assert ad.public_base_url == "https://x.example.com"
         assert ad.allowed_users == {"U1", "U2"}

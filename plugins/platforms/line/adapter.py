@@ -344,8 +344,8 @@ def _credentials(config) -> Tuple[str, str]:
     extra = getattr(config, "extra", {}) or {}
     # Stripped: a whitespace-only secret must read as unset, not key the HMAC with blanks.
     return (
-        str(_get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN") or extra.get("channel_access_token", "")).strip(),
-        str(_get_scoped_secret("LINE_CHANNEL_SECRET") or extra.get("channel_secret", "")).strip())
+        str(_get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN") or extra.get("channel_access_token") or "").strip(),
+        str(_get_scoped_secret("LINE_CHANNEL_SECRET") or extra.get("channel_secret") or "").strip())
 
 
 def _coerce(cast: Callable[[Any], Any], value: Any, default: Any) -> Any:
@@ -895,7 +895,7 @@ def _unlink_quietly(path: str) -> None:
 
 
 def _env_credentials_present() -> bool:
-    return bool(_get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN") and _get_scoped_secret("LINE_CHANNEL_SECRET"))
+    return all(str(_get_scoped_secret(k) or "").strip() for k in ("LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET"))
 
 
 def check_requirements() -> bool:

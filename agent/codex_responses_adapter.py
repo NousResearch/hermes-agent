@@ -83,6 +83,27 @@ def _leaked_tool_call_text(text: str) -> bool:
     lead_in = text[:match.start()].strip().splitlines()
     return bool(lead_in) and bool(_SHELL_JSON_LEAK_LEADIN_PATTERN.search(lead_in[-1].strip()))
 
+
+# A leaked ``to=functions.<name>`` marker plus the JSON arguments blob that precedes it
+# (the leak format emits the arguments, then the control-token slot, then junk words).
+_LEAKED_CALL_TAIL_RE = re.compile(
+    r"\s*\{[\s\S]*?\}\s*to\s*=\s*functions\.[A-Za-z_][\w.]*[^\n]*", re.IGNORECASE,
+)
+# Marker with no JSON blob in front (or non-JSON narration between): still take the
+# whole marker line — the junk that follows the marker belongs to the leaked slot.
+_LEAKED_MARKER_LINE_RE = re.compile(
+    r"(?:^|[\s>|])to\s*=\s*functions\.[A-Za-z_][\w.]*[^\n]*", re.IGNORECASE,
+)
+
+
+def _strip_leaked_tool_call_text(text: str) -> str:
+    """Remove leaked tool-call markup (arguments JSON + ``to=functions.<name>`` + the
+    junk tokens in the control-token slots) from commentary text, keeping any real
+    narration around it. Safe on clean text (returns it unchanged)."""
+    cleaned = _LEAKED_CALL_TAIL_RE.sub("", text)
+    cleaned = _LEAKED_MARKER_LINE_RE.sub("", cleaned)
+    return cleaned.strip("\n")
+
 # The Codex backend rejects literal Harmony wire tokens (``invalid_prompt: Request
 # blocked.``). Fullwidth bars survive format-character stripping and stay legible.
 _HARMONY_CONTROL_TOKEN_RE = re.compile(r"<\|(start|end|channel|message|constrain|return|call)\|>")
@@ -1111,6 +1132,7 @@ class _OutputScan:
         self.has_incomplete_items = response_status in _INCOMPLETE_STATUSES
         self.saw_streaming_or_item_incomplete = response_status in {"queued", "in_progress"}
         self.saw_commentary_phase = self.saw_final_answer_phase = self.saw_reasoning_item = False
+        self.saw_leaked_tool_call_text = False
 
     def scan(self, output: List[Any], issuer_kind: Optional[str], issuer_model: Optional[str] = None) -> None:
         for item in output:
@@ -1147,9 +1169,26 @@ class _OutputScan:
         message_text = _extract_responses_message_text(item)
         if not message_text:
             return
+        self.saw_leaked_tool_call_text = self.saw_leaked_tool_call_text or _leaked_tool_call_text(message_text)
+        # Strip leaked tool-call markup before routing the text. The leak can appear in
+        # final-answer content as well as commentary, and structured calls do not make
+        # the textual copy safe to persist or replay (#125458).
+        stripped = _strip_leaked_tool_call_text(message_text)
+        if stripped != message_text:
+            logger.warning(
+                "Codex message text contained leaked tool-call markup (%d chars stripped); "
+                "removed before routing or persistence.", len(message_text) - len(stripped),
+            )
+        message_text = stripped
+        if not message_text:
+            return
         # commentary/analysis text is mid-turn narration, never the final answer: route it
         # to the reasoning channel; the exact item is still preserved for replay/cache.
-        (self.reasoning_parts if is_commentary_phase else self.content_parts).append(message_text)
+        if is_commentary_phase:
+            if message_text:
+                self.reasoning_parts.append(message_text)
+        else:
+            self.content_parts.append(message_text)
         item_id = getattr(item, "id", None)
         self.message_items_raw.append(_message_item(
             [{"type": "output_text", "text": message_text}], status=_normalize_responses_message_status(item_status),
@@ -1194,7 +1233,7 @@ def _normalize_codex_response(
     # Tool-call leak recovery: gpt-5.x sometimes emits the intended ``function_call`` as plain Harmony text
     # (``to=functions.foo {json}``) or Codex-CLI shell JSON (``{"cmd": ...}``). Treat as incomplete so the
     # continuation re-elicits a real call; clear the garbage.
-    leaked_tool_call_text = bool(final_text and not tool_calls and _leaked_tool_call_text(final_text))
+    leaked_tool_call_text = scan.saw_leaked_tool_call_text or bool(final_text and not tool_calls and _leaked_tool_call_text(final_text))
     if leaked_tool_call_text:
         logger.warning(
             "Codex response contains leaked tool-call text in assistant content (no structured function_call "

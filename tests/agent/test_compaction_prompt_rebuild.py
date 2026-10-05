@@ -233,7 +233,9 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
         from pathlib import Path
         from agent.system_prompt import build_system_prompt, invalidate_system_prompt
 
-        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-bind-"))
+        # Resolved: the launch-dir pin key comes from os.getcwd() (physical path),
+        # which never matches a symlinked /var spelling of the same directory.
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-bind-")).resolve()
         old_cwd = os.getcwd()
         try:
             repo = _init_repo(tmp / "proj", "init commit")
@@ -260,7 +262,9 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
         from pathlib import Path
         from agent.system_prompt import build_system_prompt
 
-        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-resume-"))
+        # Resolved: the workspace block's "- Root:" is a resolved path, so the
+        # raw symlinked spelling (/var vs /private/var on macOS) never matches.
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-resume-")).resolve()
         try:
             repo, other = _init_repo(tmp / "proj", "init commit"), _init_repo(tmp / "other", "init other")
 
@@ -290,7 +294,9 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
         from pathlib import Path
         from agent.system_prompt import build_system_prompt
 
-        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-empty-"))
+        # Resolved: the workspace block's "- Root:" is a resolved path, so the
+        # raw symlinked spelling (/var vs /private/var on macOS) never matches.
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-empty-")).resolve()
         try:
             repo = _init_repo(tmp / "proj", "init commit")
             stored = f"Host: x\nUser home directory: /h\nCurrent working directory: {repo}\n\nBODY"

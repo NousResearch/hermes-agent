@@ -206,8 +206,6 @@ def _truncate_input_text_parts(content: List[Dict[str, Any]], budget: int) -> Li
     """Copy the head of validated input_text parts without flattening their metadata."""
     head = []
     for part in content:
-        if budget <= 0:
-            break
         text = part["text"]
         cost = _approx_tokens(text)
         if cost > budget:
@@ -338,13 +336,13 @@ def prune_pre_checkpoint_items(
         if is_summary:
             _retain_summary(text, item)
         elif user_remaining > 0:
-            parts_cost = _input_text_parts_cost(item.get("content"))
+            content = item.get("content")
+            parts_cost = _input_text_parts_cost(content)
             cost = parts_cost if parts_cost is not None else _approx_tokens(text)
             if cost <= user_remaining:
                 retained_reversed.append(item)
                 user_remaining -= cost
             else:
-                content = item.get("content")
                 if isinstance(content, str):
                     head = _head_within_budget(content, user_remaining)
                     keep = bool(head.strip())

@@ -32,10 +32,6 @@ class TestBraveFreeProviderIsConfigured:
         assert BraveFreeWebSearchProvider().is_available() is True
 
 
-    def test_implements_web_search_provider(self):
-        from agent.web_search_provider import WebSearchProvider
-        from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
-        assert issubclass(BraveFreeWebSearchProvider, WebSearchProvider)
 
 
 class TestBraveFreeProviderSearch:

@@ -1,5 +1,6 @@
-import { isArtifactFilePath, mediaExternalUrl, resolveMediaDisplaySrc } from '@/lib/media'
-import type { SessionInfo, SessionMessage } from '@/types/hermes'
+import { mediaTagValues } from '@/lib/chat-messages/parts'
+import { isArtifactFilePath, mediaExternalUrl, mediaPathFromMarkdownHref, resolveMediaDisplaySrc } from '@/lib/media'
+import type { SessionInfo, SessionMessage, SessionMessagesResponse } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
 export type ArtifactFilter = 'all' | ArtifactKind
@@ -27,16 +28,18 @@ export interface ArtifactLoadResult {
   failures: ArtifactLoadFailure[]
 }
 
+const ARTIFACT_MESSAGE_PAGE_SIZE = 100
+const MAX_ARTIFACT_MESSAGE_PAGE_JSON_CHARS = 32_000_000
+
 const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
-const MEDIA_RE = /[`"']?MEDIA:\s*(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
-const URL_RE = /https?:\/\/[^\s<>"')]+/g
+const URL_RE = /https?:\/\/[^\s<>"')`]+/g
 const PATH_RE = /(^|[\s("'`])((?:\/|~[\\/]|\.\.?[\\/]|\\\\)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const WINDOWS_PATH_RE = /(^|[\s("'`])([A-Za-z]:[\\/][^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp)(?:\?.*)?$/i
 
 const FILE_EXT_RE =
-  /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|zip|tar|gz|avi|flac|m4a|mkv|mp3|ogg|opus|wav|webm|mp4|mov)(?:\?.*)?$/i
+  /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|xlsx?|docx?|pptx?|html|zip|tar|gz|avi|flac|m4a|mkv|mp3|ogg|opus|wav|webm|mp4|mov)(?:\?.*)?$/i
 
 const MAX_UNIX_SECONDS = 10_000_000_000
 
@@ -51,12 +54,90 @@ const PRODUCER_TOOL_ARTIFACT_KEY_RE =
 
 const SCREENSHOT_PATH_RE = /Screenshot path:\s*([^\r\n<>]+)/gi
 
+// A pushValue callback plus whether the value is an explicit delivery the
+// author asserted as an artifact (a raw `MEDIA:` tag), as opposed to a path
+// scraped heuristically out of prose or a tool payload.
+type PushValue = (value: string, explicit?: boolean) => void
+
+// pip's own traffic, not session output (#52972): terminal output logs every
+// download (`Downloading https://<index>/packages/…/pkg-1.0-py3-none-any.whl`,
+// plus its `.whl.metadata`) and cached files live under pip's cache dir.
+const PIP_CACHE_DIR_RE = /\/(?:\.cache\/pip|library\/caches\/pip|appdata\/local\/pip\/cache)\//
+const WHEEL_RE = /\.whl(?:\.metadata)?$/
+const PACKAGE_INDEX_DIST_RE = /\/packages\/.+\.(?:tar\.gz|tar\.bz2|zip|egg)(?:\.metadata)?$/
+
+function artifactPathForFiltering(value: string): string {
+  if (/^(?:https?|file):\/\//i.test(value)) {
+    try {
+      return decodeURIComponent(new URL(value).pathname).toLowerCase()
+    } catch {
+      // Malformed URL: fall through to plain string normalization.
+    }
+  }
+
+  return value.replace(/\\/g, '/').toLowerCase()
+}
+
+function isPythonPackageDownload(value: string): boolean {
+  const path = artifactPathForFiltering(value)
+
+  return (
+    PIP_CACHE_DIR_RE.test(path) ||
+    WHEEL_RE.test(path) ||
+    (/^https?:\/\//i.test(value) && PACKAGE_INDEX_DIST_RE.test(path))
+  )
+}
+
+function looksLikeArtifact(value: string, explicit = false): boolean {
+  if (!explicit && isPythonPackageDownload(value)) {
+    return false
+  }
+
+  if (/^(?:https?:\/\/|data:image\/)/.test(value)) {
+    return true
+  }
+
+  if (!looksLikePathOrUrl(value)) {
+    return false
+  }
+
+  // An explicitly delivered file is an artifact by definition even when its
+  // extension is unknown — it should be listed as an opaque `file` entry
+  // rather than silently vanish. Extensionless bare paths scraped from prose
+  // stay excluded.
+  if (explicit) {
+    return true
+  }
+
+  return IMAGE_EXT_RE.test(value) || FILE_EXT_RE.test(value)
+}
+
 function artifactSessionTitle(session: SessionInfo): string {
   return session.title?.trim() || session.preview?.trim() || 'Untitled session'
 }
 
 function normalizeValue(value: string): string {
-  return value.trim().replace(/[),.;]+$/, '')
+  let trimmed = value.trim()
+
+  for (let i = 0; i < 3; i += 1) {
+    const quote = trimmed[0]
+
+    if (quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote)) {
+      trimmed = trimmed.slice(1, -1).trim()
+
+      continue
+    }
+
+    break
+  }
+
+  return trimmed.replace(/[`*]+$/g, '').replace(/[),.;]+$/, '')
+}
+
+// Chat renders file refs as `[label](#media:<encoded path>)`. Decode before
+// classification so the Artifacts page keeps the path, not the href.
+function decodeMediaHrefValue(value: string): string {
+  return mediaPathFromMarkdownHref(value) ?? value
 }
 
 function unquoteMediaValue(value: string): string {
@@ -72,9 +153,9 @@ function unquoteMediaValue(value: string): string {
   return trimmed
 }
 
-function collectMediaValues(text: string, pushValue: (value: string) => void): void {
-  for (const match of text.matchAll(MEDIA_RE)) {
-    pushValue(unquoteMediaValue(match[1] || ''))
+function collectMediaValues(text: string, pushValue: PushValue): void {
+  for (const value of mediaTagValues(text)) {
+    pushValue(unquoteMediaValue(value), true)
   }
 }
 
@@ -139,14 +220,6 @@ function looksLikePathOrUrl(value: string): boolean {
     value.startsWith('data:image/') ||
     isArtifactFilePath(value)
   )
-}
-
-function looksLikeArtifact(value: string): boolean {
-  if (/^(?:https?:\/\/|data:image\/)/.test(value)) {
-    return true
-  }
-
-  return looksLikePathOrUrl(value) && (IMAGE_EXT_RE.test(value) || FILE_EXT_RE.test(value))
 }
 
 function artifactKind(value: string): ArtifactKind {
@@ -257,7 +330,7 @@ function collectStringValues(
   }
 }
 
-function collectArtifactsFromText(text: string, pushValue: (value: string) => void): void {
+function collectArtifactsFromText(text: string, pushValue: PushValue): void {
   collectMediaValues(text, pushValue)
 
   for (const match of text.matchAll(MARKDOWN_IMAGE_RE)) {
@@ -271,7 +344,7 @@ function collectArtifactsFromText(text: string, pushValue: (value: string) => vo
       continue
     }
 
-    const value = match[2] || ''
+    const value = decodeMediaHrefValue(match[2] || '')
 
     if (looksLikeArtifact(value)) {
       pushValue(value)
@@ -306,6 +379,16 @@ function isArtifactProducerTool(name: string): boolean {
   return ARTIFACT_PRODUCER_TOOL_RE.test(name) || name.startsWith('bfl_flux3_')
 }
 
+function isTerminalTool(name: string): boolean {
+  return name === 'terminal'
+}
+
+// Shell-style tools report produced files as free text under generic keys
+// (`output` / `stdout` / `path`). Their values are scanned as prose (MEDIA
+// tags, markdown links, URLs, absolute paths) instead of being treated as a
+// single path value.
+const SHELL_OUTPUT_KEY_RE = /^(?:output|stdout|path)$/i
+
 function explicitToolArtifactKey(keyPath: string, producerTool: boolean): boolean {
   return keyPath
     .split('.')
@@ -330,7 +413,7 @@ function structuredToolPayload(message: SessionMessage): null | unknown {
   return content
 }
 
-function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value: string) => void): void {
+function collectArtifactsFromMessage(message: SessionMessage, pushValue: PushValue): void {
   const text = messageText(message)
 
   if (message.role === 'assistant' && text) {
@@ -345,9 +428,10 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value:
 
   const name = toolName(message)
   const producerTool = isArtifactProducerTool(name)
+  const terminalTool = isTerminalTool(name)
 
-  if (text && producerTool) {
-    collectMediaValues(text, pushValue)
+  if (text && (producerTool || terminalTool)) {
+    collectArtifactsFromText(text, pushValue)
   }
 
   if (name === 'browser_vision' && text) {
@@ -365,13 +449,43 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value:
 
   for (const parsed of payloads) {
     collectStringValues(parsed, 'tool_result', (value, keyPath) => {
-      if (!explicitToolArtifactKey(keyPath, producerTool)) {
+      // Drop bare numeric array indices from the key path *intentionally*:
+      // array-of-results payloads (e.g. `outputs.0.output`) must match via
+      // their non-index segments, and with no index the shell-output/explicit
+      // key tests match the last real segment. Do NOT switch this to
+      // exact-key matching — it would silently stop indexing those shapes.
+      const segments = keyPath.split('.').filter(segment => segment && !/^\d+$/.test(segment))
+
+      const shellOutput = terminalTool && segments.some(segment => SHELL_OUTPUT_KEY_RE.test(segment))
+
+      if (!shellOutput && !explicitToolArtifactKey(keyPath, producerTool)) {
+        return
+      }
+
+      if (shellOutput) {
+        // A shell result is free text: scan it for MEDIA tags, markdown
+        // references, URLs and absolute paths rather than treating the
+        // whole value as one path.
+        //
+        // False-positive budget: noisy stdout (`curl -v`, build logs) is
+        // kept from flooding the panel because every candidate is filtered
+        // through `looksLikeArtifact`, which requires a file/image extension
+        // (IMAGE_EXT_RE / FILE_EXT_RE) or an explicit http(s)/data: scheme —
+        // a bare error URL or un-extensioned path fails. Local file display
+        // then resolves existence through the media ladder
+        // (`artifactImageSrc` → `resolveMediaDisplaySrc`), so a candidate
+        // whose file no longer exists is resolved to its fallback rather
+        // than surfaced as a broken artifact.
+        if (value) {
+          collectArtifactsFromText(value, pushValue)
+        }
+
         return
       }
 
       collectMediaValues(value, pushValue)
 
-      const normalized = normalizeValue(value)
+      const normalized = normalizeValue(decodeMediaHrefValue(value))
 
       if (normalized && looksLikeArtifact(normalized)) {
         pushValue(normalized)
@@ -389,10 +503,10 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
       continue
     }
 
-    collectArtifactsFromMessage(message, candidate => {
-      const value = normalizeValue(candidate)
+    collectArtifactsFromMessage(message, (candidate, explicit = false) => {
+      const value = normalizeValue(decodeMediaHrefValue(candidate))
 
-      if (!value || !looksLikeArtifact(value)) {
+      if (!value || !looksLikeArtifact(value, explicit)) {
         return
       }
 
@@ -421,18 +535,49 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
 
 export async function loadArtifactsForSessions(
   sessions: SessionInfo[],
-  loadMessages: (session: SessionInfo) => Promise<SessionMessage[]>
+  loadPage: (
+    session: SessionInfo,
+    page: { limit: number; offset: number }
+  ) => Promise<Pick<SessionMessagesResponse, 'messages' | 'pagination'>>,
+  options: { maxPageJsonChars?: number } = {}
 ): Promise<ArtifactLoadResult> {
   const artifacts: ArtifactRecord[] = []
   const failures: ArtifactLoadFailure[] = []
+  const maxPageJsonChars = options.maxPageJsonChars ?? MAX_ARTIFACT_MESSAGE_PAGE_JSON_CHARS
 
-  // Keep only one transcript resident at a time. Recent sessions can each be
-  // tens of megabytes, so loading the whole page concurrently can exhaust both
-  // the Desktop renderer and a remote dashboard backend.
+  // Keep only one transcript page resident at a time. Recent sessions can each
+  // be tens of megabytes, so retaining complete transcripts exhausts the
+  // Desktop renderer even when transport requests are paginated.
   for (const session of sessions) {
     try {
-      const messages = await loadMessages(session)
-      artifacts.push(...collectArtifactsForSession(session, messages))
+      const sessionArtifacts = new Map<string, ArtifactRecord>()
+      let offset = 0
+
+      while (true) {
+        const page = await loadPage(session, { limit: ARTIFACT_MESSAGE_PAGE_SIZE, offset })
+        const pageJsonChars = (JSON.stringify(page.messages) ?? '').length
+
+        if (pageJsonChars > maxPageJsonChars) {
+          throw new Error(
+            'Session transcript page exceeds the Desktop safe-load limit; use the Web Dashboard export for this session.'
+          )
+        }
+
+        for (const artifact of collectArtifactsForSession(session, page.messages)) {
+          if (!sessionArtifacts.has(artifact.id)) {
+            sessionArtifacts.set(artifact.id, artifact)
+          }
+        }
+
+        // Legacy backends ignore pagination and return the full transcript.
+        if (!page.pagination || page.messages.length === 0 || page.messages.length < page.pagination.limit) {
+          break
+        }
+
+        offset += page.messages.length
+      }
+
+      artifacts.push(...sessionArtifacts.values())
     } catch (error) {
       failures.push({ error, session })
     }

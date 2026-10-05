@@ -5307,6 +5307,93 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
   })
 })
 
+describe('usePromptActions warm-session send survives a chat switch', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('completes a send into an already-live session when the user switches chats during attachment sync', async () => {
+    // The warm-session twin of the #62805 pin. Here the target runtime was
+    // LIVE at entry — no create or resume churned the baseline — and the
+    // attach round-trip then PROVED the stored<->runtime binding. A genuine
+    // navigation while that sync settles must not silently cancel the send
+    // back into the composer: the text was authored against that chat, its
+    // target is bound, and every view-affecting step downstream is
+    // targetIsCurrentView-guarded so the switch itself stays put.
+    const STORED_WARM = 'stored-warm'
+    const RUNTIME_WARM = 'rt-warm'
+
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_WARM }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_WARM }
+    let routeToken = `/${STORED_WARM}::`
+
+    let releaseFileAttach: () => void = () => {}
+
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:application/pdf;base64,JVBERi0=') }
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'file.attach') {
+        // Block here so the user can switch sessions mid-sync.
+        await new Promise<void>(resolve => {
+          releaseFileAttach = resolve
+        })
+
+        return {
+          attached: true,
+          ref_text: '@file:.hermes/desktop-attachments/test.pdf',
+          uploaded: true
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const attachment: ComposerAttachment = {
+      id: 'file:test',
+      kind: 'file',
+      label: 'test.pdf',
+      path: '/abs/test.pdf',
+      refText: '@file:`/abs/test.pdf`'
+    }
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={RUNTIME_WARM}
+        activeSessionIdRef={activeSessionIdRef}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_WARM}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const submitting = handle!.submitText('message sent from the warm chat', { attachments: [attachment] })
+    await waitFor(() => expect(calls.some(c => c.method === 'file.attach')).toBe(true))
+
+    // Simulate the user switching to a different session while the
+    // attachment sync is still settling.
+    selectedStoredSessionIdRef.current = 'stored-other-session'
+    routeToken = '/stored-other-session::'
+    releaseFileAttach()
+
+    expect(await submitting).toBe(true)
+    expect(calls.some(c => c.method === 'prompt.submit')).toBe(true)
+  })
+})
+
 describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
   const STORED_ID = 'stored-busy-gw'
   const RESUMED_RUNTIME_ID = 'rt-busy-gw'

@@ -201,6 +201,43 @@ describe('sessionContextDrift', () => {
     expect(reason).toBe('composer:sess-b->sess-a')
   })
 
+  it('suppresses navigation drift under ignoreNavigation (a bound send survives a user switch)', () => {
+    // The submit pipeline passes ignoreNavigation once its target binding was
+    // PROVEN live (the attach round-trip succeeded). The user browsing to
+    // another chat no longer makes that captured target ambiguous, so neither
+    // prong of a genuine navigation move may cancel the send.
+    const navigationMove = {
+      startRouteToken: routeToken(sessionRoute(SESS_A)),
+      nowRouteToken: routeToken(sessionRoute(SESS_B)),
+      startSelectedStoredId: SESS_A,
+      nowSelectedStoredId: SESS_B,
+      submitTargetStoredId: SESS_A
+    }
+
+    expect(sessionContextDrift(navigationMove)).toBe('route:sess-a->sess-b')
+    expect(sessionContextDrift(navigationMove, { ignoreNavigation: true })).toBeNull()
+  })
+
+  it('keeps the composer prong fatal under ignoreNavigation (#59305)', () => {
+    // Relaxing navigation must never relax the wrong-text-to-target coupling:
+    // whatever the route says, text composed under a different session scope
+    // must not be delivered to the submit target.
+    const reason = sessionContextDrift(
+      {
+        startRouteToken: routeToken(sessionRoute(SESS_A)),
+        nowRouteToken: routeToken(sessionRoute(SESS_A)),
+        startSelectedStoredId: SESS_A,
+        nowSelectedStoredId: SESS_A,
+        submitTargetStoredId: SESS_A,
+        composerScope: SESS_B,
+        submitTargetComposerScope: SESS_A
+      },
+      { ignoreNavigation: true }
+    )
+
+    expect(reason).toBe('composer:sess-b->sess-a')
+  })
+
   it('does not drift when the session has rotated via compression (composerScope is the lineage root, submitTargetStoredId is the live tip)', () => {
     const ROOT_ID = 'stored-root'
     const TIP_ID = 'stored-tip-after-compression'

@@ -109,16 +109,19 @@ export function pinnedOwnerCount(): number {
  * Returns null when nothing genuinely drifted, or a short reason string
  * (`route:<from>-><to>` / `selection:<from>-><to>`) for the abort log.
  */
-export function sessionContextDrift({
-  startRouteToken,
-  nowRouteToken,
-  startSelectedStoredId,
-  nowSelectedStoredId,
-  submitTargetStoredId,
-  composerScope,
-  submitTargetComposerScope,
-  pinOwner
-}: SessionContextDriftArgs): string | null {
+export function sessionContextDrift(
+  {
+    startRouteToken,
+    nowRouteToken,
+    startSelectedStoredId,
+    nowSelectedStoredId,
+    submitTargetStoredId,
+    composerScope,
+    submitTargetComposerScope,
+    pinOwner
+  }: SessionContextDriftArgs,
+  { ignoreNavigation = false }: { ignoreNavigation?: boolean } = {}
+): string | null {
   const activePins = pinOwner ? pinnedStoredSessionIdsForOwner(pinOwner) : NO_PINS
 
   // Composer prong: the composer's loaded scope disagrees with the resolved
@@ -130,6 +133,17 @@ export function sessionContextDrift({
   // SessionContextDriftArgs for why those two must not be conflated.
   if (composerScope !== undefined && composerScope !== null && composerScope !== submitTargetComposerScope) {
     return `composer:${composerScope}->${submitTargetComposerScope}`
+  }
+
+  // A caller whose submit target has already been PROVEN live (the attach
+  // round-trip against the captured target succeeded) and that is not minting
+  // or resuming a session can pass ignoreNavigation: the user browsing to
+  // another chat no longer makes the captured target ambiguous — the send
+  // completes against it, and every view-affecting step downstream is
+  // targetIsCurrentView-guarded. Only the composer prong (the #59305
+  // wrong-text-to-target coupling) stays fatal.
+  if (ignoreNavigation) {
+    return null
   }
 
   const targetStart = routeTargetFromToken(startRouteToken)

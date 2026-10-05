@@ -304,7 +304,7 @@ class TestTrustGateApprovalRouting:
             seen.update(kwargs)
             return "once"
 
-        monkeypatch.setattr(terminal_tool, "_get_approval_callback", lambda: callback)
+        monkeypatch.setattr(terminal_tool._callback_tls, "approval", callback, raising=False)
 
         def fake_request(*args, **kwargs):
             cb = terminal_tool._get_approval_callback()
@@ -318,6 +318,58 @@ class TestTrustGateApprovalRouting:
         with ThreadPoolExecutor(max_workers=1) as pool:
             assert pool.submit(invoke).result() == "once"
         assert seen["title"] == "MCP server 'srv' requests approval"
+
+
+@pytest.mark.parametrize("choice, expected", [("once", "accept"), ("no", "decline")])
+def test_elicitation_preserves_dispatch_callback_across_mcp_loop(monkeypatch, choice, expected):
+    """Real dispatch -> separate MCP loop -> consent worker, without replacing TLS getters."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    import tools.terminal_tool as terminal_tool
+
+    pytest.importorskip("mcp.types")
+    server = mcp_tool.MCPServerTask("srv")
+    assert asyncio.run(server._prepare_run({"command": "unused", "sampling": {"enabled": False}}))
+    seen = []
+    owner = threading.get_ident()
+
+    def callback(command, description, *, allow_permanent=True, title=None):
+        assert terminal_tool._get_approval_callback() is callback
+        assert threading.get_ident() != owner
+        seen.append((allow_permanent, title))
+        return choice
+
+    monkeypatch.setattr(terminal_tool._callback_tls, "approval", callback, raising=False)
+    monkeypatch.setattr("prompt_toolkit.application.current.get_app_or_none", lambda: object())
+    actions = []
+
+    async def call_tool(*args, **kwargs):
+        assert terminal_tool._get_approval_callback() is None  # the recv-loop has no CLI TLS
+        result = await server._elicitation(None, SimpleNamespace(mode="form", message="confirm", requested_schema={}))
+        actions.append(result.action)
+        return _FakeCallToolResult([_FakeContentBlock("ok")])
+
+    server.session = SimpleNamespace(call_tool=call_tool)
+
+    def run_on_loop(coro_or_factory, timeout=30):
+        def invoke():
+            async def run():
+                server._rpc_lock = asyncio.Lock()
+                return await (coro_or_factory() if callable(coro_or_factory) else coro_or_factory)
+            return asyncio.run(run())
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(invoke).result(timeout=10)
+
+    with patch.dict(mcp_tool._servers, {"srv": server}), \
+         patch("tools.mcp_tool_loop._run_on_mcp_loop", side_effect=run_on_loop), \
+         patch.dict(mcp_tool._server_error_counts, {}, clear=True):
+        raw = _mcp_handlers._make_tool_handler("srv", "confirm", 5)({})
+    assert json.loads(raw) == {"result": "ok"}
+    assert actions == [expected]
+    assert seen == [(False, "MCP server 'srv' requests approval")]
+    assert terminal_tool._get_approval_callback() is callback
+    assert server._pending_call_context is None
+    assert server._pending_consent_runner is None
 
 
 class TestTrustNormalization:

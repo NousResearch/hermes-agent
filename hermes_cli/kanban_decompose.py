@@ -26,6 +26,7 @@ from typing import Optional
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_graph import decompose_triage_task
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_routing_guard as rg
 from hermes_cli import profiles as profiles_mod
 from hermes_cli.kanban_specify import (
     _call_aux, _extract_json_blob, _load_triage_task, _task_prompt_fields, _title_body,
@@ -223,31 +224,54 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
     """``fanout=false``: single-task spec promotion (same effect as specify)."""
     title_val, body_val = _title_body(parsed)
     assignee_val = None
+    decision = None  # type: Optional[rg.GuardDecision]
     if not task.assignee:
         assignee_val = _normalize_assignee_choice(
             parsed.get("assignee"), default_assignee=routing.default_assignee, valid_names=routing.valid_names,
         )
+        # Routing guard: a card editing a profile's own instruction surface never
+        # routes to that profile. Apply after normalization so the guard sees the
+        # same candidate the decomposer would have used.
+        decision = rg.guard_assignee(
+            assignee_val, title_val or "", body_val or "",
+            default_assignee=routing.default_assignee, eligible_names=routing.valid_names,
+        )
+        if decision.rewritten:
+            assignee_val = decision.assignee
+            logger.info(
+                "decompose: routing guard fired on task %s (single): %s -> %s (%s)",
+                task.id, decision.original_assignee, decision.assignee, decision.lane_source,
+            )
     if title_val is None and body_val is None:
         return DecomposeOutcome(task.id, False, "decomposer returned fanout=false with no title/body")
     with kbc.connect_closing() as conn:
         ok = kb.specify_triage_task(
             conn, task.id, title=title_val, body=body_val, assignee=assignee_val, author=author,
         )
+        if ok and decision is not None and decision.rewritten:
+            # Record the guard audit trail inside the same connection so the
+            # event and the assignment are atomic from the caller's perspective.
+            try:
+                rg.record_guard_decision(conn, task.id, decision, author=author)
+            except Exception:
+                logger.exception("decompose: failed to record routing guard audit for task %s", task.id)
     if not ok:
         return DecomposeOutcome(task.id, False, "task moved out of triage before promotion")
     return DecomposeOutcome(task.id, True, "single task (no fanout)", fanout=False, new_title=title_val)
 
 
-def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[list[dict], str]:
-    """Validate/normalise the LLM's ``tasks`` list; ``(children, "")`` or ``([], reason)``.
-    Unknown assignees route to the default; never assignee=None."""
+def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[list[dict], list[tuple[int, rg.GuardDecision]], str]:
+    """Validate/normalise the LLM's ``tasks`` list; ``(children, guard_decisions, "")`` or ``([], [], reason)``.
+    Unknown assignees route to the default; never assignee=None.
+    guard_decisions is a list of (child_index, decision) for children where the guard fired."""
     children: list[dict] = []
+    guard_decisions: list[tuple[int, rg.GuardDecision]] = []
     for idx, entry in enumerate(raw_tasks):
         if not isinstance(entry, dict):
-            return [], f"tasks[{idx}] is not an object"
+            return [], [], f"tasks[{idx}] is not an object"
         title = entry.get("title")
         if not isinstance(title, str) or not title.strip():
-            return [], f"tasks[{idx}].title is missing or empty"
+            return [], [], f"tasks[{idx}].title is missing or empty"
         body = entry.get("body")
         assignee = entry.get("assignee")
         chosen = _normalize_assignee_choice(
@@ -259,6 +283,19 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
                 "routing to default_assignee %r",
                 task_id, idx, assignee, routing.default_assignee,
             )
+        # Routing guard: a card editing a profile's own instruction surface never
+        # routes to that profile. Apply per-child using the child's own title/body.
+        decision = rg.guard_assignee(
+            chosen, title.strip(), (body.strip() if isinstance(body, str) else ""),
+            default_assignee=routing.default_assignee, eligible_names=routing.valid_names,
+        )
+        if decision.rewritten:
+            chosen = decision.assignee
+            guard_decisions.append((idx, decision))
+            logger.info(
+                "decompose: routing guard fired on task %s child %d: %s -> %s (%s)",
+                task_id, idx, decision.original_assignee, decision.assignee, decision.lane_source,
+            )
         parents = entry.get("parents") or []
         if not isinstance(parents, list):
             parents = []
@@ -269,14 +306,14 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
             # Drop non-int, out-of-range and self parent indices.
             "parents": [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx],
         })
-    return children, ""
+    return children, guard_decisions, ""
 
 
 def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
     raw_tasks = parsed.get("tasks") or []
     if not isinstance(raw_tasks, list) or not raw_tasks:
         return DecomposeOutcome(task_id, False, "decomposer returned fanout=true with empty tasks list")
-    children, reason = _clean_children(task_id, raw_tasks, routing)
+    children, guard_decisions, reason = _clean_children(task_id, raw_tasks, routing)
     if reason:
         return DecomposeOutcome(task_id, False, reason)
     try:
@@ -289,6 +326,20 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
                 author=author,
                 auto_promote=routing.auto_promote,
             )
+            # Record routing guard audit for each child where the guard fired.
+            # The child_ids list is in the same order as the children list, so we
+            # can map (child_index, decision) to the actual child task id.
+            if child_ids and guard_decisions:
+                for child_idx, decision in guard_decisions:
+                    if 0 <= child_idx < len(child_ids):
+                        child_task_id = child_ids[child_idx]
+                        try:
+                            rg.record_guard_decision(conn, child_task_id, decision, author=author)
+                        except Exception:
+                            logger.exception(
+                                "decompose: failed to record routing guard audit for child %s (task %s child %d)",
+                                child_task_id, task_id, child_idx,
+                            )
     except ValueError as exc:
         return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}")
     except Exception as exc:

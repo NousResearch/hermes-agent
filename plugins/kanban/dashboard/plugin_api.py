@@ -36,6 +36,7 @@ from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_diagnostics as kd
+from hermes_cli import kanban_routing_guard as rg
 from hermes_cli.kanban_db import KANBAN_ATTACHMENT_MAX_BYTES, _collision_free_path, _safe_attachment_name
 
 log = logging.getLogger(__name__)
@@ -435,8 +436,30 @@ class CreateTaskBody(BaseModel):
 @router.post("/tasks")
 def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn), _value_error_400():
+        # Routing guard: a card editing a profile's own instruction surface never
+        # routes to that profile. Apply before create so the guard can rewrite
+        # the assignee if needed.
+        effective_assignee = payload.assignee
+        decision = None
+        if effective_assignee:
+            decision = rg.guard_assignee(
+                effective_assignee, payload.title or "", payload.body or "",
+            )
+            if decision.rewritten:
+                effective_assignee = decision.assignee
+                log.info(
+                    "create_task: routing guard fired on new task: %s -> %s (%s)",
+                    decision.original_assignee, decision.assignee, decision.lane_source,
+                )
+                payload.assignee = effective_assignee
         # CreateTaskBody field names match create_task's keyword parameters.
         task_id = kanban_db.create_task(conn, created_by="dashboard", board=board, **payload.model_dump())
+        # Record the routing guard audit if it fired.
+        if decision is not None and decision.rewritten:
+            try:
+                rg.record_guard_decision(conn, task_id, decision, author="dashboard")
+            except Exception:
+                log.exception("create_task: failed to record routing guard audit for task %s", task_id)
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(
             task, current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id)
@@ -692,13 +715,36 @@ def _patch_title_body(conn, task_id: str, payload: UpdateTaskBody, board: Option
 @router.patch("/tasks/{task_id}")
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
-        _require_task(conn, task_id)
+        task_before = _require_task(conn, task_id)
         # For a combined assignee+review patch, request_review must capture the
         # current implementer before the task is routed to the reviewer.
         review_assignee_deferred = payload.status == "review" and payload.assignee is not None
-        if payload.assignee is not None and not review_assignee_deferred:
+        guard_decision = None
+        effective_assignee = payload.assignee
+        # Routing guard: a card editing a profile's own instruction surface never
+        # routes to that profile. Apply when an assignee is being set, using the
+        # task's current title/body (pre-patch) as the detection context - the
+        # guard is about what the card already describes, not what's about to be
+        # written.
+        if payload.assignee is not None and payload.assignee and not review_assignee_deferred:
+            guard_decision = rg.guard_assignee(
+                payload.assignee, task_before.title or "", task_before.body or "",
+            )
+            if guard_decision.rewritten:
+                effective_assignee = guard_decision.assignee
+                log.info(
+                    "update_task: routing guard fired on task %s: %s -> %s (%s)",
+                    task_id, guard_decision.original_assignee, guard_decision.assignee,
+                    guard_decision.lane_source,
+                )
+        if effective_assignee is not None and not review_assignee_deferred:
             with _map_errors(409, RuntimeError):
-                _require_ok(kanban_db.assign_task(conn, task_id, payload.assignee or None))
+                _require_ok(kanban_db.assign_task(conn, task_id, effective_assignee or None))
+            if guard_decision is not None and guard_decision.rewritten:
+                try:
+                    rg.record_guard_decision(conn, task_id, guard_decision, author="dashboard")
+                except Exception:
+                    log.exception("update_task: failed to record routing guard audit for task %s", task_id)
         if payload.status is not None:
             _patch_status(conn, task_id, payload, review_assignee_deferred)
         for wanted, apply, _refused in _OVERRIDE_OPS:
@@ -838,10 +884,34 @@ def _bulk_apply_one(conn, tid: str, payload: BulkTaskBody, board: Optional[str],
             entry.update(ok=False, error=_open_parent_refusal(conn, tid, s) or f"transition to {s!r} refused")
     if payload.assignee is not None:
         try:
-            ok = (kanban_db.reassign_task(conn, tid, payload.assignee or None, reclaim_first=True) if payload.reclaim_first
-                  else kanban_db.assign_task(conn, tid, payload.assignee or None))
+            # Routing guard: a card editing a profile's own instruction surface never
+            # routes to that profile. Apply before assign so the guard can rewrite
+            # the target profile if needed.
+            effective_assignee = payload.assignee
+            guard_decision = None
+            if effective_assignee:
+                task_before = kanban_db.get_task(conn, tid)
+                if task_before:
+                    guard_decision = rg.guard_assignee(
+                        effective_assignee, task_before.title or "", task_before.body or "",
+                    )
+                    if guard_decision.rewritten:
+                        effective_assignee = guard_decision.assignee
+                        log.info(
+                            "bulk_update: routing guard fired on task %s: %s -> %s (%s)",
+                            tid, guard_decision.original_assignee, guard_decision.assignee,
+                            guard_decision.lane_source,
+                        )
+            ok = (kanban_db.reassign_task(conn, tid, effective_assignee or None, reclaim_first=True) if payload.reclaim_first
+                  else kanban_db.assign_task(conn, tid, effective_assignee or None))
             if not ok:
                 entry.update(ok=False, error="assign refused")
+            elif guard_decision is not None and guard_decision.rewritten:
+                # Record the routing guard audit if it fired.
+                try:
+                    rg.record_guard_decision(conn, tid, guard_decision, author="dashboard")
+                except Exception:
+                    log.exception("bulk_update: failed to record routing guard audit for task %s", tid)
         except RuntimeError as e:
             entry.update(ok=False, error=str(e))
     if payload.priority is not None:
@@ -1041,13 +1111,36 @@ def reassign_task_endpoint(task_id: str, payload: ReassignBody, board: Optional[
     """Reassign to another profile, optionally reclaiming first
     (``hermes kanban reassign <task_id> <profile> [--reclaim]``)."""
     with _board_conn(board) as (board, conn):
+        task_before = _require_task(conn, task_id)
+        # Routing guard: a card editing a profile's own instruction surface never
+        # routes to that profile. Apply before reassign so the guard can rewrite
+        # the target profile if needed.
+        effective_profile = payload.profile
+        guard_decision = None
+        if effective_profile:
+            guard_decision = rg.guard_assignee(
+                effective_profile, task_before.title or "", task_before.body or "",
+            )
+            if guard_decision.rewritten:
+                effective_profile = guard_decision.assignee
+                log.info(
+                    "reassign_task_endpoint: routing guard fired on task %s: %s -> %s (%s)",
+                    task_id, guard_decision.original_assignee, guard_decision.assignee,
+                    guard_decision.lane_source,
+                )
         ok = kanban_db.reassign_task(
-            conn, task_id, payload.profile or None, reclaim_first=bool(payload.reclaim_first), reason=payload.reason)
+            conn, task_id, effective_profile or None, reclaim_first=bool(payload.reclaim_first), reason=payload.reason)
         if not ok:
             raise _conflict(
                 f"cannot reassign {task_id}: unknown id, or still "
                 "running (pass reclaim_first=true to release the claim first)")
-        return {"ok": True, "task_id": task_id, "assignee": payload.profile or None}
+        # Record the routing guard audit if it fired.
+        if guard_decision is not None and guard_decision.rewritten:
+            try:
+                rg.record_guard_decision(conn, task_id, guard_decision, author="dashboard")
+            except Exception:
+                log.exception("reassign_task_endpoint: failed to record routing guard audit for task %s", task_id)
+        return {"ok": True, "task_id": task_id, "assignee": effective_profile or None}
 
 
 # Estimate: rough token/complexity read via the auxiliary model. NOT a dollar cost.

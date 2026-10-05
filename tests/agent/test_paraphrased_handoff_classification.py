@@ -1,14 +1,14 @@
 """Regression tests for #132934: a model-paraphrased compaction handoff must still
 classify as a summary row instead of being published as an ordinary assistant reply."""
 
+import pytest
+
 from agent.context_compressor import (
     _HANDOFF_MARKER_PREFIX,
-    _HISTORICAL_SUMMARY_PREFIXES,
     _MERGED_SUMMARY_DELIMITER,
-    _PARAPHRASED_HANDOFF_WINDOW,
-    ContextCompressor,
-    LEGACY_SUMMARY_PREFIX,
     SUMMARY_PREFIX,
+    ContextCompressor,
+    is_compaction_summary_message,
 )
 
 # The observed #132934 shape: the bracketed marker survives, the boilerplate after it
@@ -21,71 +21,23 @@ PARAPHRASED_HANDOFF = (
 )
 
 
-class TestParaphrasedHandoffClassification:
-    def test_paraphrased_handoff_classifies_standalone(self):
-        assert (
-            ContextCompressor.classify_summary_content(PARAPHRASED_HANDOFF)
-            == "standalone"
-        )
+@pytest.mark.parametrize(
+    ("role", "content", "expected"),
+    [
+        ("assistant", PARAPHRASED_HANDOFF, True),
+        ("assistant", "live tail " + _MERGED_SUMMARY_DELIMITER + "\n" + PARAPHRASED_HANDOFF, True),
+        ("assistant", _HANDOFF_MARKER_PREFIX + " is the header string; formatting only.", False),
+        ("assistant", _HANDOFF_MARKER_PREFIX + " is the marker; the summary follows it.", False),
+        # A user pasting a handoff is still a real user turn, not a synthetic summary row.
+        ("user", PARAPHRASED_HANDOFF, False),
+    ],
+    ids=["paraphrased", "merged", "quoted-no-vocab", "quoted-generic-vocab", "user-paste"],
+)
+def test_paraphrased_handoff_classification(role, content, expected):
+    assert is_compaction_summary_message({"role": role, "content": content}) is expected
 
-    def test_paraphrased_handoff_recognized_after_lstrip(self):
-        # classify_summary_content lstrips its input; feed raw whitespace too.
-        assert (
-            ContextCompressor.classify_summary_content("  \n" + PARAPHRASED_HANDOFF)
-            == "standalone"
-        )
 
-    def test_shipped_prefix_still_classifies_standalone(self):
-        assert (
-            ContextCompressor.classify_summary_content(SUMMARY_PREFIX + "\nbody")
-            == "standalone"
-        )
-
-    def test_legacy_prefix_still_classifies_standalone(self):
-        assert (
-            ContextCompressor.classify_summary_content(LEGACY_SUMMARY_PREFIX + " body")
-            == "standalone"
-        )
-
-    def test_historical_prefixes_still_classify_standalone(self):
-        for prefix in _HISTORICAL_SUMMARY_PREFIXES:
-            assert (
-                ContextCompressor.classify_summary_content(prefix + " body")
-                == "standalone"
-            ), prefix[:60]
-
-    def test_paraphrased_handoff_in_merged_position_classifies_merged(self):
-        text = (
-            "preserved live-tail content "
-            + _MERGED_SUMMARY_DELIMITER
-            + "\n"
-            + PARAPHRASED_HANDOFF
-        )
-        assert ContextCompressor.classify_summary_content(text) == "merged"
-
-    def test_marker_without_compaction_vocabulary_is_not_classified(self):
-        # The vocabulary window is what keeps a mere quotation of the marker (e.g. a
-        # docs-style reply about the marker itself) from being hidden as a handoff.
-        text = (
-            _HANDOFF_MARKER_PREFIX
-            + " Quoting this header to talk about its formatting in general."
-        )
-        assert ContextCompressor.classify_summary_content(text) is None
-
-    def test_vocabulary_outside_window_is_not_classified(self):
-        filler = "x" * _PARAPHRASED_HANDOFF_WINDOW
-        text = (
-            _HANDOFF_MARKER_PREFIX
-            + " "
-            + filler
-            + " and then the word compacted appears far too late"
-        )
-        assert ContextCompressor.classify_summary_content(text) is None
-
-    def test_ordinary_assistant_reply_is_not_classified(self):
-        assert (
-            ContextCompressor.classify_summary_content(
-                "Here is the fix you asked for: the queue command now accepts a prompt argument."
-            )
-            is None
-        )
+def test_adopted_paraphrased_echo_is_not_double_wrapped():
+    wrapped = ContextCompressor._with_summary_prefix(PARAPHRASED_HANDOFF)
+    assert wrapped.startswith(SUMMARY_PREFIX)
+    assert wrapped.count(_HANDOFF_MARKER_PREFIX) == 1

@@ -713,6 +713,10 @@ def _cold_catalog_placeholder(raw: str, normalized: str) -> dict[str, dict[str, 
     failed): models.dev list prices — but only for a provider Hermes actually knows (a fetcher
     table entry or a configured endpoint). An unknown slug stays unpriced; known providers never
     render a blank price column while the background prewarm re-fetches live rates."""
+    if not normalized and str(raw or "").lower().startswith("custom:"):
+        # The trust boundary rejected this ``custom:`` slug: a bare name that happens to be
+        # configured as an endpoint must not re-admit the global index behind its back.
+        return {}
     if normalized in _PRICING_FETCHERS or _configured_endpoint_slug(_strip_custom_prefix(raw)):
         return _models_dev_cost_index()
     return {}

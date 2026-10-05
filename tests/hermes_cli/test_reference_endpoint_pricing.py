@@ -1,6 +1,7 @@
 """Contract tests for the pricing fallbacks in ``models_pricing.get_pricing_for_provider``:
 
-- a ``custom:<canonical>`` slug keeps the canonical provider's fetcher;
+- a ``custom:<canonical>`` slug whose endpoint is the canonical upstream keeps the canonical
+  fetcher; an unproven one (no endpoint, or a non-official host) stays unpriced;
 - a configured ``providers.<slug>`` endpoint with no fetcher of its own resolves through the
   reference catalog (OpenRouter live rates + models.dev index), and ONLY when it is configured;
 - ``cached_only`` serves the reference set the prewarm cached without any provider I/O.
@@ -34,17 +35,44 @@ def _config_with(monkeypatch, providers):
     monkeypatch.setattr(config_mod, "load_config_readonly", lambda: {"providers": providers})
 
 
-def test_custom_prefix_keeps_canonical_fetcher(monkeypatch):
-    """``custom:openrouter`` must reach the openrouter pricing fetcher, not return {}."""
+def test_custom_prefix_with_canonical_endpoint_keeps_fetcher(monkeypatch):
+    """``custom:openrouter`` pointed at the official openrouter.ai endpoint reaches the
+    canonical pricing fetcher, not {}."""
     fetched = []
     monkeypatch.setitem(
         mp._PRICING_FETCHERS, "openrouter",
         lambda *, force_refresh=False: fetched.append(force_refresh)
         or {"a/b": {"prompt": "1", "completion": "2"}},
     )
-    pricing = mp.get_pricing_for_provider("custom:openrouter")
+    pricing = mp.get_pricing_for_provider(
+        "custom:openrouter", base_url="https://openrouter.ai/api"
+    )
     assert pricing == {"a/b": {"prompt": "1", "completion": "2"}}
     assert fetched == [False]
+
+
+def test_unproven_custom_canonical_slug_stays_unpriced(monkeypatch, openrouter_fetch):
+    """The trust boundary refuses a ``custom:openrouter`` row with no (or a non-official)
+    endpoint: the canonical fetcher, reseller rates, and the cold-catalog index all stay dark
+    instead of mislabeling the endpoint's models."""
+    def no_fetcher(**_kwargs):
+        raise AssertionError("canonical fetcher reached despite unproven custom slug")
+
+    monkeypatch.setitem(mp._PRICING_FETCHERS, "openrouter", no_fetcher)
+    assert mp.get_pricing_for_provider("custom:openrouter") == {}
+    assert mp.get_pricing_for_provider("custom:openrouter", cached_only=True) == {}
+    assert openrouter_fetch == []
+
+
+def test_custom_proxy_host_is_refused(monkeypatch):
+    """A lookalike host must not pass the trust boundary: exact official hostname only."""
+    assert mp.resolve_pricing_provider("custom:openrouter", base_url="https://openrouter.ai.attacker.invalid/api") == ""
+    assert mp.resolve_pricing_provider("custom:openrouter", base_url="https://api.example/v1") == ""
+    assert mp.resolve_pricing_provider("custom:openrouter", base_url="") == ""
+    assert (
+        mp.resolve_pricing_provider("custom:openrouter", base_url="https://openrouter.ai/api")
+        == "openrouter"
+    )
 
 
 def test_configured_endpoint_resolves_reference_catalog(monkeypatch, openrouter_fetch):

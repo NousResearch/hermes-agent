@@ -1020,6 +1020,18 @@ class GatewayNotificationsMixin:
         from agent import provider_wall_notice as wall
         from gateway.warning_notifications import warning_notifications_enabled
 
+        # Configurable re-notify interval: diagnostics.provider_wall_renotify_seconds
+        # (0 = disabled). Falls back to the module constant when unset.
+        _renotify_s = wall.WALL_RENOTIFY_INTERVAL_S
+        try:
+            from hermes_cli.config import load_config_readonly
+            _cfg = load_config_readonly()
+            _renotify_cfg = ((_cfg or {}).get("diagnostics") or {}).get("provider_wall_renotify_seconds")
+            if _renotify_cfg is not None:
+                _renotify_s = int(_renotify_cfg)
+        except Exception:
+            pass
+
         payload = wall.read_pending()
         if not payload:
             return
@@ -1034,6 +1046,19 @@ class GatewayNotificationsMixin:
             tuple(str(part) if part is not None else "" for part in target)
             for target in (payload.get("delivered_targets") or [])
         }
+        # Periodic re-notification backstop: if the provider didn't give a reset time,
+        # delete the marker after _renotify_s so the next failing turn
+        # creates a fresh notice with current route status.
+        if _renotify_s > 0:
+            last_delivered = payload.get("delivered_at")
+            try:
+                last_delivered = float(last_delivered) if last_delivered else None
+            except (TypeError, ValueError):
+                last_delivered = None
+            if last_delivered and time.time() - last_delivered > _renotify_s:
+                logger.info("Provider wall notice re-notify interval reached — clearing marker for refresh")
+                wall.clear_pending()
+                return
         owed = {
             _served_notice_target_key(
                 profile, platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id)
@@ -1070,9 +1095,7 @@ class GatewayNotificationsMixin:
                 notified_chats.add(chat)
                 delivered.add(target)
         wall.mark_delivered(delivered)
-        if owed <= delivered:
-            wall.clear_pending()
-            logger.info("Provider wall notice delivered to every home channel")
+        logger.info("Provider wall notice delivered to every home channel")
 
     async def _send_home_channel_startup_notifications(
         self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None

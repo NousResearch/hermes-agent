@@ -46,6 +46,9 @@ MARKER_TTL_S = 24 * 3600.0
 #: Rate-limit windows shorter than this read as a transient throttle (cooling), not a wall.
 WALL_MIN_RESET_S = 15 * 60.0
 
+#: How often to re-notify the operator while the wall persists. 0 = disabled.
+WALL_RENOTIFY_INTERVAL_S = 3600  # 1 hour (default, overridable via diagnostics.provider_wall_renotify_seconds)
+
 WALLED = "walled"
 COOLING = "cooling"
 AVAILABLE = "available"
@@ -286,7 +289,8 @@ def _fmt_wait(reset_at: Optional[float], now: float) -> str:
     return f"{minutes}m"
 
 
-def build_message(rows: list[RouteRow], *, profile: str = "default", now: Optional[float] = None) -> str:
+def build_message(rows: list[RouteRow], *, profile: str = "default", now: Optional[float] = None,
+                  created_at: Optional[float] = None, expires_at: Optional[float] = None) -> str:
     """The operator notice: a header, one line per problem route, scope and remedy."""
     now = time.time() if now is None else now
     down = [row for row in rows if row.status in {WALLED, COOLING}]
@@ -297,6 +301,17 @@ def build_message(rows: list[RouteRow], *, profile: str = "default", now: Option
         else _t("provider_wall.title_partial", down=len(down), carrying=f"{usable[0].provider} · {usable[0].model}")
     )
     lines = [header, ""]
+    # Timing line: when the wall started and when it should clear
+    timing_parts = []
+    if created_at:
+        timing_parts.append(f"Started: {_fmt_reset(created_at)}")
+    if expires_at and expires_at > now:
+        timing_parts.append(f"Expected reset: {_fmt_reset(expires_at)}")
+    elif expires_at:
+        timing_parts.append("Expected reset: past due (provider did not specify)")
+    if timing_parts:
+        lines.append(" · ".join(timing_parts))
+        lines.append("")
     for row in rows:
         lines.append(_row_line(row, now))
     cmd = "hermes model" if profile in {"", "default"} else f"hermes -p {profile} model"
@@ -406,9 +421,12 @@ def record_provider_wall(
             return None
         sig = signature(rows)
         profile = _profile_name()
-        text = build_message(rows, profile=profile)
         now = time.time()
         previous = read_pending(home)
+        resets = [row.reset_at for row in rows if row.reset_at]
+        created_ts = _as_float((previous or {}).get("created_at")) or now
+        expires_ts = max(resets) if resets else now + MARKER_TTL_S
+        text = build_message(rows, profile=profile, created_at=created_ts, expires_at=expires_ts)
         delivered: list = []
         delivered_at: Optional[float] = None
         merge = False
@@ -421,7 +439,6 @@ def record_provider_wall(
                 merge = True
                 delivered = list(previous.get("delivered_targets") or [])
                 delivered_at = _as_float(previous.get("delivered_at"))
-        resets = [row.reset_at for row in rows if row.reset_at]
         payload = {
             "v": 1,
             "signature": sig,

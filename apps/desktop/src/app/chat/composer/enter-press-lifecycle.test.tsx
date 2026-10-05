@@ -6,11 +6,12 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ChatBar } from '@/app/chat/composer'
-import { RICH_INPUT_SLOT } from '@/app/chat/composer/rich-editor'
+import { composerPlainText, RICH_INPUT_SLOT } from '@/app/chat/composer/rich-editor'
 import type { ChatBarState } from '@/app/chat/composer/types'
 import { stubThreadEnvironment, stubThreadViewportSize } from '@/components/assistant-ui/test-utils'
 import { I18nProvider } from '@/i18n'
 import { en } from '@/i18n/en'
+import { clearSessionDraft, stashSessionDraft } from '@/store/composer'
 import { $composerSendPrefs } from '@/store/composer-prefs'
 
 stubThreadEnvironment()
@@ -191,5 +192,70 @@ describe('composer Enter — a session change takes back a waiting window', () =
     })
 
     expect(onSubmit).not.toHaveBeenCalled()
+  })
+})
+
+describe('composer Enter — the idle deadline belongs to the session that armed it', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    $composerSendPrefs.set(composerPrefsFromConfig({}))
+    clearSessionDraft('session-a')
+    clearSessionDraft('session-b')
+  })
+
+  it('releases the idle deadline at the swap, so it cannot send the next session draft', async () => {
+    const onSubmit = vi.fn()
+
+    $composerSendPrefs.set(
+      composerPrefsFromConfig({
+        enter_sends: false,
+        send_on_hold: false,
+        send_on_pause: false,
+        send_on_idle: true,
+        idle_send_ms: 1000,
+        send_grace_for: [],
+        send_grace_ms: 0
+      })
+    )
+
+    // Session B already holds a draft, so the editor is NOT empty after the
+    // swap: a deadline that survived would find a payload and submit session B's
+    // draft. That is what makes the absence of a submit observable here — an
+    // empty editor short-circuits commitIdleSend before it can act, so a swap
+    // into a blank session would pass whether or not the deadline was released.
+    stashSessionDraft('session-b', 'session b draft', [])
+
+    const { container, rerender } = render(<ComposerHarness onSubmit={onSubmit} sessionId="session-a" />)
+    const editor = editorOf(container)
+
+    await act(async () => {
+      // A real character press is what lets the idle send arm (a pasted or
+      // restored draft never sends itself); the edit then arms the deadline.
+      fireEvent.keyDown(editor, { key: 'a' })
+      editor.textContent = 'session a draft'
+      fireEvent.input(editor)
+    })
+
+    // The user switches sessions before the deadline. ChatBar stays mounted, so
+    // a deadline armed for session A would now resolve against session B.
+    rerender(<ComposerHarness onSubmit={onSubmit} sessionId="session-b" />)
+
+    // The composer now holds session B's draft — the payload a stale deadline
+    // would have sent.
+    expect(composerPlainText(editor)).toContain('session b draft')
+
+    // Advancing past the deadline must neither submit, queue, nor steer: the
+    // deadline belonged to session A and the swap released it.
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    // Nothing consumed the draft either — a send would have cleared the editor.
+    expect(composerPlainText(editor)).toContain('session b draft')
   })
 })

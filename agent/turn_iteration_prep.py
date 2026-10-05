@@ -2,7 +2,7 @@
 ``begin_iteration`` (pending redirect, interrupt / review-budget / iteration-budget exits),
 ``prepare_iteration`` (``agent:step`` callback, skill-nudge counter, pre-API ``/steer`` drain as a
 standalone user row after the newest tool result, run-budget wrap-up notice, tool_call
-argument sanitization, interrupt-scaffold ghost-row drop, role-alternation repair),
+argument sanitization, interrupt-placeholder ghost-row neutralisation, role-alternation repair),
 ``announce_api_call`` (verbose summary / quiet spinner) and, after the retry loop,
 ``apply_retry_restarts`` (consumes the ``TurnRetryState`` restart flags). Nothing here
 imports ``agent.conversation_loop`` at module level (cycle)."""
@@ -183,13 +183,11 @@ def prepare_iteration(
     # Retire hidden interrupt placeholders whose text the model echoes on replay
     # (#81841 for the scaffold, #132949 for the placeholder). A hidden row still
     # reaches the provider as assistant content; a natural-language phrase in that
-    # position is reproduced verbatim. The row must STAY when the neighbour roles
-    # would form ``tool -> user`` on removal — the strict-provider failure
-    # ``close_interrupted_tool_sequence`` exists to prevent (#48879) — so neutralise
-    # a copy of the row rather than dropping it; only rows whose removal is
-    # role-safe are dropped.
-    def _neutralise_replay_echo_ghosts(seq: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int, int]:
-        """(new list, dropped, neutralised); never mutates ``seq`` or its row dicts."""
+    # position is reproduced verbatim. The row is never dropped: removal can form
+    # ``tool -> user`` (#48879) or ``user -> user``, which repair then merges —
+    # losing the second row's checkpoint ``api_content``. Neutralise a copy instead.
+    def _neutralise_replay_echo_ghosts(seq: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
+        """(new list, neutralised); never mutates ``seq`` or its row dicts."""
         from agent.agent_runtime_helpers import (
             _INTERRUPTED_PLACEHOLDER,
             _LEGACY_INTERRUPTED_PLACEHOLDER,
@@ -199,36 +197,23 @@ def prepare_iteration(
         # placeholder is the post-fix value — it stays (this is also what
         # neutralisation rewrites to, so the rewrite does not retrigger the filter).
         hazards = {_INTERRUPT_SCAFFOLD_MARKER, _LEGACY_INTERRUPTED_PLACEHOLDER}
-        dropped = neutralised = 0
+        neutralised = 0
         out: List[Dict[str, Any]] = []
-        for i, m in enumerate(seq):
-            if not (m.get("display_kind") == "hidden" and m.get("role") == "assistant"):
-                out.append(m)
-                continue
-            if not any(
-                isinstance(m.get(k), str) and m[k].strip() in hazards
-                for k in ("content", "api_content")
+        for m in seq:
+            if (
+                m.get("display_kind") == "hidden" and m.get("role") == "assistant"
+                and any(isinstance(m.get(k), str) and m[k].strip() in hazards for k in ("content", "api_content"))
             ):
-                out.append(m)
-                continue
-            prev_role = out[-1].get("role") if out else None
-            next_role = seq[i + 1].get("role") if i + 1 < len(seq) else None
-            if prev_role == "tool" and next_role == "user":
-                # Dropping would leave ``tool -> user``; repair's tool passes
-                # leave ``assistant(tool_calls)/tool/user`` untouched, so the
-                # violation would survive to the provider. Keep the row,
-                # neutralise both sides.
-                out.append({**m, "content": "", "api_content": _INTERRUPTED_PLACEHOLDER})
+                m = {**m, "content": "", "api_content": _INTERRUPTED_PLACEHOLDER}
                 neutralised += 1
-            else:
-                dropped += 1
-        return (out if dropped or neutralised else seq), dropped, neutralised
+            out.append(m)
+        return (out if neutralised else seq), neutralised
 
-    messages, _echo_dropped, _echo_neutralised = _neutralise_replay_echo_ghosts(messages)
-    if _echo_dropped or _echo_neutralised:
+    messages, _echo_neutralised = _neutralise_replay_echo_ghosts(messages)
+    if _echo_neutralised:
         request_logger.info(
-            "Retired %d interrupt-placeholder row(s) and neutralised %d before request (session=%s)",
-            _echo_dropped, _echo_neutralised, agent.session_id or "-",
+            "Neutralised %d interrupt-placeholder row(s) before request (session=%s)",
+            _echo_neutralised, agent.session_id or "-",
         )
 
     # Repair malformed role alternation (tool→user / user→user tails): providers

@@ -50,7 +50,25 @@ def _hidden_row(text, *, content="", api_content=None):
 def test_tool_tail_row_is_kept_and_neutralised(tmp_path, monkeypatch):
     """assistant(tool_calls) -> tool -> hidden(legacy) -> user: dropping would
     recreate tool -> user (#48879). The row stays, but its echoable text is
-    replaced with the post-fix placeholder."""
+    replaced with the post-fix placeholder. The persisted redirect shape
+    user -> hidden(legacy) -> user(checkpoint) must not collapse either: a
+    dropped row leaves user -> user, which repair merges, losing the
+    correction's checkpoint sidecar and rewriting the first row in place."""
+    import copy
+    checkpoint = "[Context from the interrupted assistant response]\nhalf a poem\n\nmake it short"
+    redirect = [
+        {"role": "user", "content": "write a poem"},
+        _hidden_row(LEGACY),
+        {"role": "user", "content": "make it short", "api_content": checkpoint},
+    ]
+    stored = copy.deepcopy(redirect)
+    (tmp_path / "redirect").mkdir()
+    out = _prepare(tmp_path / "redirect", monkeypatch, redirect)
+    assert redirect == stored, "stored rows were rewritten in place"
+    assert [m["role"] for m in out] == ["user", "assistant", "user"], out
+    assert out[1]["api_content"] == NEW_PLACEHOLDER
+    assert out[2].get("api_content") == checkpoint, f"checkpoint sidecar lost: {out}"
+
     messages = [
         {"role": "user", "content": "edit the file"},
         {"role": "assistant", "content": "", "tool_calls": [

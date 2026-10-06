@@ -68,6 +68,16 @@ pid_parent() { # pid -> parent pid, or nothing
   ps -o ppid= -p "$1" 2>/dev/null | tr -d '[:space:]'
 }
 
+# The launcher's "hand-off started" proof (contract C2). Within moments of its
+# claim the daemon hands line 1 to the custodian it forked (marker_refresher_start),
+# so accepting only the daemon's pid lost that race on a slow host and reported a
+# running update as a failed launch.
+marker_names_handoff() { # daemon pid -> 0 iff line 1 names it or a process it forked
+  local p
+  p="$(head -1 "$MARKER" 2>/dev/null | tr -d '[:space:]')"
+  [ -n "$p" ] && { [ "$p" = "$1" ] || [ "$(pid_parent "$p")" = "$1" ]; }
+}
+
 ct_close() { # a b tolerance -> 0 iff |a - b| <= tolerance
   awk -v a="$1" -v b="$2" -v t="$3" 'BEGIN{d=a-b; if (d<0) d=-d; exit !(d<=t)}'
 }

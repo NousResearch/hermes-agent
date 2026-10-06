@@ -970,7 +970,7 @@ os.execve("/bin/bash", ["/bin/bash", sys.argv[1], *sys.argv[2:]], env)
   # the marker. Report a daemon that never got that far (no /usr/bin/python3,
   # a refused claim) as a failed launch so the Desktop stays up.
   for _ in $(seq 1 100); do
-    [ "$(head -1 "$MARKER" 2>/dev/null | tr -d '[:space:]')" = "$DAEMON_PID" ] && exit 0
+    marker_names_handoff "$DAEMON_PID" && exit 0
     if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
       wait "$DAEMON_PID"; code=$?
       [ "$code" -ne 0 ] || code=70

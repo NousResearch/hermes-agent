@@ -415,3 +415,26 @@ def test_desktop_that_exits_inside_the_ceiling_lets_the_update_run(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert any(c.startswith("update") for c in _calls(tmp_path))
+
+
+def test_launcher_counts_the_custodian_its_daemon_forked_as_a_started_handoff(tmp_path):
+    """Contract C2: the launcher exits 0 once the marker names its hand-off. The daemon hands
+    line 1 to the custodian it forked moments after the claim, so a launcher that waited for
+    the daemon's own pid reported a running update as a failed launch (exit 70) whenever the
+    handover beat its next poll. Only the daemon or its own fork counts."""
+    marker = tmp_path / "marker"
+    script = f"""
+. {shlex.quote(str(POSIX.parent / "marker.sh"))}
+MARKER={shlex.quote(str(marker))}
+judge() {{ echo "$1" > "$MARKER"; marker_names_handoff $$ && echo "$2=yes" || echo "$2=no"; }}
+sleep 30 & child=$!
+( sleep 30 & echo $! > {shlex.quote(str(tmp_path / "gc"))}; wait ) & sub=$!
+while [ ! -s {shlex.quote(str(tmp_path / "gc"))} ]; do sleep 0.05; done
+judge "$child" custodian
+judge "$$" daemon
+judge "$(cat {shlex.quote(str(tmp_path / "gc"))})" grandchild
+judge 1 unrelated
+kill $child $sub $(cat {shlex.quote(str(tmp_path / "gc"))}) 2>/dev/null
+"""
+    out = subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True, timeout=30, check=True).stdout
+    assert out.split() == ["custodian=yes", "daemon=yes", "grandchild=no", "unrelated=no"], out

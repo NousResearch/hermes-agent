@@ -1198,7 +1198,9 @@ def _relaunch_paused_gateways(token: dict, profiles: dict, unmapped: list) -> tu
     relaunched = []
     failed_profiles = {}
     for profile, old_pid in sorted(profiles.items()):
-        if _try_call(lambda p=profile, o=old_pid: launch_detached_profile_gateway_restart(str(p), int(o)),
+        if _try_call(lambda p=profile, o=old_pid: launch_detached_profile_gateway_restart(
+                         str(p), int(o), wait_for_exit=False
+                     ),
                      "Could not restart Windows gateway profile %s after update: %s", profile):
             relaunched.append(str(profile))
         else:
@@ -1216,7 +1218,9 @@ def _relaunch_paused_gateways(token: dict, profiles: dict, unmapped: list) -> tu
     failed_unmapped = []
     for entry in unmapped:
         argv, old_pid = entry.get("argv"), entry.get("pid")
-        if argv and old_pid and _try_call(lambda o=old_pid, a=argv: launch_detached_gateway_restart_by_cmdline(int(o), list(a)),
+        if argv and old_pid and _try_call(lambda o=old_pid, a=argv: launch_detached_gateway_restart_by_cmdline(
+                                              int(o), list(a), wait_for_exit=False
+                                          ),
                                           "Could not restart unmapped Windows gateway (pid %s) after update: %s", old_pid):
             unmapped_relaunched += 1
         else:

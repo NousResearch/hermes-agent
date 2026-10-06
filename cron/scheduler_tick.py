@@ -97,6 +97,7 @@ def _tick_admitted(
                 # idle ticks so orphaned stdio children from crashed jobs are reaped even when nothing is
                 # due.
                 _sched.logger.info("%s - No jobs due", _sched._hermes_now().strftime('%H:%M:%S'))
+            store_health.recheck_idle()
             _sched._sweep_mcp_orphans()
             return 0
 

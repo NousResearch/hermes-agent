@@ -250,6 +250,31 @@ def test_skipped_oneshot_survives_recovery_by_any_save(cron_store, monkeypatch):
     assert "late" not in [j["id"] for j in load_jobs()]
 
 
+def test_idle_tick_reprobes_a_degraded_store_and_clears_it(cron_store, monkeypatch):
+    """With nothing due no save lands, so only a re-probe can end the outage; without it the
+    store stays degraded (writable=0, no "recovered" notice) after the disk is fixed."""
+    from cron import scheduler
+
+    clock = {"mono": 0.0}
+    monkeypatch.setattr(store_health.time, "monotonic", lambda: clock["mono"])
+    monkeypatch.setattr(scheduler, "_should_yield_tick_to_fresh_gateway", lambda: None)
+    monkeypatch.setattr(scheduler, "_sweep_mcp_orphans", lambda: None)
+    monkeypatch.setattr(scheduler, "get_due_jobs", lambda: [])
+    enospc = OSError(errno.ENOSPC, "No space left on device")
+    probe_result = [enospc]
+    monkeypatch.setattr(store_health, "probe_store", lambda _d: probe_result[0])
+    save_jobs([])
+    cronjobs.warn_store_unwritable(enospc, "x", "scan")
+    assert scheduler.tick(verbose=False, sync=True) == 0  # idle and still full: stays degraded
+    probe_result[0] = None
+    clock["mono"] += 30.0
+    scheduler.tick(verbose=False, sync=True)  # re-probe throttled to once a minute
+    assert store_health.degraded_record(cron_store / "cron") is not None
+    clock["mono"] += 60.0
+    scheduler.tick(verbose=False, sync=True)
+    assert store_health.degraded_record(cron_store / "cron") is None
+
+
 @pytest.mark.platforms("posix")  # POSIX mode bits; root ignores them
 @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses directory modes")
 def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store, monkeypatch, capsys, caplog):

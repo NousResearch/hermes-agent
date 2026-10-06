@@ -175,6 +175,23 @@ def dispatch_blocked(due_jobs: list) -> bool:
     return blocked
 
 
+def recheck_idle() -> None:
+    """Idle tick (nothing due, so no save will land): re-probe a degraded store at most once a
+    minute and clear it when it accepts writes, so metrics, notices and the one-shot grace gate
+    do not stay on a store that has already recovered."""
+    cron_dir = _active_cron_dir()
+    record = _degraded.get(str(cron_dir))
+    now = time.monotonic()
+    if record is None or (record.last_probe is not None and now - record.last_probe < PROBE_INTERVAL_SECONDS):
+        return
+    error = probe_store(cron_dir)
+    if error is None:
+        note_writable(cron_dir)
+        return
+    with _lock:
+        record.last_probe, record.error = now, describe_error(error)
+
+
 def probe_report(cron_dir: Path) -> Optional[dict]:
     """Cross-process view for `cron status` / `doctor`: ``None`` when the store accepts writes,
     else the notice fields. ``since`` is jobs.json's mtime (the last write that landed);

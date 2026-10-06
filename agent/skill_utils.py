@@ -487,13 +487,17 @@ def resolve_skill_catalog(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return out
 
 
-# Project-local skills (<root>/.hermes/skills, <root>/.agents/skills; root = nearest
+# Project-local skills (<root>/.hermes/skills, <root>/.agents/skills, <root>/.github/skills; root = nearest
 # .git ancestor) are a prompt-injection vector if auto-sourced from any clone, so
 # they load only when the root is in ``skills.trusted_project_dirs``; then they
 # override same-named profile/bundled skills. cwd + trust list are session-fixed
 # so the skills index stays byte-stable.
 
-PROJECT_SKILLS_SUBDIRS = (os.path.join(".hermes", "skills"), os.path.join(".agents", "skills"))
+PROJECT_SKILLS_SUBDIRS = (
+    os.path.join(".hermes", "skills"),
+    os.path.join(".agents", "skills"),
+    os.path.join(".github", "skills"),  # GitHub Copilot convention
+)
 
 _PROJECT_ROOT_MAX_DEPTH = 64  # walk-up bound for pathological cwds
 

@@ -271,6 +271,11 @@ export const zhHantChrome = {
       modelLimitedTip: (time: string) => `此模型已達到自身上限，將於 ${time} 恢復。這裡的其他模型仍可使用。`,
       usageLeft: (percent: number, time: null | string) =>
         time ? `剩餘 ${percent}% · ${time} 重設` : `剩餘 ${percent}%`,
+      poolAccounts: (count: number) => `${count} 個帳戶`,
+      poolLimited: (limited: number, total: number) => `${limited}/${total} 個帳戶已限額`,
+      poolAccount: (number: number) => `帳戶 ${number}`,
+      poolUnknown: '用量暫時無法取得',
+      poolUnavailable: '請重新登入',
       usageTip: (provider: string) => `${provider} 即將達到用量上限。`,
       usageWindow: (label: string, percent: number, time: null | string) =>
         time ? `${label}：剩餘 ${percent}%，${time} 重設` : `${label}：剩餘 ${percent}%`
@@ -343,6 +348,9 @@ export const zhHantChrome = {
       showTerminal: '顯示終端機',
       hideTerminal: '隱藏終端機',
       gateway: '閘道',
+      backend: '後端',
+      messagingStopped: '訊息閘道已停止',
+      messagingDegraded: name => `${name} 異常`,
       gatewayReady: '就緒',
       gatewayNeedsSetup: '需要設定',
       gatewayUnavailable: '推論不可用',

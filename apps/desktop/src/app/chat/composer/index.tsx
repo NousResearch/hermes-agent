@@ -1397,7 +1397,32 @@ export function ChatBar({
             onDragOver={handleDragOver}
             onDrop={handleDrop}
             onPointerDown={!hudMode && popoutAllowed ? onComposerGesturePointerDown : undefined}
-            onPointerDownCapture={hudMode ? onHudDragPointerDown : undefined}
+            onPointerDownCapture={event => {
+              if (hudMode) {
+                onHudDragPointerDown(event)
+              }
+
+              // The Send button's `disabled` gate derives from AUI composer
+              // state (`hasComposerPayload` → `canSubmit`), which lags the
+              // contentEditable by the coalesced per-frame flush — the same
+              // seam Enter guards against by reading the live DOM (#39630).
+              // Chromium resolves a click's target from the press's
+              // hit-test, and a disabled button (pointer-events-none) drops
+              // the whole press: no mousedown, no click, no form submit, no
+              // feedback. The button reads dead while Enter still sends, for
+              // exactly as long as the flush is stalled — a frame on a fast
+              // machine, seconds under main-thread pressure (#52950). Sync
+              // the live editor into composer state at the top of the press
+              // (React flushes discrete-event updates before the browser
+              // dispatches mousedown), so the gate is open when the click
+              // hit-tests. Mid-IME-composition the DOM holds uncommitted
+              // preedit — compositionend owns that flush, so skip.
+              if (composingRef.current) {
+                return
+              }
+
+              syncDraftFromEditor()
+            }}
             onSubmit={e => {
               e.preventDefault()
 

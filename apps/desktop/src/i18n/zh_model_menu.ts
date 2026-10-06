@@ -22,6 +22,11 @@ export const zhModelMenu = {
   modelResets: (time: string) => `${time} 恢复`,
   modelLimitedTip: (time: string) => `该模型已达到自身上限，将于 ${time} 恢复。这里的其他模型仍可使用。`,
   usageLeft: (percent: number, time: null | string) => (time ? `剩余 ${percent}% · ${time} 重置` : `剩余 ${percent}%`),
+  poolAccounts: (count: number) => `${count} 个账户`,
+  poolLimited: (limited: number, total: number) => `${limited}/${total} 个账户已限额`,
+  poolAccount: (number: number) => `账户 ${number}`,
+  poolUnknown: '用量暂不可用',
+  poolUnavailable: '请重新登录',
   usageTip: (provider: string) => `${provider} 即将达到用量上限。`,
   usageWindow: (label: string, percent: number, time: null | string) =>
     time ? `${label}：剩余 ${percent}%，${time} 重置` : `${label}：剩余 ${percent}%`

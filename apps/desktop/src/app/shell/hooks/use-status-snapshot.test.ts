@@ -8,6 +8,7 @@ import { getStatus } from '@/hermes'
 import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i18n'
 import { $setupReadyTick, notifySetupReady } from '@/store/live-sync'
 import { clearNotifications } from '@/store/notifications'
+import { $desktopOnboarding } from '@/store/onboarding'
 
 import { deferred } from '../../../test/deferred'
 
@@ -37,6 +38,7 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({} as never)
   $setupReadyTick.set(0)
+  $desktopOnboarding.set({ ...$desktopOnboarding.get(), flow: { status: 'idle' } })
   clearNotifications()
 })
 
@@ -370,5 +372,62 @@ describe('useStatusSnapshot', () => {
       await vi.advanceTimersByTimeAsync(60_000)
     })
     expect(result.current.statusSnapshot).toEqual({ version: '1.0.1' })
+  })
+
+  it('clears a stale readiness failure when OAuth completes while unfocused', async () => {
+    let healthy = false
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'setup.runtime_check') {
+        return (healthy ? { ok: true } : { error: 'No usable credentials found for nous.', ok: false }) as never
+      }
+
+      return { provider_configured: healthy } as never
+    }) as unknown as GatewayRequester
+
+    // Focused: seed the authoritative credential failure.
+    const { result } = renderHook(() => useStatusSnapshot('open', requestGateway))
+    await flushAsync()
+    expect(result.current.inferenceStatus).toMatchObject({ ready: false, source: 'runtime_check' })
+
+    // User leaves Hermes for the browser to complete OAuth; no focus event fires.
+    vi.mocked(document.hasFocus).mockReturnValue(false)
+    healthy = true
+
+    // OAuth completes: the onboarding flow transitions to success while unfocused.
+    await act(async () => {
+      $desktopOnboarding.set({
+        ...$desktopOnboarding.get(),
+        flow: { status: 'success', provider: { id: 'nous', name: 'Nous' } as never }
+      })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    // The stale failure is replaced by the healthy result without a focus event.
+    expect(result.current.inferenceStatus).toMatchObject({ ready: true, source: 'runtime_check' })
+  })
+
+  it('does not force a background poll on non-success onboarding transitions while unfocused', async () => {
+    const requestGateway = vi.fn(
+      async (method: string) =>
+        (method === 'setup.runtime_check' ? { ok: true } : { provider_configured: true }) as never
+    ) as unknown as GatewayRequester
+
+    vi.mocked(document.hasFocus).mockReturnValue(false)
+    renderHook(() => useStatusSnapshot('open', requestGateway))
+    await flushAsync()
+    expect(requestGateway).not.toHaveBeenCalled()
+
+    // A non-success flow change (e.g. entering the polling state) must not
+    // trigger the focus-bypassing refresh — only auth success does.
+    await act(async () => {
+      $desktopOnboarding.set({
+        ...$desktopOnboarding.get(),
+        flow: { status: 'starting', provider: { id: 'nous', name: 'Nous' } as never }
+      })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(requestGateway).not.toHaveBeenCalled()
   })
 })

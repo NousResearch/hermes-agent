@@ -30,6 +30,7 @@ import crypto from 'node:crypto'
 import { READY_IN_MERGED_OUTPUT_RE } from './backend-ready'
 import { parseRemoteProfileListing } from './connection-registry'
 import { backendProfileArg } from './profile-id-guard'
+import { REMOTE_MARKER_JUDGE_PY } from './remote-update-marker-programs'
 import { assertBootstrapNotSuperseded, withRemoteTimeout } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -319,52 +320,53 @@ async function probeRemoteHermesHome(ssh) {
   }
 }
 
-const REMOTE_UPDATE_MARKER_PROBE = String.raw`
-import errno,os,re,sys
+// The relaunch gate: REMOTE_MARKER_JUDGE_PY (update_lock.judge_marker's parser and identity rule)
+// judges the marker; a dead claim is deleted under the updaters' marker lock.
+const REMOTE_UPDATE_MARKER_PROBE = `${REMOTE_MARKER_JUDGE_PY}${String.raw`
+import fcntl
 from pathlib import Path
 
 home=Path(os.path.expanduser(sys.argv[1]))
 if home.parent.name=='profiles':home=home.parent.parent
 marker=home/'.hermes-update-in-progress'
+def uncertain():
+    print('UNCERTAIN');raise SystemExit
 def clear():
-    try:marker.unlink()
-    except FileNotFoundError:pass
-    except OSError:pass
+    # Delete only under the updaters' marker mutex and only the bytes judged dead:
+    # a claim published since our read is a fresh claim, never ours to remove.
+    try:
+        try:fd=os.open(str(marker)+'.lock',os.O_RDWR|os.O_CREAT,0o644)
+        except PermissionError:fd=os.open(str(marker)+'.lock',os.O_RDONLY)
+    except OSError:uncertain()
+    try:
+        try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except OSError:uncertain()
+        try:
+            with marker.open('rb') as stream:
+                if stream.read(4097)!=raw:uncertain()
+            marker.unlink()
+        except FileNotFoundError:pass
+        except OSError:uncertain()
+    finally:os.close(fd)
     print('CLEAR');raise SystemExit
 try:
-    with marker.open('rb') as stream:raw=stream.read(257)
+    with marker.open('rb') as stream:raw=stream.read(4097)
 except FileNotFoundError:
     print('CLEAR');raise SystemExit
 except OSError:
-    print('UNCERTAIN');raise SystemExit
-if len(raw)>256:
-    print('UNCERTAIN');raise SystemExit
-match=re.fullmatch(rb'([1-9][0-9]*)\r?\n([0-9]+)(?:\r?\n)?',raw)
-if not match:
-    print('UNCERTAIN');raise SystemExit
+    uncertain()
+verdict=marker_verdict(raw)
+if verdict=='CLEAR':clear()
+print(verdict)
+`}`
+
+// The spawn recheck: the same judgement, read-only (the relaunch gate above already reclaimed).
+const REMOTE_MARKER_VERDICT_PY = `${REMOTE_MARKER_JUDGE_PY}${String.raw`
 try:
-    owner=int(match.group(1));lease=int(match.group(2))
-    if owner<1 or owner>4294967295 or lease>9007199254740991:raise ValueError()
-except ValueError:
-    print('UNCERTAIN');raise SystemExit
-try:
-    os.kill(owner,0)
-except ProcessLookupError:
-    clear()
-except PermissionError:
-    print('LIVE:'+str(owner));raise SystemExit
-except OSError as error:
-    if error.errno==errno.ESRCH:clear()
-    elif error.errno==errno.EPERM:print('LIVE:'+str(owner));raise SystemExit
-    else:print('UNCERTAIN');raise SystemExit
-try:
-    cmd=open('/proc/%d/cmdline'%owner,'rb').read().replace(b'\0',b' ')
-except OSError:
-    cmd=b''
-if cmd and b'update' not in cmd:
-    clear()
-print('LIVE:'+str(owner))
-`
+    with open(sys.argv[1],'rb') as stream:raw=stream.read(4097)
+except FileNotFoundError:raw=None
+print(marker_verdict(raw))
+`}`
 
 /**
  * Refuse normal SSH reuse/spawn while the remote install is being mutated.
@@ -1184,9 +1186,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   // owning remote shell is dead.
   const markerClear =
     `marker_clear() { if [ ! -e ${marker} ]; then return 0; fi; ` +
-    `if [ ! -r ${marker} ]; then return 1; fi; ` +
-    `owner=$(IFS= read -r owner < ${marker} && printf '%s' "$owner"); ` +
-    `case "$owner" in ''|*[!0-9]*) return 1;; esac; if kill -0 "$owner" 2>/dev/null; then return 1; fi; return 0; }`
+    `[ "$(python3 -c ${shq(REMOTE_MARKER_VERDICT_PY)} ${marker} 2>/dev/null)" = CLEAR ]; }`
 
   const dashCmd =
     `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +

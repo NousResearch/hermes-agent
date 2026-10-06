@@ -1,7 +1,7 @@
-
 import { billingRiskEn as billingRiskCopy } from './billing-risk-copy'
 import { enSettings } from './en-settings'
 import { enModelMenu } from './en_model_menu'
+import { enSharedMetrics } from './en_shared_metrics'
 import { en as permissionModelCopy } from './permission-model-copy'
 import type { Translations } from './types'
 
@@ -17,41 +17,8 @@ export const en: Translations = {
       message: 'This file does not exist — it may have been deleted or moved, or it lives on another machine.'
     }
   },
-  sharedMetrics: {
-    consentTitle: 'Help improve Hermes?',
-    consentBody:
-      'Shared metrics contain only bounded counters. Never prompts, files, paths or error text. Collection is local. Sending them to Nous is a separate opt-in.',
-    whatIsCollected: 'What is collected',
-    collectedIntro: 'Only bounded counters:',
-    collectedActivity: 'Activity, session length, outcomes and error classes',
-    collectedModels: 'Model routes and token totals',
-    collectedNames: 'Built-in tool, command and catalog names',
-    collectedMilestones: 'Bucketed setup counts',
-    collectedReliability: 'Update results and timing, crashes, startup and reply speed, messaging-platform health',
-    collectedUsage:
-      'How Hermes gets used: agent accuracy and efficiency (edit matches, loops, recoveries, tokens and tool calls per task, cache breaks), active time per surface and Desktop mode, which app areas, actions and settings are used, closed quickly or switched off, and provider setup outcomes',
-    collectedMachine:
-      'Coarse machine facts: RAM range, GPU type, Hermes version age and release channel, updates behind, whether a local model server is used',
-    installId:
-      'Sending uploads each daily package to the Nous telemetry service. Packages carry this profile’s install ID: a stable random UUID with no personal information, reset by deleting the shared-metrics directory.',
-    consentWindow:
-      'Only packages whose entire collection period falls inside a recorded consent window are ever sent — data from before you opt in, or from any gap while sending was off, stays on this machine. Sending can be turned off again at any time.',
-    readDocs: 'Read the full details',
-    share: 'Collect and send to Nous',
-    local: 'Collect locally only',
-    off: 'No thanks',
-    changeLater: 'You can change this any time in Settings → Safety.',
-    saveFailed: 'Couldn’t save your choice',
-    collectLabel: 'Collect usage stats',
-    collectDesc: 'Bounded counters kept on this device. Never prompts, files, paths or error text.',
-    sendLabel: 'Send usage stats to Nous',
-    sendDesc:
-      'Upload each daily package to the Nous telemetry service. Only data from inside a consent window is sent. Needs collection on.',
-    unavailable: 'Update the Hermes backend to change this setting.',
-    stripBody: 'Bounded counters only, never prompts or files.',
-    stripChoices: { share: 'Send to Nous', local: 'Local only', off: 'No thanks' },
-    stripDetails: 'Details'
-  },
+  sharedMetrics: enSharedMetrics,
+  // English editorial copy stays in the shipped JSONL; other locales override it.
   intro: { stock: {}, custom: () => [] },
   connectors: {
     title: 'Connect your apps',
@@ -605,7 +572,7 @@ export const en: Translations = {
       inputTitleNamed: session => `Input needed — ${session}`,
       inputBody: 'Hermes is waiting for your response.',
       turnDoneTitle: 'Hermes finished',
-      turnDoneBody: '',
+      turnDoneBody: 'Message complete.',
       turnErrorTitle: 'Turn failed',
       backgroundDoneTitle: 'Background task finished',
       backgroundFailedTitle: 'Background task failed',
@@ -962,7 +929,7 @@ export const en: Translations = {
         save: 'Save settings',
         saved: (name: string) => `${name} settings saved.`,
         saveFailed: (name: string) => `Could not save ${name} settings`,
-        optional: '(optional)',
+        required: 'Required',
         secretSet: '•••••••• (set)',
         secretStoredAs: (env: string) =>
           `Stored in the profile's .env as ${env}, never in config.yaml; leave blank to keep the current value.`
@@ -2762,9 +2729,10 @@ export const en: Translations = {
       restarting: 'Backend restarting to load the update…',
       notAvailable: 'Update not available for this backend.',
       failed: 'Backend update failed.',
-      noReturn: 'Backend didn’t come back online. The update may not have completed — check the backend host.'
+      noReturn: 'Backend didn’t come back online. The update may not have completed — check the backend host.',
+      owed: steps => `Backend updated, but still owed: ${steps}. Re-run \`hermes update\` to finish them.`
     },
-    appName: 'Hermes',
+    appName: 'Hermes', // Update-status overlay + version-details (mechanism-aware update UI).
     version: (value: string) => `Version ${value}`,
     versionUnavailable: 'Version unavailable',
     checkNow: 'Check now',
@@ -3174,6 +3142,9 @@ export const en: Translations = {
       showTerminal: 'Show terminal',
       hideTerminal: 'Hide terminal',
       gateway: 'Gateway',
+      backend: 'Backend',
+      messagingStopped: 'messaging stopped',
+      messagingDegraded: name => `${name} down`,
       gatewayReady: 'ready',
       gatewayNeedsSetup: 'needs setup',
       gatewayUnavailable: 'inference unavailable',

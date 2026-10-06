@@ -1,13 +1,17 @@
 import { type ReactNode, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Field, FieldHint } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
+import { Loader2, Save, SlidersHorizontal } from '@/lib/icons'
+import { cn } from '@/lib/utils'
 import type { PluginSettingField, PluginSettingFieldType } from '@/store/agent-plugins'
+
+import { CONTROL_TEXT } from './constants'
+import { ListRow, Pill, SectionHeading } from './primitives'
 
 // A plugin manifest's `config_schema` rendered as a form. Every non-secret
 // value is edited as TEXT (the draft) and coerced to its wire type on save, so a
@@ -31,6 +35,80 @@ interface ControlProps {
   secretSetHint: string
 }
 
+// Words a humanized key keeps upper-case ("maps_api_key" → "Maps API key").
+const KEY_ACRONYMS = new Set([
+  'ai',
+  'api',
+  'cpu',
+  'css',
+  'dns',
+  'gpu',
+  'html',
+  'http',
+  'https',
+  'id',
+  'ip',
+  'json',
+  'llm',
+  'mcp',
+  'oauth',
+  'sql',
+  'ssh',
+  'ssl',
+  'tls',
+  'tts',
+  'ui',
+  'uri',
+  'url',
+  'xml'
+])
+
+const ACRONYM_SPELLING: Record<string, string> = { ids: 'IDs', oauth: 'OAuth', urls: 'URLs' }
+
+/** A config key as a sentence-case label: `daily_budget` → "Daily budget",
+ *  `maps_api_key` → "Maps API key", `webhookURL` → "Webhook URL". */
+export function humanizeSettingKey(key: string): string {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .split(/[\s_.\-/]+/)
+    .filter(Boolean)
+
+  return words
+    .map((word, index) => {
+      const lower = word.toLowerCase()
+
+      if (ACRONYM_SPELLING[lower]) {
+        return ACRONYM_SPELLING[lower]
+      }
+
+      if (KEY_ACRONYMS.has(lower)) {
+        return lower.toUpperCase()
+      }
+
+      return index === 0 ? lower.charAt(0).toUpperCase() + lower.slice(1) : lower
+    })
+    .join(' ')
+}
+
+/** The row label: the manifest's `label`/`title` when it gave one (the backend
+ *  falls back to the bare key), else the key humanized. */
+export function fieldLabel(field: Pick<PluginSettingField, 'key' | 'label'>): string {
+  const label = field.label.trim()
+
+  return label && label !== field.key ? label : humanizeSettingKey(field.key)
+}
+
+/** Helper copy from independent sentences (a plugin's description, the secret
+ *  storage note): each part ends its sentence before the next begins. */
+export function joinSentences(...parts: (null | string | undefined)[]): string {
+  const kept = parts.map(part => part?.trim() ?? '').filter(Boolean)
+
+  return kept
+    .map((part, index) => (index < kept.length - 1 && !/[.!?。！？…:;]$/.test(part) ? `${part}.` : part))
+    .join(' ')
+}
+
 /** What the input shows before the user touches it. */
 const INITIAL_TEXT: Record<PluginSettingFieldType, (field: PluginSettingField) => string> = {
   boolean: field => (field.value === true ? 'true' : 'false'),
@@ -46,7 +124,7 @@ const COERCE: Record<Exclude<PluginSettingFieldType, 'secret'>, (raw: string, fi
   boolean: raw => raw === 'true',
   enum: (raw, field) => {
     if (!field.choices?.includes(raw)) {
-      throw new Error(`${field.label}: not one of ${field.choices?.join(', ') ?? ''}`)
+      throw new Error(`${fieldLabel(field)}: not one of ${field.choices?.join(', ') ?? ''}`)
     }
 
     return raw
@@ -55,7 +133,7 @@ const COERCE: Record<Exclude<PluginSettingFieldType, 'secret'>, (raw: string, fi
     const parsed: unknown = JSON.parse(raw || 'null')
 
     if (parsed === null || typeof parsed !== 'object') {
-      throw new Error(`${field.label}: expected a JSON list or object`)
+      throw new Error(`${fieldLabel(field)}: expected a JSON list or object`)
     }
 
     return parsed
@@ -64,7 +142,7 @@ const COERCE: Record<Exclude<PluginSettingFieldType, 'secret'>, (raw: string, fi
     const n = Number(raw)
 
     if (raw.trim() === '' || Number.isNaN(n)) {
-      throw new Error(`${field.label}: expected a number`)
+      throw new Error(`${fieldLabel(field)}: expected a number`)
     }
 
     return n
@@ -72,7 +150,7 @@ const COERCE: Record<Exclude<PluginSettingFieldType, 'secret'>, (raw: string, fi
   string: raw => raw
 }
 
-const TEXT_CLASS = 'h-7 text-xs'
+const TEXT_CLASS = cn('w-full', CONTROL_TEXT)
 
 function StringControl({ disabled, id, onChange, raw }: ControlProps) {
   return (
@@ -103,7 +181,7 @@ function NumberControl({ disabled, id, onChange, raw }: ControlProps) {
 function BooleanControl({ disabled, field, id, onChange, raw }: ControlProps) {
   return (
     <Switch
-      aria-label={field.label}
+      aria-label={fieldLabel(field)}
       checked={raw === 'true'}
       disabled={disabled}
       id={id}
@@ -115,7 +193,7 @@ function BooleanControl({ disabled, field, id, onChange, raw }: ControlProps) {
 function EnumControl({ disabled, field, id, onChange, raw }: ControlProps) {
   return (
     <Select disabled={disabled} onValueChange={onChange} value={raw}>
-      <SelectTrigger aria-label={field.label} className={TEXT_CLASS} id={id}>
+      <SelectTrigger aria-label={fieldLabel(field)} className={TEXT_CLASS} id={id}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
@@ -148,7 +226,7 @@ function SecretControl({ disabled, field, id, onChange, raw, secretSetHint }: Co
 function JsonControl({ disabled, id, onChange, raw }: ControlProps) {
   return (
     <Textarea
-      className="min-h-16 font-mono text-xs"
+      className={cn('min-h-28 resize-y bg-background font-mono', CONTROL_TEXT)}
       disabled={disabled}
       id={id}
       onChange={e => onChange(e.currentTarget.value)}
@@ -204,13 +282,19 @@ export function PluginSettingsForm({
   fields,
   idPrefix,
   disabled,
-  onSave
+  intro,
+  onSave,
+  title
 }: {
   fields: PluginSettingField[]
   idPrefix: string
   disabled: boolean
+  /** Lead copy under the page heading (the plugin's description). */
+  intro?: ReactNode
   /** Resolves true when everything landed; the form then re-seeds from `fields`. */
   onSave: (changes: PluginSettingsSave) => Promise<boolean>
+  /** Page title; the Settings breadcrumb owns it, embedded callers show it. */
+  title: string
 }) {
   const { t } = useI18n()
   const s = t.skills.plugins.settingsForm
@@ -218,6 +302,7 @@ export function PluginSettingsForm({
   const [draft, setDraft] = useState<PluginSettingsDraft>(seed)
   const [seedRef, setSeedRef] = useState(seed)
   const [error, setError] = useState<null | string>(null)
+  const [saving, setSaving] = useState(false)
 
   // The row's refreshed copy re-seeds the form (a saved value becomes the new baseline).
   if (seedRef !== seed) {
@@ -239,60 +324,98 @@ export function PluginSettingsForm({
     }
 
     setError(null)
+    setSaving(true)
 
-    if (await onSave(changes)) {
-      // Secrets are never echoed back; clear them so the placeholder shows "set".
-      setDraft(current =>
-        Object.fromEntries(fields.map(field => [field.key, field.type === 'secret' ? '' : (current[field.key] ?? '')]))
-      )
+    try {
+      if (await onSave(changes)) {
+        // Secrets are never echoed back; clear them so the placeholder shows "set".
+        setDraft(current =>
+          Object.fromEntries(
+            fields.map(field => [field.key, field.type === 'secret' ? '' : (current[field.key] ?? '')])
+          )
+        )
+      }
+    } finally {
+      setSaving(false)
     }
   }
 
   return (
     <form
-      className="grid gap-3"
       data-testid={`${idPrefix}-settings-form`}
       onSubmit={event => {
         event.preventDefault()
         void save()
       }}
     >
-      <div className="grid items-start gap-3 sm:grid-cols-2">
+      {/* The page's one action rides the heading row, like every Settings page
+          with a primary action (Passwords & Logins' Add): never mid-canvas. */}
+      <SectionHeading
+        aside={
+          <Button className="gap-1.5" disabled={disabled || saving || !dirty} size="sm" type="submit">
+            {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
+            {s.save}
+          </Button>
+        }
+        icon={SlidersHorizontal}
+        page
+        title={title}
+      />
+      {intro}
+      {error && (
+        <p className="mb-1 text-[length:var(--conversation-caption-font-size)] text-destructive" role="alert">
+          {error}
+        </p>
+      )}
+      <div>
         {fields.map(field => {
           const id = `${idPrefix}-${field.key}`
           const Control = FIELD_CONTROLS[field.type]
+          const label = fieldLabel(field)
 
-          return (
-            <Field
-              htmlFor={id}
+          const control = (
+            <Control
+              disabled={disabled || saving}
+              field={field}
+              id={id}
+              onChange={raw => setDraft(current => ({ ...current, [field.key]: raw }))}
+              raw={draft[field.key] ?? ''}
+              secretSetHint={s.secretSet}
+            />
+          )
+
+          const description =
+            joinSentences(field.description, field.type === 'secret' && field.env ? s.secretStoredAs(field.env) : '') ||
+            undefined
+
+          const rowTitle = (
+            <span className="inline-flex flex-wrap items-center gap-2">
+              <label htmlFor={id}>{label}</label>
+              {field.required && <Pill>{s.required}</Pill>}
+            </span>
+          )
+
+          // Editors too big for the control column take the full width under
+          // the description, as native config rows do.
+          return field.type === 'json' ? (
+            <ListRow
+              below={<div className="mt-3">{control}</div>}
+              data-tour={`plugin-field-${field.key}`}
+              description={description}
               key={field.key}
-              label={field.label}
-              optional={!field.required}
-              optionalLabel={s.optional}
-            >
-              <Control
-                disabled={disabled}
-                field={field}
-                id={id}
-                onChange={raw => setDraft(current => ({ ...current, [field.key]: raw }))}
-                raw={draft[field.key] ?? ''}
-                secretSetHint={s.secretSet}
-              />
-              {(field.description || field.type === 'secret') && (
-                <FieldHint>
-                  {field.description}
-                  {field.type === 'secret' && field.env ? ` ${s.secretStoredAs(field.env)}` : ''}
-                </FieldHint>
-              )}
-            </Field>
+              title={rowTitle}
+              wide
+            />
+          ) : (
+            <ListRow
+              action={control}
+              data-tour={`plugin-field-${field.key}`}
+              description={description}
+              key={field.key}
+              title={rowTitle}
+            />
           )
         })}
-      </div>
-      {error && <FieldHint error>{error}</FieldHint>}
-      <div className="flex items-center justify-end gap-2">
-        <Button disabled={disabled || !dirty} size="xs" type="submit" variant="outline">
-          {s.save}
-        </Button>
       </div>
     </form>
   )

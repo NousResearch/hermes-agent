@@ -24,6 +24,11 @@ export const frModelMenu = {
     `Ce modèle a atteint sa propre limite et revient à ${time}. Les autres modèles ici fonctionnent toujours.`,
   usageLeft: (percent: number, time: null | string) =>
     time ? `${percent} % restant · réinit. ${time}` : `${percent} % restant`,
+  poolAccounts: (count: number) => `${count} ${count === 1 ? 'compte' : 'comptes'}`,
+  poolLimited: (limited: number, total: number) => `${limited}/${total} comptes limités`,
+  poolAccount: (number: number) => `Compte ${number}`,
+  poolUnknown: 'Utilisation indisponible',
+  poolUnavailable: 'Reconnectez-vous',
   usageTip: (provider: string) => `${provider} approche de sa limite d’utilisation.`,
   usageWindow: (label: string, percent: number, time: null | string) =>
     time ? `${label} : ${percent} % restant, réinitialisation ${time}` : `${label} : ${percent} % restant`

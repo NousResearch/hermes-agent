@@ -1096,6 +1096,10 @@ export interface AutomationBlueprint {
   fields: AutomationBlueprintField[]
   command: string
   appUrl: string
+  /** Where it comes from; absent on backends that predate plugin blueprints. */
+  source?: 'builtin' | 'plugin'
+  /** The registering plugin's name when source is 'plugin' (key is `<plugin>:<key>`). */
+  plugin?: null | string
 }
 
 export interface ProfileCreatePayload {
@@ -1253,6 +1257,9 @@ export interface ToolProvider {
   /** Web toolset only: capabilities this backend can serve. Search-only
    *  providers (ddgs, brave-free) report ['search']. */
   capabilities?: WebCapability[]
+  /** Set on the "Nous Subscription" rows (e.g. 'web'): served through the
+   *  Nous Tool Gateway rather than the user's own key. */
+  managed_nous_feature?: null | string
 }
 
 /** A web toolset capability — the runtime dispatches web_search and
@@ -1270,6 +1277,10 @@ export interface ToolsetConfig {
   active_search_backend?: string | null
   /** Web toolset only: backend the web_extract tool resolves to right now. */
   active_extract_backend?: string | null
+  /** Web toolset only: web_search / web_extract currently go through the Nous
+   *  Tool Gateway (billed to the subscription) instead of the user's own key. */
+  search_via_nous?: boolean
+  extract_via_nous?: boolean
 }
 
 /** Health status of a terminal execution backend row.
@@ -1546,6 +1557,11 @@ export interface UpdateReceiptSummary {
   post_sha: string | null
   post_version: string | null
   fleet_states: string[]
+  /** Post-commit steps a committed (successful) update still owes. */
+  followups?: Array<{ step: string; reason: string }>
+  user_action?: { step: string; reason: string } | null
+  /** Dashboard action that wrote the receipt; null for a CLI-run update. */
+  action_id?: string | null
 }
 
 export interface ActionStatusResponse {
@@ -1585,10 +1601,21 @@ export interface BackendUpdateCheckResponse {
 
 export interface AuxiliaryTaskAssignment {
   base_url: string
+  /** Plugin tasks with `inherit_from` only: the route the task resolves to right now
+   *  (the base slot's while this slot is unpinned). Absent on older backends. */
+  effective?: { base_url: string; model: string; provider: string }
+  /** Set only on plugin-registered tasks (PluginContext.register_auxiliary_task):
+   *  the plugin's display name / description / owning plugin id. Built-in tasks
+   *  are labelled client-side via i18n. Absent on older backends. */
+  hint?: string
+  /** Plugin tasks only: the slot this one follows until it is pinned itself. */
+  inherit_from?: null | string
+  label?: string
   /** Backend verdict (`agent/model_metadata.py::is_local_endpoint`) that `base_url`
    *  is a loopback/LAN/mDNS endpoint. Absent on older backends. */
   local_endpoint?: boolean
   model: string
+  plugin?: string
   provider: string
   /** Task-level effort override (`auxiliary.<task>.reasoning_effort`); null/absent
    *  means the task inherits the main agent's effort. */

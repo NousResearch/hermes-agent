@@ -26539,7 +26539,7 @@
       },
       "ProviderUsage": {
         "additionalProperties": false,
-        "description": "``hermes_cli/inventory.py::_apply_usage`` \u2014 the provider's account usage windows, from cache.",
+        "description": "``hermes_cli/inventory.py::_apply_usage`` \u2014 the provider's subscription usage, from cache.\n\nMulti-entry credential pools carry ``accounts`` (one row per account; the legacy ``windows``\nstays EMPTY there \u2014 a provider-wide percentage across different logins would be fabricated).\nSingle-account providers keep the legacy ``windows`` gauge.",
         "properties": {
           "windows": {
             "items": {
@@ -26547,17 +26547,79 @@
             },
             "title": "Windows",
             "type": "array"
+          },
+          "accounts": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ProviderUsageAccount"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Accounts"
+          }
+        },
+        "title": "ProviderUsage",
+        "type": "object"
+      },
+      "ProviderUsageAccount": {
+        "additionalProperties": false,
+        "description": "One account of a provider's credential pool (``hermes_cli/inventory.py::_pool_usage_accounts``).\n``id`` is a stable non-secret account identity (never a key or URL); ``label`` may be empty (UI\nfalls back to a localized \"Account N\"). ``windows`` is empty while the account's usage is not\nyet known \u2014 state carries the meaning, never a fabricated gauge.\n\n``state``: ``ready`` \u2014 live quota below the cap (numeric windows present); ``limited`` \u2014 a live\ncredential-wide cooldown or exhausted account-scoped quota windows; ``unknown`` \u2014 no live\nnumeric windows (failed/empty fetch, stale snapshot, provider without a usage API);\n``unavailable`` \u2014 DEAD auth row (kept visible, never a quota row).\n\n``resets_at``: for a limited account, the LATEST of its exhausted account-scoped windows (or a\nlive cooldown when later); ``None`` when unknown (the frontend renders its own advisory, e.g.\nthe earliest limited sibling).",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderUsageWindow"
+            },
+            "title": "Windows",
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "ready",
+              "limited",
+              "unknown",
+              "unavailable"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "resets_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resets At"
           }
         },
         "required": [
-          "windows"
+          "id",
+          "state"
         ],
-        "title": "ProviderUsage",
+        "title": "ProviderUsageAccount",
         "type": "object"
       },
       "ProviderUsageWindow": {
         "additionalProperties": false,
-        "description": "One subscription usage window (``agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour\nsession or the weekly cap, with how much of it is spent and when it rolls over (ISO).",
+        "description": "One subscription usage window (``agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour\nsession or the weekly cap, with how much of it is spent and when it rolls over (ISO).\n\n``scope``: ``account`` \u2014 exhausting the window exhausts the whole login (Codex session/weekly,\nso a limited account's resets_at must wait for it); ``model`` \u2014 the window caps only one model\nfamily (Anthropic Opus/Sonnet weekly) and can never imply the account itself is out of quota.",
         "properties": {
           "label": {
             "title": "Label",
@@ -26578,6 +26640,15 @@
             ],
             "default": null,
             "title": "Resets At"
+          },
+          "scope": {
+            "default": "account",
+            "enum": [
+              "account",
+              "model"
+            ],
+            "title": "Scope",
+            "type": "string"
           }
         },
         "required": [
@@ -32612,7 +32683,7 @@
       },
       "SharedMetricsConsentResult": {
         "additionalProperties": false,
-        "description": "The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while\n``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults\nare not an answer).",
+        "description": "The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while\n``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults\nare not an answer) and it is not a ``reask``: an \"off\" from before the type-ahead fix, offered\nonce more with the reason.",
         "properties": {
           "enabled": {
             "title": "Enabled",
@@ -32624,6 +32695,11 @@
           },
           "decided": {
             "title": "Decided",
+            "type": "boolean"
+          },
+          "reask": {
+            "default": false,
+            "title": "Reask",
             "type": "boolean"
           }
         },

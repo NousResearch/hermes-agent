@@ -25,7 +25,7 @@ import tempfile
 import threading
 import time
 import unicodedata
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -2600,14 +2600,15 @@ def sanitize_env_file() -> int:
     env_path = get_env_path()
     if not env_path.exists():
         return 0
-    with open(env_path, encoding="utf-8-sig", errors="replace") as f:
-        original_lines = f.readlines()
-    sanitized = _sanitize_env_lines(original_lines)
-    if sanitized == original_lines:
-        return 0
-    fixes = abs(len(sanitized) - len(original_lines)) or sum(
-        1 for a, b in zip(original_lines, sanitized) if a != b)
-    _write_env_lines(env_path, sanitized, preserve_mode=False)
+    with _env_write_lock(env_path):
+        with open(env_path, encoding="utf-8-sig", errors="replace") as f:
+            original_lines = f.readlines()
+        sanitized = _sanitize_env_lines(original_lines)
+        if sanitized == original_lines:
+            return 0
+        fixes = abs(len(sanitized) - len(original_lines)) or sum(
+            1 for a, b in zip(original_lines, sanitized) if a != b)
+        _write_env_lines(env_path, sanitized, preserve_mode=False)
     invalidate_env_cache()
     return fixes
 
@@ -2617,6 +2618,49 @@ def _read_env_lines(env_path: Path) -> list:
     tolerance (Notepad adds one)."""
     with open(env_path, encoding="utf-8-sig", errors="replace") as f:
         return _sanitize_env_lines(f.readlines())
+
+
+_ENV_WRITE_LOCK_HOLDERS: Dict[str, Any] = {}
+_ENV_WRITE_LOCK_HOLDERS_GUARD = threading.Lock()
+
+
+def _env_write_lock_holder(env_path: Path) -> Any:
+    """Reentrancy tracker for one canonical ``.env`` path (mirrors auth's
+    ``_auth_lock_holder_for``): multiplexed profiles each get their own tracker."""
+    key = str(env_path)
+    with _ENV_WRITE_LOCK_HOLDERS_GUARD:
+        return _ENV_WRITE_LOCK_HOLDERS.setdefault(key, threading.local())
+
+
+@contextmanager
+def _env_write_lock(env_path: Path):
+    """Serialize a whole ``.env`` read-modify-write cycle (#77187).
+
+    ``save_env_value`` / ``remove_env_value`` / ``sanitize_env_file`` read the file,
+    rewrite it in memory, then atomically replace it. Without a lock, two
+    concurrent writers (setup wizard + dashboard save, gateway + CLI) both
+    snapshot the pre-write file and the loser's replace silently drops the
+    winner's key. ``_CONFIG_LOCK`` cannot help: it guards in-memory config only.
+
+    Reuses ``hermes_cli.auth._file_lock`` (fcntl flock / msvcrt byte lock,
+    cross-process, reentrant per thread) rather than growing a second kernel-lock
+    implementation. The import is call-time: ``hermes_cli.auth`` imports this
+    module at import time, so a module-level import would be circular. Nothing
+    under this lock takes other locks, and the only nesting direction that exists
+    (credential_lifecycle takes ``_auth_store_lock`` around its own auth-store
+    writes, NOT around ``save_env_value``) keeps a single ordering — no cycle.
+    On a filesystem without flock the helper degrades to a depth-only guard
+    (same behavior as auth's locks), never to a crash.
+    """
+    from hermes_cli.auth import _file_lock
+
+    with _file_lock(
+        env_path.with_name(env_path.name + ".lock"),
+        _env_write_lock_holder(env_path),
+        15.0,
+        f"Timed out waiting for the environment file lock ({env_path})",
+    ):
+        yield
 
 
 def _write_env_lines(env_path: Path, lines: list, *, preserve_mode: bool) -> None:
@@ -2780,18 +2824,19 @@ def save_env_value(key: str, value: str):
     ensure_hermes_home()
     env_path = get_env_path()
 
-    lines = _read_env_lines(env_path) if env_path.exists() else []
-    serialized_value = _quote_env_value(value)
+    with _env_write_lock(env_path):
+        lines = _read_env_lines(env_path) if env_path.exists() else []
+        serialized_value = _quote_env_value(value)
 
-    idx = next((i for i, line in enumerate(lines) if _env_line_defines_key(line, key)), None)
-    if idx is not None:
-        lines[idx] = f"{key}={serialized_value}\n"
-    else:
-        if lines and not lines[-1].endswith("\n"):
-            lines[-1] += "\n"
-        lines.append(f"{key}={serialized_value}\n")
+        idx = next((i for i, line in enumerate(lines) if _env_line_defines_key(line, key)), None)
+        if idx is not None:
+            lines[idx] = f"{key}={serialized_value}\n"
+        else:
+            if lines and not lines[-1].endswith("\n"):
+                lines[-1] += "\n"
+            lines.append(f"{key}={serialized_value}\n")
 
-    _write_env_lines(env_path, lines, preserve_mode=env_path.exists())
+        _write_env_lines(env_path, lines, preserve_mode=env_path.exists())
     _publish_env_value(key, value)
     invalidate_env_cache()
 
@@ -2816,11 +2861,12 @@ def remove_env_value(key: str) -> bool:
         _publish_env_value(key, None)
         return False
 
-    lines = _read_env_lines(env_path)
-    new_lines = [line for line in lines if not _env_line_defines_key(line, key)]
-    found = len(new_lines) < len(lines)
-    if found:
-        _write_env_lines(env_path, new_lines, preserve_mode=True)
+    with _env_write_lock(env_path):
+        lines = _read_env_lines(env_path)
+        new_lines = [line for line in lines if not _env_line_defines_key(line, key)]
+        found = len(new_lines) < len(lines)
+        if found:
+            _write_env_lines(env_path, new_lines, preserve_mode=True)
     _publish_env_value(key, None)
     invalidate_env_cache()
     return found
@@ -2907,8 +2953,18 @@ def get_env_value(key: str) -> Optional[str]:
 
 def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
     """Resolve a Hermes-managed credential preferring ``~/.hermes/.env`` over ``os.environ``, so a
-    deliberate .env edit beats a stale value inherited from the parent shell."""
-    return load_env().get(key) or _scoped_environ_get(key)
+    deliberate .env edit beats a stale value inherited from the parent shell.
+
+    An unresolved ``op://`` reference left in .env yields to the already-resolved value from the
+    active secret scope (set by the 1Password secret source) — otherwise a provider auth attempt
+    would receive a URL instead of a key. Same carve-out as
+    ``agent.credential_pool.get_env_prefer_dotenv``."""
+    raw = load_env().get(key) or ""
+    if str(raw).lstrip().startswith("op://"):
+        scoped = _scoped_environ_get(key)
+        if scoped:
+            return scoped
+    return raw or _scoped_environ_get(key)
 
 
 # ---- Config display ----

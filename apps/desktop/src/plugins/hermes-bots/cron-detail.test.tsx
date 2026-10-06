@@ -72,10 +72,10 @@ afterEach(() => {
 })
 
 function SwitchLanguage() {
-  const { setLocale } = useI18n()
+  const { locale, setLocale } = useI18n()
 
   return (
-    <button onClick={() => void setLocale('ko')} type="button">
+    <button onClick={() => void setLocale(locale === 'ko' ? 'en' : 'ko')} type="button">
       Switch language
     </button>
   )
@@ -246,6 +246,13 @@ describe('the inspector', () => {
       expect(rows.some(row => row.value === expected)).toBe(true)
       expect(rows.some(row => row.value === 'unknown-target')).toBe(true)
     }
+
+    fireEvent.click(screen.getByText('Switch language'))
+    expect(screen.getByText(timestamp('en'))).toBeTruthy()
+    expect(screen.queryByText(timestamp('ko'))).toBeNull()
+    expect(screen.getByText('3 times')).toBeTruthy()
+    expect(screen.queryByText('실행 기록에만 저장')).toBeNull()
+    expect(screen.getByText('vendor/model:1')).toBeTruthy()
 
     expect(job.repeat).toBe('3 times')
     expect(job.deliver).toBe('local')

@@ -9,7 +9,16 @@ export const koSettings: NonNullable<TranslationOverrides['settings']> = {
   resetConfirm: '모든 설정을 Hermes 기본값으로 초기화하시겠습니까?',
   exportFailed: '내보내기 실패',
   resetFailed: '초기화 실패',
+  pluginPages: {
+    blurb: '설치한 플러그인이 제공하는 설정입니다. 플러그인마다 설정 페이지가 있으며 하위 페이지가 있을 수 있습니다.',
+    empty: '아직 설정 페이지를 제공하는 플러그인이 없습니다.',
+    manage: '플러그인 관리',
+    agentSettings: '에이전트 설정',
+    pageCount: n => '페이지 ' + n + '개',
+    missing: '이 플러그인의 설정 페이지가 없습니다. 플러그인이 비활성화되었거나 제거되었을 수 있습니다.'
+  },
   nav: {
+    plugins: '플러그인',
     providers: '공급자',
     providerAccounts: '계정',
     providerApiKeys: 'API 키',
@@ -34,16 +43,10 @@ export const koSettings: NonNullable<TranslationOverrides['settings']> = {
       '이 구버전 앱은 plugin.js의 처음 512 KiB만 읽을 수 있습니다. 이 플러그인을 불러오려면 Hermes Desktop을 업데이트하세요.',
     loadFailed: name => `플러그인 “${name}”을(를) 불러오지 못했습니다`,
     title: '데스크톱 플러그인',
-    blurb:
-      '앱을 확장하는 플러그인입니다. 앱 전체에 한 번 설치되며 연결한 프로필, 게이트웨이, 컴퓨터와 관계없이 적용됩니다. 앱에 포함되거나 desktop-plugins 폴더에 추가되며, 켜기·끄기는 즉시 적용됩니다.',
-    count: n => `${n}개 설치됨`,
     openFolder: '플러그인 폴더 열기',
     rescan: '다시 검색',
     reveal: '파일 관리자에서 보기',
-    enable: '활성화',
-    disable: '비활성화',
     failed: '실패',
-    empty: '아직 설치된 데스크톱 플러그인이 없습니다.',
     kinds: {
       bundled: '기본 제공',
       disk: '디스크',
@@ -98,10 +101,7 @@ export const koSettings: NonNullable<TranslationOverrides['settings']> = {
       pinToCommitHint:
         '이 SHA를 설치하면 누구나 같은 코드를 사용합니다. 다시 고정할 때까지 플러그인 업데이트는 차단됩니다. 최신 커밋을 설치하려면 비워 두세요.',
       pinToCommitInvalid: '전체 40자리 커밋 SHA를 입력하세요. 브랜치와 태그는 사용할 수 없습니다.'
-    },
-    agentHalfMissing: '에이전트 구성 요소가 설치되지 않음',
-    agentHalfMissingTip:
-      '이 통합 플러그인의 데스크톱 구성 요소는 있지만, 현재 연결된 백엔드/프로필에는 에이전트 구성 요소가 없습니다. 스킬과 도구 → 플러그인에서 설치하세요.'
+    }
   },
   notifications: {
     title: '알림',

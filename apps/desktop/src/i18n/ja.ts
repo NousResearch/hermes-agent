@@ -1,9 +1,9 @@
-
 import { billingRiskJa as billingRiskCopy } from './billing-risk-copy'
 import { defineLocale } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaSettings } from './ja-settings'
 import { jaModelMenu } from './ja_model_menu'
+import { jaSharedMetrics } from './ja_shared_metrics'
 import { ja as permissionModelCopy } from './permission-model-copy'
 
 export const ja = defineLocale({
@@ -14,43 +14,7 @@ export const ja = defineLocale({
     copyUrl: 'リンクをコピー',
     close: '閉じる'
   },
-  sharedMetrics: {
-    consentTitle: 'Hermes の改善に協力しますか？',
-    consentBody:
-      '共有メトリクスは上限付きのカウンターだけです。プロンプト、ファイル、パス、エラーテキストは含みません。収集はローカルで行われ、Nous への送信は別途オプトインです。',
-    whatIsCollected: '収集される内容',
-    collectedIntro: '上限付きのカウンターのみ：',
-    collectedActivity: 'アクティビティ、セッションの長さ、結果、エラーの分類',
-    collectedModels: 'モデルのルートとトークン合計',
-    collectedNames: '組み込みツール、コマンド、カタログの名前',
-    collectedMilestones: '区分けされたセットアップの件数',
-    collectedReliability:
-      'アップデートの結果と所要時間、クラッシュ、起動と応答の速さ、メッセージングプラットフォームの状態',
-    collectedUsage:
-      'Hermes の使われ方：エージェントの精度と効率（編集の適用結果、ループ、エラーからの回復、タスクごとのトークン数とツール呼び出し数、キャッシュの破棄）、画面・Desktop モードごとのアクティブ時間、アプリのどの領域・操作・設定が使われ、すぐ閉じられ、オフにされたか、プロバイダー設定の結果',
-    collectedMachine:
-      '大まかなマシン情報：RAM の範囲、GPU の種類、Hermes バージョンの古さとリリースチャネル、未適用の更新数、ローカルモデルサーバーの使用有無',
-    installId:
-      '送信すると、日次パッケージが Nous のテレメトリサービスにアップロードされます。パッケージにはこのプロファイルのインストール ID（個人情報を含まない固定のランダム UUID。共有メトリクスのディレクトリを削除するとリセット）が付きます。',
-    consentWindow:
-      '収集期間全体が記録済みの同意期間内に収まるパッケージだけが送信されます。オプトイン前のデータや、送信オフ中のデータはこのマシンに残ります。送信はいつでもオフに戻せます。',
-    readDocs: '詳細を読む',
-    share: '収集して Nous に送信する',
-    local: 'ローカルでのみ収集する',
-    off: '共有しない',
-    changeLater: '設定 → 安全性 からいつでも変更できます。',
-    saveFailed: '選択を保存できませんでした',
-    collectLabel: '利用統計を収集する',
-    collectDesc:
-      '上限付きのカウンターをこのデバイスに保存します。プロンプト、ファイル、パス、エラーテキストは含みません。',
-    sendLabel: '利用統計を Nous に送信する',
-    sendDesc:
-      '日次パッケージを Nous のテレメトリサービスにアップロードします。同意期間内のデータだけが送信されます。収集がオンである必要があります。',
-    unavailable: 'この設定を変更するには Hermes バックエンドを更新してください。',
-    stripBody: '上限付きのカウンターのみ。プロンプトやファイルは含みません。',
-    stripChoices: { share: 'Nous に送信', local: 'ローカルのみ', off: '今はしない' },
-    stripDetails: '詳細'
-  },
+  sharedMetrics: jaSharedMetrics,
   intro: introJa,
   sessionImport: {
     title: '別のアプリから続ける',
@@ -285,7 +249,7 @@ export const ja = defineLocale({
       inputTitleNamed: session => `入力が必要です — ${session}`,
       inputBody: 'Hermes が応答を待っています。',
       turnDoneTitle: 'Hermes が完了しました',
-      turnDoneBody: '',
+      turnDoneBody: 'メッセージが完了しました。',
       turnErrorTitle: 'ターンが失敗しました',
       backgroundDoneTitle: 'バックグラウンドタスクが完了しました',
       backgroundFailedTitle: 'バックグラウンドタスクが失敗しました',
@@ -2242,6 +2206,9 @@ export const ja = defineLocale({
       showTerminal: 'ターミナルを表示',
       hideTerminal: 'ターミナルを非表示',
       gateway: 'ゲートウェイ',
+      backend: 'バックエンド',
+      messagingStopped: 'メッセージング停止',
+      messagingDegraded: name => `${name} 停止`,
       gatewayReady: '準備完了',
       gatewayNeedsSetup: '設定が必要',
       gatewayUnavailable: '推論を利用できません',

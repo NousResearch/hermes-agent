@@ -146,7 +146,17 @@ export const koCapabilities: Pick<
         `커밋 ${sha}에 고정되어 있습니다. 새 고정 커밋으로 다시 설치하기 전에는 업데이트할 수 없습니다.`,
       pinnedBadge: (sha: string) => `고정 @ ${sha}`,
       uninstall: '제거',
-      settingsForm: { optional: '(선택 사항)' }
+      settingsForm: {
+        save: '설정 저장',
+        saved: name => '플러그인 “' + name + '”의 설정을 저장했습니다',
+        saveFailed: name => '플러그인 “' + name + '”의 설정을 저장하지 못했습니다',
+        required: '(필수)',
+        secretSet: '•••••••• (설정됨)',
+        secretStoredAs: env =>
+          '이 프로필의 .env에 ' +
+          env +
+          '로 저장되며 config.yaml에는 저장되지 않습니다. 현재 값을 유지하려면 비워 두세요.'
+      }
     },
     officialCatalog: '설치 가능',
     officialPill: '공식',

@@ -10,7 +10,9 @@ import type { BillingRiskCopy } from './billing-risk-copy'
 // fall back to English while new keys remain type-checked.
 import type { PermissionModelCopy } from './permission-model-copy'
 import type { NotificationsTranslations } from './types-notifications'
+import type { AuxTaskCopyMap } from './types_aux_tasks'
 import type { ModelMenuTranslations } from './types_model_menu'
+import type { SharedMetricsTranslations } from './types_shared_metrics'
 
 /** The locales compiled into the app (`TRANSLATIONS`). */
 export type BundledLocale = 'en' | 'ko' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
@@ -64,41 +66,9 @@ interface ModeOptionCopy {
   description: string
 }
 
-interface AuxTaskCopy {
-  label: string
-  hint: string
-}
-
 export interface Translations {
-  sharedMetrics: {
-    consentTitle: string
-    consentBody: string
-    whatIsCollected: string
-    collectedIntro: string
-    collectedActivity: string
-    collectedModels: string
-    collectedNames: string
-    collectedMilestones: string
-    collectedReliability: string
-    collectedUsage: string
-    collectedMachine: string
-    installId: string
-    consentWindow: string
-    readDocs: string
-    share: string
-    local: string
-    off: string
-    changeLater: string
-    saveFailed: string
-    collectLabel: string
-    collectDesc: string
-    sendLabel: string
-    sendDesc: string
-    unavailable: string
-    stripBody: string
-    stripChoices: { share: string; local: string; off: string }
-    stripDetails: string
-  }
+  /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
+  sharedMetrics: SharedMetricsTranslations
   externalOpenFailed: {
     title: string
     message: string
@@ -626,6 +596,9 @@ export interface Translations {
     resetConfirm: string
     exportFailed: string
     resetFailed: string
+    pluginPages: Record<'agentSettings' | 'blurb' | 'empty' | 'manage' | 'missing', string> & {
+      pageCount: (n: number) => string
+    }
     nav: {
       providers: string
       providerAccounts: string
@@ -644,25 +617,15 @@ export interface Translations {
       billing: string
       notifications: string
       vault: string
+      plugins: string
     }
     plugins: {
       title: string
-      blurb: string
-      count: (n: number) => string
       openFolder: string
       rescan: string
       reveal: string
-      enable: string
-      disable: string
       failed: string
-      empty: string
-      kinds: {
-        bundled: string
-        disk: string
-        runtime: string
-      }
-      agentHalfMissing: string
-      agentHalfMissingTip: string
+      kinds: { bundled: string; disk: string; runtime: string }
       installModal: {
         installFromGit: string
         reviewRepository: string
@@ -1371,6 +1334,7 @@ export interface Translations {
       sshErrPlatform: string
       sshErrTimeout: string
       sshErrUpdateRequired: string
+      sshErrInteractiveAuth: string
       sshErrUnknown: string
     }
     keys: {
@@ -1514,6 +1478,8 @@ export interface Translations {
       change: string
       autoUseMain: string
       inheritMainEffort: string
+      inheritsFrom: (task: string) => string
+      followTask: (task: string) => string
       providerDefault: string
       fallbackAdd: string
       fallbackEmpty: string
@@ -1524,7 +1490,7 @@ export interface Translations {
       moaAggregator: string
       moaAggregatorBilled: string
       moaReferenceHint: string
-      tasks: Record<string, AuxTaskCopy>
+      tasks: AuxTaskCopyMap
     }
     localModels: {
       connectionChanged: string
@@ -2156,7 +2122,7 @@ export interface Translations {
         save: string
         saved: (name: string) => string
         saveFailed: (name: string) => string
-        optional: string
+        required: string
         secretSet: string
         secretStoredAs: (env: string) => string
       }
@@ -3538,7 +3504,9 @@ export interface Translations {
       notAvailable: string
       failed: string
       noReturn: string
+      owed: (steps: string) => string
     }
+    /** Update-status overlay + version-details (mechanism-aware update UI), read off t.updates directly. */
     appName: string
     version: (value: string) => string
     versionUnavailable: string
@@ -3893,6 +3861,9 @@ export interface Translations {
       showTerminal: string
       hideTerminal: string
       gateway: string
+      backend: string
+      messagingStopped: string
+      messagingDegraded: (name: string) => string
       gatewayReady: string
       gatewayNeedsSetup: string
       gatewayUnavailable: string

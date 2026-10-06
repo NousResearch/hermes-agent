@@ -1,47 +1,13 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { esAuxTasks } from './es_aux_tasks'
 import { esModelMenu } from './es_model_menu'
+import { esSharedMetrics } from './es_shared_metrics'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
-  sharedMetrics: {
-    consentTitle: '¿Nos ayudas a mejorar Hermes?',
-    consentBody:
-      'Las métricas compartidas solo contienen contadores acotados. Nunca prompts, archivos, rutas ni textos de error. La recopilación es local. Enviarlas a Nous es una aceptación aparte.',
-    whatIsCollected: 'Qué se recopila',
-    collectedIntro: 'Solo contadores acotados:',
-    collectedActivity: 'Actividad, duración de sesiones, resultados y clases de error',
-    collectedModels: 'Rutas de modelo y totales de tokens',
-    collectedNames: 'Nombres de herramientas, comandos y elementos del catálogo integrados',
-    collectedMilestones: 'Recuentos de configuración agrupados',
-    collectedReliability:
-      'Resultados y duración de actualizaciones, fallos, velocidad de inicio y de respuesta, estado de las plataformas de mensajería',
-    collectedUsage:
-      'Cómo se usa Hermes: precisión y eficiencia del agente (ediciones acertadas, bucles, recuperaciones, tokens y llamadas a herramientas por tarea, cortes de caché), tiempo activo por superficie y modo de Desktop, qué áreas, acciones y ajustes de la app se usan, se cierran enseguida o se desactivan, y resultados de la configuración de proveedores',
-    collectedMachine:
-      'Datos generales del equipo: rango de RAM, tipo de GPU, antigüedad y canal de la versión de Hermes, actualizaciones pendientes, si se usa un servidor de modelos local',
-    installId:
-      'Al enviar, cada paquete diario se sube al servicio de telemetría de Nous. Los paquetes llevan el ID de instalación de este perfil: un UUID aleatorio y estable sin información personal, que se restablece al borrar el directorio de métricas compartidas.',
-    consentWindow:
-      'Solo se envían los paquetes cuyo periodo de recopilación completo cae dentro de una ventana de consentimiento registrada; los datos de antes de aceptar, o de cualquier intervalo con el envío desactivado, se quedan en este equipo. Puedes volver a desactivar el envío cuando quieras.',
-    readDocs: 'Leer todos los detalles',
-    share: 'Recopilar y enviar a Nous',
-    local: 'Recopilar solo en local',
-    off: 'No, gracias',
-    changeLater: 'Puedes cambiarlo cuando quieras en Ajustes → Seguridad.',
-    saveFailed: 'No se pudo guardar tu elección',
-    collectLabel: 'Recopilar estadísticas de uso',
-    collectDesc:
-      'Contadores acotados guardados en este dispositivo. Nunca prompts, archivos, rutas ni textos de error.',
-    sendLabel: 'Enviar estadísticas de uso a Nous',
-    sendDesc:
-      'Sube cada paquete diario al servicio de telemetría de Nous. Solo se envían datos de una ventana de consentimiento. Requiere la recopilación activada.',
-    unavailable: 'Actualiza el backend de Hermes para cambiar este ajuste.',
-    stripBody: 'Solo contadores acotados, nunca prompts ni archivos.',
-    stripChoices: { share: 'Enviar a Nous', local: 'Solo local', off: 'No, gracias' },
-    stripDetails: 'Detalles'
-  },
+  sharedMetrics: esSharedMetrics,
   intro: introEs,
   connectors: {
     title: 'Conecta tus apps',
@@ -870,6 +836,15 @@ export const esOverrides = {
     resetConfirm: '¿Restablecer toda la configuración a los valores predeterminados de Hermes?',
     exportFailed: 'Falló la exportación',
     resetFailed: 'Falló el restablecimiento',
+    pluginPages: {
+      blurb:
+        'Opciones que añaden los plugins instalados. Cada plugin tiene su propia página y algunos añaden subpáginas.',
+      empty: 'Ningún plugin tiene ajustes todavía.',
+      manage: 'Gestionar plugins',
+      agentSettings: 'Ajustes del agente',
+      pageCount: (n: number) => (n === 1 ? '1 página' : `${n} páginas`),
+      missing: 'Este plugin no tiene página de ajustes. Puede que esté desactivado o desinstalado.'
+    },
     nav: {
       providers: 'Proveedores',
       providerAccounts: 'Cuentas',
@@ -891,24 +866,15 @@ export const esOverrides = {
     },
     plugins: {
       title: 'Plugins de escritorio',
-      blurb:
-        'Amplía esta app, no un agente: se instala una sola vez para toda la app, sea cual sea el perfil, gateway o equipo al que te conectes. Incluidos o copiados en la carpeta desktop-plugins; los interruptores se aplican al instante.',
-      count: n => `${n} instalados`,
       openFolder: 'Abrir la carpeta de plugins de escritorio',
       rescan: 'Volver a buscar',
       reveal: 'Mostrar en el gestor de archivos',
-      enable: 'Activar',
-      disable: 'Desactivar',
       failed: 'falló',
-      empty: 'Aún no hay plugins de escritorio instalados.',
       kinds: {
         bundled: 'incluido',
         disk: 'en disco',
         runtime: 'en ejecución'
       },
-      agentHalfMissing: 'falta la parte del agente aquí',
-      agentHalfMissingTip:
-        'Esta es la parte de escritorio de un plugin incluido, pero su parte del agente no está instalada en el backend o perfil conectado. Instálala desde Capacidades → Plugins.',
       installModal: {
         installFromGit: 'Instalar desde Git',
         reviewRepository: 'Revisar repositorio',
@@ -2009,6 +1975,8 @@ export const esOverrides = {
         'Plataforma remota no compatible. El modo SSH de Hermes Desktop admite hosts remotos Linux, macOS y Windows.',
       sshErrTimeout: 'La conexión SSH agotó el tiempo de espera. Es posible que el host no responda o esté en reposo.',
       sshErrUpdateRequired: 'Actualiza Hermes en el host remoto antes de conectarte con Desktop SSH.',
+      sshErrInteractiveAuth:
+        'Tailscale SSH requiere una comprobación interactiva del navegador. Ejecuta `ssh <host> true` en la terminal, completa la comprobación y vuelve a intentarlo; Hermes ejecuta SSH de forma no interactiva.',
       sshErrUnknown: 'Falló la conexión SSH.'
     },
     keys: {
@@ -2117,6 +2085,8 @@ export const esOverrides = {
       change: 'Cambiar',
       autoUseMain: 'auto · usar modelo principal',
       inheritMainEffort: 'heredar · esfuerzo del modelo principal',
+      inheritsFrom: task => `hereda de ${task}`,
+      followTask: task => `Seguir ${task}`,
       providerDefault: '(predeterminado del proveedor)',
       fallbackAdd: 'Añadir respaldo',
       fallbackEmpty: 'No hay modelos de respaldo; se usa el modelo predeterminado salvo que falle.',
@@ -2128,52 +2098,7 @@ export const esOverrides = {
       moaAggregator: 'Agregador',
       moaAggregatorBilled: 'modelo que actúa · se factura por la ejecución',
       moaReferenceHint: 'asesora una vez por turno por defecto',
-      tasks: {
-        vision: {
-          label: 'Visión',
-          hint: 'Análisis de imágenes'
-        },
-        compression: {
-          label: 'Compresión',
-          hint: 'Compactación de contexto'
-        },
-        skills_hub: {
-          label: 'Hub de skills',
-          hint: 'Búsqueda de skills'
-        },
-        approval: {
-          label: 'Aprobación',
-          hint: 'Aprobación automática inteligente'
-        },
-        mcp: {
-          label: 'MCP',
-          hint: 'Enrutamiento de herramientas MCP'
-        },
-        title_generation: {
-          label: 'Generación de títulos',
-          hint: 'Títulos de sesión'
-        },
-        review: {
-          label: 'Revisión',
-          hint: 'subagente revisor de /review'
-        },
-        triage_specifier: {
-          label: 'Especificador de triaje',
-          hint: 'Detalle de especificaciones de Kanban'
-        },
-        kanban_decomposer: {
-          label: 'Descomponedor de Kanban',
-          hint: 'Descomposición de tareas'
-        },
-        profile_describer: {
-          label: 'Descriptor de perfiles',
-          hint: 'Descripciones automáticas de perfiles'
-        },
-        curator: {
-          label: 'Curador',
-          hint: 'Revisión de uso de skills'
-        }
-      }
+      tasks: esAuxTasks
     },
     localModels: {
       connectionChanged: 'Cambió la conexión de los modelos locales',
@@ -2906,7 +2831,7 @@ export const esOverrides = {
         save: 'Guardar configuración',
         saved: (name: string) => `Configuración de ${name} guardada.`,
         saveFailed: (name: string) => `No se pudo guardar la configuración de ${name}`,
-        optional: '(opcional)',
+        required: 'Obligatorio',
         secretSet: '•••••••• (configurado)',
         secretStoredAs: (env: string) =>
           `Se guarda en el .env del perfil como ${env}, nunca en config.yaml; déjalo en blanco para conservar el valor actual.`

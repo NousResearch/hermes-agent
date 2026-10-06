@@ -1,6 +1,8 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import type { TranslationOverrides } from './define-locale'
+import { jaAuxTasks } from './ja_aux_tasks'
+import { jaPluginSettings } from './ja_plugins'
 import { settingsRiskCopyJa } from './settings-risk-copy'
 
 export const jaSettings: NonNullable<TranslationOverrides['settings']> = {
@@ -87,27 +89,7 @@ export const jaSettings: NonNullable<TranslationOverrides['settings']> = {
     billingOverview: '概要',
     billingPlans: 'プラン'
   },
-  plugins: {
-    openFolder: 'デスクトッププラグインフォルダーを開く',
-    installModal: {
-      installUncertain:
-        'Hermes はインストール結果の待機を終了しましたが、プラグインのインストールはまだ進行中の可能性があります。この画面を閉じ、再インストールする前にプラグイン一覧を再スキャンしてください。',
-      installFromGit: 'Git からインストール',
-      reviewRepository: 'リポジトリを確認',
-      repoPlaceholder: 'https://github.com/owner/repo',
-      toolsConnected: n => `${n} 個のツールを接続しました`,
-      skillsReady: names =>
-        names.length === 1 ? `スキル ${names[0]} の準備ができました` : `${names.length} 個のスキルの準備ができました`,
-      nextChat: 'ほかのツールは次のチャットで使えます',
-      serverNotConnected: (server, reason) =>
-        `MCP サーバー ${server} は接続されていません${reason ? `: ${reason}` : '。'}`
-    },
-    sourceTooLarge:
-      'プラグインファイルがこのアプリの読み込み上限を超えています。サイズを小さくしてから再読み込みしてください。',
-    sourcePreviewTruncated:
-      'この旧バージョンのアプリでは plugin.js の先頭 512 KiB しか読み込めません。このプラグインを読み込むには Hermes Desktop を更新してください。',
-    loadFailed: name => `プラグイン「${name}」を読み込めませんでした`
-  },
+  plugins: jaPluginSettings.plugins,
   closeSettings: '設定を閉じる',
   exportConfig: '設定を書き出す',
   importConfig: '設定を読み込む',
@@ -115,6 +97,7 @@ export const jaSettings: NonNullable<TranslationOverrides['settings']> = {
   resetConfirm: 'すべての設定を Hermes のデフォルトに戻しますか？',
   exportFailed: '書き出しに失敗しました',
   resetFailed: 'リセットに失敗しました',
+  pluginPages: jaPluginSettings.pluginPages,
   nav: {
     providers: 'プロバイダー',
     providerAccounts: 'アカウント',
@@ -132,7 +115,8 @@ export const jaSettings: NonNullable<TranslationOverrides['settings']> = {
     about: '情報',
     billing: '請求',
     notifications: '通知',
-    vault: 'パスワードとログイン'
+    vault: 'パスワードとログイン',
+    plugins: 'プラグイン'
   },
   vault: {
     title: 'パスワードとログイン',
@@ -960,6 +944,8 @@ export const jaSettings: NonNullable<TranslationOverrides['settings']> = {
       'サポートされていないリモートプラットフォームです。Hermes Desktop の SSH モードは Linux、macOS、Windows のリモートホストに対応しています。',
     sshErrTimeout: 'SSH 接続がタイムアウトしました。ホストが到達不能、またはスリープ中の可能性があります。',
     sshErrUpdateRequired: 'Desktop SSH で接続する前に、リモートホストの Hermes を更新してください。',
+    sshErrInteractiveAuth:
+      'Tailscale SSH では対話的なブラウザー確認が必要です。ターミナルで `ssh <host> true` を実行して確認を完了し、再試行してください。Hermes は SSH を非対話的に実行します。',
     sshErrUnknown: 'SSH 接続に失敗しました。'
   },
   keys: {
@@ -1087,44 +1073,10 @@ export const jaSettings: NonNullable<TranslationOverrides['settings']> = {
     change: '変更',
     autoUseMain: '自動 · メインモデルを使用',
     inheritMainEffort: '継承 · メインモデルの推論強度',
+    inheritsFrom: task => `${task} を継承`,
+    followTask: task => `${task} に従う`,
     providerDefault: '(プロバイダーのデフォルト)',
-    tasks: {
-      vision: {
-        label: 'ビジョン',
-        hint: '画像分析'
-      },
-      compression: {
-        label: '圧縮',
-        hint: 'コンテキストの圧縮'
-      },
-      skills_hub: {
-        label: 'スキルハブ',
-        hint: 'スキル検索'
-      },
-      approval: {
-        label: '承認',
-        hint: 'スマート自動承認'
-      },
-      mcp: {
-        label: 'MCP',
-        hint: 'MCP ツールルーティング'
-      },
-      title_generation: {
-        label: 'タイトル生成',
-        hint: 'セッションタイトル'
-      },
-      review: {
-        label: 'レビュー',
-        hint: '/review レビューサブエージェント'
-      },
-      triage_specifier: { label: 'トリアージ指定', hint: 'カンバン仕様の具体化' },
-      kanban_decomposer: { label: 'カンバン分解', hint: 'タスク分解' },
-      profile_describer: { label: 'プロファイル記述', hint: 'プロファイル概要の自動生成' },
-      curator: {
-        label: 'キュレーター',
-        hint: 'スキル使用レビュー'
-      }
-    }
+    tasks: jaAuxTasks
   },
   localModels: {
     connectionChanged: 'ローカルモデルの接続が変更されました',

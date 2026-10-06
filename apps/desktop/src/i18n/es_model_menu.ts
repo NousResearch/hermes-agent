@@ -24,6 +24,11 @@ export const esModelMenu = {
     `Este modelo alcanzó su propio límite y vuelve a las ${time}. Los demás modelos de aquí siguen funcionando.`,
   usageLeft: (percent: number, time: null | string) =>
     time ? `Queda ${percent} % · se restablece ${time}` : `Queda ${percent} %`,
+  poolAccounts: (count: number) => `${count} ${count === 1 ? 'cuenta' : 'cuentas'}`,
+  poolLimited: (limited: number, total: number) => `${limited}/${total} cuentas limitadas`,
+  poolAccount: (number: number) => `Cuenta ${number}`,
+  poolUnknown: 'Uso no disponible',
+  poolUnavailable: 'Vuelve a iniciar sesión',
   usageTip: (provider: string) => `${provider} está cerca de su límite de uso.`,
   usageWindow: (label: string, percent: number, time: null | string) =>
     time ? `${label}: queda ${percent} %, se restablece ${time}` : `${label}: queda ${percent} %`

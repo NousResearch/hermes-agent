@@ -18,11 +18,17 @@ import { categoryFor } from './skills-data'
 export function SkillDetail({
   onArchive,
   onEdit,
+  onTogglePin,
+  pinning,
   profile,
   skill
 }: {
   onArchive: () => void
   onEdit: () => void
+  /** Toggle the curator pin. Only rendered for learned skills — the same thing
+   *  `hermes curator pin` writes, so the pane and the CLI cannot disagree. */
+  onTogglePin: () => void
+  pinning?: boolean
   profile?: ProfileScope
   skill: SkillInfo
 }) {
@@ -30,6 +36,14 @@ export function SkillDetail({
   // Origin only, never mutability: external mounts stay editable in place —
   // see ./skill-provenance (commit 8c8fc6c1ec).
   const editable = isEditableProvenance(skill.provenance)
+  // Only learned skills are curator-eligible, so only they get the pin control:
+  // bundled/hub skills are managed by their sources, and an external mount is
+  // the user's own directory (the curator never archives either of them).
+  // An absent flag means the runtime predates `PUT /api/skills/pin` — offer no
+  // control rather than one that can only fail (desktop and runtime update on
+  // separate clocks).
+  const learned = skill.provenance === 'agent' && skill.pinned !== undefined
+  const pinned = skill.pinned === true
 
   // The FULL skill — frontmatter metadata + complete SKILL.md body — for any
   // provenance, scoped to the Capabilities profile selector. The row list only
@@ -57,6 +71,7 @@ export function SkillDetail({
                 {t.skills.provenance[skill.provenance]}
               </PanelPill>
             )}
+            {learned && pinned && <PanelPill tone="good">{t.skills.pinned}</PanelPill>}
           </>
         }
         title={skill.name}
@@ -69,6 +84,17 @@ export function SkillDetail({
           <Button className="text-destructive hover:text-destructive" onClick={onArchive} size="xs" variant="text">
             {t.skills.archive}
           </Button>
+          {learned && (
+            <Button
+              aria-pressed={pinned}
+              disabled={pinning}
+              onClick={onTogglePin}
+              size="xs"
+              variant="text"
+            >
+              {pinned ? t.skills.unpin : t.skills.pin}
+            </Button>
+          )}
         </div>
       )}
       {parsed && parsed.meta.length > 0 && (

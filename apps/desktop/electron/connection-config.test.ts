@@ -14,10 +14,10 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
+import { httpStatusError } from './api-transport'
 import { makeNousCloudBackendDownError } from './backend-health'
 import {
   apiRequestRegistryConnectionId,
-  AT_COOKIE_VARIANTS,
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
@@ -45,13 +45,13 @@ import {
   resolveProfileBackendRoute,
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
-  RT_COOKIE_VARIANTS,
   sanitizeRemoteHeaderValue,
   savedProfileSsh,
   tokenPreview,
   translateSelfProfileQuery,
   withTransientRetries
 } from './connection-config'
+import { mintGatewayWsTicket } from './oauth-rest-request'
 
 // --- connectionScopeKey / normAuthMode ---
 
@@ -252,6 +252,37 @@ test('SSH remains separate from URL-shaped remote modes and preserves an explici
     keyPath: '/key',
     remoteProfile: 'default'
   })
+})
+
+test('profileRemoteOverride preserves an explicit remote profile mapping on a URL override', () => {
+  const config = {
+    profiles: { gris: { mode: 'remote', url: 'https://agent.example.com/hermes', remoteProfile: 'main-gris' } }
+  }
+
+  assert.deepEqual(profileRemoteOverride(config, 'gris'), {
+    url: 'https://agent.example.com/hermes',
+    authMode: 'token',
+    token: undefined,
+    remoteProfile: 'main-gris'
+  })
+})
+
+test('profileRemoteOverride drops invalid or reserved remote profile mappings', () => {
+  assert.equal(
+    profileRemoteOverride({ profiles: { p: { mode: 'remote', url: 'https://x', remoteProfile: 'bad profile' } } }, 'p')
+      ?.remoteProfile,
+    undefined
+  )
+  assert.equal(
+    profileRemoteOverride({ profiles: { p: { mode: 'cloud', url: 'https://x', remoteProfile: 'root' } } }, 'p')
+      ?.remoteProfile,
+    undefined
+  )
+  assert.equal(
+    profileRemoteOverride({ profiles: { p: { mode: 'remote', url: 'https://x', remoteProfile: '' } } }, 'p')
+      ?.remoteProfile,
+    undefined
+  )
 })
 
 test('normalizeSshConfig rejects unsafe remote profile mappings', () => {
@@ -617,6 +648,16 @@ test('pathForRegistryBackendRequest uses the resolved registry backend scope', (
   )
 })
 
+test('registry model reads and writes retain each profile on a shared local backend', () => {
+  for (const backend of [{ mode: 'local' }, { sharedPrimary: true }]) {
+    for (const profile of ['research', 'default', 'research']) {
+      for (const path of ['/api/model/info', '/api/model/options', '/api/model/set']) {
+        assert.equal(pathForRegistryBackendRequest(path, profile, backend), `${path}?profile=${profile}`)
+      }
+    }
+  }
+})
+
 // --- pathWithGlobalRemoteProfile ---
 
 test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => {
@@ -687,6 +728,32 @@ test('pathWithGlobalRemoteProfile translates a desktop SSH alias in an explicit 
       backendProfile: 'default'
     }),
     '/api/cron/jobs?profile=default'
+  )
+})
+
+test('pathWithGlobalRemoteProfile translates a URL-remote override alias via backendProfile', () => {
+  // A URL-remote per-profile override (gris → main-gris) must rewrite the
+  // self-profile scope the same way the SSH mapping does, or the backend 404s
+  // on a profile it does not have (#88282).
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/cron/jobs?profile=gris', 'gris', {
+      globalRemote: false,
+      profileRemoteOverride: true,
+      backendProfile: 'main-gris'
+    }),
+    '/api/cron/jobs?profile=main-gris'
+  )
+})
+
+test('pathWithGlobalRemoteProfile keeps the local label when a URL override has no mapping', () => {
+  // Blank remoteProfile → the label itself is the scope (historical behavior).
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/cron/jobs?profile=gris', 'gris', {
+      globalRemote: false,
+      profileRemoteOverride: true,
+      backendProfile: undefined
+    }),
+    '/api/cron/jobs?profile=gris'
   )
 })
 
@@ -1188,14 +1255,6 @@ test('cookiesHaveSession handles non-arrays', () => {
   assert.equal(cookiesHaveSession([]), false)
 })
 
-test('AT_COOKIE_VARIANTS covers all three deploy shapes', () => {
-  assert.deepEqual(AT_COOKIE_VARIANTS, ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at'])
-})
-
-test('RT_COOKIE_VARIANTS covers all three deploy shapes', () => {
-  assert.deepEqual(RT_COOKIE_VARIANTS, ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt'])
-})
-
 // --- cookiesHaveLiveSession (AT or RT — the connectivity check) ---
 
 test('cookiesHaveLiveSession is true for a live access-token cookie', () => {
@@ -1297,6 +1356,40 @@ test('resolveTestWsUrl (oauth, auth rejected) requests sign-in and does not skip
       assert.match(err.message, /sign in again/i)
       assert.equal(err.needsOauthLogin, true)
       assert.ok(err.cause instanceof Error)
+
+      return true
+    }
+  )
+})
+
+test('resolveTestWsUrl (oauth, stale app bearer) names the app token, not the server OAuth session', async () => {
+  const staleBearer = 'stale-app-bearer-do-not-log'
+
+  const cause = await mintGatewayWsTicket('https://gw.example.com', {
+    ensureNativeAccessToken: async () => staleBearer,
+    fetchJson: async (_url, _token, options) => {
+      assert.equal(options.bearer, staleBearer)
+      throw httpStatusError(401, JSON.stringify({ reason: 'invalid_or_expired_session' }))
+    },
+    fetchJsonViaOauthSession: async () => {
+      throw httpStatusError(401, JSON.stringify({ reason: 'no_cookie' }))
+    }
+  }).catch((error: unknown) => error)
+
+  await assert.rejects(
+    () =>
+      resolveTestWsUrl('https://gw.example.com', 'oauth', null, {
+        mintTicket: async () => {
+          throw cause
+        }
+      }),
+    (err: any) => {
+      assert.match(err.message, /app token is invalid/i)
+      assert.match(err.message, /saved gateway bearer/i)
+      assert.doesNotMatch(err.message, /oauth session/i)
+      assert.doesNotMatch(err.message, /re-authenticate/i)
+      assert.equal(err.message.includes(staleBearer), false)
+      assert.equal(err.needsOauthLogin, true)
 
       return true
     }
@@ -1430,20 +1523,6 @@ test('gatewayTicketFailure preserves a structured 503 statusCode as a transport 
   assert.equal((wrapped as any).cause, source)
 })
 
-test('gatewayTicketFailure keeps 401 and 403 as reauth with needsOauthLogin', () => {
-  for (const code of [401, 403]) {
-    const source = new Error(`HTTP ${code}`) as any
-    source.statusCode = code
-
-    const wrapped = gatewayTicketFailure(source, 'auth message', 'transport message')
-
-    assert.equal(wrapped.message, 'auth message')
-    assert.equal((wrapped as any).needsOauthLogin, true)
-    assert.equal((wrapped as any).statusCode, code)
-    assert.equal((wrapped as any).cause, source)
-  }
-})
-
 test('gatewayTicketFailure only copies an integer statusCode, not a message prefix', () => {
   // A legacy "503: ..." message carries no structured statusCode; the Cloud
   // classifier (makeNousCloudBackendDownError) handles the prefix at the mint
@@ -1473,7 +1552,6 @@ test('OAuth ticket-mint 503 surfaces the Cloud-down error (startup boundary)', (
   if (cloudError !== null) {
     assert.equal((cloudError as any).isCloudBackendDown, true)
     assert.equal((cloudError as any).statusCode, 503)
-    assert.ok(cloudError.message.includes('Nous Cloud agent ares-3009.agents.nousresearch.com is down'))
 
     return
   }

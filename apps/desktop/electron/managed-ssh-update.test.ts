@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { exec as execCallback } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -13,9 +13,13 @@ import {
   buildWindowsManagedUpdateLaunch,
   fenceManagedSshBootstrapPublication,
   ManagedConnectionUpdateGate,
+  managedSshDrainBlocker,
+  managedSshRecoveryDisposition,
   managedSshRecoveryScopes,
   managedSshScopeRole,
   managedSshTokenPersistencePlan,
+  managedSshUpdateAllRow,
+  MAX_MANAGED_SSH_RECOVERY_ATTEMPTS,
   parseRemoteUpdateObservation,
   RECEIPT_GRACE_MS,
   recoverManagedSshScopes,
@@ -100,12 +104,103 @@ test('inactive SSH crash recovery keeps ordinary dials fenced until positive cle
   assert.throws(() => relaunchedGate.assertCanDial('homelab'), /paused/)
   assert.equal(journalCleared, false)
   releaseClearance()
-  const results = await recovery
+  const { disposition, results } = await recovery
 
+  assert.equal(disposition, 'complete')
   assert.deepEqual(results, [])
   assert.equal(restoreCalls, 0)
   assert.equal(journalCleared, true)
   assert.doesNotThrow(() => relaunchedGate.assertCanDial('homelab'))
+})
+
+test('durable recovery disposition is bounded once the remote install is clear', () => {
+  const max = MAX_MANAGED_SSH_RECOVERY_ATTEMPTS
+
+  assert.equal(managedSshRecoveryDisposition({ attempts: 0, restoreFailures: 0, updateSucceeded: false }), 'complete')
+  assert.equal(managedSshRecoveryDisposition({ attempts: 1, restoreFailures: 1, updateSucceeded: false }), 'retry')
+  assert.equal(
+    managedSshRecoveryDisposition({ attempts: max - 1, restoreFailures: 1, updateSucceeded: false }),
+    'retry'
+  )
+  assert.equal(managedSshRecoveryDisposition({ attempts: max, restoreFailures: 1, updateSucceeded: false }), 'abandon')
+  assert.equal(managedSshRecoveryDisposition({ attempts: 1, restoreFailures: 2, updateSucceeded: true }), 'abandon')
+  assert.equal(
+    managedSshRecoveryDisposition({ attempts: 2, maxAttempts: 5, restoreFailures: 1, updateSucceeded: false }),
+    'retry'
+  )
+})
+
+async function relaunchRecoveryWithStuckScope(options: {
+  attempts: number
+  clearance?: { exitCode: null | number; receipt: null | { correlationId: string; outcome: string } }
+}) {
+  let durableOwner: string | null = CORRELATION
+  let recordedAttempts: null | number = null
+  const gate = new ManagedConnectionUpdateGate(id => (id === 'homelab' ? durableOwner : null))
+
+  const outcome = await recoverManagedSshScopes({
+    attempts: options.attempts,
+    scopes: [{ profile: 'default' }, { profile: 'stuck' }],
+    awaitClearance: async () => options.clearance ?? { exitCode: null, receipt: null },
+    restoreScope: async scope => {
+      if (scope.profile === 'stuck') {
+        throw new Error('serve never became healthy')
+      }
+    },
+    recordFailedAttempt: async next => {
+      recordedAttempts = next
+    },
+    completeRecovery: async () => {
+      durableOwner = null
+    }
+  })
+
+  return { gate, outcome, recordedAttempts }
+}
+
+test('a scope that never restores stops fencing the connection after bounded relaunch attempts (#107827)', async () => {
+  const first = await relaunchRecoveryWithStuckScope({ attempts: 0 })
+
+  assert.equal(first.outcome.disposition, 'retry')
+  assert.equal(first.recordedAttempts, 1)
+  assert.throws(() => first.gate.assertCanDial('homelab'), /paused/)
+  assert.throws(() => first.gate.assertCanMutate('homelab'), /edited or removed/)
+
+  const last = await relaunchRecoveryWithStuckScope({ attempts: MAX_MANAGED_SSH_RECOVERY_ATTEMPTS - 1 })
+
+  assert.equal(last.outcome.disposition, 'abandon')
+  assert.equal(last.outcome.attempts, MAX_MANAGED_SSH_RECOVERY_ATTEMPTS)
+  assert.equal(last.recordedAttempts, null)
+  assert.deepEqual(
+    last.outcome.results.map(result => result.status),
+    ['fulfilled', 'rejected']
+  )
+  assert.doesNotThrow(() => last.gate.assertCanDial('homelab'))
+  assert.doesNotThrow(() => last.gate.assertCanMutate('homelab'))
+})
+
+test('a correlated remote exit 0 ends durable recovery on the first failed restore', async () => {
+  const success = await relaunchRecoveryWithStuckScope({
+    attempts: 0,
+    clearance: { exitCode: 0, receipt: { correlationId: CORRELATION, outcome: 'success' } }
+  })
+
+  assert.equal(success.outcome.disposition, 'abandon')
+  assert.doesNotThrow(() => success.gate.assertCanDial('homelab'))
+
+  // Reported shape: `.update_exit_code.<correlation>` is 0 but no receipt was written.
+  const exitOnly = await relaunchRecoveryWithStuckScope({ attempts: 0, clearance: { exitCode: 0, receipt: null } })
+
+  assert.equal(exitOnly.outcome.disposition, 'abandon')
+  assert.doesNotThrow(() => exitOnly.gate.assertCanDial('homelab'))
+
+  const failed = await relaunchRecoveryWithStuckScope({
+    attempts: 0,
+    clearance: { exitCode: 1, receipt: { correlationId: CORRELATION, outcome: 'failed' } }
+  })
+
+  assert.equal(failed.outcome.disposition, 'retry')
+  assert.throws(() => failed.gate.assertCanDial('homelab'), /paused/)
 })
 
 test('managed update joins a pre-claim bootstrap until its final gate check rolls back the serve', async () => {
@@ -259,60 +354,68 @@ test('update-all deduplicates the same recovery scope and keeps primary preceden
   )
 })
 
-test('POSIX managed launcher is detached, correlation-scoped, and never publishes handoff exit 75', () => {
-  const command = buildPosixManagedUpdateLaunch(
-    {
-      ssh: { exec: async () => '' },
-      platform: 'Linux',
-      hermesPath: '~/.local/bin/hermes',
-      hermesHome: '~/.hermes'
-    },
-    CORRELATION
-  )
+test.runIf(process.platform !== 'win32').each([0, 23])(
+  'POSIX managed launcher executes the updater command and atomically publishes status %i',
+  async (exitCode: number): Promise<void> => {
+    const home: string = await mkdtemp(path.join(os.tmpdir(), 'hermes managed launch '))
+    const shell: string = (await exec('command -v bash', { shell: 'bash' })).stdout.trim()
+    const launcher: string = path.join(home, 'hermes launcher')
 
-  assert.match(command, /setsid/)
-  assert.match(command, /update --yes/)
-  assert.doesNotMatch(command, /update --yes --gateway/)
-  assert.match(command, new RegExp(`HERMES_UPDATE_CORRELATION_ID=.*${CORRELATION}`))
-  assert.match(command, /\[ "\$rc" -ne 75 \]/)
-  assert.match(command, new RegExp(`\\.update_exit_code\\.${CORRELATION}`))
-  assert.match(command, new RegExp(`\\.update_launch_intent\\.${CORRELATION}`))
-  assert.match(command, /while \[ ! -e/)
-})
+    try {
+      await writeFile(
+        launcher,
+        `#!${shell}\nprintf '%s\\n' "$@" "$HERMES_HOME" "$HERMES_UPDATE_CORRELATION_ID" "$HERMES_UPDATE_ORIGIN_PROFILE" "$HERMES_UPDATE_ORIGIN_HOME" "$HERMES_UPDATE_OUTPUT_PATH"\nexit ${exitCode}\n`,
+        { encoding: 'utf8', mode: 0o700 }
+      )
 
-test('POSIX managed launcher executes the updater command and atomically publishes its status', async () => {
-  const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-launch-'))
+      const command: string = buildPosixManagedUpdateLaunch(
+        {
+          ssh: { exec: async (): Promise<string> => '' },
+          platform: 'Linux',
+          hermesPath: launcher,
+          hermesHome: home
+        },
+        CORRELATION
+      )
 
-  try {
-    const command = buildPosixManagedUpdateLaunch(
-      {
-        ssh: { exec: async () => '' },
-        platform: 'Linux',
-        hermesPath: '/bin/true',
-        hermesHome: home
-      },
-      CORRELATION
-    )
+      const { stdout, stderr } = await exec(command, { shell, env: { ...process.env, HOME: home, HERMES_HOME: home } })
+      const statusPath: string = path.join(home, `.update_exit_code.${CORRELATION}`)
+      const logPath: string = path.join(home, 'logs', `desktop-update-${CORRELATION}.log`)
+      let status: string | undefined
 
-    const { stdout } = await exec(command, { shell: '/bin/sh' })
-    const statusPath = path.join(home, `.update_exit_code.${CORRELATION}`)
-    let status = ''
+      for (let attempt: number = 0; attempt < 100; attempt += 1) {
+        try {
+          status = await readFile(statusPath, 'utf8')
 
-    for (let attempt = 0; attempt < 50 && !status; attempt += 1) {
-      try {
-        status = await readFile(statusPath, 'utf8')
-      } catch {
-        await new Promise(resolve => setTimeout(resolve, 10))
+          break
+        } catch (error: unknown) {
+          if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) {
+            throw error
+          }
+
+          await new Promise<void>(resolve => setTimeout(resolve, 25))
+        }
       }
+
+      const log: string = await readFile(logPath, 'utf8')
+      assert.match(stdout, /MANAGED_UPDATE_STARTED/)
+      assert.match(log, /managed-update start pid=/)
+      assert.match(log, new RegExp(`managed-update exit rc=${exitCode}`))
+      assert.equal(status, String(exitCode), `updater output: ${log}`)
+      const logLines: string[] = log.trimEnd().split('\n')
+      assert.match(logLines.shift() ?? '', /managed-update start pid=/)
+      assert.match(logLines.pop() ?? '', new RegExp(`managed-update exit rc=${exitCode}`))
+      assert.deepEqual(logLines, ['update', '--yes', home, CORRELATION, 'default', home, logPath])
+      assert.equal((await stat(statusPath)).mode & 0o777, 0o600)
+      assert.equal(
+        (await readdir(home)).some((name: string): boolean => name.endsWith('.tmp')),
+        false
+      )
+    } finally {
+      await rm(home, { force: true, recursive: true })
     }
-
-    assert.match(stdout, /MANAGED_UPDATE_STARTED/)
-    assert.equal(status, '0')
-  } finally {
-    await rm(home, { force: true, recursive: true })
   }
-})
-
+)
 test('Windows managed launcher starts a hidden child and leaves exit 75 to the external coordinator', () => {
   const command = buildWindowsManagedUpdateLaunch(
     {
@@ -359,75 +462,81 @@ test('remote observation rejects a receipt for another correlation', () => {
   )
 })
 
-test('POSIX observer reads the exact correlation receipt and terminal marker from disk', async () => {
-  const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-update-'))
+test.runIf(process.platform !== 'win32')(
+  'POSIX observer reads the exact correlation receipt and terminal marker from disk',
+  async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-update-'))
 
-  try {
-    const receipts = path.join(home, 'logs', 'update_receipts')
-    await mkdir(receipts, { recursive: true })
-    await writeFile(path.join(home, `.update_exit_code.${CORRELATION}`), '0')
-    await writeFile(
-      path.join(receipts, `update_${CORRELATION}.json`),
-      JSON.stringify({
-        correlation_id: CORRELATION,
-        outcome: 'success',
-        started_at: '2026-08-23T00:00:00Z',
-        finished_at: '2026-08-23T00:01:00Z',
-        pre_update: { sha: 'old' },
-        post_update: { sha: 'new' }
-      })
-    )
+    try {
+      const receipts = path.join(home, 'logs', 'update_receipts')
+      await mkdir(receipts, { recursive: true })
+      await writeFile(path.join(home, `.update_exit_code.${CORRELATION}`), '0')
+      await writeFile(
+        path.join(receipts, `update_${CORRELATION}.json`),
+        JSON.stringify({
+          correlation_id: CORRELATION,
+          outcome: 'success',
+          started_at: '2026-08-23T00:00:00Z',
+          finished_at: '2026-08-23T00:01:00Z',
+          pre_update: { sha: 'old' },
+          post_update: { sha: 'new' }
+        })
+      )
 
-    const command = buildRemoteUpdateObservationCommand(
-      {
-        ssh: { exec: async () => '' },
-        platform: 'Linux',
-        hermesPath: '/opt/hermes/hermes',
-        hermesHome: home
-      },
-      CORRELATION
-    )
+      const command = buildRemoteUpdateObservationCommand(
+        {
+          ssh: { exec: async () => '' },
+          platform: 'Linux',
+          hermesPath: '/opt/hermes/hermes',
+          hermesHome: home
+        },
+        CORRELATION
+      )
 
-    const { stdout } = await exec(command, { shell: '/bin/sh' })
-    const parsed = parseRemoteUpdateObservation(stdout, CORRELATION)
+      const { stdout } = await exec(command, { shell: 'sh' })
+      const parsed = parseRemoteUpdateObservation(stdout, CORRELATION)
 
-    assert.equal(parsed.marker, 'absent')
-    assert.equal(parsed.exitCode, 0)
-    assert.equal(parsed.receipt?.correlationId, CORRELATION)
-    assert.equal(parsed.receipt?.preSha, 'old')
-    assert.equal(parsed.receipt?.postSha, 'new')
-  } finally {
-    await rm(home, { force: true, recursive: true })
+      assert.equal(parsed.marker, 'absent')
+      assert.equal(parsed.exitCode, 0)
+      assert.equal(parsed.receipt?.correlationId, CORRELATION)
+      assert.equal(parsed.receipt?.preSha, 'old')
+      assert.equal(parsed.receipt?.postSha, 'new')
+    } finally {
+      await rm(home, { force: true, recursive: true })
+    }
   }
-})
+)
 
-test('managed observer unwraps a named profile home for the install-wide marker', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-profile-marker-'))
-  const profileHome = path.join(root, 'profiles', 'research')
+test.runIf(process.platform !== 'win32')(
+  'managed observer unwraps a named profile home for the install-wide marker',
+  async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-profile-marker-'))
+    const profileHome = path.join(root, 'profiles', 'research')
 
-  try {
-    await mkdir(profileHome, { recursive: true })
-    await writeFile(path.join(root, '.hermes-update-in-progress'), `${process.pid}\n1\n`)
+    try {
+      await mkdir(profileHome, { recursive: true })
+      await writeFile(path.join(root, '.hermes-update-in-progress'), `${process.pid}\n1\n`)
 
-    const command = buildRemoteUpdateObservationCommand(
-      {
-        ssh: { exec: async () => '' },
-        platform: 'Linux',
-        hermesPath: '/opt/hermes/hermes',
-        hermesHome: profileHome
-      },
-      CORRELATION
-    )
+      const command = buildRemoteUpdateObservationCommand(
+        {
+          ssh: { exec: async () => '' },
+          platform: 'Linux',
+          hermesPath: '/opt/hermes/hermes',
+          hermesHome: profileHome
+        },
+        CORRELATION
+      )
 
-    const { stdout } = await exec(command, { shell: '/bin/sh' })
-    const parsed = parseRemoteUpdateObservation(stdout, CORRELATION)
+      const { stdout } = await exec(command, { shell: 'sh' })
+      const parsed = parseRemoteUpdateObservation(stdout, CORRELATION)
 
-    assert.equal(parsed.marker, 'live')
-    assert.equal(parsed.markerPid, process.pid)
-  } finally {
-    await rm(root, { force: true, recursive: true })
+      assert.equal(parsed.marker, 'live')
+      assert.equal(parsed.markerPid, process.pid)
+    } finally {
+      await rm(root, { force: true, recursive: true })
+    }
   }
-})
+)
 
 test('Windows coordinator handoff is pending until its marker clears and correlated receipt is durable', async () => {
   const replies = [
@@ -768,6 +877,59 @@ test('managed lifecycle attempts every drain and every restore when one ownershi
   assert.match(result.error || '', /foreign owner/)
 })
 
+async function updateWithStuckRestore(exitCode: number, outcome: string) {
+  let journalCleared = false
+
+  const result = await runManagedSshUpdate({
+    connectionId: 'home',
+    correlationId: CORRELATION,
+    scopes: [
+      { key: 'a', profile: 'default' },
+      { key: 'b', profile: 'stuck' }
+    ],
+    preflightRemote: async () => {},
+    prepareRecovery: async () => {},
+    drainScope: async () => {},
+    updateRemote: async () => ({ exitCode, receipt: { correlationId: CORRELATION, outcome } }),
+    awaitRestoreClearance: async () => {},
+    closeTransports: async () => {},
+    restoreScope: async scope => {
+      if (scope.profile === 'stuck') {
+        throw new Error('serve never became healthy')
+      }
+    },
+    completeRecovery: async () => {
+      journalCleared = true
+    },
+    releaseGate: () => {}
+  })
+
+  return { journalCleared, result }
+}
+
+test('a successful update clears the journal even when one scope fails to restore (#107827)', async () => {
+  const { journalCleared, result } = await updateWithStuckRestore(0, 'success')
+
+  assert.equal(journalCleared, true)
+  assert.equal(result.updateOk, true)
+  assert.equal(result.restoreOk, false)
+  assert.equal(result.outcome, 'restore-failed')
+  assert.deepEqual(
+    result.scopes.map(scope => [scope.profile, scope.restored]),
+    [
+      ['default', true],
+      ['stuck', false]
+    ]
+  )
+})
+
+test('a failed update keeps the journal for relaunch recovery when a scope fails to restore', async () => {
+  const { journalCleared, result } = await updateWithStuckRestore(1, 'failed')
+
+  assert.equal(journalCleared, false)
+  assert.equal(result.outcome, 'update-and-restore-failed')
+})
+
 test('managed lifecycle journals before drain and leaves scopes stopped when clearance cannot be proved', async () => {
   const events: string[] = []
 
@@ -884,4 +1046,37 @@ test('refused result is structured and has no managed scopes to restore', () => 
   assert.equal(result.outcome, 'refused')
   assert.equal(result.restoreOk, true)
   assert.deepEqual(result.scopes, [])
+})
+
+test('a live Desktop-owned serve on a macOS remote is a per-row skip, not a batch failure (#124617)', () => {
+  // Darwin cannot bind a signal to the verified PID, so the drain refuses to
+  // stop the serve. Detect that before any scope is touched and report the
+  // connection as skipped instead of an aborted update.
+  const blocker = managedSshDrainBlocker([
+    { profile: 'default', state: { remotePlatform: 'Darwin' } },
+    { profile: 'work', state: null }
+  ])
+
+  assert.equal(blocker?.reason, 'darwin-drain-unsupported')
+  assert.match(blocker?.message || '', /macOS remote \(default\)/)
+
+  const refused = refusedManagedSshUpdate('mac', CORRELATION, blocker!.message, blocker!.reason)
+  const row: any = managedSshUpdateAllRow({ connectionId: 'mac', label: 'Mac', kind: 'ssh' }, refused)
+
+  assert.equal(row.skipped, true)
+  assert.equal(row.reason, 'darwin-drain-unsupported')
+  assert.equal(row.detail, blocker!.message)
+  assert.equal(row.error, undefined)
+})
+
+test('macOS remotes with no live serve and Linux remotes still update', () => {
+  assert.equal(managedSshDrainBlocker([{ profile: 'default', state: null }]), null)
+  assert.equal(managedSshDrainBlocker([{ profile: 'default', state: { remotePlatform: 'Linux' } }]), null)
+
+  const failed = { ...refusedManagedSshUpdate('box', CORRELATION, 'boom'), outcome: 'update-failed' as const }
+  const row: any = managedSshUpdateAllRow({ connectionId: 'box' }, failed)
+
+  assert.equal(row.skipped, undefined)
+  assert.equal(row.ok, false)
+  assert.equal(row.error, 'boom')
 })

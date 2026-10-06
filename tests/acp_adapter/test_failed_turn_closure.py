@@ -144,7 +144,7 @@ def test_acp_refusal_closes_the_turn_and_is_not_replayed_into_the_next_prompt(ac
     Invariant: the durable tail after a failed turn is a Hermes-authored assistant row (never
     provider text), and the next prompt reaches the provider as its own user row.
     """
-    from agent.turn_failure_copy import FAILED_TURN_NOTICE
+    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE
 
     provider, prompt, conversation_rows, db, sid, conn, server = acp
 
@@ -155,6 +155,12 @@ def test_acp_refusal_closes_the_turn_and_is_not_replayed_into_the_next_prompt(ac
     assert [r[0] for r in rows] == ["user", "assistant"], rows
     assert rows[1][1] == FAILED_TURN_NOTICE  # no tool ran: no hedging, no provider detail
     assert db.latest_conversation_role(sid) == "assistant"
+    # Typed, so a renderer or room poller never has to match the English copy to tell the
+    # boundary from a model reply.
+    with sqlite3.connect(db.db_path) as c:
+        kinds = [r[0] for r in c.execute(
+            "SELECT display_kind FROM messages WHERE session_id = ? AND role = 'assistant'", (sid,))]
+    assert kinds == [FAILED_TURN_DISPLAY_KIND]
     # The refusal reaches the ACP client, but never becomes canonical assistant history.
     texts = [getattr(getattr(u, "content", None), "text", None) or getattr(u, "text", None) for u in conn.updates]
     assert any(_REFUSAL_DETAIL in (t or "") for t in texts)
@@ -165,6 +171,7 @@ def test_acp_refusal_closes_the_turn_and_is_not_replayed_into_the_next_prompt(ac
     sent = [m for m in provider.requests[-1]["messages"] if m["role"] != "system"]
     assert [m["role"] for m in sent] == ["user", "assistant", "user"], sent
     assert [m["content"] for m in sent if m["role"] == "user"] == [_REFUSED, _NEW_REQUEST]
+    assert sent[1] == {"role": "assistant", "content": FAILED_TURN_NOTICE}  # the type never reaches the wire
 
     # Turn 3: cancelled mid-turn. The interrupt envelope carries ``final_response=None``
     # (no assistant text yet); ``_finish_turn`` must still report ``cancelled`` — never crash
@@ -224,4 +231,66 @@ def test_failed_turn_boundary_is_idempotent_on_the_durable_tail_and_skips_contex
     assert len(written) == 1
     assert (messages[-1]["role"], messages[-1]["content"]) == ("assistant", PARTIAL_FAILED_TURN_NOTICE)  # a tool ran: hedge
     assert db.latest_conversation_role(sid) == "assistant"
+    db.close()
+
+
+def test_prompt_after_cancel_keeps_the_unanswered_request(acp):
+    """An unanswered request survives the next ACP prompt and its replay prefix."""
+    provider, prompt, _rows, _db, sid, _conn, server = acp
+    state = server.session_manager.get_session(sid)
+    before, real = list(state.history), state.agent.run_conversation
+    state.agent.run_conversation = lambda **kw: {
+        "final_response": None, "interrupted": True, "completed": False,
+        "messages": before + [{"role": "user", "content": "deploy build 42"}],
+    }
+    try:
+        prompt("deploy build 42")
+    finally:
+        state.agent.run_conversation = real
+
+    provider.script = [
+        {"finish_reason": "stop", "content": "done"},
+        {"finish_reason": "stop", "content": "ok"},
+    ]
+    prompt("also run the smoke tests")
+    prompt("third")
+    turn2 = provider.requests[-2]["messages"]
+    turn3 = provider.requests[-1]["messages"]
+    assert turn3[:len(turn2)] == turn2
+    assert any(
+        msg["role"] == "user" and msg["content"] == "deploy build 42\n\nalso run the smoke tests"
+        for msg in turn2
+    )
+
+
+def test_failed_turn_boundary_keeps_the_error_card_for_rehydration(tmp_path, monkeypatch):
+    """The boundary row carries the failure's error text and ``error_surface`` so a client
+    reopening the session after a restart redraws the error card, not only the notice."""
+    from types import SimpleNamespace
+
+    from agent.conversation_loop import _close_durable_failed_turn
+    from hermes_state import SessionDB
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = SessionDB(tmp_path / "state.db")
+    sid = "s1"
+    db.create_session(session_id=sid, source="acp", model="m")
+    db.append_message(sid, "user", "say hello")
+
+    def flush(messages):
+        db.append_message(sid, messages[-1]["role"], messages[-1]["content"],
+                          display_metadata=messages[-1].get("display_metadata"))
+
+    agent = SimpleNamespace(_session_db=db, session_id=sid, _flush_messages_to_session_db=flush,
+                            provider="opencode-go", model="deepseek-v4.1-flash")
+    messages = [{"role": "user", "content": "say hello"}]
+    _close_durable_failed_turn(agent, {"completed": False, "failed": True, "failure_reason": "timeout",
+                                       "error": "Connection error.", "messages": messages})
+
+    metadata = messages[-1]["display_metadata"]
+    assert metadata["error"] == "Connection error."
+    assert metadata["error_surface"]["code"] == "timeout"
+    assert metadata["error_surface"]["provider"] == "opencode-go"
+    stored = db.get_messages(sid)[-1]["display_metadata"]
+    assert (stored if isinstance(stored, dict) else json.loads(stored))["error_surface"]["code"] == "timeout"
     db.close()

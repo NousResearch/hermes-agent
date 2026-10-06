@@ -8,7 +8,8 @@ timeout, log "the worker thread is left to finish on its own" and proceed.
 that has already begun executing is not cancellable, so the abandoned worker keeps its pool slot
 until its blocking call returns. While those callers shared the turn pool, N abandonments retired
 N turn slots for ANY N, and a saturated pool then delayed the turn body of every subsequent
-message with nothing in the logs naming the wait.
+message with nothing in the logs naming the wait. The turn pool is now unbounded, so housekeeping
+keeps its own bounded pool to cap its thread growth; the pin is that it never lands on the turn pool.
 
 The runner here is a real ``GatewayRunner`` instance (``__new__``, no ``__init__``) carrying only
 the executor attributes.
@@ -22,7 +23,7 @@ import time
 
 import pytest
 
-from gateway.run import _TURN_MAX_WORKERS, GatewayRunner
+from gateway.run import GatewayRunner
 
 
 def _runner(cleanup=None, *, cleanup_timeout=0.5):
@@ -52,43 +53,24 @@ async def _abandon_housekeeping(runner, count, timeout):
     await asyncio.gather(*(one() for _ in range(count)))
 
 
-def test_abandoned_housekeeping_cannot_delay_a_turn_body():
-    """The regression pin: wedged, abandoned housekeeping must leave turn slots free."""
+def test_abandoned_housekeeping_stays_off_the_turn_pool():
+    """The regression pin: wedged, abandoned housekeeping occupies the housekeeping pool only."""
     wedge = threading.Event()
-    entered = threading.Semaphore(0)
+    ran_on: list[str] = []
 
     def wedged_cleanup(agent):
-        entered.release()
+        ran_on.append(threading.current_thread().name)
         assert wedge.wait(60), "wedge never released"
 
     runner = _runner(wedged_cleanup)
-    # Enough to fill the turn pool outright if housekeeping still lands on it.
-    abandoned = _TURN_MAX_WORKERS
-
-    async def exercise():
-        await _abandon_housekeeping(runner, abandoned, runner._CLEANUP_TIMEOUT_S)
-        # At least one wedged item is executing somewhere before we time the turn body.
-        assert await asyncio.to_thread(entered.acquire, True, 30)
-
-        started: dict[str, float] = {}
-
-        def turn_body():
-            started["at"] = time.monotonic()
-
-        submitted = time.monotonic()
-        try:
-            await asyncio.wait_for(runner._run_in_executor_with_context(turn_body), timeout=3)
-        except asyncio.TimeoutError:
-            pytest.fail("turn body never started: turn pool is held by abandoned housekeeping")
-        return started["at"] - submitted
-
     try:
-        latency = asyncio.run(exercise())
+        asyncio.run(_abandon_housekeeping(runner, 3, runner._CLEANUP_TIMEOUT_S))
+        assert ran_on, "no housekeeping item started"
+        assert all(name.startswith("hermes-gateway-hk") for name in ran_on), ran_on
+        assert runner._executor is None, "housekeeping created or used the turn pool"
     finally:
         wedge.set()
         runner._shutdown_executor()
-
-    assert latency < 1.0, f"turn body waited {latency:.2f}s behind abandoned housekeeping"
 
 
 def test_shutdown_stops_the_housekeeping_pool():

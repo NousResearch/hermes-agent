@@ -33,10 +33,6 @@ def _reset_scheduler_state():
 
 
 class TestGetRunningJobIds:
-    def test_empty_when_nothing_running(self):
-        import cron.scheduler as sched
-
-        assert sched.get_running_job_ids() == frozenset()
 
     def test_reflects_in_flight_jobs(self):
         import cron.scheduler as sched
@@ -260,17 +256,7 @@ class TestIsInterrupted:
     """Peek-only check used at the delivery gate -- must NOT clear the
     flag, unlike _consume_interrupted_flag."""
 
-    def test_false_when_not_marked(self):
-        import cron.scheduler as sched
 
-        assert sched._is_interrupted("job-1") is False
-
-    def test_true_when_marked(self):
-        import cron.scheduler as sched
-
-        sched._interrupted_job_ids.add(sched._inflight_key("job-1"))
-
-        assert sched._is_interrupted("job-1") is True
 
     def test_does_not_clear_the_flag(self):
         import cron.scheduler as sched

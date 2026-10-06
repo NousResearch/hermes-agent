@@ -21,7 +21,7 @@ The curator is triggered by an inactivity check, not a cron job. On CLI session 
 1. Enough time has passed since the last curator run (`interval_hours`, default **7 days**), and
 2. The agent has been idle long enough (`min_idle_hours`, default **2 hours**).
 
-Desktop and other `hermes serve` backends share the existing hourly maintenance timer (first poll after 90 seconds), independently of cron jobs. They measure inactivity from process startup and the most recent chat activity in the same profile, retaining that activity timestamp after a session closes or is reaped, and skip curator while a turn in that profile is running. A connected but inactive window does not block maintenance. This timer also polls personal and organization Skill Sync, subject to those features' own opt-in gates. A running messaging gateway for the same profile owns these chores instead.
+Desktop and other `hermes serve` backends share the existing hourly maintenance timer (first poll after 90 seconds), independently of cron jobs. They measure inactivity from process startup and the most recent chat activity in the same profile, retaining that activity timestamp after a session closes or is reaped, and skip curator while a turn in that profile is running. A connected but inactive window does not block maintenance. A running messaging gateway for the same profile owns these chores instead.
 
 The timer services its backend's profile. In-flight maintenance runs in a worker thread; closing the backend does not cooperatively interrupt that pass. Starting multiple independent serve processes for the same profile can still race the curator's interval check.
 
@@ -173,6 +173,13 @@ The ledger is telemetry, never a gate — if writing an entry fails, the mutatio
 ```yaml
 skills:
   ledger: false
+```
+
+The file is also size-bounded: once it grows past `skills.ledger_max_bytes` (default 5 MB), the next mutation first rewrites it through the unchanged-file dedup (exactly what `hermes curator ledger --compact` does) and, if genuinely-divergent entries still exceed the cap, drops the oldest ones regardless of shape — the newest entry always survives, lines in the retained tail are never rewritten or parsed (a malformed line there survives verbatim), and the sweep frees blobs nothing references anymore and older than an hour (a fresh unreferenced blob may belong to a capture another process has not yet recorded). Set it to `0` to keep the ledger append-only forever.
+
+```yaml
+skills:
+  ledger_max_bytes: 5242880   # 0 = never auto-maintain
 ```
 
 ## Archive TTL purge

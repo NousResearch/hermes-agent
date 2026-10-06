@@ -89,4 +89,3 @@ def test_empty_include_reopens_with_nothing_preselected():
     assert checklist.call_args.args[2] == set()
     mock_save.assert_not_called()
     assert config["mcp_servers"]["github"]["tools"] == {"include": []}
-

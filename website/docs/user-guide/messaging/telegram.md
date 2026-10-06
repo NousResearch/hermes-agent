@@ -114,6 +114,53 @@ Notes:
   instance partially processed. Telegram's offset usually prevents this,
   but time-sensitive commands sent during a long outage will run on boot.
 
+### Concurrent update handling
+
+Updates from different chats are processed concurrently, so one slow turn
+(a long provider retry, a large download) no longer stalls every other chat.
+Updates from the same chat still run one after another, in arrival order.
+The cross-chat pool defaults to 32; an invalid value logs a warning and uses
+the default:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      max_concurrent_updates: 32   # 1 restores fully sequential processing
+```
+
+### Repeated inbound updates
+
+Hermes suppresses repeated Telegram `update_id` values before message batching,
+command/media handling, observed group-history writes and plugin observers.
+The receiving adapter and numeric bot ID scope this check; it does not deduplicate
+by text or `message_id`. A genuine edit with a new update ID can still be processed.
+
+This is bounded, **in-memory** protection, not an exactly-once guarantee:
+
+- The adapter remembers the most recent 4096 completed admissions, with no time
+  expiry. Active updates stay claimed until dispatch and its scheduled PTB handler
+  tasks finish, including nonblocking native plugins and registered error callbacks.
+- Reconnecting the same adapter retains that history. Eviction, adapter replacement
+  or a process restart can allow an old update through again. Nothing is written
+  to a replay ledger on disk.
+- Failed or cancelled preparation releases its claim if nothing has been handed
+  off. Once an update enters a batch/hold queue, gateway dispatch, an observer or
+  a native plugin, a later error does not reopen it. Native plugins own their own
+  partial effects, so entering their update or registered error callback is
+  conservatively treated as handoff. PTB's own exception logging is not a handoff.
+  Uncached static-sticker vision analysis is also a handoff: cancelling the await
+  cannot undo an auxiliary model request already submitted. Caught preparation
+  errors before any handoff remain retryable; an intentional refusal is terminal.
+- Releasing a claim only permits a later delivery; it does not request one from
+  Telegram. Polling acknowledgement is independent of agent completion. This check
+  does not retry failed replies or prevent a downstream component from independently
+  duplicating work.
+
+For a suspected late replay, compare both occurrences' bot/profile, chat/topic,
+`update_id`, update kind, `message_id` and actual receive time. An edit can reuse
+`message_id`, and the message's sent timestamp is not its receive time.
+
 ### Command menu priority and cap (Optional)
 
 Hermes registers its command menu automatically when the Telegram gateway starts. The menu is built from the central slash-command registry plus eligible plugin/skill commands, then capped so Telegram accepts the payload reliably. The default cap is 60 commands — enough to keep all built-in commands plus common skill commands visible.
@@ -1359,7 +1406,7 @@ When the agent calls the `clarify` tool — to ask which approach you prefer, ge
 
 Tap a button to answer, or tap **Other** to type a free-form response (the next message you send becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
 
-Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `3600` seconds). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
+Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `3600` seconds). If you don't respond within the timeout, the agent unblocks with `"outcome": "timed_out"` and adapts rather than hanging. Reply `skip` to skip a question.
 
 If Telegram cannot render the button card (the Bot API rejects it, or the send fails after its 15-second acknowledgement window), Hermes re-asks the same question as a plain numbered-list message and your typed reply (a number or the option text) is taken as the answer. When even that cannot be delivered, the agent is released at once with `[clarify prompt could not be delivered]` instead of waiting out the timeout and mistaking the silence for you not answering.
 

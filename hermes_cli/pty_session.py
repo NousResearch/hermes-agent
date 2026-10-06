@@ -186,7 +186,7 @@ class PtySession:
             # bridge.close() joins the child — blocking; keep it off the event loop.
             # See #53227.
             await asyncio.to_thread(self.bridge.close)
-        except Exception:
+        except Exception:  # health: allow BLE001 S110 -- teardown of an already-dead PTY must not mask the caller's error path
             pass
         try:
             if self.active_session_file is not None:
@@ -196,7 +196,7 @@ class PtySession:
         if self.active_session_cleanup is not None:
             try:
                 self.active_session_cleanup()
-            except Exception:
+            except Exception:  # health: allow BLE001 S110 -- cleanup callback must not mask the close path; the PTY is dead either way
                 pass
             self.active_session_cleanup = None
 

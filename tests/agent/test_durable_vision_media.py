@@ -498,3 +498,15 @@ def test_media_bookkeeping_never_scans_the_messages_table(tmp_path, monkeypatch)
                     "SELECT media_content FROM messages WHERE media_content IS NOT NULL"):
             plan = " ".join(row[3] for row in store._conn.execute("EXPLAIN QUERY PLAN " + sql))
             assert "idx_messages_media" in plan, plan
+
+
+@pytest.mark.parametrize("kind", ["envelope", "tool_parts", "user"])
+def test_rewind_from_reloaded_view_keeps_image_prefix_rows(db, kind):
+    """A rewind issued from the rehydrated view must recognise image-bearing rows as the kept prefix (#82956)."""
+    live = _history(kind) + [{"role": "assistant", "content": "Done"}, {"role": "user", "content": "Again"}]
+    _flush(db, live)
+    ids = [m["id"] for m in db.get_messages("vision")]
+    loaded = db.get_messages_as_conversation("vision", repair_alternation=True)
+    db.replace_messages("vision", [dict(m) for m in loaded[:-1]], active_only=True, archive_dropped=True)
+    assert [m["id"] for m in db.get_messages("vision")] == ids[:-1]
+    assert len([m for m in db.get_messages("vision", include_inactive=True) if not m["active"]]) == 1

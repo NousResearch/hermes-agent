@@ -318,7 +318,7 @@ def _raise_for_anon_status(
             # the honest way forward is a sign-in, in the service's own words when it sent some.
             raise anon_challenge.signin_required_error(payload.get("message"))
     cls, code = (_NAS_REFUSALS.get((status, error)) or _NAS_REFUSALS.get((status, None))
-                 or (AuthError, ANON_SERVER_ERROR))
+                 or ((AuthError, ANON_POW_REQUIRED) if error == "pow_" else (AuthError, ANON_SERVER_ERROR)))
     if code == ANON_SERVER_ERROR:
         logger.info("Nous free tier %s failed (%s%s)", action, status, f": {error}" if error else "")
     retry_after = parse_retry_after_seconds(response.headers)

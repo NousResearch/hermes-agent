@@ -264,6 +264,12 @@ class TestOtherEndpointsAreUnchanged:
             anon_auth.ensure_portal_identity(explicit=True)
         assert exc.value.code == anon_auth.ANON_POW_REQUIRED
 
+    def test_a_proof_of_work_verdict_off_428_stays_the_proof_of_work_verdict(self, nas):
+        nas.create_response = httpx.Response(400, json={"error": "pow_invalid"})
+        with pytest.raises(anon_auth.AuthError) as exc:
+            anon_auth.ensure_portal_identity(explicit=True)
+        assert exc.value.code == anon_auth.ANON_POW_REQUIRED and exc.value.retryable is False
+
     def test_a_403_on_sign_up_stays_retryable(self, nas):
         nas.create_response = httpx.Response(403, json={"error": "access_denied"})
         with pytest.raises(anon_auth.AuthError) as exc:

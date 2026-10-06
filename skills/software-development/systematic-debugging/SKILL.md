@@ -114,8 +114,8 @@ pytest tests/test_module.py::test_name -v
 # Or run a scripted repro
 python scripts/repro_bug.py
 
-# Or run a high-repetition flaky repro
-for i in {1..100}; do pytest tests/test_flake.py::test_name -q || break; done
+# Or run a high-repetition flaky repro — log each run, surface only the failing one
+for i in {1..100}; do pytest tests/test_flake.py::test_name -q > /tmp/flake-run.log 2>&1 || { echo "failed on run $i"; tail -20 /tmp/flake-run.log; break; }; done
 ```
 
 ### 3. Check Recent Changes
@@ -288,8 +288,8 @@ If the user is present, show the ranked list before testing. They may have domai
 # Run the specific regression test
 pytest tests/test_module.py::test_regression -v
 
-# Run full suite — no regressions
-pytest tests/ -q
+# Run full suite — no regressions — log the run, read back only the summary
+pytest tests/ -q > /tmp/pytest-full.log 2>&1; echo "exit=$?"; tail -3 /tmp/pytest-full.log
 ```
 
 ### 4. If Fix Doesn't Work — The Rule of Three

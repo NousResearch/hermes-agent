@@ -76,8 +76,7 @@ def test_skew_probe_failure_degrades_to_the_plain_message(monkeypatch):
 
 def test_failure_notice_identifies_emitting_process_and_loaded_revision(monkeypatch):
     monkeypatch.setattr(
-        scheduler,
-        "_delivery_process_context",
+        "cron.scheduler_failure_copy.delivery_process_context",
         lambda: "[emitter pid=412 loaded_revision=abc123]",
     )
     msg = _summarize_cron_failure_for_delivery(

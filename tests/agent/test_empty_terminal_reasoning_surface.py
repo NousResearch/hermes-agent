@@ -27,11 +27,13 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 
-# Provider-level ``capabilities:`` opt-ins: the fixture's own route and a second custom provider.
+# Provider-level ``capabilities:`` opt-ins: the fixture's own route and a second custom provider
+# (plus an un-opted sibling on that provider's endpoint).
 _OPTED_IN_PROVIDERS = [
     {"name": "local", "base_url": "https://example.invalid/v1", "capabilities": {"answer_in_reasoning": True}},
     {"name": "acme", "base_url": "https://llm.example.com/v1", "model": "acme/reasoner",
      "capabilities": {"answer_in_reasoning": True}},
+    {"name": "acme-plain", "base_url": "https://llm.example.com/v1"},  # same endpoint, no opt-in
 ]
 
 
@@ -188,6 +190,7 @@ def test_length_cut_reasoning_is_not_promoted(tmp_path, monkeypatch):
     ("custom", "https://llm.example.com/v1", "acme/reasoner", "private thoughts that must not be shown", 1),
     ("custom", "https://llm.example.com/v1", "acme/after-model-switch", "private thoughts that must not be shown", 1),
     ("custom", "https://fallback.example.com/v1", "acme/reasoner", "the visible answer", 2),
+    ("custom:acme-plain", "https://llm.example.com/v1", "acme/reasoner", "the visible answer", 2),
 ])
 def test_reasoning_promotion_requires_a_trusted_route(tmp_path, monkeypatch, provider, base_url, model, final, calls):
     """Private reasoning on an untrusted route retries to the visible answer and never

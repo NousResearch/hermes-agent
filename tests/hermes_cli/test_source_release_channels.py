@@ -173,11 +173,12 @@ def test_retirement_no_git_older_stamped_install_is_admitted_unverified(tmp_path
     stamp.write_text(json.dumps({"commit": "a" * 40}), encoding="utf-8")
     assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is True
 
-    # When a channel head does publish a commit field, a stamp equal to the
-    # destination head is proven too.
+    # A stamp matching a destination head that publishes a commit field is
+    # NOT proof: "same version, different build" would read as "sitting on
+    # the destination" and silently admit the downgrade the retirement pins.
     terminal["head"]["commit"] = "b" * 40
     stamp.write_text(json.dumps({"commit": "b" * 40}), encoding="utf-8")
-    assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is True
+    assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is False
 
 
 def test_retirement_no_git_without_stamp_stays_permissive(tmp_path):
@@ -202,6 +203,12 @@ def test_retirement_downgrade_refuses_when_ancestry_is_unavailable(monkeypatch, 
         return Result()
 
     monkeypatch.setattr("subprocess.run", run)
+    # A non-shallow checkout (rev-parse reports false) with the target present
+    # and a descendant HEAD: the downgrade refusal is decisive without a fetch.
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda argv, **_kw: Result() if argv[1:3] == ["rev-list", "--ancestry-path"]
+        else subprocess.CompletedProcess(args=argv, returncode=0, stdout="false\n"))
     request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
     terminal = {"name": "stable", "head": {"sequence": 1}}
     with pytest.raises(ValueError, match="downgrade"):
@@ -310,6 +317,67 @@ def test_retirement_target_fetch_unshallows_older_install(tmp_path, monkeypatch)
     assert source_releases._git_retirement_proof(request, terminal, ["git"], fresh, True) is True
 
 
+def test_retirement_unshallows_grafted_divergence_before_refusing(tmp_path, monkeypatch):
+    """A depth-limited fetch can leave the pinned target grafted with its parents
+    unfetched: an OLDER HEAD then reads as divergent. The apply path refills the
+    history (custody lane) and re-judges before refusing; the passive check fails
+    open to the unverified answer instead."""
+    from hermes_cli import source_releases, update_custody
+
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    git(origin, "init", "--bare", "-b", "main")
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git(seed, "clone", str(origin), str(seed))
+    git(seed, "config", "user.name", "Release Fixture")
+    git(seed, "config", "user.email", "fixture@example.invalid")
+    labels = ("installed", "middle", "target")
+    commits = []
+    for label in labels:
+        (seed / "content.txt").write_text(label, encoding="utf-8")
+        git(seed, "add", "content.txt")
+        git(seed, "commit", "-m", label)
+        commits.append(git(seed, "rev-parse", "HEAD"))
+    installed, middle, target = commits
+    git(seed, "push", "origin", "HEAD:refs/heads/main")
+    git(seed, "push", "origin", installed + ":refs/heads/old")
+
+    fresh = tmp_path / "fresh"
+    # The installer shape: a depth-1 clone pinned at the OLDER commit, then a
+    # depth-1 fetch materializes the pinned target as a second graft: target
+    # present, the connecting `middle` commit absent.
+    git(tmp_path, "clone", "--depth=1", "--branch", "old", origin.as_uri(), str(fresh))
+    git(fresh, "fetch", "--depth=1", "origin", target)
+    git(fresh, "checkout", "--detach")
+    assert subprocess.run(["git", "cat-file", "-e", target + "^{commit}"], cwd=fresh,
+                          capture_output=True).returncode == 0
+    assert subprocess.run(["git", "cat-file", "-e", middle + "^{commit}"], cwd=fresh,
+                          capture_output=True).returncode != 0
+    # Both transports see the grafted shape as "divergent" before the refill.
+    request = {"commit": target, "sourceVersion": "1.0.0", "sequence": 1,
+               "repository": "NousResearch/hermes-agent"}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+
+    fetch_args = []
+    real_run_git = update_custody.run_git
+
+    def spying_run_git(git_cmd, args, **kwargs):
+        if args[:1] == ["fetch"]:
+            fetch_args.append(args)
+        return real_run_git(git_cmd, args, **kwargs)
+
+    monkeypatch.setattr(update_custody, "run_git", spying_run_git)
+
+    # Passive: cannot decide, fails open without fetching.
+    assert source_releases._git_retirement_proof(request, terminal, ["git"], fresh, False) is False
+    assert fetch_args == []
+
+    # Apply: refill, then prove the older install safe.
+    assert source_releases._git_retirement_proof(request, terminal, ["git"], fresh, True) is True
+    assert any("--unshallow" in args for args in fetch_args)
+
+
 def test_retirement_admits_install_sitting_on_the_qualified_target(tmp_path):
     """Equal-and-equal: an install already on the qualified build proves safe without a fetch."""
     from hermes_cli import source_releases
@@ -394,6 +462,142 @@ def test_retirement_stamp_outside_admitted_identities_is_unverified(tmp_path):
     (tmp_path / "install-stamp.json").write_text(
         json.dumps({"commit": "c" * 40}), encoding="utf-8")
     assert _retirement_commit_proof(request, terminal, None, tmp_path, True) is False
+
+
+def test_retirement_apply_fetch_runs_under_custody(monkeypatch, tmp_path):
+    """The pinned-target fetch must ride the updater's custody runner, not a bare
+    ``subprocess.run``: on Windows a killed updater would orphan a child git that is
+    outside the kill-on-close job while the checkout lock is already released."""
+    from hermes_cli import source_releases, update_custody
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-b", "main")
+    git(root, "config", "user.name", "Release Fixture")
+    git(root, "config", "user.email", "fixture@example.invalid")
+    (root / "content.txt").write_text("installed", encoding="utf-8")
+    git(root, "add", ".")
+    git(root, "commit", "-m", "installed")
+    request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1,
+               "repository": "NousResearch/hermes-agent"}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+
+    calls = []
+
+    def custody_run_git(git_cmd, args, **kwargs):
+        calls.append(args)
+        if args[:1] == ["fetch"]:
+            # Simulate a fetch that downloads nothing verifiable (rc 0, empty).
+            return subprocess.CompletedProcess(args=[*git_cmd, *args], returncode=0,
+                                               stdout="", stderr="")
+        result = subprocess.run([*git_cmd, *args], cwd=kwargs.get("cwd"),
+                                capture_output=True, text=True)
+        return subprocess.CompletedProcess(args=[*git_cmd, *args], returncode=result.returncode,
+                                           stdout=result.stdout, stderr=result.stderr)
+
+    # The destination-manifest guard reads through the real channel reader; stub it.
+    monkeypatch.setattr(source_releases, "_resolve_channel",
+                        lambda name, repository: SimpleNamespace(manifest=None))
+    monkeypatch.setattr(update_custody, "run_git", custody_run_git)
+    with pytest.raises(ValueError, match="not newer"):
+        source_releases._git_retirement_proof(request, terminal, ["git"], root, True)
+    assert calls and calls[0][:1] == ["fetch"]
+
+
+def test_retirement_destination_reread_only_when_destination_is_newer(monkeypatch, tmp_path):
+    """The destination re-read can only refuse; it must not gate the answer on a
+    second publication fetch when the destination has not moved past the build."""
+    from hermes_cli import source_releases
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-b", "main")
+    git(root, "config", "user.name", "Release Fixture")
+    git(root, "config", "user.email", "fixture@example.invalid")
+    (root / "content.txt").write_text("installed", encoding="utf-8")
+    git(root, "add", ".")
+    git(root, "commit", "-m", "installed")
+    request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1,
+               "repository": "NousResearch/hermes-agent"}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+
+    rereads = []
+
+    def failing_reread(name, repository):
+        rereads.append(name)
+        raise AssertionError("no destination re-read when the sequence is not newer")
+
+    monkeypatch.setattr(source_releases, "_resolve_channel", failing_reread)
+    # Equal sequence: the first read already supplied the pinned target.
+    assert source_releases._git_retirement_proof(request, terminal, ["git"], root, False) is False
+    assert rereads == []
+
+    # A strictly newer destination re-enables the guard; a failing re-read
+    # there degrades to the passive answer instead of raising.
+    monkeypatch.setattr(
+        source_releases, "_resolve_channel",
+        lambda name, repository: (_ for _ in ()).throw(OSError("publication read failed")))
+    newer = {"name": "stable", "head": {"sequence": 2}}
+    assert source_releases._git_retirement_proof(request, newer, ["git"], root, False) is False
+
+
+def test_channel_compare_branch_resolves_retirement_passively(tmp_path, monkeypatch, capsys):
+    """``hermes update --check``'s channel verdict must not fetch the pinned target:
+    the strict fetch belongs to the update that applies the retirement."""
+    from hermes_cli import source_releases, update_cmd_check, update_custody
+
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    git(origin, "init", "--bare", "-b", "main")
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git(seed, "clone", str(origin), str(seed))
+    git(seed, "config", "user.name", "Release Fixture")
+    git(seed, "config", "user.email", "fixture@example.invalid")
+    (seed / "pyproject.toml").write_text('[project]\nversion = "0.9.0"\n', encoding="utf-8")
+    git(seed, "add", "pyproject.toml")
+    git(seed, "commit", "-m", "installed")
+    installed = git(seed, "rev-parse", "HEAD")
+    (seed / "content.txt").write_text("target", encoding="utf-8")
+    git(seed, "add", "content.txt")
+    git(seed, "commit", "-m", "target")
+    target = git(seed, "rev-parse", "HEAD")
+    git(seed, "push", "origin", "HEAD:refs/heads/main")
+    git(seed, "push", "origin", installed + ":refs/heads/old")
+
+    # A depth-1 clone pinned at the OLDER commit (the installer shape).
+    fresh = tmp_path / "fresh"
+    git(tmp_path, "clone", "--depth=1", "--branch", "old", origin.as_uri(), str(fresh))
+    git(fresh, "checkout", "--detach")
+    assert subprocess.run(["git", "cat-file", "-e", target + "^{commit}"], cwd=fresh,
+                          capture_output=True).returncode != 0
+
+    record = {"name": "stable", "repository": "file:///fixture/origin.git",
+              "state": "retired", "policy": "preview"}
+    manifest = {"request": {"commit": target, "sourceVersion": "1.0.0",
+                            "buildId": "b", "sequence": 1,
+                            "repository": "file:///fixture/origin.git"}}
+    resolution = SimpleNamespace(requested=record, terminal=record, manifest=manifest)
+    monkeypatch.setattr(source_releases, "_resolve_channel", lambda name, repository: resolution)
+    monkeypatch.setattr(source_releases, "source_repository",
+                        lambda git_cmd, cwd: "file:///fixture/origin.git")
+
+    fetches = []
+    real_run_git = update_custody.run_git
+
+    def spying_run_git(git_cmd, args, **kwargs):
+        if args[:1] == ["fetch"]:
+            fetches.append(args)
+        return real_run_git(git_cmd, args, **kwargs)
+
+    monkeypatch.setattr(update_custody, "run_git", spying_run_git)
+
+    assert update_cmd_check.channel_compare_branch("stable", ["git"], fresh) is None
+    out = capsys.readouterr().out
+    # The pinned-commit verdict prints without any fetch: the strict fetch of
+    # the pinned retirement target belongs to the update that applies it.
+    assert "Update channel: stable" in out and "Selected release available" in out
+    assert fetches == []
 
 
 @pytest.mark.parametrize("channel", ["stable", "canary"])

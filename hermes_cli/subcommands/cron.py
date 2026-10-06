@@ -19,6 +19,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
 
     cron_list = cron_subparsers.add_parser("list", help="List scheduled jobs")
     _flag(cron_list, "--all", help="Include disabled and completed jobs")
+    _flag(cron_list, "--json", help="Print job records as a JSON array instead of the table")
 
     cron_create = cron_subparsers.add_parser(
         "create", aliases=["add"], help="Create a scheduled job")

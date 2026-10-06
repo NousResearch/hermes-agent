@@ -225,6 +225,23 @@ unrelated or older `hermes` on a service's `PATH` cannot take precedence when
 that sibling entrypoint exists. `--in ~` selects the working directory; the
 explicit Bot Chat title is resolved in the target profile's session database.
 
+### The live reply-wait budget
+
+A live Bot Chat delivery (a local DM, a peer DM, or the Desktop relay) waits
+for the target's reply for at most `bot_mode.live_wait_seconds` — 300 by
+default. The knob is a **single budget spanning the queue wait and the reply
+wait**: one deadline per request that starts when the message is dispatched,
+covering both the time the target spends waiting for a free runtime and the
+time its turn spends producing the reply. It is not two independent timeouts.
+Work that outlives the budget still settles its receipt, but the waiter has
+already exited, so the reply is stranded in a ticket nobody reads again —
+raise the knob when bot-to-bot turns routinely run longer than five minutes:
+
+```yaml
+bot_mode:
+  live_wait_seconds: 7200   # one deadline covering queue wait + reply wait
+```
+
 ### When a delivery fails: typed reasons
 
 A failed bot turn or relay delivery carries a machine-readable `reason` code alongside the human error text, end to end: the target gateway classifies the failure (`provider_auth_or_access`, `provider_quota_limit`, `provider_rate_limit`, `provider_server_error`, `context_overflow`, `missing_config`, `model_unavailable`, `runtime_offline`, `queued_expired`, `delivery_timeout`, `target_busy`, `unknown`), the Desktop forwards it, and the sending agent's completion notification is tagged `[reason: <code>]` ahead of the error text. A calling agent can branch on the code — "sign in again" vs "retry later" — instead of parsing provider prose. The Desktop's needs-attention badge uses the same codes.

@@ -346,6 +346,8 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
         # Durable row identity (_rows_to_conversation); reactions etc. address persisted messages by it.
         if m.get("_row_id") is not None:
             msg["row_id"] = m["_row_id"]
+        if m.get("message_uid"):
+            msg["message_uid"] = m["message_uid"]
         # A user turn shows its skill invocation, never the expanded body (rewind re-sends by ordinal).
         invocation = _skill_scaffold_projection(content_text) if role == "user" else ""
         if invocation:

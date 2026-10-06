@@ -58,6 +58,7 @@ def _compute_host_turn_frame(
     return {
         "type": "turn.start", "sid": sid, "request_id": rid,
         "session_key": session.get("session_key") or sid, "text": text,
+        "submit_user_row": session.get("_submit_user_row"),
         **({"display_kind": display_kind} if display_kind else {}), "history": history,
         **({"display_metadata": display_metadata} if display_metadata else {}),
         "history_version": history_version, "cols": int(session.get("cols", 80) or 80),
@@ -299,6 +300,9 @@ def _submit_prompt_to_compute_host(
                 session.pop("_compute_host_activity_ns", None)
         return _err(rid, 5019, f"compute-host dispatch failed: {exc}")
     with session["history_lock"]:
+        # A fast completion can already have staged the next queued turn.
+        if session.get("_submit_user_row") is frame["submit_user_row"]:
+            session.pop("_submit_user_row", None)
         session["_compute_host_active"] = True
         if image_paths is None:
             session["attached_images"] = []

@@ -18755,6 +18755,27 @@
         "title": "MessageReactionPayload",
         "type": "object"
       },
+      "MessageUserPayload": {
+        "additionalProperties": false,
+        "description": "Canonical submitted user row at dispatch, shared by all attached clients.",
+        "properties": {
+          "message": {
+            "$ref": "#/components/schemas/TranscriptMessage"
+          },
+          "client_message_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Client Message Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "MessageUserPayload",
+        "type": "object"
+      },
       "MoaAggregatingPayload": {
         "additionalProperties": false,
         "properties": {
@@ -26227,6 +26248,18 @@
           "text": {
             "default": "",
             "title": "Text"
+          },
+          "client_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Message Id"
           },
           "display_kind": {
             "anyOf": [
@@ -36855,6 +36888,18 @@
             "default": null,
             "title": "Row Id"
           },
+          "message_uid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Message Uid"
+          },
           "display_kind": {
             "anyOf": [
               {
@@ -39854,6 +39899,18 @@
           "schema": {
             "type": "object",
             "additionalProperties": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "message.user",
+      "summary": "Project a canonical user turn before streaming; dedupe by message uid / row id / client correlation.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/MessageUserPayload"
           }
         }
       ]

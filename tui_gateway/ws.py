@@ -333,7 +333,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 await _reply(_error(-32603, "internal error", req_id), "send_failed_after_dispatch_crash",
                              "ws dispatch-crash reply send failed peer=%s id=%s method=%s", peer, req_id, req_method)
                 continue
-            if resp is not None:
+            if resp is not None and not transport.closed:
                 await _reply(resp, "send_failed_after_response",
                              "ws response send failed peer=%s id=%s method=%s", peer, req_id, req_method)
 
@@ -426,6 +426,10 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     except _SendFailed:
         pass
     finally:
+        # The read loop has ended. Revoke delivery before draining accepted RPCs
+        # or awaiting controller cleanup: both can outlive the closed socket.
+        if transport is not None:
+            transport.close()
         if dispatcher is not None:
             # Finish the in-flight handler and the frames read before the disconnect (as the serial read loop
             # did) before the teardown below parks this transport's sessions. A cancelled connection (server
@@ -451,7 +455,6 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 await asyncio.to_thread(get_browser_control_broker().disconnect_owner, transport)
             except Exception:
                 _log.exception("ws browser-controller disconnect failed peer=%s", peer)
-            transport.close()
             try:
                 await asyncio.to_thread(server._release_wake_for_transport, transport)
             except Exception:

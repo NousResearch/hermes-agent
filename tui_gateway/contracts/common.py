@@ -167,6 +167,7 @@ class TranscriptMessage(OpenModel):
     tool_call_id: str | None = None
     timestamp: float | None = None
     row_id: int | None = None
+    message_uid: str | None = None
     display_kind: str | None = None
     display_metadata: JsonValue | None = None
     name: str | None = None

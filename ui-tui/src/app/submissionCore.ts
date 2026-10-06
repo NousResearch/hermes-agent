@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { InputDetectDropResponse, PromptSubmitResponse } from '../gatewayTypes.js'
 import type { Msg } from '../types.js'
@@ -71,8 +72,9 @@ export function submitPrompt(
     turnController.clearStatusTimer()
     deps.setLastUserMsg(text)
 
+    const clientMessageId = randomUUID()
     if (show) {
-      deps.appendMessage({ role: 'user', text: displayOverride || displayText })
+      deps.appendMessage({ role: 'user', text: displayOverride || displayText, clientMessageId })
     }
 
     patchUiState({ busy: true, status: 'running…' })
@@ -80,7 +82,11 @@ export function submitPrompt(
     turnController.interrupted = false
 
     deps.gw
-      .request<PromptSubmitResponse>('prompt.submit', { session_id: liveSid, text: submitText })
+      .request<PromptSubmitResponse>('prompt.submit', {
+        session_id: liveSid,
+        text: submitText,
+        client_message_id: clientMessageId
+      })
       .then(r => {
         // The gateway consumed a typed voice stop phrase server-side (voice
         // chat ended, no turn started) — release the busy latch; the

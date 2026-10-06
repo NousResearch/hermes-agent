@@ -129,3 +129,45 @@ def test_discovery_failure_message_names_state_and_resume_path(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+def test_discovery_uses_verified_official_host_rendezvous(tmp_path, monkeypatch):
+    from gateway import host_rendezvous as hr
+    from hermes_cli.shared_session_attach import discover_attach_url
+
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    token = "test-existing-host-token"
+    identity = {"pid": os.getpid(), "role": hr.ROLE_DESKTOP_SERVE}
+    probes = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            probes.append(self.path)
+            assert self.headers["X-Hermes-Token"] == token
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps(identity).encode())
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    lease, error = try_acquire_active_session(
+        session_id="hosted", surface="desktop", config={}, registry_home=tmp_path / "profile",
+        metadata={"live_session_id": "live"})
+    assert error is None
+    try:
+        hr.publish_record(hr.ROLE_DESKTOP_SERVE, host="127.0.0.1", port=server.server_port, token=token)
+        assert discover_attach_url("hosted", registry_home=tmp_path / "profile") == (
+            f"ws://127.0.0.1:{server.server_port}/api/ws?token={token}")
+        assert probes == [hr.HOST_IDENTITY_PATH]
+        identity["pid"] += 1
+        with pytest.raises(ValueError, match="not available"):
+            discover_attach_url("hosted", registry_home=tmp_path / "profile")
+    finally:
+        lease.release()
+        server.shutdown()
+        server.server_close()
+        thread.join()

@@ -74,7 +74,7 @@ def _accept_busy_then_run_both_turns(monkeypatch, tmp_path, queued_text="queued 
     server._ensure_session_db_row(session)  # the lazy row a real first submit would have written
     db.append_message(key, "user", content="prompt A")  # turn A's row, as A's turn would have written it
     _busy(session)
-    resp = server._handle_busy_submit("r1", sid, session, queued_text, "ws-1", queued=True, display_kind=None)
+    resp = server._handle_busy_submit("r1", sid, session, queued_text, None, queued=True, display_kind=None)
     assert resp["result"]["status"] == "queued"
     db.append_message(key, "assistant", content="reply A")  # turn A concludes
     with session["history_lock"]:
@@ -94,7 +94,7 @@ def test_busy_accept_writes_the_queued_user_row_immediately(monkeypatch, tmp_pat
     session = server._sessions[sid]
     try:
         _busy(session)
-        resp = server._handle_busy_submit("r1", sid, session, "queued text QUEUED-MARKER", "ws-1",
+        resp = server._handle_busy_submit("r1", sid, session, "queued text QUEUED-MARKER", None,
                                           queued=True, display_kind=None)
         assert resp["result"]["status"] == "queued"
         # The turn has not run: the cold resume read must already see the accepted message.
@@ -133,7 +133,7 @@ def test_queued_prompt_survives_a_backend_restart(monkeypatch, tmp_path):
     session = server._sessions[sid]
     try:
         _busy(session)
-        server._handle_busy_submit("r1", sid, session, "queued text QUEUED-MARKER", "ws-1",
+        server._handle_busy_submit("r1", sid, session, "queued text QUEUED-MARKER", None,
                                    queued=True, display_kind=None)
         fresh = SessionDB(db_path=tmp_path / "state.db")  # a restarted backend opens a new handle
         try:
@@ -155,9 +155,9 @@ def test_merged_queue_text_updates_the_written_row_in_place(monkeypatch, tmp_pat
     session = server._sessions[sid]
     try:
         _busy(session)
-        assert server._handle_busy_submit("r1", sid, session, "first QUEUED-MARKER-A", "ws-1",
+        assert server._handle_busy_submit("r1", sid, session, "first QUEUED-MARKER-A", None,
                                           queued=True, display_kind=None)["result"]["status"] == "queued"
-        assert server._handle_busy_submit("r2", sid, session, "second", "ws-1",
+        assert server._handle_busy_submit("r2", sid, session, "second", None,
                                           queued=True, display_kind=None)["result"]["status"] == "queued"
         assert session["queued_prompt"]["text"] == "first QUEUED-MARKER-A\n\nsecond"
         rows = [r for r in _active_rows(db, key) if r["role"] == "user"]
@@ -176,7 +176,7 @@ def test_cleared_queue_keeps_the_queued_row_as_the_interrupted_shape(monkeypatch
     session = server._sessions[sid]
     try:
         _busy(session)
-        server._handle_busy_submit("r1", sid, session, "queued text QUEUED-MARKER", "ws-1",
+        server._handle_busy_submit("r1", sid, session, "queued text QUEUED-MARKER", None,
                                    queued=True, display_kind=None)
         server._ac_set_queue(session, [])  # Stop / queue clear
         assert not session.get("queued_prompt") and not session.get("queued_prompts")
@@ -212,10 +212,10 @@ def test_partial_drain_never_puts_a_later_prompt_before_an_earlier_one(monkeypat
         db.append_message(key, "user", content="prompt A")  # turn A's row
         _busy(session)
         session["attached_images"] = ["/tmp/b.png"]
-        assert server._handle_busy_submit("r1", sid, session, "prompt B QUEUED-B", "ws-1",
+        assert server._handle_busy_submit("r1", sid, session, "prompt B QUEUED-B", None,
                                           queued=True, display_kind=None)["result"]["status"] == "queued"
         session["attached_images"] = ["/tmp/c.png"]
-        assert server._handle_busy_submit("r2", sid, session, "prompt C QUEUED-C", "ws-1",
+        assert server._handle_busy_submit("r2", sid, session, "prompt C QUEUED-C", None,
                                           queued=True, display_kind=None)["result"]["status"] == "queued"
         db.append_message(key, "assistant", content="reply A")  # turn A concludes
         with session["history_lock"]:
@@ -257,7 +257,7 @@ def test_drain_after_in_place_compaction_leaves_one_active_queued_row(monkeypatc
         server._ensure_session_db_row(session)
         db.append_message(key, "user", content="prompt A")
         _busy(session)
-        server._handle_busy_submit("r1", sid, session, "queued text QUEUED-MARKER", "ws-1",
+        server._handle_busy_submit("r1", sid, session, "queued text QUEUED-MARKER", None,
                                    queued=True, display_kind=None)
         _compact_in_place_while_queued(db, key)
         db.append_message(key, "assistant", content="reply A")
@@ -288,9 +288,9 @@ def test_merge_after_in_place_compaction_updates_the_live_queued_row(monkeypatch
         server._ensure_session_db_row(session)
         db.append_message(key, "user", content="prompt A")
         _busy(session)
-        server._handle_busy_submit("r1", sid, session, "first QUEUED-MARKER", "ws-1", queued=True, display_kind=None)
+        server._handle_busy_submit("r1", sid, session, "first QUEUED-MARKER", None, queued=True, display_kind=None)
         _compact_in_place_while_queued(db, key)
-        server._handle_busy_submit("r2", sid, session, "second", "ws-1", queued=True, display_kind=None)
+        server._handle_busy_submit("r2", sid, session, "second", None, queued=True, display_kind=None)
 
         queued = [r["content"] for r in _active_rows(db, key) if "QUEUED-MARKER" in str(r["content"])]
         assert queued == ["first QUEUED-MARKER\n\nsecond"]

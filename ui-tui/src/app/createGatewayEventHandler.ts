@@ -8,6 +8,7 @@ import type { StreamDeltaPayload, SubagentStatus, Usage } from '@hermes/shared/g
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
+import { projectUserTurn } from '../domain/messages.js'
 import type {
   AnyGatewayEvent,
   CommandsCatalogResponse,
@@ -901,6 +902,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'session.control.update':
         applyGoalSnapshot(sid, ev.payload?.control.goal ?? null)
 
+        return
+
+      case 'message.user':
+        if (ev.payload) {
+          setHistoryItems(messages => projectUserTurn(messages, ev.payload!))
+        }
         return
 
       case 'message.start':

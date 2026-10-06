@@ -77,7 +77,7 @@ profile's does not, and that `os.environ` is unchanged afterwards.
 
 | Surface | Ink component | Gateway method / event |
 |---|---|---|
-| Chat streaming | `app.tsx` + `messageLine.tsx` | `prompt.submit` → `message.delta` / `message.complete` |
+| Chat streaming | `app.tsx` + `messageLine.tsx` | `prompt.submit` → canonical `message.user`, then `message.start` / `message.delta` / `message.complete` |
 | Tool activity | `thinking.tsx` | `tool.start` / `tool.generating` / `tool.complete` |
 | Approvals | `prompts.tsx` | server→client request `approval` → response `{choice}` |
 | Clarify / sudo / secret | `prompts.tsx`, `maskedPrompt.tsx` | server→client requests `clarify` / `sudo` / `secret` (`server_requests.py`) |

@@ -887,6 +887,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         const submitParams = (targetId: string) => ({
           session_id: targetId,
+          client_message_id: optimisticId,
           text,
           ...(interrupted && { interrupted }),
           // Off-screen widget intent: the gateway types the persisted user

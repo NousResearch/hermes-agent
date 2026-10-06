@@ -967,7 +967,8 @@ export function usePromptActions({
       interruptFirst: boolean,
       truncateRowId?: number,
       sourceText?: string,
-      rebindRowIds?: readonly number[]
+      rebindRowIds?: readonly number[],
+      clientMessageId?: string
     ) =>
       runRewindSubmit(
         requestGateway,
@@ -985,7 +986,8 @@ export function usePromptActions({
         },
         truncateRowId,
         sourceText,
-        rebindRowIds
+        rebindRowIds,
+        clientMessageId
       ),
     [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
   )
@@ -1022,7 +1024,8 @@ export function usePromptActions({
           false,
           plan.truncateRowId,
           plan.sourceText,
-          durableRowIdsForRebind(messages)
+          durableRowIdsForRebind(messages),
+          messages[plan.userIndex]?.id
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1097,7 +1100,8 @@ export function usePromptActions({
           interruptFirst,
           plan.truncateRowId,
           plan.sourceText,
-          durableRowIdsForRebind(messages)
+          durableRowIdsForRebind(messages),
+          messages[plan.sourceIndex]?.id
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1133,7 +1137,8 @@ export function usePromptActions({
                 false,
                 retryPlan.truncateRowId,
                 retryPlan.sourceText,
-                durableRowIdsForRebind(refreshed)
+                durableRowIdsForRebind(refreshed),
+                refreshed[retryPlan.sourceIndex]?.id
               )
 
               applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1234,7 +1239,8 @@ export function usePromptActions({
           interruptFirst,
           plan.truncateRowId,
           plan.sourceText,
-          durableRowIdsForRebind(messages)
+          durableRowIdsForRebind(messages),
+          messages[plan.sourceIndex]?.id
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1268,7 +1274,8 @@ export function usePromptActions({
                 false,
                 retryPlan.truncateRowId,
                 retryPlan.sourceText,
-                durableRowIdsForRebind(refreshed)
+                durableRowIdsForRebind(refreshed),
+                refreshed[retryPlan.sourceIndex]?.id
               )
 
               applySurvivorRowIds(sessionId, survivorRowIds)

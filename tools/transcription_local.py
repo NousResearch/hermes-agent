@@ -28,6 +28,37 @@ from tools.transcription_common import (
 logger = logging.getLogger("tools.transcription_tools")
 
 
+_LOCAL_LANGUAGE_ALIASES = {
+    "繁體中文": "zh",
+    "繁体中文": "zh",
+    "简体中文": "zh",
+    "簡體中文": "zh",
+}
+_THREE_LETTER_WHISPER_CODES = frozenset({"haw", "yue"})
+
+
+def _normalize_local_stt_language(
+    language: Optional[str], supported_languages: object = None
+) -> Optional[str]:
+    """Return a Whisper language code, or None so the caller can fall back safely."""
+    if not isinstance(language, str) or not language.strip():
+        return None
+    raw = language.strip()
+    folded = raw.casefold().replace("_", "-")
+    candidate = _LOCAL_LANGUAGE_ALIASES.get(raw, folded.split("-", 1)[0])
+    code_shape_is_valid = len(candidate) == 2 or candidate in _THREE_LETTER_WHISPER_CODES
+    if not (candidate.isascii() and candidate.isalpha() and code_shape_is_valid):
+        logger.warning("Local STT language %r is not a language code; using fallback", raw)
+        return None
+
+    if isinstance(supported_languages, (list, tuple, set, frozenset)):
+        supported_codes = {str(code).casefold() for code in supported_languages}
+        if candidate not in supported_codes:
+            logger.warning("Local STT language %r is unsupported; using fallback", raw)
+            return None
+    return candidate
+
+
 def _get_local_command_template() -> Optional[str]:
     configured = os.getenv(LOCAL_STT_COMMAND_ENV, "").strip()
     if configured:
@@ -275,7 +306,8 @@ def _transcribe_local_command(
     if not command_template:
         return _error_result(f"{LOCAL_STT_COMMAND_ENV} not configured and no local whisper binary was found")
     # Language: hook override > stt.local.language > stt.language > env > "en".
-    language = language or _resolve_stt_language("local") or DEFAULT_LOCAL_STT_LANGUAGE
+    configured_language = language or _resolve_stt_language("local")
+    language = _normalize_local_stt_language(configured_language) or DEFAULT_LOCAL_STT_LANGUAGE
     normalized_model = _normalize_local_model(model_name)
     try:
         if not os.getenv(LOCAL_STT_COMMAND_ENV, "").strip():

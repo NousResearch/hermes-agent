@@ -24,10 +24,7 @@ def db(tmp_path):
     d.create_session("s1", source="test")
     d.append_message("s1", "user", "hello world")
     yield d
-    try:
-        d.close()
-    except Exception:
-        pass
+    d.close()
 
 
 def _corrupting_execute(match, command="rebuild"):

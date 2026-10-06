@@ -394,6 +394,10 @@ def _register_session_cwd(session: dict | None) -> None:
     hints = getattr(agent, "_subdirectory_hints", None) if session.get("cwd") else None
     if hints is not None and hasattr(hints, "rebind_working_dir"):
         hints.rebind_working_dir(str(session.get("cwd")))
+
+    # Display/completion fallbacks must not become per-session host cwd overrides.
+    if not session.get("explicit_cwd"):
+        return
     with contextlib.suppress(Exception):
         from tools.terminal_tool import register_task_env_overrides
         cwd, cwd_source = _terminal_task_cwd_with_source(session)

@@ -27,7 +27,7 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 
-def _build_agent(tmp_path, monkeypatch):
+def _build_agent(tmp_path, monkeypatch, capabilities={"answer_in_reasoning": True}):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")
     (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
@@ -41,13 +41,13 @@ def _build_agent(tmp_path, monkeypatch):
         skip_context_files=True,
         skip_memory=True,
         platform="cli",
+        capabilities=capabilities,
     )
     # Route through the non-streaming _interruptible_api_call path so the
     # monkeypatched fake responses are what the loop consumes.
     agent._disable_streaming = True
-    # This fixture represents the explicit parser-compatible route. Private reasoning
-    # tests clear the capability and use an OpenRouter route instead.
-    agent.runtime_capabilities["answer_in_reasoning"] = True
+    # By default this fixture is the explicit parser-compatible route (constructor opt-in).
+    # Private reasoning tests drop the opt-in and use an OpenRouter route instead.
     return agent
 
 
@@ -177,16 +177,20 @@ def test_length_cut_reasoning_is_not_promoted(tmp_path, monkeypatch):
 
 
 
-@pytest.mark.parametrize("provider, base_url, model, final, calls", [
-    ("openrouter", "https://openrouter.ai/api/v1", "deepseek/deepseek-v4.1", "the visible answer", 2),
-    ("vllm", "http://127.0.0.1:8000/v1", "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+@pytest.mark.parametrize("provider, base_url, model, capabilities, final, calls", [
+    ("openrouter", "https://openrouter.ai/api/v1", "deepseek/deepseek-v4.1", {}, "the visible answer", 2),
+    ("vllm", "http://127.0.0.1:8000/v1", "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", {},
+     "private thoughts that must not be shown", 1),
+    ("custom", "https://llm.example.com/v1", "acme/reasoner", {"answer_in_reasoning": True},
      "private thoughts that must not be shown", 1),
 ])
-def test_reasoning_promotion_requires_a_trusted_route(tmp_path, monkeypatch, provider, base_url, model, final, calls):
+def test_reasoning_promotion_requires_a_trusted_route(
+    tmp_path, monkeypatch, provider, base_url, model, capabilities, final, calls,
+):
     """Private reasoning on an untrusted route retries to the visible answer and never
-    surfaces; the local Nemotron parser route (#109205) still promotes in one call."""
-    agent = _build_agent(tmp_path, monkeypatch)
-    agent.runtime_capabilities.pop("answer_in_reasoning")
+    surfaces; the local Nemotron parser route (#109205) and an explicit constructor
+    ``capabilities`` opt-in (provider-level ``capabilities:`` block) promote in one call."""
+    agent = _build_agent(tmp_path, monkeypatch, capabilities=capabilities)
     agent.provider, agent.base_url, agent.model = provider, base_url, model
     responses = [
         _private_reasoning_only_response(),

@@ -19,8 +19,10 @@ _NEMOTRON_PARSER_MODEL_MARKER = "nemotron-3.5-lightning"
 def answer_in_reasoning_capability(agent: Any) -> bool:
     """True when the live route may return a clean-stop reasoning payload as the answer.
 
-    Trusted: an explicit ``answer_in_reasoning`` bool in ``runtime_capabilities``, a
-    custom_providers per-model ``answer_in_reasoning`` opt-in, or the local
+    Trusted: an explicit ``answer_in_reasoning`` bool in ``runtime_capabilities`` (seeded at
+    startup from the constructor's ``capabilities=``, e.g. a provider-level ``capabilities:``
+    block, so it holds on the primary route only: fallback rebuilds drop it and primary restore
+    brings it back), a custom_providers per-model ``answer_in_reasoning`` opt-in, or the local
     Nemotron-3.5-Lightning parser route from #109205. OpenRouter and non-chat-completions
     transports are never trusted.
     """

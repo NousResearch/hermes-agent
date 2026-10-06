@@ -14,6 +14,15 @@ import { useIsDark } from './use-is-dark'
 let lastTheme: 'dark' | 'default' | null = null
 const loadMermaid = createRetryableLoader<MermaidApi>(() => import('mermaid').then(module => module.default))
 
+// strict mode hands the label HTML through DOMPurify, which re-serialises it
+// from a live HTML tree. HTML re-serialisation dequalifies void elements
+// (<br/> → <br>), and mermaid's htmlLabels wrap node labels in foreignObject,
+// so those bare <br> tags end up inside an SVG document. The rendered SVG
+// never touches the live DOM — it goes out as a data URL consumed by <img> —
+// and the XML parser the <img> uses rejects a bare <br>, taking the whole
+// diagram down. Re-close the void tag before the SVG leaves the pipeline.
+const closeVoidElements = (svg: string): string => svg.replace(/<br(?=[\s>])/g, '<br/')
+
 // Re-initialise only on first use / theme flip. `securityLevel: 'strict'` makes
 // mermaid sanitise label HTML and drop click handlers, so the rendered SVG is
 // safe to inject.
@@ -36,7 +45,7 @@ const renderCache = createMermaidRenderCache({
     const id = `mmd-${Math.random().toString(36).slice(2)}`
     const result = await mermaid.render(id, code)
 
-    return normalizeSvgSize(result.svg)
+    return normalizeSvgSize(closeVoidElements(result.svg))
   },
   // Defer until the source fallback has had a frame to paint, so the mermaid
   // runtime import and parse/layout cannot contend with first paint of the

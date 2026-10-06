@@ -266,6 +266,30 @@ class TestUnifiedCronjobTool:
         assert stored["schedule"]["kind"] == "cron"
         assert stored["schedule"]["expr"] == "0 9 * * 1"
 
+    def test_create_previews_upcoming_fires_so_the_schedule_can_be_checked(self):
+        """``upcoming`` walks the schedule forward from ``next_run_at``: a weekly rule shows three
+        consecutive Mondays, a bounded repeat stops at its budget, a one-shot has exactly one."""
+        pytest.importorskip("croniter")
+        from datetime import datetime
+
+        weekly = json.loads(cronjob(action="create", prompt="Weekly report", schedule="every monday 9am"))
+        assert weekly["upcoming"][0] == weekly["next_run_at"]
+        fires = [datetime.fromisoformat(v) for v in weekly["upcoming"]]
+        assert len(fires) == 3 and all(f.weekday() == 0 for f in fires)
+        assert [(b - a).days for a, b in zip(fires, fires[1:])] == [7, 7]
+
+        twice = json.loads(cronjob(action="create", prompt="Ping", schedule="every 1h", repeat=2))
+        assert len(twice["upcoming"]) == 2
+
+        once = json.loads(cronjob(action="create", prompt="Remind", schedule="in 30m"))
+        assert once["upcoming"] == [once["next_run_at"]]
+
+        # An update re-echoes the preview for the NEW schedule.
+        updated = json.loads(cronjob(action="update", job_id=once["job_id"], schedule="every 2h"))
+        assert updated["success"] is True
+        assert len(updated["upcoming"]) == 3
+        assert updated["upcoming"][0] == updated["job"]["next_run_at"]
+
     def test_update_to_natural_weekday_schedule(self):
         pytest.importorskip("croniter")
         created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))

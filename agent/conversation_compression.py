@@ -4116,8 +4116,6 @@ def compress_context(
     if not force and _automatic_compression_gate_blocks(agent, bypass_cooldown):
         return messages, _existing_system_prompt(agent, system_message)
 
-    _refresh_main_credential(agent)
-
     _pre_msg_count = len(messages)
     # In-place keeps the SAME session_id (no rotation/child/renumber/re-sync). A
     # missing attribute must default True, not rotation, which can wedge sessions.
@@ -4128,6 +4126,8 @@ def compress_context(
     lifecycle = _announce_compression_start(
         agent, message_count=_pre_msg_count, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force
     )
+    # After the announce: an expired token's refresh is a blocking network call. Before the probe and summary call.
+    _refresh_main_credential(agent)
     # Lazy feasibility probe (~400ms cold) on first attempt, not __init__; it sets
     # _compression_warning so status replay still surfaces the warning. Marked checked
     # only after the probe completes (transient failures are swallowed inside). A hard

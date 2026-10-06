@@ -134,7 +134,7 @@ class TestOAuthFlagOnRefresh:
         from agent.conversation_compression import compress_context
 
         old, new = "sk-ant-oat01-old", "sk-ant-oat01-new"
-        seen = []
+        seen, announced = [], []
         agent.api_mode, agent.provider = "anthropic_messages", "anthropic"
         agent._anthropic_base_url = "https://api.anthropic.com"
         agent._anthropic_client = MagicMock()
@@ -151,11 +151,13 @@ class TestOAuthFlagOnRefresh:
             patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
             patch.object(AIAgent, "_build_direct_anthropic_client", return_value=MagicMock()),
             patch.object(cc, "compress", side_effect=fake_compress),
+            patch.object(agent, "_emit_status", side_effect=lambda _s: announced.append(agent._anthropic_api_key)),
         ):
             compress_context(agent, [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}],
                              "system", approx_tokens=100_000, force=True)
 
         assert seen == [new]
+        assert announced[:1] == [old]  # the Desktop announce lands before the (possibly blocking) refresh
         assert agent._anthropic_api_key == agent.api_key == new
         assert agent._primary_runtime == {"api_key": new, "anthropic_api_key": new, "compressor_api_key": new,
                                           "is_anthropic_oauth": agent._is_anthropic_oauth}

@@ -382,6 +382,7 @@ def _install_memory_provider_external_dependencies(dependencies: List[Dict[str, 
 
 
 def _install_memory_provider_setup(name: str) -> Dict[str, Any]:
+    from hermes_cli.dashboard_profile_scope import dashboard_profile_secret_scope
     provider = _load_memory_provider(name)
     manifest = _memory_provider_manifest(name)
     if provider is None and not manifest:
@@ -396,7 +397,8 @@ def _install_memory_provider_setup(name: str) -> Dict[str, Any]:
     if not results:
         results.append(_command_result(kind="setup", name=name, status="no_declared_steps"))
     ok = all(result["status"] != "failed" for result in results)
-    statuses = {row["name"]: row for row in _discover_memory_provider_statuses()}
+    with dashboard_profile_secret_scope():
+        statuses = {row["name"]: row for row in _discover_memory_provider_statuses()}
     return {"ok": ok, "provider": name, "results": results, "status": statuses.get(name)}
 
 

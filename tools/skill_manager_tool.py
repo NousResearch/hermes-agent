@@ -215,6 +215,29 @@ def _iter_skill_dirs(root: Path):
             yield skill_md.parent
 
 
+def _skill_declared_name(skill_dir: Path) -> Optional[str]:
+    """Frontmatter ``name:`` of a skill directory, or ``None``. Fail-quiet."""
+    try:
+        from tools.skills_tool_plugin import _safe_frontmatter
+        declared = _safe_frontmatter(skill_dir / "SKILL.md").get("name")
+    except Exception:
+        logger.debug("frontmatter name lookup failed for %s", skill_dir, exc_info=True)
+        return None
+    return str(declared) if declared else None
+
+
+def _matches_skill_name(skill_dir: Path, name: str) -> bool:
+    """Whether ``name`` identifies ``skill_dir``, i.e. either form ``skill_view()`` accepts:
+    the directory name, or the frontmatter ``name:``.
+
+    The second form is what makes bundle sub-skills reachable. ``skills_list()`` exposes the
+    frontmatter name, so ``~/.hermes/skills/madocore/deploy/SKILL.md`` is ``madocore-deploy``
+    while its directory is plain ``deploy`` — matching on the directory alone made
+    ``skill_manage`` answer "not found in active profile" for a skill inside the active profile
+    (and then suggest switching profiles or hand-editing files, which is what callers did)."""
+    return skill_dir.name == name or _skill_declared_name(skill_dir) == name
+
+
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     """Find a skill (local skills dir, then skills.external_dirs) -> ``{"path": Path}`` | None.
 
@@ -234,6 +257,8 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
+        # Pass 1 — directory name, plus the categorized path for "<category>/<name>". No file
+        # reads, so the common lookup stays free.
         for skill_dir in _iter_skill_dirs(skills_dir):
             if skill_dir.name == name:
                 return {"path": skill_dir}
@@ -242,6 +267,11 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
                 if (resolved.is_relative_to(local_root)
                         and resolved.relative_to(local_root).as_posix() == name):  # POSIX form
                     return {"path": skill_dir}
+        # Pass 2 — frontmatter `name:`. Only runs when pass 1 found nothing, so a bundle
+        # sub-skill costs one pass over the tree rather than a parse per skill on every lookup.
+        for skill_dir in _iter_skill_dirs(skills_dir):
+            if _skill_declared_name(skill_dir) == name:
+                return {"path": skill_dir}
     return None
 
 
@@ -277,7 +307,7 @@ def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
         if not skills_dir.is_dir():
             continue
         with suppress(OSError):
-            hit = next((d for d in _iter_skill_dirs(skills_dir) if d.name == name), None)
+            hit = next((d for d in _iter_skill_dirs(skills_dir) if _matches_skill_name(d, name)), None)
             if hit is not None:
                 matches.append((profile_name, hit))  # one match per profile is enough
     return matches

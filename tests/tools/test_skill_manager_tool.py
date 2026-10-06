@@ -1261,3 +1261,49 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+class TestBundleSubSkillLookup:
+    """A skill inside a bundle dir is exposed by its frontmatter name, not its directory name
+    (`~/.hermes/skills/madocore/deploy/SKILL.md` shows up as `madocore-deploy`). `skill_view()`
+    has always accepted both forms because its scanner compares the frontmatter too; `skill_manage`
+    matched the directory only, so it answered "not found in active profile" — and suggested
+    switching profiles or hand-editing files — for a skill sitting in the active profile."""
+
+    @staticmethod
+    def _bundle_skill(tmp_path, bundle="madocore", sub="deploy", name="madocore-deploy"):
+        skill_dir = tmp_path / bundle / sub
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: Bundle sub-skill.\n---\n\n# Deploy\n\nDo the thing.\n"
+        )
+        return skill_dir
+
+    def test_find_skill_resolves_frontmatter_name(self, tmp_path):
+        skill_dir = self._bundle_skill(tmp_path)
+        with _skill_dir(tmp_path):
+            assert _find_skill("madocore-deploy")["path"] == skill_dir
+            # The directory name and the categorized "<category>/<name>" form keep working.
+            assert _find_skill("deploy")["path"] == skill_dir
+            assert _find_skill("madocore/deploy")["path"] == skill_dir
+
+    def test_find_skill_still_returns_none_for_unknown_names(self, tmp_path):
+        """The frontmatter pass must not turn a miss into a false hit (that would let an
+        operation land on the wrong skill)."""
+        self._bundle_skill(tmp_path)
+        with _skill_dir(tmp_path):
+            assert _find_skill("madocore-nope") is None
+            assert _find_skill("madocore") is None  # the bundle dir has no SKILL.md of its own
+
+    def test_patch_by_frontmatter_name_writes_through(self, tmp_path):
+        skill_dir = self._bundle_skill(tmp_path)
+        with _skill_dir(tmp_path):
+            result = _patch_skill("madocore-deploy", "Do the thing.", "Do the new thing.")
+            assert result["success"] is True, result
+        assert "Do the new thing." in (skill_dir / "SKILL.md").read_text()
+
+    def test_missing_skill_error_no_longer_blames_another_profile(self, tmp_path):
+        """Whatever the name, a skill that IS resolvable must not produce the not-found error."""
+        self._bundle_skill(tmp_path, bundle="other", sub="deploy", name="other-deploy")
+        with _skill_dir(tmp_path):
+            assert _find_skill("other-deploy") is not None

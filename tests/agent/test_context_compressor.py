@@ -3685,7 +3685,87 @@ class TestPreLlmFeasibilityCheck:
         mock_gen.assert_called_once()
         assert compressor._prellm_skip_count == 0
 
+    def test_fallback_streak_benches_summary_model_but_keeps_compacting(self, compressor):
+        """Two fallbacks in a row stop the summary calls (#63008), not the compaction itself:
+        the window is still dropped, and one probe per recovery window can heal the streak."""
+        compressor._fallback_compression_streak = 2
+        msgs = self._make_messages()
 
+        with patch.object(compressor, "_generate_summary", return_value="LLM summary") as mock_gen:
+            benched = compressor.compress(msgs, force=False)
+            mock_gen.assert_not_called()
+            assert len(benched) < len(msgs)
+            assert compressor._last_feasibility_skip is True  # recorded streak-neutral
+
+            compressor._fallback_probe_at = time.monotonic() - 1  # recovery window elapsed
+            compressor.compress(self._make_messages(), force=False)
+            mock_gen.assert_called_once()
+
+    @staticmethod
+    def _record_boundary(compressor):
+        """Mirror the boundary wrapper's bookkeeping (agent/conversation_compression.py)."""
+        compressor.record_completed_compaction(
+            used_fallback=compressor._last_summary_fallback_used,
+            feasibility_skip=compressor._last_feasibility_skip,
+        )
+
+    def test_fresh_compressor_with_a_streak_benches_and_arms_a_full_window(self, compressor):
+        """A compressor that comes up with a persisted streak (restart, session rotation) has no
+        probe clock: it benches the summary model and starts a full window, it does not probe at once."""
+        compressor._fallback_compression_streak = 2
+        assert compressor._fallback_probe_at == 0.0
+        before = time.monotonic()
+
+        with patch.object(compressor, "_generate_summary", return_value="LLM summary") as mock_gen:
+            compressor.compress(self._make_messages(), force=False)
+
+        mock_gen.assert_not_called()
+        assert compressor._fallback_probe_at >= before + compressor._ANTI_THRASH_RECOVERY_SECONDS
+
+    def test_healthy_probe_resets_the_streak(self, compressor):
+        """A bench leaves the streak alone; the probe after the recovery window is a normal summary
+        attempt, so a healthy summary resets it."""
+        compressor._fallback_compression_streak = 2
+
+        with patch.object(compressor, "_generate_summary", return_value="LLM summary") as mock_gen:
+            compressor.compress(self._make_messages(), force=False)  # benched
+            self._record_boundary(compressor)
+            assert compressor._fallback_compression_streak == 2  # a bench is streak-neutral
+
+            compressor._fallback_probe_at = time.monotonic() - 1  # recovery window elapsed
+            compressor.compress(self._make_messages(), force=False)  # probe
+            self._record_boundary(compressor)
+
+        mock_gen.assert_called_once()
+        assert compressor._fallback_compression_streak == 0
+
+    def test_failed_probe_benches_again_for_another_window(self, compressor):
+        """One probe per recovery window: a probe whose summary fails again counts as a fallback
+        and benches the summary model for another full window."""
+        compressor._fallback_compression_streak = 2
+        compressor._fallback_probe_at = time.monotonic() - 1  # recovery window elapsed
+
+        with patch.object(compressor, "_generate_summary", return_value=None) as mock_gen:
+            compressor.compress(self._make_messages(), force=False)  # probe, summary fails
+            self._record_boundary(compressor)
+            assert mock_gen.call_count == 1
+            assert compressor._fallback_compression_streak == 3
+
+            before = time.monotonic()
+            compressor.compress(self._make_messages(), force=False)  # benched again
+
+        assert mock_gen.call_count == 1
+        assert compressor._fallback_probe_at >= before + compressor._ANTI_THRASH_RECOVERY_SECONDS
+
+    def test_skip_count_resets_on_session_reset(self, compressor):
+        """_prellm_skip_count must reset alongside _ineffective_compression_count."""
+        compressor._prellm_skip_count = 5
+        compressor._ineffective_compression_count = 2
+
+        compressor.bind_session_state()  # a new session row
+
+        assert compressor._prellm_skip_count == 0
+        assert compressor._ineffective_compression_count == 0
 
     def test_skip_fires_on_fat_tail_small_middle(self, compressor):
         """The target scenario from #60451: a tool-heavy transcript whose
@@ -3725,9 +3805,8 @@ class TestPreLlmFeasibilityCheck:
         skip path sets _last_summary_fallback_used, which the boundary
         wrapper (conversation_compression.py) records via
         record_completed_compaction(used_fallback=True) — incrementing
-        _fallback_compression_streak, whose second occurrence blocks
-        automatic compression. Two deliberate skips must NOT trip that
-        breaker."""
+        _fallback_compression_streak. A deliberate skip must not count as
+        a failed summary-model attempt."""
         compressor._ineffective_compression_count = 1
         msgs = self._make_messages()
 
@@ -3746,10 +3825,7 @@ class TestPreLlmFeasibilityCheck:
 
         assert compressor._prellm_skip_count == 2
         assert compressor._fallback_compression_streak == 0
-        assert not compressor._automatic_compression_blocked_locally(), (
-            "two deliberate feasibility skips must not disable automatic "
-            "compression via the fallback-streak breaker"
-        )
+        assert not compressor._automatic_compression_blocked_locally()
 
     def test_boundary_accounting_skip_does_not_reset_fallback_streak(self, compressor):
         """A skip proves nothing about the summary model's health: an

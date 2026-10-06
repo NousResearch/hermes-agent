@@ -13,6 +13,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
+try:
+    import discord
+except ImportError:  # the adapter does not start without discord.py
+    discord = None
+
 _MAX_RECORDS = 2000
 
 
@@ -73,6 +78,7 @@ class SemanticThreadRenames:
 class DiscordThreadTitlesMixin:
     _semantic_thread_renames: SemanticThreadRenames
     _is_forum_parent: Callable[[Any], bool]
+    _get_effective_topic: Callable[..., str | None]
 
     async def _on_platform_raw_thread_update(self, payload: Any) -> None:
         # discord.py updates the cached thread before cached callbacks run, so batched updates
@@ -96,3 +102,10 @@ class DiscordThreadTitlesMixin:
         if parent_name:
             return f"{parent_name} / {thread_name}"
         return thread_name
+
+    def _guild_channel_labels(self, channel: Any) -> tuple[str, str | None]:
+        """``(chat_name, chat_topic)`` for a guild channel or thread, as a message posted there gets them."""
+        if isinstance(channel, discord.Thread):
+            return self._format_thread_chat_name(channel), self._get_effective_topic(channel, is_thread=True)
+        name, guild = getattr(channel, "name", str(channel.id)), getattr(channel, "guild", None)
+        return (f"{guild.name} / #{name}" if guild else name), self._get_effective_topic(channel)

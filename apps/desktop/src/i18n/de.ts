@@ -1,5 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { deAuxTasks } from './de_aux_tasks'
 import { deModelMenu } from './de_model_menu'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
@@ -869,6 +870,14 @@ export const deOverrides = {
     resetConfirm: 'Alle Einstellungen auf Hermes-Standard zurücksetzen?',
     exportFailed: 'Export fehlgeschlagen',
     resetFailed: 'Zurücksetzen fehlgeschlagen',
+    pluginPages: {
+      blurb: 'Optionen installierter Plugins. Jedes Plugin hat eine eigene Seite, manche mit Unterseiten.',
+      empty: 'Noch kein Plugin hat Einstellungen.',
+      manage: 'Plugins verwalten',
+      agentSettings: 'Agent-Einstellungen',
+      pageCount: (n: number) => (n === 1 ? '1 Seite' : `${n} Seiten`),
+      missing: 'Dieses Plugin hat keine Einstellungsseite. Es ist eventuell deaktiviert oder deinstalliert.'
+    },
     nav: {
       providers: 'Anbieter',
       providerAccounts: 'Konten',
@@ -890,23 +899,15 @@ export const deOverrides = {
     },
     plugins: {
       title: 'Desktop-Plugins',
-      blurb: 'Gebündelt oder im Ordner „Desktop-Plugins“ abgelegt. Deaktivieren, um live zu entladen.',
-      count: n => `${n} installiert`,
       openFolder: 'Ordner für Desktop-Plugins öffnen',
       rescan: 'Erneut scannen',
       reveal: 'Im Dateimanager anzeigen',
-      enable: 'Aktivieren',
-      disable: 'Deaktivieren',
       failed: 'fehlgeschlagen',
-      empty: 'Noch keine Desktop-Plugins installiert.',
       kinds: {
         bundled: 'gebündelt',
         disk: 'auf Datenträger',
         runtime: 'Laufzeit'
       },
-      agentHalfMissing: 'Agent-Hälfte fehlt hier',
-      agentHalfMissingTip:
-        'Das ist die Desktop-Hälfte eines gebündelten Plugins, aber seine Agent-Hälfte ist auf dem aktuell verbundenen Backend/Profil nicht installiert. Installieren Sie sie unter Fähigkeiten → Plugins.',
       installModal: {
         installFromGit: 'Von Git installieren',
         reviewRepository: 'Repository prüfen',
@@ -2016,6 +2017,8 @@ export const deOverrides = {
         'Nicht unterstützte Remote-Plattform. Der Desktop-SSH-Modus von Hermes unterstützt Linux-, macOS- und Windows-Remote-Hosts.',
       sshErrTimeout: 'SSH-Verbindung ist ausgelaufen. Der Host ist möglicherweise nicht erreichbar oder schläft.',
       sshErrUpdateRequired: 'Aktualisieren Sie Hermes auf dem Remote-Host, bevor Sie sich mit Desktop-SSH verbinden.',
+      sshErrInteractiveAuth:
+        'Tailscale SSH erfordert eine interaktive Browser-Prüfung. Führen Sie im Terminal `ssh <host> true` aus, schließen Sie die Prüfung ab und versuchen Sie es erneut – Hermes führt SSH nicht interaktiv aus.',
       sshErrUnknown: 'SSH-Verbindung fehlgeschlagen.'
     },
     keys: {
@@ -2123,6 +2126,8 @@ export const deOverrides = {
       change: 'Ändern',
       autoUseMain: 'automatisch · Hauptmodell verwenden',
       inheritMainEffort: 'übernehmen · Aufwand des Hauptmodells',
+      inheritsFrom: task => `erbt von ${task}`,
+      followTask: task => `${task} folgen`,
       providerDefault: '(Anbietervorgabe)',
       fallbackAdd: 'Fallback hinzufügen',
       fallbackEmpty: 'Keine Fallback-Modelle — es wird das Standardmodell verwendet, außer es schlägt fehl.',
@@ -2135,52 +2140,7 @@ export const deOverrides = {
       moaAggregator: 'Aggregator',
       moaAggregatorBilled: 'handelndes Modell · wird für den Lauf berechnet',
       moaReferenceHint: 'berät standardmäßig einmal pro Turn',
-      tasks: {
-        vision: {
-          label: 'Sehen',
-          hint: 'Bildanalyse'
-        },
-        compression: {
-          label: 'Kompression',
-          hint: 'Kontext-Verdichtung'
-        },
-        skills_hub: {
-          label: 'Skills-Hub',
-          hint: 'Skill-Suche'
-        },
-        approval: {
-          label: 'Freigabe',
-          hint: 'Intelligente Auto-Freigabe'
-        },
-        mcp: {
-          label: 'MCP',
-          hint: 'MCP-Tool-Routing'
-        },
-        title_generation: {
-          label: 'Titel-Generierung',
-          hint: 'Session-Titel'
-        },
-        review: {
-          label: 'Review',
-          hint: '/review Bewertungs-Subagent'
-        },
-        triage_specifier: {
-          label: 'Triage-Spezifizierer',
-          hint: 'Kanban-Spezifikation ausarbeiten'
-        },
-        kanban_decomposer: {
-          label: 'Kanban-Zerleger',
-          hint: 'Aufgaben zerlegen'
-        },
-        profile_describer: {
-          label: 'Profil-Beschreiber',
-          hint: 'Automatische Profilbeschreibungen'
-        },
-        curator: {
-          label: 'Kurator',
-          hint: 'Skill-Nutzungs-Review'
-        }
-      }
+      tasks: deAuxTasks
     },
     localModels: {
       connectionChanged: 'Verbindung für lokale Modelle geändert',
@@ -2912,7 +2872,7 @@ export const deOverrides = {
         save: 'Einstellungen speichern',
         saved: (name: string) => `Einstellungen von ${name} gespeichert.`,
         saveFailed: (name: string) => `Einstellungen von ${name} konnten nicht gespeichert werden`,
-        optional: '(optional)',
+        required: 'Erforderlich',
         secretSet: '•••••••• (gesetzt)',
         secretStoredAs: (env: string) =>
           `Wird in der .env des Profils als ${env} gespeichert, nie in config.yaml; leer lassen, um den aktuellen Wert zu behalten.`

@@ -288,24 +288,180 @@ def _apply_limits(rows: list[dict]) -> None:
 def _apply_usage(rows: list[dict]) -> None:
     """Attach ``usage`` (subscription windows: % spent + reset) to signed-in rows that can report it,
     from the cache only, and ask for a background refresh, so the picker never waits on a usage API
-    and a chip can warn before the wall instead of at it."""
-    from agent.account_usage_cache import cached_account_usage, has_account_usage, refresh_account_usage_async
+    and a chip can warn before the wall instead of at it.
 
-    wanted: list[str] = []
-    for row in rows:
-        slug = str(row.get("slug") or "")
-        if not slug or row.get("is_user_defined") or row.get("authenticated") is False or not has_account_usage(slug):
-            continue
-        wanted.append(slug)
-        snapshot = cached_account_usage(slug)
-        windows = [
+    Single-account providers keep the legacy gauge (``usage.windows``). A provider with a
+    MULTI-ENTRY credential pool reports ``usage.accounts`` instead — one row per account, each with
+    its own windows/state/resets_at — because one account's quota says nothing about its siblings;
+    a provider-wide percentage there would be a fabricated average. A snapshot older than the
+    staleness bound renders ``unknown``/``unavailable``, never a confident stale gauge. Nothing here
+    mutates the pool or disables routing: telemetry never benches a credential."""
+    from agent.account_usage_cache import (
+        cached_account_usage, has_account_usage, refresh_account_usage_async,
+        refresh_account_usage_entries_async, snapshot_is_stale,
+    )
+    from hermes_cli.auth import read_credential_pool
+
+    def _wire_windows(snapshot) -> list[dict]:
+        return [
             {"label": w.label, "used_percent": float(w.used_percent),
-             "resets_at": w.reset_at.isoformat() if w.reset_at else None}
+             "resets_at": w.reset_at.isoformat() if w.reset_at else None,
+             "scope": w.scope}
             for w in (snapshot.windows if snapshot else ()) if w.used_percent is not None
         ]
-        if windows:
-            row["usage"] = {"windows": windows}
+
+    def _account_resets_at(snapshot, live_cooldown_until: float | None) -> str | None:
+        """A quota-exhausted account recovers at the LATEST of its exhausted account-scoped
+        windows (all of them must reopen before the account is whole again); a live
+        credential-wide cooldown wins when later. Model-scoped windows never reset an account.
+        Unknown stays None — the frontend renders its own advisory (e.g. the earliest sibling)."""
+        resets: list[str] = []
+        if live_cooldown_until:
+            resets.append(_iso_from_epoch(live_cooldown_until))
+        for window in (snapshot.windows if snapshot else ()):
+            if window.scope != "account" or window.used_percent is None or window.reset_at is None:
+                continue
+            if float(window.used_percent) >= _EXHAUSTED_WINDOW_PERCENT:
+                resets.append(window.reset_at.isoformat())
+        return max(resets) if resets else None
+
+    wanted: list[str] = []
+    entry_requests: list[dict] = []
+    pooled_sizes = {slug: len(entries) for slug, entries in read_credential_pool().items() if entries}
+    for row in rows:
+        slug = str(row.get("slug") or "")
+        if not slug or row.get("is_user_defined") or row.get("authenticated") is False:
+            continue
+        supports_usage = has_account_usage(slug)
+        # A single-entry pool (or no pool) is the single-account case: the legacy gauge stays
+        # (chip contract unchanged). Only a genuinely multi-entry pool gets per-account rows —
+        # there, a provider-wide percentage would be a fabricated average across logins.
+        if pooled_sizes.get(slug, 0) < 2:
+            if not supports_usage:
+                continue
+            wanted.append(slug)
+            snapshot = cached_account_usage(slug)
+            windows = _wire_windows(snapshot)
+            if windows and not snapshot_is_stale(snapshot):
+                row["usage"] = {"windows": windows}
+            continue
+        if supports_usage:
+            wanted.append(slug)
+        accounts = _pool_usage_accounts(slug, _wire_windows, _account_resets_at, entry_requests)
+        if accounts is not None:
+            row["usage"] = {"accounts": accounts}
     refresh_account_usage_async(wanted)
+    refresh_account_usage_entries_async(entry_requests)
+
+
+# A window this spent counts as exhausted when computing an account's recovery time.
+_EXHAUSTED_WINDOW_PERCENT = 100.0
+
+
+def _iso_from_epoch(epoch: float) -> str:
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(float(epoch), timezone.utc).isoformat()
+
+
+def _pool_usage_accounts(slug: str, wire_windows, account_resets_at,
+                         entry_requests: list[dict]) -> Optional[list[dict]]:
+    """Per-account usage rows for one pooled provider, or None when the pool cannot be read.
+
+    Read-only: entries are inspected via ``load_pool(slug)`` properties (no select/rotate/refresh).
+    Dedupe is scoped to provider+host+trusted decoded account id where supported (several
+    credentials of one Codex account are ONE account), else per-credential token identity — never
+    a provider-wide singleton. Providers without a usage fetcher still get one metadata row per
+    account with state unknown/limited/unavailable, so the chip can count honestly without bogus
+    fetches. DEAD auth rows stay visible as ``unavailable`` (never a quota row). No secrets, raw
+    payloads or base URLs ride the wire."""
+    import logging
+    import time
+
+    from agent.account_usage_cache import _identity_id_for, cached_account_usage, has_account_usage, snapshot_is_stale
+    from agent.credential_pool import STATUS_DEAD, _exhausted_until, load_pool
+
+    try:
+        pool = load_pool(slug)
+        entries = list(pool.entries())
+    except Exception:  # an unreadable pool must not fail the whole catalog
+        logging.getLogger(__name__).debug("Pool usage read failed for %s", slug, exc_info=True)
+        return None
+    if not entries:
+        return None
+    live = [e for e in entries if e.last_status != STATUS_DEAD]
+    sole = len(live) <= 1
+    supports_usage = has_account_usage(slug)
+    now = time.time()
+    accounts: list[dict] = []
+    seen: dict[tuple[str, str, str], dict] = {}
+    for entry in entries:
+        identity_id = _identity_id_for(slug, entry)
+        host = _pool_entry_host(slug, entry)
+        dedupe_key = (slug, host, identity_id)
+        is_dead = entry.last_status == STATUS_DEAD
+        snapshot = (cached_account_usage(slug, identity_id=identity_id)
+                    if supports_usage and not is_dead else None)
+        stale = snapshot_is_stale(snapshot)
+        windows = wire_windows(snapshot) if not stale else []
+        # 'limited' only when a live credential-wide cooldown benches this account or its
+        # account-scoped quota windows are exhausted — telemetry alone never benches anything.
+        cooldown_until = None if is_dead else _exhausted_until(entry, sole_credential=sole)
+        live_cooldown = cooldown_until if cooldown_until and cooldown_until > now else None
+        quota_exhausted = bool(windows) and any(
+            w.get("scope") == "account" and w.get("used_percent") is not None
+            and float(w["used_percent"]) >= _EXHAUSTED_WINDOW_PERCENT for w in windows)
+        if is_dead:
+            state = "unavailable"
+        elif live_cooldown is not None or quota_exhausted:
+            state = "limited"
+        elif snapshot is None or stale or not windows:
+            # No numeric live windows (failed/empty fetch, stale snapshot, non-supporting
+            # provider): unknown — including a "ready-looking" account with nothing to show.
+            state = "unknown"
+        else:
+            state = "ready"
+        account_row = {
+            "id": identity_id, "label": str(entry.label or ""), "windows": windows,
+            "state": state, "resets_at": account_resets_at(snapshot, live_cooldown),
+        }
+        if dedupe_key in seen:
+            # Same account under a second credential: keep the row that says more (state rank
+            # limited > ready > unknown > unavailable), but never duplicate the account.
+            existing = seen[dedupe_key]
+            rank = {"limited": 3, "ready": 2, "unknown": 1, "unavailable": 0}
+            if rank.get(account_row["state"], 0) > rank.get(existing["state"], 0):
+                accounts[accounts.index(existing)] = account_row
+                seen[dedupe_key] = account_row
+            continue
+        seen[dedupe_key] = account_row
+        accounts.append(account_row)
+        if supports_usage and not is_dead:
+            entry_requests.append({
+                "provider": slug, "identity_id": identity_id,
+                "base_url": _pool_entry_route_base_url(slug, entry), "api_key": entry.runtime_api_key,
+            })
+    return accounts or None
+
+
+def _pool_entry_host(slug: str, entry) -> str:
+    """Normalized route host of one entry, for account dedupe scoping. Never serialized."""
+    from agent.credential_pool import _norm_url
+
+    if slug == "openai-codex":
+        from hermes_cli.auth_codex import _codex_pool_route_base_url
+
+        return _norm_url(_codex_pool_route_base_url(entry.runtime_base_url))
+    return _norm_url(getattr(entry, "runtime_base_url", None))
+
+
+def _pool_entry_route_base_url(slug: str, entry) -> Optional[str]:
+    """The base URL a usage fetch for *entry* must target (its own route, never a sibling's)."""
+    if slug == "openai-codex":
+        from hermes_cli.auth_codex import _codex_pool_route_base_url
+
+        return _codex_pool_route_base_url(entry.runtime_base_url)
+    return getattr(entry, "runtime_base_url", None) or None
 
 
 # ─── Public: auxiliary-task pickers ─────────────────────────────────────

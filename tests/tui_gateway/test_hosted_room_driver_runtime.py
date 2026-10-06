@@ -884,7 +884,7 @@ def test_oversized_terminal_reply_is_bounded_without_waiting_for_deadline(db: Pa
     assert result["text"].endswith("share the full result as a file.]")
 
 
-def test_peer_recovery_probe_is_bounded_by_attempt_and_stale_age(db: Path):
+def test_unknown_peer_is_deferred_only_after_its_stale_deadline(db: Path):
     identity = _identity()
     now = [100.0]
 
@@ -927,21 +927,18 @@ def test_peer_recovery_probe_is_bounded_by_attempt_and_stale_age(db: Path):
     )
     state.recover_room(db, recovery_lease, clock=clock)
     runtime.transport_resolver = lambda _binding, _task: object()
-    probes = []
-
     def inspect(_binding, task):
-        probes.append((task["identity"].task_id, now[0]))
         return SimpleNamespace(terminal=None, active=False, status=None)
 
     runtime._inspect_recovery_session = inspect
 
     assert runtime._reconcile_indeterminate(BINDING, recovery_lease) is True
     assert runtime._reconcile_indeterminate(BINDING, recovery_lease) is True
-    assert probes == [(identity.task_id, 102.0)]
+    assert state.get_task(db, identity)["status"] == "indeterminate"
 
     now[0] = 108.0
     assert runtime._reconcile_indeterminate(BINDING, recovery_lease) is False
-    assert probes == [(identity.task_id, 102.0), (identity.task_id, 108.0)]
+    assert state.get_task(db, identity)["execution_generation"] == 1
     assert state.get_task(db, identity)["status"] == "deferred"
 
 

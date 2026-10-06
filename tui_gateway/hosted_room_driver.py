@@ -847,7 +847,8 @@ class HostedRoomRuntime:
                 task.get("indeterminate_at") or task.get("updated_at") or task.get("created_at")
                 or self.clock())
             inspection = _NO_INSPECTION
-            if attempt_key not in inspected or self.clock() >= deadline:
+            # Only local session recovery is one-shot; the peer client owns HTTP backoff.
+            if not is_local or attempt_key not in inspected or self.clock() >= deadline:
                 try:
                     if self._transport_for(binding, task) is not self.rpc:
                         inspection = self._inspect_recovery_session(binding, task)

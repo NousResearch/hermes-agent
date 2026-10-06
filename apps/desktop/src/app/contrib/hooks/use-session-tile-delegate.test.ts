@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { reasoningEffortPending } from '@/app/chat/session-view'
 import type { ClientSessionState } from '@/app/types'
 import type * as HermesModule from '@/hermes'
-import { type ChatMessage, textPart } from '@/lib/chat-messages'
+import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $notifications } from '@/store/notifications'
 import { $cronRunReadOnlyVerdicts, recordCronRunVerdict } from '@/store/read-only-transcript'
@@ -696,7 +696,7 @@ describe('useSessionTileDelegate interruptSession', () => {
   })
 })
 
-describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
+describe('useSessionTileDelegate send from a tile behind the stored transcript', () => {
   const storedId = 'stored-tile-peer'
   const runtimeId = 'rt-tile-peer'
 
@@ -712,7 +712,7 @@ describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
     $notifications.set([])
   })
 
-  it('refuses submitToSession when a peer window advanced the transcript', async () => {
+  it('submits without a pre-send transcript read or a warning when a peer window advanced the chat (#65047)', async () => {
     setSessions([row({ id: storedId, profile: 'work-vps' })])
     vi.mocked(getLatestSessionMessages).mockResolvedValue({
       session_id: storedId,
@@ -724,99 +724,7 @@ describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
       ]
     })
 
-    const stale = createClientSessionState(storedId, [
-      { id: 'u1', role: 'user', parts: [textPart('a')] },
-      { id: 'a1', role: 'assistant', parts: [textPart('b')] }
-    ])
-
-    const sessionStateByRuntimeIdRef = { current: new Map([[runtimeId, stale]]) }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([[storedId, runtimeId]]) }
-    const seeds: unknown[] = []
-    const requestGateway = vi.fn(async () => ({}) as never)
-
-    renderTile(requestGateway, {
-      runtimeIdByStoredSessionIdRef,
-      sessionStateByRuntimeIdRef,
-      updateSessionState: vi.fn((id, updater, stored) => {
-        const prev = sessionStateByRuntimeIdRef.current.get(id) ?? createClientSessionState(stored)
-        const next = updater(prev)
-        sessionStateByRuntimeIdRef.current.set(id, next)
-        seeds.push(next)
-
-        return next
-      })
-    })
-
-    await sessionTileDelegate()!.submitToSession(runtimeId, 'stale tile send')
-
-    expect(getLatestSessionMessages).toHaveBeenCalledWith(storedId, 'work-vps')
-    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
-    expect(requestGatewayForProfile).not.toHaveBeenCalledWith(
-      'work-vps',
-      'prompt.submit',
-      expect.anything(),
-      expect.anything(),
-      expect.anything()
-    )
-    expect(seeds.at(-1)).toEqual(expect.objectContaining({ busy: false, messages: expect.any(Array) }))
-    expect((seeds.at(-1) as { messages: unknown[] }).messages).toHaveLength(4)
-    expect($notifications.get().some(note => note.kind === 'warning')).toBe(true)
-  })
-
-  it('grafts same-window residue and still submits the Quick Entry prompt', async () => {
-    setSessions([row({ id: storedId, profile: 'work-vps' })])
-    vi.mocked(getLatestSessionMessages).mockResolvedValue({
-      session_id: storedId,
-      messages: [
-        { content: 'a', id: 1, role: 'user', timestamp: 1 },
-        { content: 'server-side turn residue', id: 2, role: 'assistant', timestamp: 2 }
-      ]
-    })
-
-    const stale = createClientSessionState(storedId, [{ id: 'u1', role: 'user', rowId: 1, parts: [textPart('a')] }])
-
-    const sessionStateByRuntimeIdRef = { current: new Map([[runtimeId, stale]]) }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([[storedId, runtimeId]]) }
-    const seeds: unknown[] = []
-    const requestGateway = vi.fn(async () => ({}) as never)
-
-    renderTile(requestGateway, {
-      runtimeIdByStoredSessionIdRef,
-      sessionStateByRuntimeIdRef,
-      updateSessionState: vi.fn((id, updater, stored) => {
-        const prev = sessionStateByRuntimeIdRef.current.get(id) ?? createClientSessionState(stored)
-        const next = updater(prev)
-        sessionStateByRuntimeIdRef.current.set(id, next)
-        seeds.push(next)
-
-        return next
-      })
-    })
-
-    await sessionTileDelegate()!.submitToSession(runtimeId, 'follow up')
-
-    expect(requestGatewayForProfile).toHaveBeenCalledWith(
-      'work-vps',
-      'prompt.submit',
-      { session_id: runtimeId, text: 'follow up' },
-      1_800_000,
-      undefined
-    )
-    expect((seeds.at(-1) as { messages: ChatMessage[] }).messages.map(message => message.rowId)).toEqual([1, 2])
-    expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
-  })
-
-  it('allows submitToSession when the authoritative transcript is not ahead', async () => {
-    setSessions([row({ id: storedId, profile: 'work-vps' })])
-    vi.mocked(getLatestSessionMessages).mockResolvedValue({
-      session_id: storedId,
-      messages: [
-        { content: 'a', role: 'user', timestamp: 1 },
-        { content: 'b', role: 'assistant', timestamp: 2 }
-      ]
-    })
-
-    const fresh = createClientSessionState(storedId, [
+    const behind = createClientSessionState(storedId, [
       { id: 'u1', role: 'user', parts: [textPart('a')] },
       { id: 'a1', role: 'assistant', parts: [textPart('b')] }
     ])
@@ -825,18 +733,19 @@ describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
 
     renderTile(requestGateway, {
       runtimeIdByStoredSessionIdRef: { current: new Map([[storedId, runtimeId]]) },
-      sessionStateByRuntimeIdRef: { current: new Map([[runtimeId, fresh]]) }
+      sessionStateByRuntimeIdRef: { current: new Map([[runtimeId, behind]]) }
     })
 
-    await sessionTileDelegate()!.submitToSession(runtimeId, 'fresh tile send')
+    await sessionTileDelegate()!.submitToSession(runtimeId, 'tile send from behind')
 
     expect(requestGatewayForProfile).toHaveBeenCalledWith(
       'work-vps',
       'prompt.submit',
-      { session_id: runtimeId, text: 'fresh tile send' },
+      { session_id: runtimeId, text: 'tile send from behind' },
       1_800_000,
       undefined
     )
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
     expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
   })
 })

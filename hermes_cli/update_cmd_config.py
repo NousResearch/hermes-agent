@@ -42,7 +42,7 @@ def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
     ``_get_default_hermes_home()``, not under ``profiles/``, so a named-profile
     ``hermes update`` still migrates it.
     """
-    from hermes_cli.config import check_config_version, migrate_config
+    from hermes_cli.config import InvalidUserConfigError, check_config_version, migrate_config
     migrated: list[tuple[str, int, int]] = []
     with _best_effort('Sibling profile enumeration failed: %s'):
         from hermes_constants import (
@@ -57,12 +57,26 @@ def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
                 current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
                 if current_ver >= latest_ver:
                     continue
-                migrate_config(interactive=False, quiet=True)
+                results = migrate_config(interactive=False, quiet=True)
                 after_ver, _ = check_config_version(raise_on_parse_error=True)
                 if after_ver > current_ver:
                     migrated.append((name, current_ver, after_ver))
+                # quiet=True also mutes the steps that reset, remove or disable a setting; name
+                # them per profile, as the active profile's path does, so an unattended update
+                # never changes a sibling's config silently.
+                for note in results.get("config_added") or []:
+                    print(f"  ℹ Profile '{name}': {note}")
+                for warning in results.get("warnings") or []:
+                    print(f"  ⚠️  Profile '{name}': {warning}")
             except Exception as exc:
                 logger.debug("Config migration for profile %s failed: %s", name, exc)
+                print(f"  ⚠️  Profile '{name}': config migration failed: {exc}")
+                if isinstance(exc, InvalidUserConfigError):
+                    # `config migrate` re-reads the same file and fails identically.
+                    print(f"     Fix it with 'hermes -p {name} config edit', then run "
+                          f"'hermes -p {name} config migrate'.")
+                else:
+                    print(f"     Run 'hermes -p {name} config migrate' to retry.")
             finally:
                 reset_hermes_home_override(token)
     return migrated

@@ -35,8 +35,10 @@ _pending_autostash: Optional[tuple[str, int]] = None
 
 def _git_quiet(git_cmd: list[str], args: list[str], cwd: Path, **kwargs):
     """``subprocess.run`` of a git command with captured output; None when git cannot run."""
+    from hermes_cli.update_custody import run_git
+
     try:
-        return subprocess.run(git_cmd + args, cwd=cwd, capture_output=True, **kwargs)
+        return run_git(git_cmd, args, cwd=cwd, capture_output=True, **kwargs)
     except (OSError, subprocess.SubprocessError):
         return None
 
@@ -66,7 +68,9 @@ def _git_paths_z(git_cmd: list[str], args: list[str], cwd: Path):
 
 
 def _reset_hard(git_cmd: list[str], cwd: Path) -> None:
-    subprocess.run(git_cmd + ["reset", "--hard", "HEAD"], cwd=cwd, capture_output=True)
+    from hermes_cli.update_custody import run_git
+
+    run_git(git_cmd, ["reset", "--hard", "HEAD"], cwd=cwd, capture_output=True)
 
 
 def _print_nonempty(text: str, prefix: str = "") -> None:
@@ -90,7 +94,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
     # "needs merge"; `git reset` drops only the index conflict state, not the tree.
     if _git_run(git_cmd, ["ls-files", "--unmerged"], cwd).stdout.strip():
         print("→ Clearing unmerged index entries from a previous conflict...")
-        subprocess.run(git_cmd + ["reset"], cwd=cwd, capture_output=True)
+        _git_quiet(git_cmd, ["reset"], cwd)
 
     # Intent-to-add entries are the other index state `git stash push` refuses (see
     # _intent_to_add_paths). Promoting them to real staged adds keeps their content and is lossless
@@ -264,6 +268,8 @@ def _untracked_files_replaced_by_update(git_cmd: list[str], cwd: Path, stash_ref
     now tracks its own file there (``HEAD:<path>``) and the tree does not hold the stash's untracked
     copy (``<stash>^3``). An untracked occupant HEAD does not track is the #70127 file that could
     not be deleted at stash time, whatever its content now; it is never the update's."""
+    from hermes_cli.update_custody import run_git
+
     replaced = []
     suffix = " already exists, no checkout"
     for ln in (stderr or "").splitlines():
@@ -271,12 +277,10 @@ def _untracked_files_replaced_by_update(git_cmd: list[str], cwd: Path, stash_ref
         if not ln.endswith(suffix):
             continue
         rel = ln[: -len(suffix)]
-        tracked = subprocess.run([*git_cmd, "cat-file", "-e", f"HEAD:{rel}"], cwd=cwd, capture_output=True, check=False)
+        tracked = run_git(git_cmd, ["cat-file", "-e", f"HEAD:{rel}"], cwd=cwd, capture_output=True, check=False)
         if tracked.returncode != 0:
             continue
-        stashed = subprocess.run(
-            [*git_cmd, "show", f"{stash_ref}^3:{rel}"], cwd=cwd, capture_output=True, check=False,
-        )
+        stashed = run_git(git_cmd, ["show", f"{stash_ref}^3:{rel}"], cwd=cwd, capture_output=True, check=False)
         try:
             current = (Path(cwd) / rel).read_bytes()
         except OSError:

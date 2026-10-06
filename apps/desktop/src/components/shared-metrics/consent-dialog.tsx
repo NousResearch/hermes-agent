@@ -61,10 +61,7 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
   const [expanded, setExpanded] = useState(true)
   const [saving, setSaving] = useState(false)
 
-  const scopedRequest = useMemo(
-    () => sharedMetricsProfileRequester(requestGateway, profile),
-    [profile, requestGateway]
-  )
+  const scopedRequest = useMemo(() => sharedMetricsProfileRequester(requestGateway, profile), [profile, requestGateway])
 
   // Never over the provider picker, the free-tier welcome or the guided chat:
   // the question belongs to the moment after setup.

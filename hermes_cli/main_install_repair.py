@@ -203,6 +203,11 @@ def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
     scripts_dir = scripts_dir if scripts_dir is not None else _venv_scripts_dir()
     if scripts_dir is None:
         return
+    from hermes_cli.main import PROJECT_ROOT
+    from hermes_cli.update_lock import update_in_progress
+
+    if update_in_progress(PROJECT_ROOT):
+        return  # every quarantine may be that update's own, mid rename-back
     _cleanup_pending_shim_renames(scripts_dir)
     now = _time.time()
     try:

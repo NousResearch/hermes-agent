@@ -81,10 +81,16 @@ describe('listEveryArchivedSession', () => {
     // a riding pin. The next offset must stay 200/400 regardless.
     listAllProfileSessions
       .mockResolvedValueOnce({
-        sessions: [...page(0, PAGE_SIZE), pinnedRow('pin-x')], total: 401, limit: PAGE_SIZE, offset: 0
+        sessions: [...page(0, PAGE_SIZE), pinnedRow('pin-x')],
+        total: 401,
+        limit: PAGE_SIZE,
+        offset: 0
       })
       .mockResolvedValueOnce({
-        sessions: [...page(PAGE_SIZE, PAGE_SIZE), pinnedRow('pin-x')], total: 401, limit: PAGE_SIZE, offset: PAGE_SIZE
+        sessions: [...page(PAGE_SIZE, PAGE_SIZE), pinnedRow('pin-x')],
+        total: 401,
+        limit: PAGE_SIZE,
+        offset: PAGE_SIZE
       })
       .mockResolvedValueOnce({ sessions: [row('a-400')], total: 401, limit: PAGE_SIZE, offset: 2 * PAGE_SIZE })
 
@@ -94,10 +100,8 @@ describe('listEveryArchivedSession', () => {
     expect(sessions).toHaveLength(402)
     expect(sessions.filter(s => s.id === 'pin-x')).toHaveLength(1)
     expect(sessions.filter(s => s.archived).map(s => s.id)).toContain('a-400')
-    expect(listAllProfileSessions).toHaveBeenNthCalledWith(
-      2, PAGE_SIZE, 0, 'only', 'recent', 'all', {}, PAGE_SIZE)
-    expect(listAllProfileSessions).toHaveBeenNthCalledWith(
-      3, PAGE_SIZE, 0, 'only', 'recent', 'all', {}, 2 * PAGE_SIZE)
+    expect(listAllProfileSessions).toHaveBeenNthCalledWith(2, PAGE_SIZE, 0, 'only', 'recent', 'all', {}, PAGE_SIZE)
+    expect(listAllProfileSessions).toHaveBeenNthCalledWith(3, PAGE_SIZE, 0, 'only', 'recent', 'all', {}, 2 * PAGE_SIZE)
   })
 
   it('loads every archived row when non-archived pins inflate each page', async () => {

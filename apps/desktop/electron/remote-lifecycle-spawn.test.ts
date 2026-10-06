@@ -8,6 +8,7 @@ import { promisify } from 'node:util'
 import { expect, test } from 'vitest'
 
 import {
+  assertRemoteInstallUpdateClear,
   buildSpawnCommand,
   cleanupStale,
   connectReservationPath,
@@ -143,7 +144,7 @@ async function spawnFixture(launcher: 'setsid' | 'nohup', owned: boolean): Promi
 import json,os,signal,time
 from pathlib import Path
 pid=os.getpid()
-mutex=Path(os.environ['HERMES_HOME'])/'.hermes-update-in-progress.mutex'
+mutex=Path(os.environ['HERMES_HOME'])/'.hermes-update-in-progress.lock'
 identity=mutex.stat()
 fds=[]
 for fd in range(3,256):
@@ -258,7 +259,7 @@ test.skipIf(process.platform === 'win32').each(variants)(
 
       // The child remains alive while another process acquires the exact mutex.
       await fixture.run(
-        `python3 -c 'import fcntl,sys;f=open(sys.argv[1],"a");fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)' ${expandRemotePath(`${fixture.marker}.mutex`)}`
+        `python3 -c 'import fcntl,sys;f=open(sys.argv[1],"a");fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)' ${expandRemotePath(`${fixture.marker}.lock`)}`
       )
       // The published ownership record carries the profile the spawn argv
       // actually pinned — normalized like the CLI would (#88842) — never the
@@ -299,7 +300,7 @@ test.skipIf(process.platform === 'win32').each(variants)(
     const fixture: SpawnFixture = await spawnFixture(launcher, owned)
 
     try {
-      for (const marker of [`${process.pid}\n0\n`, 'not-a-pid\n']) {
+      for (const marker of [`${process.pid}\n${Math.floor(Date.now() / 1000)}\n`, 'not-a-pid\n']) {
         await writeFile(fixture.marker, marker, 'utf8')
         await assert.rejects(fixture.run(fixture.command), { code: 75, stdout: '' })
         assert.deepEqual(await reports(fixture), [])
@@ -307,6 +308,96 @@ test.skipIf(process.platform === 'win32').each(variants)(
         await assert.rejects(readFile(fixture.localPath(lockfilePath(ownershipId))), { code: 'ENOENT' })
       }
     } finally {
+      await fixture.dispose()
+    }
+  },
+  20_000
+)
+
+/** A python3 child that prints one line (after its setup) and stays alive. */
+async function pythonChild(fixture: SpawnFixture, script: string, ...args: string[]): Promise<[ChildProcess, string]> {
+  const child: ChildProcess = spawn('python3', ['-c', script, ...args], {
+    env: fixture.env,
+    stdio: ['ignore', 'pipe', 'inherit']
+  })
+
+  const line: string = await new Promise((resolve, reject) => {
+    child.stdout!.once('data', (chunk: Buffer) => resolve(chunk.toString().trim()))
+    child.once('exit', code => reject(new Error(`python child exited ${code}`)))
+  })
+
+  return [child, line]
+}
+
+async function deadPid(): Promise<number> {
+  const child: ChildProcess = spawn('true')
+  await new Promise(resolve => child.once('exit', resolve))
+
+  return child.pid!
+}
+
+test.skipIf(process.platform === 'win32')(
+  'v2 claims are judged by pid + creation time: a dead claim is cleared, a live delegate refuses',
+  async (): Promise<void> => {
+    const fixture: SpawnFixture = await spawnFixture(variants[0].launcher, false)
+    const [delegate, ct] = await pythonChild(fixture, 'import time;print(time.time(),flush=True);time.sleep(30)')
+    const dead: number = await deadPid()
+    const now: number = Math.floor(Date.now() / 1000)
+
+    try {
+      await writeFile(fixture.marker, `${dead}\n${now}\nct:${ct}\ndelegate:${dead} ct:${ct}\nrun:desk-1\n`)
+      await assertRemoteInstallUpdateClear(fixture.ssh, fixture.lock.hermesHome)
+      await assert.rejects(readFile(fixture.marker), { code: 'ENOENT' })
+
+      const live: string = `${dead}\n${now}\nct:${ct}\ndelegate:${delegate.pid} ct:${ct}\n`
+      await writeFile(fixture.marker, live)
+      await assert.rejects(
+        assertRemoteInstallUpdateClear(fixture.ssh, fixture.lock.hermesHome),
+        (error: any) => error.kind === 'update-in-progress' && error.message.includes(`process ${delegate.pid}`)
+      )
+      await assert.rejects(fixture.run(fixture.command), { code: 75, stdout: '' })
+      assert.equal(await readFile(fixture.marker, 'utf8'), live)
+
+      // The live pid at another incarnation (creation time 60 s off) is a dead claim.
+      await writeFile(fixture.marker, `${delegate.pid}\n${now}\nct:${Number(ct) - 60}\n`)
+      assert.match((await fixture.run(fixture.command)).stdout, /^[1-9][0-9]*\n$/)
+      await assert.rejects(readFile(fixture.marker), { code: 'ENOENT' })
+    } finally {
+      delegate.kill('SIGKILL')
+      await fixture.dispose()
+    }
+  },
+  20_000
+)
+
+test.skipIf(process.platform === 'win32')(
+  "spawn waits on the updaters' <marker>.lock, so a claim made under it is never raced",
+  async (): Promise<void> => {
+    const fixture: SpawnFixture = await spawnFixture(variants[0].launcher, false)
+
+    // An updater: hold <marker>.lock (update_lock.py / marker.sh flock), then
+    // write its v2 claim and release, staying alive as the live owner.
+    const [updater] = await pythonChild(
+      fixture,
+      `import fcntl,os,sys,time
+t=time.time()
+fd=os.open(sys.argv[1]+'.lock',os.O_RDWR|os.O_CREAT)
+fcntl.flock(fd,fcntl.LOCK_EX)
+print('held',flush=True)
+time.sleep(0.5)
+open(sys.argv[1],'w').write('%d\\n%d\\nct:%.3f\\n'%(os.getpid(),int(t),t))
+time.sleep(0.5)
+fcntl.flock(fd,fcntl.LOCK_UN)
+time.sleep(30)`,
+      fixture.marker
+    )
+
+    try {
+      await assert.rejects(fixture.run(fixture.command), { code: 75, stdout: '' })
+      assert.deepEqual(await reports(fixture), [])
+      assert.match(await readFile(fixture.marker, 'utf8'), new RegExp(`^${updater.pid}\\n`))
+    } finally {
+      updater.kill('SIGKILL')
       await fixture.dispose()
     }
   },

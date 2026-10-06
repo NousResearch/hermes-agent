@@ -42,6 +42,28 @@ async def _close_ws(ws, code: int) -> None:
         pass
 
 
+def _process_ancestors(pid: int) -> set[int]:
+    """Pids of ``pid``'s live ancestors; empty when the process is gone or unreadable."""
+    import psutil  # type: ignore
+
+    try:
+        return {parent.pid for parent in psutil.Process(pid).parents()}
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, ValueError):
+        return set()
+
+
+def _key_segments(key: str) -> tuple[str, str]:
+    """``(profile, resume)`` a keep-alive key was registered under.
+
+    Registry keys read ``token\\0profile\\0resume``; a key without those
+    segments — a chat that was never resumed from — yields ``("", "")``.
+    Session ids are only unique within a profile's store, so a resume target
+    is identified by both.
+    """
+    parts = key.split("\0")
+    return (parts[1], parts[2]) if len(parts) >= 3 else ("", "")
+
+
 class PtySession:
     def __init__(self, key: str, bridge, *, buffer_cap: int, read_timeout: float) -> None:
         self.key = key
@@ -132,6 +154,22 @@ class PtySession:
         self._ws = None
         self.attached = False
         self.last_detached_at = time.monotonic()
+
+    def hosts_pid(self, pid: Optional[int]) -> bool:
+        """Whether ``pid`` runs inside this PTY: the leader itself or one of its descendants.
+
+        The dashboard's PTY leader is ``node entry.js``; the process that takes the
+        session lease is its ``tui_gateway`` child, so the lease pid is never the
+        bridge's own pid and only ancestry identifies the terminal. A bridge that
+        cannot report a pid (already reaped, or a stub) is simply not a match.
+        """
+        if pid is None:
+            return False
+        try:
+            leader = int(self.bridge.pid)
+        except (AttributeError, TypeError, ValueError, OSError):
+            return False
+        return leader == pid or leader in _process_ancestors(pid)
 
     async def close(self) -> None:
         self.alive = False
@@ -229,6 +267,39 @@ class PtySessionRegistry:
                     # until its next keystroke fails with 1013.
                     await _close_ws(session._ws, WS_CLOSE_SUPERSEDED)
                     await session.close()
+
+    async def close_orphaned_sessions(
+        self, resume: Optional[str], *, keep_key: str, holder_pid: Optional[int] = None,
+    ) -> None:
+        """Close a keep-alive PTY stranded under a superseded attach token.
+
+        Rotating the token — the dashboard's *New chat* — moves the tab to a
+        fresh PTY while the previous one keeps the TUI's single-writer lease on
+        its session. That terminal is out of the user's reach, so the next
+        return to the same chat is refused as a session held elsewhere. A PTY
+        with a live viewer is never a candidate: somebody is still using it.
+
+        A chat that was never resumed from carries no resume target in its key,
+        so ``holder_pid`` — the process holding the lease for the session being
+        resumed — identifies that terminal instead.
+        """
+        if not resume:
+            return
+        # The requested chat is (profile, session): the same session id in
+        # another profile's store is a different chat whose terminal stays.
+        target = (_key_segments(keep_key)[0], resume)
+        async with self._attach_lock:
+            doomed = [
+                key for key, session in self._sessions.items()
+                if key != keep_key and not session.attached
+                and (_key_segments(key) == target or session.hosts_pid(holder_pid))
+            ]
+            sessions = [self._sessions.pop(key) for key in doomed]
+        # Close outside the registry lock — a close can wait out its helpers' SIGHUP grace and
+        # this lock serializes every new chat — but still before the caller spawns: the child's
+        # session lease is only released once its close finishes.
+        for session in sessions:
+            await session.close()
 
     def detach(self, key: str, ws) -> None:
         s = self._sessions.get(key)

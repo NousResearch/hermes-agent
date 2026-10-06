@@ -3674,7 +3674,7 @@ tips:
   t197: "O salvamento de trajetórias (--save-trajectories) captura rastros completos de uso de ferramentas para treinar modelos."
   t198: "Três tipos de plugin: geral (ferramentas/hooks), fornecedores de memória e motores de contexto."
   t199: "hermes plugins install owner/repo instala plugins diretamente do GitHub."
-  t200: "Fornecedores de memória externos: OpenViking e Mem0 incluídos; Honcho, Hindsight e outros via hermes plugins install."
+  t200: "Fornecedores de memória externos: OpenViking incluído; Honcho, Hindsight, Mem0 e outros via hermes plugins install."
   t201: "Os hooks de plugin incluem pre/post_tool_call, pre/post_llm_call e transform_terminal_output para canonicalizar a saída."
   t202: "O cache de prompt (Anthropic) reduz custos ao reutilizar prefixos de prompt do sistema em cache."
   t203: "O agente gera títulos de sessão automaticamente em um tópico em segundo plano — sem impacto na latência."

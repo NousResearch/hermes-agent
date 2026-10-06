@@ -21,17 +21,6 @@ def _probe_home(seen: dict, key: str = "home"):
     return _record
 
 
-def _mem0(seen, tmp_path):
-    from plugins.memory.mem0 import Mem0MemoryProvider
-
-    p = Mem0MemoryProvider()
-    p._backend = MagicMock()
-    p._config = {"mode": "platform"}
-    p._add = _probe_home(seen)
-    p.sync_turn("a long enough user message", "assistant reply")
-    return [p._sync_thread]
-
-
 def _retaindb(seen, tmp_path):
     import plugins.memory.retaindb as retaindb
 
@@ -62,7 +51,7 @@ def _openviking(seen, tmp_path):
 
 
 _PROVIDERS = {
-    "mem0": _mem0, "retaindb": _retaindb, "byterover": _byterover,
+    "retaindb": _retaindb, "byterover": _byterover,
     "openviking": _openviking,
 }
 

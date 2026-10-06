@@ -198,3 +198,21 @@ def test_retry_gate_publishes_a_distinct_stage(tmp_path):
         "Updating code and dependencies",
         "Retrying update",
     ]
+
+
+@requires_posix_handoff
+def test_handoff_protects_session_creation_until_script_traps_are_installed():
+    """The TERM/HUP guard must cover both setsid() and Bash startup.
+
+    A teardown signal can arrive while the launcher is moving into its new
+    process group, and caught Python handlers reset on execve. The source
+    wrapper therefore needs to inherit SIG_IGN and source posix.sh in the same
+    Bash process so the script's real traps can replace it before work starts.
+    """
+    source = (SHIM_DIR / "posix.sh").read_text()
+    handoff = source[source.index("/usr/bin/nohup /usr/bin/python3 -c '") : source.index("  exit 0", source.index("/usr/bin/nohup /usr/bin/python3 -c '"))]
+
+    assert handoff.index("signal.signal(signal.SIGTERM, _hold_teardown_signal)") < handoff.index("\nos.setsid()")
+    assert handoff.index("signal.signal(signal.SIGTERM, signal.SIG_IGN)") > handoff.index("\nos.setsid()")
+    assert "chr(34)" in handoff
+    assert '" TERM HUP; script=" + q + "$1"' in handoff

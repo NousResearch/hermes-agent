@@ -1002,13 +1002,11 @@ def _cmd_compress(rid, params, session, name, arg):
             return _ok(rid, {"type": "exec", "status": "pending", "output": text})
         return _exec_out(rid, text)
     try:
-        output = _compress_live_with_feedback(sid, session, session["agent"], arg, snapshot_kwargs=True)
-        return _exec_out(rid, output)
+        return _exec_out(rid, _compress_live_with_feedback(sid, session, session["agent"], arg, snapshot_kwargs=True))
     except CompressionBusy as exc:  # a turn won the race after the unlocked pre-check above
         return _err(rid, 4009, str(exc))
     except Exception as exc:
-        _tools_mod("agent.conversation_compression").finalize_context_engine_compression_notification(
-            session["agent"], committed=False)
+        _tools_mod("agent.conversation_compression").finalize_context_engine_compression_notification(session["agent"], committed=False)
         return _err(rid, 5009, f"compress failed: {exc}")
 
 

@@ -12,42 +12,51 @@ import asyncio
 import concurrent.futures
 import contextlib
 import logging
-import threading
-import time
 from pathlib import Path
 
 from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 
-# A store flapping across the disk-full line must not post a notice pair every tick.
+# A store flapping across the disk-full line must not post a notice pair every tick: "recovered"
+# waits this long and is dropped if the store degrades again meanwhile.
 NOTICE_REPEAT_SECONDS = 3600.0
 
 
 def install_cron_store_notices(runner, loop: asyncio.AbstractEventLoop) -> None:
     """Route store transitions from the ticker thread onto the gateway loop. Installed once the
-    adapters are connected, so a store that degraded during boot is announced then."""
-    from cron.store_health import degraded_records, set_transition_listener
+    adapters are connected, so a store that degraded during boot is announced then. The last
+    notice a home channel sees always matches the store's real state."""
+    from cron.store_health import degraded_record, degraded_records, set_transition_listener
 
-    last_sent: dict[str, float] = {}  # store -> monotonic time of its last notice
+    # Loop-only state (mutated in loop callbacks, never on the ticker thread).
     announced: set[str] = set()  # stores whose current outage got an "unwritable" notice
-    lock = threading.Lock()
+    pending: dict[str, asyncio.TimerHandle] = {}  # store -> its deferred "recovered" notice
 
-    def on_transition(event, record) -> None:
-        store, now = record.store, time.monotonic()
-        with lock:
-            if event == "unwritable":
-                last = last_sent.get(store)
-                if last is not None and now - last < NOTICE_REPEAT_SECONDS:
-                    return  # the logs still carry every transition
+    def send(event, record) -> None:
+        task = loop.create_task(send_cron_store_notice(runner, event, record))
+        task.add_done_callback(lambda done: _log_notice_failure(done, event, record.store))
+
+    def send_recovered(record) -> None:
+        pending.pop(record.store, None)
+        if degraded_record(Path(record.store)) is None:  # else it degraded again: outage goes on
+            announced.discard(record.store)
+            send("recovered", record)
+
+    def on_loop(event, record) -> None:
+        store = record.store
+        if event == "unwritable":
+            if (handle := pending.pop(store, None)) is not None:
+                handle.cancel()  # never told it recovered: the outage notice still stands
+            elif store not in announced:
                 announced.add(store)
-            elif store in announced:
-                announced.discard(store)
-            else:
-                return  # its outage was never announced: no lone "recovered"
-            last_sent[store] = now
-        future = asyncio.run_coroutine_threadsafe(send_cron_store_notice(runner, event, record), loop)
-        future.add_done_callback(lambda done: _log_notice_failure(done, event, store))
+                send(event, record)
+        elif store in announced and store not in pending:  # no lone "recovered"
+            pending[store] = loop.call_later(NOTICE_REPEAT_SECONDS, send_recovered, record)
+
+    def on_transition(event, record) -> None:  # the ticker thread
+        # A closed loop raises before any coroutine exists; store_health._notify logs and swallows it.
+        loop.call_soon_threadsafe(on_loop, event, record)
 
     set_transition_listener(on_transition)
     for record in degraded_records():

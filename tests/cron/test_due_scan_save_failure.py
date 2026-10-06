@@ -228,10 +228,12 @@ def test_unwritable_store_degrades_once_throttles_and_catches_up_once(cron_store
 @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses directory modes")
 def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store, monkeypatch, capsys, caplog):
     """`hermes cron status` probes the store itself (a real 0500 dir) and leads with the red
-    headline + fix; the gateway posts ONE home-channel notice on entry and ONE on recovery,
-    each naming the store, the error, since-when and the skipped runs; re-entry within the hour
-    posts nothing."""
+    headline + fix; the gateway posts ONE home-channel notice on entry, naming the store, the
+    error and since-when. "recovered" waits out the repeat
+    window and is dropped if the store degrades again meanwhile, so the last notice always matches
+    the store's real state."""
     from types import SimpleNamespace
+    from gateway import cron_store_notices
     from gateway.cron_store_notices import install_cron_store_notices
     from hermes_cli import cron as cron_cli
 
@@ -251,14 +253,21 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
     sent = []
 
     async def send(platform, home, transport, message, failure_fmt):
-        sent.append(message)
+        sent.append((home.chat_id, message))
         return True
 
     home = SimpleNamespace(chat_id="c1", thread_id=None)
     runner = SimpleNamespace(_send_home_channel_message=send, _served_home_channel_transports=lambda: iter(
         [(None, "telegram", None, home, object())]))
     monkeypatch.setattr("hermes_constants.get_routing_process_hermes_home", lambda: cron_store)
+    monkeypatch.setattr(cron_store_notices, "NOTICE_REPEAT_SECONDS", 0.05)
     loop = asyncio.new_event_loop()
+
+    async def drain():  # past the repeat window, then until every notice send has finished
+        await asyncio.sleep(0.2)
+        await asyncio.gather(*(asyncio.all_tasks() - {asyncio.current_task()}), return_exceptions=True)
+
+    settle = lambda: loop.run_until_complete(drain())
     try:
         install_cron_store_notices(runner, loop)
         enospc = OSError(errno.ENOSPC, "No space left on device")
@@ -266,14 +275,18 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
             cronjobs.warn_store_unwritable(enospc, "x", site, [_due_job()])
         save_jobs([_due_job()])
         save_jobs([_due_job()])
-        cronjobs.warn_store_unwritable(enospc, "x", "scan", [_due_job()])  # flaps back within the hour
-        loop.run_until_complete(asyncio.sleep(0.05))
+        cronjobs.warn_store_unwritable(enospc, "x", "scan", [_due_job()])  # flaps back within the window
+        settle()
+        assert [m[:2] for _, m in sent] == ["⚠️"]  # still down: no "writable again", ever
+        save_jobs([_due_job()])
+        settle()
         install_cron_store_notices(SimpleNamespace(), loop)  # a send that raises is logged, not lost
-        loop.run_until_complete(asyncio.sleep(0.05))
+        cronjobs.warn_store_unwritable(enospc, "x", "scan", [_due_job()])
+        settle()
     finally:
         loop.close()
     assert len(sent) == 2
-    assert str(cron_dir) in sent[0] and "ENOSPC: No space left on device" in sent[0] and "since " in sent[0]
-    assert f"fix permissions on {cron_dir}" in sent[0]
-    assert "writable again; 1 skipped run(s), catching up once per job" in sent[1]
+    assert str(cron_dir) in sent[0][1] and "ENOSPC: No space left on device" in sent[0][1] and "since " in sent[0][1]
+    assert f"fix permissions on {cron_dir}" in sent[0][1]
+    assert "writable again; 1 skipped run(s), catching up once per job" in sent[1][1]
     assert any(r.levelname == "WARNING" and "unwritable notice for" in r.getMessage() for r in caplog.records)

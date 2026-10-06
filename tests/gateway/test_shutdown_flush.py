@@ -324,3 +324,142 @@ def test_drain_transcript_spool_skips_parseable_non_dict_payload(tmp_path, monke
     replayed = []
     assert drain_transcript_spool("sess-1", replayed.append) == (1, 0)
     assert replayed == [{"role": "user", "content": "hi"}]
+
+
+# ── A payload whose session row is gone: preserved and named, never a raw FK rejection ──
+#
+# Measured on a firm instance (2026-10-05): two cap-dropped transcript spools replayed on every
+# restart, each failing as `Failed to recover pending message from …: FOREIGN KEY constraint failed`
+# because the payload's session had no row in the store (state.db rebuilt from a backup while the
+# spool files survived) — `messages.session_id` foreign-keys `sessions.id`. The message is the only
+# surviving copy, so the pass must keep it and say WHICH session is gone.
+
+
+def _store_without_session(missing_session_id: str):
+    """A store that holds every session but *missing_session_id*."""
+
+    class Store:
+        def __init__(self):
+            self.appended = []
+            self.probed = []
+
+        def get_session(self, session_id):
+            self.probed.append(session_id)
+            return None if session_id == missing_session_id else {"id": session_id}
+
+        def append_message(self, **kwargs):
+            self.appended.append(kwargs)
+
+    return Store()
+
+
+def _assert_named_and_preserved(store, spool, sid, messages: str) -> None:
+    """The shared assertions: no append, file kept, session named, no raw rejection echoed."""
+    assert store.appended == []
+    assert spool.exists()  # the only copy of the message — never dropped
+    assert sid in messages
+    assert "FOREIGN KEY" not in messages.upper()
+    assert "Failed to recover pending message" not in messages
+
+
+def test_recover_preserves_transcript_spool_whose_session_row_is_gone(
+    tmp_path, monkeypatch, caplog
+):
+    """The measured defect, in its own shape: a cap-dropped transcript spool, session gone."""
+    import logging
+
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    sid = "20260929_140547_994b400d"
+    spool = flush_dir / "pending-090b734e12244ee4b1c3528a3f991e89.json"
+    spool.write_text(
+        json.dumps(
+            {
+                "session_key": sid,
+                "reason": "transcript_cap_drop",
+                "ts": 1790690759,
+                "seq": 0,
+                "data": {
+                    "session_id": sid,
+                    "message": {"role": "user", "content": "lost turn"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    store = _store_without_session(sid)
+    with caplog.at_level(logging.DEBUG, logger="gateway.shutdown_flush"):
+        assert recover_pending_to_db(store) == 0
+
+    messages = "\n".join(r.getMessage() for r in caplog.records)
+    _assert_named_and_preserved(store, spool, sid, messages)
+    assert store.probed == [sid]
+
+
+def test_recover_preserves_slot_payload_whose_session_row_is_gone(
+    tmp_path, monkeypatch, caplog
+):
+    """The same condition for a slot/overflow payload (reason ``shutdown``)."""
+    import logging
+
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    sid = "20260929_140547_994b400d"
+    spool = _write_flush_file(flush_dir, "pending-gone.json", sid, "queued turn")
+
+    store = _store_without_session(sid)
+    with caplog.at_level(logging.DEBUG, logger="gateway.shutdown_flush"):
+        assert recover_pending_to_db(store) == 0
+
+    messages = "\n".join(r.getMessage() for r in caplog.records)
+    _assert_named_and_preserved(store, spool, sid, messages)
+
+
+def test_recover_names_a_foreign_key_rejection_instead_of_echoing_it(
+    tmp_path, monkeypatch, caplog
+):
+    """A session that vanishes between probe and append reaches the caller as the same condition."""
+    import logging
+
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    sid = "20260930_090000_race"
+    spool = _write_flush_file(flush_dir, "pending-race.json", sid, "racing turn")
+
+    class VanishingStore:
+        """The probe sees the session; the append is rejected because the row went away."""
+
+        def __init__(self):
+            self.appended = []
+
+        def get_session(self, session_id):
+            return {"id": session_id}
+
+        def append_message(self, **kwargs):
+            raise Exception("FOREIGN KEY constraint failed")
+
+    store = VanishingStore()
+    with caplog.at_level(logging.DEBUG, logger="gateway.shutdown_flush"):
+        assert recover_pending_to_db(store) == 0
+
+    messages = "\n".join(r.getMessage() for r in caplog.records)
+    _assert_named_and_preserved(store, spool, sid, messages)
+
+
+def test_a_stranded_payload_does_not_stop_the_others(tmp_path, monkeypatch, caplog):
+    """One session gone must not strand the payloads whose sessions are still there."""
+    import logging
+
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    gone = _write_flush_file(flush_dir, "pending-gone.json", "sid-gone", "first")
+    live = _write_flush_file(flush_dir, "pending-live.json", "sid-live", "second")
+
+    store = _store_without_session("sid-gone")
+    with caplog.at_level(logging.DEBUG, logger="gateway.shutdown_flush"):
+        assert recover_pending_to_db(store) == 1
+
+    assert [call["session_id"] for call in store.appended] == ["sid-live"]
+    assert not live.exists()
+    assert gone.exists()

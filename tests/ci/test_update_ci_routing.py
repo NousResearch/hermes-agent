@@ -410,11 +410,7 @@ def _tracked_mentions(name: str) -> list[str]:
 # lands LOCK, COMMIT, WIN, DESK, SCRIPTS, POST, then this CI PR). Only these may be absent,
 # and only while the sibling is unmerged: an entry whose file exists fails the guard, so the
 # table empties when the siblings land and a later deletion of a consumer turns it red.
-_LANDS_IN_SIBLING_PR: dict[str, str] = {
-    "apps/desktop/electron/update-marker-corpus.test.ts": "#132345 desktop update gate",
-    "tests/scripts/desktop_update/test_desktop_update_posix_marker_corpus.py": "#132354 hand-off scripts",
-    "tests/scripts/desktop_update/test_desktop_update_windows_marker_corpus.py": "#132354 hand-off scripts",
-}
+_LANDS_IN_SIBLING_PR: dict[str, str] = {}  # #132345 and #132354 landed
 
 
 def test_every_test_that_reads_a_shared_fixture_is_routed_by_it():

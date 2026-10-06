@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import hashlib
 import json
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -865,3 +866,268 @@ class TestWeixinVoiceGatewayHandoff:
             "VOICE event body leaked Tencent's STT text — runner would trust "
             "the wrong transcript instead of re-transcribing (#27300)."
         )
+
+
+class TestWeixinQuoteCache:
+    """Bounded in-memory cache backing ID-only quote resolution (``ref_msg.svr_id`` / ``msg_id``)."""
+
+    def test_cache_is_isolated_per_conversation(self):
+        cache = weixin.QuoteCache()
+        cache.remember("conv-a", ["msg-1"], "hello")
+
+        assert cache.resolve("conv-a", {"svr_id": "msg-1"}) == "hello"
+        assert cache.resolve("conv-b", {"svr_id": "msg-1"}) == ""
+
+    def test_remember_skips_empty_body_and_empty_ids(self):
+        cache = weixin.QuoteCache()
+        cache.remember("conv-a", ["msg-1"], "")
+        cache.remember("conv-a", ["", "   "], "body without id")
+
+        assert cache.resolve("conv-a", {"svr_id": "msg-1"}) == ""
+        assert cache.resolve("conv-a", {"svr_id": ""}) == ""
+        assert cache.resolve("conv-a", {}) == ""
+
+    def test_least_recently_used_entry_is_evicted(self):
+        cache = weixin.QuoteCache(max_entries=2)
+        cache.remember("conv-a", ["m1"], "one")
+        cache.remember("conv-a", ["m2"], "two")
+        assert cache.resolve("conv-a", {"svr_id": "m1"}) == "one"  # refresh m1
+        cache.remember("conv-a", ["m3"], "three")  # evicts the least recently used entry (m2)
+
+        assert cache.resolve("conv-a", {"svr_id": "m1"}) == "one"
+        assert cache.resolve("conv-a", {"svr_id": "m3"}) == "three"
+        assert cache.resolve("conv-a", {"svr_id": "m2"}) == ""
+
+    def test_default_capacity_is_bounded(self):
+        assert weixin.QUOTE_CACHE_MAX_ENTRIES == 1000
+        cache = weixin.QuoteCache()
+        for index in range(weixin.QUOTE_CACHE_MAX_ENTRIES + 5):
+            cache.remember("conv-a", [f"m{index}"], f"body {index}")
+        newest = weixin.QUOTE_CACHE_MAX_ENTRIES + 4
+
+        assert cache.resolve("conv-a", {"svr_id": "m0"}) == ""
+        assert cache.resolve("conv-a", {"svr_id": f"m{newest}"}) == f"body {newest}"
+
+    def test_resolve_prefers_svr_id_then_message_item_msg_id(self):
+        cache = weixin.QuoteCache()
+        cache.remember("conv-a", ["srv-1"], "from svr id")
+        cache.remember("conv-a", ["item-1"], "from item id")
+
+        assert cache.resolve("conv-a", {"svr_id": "srv-1", "message_item": {"msg_id": "item-1"}}) == "from svr id"
+        assert cache.resolve("conv-a", {"svr_id": "missing", "message_item": {"msg_id": "item-1"}}) == "from item id"
+        assert cache.resolve("conv-a", {"svr_id": " ", "message_item": {}}) == ""
+
+    def test_media_descriptors_are_used_when_there_is_no_text(self):
+        assert weixin._quote_cache_body([{"type": weixin.ITEM_IMAGE}], "") == "[图片]"
+        assert weixin._quote_cache_body([{"type": weixin.ITEM_VIDEO}], "") == "[视频]"
+        assert weixin._quote_cache_body([{"type": weixin.ITEM_VOICE}], "") == "[语音]"
+        assert weixin._quote_cache_body([{"type": weixin.ITEM_FILE, "file_item": {"file_name": "report.pdf"}}], "") == "[文件: report.pdf]"
+        assert weixin._quote_cache_body([{"type": weixin.ITEM_FILE, "file_item": {}}], "") == "[文件]"
+        assert weixin._quote_cache_body([{"type": 99}], "") == ""
+        assert weixin._quote_cache_body([{"type": weixin.ITEM_IMAGE}], "有文本") == "有文本"
+
+
+class TestWeixinPartialQuote:
+    """``_resolve_partial_quote`` ports the official partial-quote semantics (both endindex readings)."""
+
+    @staticmethod
+    def _md5(value: str) -> str:
+        return hashlib.md5(value.encode("utf-8")).hexdigest()
+
+    def test_md5_verified_fragment_with_global_end_index(self):
+        partial = {"start": "aa", "startindex": 1, "end": "bb", "endindex": 1, "quotemd5": self._md5("aa bb")}
+        assert weixin._resolve_partial_quote("aa bb aa bb", partial) == "aa bb"
+
+    def test_md5_verified_fragment_with_relative_end_index(self):
+        partial = {"start": "mm", "startindex": 0, "end": "xx", "endindex": 0, "quotemd5": self._md5("mm xx")}
+        assert weixin._resolve_partial_quote("xx mm xx mm xx", partial) == "mm xx"
+
+    def test_md5_mismatch_returns_empty(self):
+        partial = {"start": "aa", "startindex": 1, "end": "bb", "endindex": 1, "quotemd5": self._md5("其他片段")}
+        assert weixin._resolve_partial_quote("aa bb aa bb", partial) == ""
+
+    def test_without_md5_the_first_candidate_wins(self):
+        partial = {"start": "a", "startindex": 0, "end": "b", "endindex": 1}
+        assert weixin._resolve_partial_quote("b a b a b", partial) == "a b"
+
+        partial["quotemd5"] = self._md5("a b a b")
+        assert weixin._resolve_partial_quote("b a b a b", partial) == "a b a b"
+
+    def test_missing_fields_return_empty(self):
+        assert weixin._resolve_partial_quote("", {"start": "a", "end": "b"}) == ""
+        assert weixin._resolve_partial_quote("abc", {"end": "b", "endindex": 0}) == ""
+        assert weixin._resolve_partial_quote("abc", {"start": "a", "startindex": 0}) == ""
+        assert weixin._resolve_partial_quote("abc", {"start": "zz", "startindex": 0, "end": "b", "endindex": 0}) == ""
+
+
+class TestWeixinQuoteExtraction:
+    """``_extract_text`` resolves ID-only refs without regressing the embedded-ref formats."""
+
+    @staticmethod
+    def _items(text, ref=None):
+        item = {"type": weixin.ITEM_TEXT, "text_item": {"text": text}}
+        if ref is not None:
+            item["ref_msg"] = ref
+        return [item]
+
+    def test_id_only_ref_resolves_from_the_cache(self):
+        items = self._items("看看这个", {"svr_id": "srv-1"})
+        assert weixin._extract_text(items, resolve_ref=lambda ref: "被引原文") == "[引用: 被引原文]\n看看这个"
+
+    def test_id_only_ref_miss_gets_explicit_placeholder(self):
+        items = self._items("看看这个", {"svr_id": "missing"})
+        assert weixin._extract_text(items, resolve_ref=lambda ref: "") == "[引用: 内容未缓存]\n看看这个"
+        # Without a resolver the ref still degrades explicitly instead of silently reading as bare text.
+        assert weixin._extract_text(items) == "[引用: 内容未缓存]\n看看这个"
+
+    def test_title_is_kept_with_a_resolved_body(self):
+        items = self._items("回复", {"title": "之前的消息", "svr_id": "srv-1"})
+        assert weixin._extract_text(items, resolve_ref=lambda ref: "原文内容") == "[引用: 之前的消息 | 原文内容]\n回复"
+
+    def test_embedded_text_ref_keeps_legacy_format(self):
+        embedded = {"type": weixin.ITEM_TEXT, "text_item": {"text": "内嵌原文"}}
+        items = self._items("继续", {"message_item": embedded})
+        assert weixin._extract_text(items, resolve_ref=lambda ref: "不应使用") == "[引用: 内嵌原文]\n继续"
+        items = self._items("继续", {"title": "标题", "message_item": embedded})
+        assert weixin._extract_text(items, resolve_ref=lambda ref: "不应使用") == "[引用: 标题 | 内嵌原文]\n继续"
+
+    def test_embedded_media_ref_keeps_legacy_format(self):
+        items = self._items("看", {"title": "一张图", "message_item": {"type": weixin.ITEM_IMAGE}})
+        assert weixin._extract_text(items) == "[引用媒体: 一张图]\n看"
+        items = self._items("听", {"message_item": {"type": weixin.ITEM_VOICE}})
+        assert weixin._extract_text(items) == "[引用媒体]\n听"
+
+    def test_message_without_ref_is_unchanged(self):
+        assert weixin._extract_text(self._items("你好")) == "你好"
+        assert weixin._extract_text([]) == ""
+
+
+class TestWeixinQuoteResolutionRoundTrip:
+    """Remembered bodies resolve when their server ids arrive as quotes (inbound + outbound)."""
+
+    @staticmethod
+    def _inbound_adapter() -> WeixinAdapter:
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        # Tighten the text-debounce delay so flushes complete quickly (see TestWeixinContentDedup).
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._text_batch_split_delay_seconds = 0.05
+        return adapter
+
+    @staticmethod
+    def _connected_adapter() -> WeixinAdapter:
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._send_session = adapter._session
+        adapter._base_url = "https://weixin.example.com"
+        adapter._token_store.get = lambda account_id, chat_id: "ctx-token"
+        return adapter
+
+    def test_quoted_inbound_message_resolves_from_cache(self):
+        adapter = self._inbound_adapter()
+
+        async def _drive():
+            await adapter._process_message({
+                "from_user_id": "wxid_user1", "message_id": "srv-1",
+                "item_list": [{"type": weixin.ITEM_TEXT, "text_item": {"text": "hello world"}}]})
+            await asyncio.sleep(0.15)  # let the first text batch flush
+            await adapter._process_message({
+                "from_user_id": "wxid_user1", "message_id": "srv-2",
+                "item_list": [{"type": weixin.ITEM_TEXT, "text_item": {"text": "看看这个"}, "ref_msg": {"svr_id": "srv-1"}}]})
+            await asyncio.sleep(0.15)
+
+        asyncio.run(_drive())
+
+        assert adapter.handle_message.await_count == 2
+        quoted = adapter.handle_message.await_args_list[1][0][0]
+        assert quoted.text == "[引用: hello world]\n看看这个"
+
+    def test_own_account_echo_is_remembered_without_dispatch(self):
+        adapter = self._inbound_adapter()
+        echo = {
+            "from_user_id": adapter._account_id, "to_user_id": "wxid_user1",
+            "message_type": weixin.MSG_TYPE_BOT, "message_id": "srv-echo-1",
+            "item_list": [{"type": weixin.ITEM_TEXT, "text_item": {"text": "bot reply text"}}]}
+
+        asyncio.run(adapter._process_message(echo))
+
+        assert adapter.handle_message.await_count == 0
+        _, conversation_id = weixin._guess_chat_type(echo, adapter._account_id)
+        assert adapter._quote_cache.resolve(conversation_id, {"svr_id": "srv-echo-1"}) == "bot reply text"
+
+    def test_quoted_media_message_resolves_to_its_descriptor(self, tmp_path, monkeypatch):
+        adapter = self._inbound_adapter()
+        adapter._cdn_base_url = "https://example.invalid"
+        monkeypatch.setattr(weixin, "cache_image_from_bytes_async",
+                            AsyncMock(side_effect=lambda data, ext: str(tmp_path / f"image{ext}")))
+
+        async def _fake_download(session, *, cdn_base_url, encrypted_query_param, aes_key_b64, full_url, timeout_seconds):
+            return b"fake-image"
+
+        monkeypatch.setattr(weixin, "_download_and_decrypt_media", _fake_download)
+
+        async def _drive():
+            await adapter._process_message({
+                "from_user_id": "wxid_user1", "message_id": "img-1",
+                "item_list": [{"type": weixin.ITEM_IMAGE, "image_item": {
+                    "media": {"encrypt_query_param": "q", "aes_key": "a" * 32}}}]})
+            await asyncio.sleep(0.15)
+            await adapter._process_message({
+                "from_user_id": "wxid_user1", "message_id": "srv-2",
+                "item_list": [{"type": weixin.ITEM_TEXT, "text_item": {"text": "这是什么"}, "ref_msg": {"svr_id": "img-1"}}]})
+            await asyncio.sleep(0.15)
+
+        asyncio.run(_drive())
+
+        assert adapter._quote_cache.resolve("wxid_user1", {"svr_id": "img-1"}) == "[图片]"
+        quoted = adapter.handle_message.await_args_list[-1][0][0]
+        assert quoted.text == "[引用: [图片]]\n这是什么"
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_outbound_text_is_remembered_for_quote_resolution(self, send_message_mock):
+        adapter = self._connected_adapter()
+        send_message_mock.return_value = {"ret": 0, "message_id": "srv-out-1"}
+
+        result = asyncio.run(adapter.send("wxid_test123", "出站消息"))
+
+        assert result.success is True
+        assert adapter._quote_cache.resolve("wxid_test123", {"svr_id": "srv-out-1"}) == "出站消息"
+
+    @patch.object(weixin, "_send_items", new_callable=AsyncMock)
+    @patch.object(weixin, "_upload_ciphertext", new=AsyncMock(return_value="enc-q"))
+    @patch.object(weixin, "_get_upload_url", new=AsyncMock(return_value={"upload_full_url": "https://cdn.example.com/upload"}))
+    def test_outbound_file_remembers_caption_and_media_descriptor(self, send_items_mock, tmp_path):
+        adapter = self._connected_adapter()
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"%PDF-1.4")
+        send_items_mock.side_effect = [{"ret": 0, "message_id": "srv-caption-1"}, {"ret": 0, "message_id": "srv-media-1"}]
+
+        result = asyncio.run(adapter.send_document("wxid_test123", str(doc), caption="请看报告"))
+
+        assert result.success is True
+        assert adapter._quote_cache.resolve("wxid_test123", {"svr_id": "srv-caption-1"}) == "请看报告"
+        assert adapter._quote_cache.resolve("wxid_test123", {"svr_id": "srv-media-1"}) == "[文件: report.pdf]"
+
+    def test_partial_text_quote_resolves_the_selected_fragment(self):
+        adapter = _make_adapter()
+        fragment = "报告初稿已经完成"
+        adapter._quote_cache.remember("wxid_user1", ["srv-1"], f"{fragment}，请审阅。后续安排另行通知")
+        ref = {"svr_id": "srv-1", "partial_text": {
+            "start": "报告初稿", "startindex": 0, "end": "完成", "endindex": 0,
+            "quotemd5": hashlib.md5(fragment.encode("utf-8")).hexdigest()}}
+
+        assert adapter._resolve_quote_reference("wxid_user1", ref) == fragment
+
+    def test_partial_text_failure_keeps_the_full_body(self):
+        adapter = _make_adapter()
+        adapter._quote_cache.remember("wxid_user1", ["srv-1"], "完整原文内容")
+        ref = {"svr_id": "srv-1", "partial_text": {"start": "不存在", "startindex": 0, "end": "也不存在", "endindex": 0}}
+
+        assert adapter._resolve_quote_reference("wxid_user1", ref) == "完整原文内容"
+
+    def test_unresolved_reference_returns_empty(self):
+        adapter = _make_adapter()
+
+        assert adapter._resolve_quote_reference("wxid_user1", {"svr_id": "nope"}) == ""
+        assert adapter._resolve_quote_reference("wxid_user1", {"message_item": {"msg_id": "nope"}}) == ""

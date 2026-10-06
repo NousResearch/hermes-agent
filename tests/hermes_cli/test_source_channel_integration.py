@@ -51,7 +51,7 @@ def source(tmp_path, monkeypatch):
     monkeypatch.setattr(update_cmd, "_resolve_update_options", lambda *_: opts)
     monkeypatch.setattr(update_cmd, "_begin_update_receipt_and_plan", lambda *_: None)
     monkeypatch.setattr(main, "_run_pre_update_backup", lambda *_: None)
-    monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: None)
+    monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda *_, **__: None)
     monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (False, ["git"], False))
     return SimpleNamespace(home=home, origin=origin, root=checkout, commits=commits, parser=parser)
 

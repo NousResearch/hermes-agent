@@ -470,8 +470,15 @@ class PeerRunsHTTPClient:
         return str(prepared.get("session_id") or prepared.get("id") or "")
 
     def _observation_receipt(
-        self, *, room_id: str, profile: str, session_id: str) -> dict[str, Any] | None:
-        record = None if self._observation_key is None else self._receipt(*self._observation_key)
+        self, *, room_id: str, profile: str, session_id: str,
+        task_id: str | None = None, execution_generation: int | None = None,
+    ) -> dict[str, Any] | None:
+        key = self._observation_key
+        if task_id is not None or execution_generation is not None:
+            key = (str(task_id or ""), int(execution_generation or 0))
+            if not key[0] or key[1] < 1:
+                raise PeerRunsHTTPError("peer observation identity is invalid")
+        record = None if key is None else self._receipt(*key)
         if record is None:
             return None
         scope = (record["room_id"], record["target_profile"], record["session_id"])
@@ -516,8 +523,11 @@ class PeerRunsHTTPClient:
 
     def history(
         self, *, room_id: str, profile: str, session_id: str, grant: str,
+        task_id: str | None = None, execution_generation: int | None = None,
     ) -> Sequence[Mapping[str, Any]]:
-        receipt = self._observation_receipt(room_id=room_id, profile=profile, session_id=session_id)
+        receipt = self._observation_receipt(
+            room_id=room_id, profile=profile, session_id=session_id,
+            task_id=task_id, execution_generation=execution_generation)
         if receipt is None:
             return []
         status = self._poll_receipt(receipt, grant=grant)
@@ -532,8 +542,12 @@ class PeerRunsHTTPClient:
             "content": status.get("output") or status.get("error") or ""}]
 
     def status(
-        self, *, room_id: str, profile: str, session_id: str, grant: str) -> Mapping[str, Any]:
-        receipt = self._observation_receipt(room_id=room_id, profile=profile, session_id=session_id)
+        self, *, room_id: str, profile: str, session_id: str, grant: str,
+        task_id: str | None = None, execution_generation: int | None = None,
+    ) -> Mapping[str, Any]:
+        receipt = self._observation_receipt(
+            room_id=room_id, profile=profile, session_id=session_id,
+            task_id=task_id, execution_generation=execution_generation)
         if receipt is None:
             return {"active": False, "task_id": None}
         status = self._poll_receipt(receipt, grant=grant)

@@ -1,0 +1,27 @@
+name: local-llm-polished
+repo: https://github.com/dmmeteo/hermes-local-llm-polished
+sha: 257751e3d84efae269d90fcf51c3028027cf1af2
+subdir: local-llm-polished
+description: >-
+  Local speech-to-text provider (local_llm_polished) with faster-whisper or sherpa-onnx Parakeet V3,
+  long-audio chunking, and an optional bounded LLM cleanup pass that falls back to the raw
+  transcript on failure. Disclosure — register() adds one transcription provider; audio is
+  decoded locally, but post-processing is on by default and sends the transcript text to the
+  LLM Hermes routes the stt_polish task to (remote unless pointed at a local endpoint), using
+  Hermes' existing credentials via the auxiliary client; runs ffmpeg/ffprobe for resampling,
+  speed changes and chunking; the opt-in Parakeet backend reads a local model export and on
+  first use installs pinned sherpa-onnx and numpy from PyPI into
+  ~/.hermes/plugin-runtimes/local-llm-polished/ (auto_install_deps: false disables); no tools,
+  hooks, background processes, telemetry or stored credentials.
+maintainer: dmmeteo
+tier: community
+category: voice
+requires_hermes: ">=0.15.0"
+docs_url: https://github.com/dmmeteo/hermes-local-llm-polished/tree/257751e3d84efae269d90fcf51c3028027cf1af2/local-llm-polished#readme
+version: "0.3.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

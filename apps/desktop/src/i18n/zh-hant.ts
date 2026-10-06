@@ -1,7 +1,7 @@
-import { zhHant as permissionModelCopy } from './permission-model-copy'
 import { billingRiskZhHant as billingRiskCopy } from './billing-risk-copy'
 import { defineLocale } from './define-locale'
 import { introZhHant } from './intro-zh-hant'
+import { zhHant as permissionModelCopy } from './permission-model-copy'
 import { zhHantArtifacts } from './zh-hant_artifacts'
 import { zhHantAssistant } from './zh-hant_assistant'
 import { zhHantBoot } from './zh-hant_boot'

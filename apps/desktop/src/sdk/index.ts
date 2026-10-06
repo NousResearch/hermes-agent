@@ -17,9 +17,6 @@
  *    and the future seam for per-plugin capability grants.
  *  - `ui.*` — the design language, so plugin UI looks native by default.
  */
-import { type PluginProfileRoute, pluginRouteStillRegistered } from './profile-route'
-export type { PluginProfileRoute } from './profile-route'
-
 
 import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
@@ -115,11 +112,13 @@ import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { type PluginProfileRoute, pluginRouteStillRegistered } from './profile-route'
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
 export { PANES_AREA, STATUSBAR_AREAS, TITLEBAR_AREAS } from './areas'
+export type { PluginProfileRoute } from './profile-route'
 
 // -- state: readonly views over the app's live atoms -------------------------
 

@@ -109,13 +109,11 @@ DEFAULT_CONFIG = {
         # TimeoutStopSec or risk SIGKILL mid-cleanup; for /restart prefer restart_after_turn_timeout
         # so turns finish BEFORE stop().
         "restart_drain_timeout": 0,
-        # Cron-only floor under the stop()/drain wait (seconds). Interrupted chat turns resume on
-        # the next message, but an interrupted cron run is recorded as a permanent failure, so it
-        # must not inherit restart_drain_timeout's 0. Clamped to the shutdown-watchdog leash minus
-        # teardown headroom (~50s unless TimeoutStopSec is raised). 0 = opt out.
-        # A chat turn interrupted by a restart is announced to the user and resumed on their next message;
-        # an interrupted cron run is written to jobs.json as a permanent failure that nobody is waiting on,
-        # so it must not inherit restart_drain_timeout's 0 (#82161).
+        # Floor under the stop()/drain wait (seconds) for cron jobs and api_server runs. Interrupted
+        # chat turns resume on the next message, but an interrupted cron run is recorded as a
+        # permanent failure and an interrupted /v1 run fails its waiting caller, so neither may
+        # inherit restart_drain_timeout's 0 (#82161, #132989). Clamped to the shutdown-watchdog
+        # leash minus teardown headroom (~50s unless TimeoutStopSec is raised). 0 = opt out.
         "cron_drain_timeout": 30,
         # In-band restart (/restart, SIGUSR1): refuse new work, then wait up to this many seconds
         # for in-flight agents/cron/api runs to finish before stop(). 0 = enter stop() at once. 30
@@ -760,9 +758,9 @@ DEFAULT_CONFIG = {
         # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s).
         "vision": _aux(120, download_timeout=30),
         # web_extract and session_search no longer use an aux LLM; leftover blocks in user config
-        # are ignored. Compression: raise timeout for local models. no_progress_timeout
-        # (Codex/Responses streams only): seconds without a substantive event before the stream
-        # fails fast; None = built-in 60s default. Independent of "timeout" (the overall request
+        # are ignored. Compression: raise timeout for local models. no_progress_timeout:
+        # seconds a streamed call goes without a substantive chunk before it fails fast into
+        # retry/fallback; None = built-in 60s default. Independent of "timeout" (the overall request
         # budget) — raising "timeout" alone does not widen this window. See #108104.
         "compression": _aux(120, no_progress_timeout=None),
         "skills_hub": _aux(30),

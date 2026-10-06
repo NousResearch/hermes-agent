@@ -123,6 +123,32 @@ def _require_boto3():
     return boto3
 
 
+def _bedrock_client_config(timeout: Optional[float] = None) -> Any:
+    """botocore.config.Config with the configured Bedrock request timeout, or None."""
+    if timeout is None:
+        try:
+            from hermes_cli.timeouts import get_provider_request_timeout
+            timeout = get_provider_request_timeout("bedrock")
+        except (ImportError, AttributeError):
+            timeout = None
+    if timeout is None or timeout <= 0:
+        return None
+    try:
+        from botocore.config import Config
+        return Config(read_timeout=timeout, connect_timeout=min(timeout, 60.0))
+    except (ImportError, AttributeError):
+        return None
+
+
+def _bedrock_client_kwargs(region: str) -> dict[str, Any]:
+    """Client kwargs for boto3 client creation, applying configured timeouts."""
+    kwargs: dict[str, Any] = {"region_name": region}
+    cfg = _bedrock_client_config()
+    if cfg is not None:
+        kwargs["config"] = cfg
+    return kwargs
+
+
 def _cached_client(cache: dict[str, Any], service: str, region: str):
     """Get or create a per-region boto3 client. Unscoped: the default credential chain, one client per
     region. Routed profile: one client per (home, service, region), built from that profile's scoped
@@ -130,7 +156,8 @@ def _cached_client(cache: dict[str, Any], service: str, region: str):
     from hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is None:
         if region not in cache:
-            cache[region] = _require_boto3().client(service, region_name=region)
+            boto3_mod = _require_boto3()
+            cache[region] = boto3_mod.client(service, **_bedrock_client_kwargs(region))
         return cache[region]
     key = (hermes_home_key(), service, region)
     client = _bedrock_clients_by_home.get(key)
@@ -138,7 +165,8 @@ def _cached_client(cache: dict[str, Any], service: str, region: str):
         # Scope check first: a cred-less multiplex profile must hit the ambient-chain
         # refusal, not a boto3 ImportError on hosts that lack the package.
         kwargs = scoped_aws_session_kwargs()
-        client = _require_boto3().Session(**kwargs).client(service, region_name=region)
+        boto3_mod = _require_boto3()
+        client = boto3_mod.Session(**kwargs).client(service, **_bedrock_client_kwargs(region))
         _bedrock_clients_by_home[key] = client
     return client
 

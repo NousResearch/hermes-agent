@@ -90,15 +90,37 @@ def _is_cjk(cp: int) -> bool:
     return any(lo <= cp <= hi for lo, hi in _CJK_RANGES)
 
 
+# Helpers below run on SANITIZED queries, where FTS5's rule holds: only the uppercase spelling is
+# an operator. ``_sanitize_fts5_query`` is the one place a lowercase ``and``/``or`` is promoted;
+# lowercase ``not`` stays a word on every route.
 def _non_operator_tokens(raw_query: str) -> List[str]:
-    return [t for t in raw_query.split() if t.upper() not in _FTS_OPERATORS]
+    return [t for t in raw_query.split() if t not in _FTS_OPERATORS]
 
 
 def _quote_fts_tokens(raw_query: str) -> str:
     """Quote each non-operator token (neutralising FTS5 special characters), keeping AND/OR/NOT."""
     return " ".join(
-        tok if tok.upper() in _FTS_OPERATORS else '"' + tok.replace('"', '""') + '"' for tok in raw_query.split()
+        tok if tok in _FTS_OPERATORS else '"' + tok.replace('"', '""') + '"' for tok in raw_query.split()
     )
+
+
+def _uppercase_interior_operators(query: str) -> str:
+    """Uppercase a bare ``and``/``or`` that sits between two terms: FTS5 only honours the
+    uppercase spelling and matches ``python or rust`` as the literal word "or". Lowercase ``not``
+    stays a word (``tests do not pass`` must not exclude "pass"); leading, trailing and stacked
+    operators are left alone."""
+    tokens = query.split()
+    is_op = [tok.upper() in _FTS_OPERATORS for tok in tokens]
+    interior = [
+        i
+        for i in range(1, len(tokens) - 1)
+        if tokens[i].upper() in ("AND", "OR") and not is_op[i - 1] and not is_op[i + 1]
+    ]
+    if not any(tokens[i] != tokens[i].upper() for i in interior):
+        return query
+    for i in interior:
+        tokens[i] = tokens[i].upper()
+    return " ".join(tokens)
 
 
 def _like_params(term: str) -> List[str]:
@@ -839,9 +861,11 @@ class SessionSearchMixin:
         # 3. Collapse repeated * and drop leading * (prefix needs a char).
         sanitized = re.sub(r"\*+", "*", sanitized)
         sanitized = re.sub(r"(^|\s)\*", r"\1", sanitized)
-        # 4. Drop dangling boolean operators at start/end (syntax errors).
+        # 4. Drop dangling boolean operators at start/end (syntax errors); uppercase interior
+        # ones (quoted phrases are still placeholders here, so their words are untouched).
         sanitized = re.sub(r"(?i)^(AND|OR|NOT)\b\s*", "", sanitized.strip())
         sanitized = re.sub(r"(?i)\s+(AND|OR|NOT)\s*$", "", sanitized.strip())
+        sanitized = _uppercase_interior_operators(sanitized)
         # 5. Quote dotted/hyphenated/underscored terms in ONE pass (sequential passes
         # double-quote ``my-app.config``).
         sanitized = re.sub(r"\b(\w+(?:[._-]\w+)+)\b", r'"\1"', sanitized)
@@ -880,10 +904,9 @@ class SessionSearchMixin:
         whole units: ``"docker networking" tls`` -> ``"docker networking" OR tls``."""
         units: List[str] = []
         for raw_token in _LIKE_TOKEN_RE.findall(query):
-            upper = raw_token.upper()
-            if upper in {"OR", "NOT"}:
+            if raw_token in {"OR", "NOT"}:
                 return None
-            if upper != "AND":
+            if raw_token != "AND":
                 units.append(raw_token)
         return " OR ".join(units) if len(units) >= 2 else None
 
@@ -969,19 +992,19 @@ class SessionSearchMixin:
     @staticmethod
     def _compile_like_boolean_query(query: str) -> Tuple[str, List[Any], Optional[str]]:
         """Compile the supported FTS boolean subset into LIKE predicates: terms within an OR
-        group are ANDed (FTS5's implicit conjunction) and ``NOT`` negates the next term."""
+        group are ANDed (FTS5's implicit conjunction) and ``NOT`` negates the next term. As in
+        FTS5 only uppercase operators count, so lowercase ``not`` stays a searched word."""
         groups: List[List[Tuple[str, bool]]] = [[]]
         negate_next = False
         for raw_token in _LIKE_TOKEN_RE.findall(query):
-            operator = raw_token.upper()
-            if operator == "OR":
+            if raw_token == "OR":
                 if groups[-1]:
                     groups.append([])
                 negate_next = False
                 continue
-            if operator in {"AND", "NEAR"}:
+            if raw_token in {"AND", "NEAR"}:
                 continue
-            if operator == "NOT":
+            if raw_token == "NOT":
                 negate_next = True
                 continue
             term = raw_token.strip('"').strip("*").strip()
@@ -1193,8 +1216,9 @@ class SessionSearchMixin:
         missed phrases). cjk-bigram serves every shape except queries wanting rows the
         substring indexes exclude (role='tool', cron/subagent sources) and LONE
         1-char CJK runs (bigrams only exist for runs >=2 — LIKE is broader); then trigram
-        (>=3 CJK chars per token); then a LIKE substring scan with one clause per
-        non-operator token so "广西 OR 桂林 OR 漓江" matches each term."""
+        (>=3 CJK chars per token); then a LIKE substring scan: any term by default, and the exact
+        AND/OR/NOT of ``_compile_like_boolean_query`` once the query spells an operator
+        ("部署 and 监控" needs both terms, "部署 NOT 测试" excludes 测试)."""
         raw_query = _strip_cjk_wildcards(query).strip('"').strip()
         match_query = _quote_fts_tokens(raw_query)
         if self._fts_cjk_available and not wants_unindexed_rows and not self._has_lone_cjk_run(raw_query):
@@ -1207,14 +1231,19 @@ class SessionSearchMixin:
             matches = self._match_rows("messages_fts_trigram", match_query, fail_open="Trigram", **route)
             if matches is not None:
                 return matches
-        non_op_tokens = _non_operator_tokens(raw_query) or [raw_query]
-        like_params: list = [p for tok in non_op_tokens for p in _like_params(tok)]
-        like_where = [f"({' OR '.join([_LIKE_ANY_COLUMN_SQL] * len(non_op_tokens))})"]
+        # Explicit operators compile exactly; without one this arm keeps its any-term recall
+        # (CJK queries never take the unicode61 route's OR-relaxed retry).
+        tokens = _LIKE_TOKEN_RE.findall(raw_query)
+        like_query = raw_query if any(tok in _FTS_OPERATORS for tok in tokens) else " OR ".join(tokens)
+        predicate, like_params, snippet_term = self._compile_like_boolean_query(like_query)
+        if not predicate or snippet_term is None:
+            return []
+        like_where = [f"({predicate})"]
         filters = {k: route[k] for k in ("include_inactive", "source_filter", "exclude_sources", "role_filter",
                                          "after_ts", "before_ts")}
         _search_filter_clauses(like_where, like_params, **filters)
-        # instr() for the snippet uses the first search token.
-        return self._like_rows(like_where, [non_op_tokens[0], *like_params, route["limit"], route["offset"]],
+        # instr() for the snippet uses the first positive search term.
+        return self._like_rows(like_where, [snippet_term, *like_params, route["limit"], route["offset"]],
                                order_by="ORDER BY m.timestamp DESC", limit_sql="LIMIT ? OFFSET ?")
 
     def _search_unindexed_gap(self, fts_query: str, limit: int, **filters) -> List[Dict[str, Any]]:
@@ -1225,7 +1254,7 @@ class SessionSearchMixin:
         if status is None or limit <= 0:
             return []
         terms = [tok for tok in (t.strip('"').strip("*").strip() for t in _LIKE_TOKEN_RE.findall(fts_query))
-                 if tok and tok.upper() not in _LIKE_SKIP_TOKENS]
+                 if tok and tok not in _LIKE_SKIP_TOKENS]
         if not terms:
             return []
         where = ["m.id > ? AND m.id <= ?", *([_LIKE_ANY_COLUMN_SQL] * len(terms))]

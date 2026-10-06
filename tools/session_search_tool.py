@@ -672,7 +672,8 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Search query (discovery shape). Keywords, phrases, or boolean "
-                    "expressions to find in past sessions. Omit to browse recent "
+                    "expressions to find in past sessions. Terms are ANDed; use OR for "
+                    "either term and uppercase NOT to exclude. Omit to browse recent "
                     "sessions. Ignored when session_id + around_message_id are set "
                     "(scroll shape)."
                 ),

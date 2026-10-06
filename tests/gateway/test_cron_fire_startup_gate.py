@@ -58,8 +58,10 @@ async def _post_fire(adapter, runner):
     app.router.add_post("/api/cron/fire", adapter._handle_cron_fire)
     with patch("gateway.run._gateway_runner_ref", lambda: runner):
         async with TestClient(TestServer(app)) as cli:
-            return await cli.post(
+            resp = await cli.post(
                 "/api/cron/fire", headers={"Authorization": "Bearer good"}, json={"job_id": "job-1"})
+            await resp.read()  # keep the body readable after the client closes
+            return resp
 
 
 async def _wait_for(predicate, timeout=2.0):

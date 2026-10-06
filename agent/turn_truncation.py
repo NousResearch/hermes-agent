@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.error_classifier import FailoverReason
 from agent.message_metadata import append_message
 from agent.message_sanitization import close_interrupted_tool_sequence
-from agent.repetition_guard import is_repetition_dominated
+from agent.repetition_guard import is_repetition_dominated, repetition_excerpt
 from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_failure_copy import content_policy_copy, provider_label_for, site_copy, stamp_failure
 from agent.turn_retry_state import TurnRetryState
@@ -297,6 +297,40 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
     return None
 
 
+def _repetition_fallback(st: _Trunc, _retry: TurnRetryState, content: Any) -> Optional[TruncationVerdict]:
+    """A repetition loop is a property of the model on this prompt, not of the request: hand the
+    turn to the next fallback model (same roll-back as ``_content_filter_fallback``) before the
+    partial is discarded. None when no fallback is left."""
+    agent = st.agent
+    logger.warning("%sRepetition loop ended the response (%s chars, model=%s provider=%s): %s",
+                   agent.log_prefix, len(content) if isinstance(content, str) else 0, agent.model, agent.provider,
+                   repetition_excerpt(content if isinstance(content, str) else ""))
+    if not agent._try_activate_fallback():
+        return None
+    agent._vprint(f"{agent.log_prefix}🔁 Repetition loop — retrying on fallback {agent.model} ({agent.provider})",
+                  force=True, diagnostic=True)
+    if st.truncated_response_parts:
+        st.messages = agent._get_messages_up_to_last_assistant(st.messages)
+    for _frag in st.messages:
+        if isinstance(_frag, dict):
+            _frag.pop("_length_continuation_fragment", None)
+            _frag.pop("_length_continuation_nudge", None)
+    agent._session_messages = st.messages
+    st.length_continue_retries = 0
+    st.truncated_response_parts = []
+    st.retry_count = 0
+    st.compression_attempts = 0
+    _retry.primary_recovery_attempted = False
+    _retry.restart_with_rebuilt_messages = True
+    # The looped text already streamed: close that segment so clients discard it before the retry.
+    if agent.stream_delta_callback:
+        try:
+            agent.stream_delta_callback(None)
+        except Exception:
+            logger.debug("stream boundary callback raised", exc_info=True)
+    return st.done("break")
+
+
 def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -> TruncationVerdict:
     """Text truncation (no tool calls): append the fragment + a continuation nudge (up to
     4), then the ceiling exit that drops the fragment trail and keeps the stitched partial.
@@ -506,10 +540,18 @@ def recover_from_truncation(
     _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
 
     abort = _abort_reason(agent, _trunc_content, _trunc_has_tool_calls)
+    if getattr(response, "_repetition_terminated", False):
+        abort = _REPETITION_DOMINATED  # the stream was cut mid-loop (chat_completion_helpers)
+    if abort is _REPETITION_DOMINATED:
+        retry = _repetition_fallback(st, _retry, _trunc_content)
+        if retry is not None:
+            return retry
     if abort is not None:
         line, user_response, error = abort
         agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
-        return st.end_turn(user_response, error)
+        # A typed verdict so a gateway can retry or say it in its own words (LKP-1014).
+        failure = ("repetition", True) if abort is _REPETITION_DOMINATED else ("truncated", True)
+        return st.end_turn(user_response, error, failure=failure)
 
     if agent.api_mode in _CONTINUABLE_MODES:
         cf = _content_filter_fallback(st, _retry)

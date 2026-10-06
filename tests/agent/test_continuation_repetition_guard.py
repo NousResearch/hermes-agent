@@ -135,3 +135,47 @@ class TestContinuationRepetitionGuard:
 
         assert result["partial"] is True
         assert loop_agent.client.chat.completions.create.call_count == 4
+
+
+class TestRepetitionFallback:
+    """LKP-1014: a repetition loop moves the turn to the fallback chain before the partial is discarded,
+    and the discard, when nothing is left to try, is typed ``repetition`` so a gateway can retry."""
+
+    def test_fallback_is_tried_before_the_partial_is_discarded(self, loop_agent):
+        echo = _INCIDENT_ECHO * 2000
+        loop_agent.client.chat.completions.create.side_effect = [
+            _response(echo), _response("The hearing is on the 9th.", finish_reason="stop", response_id="ok-1")]
+        activations = []
+
+        def activate(*args, **kwargs):
+            activations.append(loop_agent.model)
+            loop_agent.model = "anthropic/claude-sonnet-5"
+            return len(activations) == 1
+
+        with patch.object(loop_agent, "_try_activate_fallback", side_effect=activate):
+            result = _run(loop_agent, "when is the hearing?")
+
+        assert activations and loop_agent.client.chat.completions.create.call_count == 2
+        assert result["completed"] is True and result["final_response"] == "The hearing is on the 9th."
+        assert not any(isinstance(m, dict) and echo in str(m.get("content") or "") for m in result["messages"])
+
+    def test_without_a_fallback_the_discard_is_typed_repetition(self, loop_agent):
+        loop_agent.client.chat.completions.create.side_effect = [_response(_INCIDENT_ECHO * 2000)]
+
+        with patch.object(loop_agent, "_try_activate_fallback", return_value=False) as activate:
+            result = _run(loop_agent, "write me a long report")
+
+        assert activate.called
+        assert result["partial"] is True and "Repetition" in result["final_response"]
+        assert (result["failure_reason"], result["failure_retryable"]) == ("repetition", True)
+
+    def test_a_stream_cut_mid_loop_takes_the_repetition_path(self, loop_agent):
+        stub = _response("A short head of the loop. " * 3)  # too short to judge on its own
+        stub._repetition_terminated = True  # set by the mid-stream guard
+        loop_agent.client.chat.completions.create.side_effect = [stub]
+
+        with patch.object(loop_agent, "_try_activate_fallback", return_value=False):
+            result = _run(loop_agent, "write me a long report")
+
+        assert loop_agent.client.chat.completions.create.call_count == 1, "never continued"
+        assert result["failure_reason"] == "repetition"

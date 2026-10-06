@@ -18,7 +18,7 @@ from hermes_constants import display_hermes_home
 # Failure codes minted by loop sites that are not provider verdicts (see module docstring).
 SITE_FAILURE_CODES = frozenset({
     "context_overflow", "truncated", "invalid_response", "empty_response", "loop_error",
-    "interpreter_shutdown", "session_busy",
+    "interpreter_shutdown", "session_busy", "repetition",
 })
 
 

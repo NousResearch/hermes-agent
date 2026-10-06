@@ -39,6 +39,7 @@ _REASON_TO_LAYER = {
     "loop_error": LAYER_GATEWAY, "interpreter_shutdown": LAYER_GATEWAY, "session_busy": LAYER_GATEWAY,
     "truncated": LAYER_PROVIDER, "empty_response": LAYER_PROVIDER, "invalid_response": LAYER_PROVIDER,
     "context_overflow": LAYER_PROVIDER,  # a bigger-window model IS the fix, so Switch provider applies
+    "repetition": LAYER_PROVIDER,  # the model looped on this prompt; another model is the fix
 }
 
 # Failures between us and the base_url (not a provider verdict); on a

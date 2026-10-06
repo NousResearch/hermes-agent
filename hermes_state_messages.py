@@ -63,7 +63,7 @@ _DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND 
 _DISPLAY_INDEX_MISSING_SQL = ("SELECT 1 FROM messages WHERE session_id = ?" + _DISPLAY_ACTIVE_CLAUSE
                               + " AND (display_order IS NULL OR display_identity IS NULL) LIMIT 1")
 _ACTIVE_IDS_SQL = "SELECT id FROM messages WHERE session_id = ? AND active = 1 ORDER BY id"
-_LIVE_IDENTITY_SQL = ("SELECT id, role, content, tool_call_id, tool_calls, message_uid FROM messages "
+_LIVE_IDENTITY_SQL = ("SELECT id, role, content, tool_call_id, tool_calls, message_uid, media_content FROM messages "
                       "WHERE session_id = ? AND active = 1 ORDER BY id LIMIT ?")
 _SET_COUNTERS_SQL = "UPDATE sessions SET message_count = ?, tool_call_count = ?"
 _RESET_COUNTERS_SQL = "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?"
@@ -885,7 +885,10 @@ class SessionMessagesMixin:
                 break
             identity = self._row_identity(role, msg.get("content"), msg.get("tool_call_id"),
                                           _parse_tool_calls(msg.get("tool_calls")))
-            if identity != self._row_identity(row[1], self._decode_content(row[2]), row[3], _parse_tool_calls(row[4])):
+            # A live view may hold either the text projection or the media-rehydrated content (model reloads).
+            stored = [self._decode_content(row[2])]
+            stored += [restore_media_content(self.db_path, row[6], stored[0])] if row[6] else []
+            if all(identity != self._row_identity(row[1], c, row[3], _parse_tool_calls(row[4])) for c in stored):
                 break
             msg["_row_id"] = row[0]
             if row[5]:

@@ -12,7 +12,8 @@ export const esOverrides = {
       'Las métricas compartidas solo contienen contadores acotados. Nunca prompts, archivos, rutas ni textos de error. La recopilación es local. Enviarlas a Nous es una aceptación aparte.',
     whatIsCollected: 'Qué se recopila',
     collectedIntro: 'Solo contadores acotados:',
-    collectedActivity: 'Actividad, duración de sesiones, resultados y clases de error, incluido un motivo de una lista fija cuando una escritura en memoria o una compresión de contexto se rechaza, falla o se omite',
+    collectedActivity:
+      'Actividad, duración de sesiones, resultados y clases de error, incluido un motivo de una lista fija cuando una escritura en memoria o una compresión de contexto se rechaza, falla o se omite',
     collectedModels: 'Rutas de modelo y totales de tokens',
     collectedNames: 'Nombres de herramientas, comandos y elementos del catálogo integrados',
     collectedMilestones: 'Recuentos de configuración agrupados',

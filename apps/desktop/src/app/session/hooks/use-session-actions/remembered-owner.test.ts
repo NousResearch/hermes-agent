@@ -1,11 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import {
-  $sessions,
-  _resetSessionOwnerHintsForTests,
-  getSessionOwnerHint,
-  setSessionOwnerHint
-} from '@/store/session'
+import { $sessions, _resetSessionOwnerHintsForTests, getSessionOwnerHint, setSessionOwnerHint } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { rememberedOwnerForResume } from './remembered-owner'

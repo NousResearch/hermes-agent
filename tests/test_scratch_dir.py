@@ -1,10 +1,12 @@
 """Scratch dir contract: TMPDIR/TMP/TEMP follow HERMES_HOME/cache/scratch unless the user set them."""
 
 import os
+import shutil
 import stat
 import subprocess
 import sys
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -252,6 +254,43 @@ def test_prune_reaps_process_living_in_idle_entry_and_spares_live_tree(tmp_path)
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=10)
+
+
+def test_prune_records_removals_and_kills_in_scratch_prune_log(tmp_path: Path) -> None:
+    """Every removed entry and every signalled process leaves a line in
+    ``<home>/logs/scratch-prune.log``: the prune's own handler writes it, so the boot-time
+    prune (before ``setup_logging()``) is not silent. An entry rmtree could not delete is
+    neither counted nor recorded as removed (#132401)."""
+    import subprocess
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    gone, stuck = scratch / "idle-lane", scratch / "stuck-lane"
+    ancient = time.time() - 30 * 3600
+    for entry in (gone, stuck):
+        entry.mkdir()
+        (entry / "out.md").write_text("deliverable", encoding="utf-8")
+        for path in (entry / "out.md", entry):
+            os.utime(path, (ancient, ancient))
+    worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=str(gone),
+                              stdin=subprocess.DEVNULL)
+    real_rmtree = shutil.rmtree
+
+    def rmtree(path: str | os.PathLike[str], *args: object, **kwargs: object) -> None:
+        if os.path.realpath(path) != os.path.realpath(stuck):
+            real_rmtree(path, *args, **kwargs)
+
+    try:
+        with patch("hermes_constants_scratch.shutil.rmtree", rmtree):
+            assert prune_scratch_dir(scratch) == 1
+        assert worker.wait(timeout=10) is not None
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+            worker.wait(timeout=10)
+    log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
+    assert f"removed {gone} (" in log
+    assert f"sent TERM pid={worker.pid} " in log
+    assert f"could not fully remove {stuck}" in log and f"removed {stuck}" not in log
 
 
 def test_prune_releases_git_worktree_registration_of_idle_entry(tmp_path):

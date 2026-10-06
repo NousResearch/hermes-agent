@@ -3082,6 +3082,7 @@ dashboard:
     password: ""              # plaintext fallback (hashed in-memory at load)
     secret: ""                # token-signing key; blank → random per-process
     session_ttl_seconds: 0    # 0 → plugin default (12h)
+    totp_secret: ""           # base32 TOTP secret → one-time code as second factor (hermes dashboard totp)
   drain_auth:                 # Drain-control service-credential gate (dashboard_auth/drain plugin)
     scope: "drain"            # capability label on the verified principal
     min_secret_chars: 43      # entropy bar (url-safe-b64 chars; 43 ≈ 256 bits)

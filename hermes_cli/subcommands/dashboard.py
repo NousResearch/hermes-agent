@@ -74,8 +74,13 @@ def build_serve_parser(
 
 
 def build_dashboard_parser(
-    subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable) -> None:
+    subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable,
+    cmd_dashboard_totp: Callable | None = None) -> None:
     """Attach ``dashboard`` (browser UI) and ``serve`` (headless backend the desktop spawns)."""
+    if cmd_dashboard_totp is None:
+        def cmd_dashboard_totp(args):
+            from hermes_cli.dashboard_totp import cmd_dashboard_totp as _impl
+            return _impl(args)
     dashboard_parser = subparsers.add_parser(
         "dashboard", help="Start the web UI dashboard",
         description="Launch the Hermes Agent web dashboard for managing config, API keys, and sessions",
@@ -123,3 +128,28 @@ def build_dashboard_parser(
             "portal. Also settable via HERMES_DASHBOARD_PORTAL_URL. Mainly for "
             "testing against a staging/preview portal.")
     dashboard_register_parser.set_defaults(func=cmd_dashboard_register)
+
+    dashboard_totp_parser = dashboard_subparsers.add_parser(
+        "totp",
+        help="Pair an authenticator app (Microsoft/Google Authenticator, …) as a second factor "
+             "for username/password dashboard login",
+        description="Enable two-factor authentication for the dashboard's username/password "
+            "login: shows a QR code / setup key to add to an authenticator app, verifies one "
+            "code, and saves the TOTP secret under dashboard.basic_auth.totp_secret. "
+            "Restart the dashboard afterwards.")
+    dashboard_totp_parser.add_argument(
+        "--disable", action="store_true", help="Turn two-factor authentication off")
+    dashboard_totp_parser.add_argument(
+        "--force", action="store_true",
+        help="Pair a new authenticator even if one is already enrolled (replaces it)")
+    dashboard_totp_parser.add_argument(
+        "--env", action="store_true",
+        help="Store the secret as HERMES_DASHBOARD_BASIC_AUTH_TOTP_SECRET in ~/.hermes/.env "
+             "instead of config.yaml")
+    dashboard_totp_parser.add_argument(
+        "--show-uri", dest="show_uri", action="store_true",
+        help="Also print the raw otpauth:// URI")
+    dashboard_totp_parser.add_argument(
+        "--yes", action="store_true",
+        help="Skip the confirmation code (non-interactive; you may lock yourself out)")
+    dashboard_totp_parser.set_defaults(func=cmd_dashboard_totp)

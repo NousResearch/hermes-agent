@@ -39,11 +39,9 @@ def test_cron_store_writability_is_exported(monkeypatch):
     import errno
     from agent.monitoring.cron_health import build_cron_health_snapshot
     from cron import store_health
-    from cron.jobs import _current_cron_store
-
     monkeypatch.setattr(store_health, "_degraded", {})
     monkeypatch.setattr(store_health, "_listener", None)
-    store_health.note_unwritable(_current_cron_store().cron_dir, OSError(errno.ENOSPC, "full"), "x", "advance",
+    store_health.note_unwritable(OSError(errno.ENOSPC, "full"), "x", "advance",
                                  [{"id": "job", "next_run_at": "2026-06-22T12:00:00+00:00"}])
     degraded = build_cron_health_snapshot()
     assert (_metric(degraded, "hermes.cron.store.writable").value,

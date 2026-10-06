@@ -1249,13 +1249,6 @@ def _write_marker(name: str, text: str, tmp_prefix: str) -> None:
         pass
 
 
-def warn_store_unwritable(exc: OSError, consequence: str, site: str, skipped_jobs=()) -> None:
-    """Record a failed cron store write (ENOSPC/EROFS/EACCES) in the store's degraded state, which
-    warns once per outage. Callers skip the dispatch that needed the write: no job runs without a
-    durable advance/fire claim."""
-    store_health.note_unwritable(_current_cron_store().cron_dir, exc, consequence, site, skipped_jobs)
-
-
 def record_ticker_heartbeat(success: bool = False) -> None:
     """Record ticker liveness (+ last-success marker when ``success``) so `cron status` can tell
     "alive but failing" from "firing"; scoped per profile store.
@@ -1450,7 +1443,7 @@ def load_jobs() -> List[Dict[str, Any]]:
             save_jobs(jobs, replace=unmergeable and _peek_jobs_unlocked() is None)
             logger.warning("Auto-repaired jobs.json (%s)", repair)
         except OSError as exc:  # repaired in memory; the next load retries the persist
-            warn_store_unwritable(exc, f"jobs.json repair ({repair}) not persisted", "load")
+            store_health.note_unwritable(exc, f"jobs.json repair ({repair}) not persisted", "load")
     _record_load_stamp(pre_read_stamp)
     return jobs
 
@@ -3357,7 +3350,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
         try:
             save_jobs(raw_jobs, removed_ids=scan.removed or None)
         except OSError as exc:  # repairs live in memory; the next tick retries the persist
-            warn_store_unwritable(exc, "due-scan repairs not persisted", "scan")
+            store_health.note_unwritable(exc, "due-scan repairs not persisted", "scan")
     return due
 
 

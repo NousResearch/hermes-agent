@@ -88,7 +88,7 @@ def test_due_jobs_are_returned_when_the_store_cannot_be_saved(cron_store, full_d
         assert [d["id"] for d in get_due_jobs()] == ["due-job"]
 
         with cronjobs.use_cron_store(cron_store / "other-profile"):  # a second profile's store
-            cronjobs.warn_store_unwritable(OSError(errno.ENOSPC, "No space left on device"), "x", "scan")
+            store_health.note_unwritable(OSError(errno.ENOSPC, "No space left on device"), "x", "scan")
 
     # One WARNING per outage per store (its degraded state), not one per 60s scan, and a
     # sibling profile on the same errno is not silenced; each names its store.
@@ -239,7 +239,7 @@ def test_skipped_oneshot_survives_recovery_by_any_save(cron_store, monkeypatch):
                 repeat={"times": 1, "completed": 0})
     save_jobs([once])
     enospc = OSError(errno.ENOSPC, "No space left on device")
-    cronjobs.warn_store_unwritable(enospc, "x", "claim", [once])
+    store_health.note_unwritable(enospc, "x", "claim", [once])
     clock["now"] = FIXED_NOW + timedelta(minutes=10)
     save_jobs(load_jobs() + [dict(_due_job("other"), next_run_at=(clock["now"] + timedelta(hours=1)).isoformat())])
     assert store_health.degraded_record(cron_store / "cron") is None
@@ -266,7 +266,7 @@ def test_idle_tick_reprobes_a_degraded_store_and_clears_it(cron_store, monkeypat
     probe_result = [enospc]
     monkeypatch.setattr(store_health, "probe_store", lambda _d: probe_result[0])
     save_jobs([])
-    cronjobs.warn_store_unwritable(enospc, "x", "scan")
+    store_health.note_unwritable(enospc, "x", "scan")
     assert scheduler.tick(verbose=False, sync=True) == 0  # idle and still full: stays degraded
     probe_result[0] = None
     clock["mono"] += 30.0
@@ -325,21 +325,21 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
         install_cron_store_notices(runner, loop)
         enospc = OSError(errno.ENOSPC, "No space left on device")
         for site in ("scan", "advance", "claim"):  # one outage, many failing sites
-            cronjobs.warn_store_unwritable(enospc, "x", site, [_due_job()])
+            store_health.note_unwritable(enospc, "x", site, [_due_job()])
         save_jobs([_due_job()])
         save_jobs([_due_job()])
-        cronjobs.warn_store_unwritable(enospc, "x", "scan", [_due_job()])  # flaps back within the window
+        store_health.note_unwritable(enospc, "x", "scan", [_due_job()])  # flaps back within the window
         settle()
         assert [m[:2] for _, m in sent] == ["⚠️"]  # still down: no "writable again", ever
         save_jobs([_due_job()])
-        cronjobs.warn_store_unwritable(enospc, "x", "scan", [_due_job()])  # re-entry cancels the pending recovery
+        store_health.note_unwritable(enospc, "x", "scan", [_due_job()])  # re-entry cancels the pending recovery
         save_jobs([_due_job()])
         settle()
-        cronjobs.warn_store_unwritable(enospc, "x", "scan", [_due_job()])  # already writable when the loop runs:
+        store_health.note_unwritable(enospc, "x", "scan", [_due_job()])  # already writable when the loop runs:
         save_jobs([_due_job()])  # nothing announced, so no lone "recovered" either
         settle()
         install_cron_store_notices(SimpleNamespace(), loop)  # a send that raises is logged, not lost
-        cronjobs.warn_store_unwritable(enospc, "x", "scan", [_due_job()])
+        store_health.note_unwritable(enospc, "x", "scan", [_due_job()])
         settle()
     finally:
         loop.close()

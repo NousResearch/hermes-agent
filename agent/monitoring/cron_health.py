@@ -153,7 +153,7 @@ _METRIC_GROUPS: tuple[tuple[Callable[[list[GatewayMetric]], None], str], ...] = 
     (_job_metrics, "cron job metrics unavailable"),
     (_single_metric("hermes.cron.jobs.running", lambda: len(get_running_job_ids())), "cron running-job metric unavailable"),
     (_single_metric("hermes.cron.store.writable", lambda: int(degraded_record() is None)), "cron store metric unavailable"),
-    (_single_metric("hermes.cron.store.skipped_runs", lambda: getattr(degraded_record(), "skipped_runs", 0)),
+    (_single_metric("hermes.cron.store.skipped_runs", lambda: (r.skipped_runs if (r := degraded_record()) else 0)),
      "cron store metric unavailable"),
 )
 

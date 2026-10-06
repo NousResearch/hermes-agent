@@ -502,8 +502,10 @@ def cron_status():
     from hermes_cli.profiles import get_active_profile_name
     print()
 
-    if (store_report := _store_unwritable_report()) is not None:
-        store_report["skipped"] = sum(1 for j in list_jobs(include_disabled=False)
+    store_report = _store_unwritable_report()  # before list_jobs: loading re-secures the dir mode
+    active_jobs = list_jobs(include_disabled=False)
+    if store_report is not None:
+        store_report["skipped"] = sum(1 for j in active_jobs
                                       if (_next_run_overdue_seconds(j.get("next_run_at")) or 0) > 0)
         _print_store_unwritable(store_report)
         print()
@@ -594,7 +596,7 @@ def cron_status():
                       "  Check: hermes cron status from this profile should show its ticker heartbeat.\n")
 
     print()
-    _print_active_jobs_summary(list_jobs(include_disabled=False))
+    _print_active_jobs_summary(active_jobs)
     print()
 
 

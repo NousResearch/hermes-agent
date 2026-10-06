@@ -6,7 +6,6 @@ import logging
 import time
 
 from cron import store_health
-from cron.jobs import warn_store_unwritable
 
 logger = logging.getLogger("cron.scheduler")
 
@@ -118,10 +117,9 @@ def _tick_admitted(
         except OSError as exc:
             # No durable advance -> a crash mid-run would re-fire recurring jobs; skipping is the
             # at-most-once side. One-shots still go through their own fire claim.
-            recurring = [j.get("schedule", {}).get("kind") in {"cron", "interval"} for j in due_jobs]
-            skipped = [j for j, r in zip(due_jobs, recurring) if r]
-            due_jobs = [j for j, r in zip(due_jobs, recurring) if not r]
-            warn_store_unwritable(exc, f"skipped {len(skipped)} recurring job(s)", "advance", skipped)
+            skipped = [j for j in due_jobs if (j.get("schedule") or {}).get("kind") in {"cron", "interval"}]
+            due_jobs = [j for j in due_jobs if j not in skipped]
+            store_health.note_unwritable(exc, f"skipped {len(skipped)} recurring job(s)", "advance", skipped)
             if not due_jobs:
                 _sched._sweep_mcp_orphans()
                 return 0

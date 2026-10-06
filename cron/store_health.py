@@ -95,10 +95,12 @@ def _run_keys(jobs: Iterable[dict]) -> set:
     return {(job.get("id"), job.get("next_run_at")) for job in jobs}
 
 
-def note_unwritable(cron_dir: Path, exc: OSError, consequence: str, site: str,
-                    skipped_jobs: Iterable[dict] = ()) -> None:
-    """Record a failed store write; WARN once, when the store enters the degraded state."""
-    store = str(cron_dir)
+def note_unwritable(exc: OSError, consequence: str, site: str, skipped_jobs: Iterable[dict] = (),
+                    cron_dir: Optional[Path] = None) -> None:
+    """Record a failed write to ``cron_dir`` (default: the active store); WARN once, when the store
+    enters the degraded state. Callers skip the dispatch that needed the write: no job runs
+    without a durable advance/fire claim."""
+    store = str(cron_dir if cron_dir is not None else _active_cron_dir())
     with _lock:
         record = _degraded.get(store)
         entered = record is None

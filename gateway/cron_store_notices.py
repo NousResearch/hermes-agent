@@ -81,7 +81,7 @@ async def send_cron_store_notice(runner, event: str, record) -> None:
     key = "gateway.cron_store.unwritable" if event == "unwritable" else "gateway.cron_store.recovered"
     message = t(key, **fields)
     store_home = hermes_home_key(Path(record.store).parent)
-    served_homes = getattr(runner, "_served_profile_homes", None) or {}
+    served_homes = runner._served_profile_homes or {}
     logger.info("Broadcasting cron store %s notice for %s", event, record.store)
     for profile, platform, _cfg, home, transport in list(runner._served_home_channel_transports()):
         served_home = served_homes.get(profile) if profile is not None else None

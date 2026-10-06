@@ -42,6 +42,8 @@ export interface ChannelResolverDeps {
   /** Locally trusted signing identity, not a value supplied by the feed. */
   signer: string
   fetch?: typeof fetch
+  /** Resolved update proxy URL (#60049); when set without `fetch`, `withProxy` builds a proxied fetch. */
+  proxyUrl?: string
 }
 
 function assertVersionFloor(version: string, floor: string): void {
@@ -73,6 +75,19 @@ export class ChannelResolver {
     this.base = channelPublicBase(deps.build.publicBase)
     this.fetcher = deps.fetch ?? fetch
     validateChannelName(deps.build.channel)
+  }
+
+  /**
+   * A fetch bound to a proxy dispatcher (#60049): a GUI-launched app inherits
+   * no proxy env, so metadata reads on proxied networks must dial through the
+   * resolved update proxy explicitly. Null proxy keeps the global fetch.
+   */
+  static withProxy(deps: ChannelResolverDeps, proxyFetch: ((proxy: string) => typeof fetch) | null): ChannelResolver {
+    const proxy = proxyFetch && deps.proxyUrl ? deps.proxyUrl : null
+
+    return proxy
+      ? new ChannelResolver({ ...deps, fetch: proxyFetch!(proxy) })
+      : new ChannelResolver({ ...deps, fetch: deps.fetch })
   }
 
   async read(key: string, digest?: string): Promise<string> {

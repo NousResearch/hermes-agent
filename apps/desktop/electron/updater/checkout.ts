@@ -30,6 +30,13 @@ export interface CheckoutStrategyDeps {
   resolveUpdateRoot: () => string
   readSourceUpdate: (root: string, opts: { force?: boolean }) => Promise<SourceUpdate | null>
   hermesHome: string
+  /**
+   * Proxy env overlay for update traffic (#60049): HTTP(S)_PROXY from
+   * `updates.proxy`/ambient env, composed into every child the update flow
+   * spawns (source check, hand-off, CLI updater) so their git and urllib
+   * calls dial through the same proxy the transports do.
+   */
+  proxyEnv: NodeJS.ProcessEnv
   isWindows: boolean
   isMac: boolean
   defaultUpdateBranch: string
@@ -295,7 +302,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
         cwd: deps.hermesHome,
         env: {
-          ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
+          ...sourceUpdateEnvironment(updateRoot, deps.hermesHome, deps.proxyEnv),
           HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
         },
         // Never `true` here: DETACHED_PROCESS leaves the wrapper console-less, so
@@ -323,7 +330,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       child = spawnUpdaterProcess(updater, updaterArgs, {
         cwd: deps.hermesHome,
         env: {
-          ...sourceUpdateEnvironment(updateRoot, deps.hermesHome)
+          ...sourceUpdateEnvironment(updateRoot, deps.hermesHome, deps.proxyEnv)
         },
         detached: true,
         stdio: 'ignore'
@@ -469,7 +476,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     const child = spawnUpdaterProcess(handoff.command, args, {
       cwd: deps.hermesHome,
       env: {
-        ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
+        ...sourceUpdateEnvironment(updateRoot, deps.hermesHome, deps.proxyEnv),
         HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
       },
       detached: true,

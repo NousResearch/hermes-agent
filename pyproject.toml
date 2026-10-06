@@ -336,7 +336,7 @@ stt-whisper = [
 ]
 audio-io = ["sounddevice==0.5.5", "numpy==2.4.3"]
 # WeChat voice decode (tools/transcription_tools.py self-heal path).
-silk = ["pilk==0.2.4"]
+silk = ["pilk==0.2.4; python_version < '3.12'"]
 # Wake-engine sub-extras — lazy per-engine installs so a user who only wants
 # sherpa-onnx doesn't pull the whole [wake] bundle. Pins match [wake].
 wake-openwakeword = [
@@ -587,6 +587,9 @@ matrix = "sys_platform == 'linux'"
 google-chat = "platform_machine != 'ARM64' or sys_platform != 'win32'"
 # qdrant-client → grpcio (via mem0ai) has no win_arm64 wheel.
 mem0 = "platform_machine != 'ARM64' or sys_platform != 'win32'"
+# pilk has no wheels for Python 3.12+; avoid forcing a source build on managed runtimes.
+silk = "python_version < '3.12'"
+# Wake-engine sub-extras
 # Match the engine dependency markers so PM refuses an unsupported install.
 wake-openwakeword = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"
 # faster-whisper's closure is prebuilt-only: ctranslate2 has no win_arm64 wheel and onnxruntime

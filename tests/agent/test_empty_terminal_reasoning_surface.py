@@ -187,10 +187,10 @@ def test_length_cut_reasoning_is_not_promoted(tmp_path, monkeypatch):
     ("openrouter", "https://openrouter.ai/api/v1", "deepseek/deepseek-v4.1", "the visible answer", 2),
     ("vllm", "http://127.0.0.1:8000/v1", "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
      "private thoughts that must not be shown", 1),
-    ("custom", "https://llm.example.com/v1", "acme/reasoner", "private thoughts that must not be shown", 1),
+    (("custom", "custom:acme"), "https://llm.example.com/v1", "acme/reasoner", "private thoughts that must not be shown", 1),
     ("custom", "https://llm.example.com/v1", "acme/after-model-switch", "private thoughts that must not be shown", 1),
     ("custom", "https://fallback.example.com/v1", "acme/reasoner", "the visible answer", 2),
-    ("custom:acme-plain", "https://llm.example.com/v1", "acme/reasoner", "the visible answer", 2),
+    (("custom", "custom:acme-plain"), "https://llm.example.com/v1", "acme/reasoner", "the visible answer", 2),
 ])
 def test_reasoning_promotion_requires_a_trusted_route(tmp_path, monkeypatch, provider, base_url, model, final, calls):
     """Private reasoning on an untrusted route retries to the visible answer and never
@@ -198,7 +198,9 @@ def test_reasoning_promotion_requires_a_trusted_route(tmp_path, monkeypatch, pro
     opt-in promote in one call, re-read on the live route (any model on that provider, never a
     fallback on another base_url), with no constructor ``capabilities=`` (CLI/TUI)."""
     agent = _build_agent(tmp_path, monkeypatch)
-    agent.provider, agent.base_url, agent.model = provider, base_url, model
+    # A (provider, requested_provider) pair is the startup/gateway shape for a named custom provider.
+    agent.provider, agent.requested_provider = provider if isinstance(provider, tuple) else (provider, provider)
+    agent.base_url, agent.model = base_url, model
     responses = [
         _private_reasoning_only_response(),
         SimpleNamespace(

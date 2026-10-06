@@ -49,12 +49,15 @@ def answer_in_reasoning_capability(agent: Any) -> bool:
     # The provider-level ``capabilities:`` block, re-read on the live route like the per-model key
     # so it holds on CLI/TUI (no constructor ``capabilities=``) and survives /model switches.
     # Several entries may share one endpoint (LiteLLM/vLLM router): only the live ``custom:<slug>``
-    # entry counts; without one, every flagged sibling on the endpoint must opt in.
+    # entry counts; without one, every flagged sibling on the endpoint must opt in. Startup, gateway
+    # and TUI keep ``provider="custom"`` and the named identity in ``requested_provider``.
     from hermes_cli.providers import custom_provider_slug
 
+    requested = str(getattr(agent, "requested_provider", "") or "").strip().lower()
+    ids = {custom_provider_slug(p) for p in (provider, requested) if p.startswith("custom:")}
     entries = list(_entries_for_route(base_url, custom_providers, None))
     live = [e for e in entries
-            if custom_provider_slug(str(e.get("name") or ""), str(e.get("provider_key") or "")) == provider]
+            if custom_provider_slug(str(e.get("name") or ""), str(e.get("provider_key") or "")) in ids]
     flags = {(e.get("capabilities") or {}).get(_ANSWER_IN_REASONING_CAPABILITY) for e in live or entries}
     flags &= {True, False}
     if flags:

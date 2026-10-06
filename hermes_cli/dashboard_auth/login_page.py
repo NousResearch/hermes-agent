@@ -1,10 +1,17 @@
 """Server-rendered /login page (no React, no SPA bundle, no injected token).
 
 Providers come from the registry; an OAuth provider renders an anchor to
-``/auth/login?provider=<name>``, a ``supports_password`` provider renders a
-credential form wired by :data:`_PASSWORD_FORM_SCRIPT`. Styling mirrors the
-``@nous-research/ui`` design system; fonts load from the SPA's ``/fonts/``
-mount, which the gate allowlists pre-auth.
+``{prefix}/auth/login?provider=<name>``, a ``supports_password`` provider
+renders a credential form wired by :data:`_PASSWORD_FORM_SCRIPT`. Styling
+mirrors the ``@nous-research/ui`` design system; fonts load from the SPA's
+``{prefix}/fonts/`` mount, which the gate allowlists pre-auth.
+
+Every URL this module emits is built from the caller-supplied ``prefix``
+(the request's normalised ``X-Forwarded-Prefix``, ``""`` when not proxied).
+A root-absolute URL here escapes a path-prefix reverse-proxy mount, and for
+``/auth/password-login`` that is not merely a 404: the browser matches the
+PKCE cookie's ``Path`` against the request path, so a POST to the origin
+root silently omits it and the native/Desktop broker handle is lost.
 
 The ``class="provider-btn"`` anchor is test-stable: the suite extracts its
 href to walk the OAuth flow.
@@ -12,9 +19,11 @@ href to walk the OAuth flow.
 from __future__ import annotations
 
 import html
+import json
 from urllib.parse import quote, urlencode
 
 from hermes_cli.dashboard_auth import list_session_providers
+from hermes_cli.dashboard_auth.prefix import normalise_prefix
 
 # Single curly braces are ``str.format`` placeholders; CSS curlies are doubled.
 _LOGIN_HTML_TEMPLATE = """\
@@ -31,28 +40,28 @@ _LOGIN_HTML_TEMPLATE = """\
     font-style: normal;
     font-weight: 400;
     font-display: swap;
-    src: url('/fonts/Collapse-Regular.woff2') format('woff2');
+    src: url('{font_base}/fonts/Collapse-Regular.woff2') format('woff2');
   }}
   @font-face {{
     font-family: 'Collapse';
     font-style: normal;
     font-weight: 700;
     font-display: swap;
-    src: url('/fonts/Collapse-Bold.woff2') format('woff2');
+    src: url('{font_base}/fonts/Collapse-Bold.woff2') format('woff2');
   }}
   @font-face {{
     font-family: 'Rules Compressed';
     font-style: normal;
     font-weight: 400;
     font-display: swap;
-    src: url('/fonts/RulesCompressed-Regular.woff2') format('woff2');
+    src: url('{font_base}/fonts/RulesCompressed-Regular.woff2') format('woff2');
   }}
   @font-face {{
     font-family: 'Rules Compressed';
     font-style: normal;
     font-weight: 600;
     font-display: swap;
-    src: url('/fonts/RulesCompressed-Medium.woff2') format('woff2');
+    src: url('{font_base}/fonts/RulesCompressed-Medium.woff2') format('woff2');
   }}
 
   :root {{
@@ -393,9 +402,16 @@ an SSH tunnel or Tailscale.</p>
 # login pages stay script-free. Plain string (not ``str.format``): braces are
 # literal. One delegated submit handler covers every form; the provider name
 # comes from the form's ``data-provider`` attribute.
+#
+# ``__HERMES_PREFIX_JSON__`` is replaced by :func:`render_login_html` with the
+# JSON encoding of the reverse-proxy prefix (``""`` at the root). JSON is the
+# escaping boundary: ``normalise_prefix`` already rejects quotes and angle
+# brackets, and ``json.dumps`` keeps a hostile value from breaking out of the
+# string literal regardless.
 _PASSWORD_FORM_SCRIPT = """\
 <script>
 (function () {
+  var PREFIX = __HERMES_PREFIX_JSON__;
   function handle(form) {
     form.addEventListener('submit', function (ev) {
       ev.preventDefault();
@@ -409,7 +425,7 @@ _PASSWORD_FORM_SCRIPT = """\
         password: (form.querySelector('input[name=password]') || {}).value || '',
         next: (form.querySelector('input[name=next]') || {}).value || ''
       };
-      fetch('/auth/password-login', {
+      fetch(PREFIX + '/auth/password-login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -417,7 +433,7 @@ _PASSWORD_FORM_SCRIPT = """\
       }).then(function (resp) {
         if (resp.ok) {
           return resp.json().then(function (data) {
-            window.location.assign((data && data.next) || '/');
+            window.location.assign((data && data.next) || (PREFIX + '/'));
           });
         }
         var msg = resp.status === 429
@@ -439,41 +455,69 @@ _PASSWORD_FORM_SCRIPT = """\
 """
 
 
-def render_login_html(*, next_path: str = "") -> str:
+def _empty_html(prefix: str) -> str:
+    """:data:`_EMPTY_HTML` with its font URLs under ``prefix``.
+
+    Kept a literal (not a ``str.format`` template) because its CSS braces are
+    unescaped; a targeted replace avoids doubling every one of them.
+    """
+    if not prefix:
+        return _EMPTY_HTML
+    return _EMPTY_HTML.replace("url('/fonts/", f"url('{prefix}/fonts/")
+
+
+def render_login_html(*, next_path: str = "", prefix: str = "") -> str:
     """Return the full HTML for ``GET /login``.
 
     ``next_path`` is threaded into each provider button/form so the OAuth round
     trip carries it end-to-end. The caller validates it same-origin; it is
     HTML-escaped here as defence in depth.
+
+    ``prefix`` is the request's ``X-Forwarded-Prefix`` (``""`` when not behind
+    a path-prefix proxy, which reproduces the pre-prefix output byte for byte).
+    It is re-normalised here so a caller that skips
+    :func:`~hermes_cli.dashboard_auth.prefix.prefix_from_request` cannot smuggle
+    a traversal or an injection character into the page.
     """
+    prefix = normalise_prefix(prefix)
     providers = list_session_providers()
     if not providers:
-        return _EMPTY_HTML
+        return _empty_html(prefix)
     # URL-encode then HTML-escape, matching the gate's ``_safe_next_target``
     # shape so a round-tripped value is byte-identical.
     next_qs = f"&next={html.escape(quote(next_path, safe=''), quote=True)}" if next_path else ""
+    safe_prefix = html.escape(prefix, quote=True)
     buttons = [
         _render_password_form(p, next_path) if getattr(p, "supports_password", False) else
         f'      <a class="provider-btn" '
-        f'href="/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
+        f'href="{safe_prefix}/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
         f'Sign in with {html.escape(p.display_name)}</a>'
         for p in providers
     ]
     needs_password_script = any(getattr(p, "supports_password", False) for p in providers)
+    password_script = (
+        _PASSWORD_FORM_SCRIPT.replace("__HERMES_PREFIX_JSON__", json.dumps(prefix))
+        if needs_password_script else "")
     return _LOGIN_HTML_TEMPLATE.format(
         provider_buttons="\n".join(buttons),
-        password_script=_PASSWORD_FORM_SCRIPT if needs_password_script else "",
+        password_script=password_script,
+        font_base=safe_prefix,
     )
 
 
 def render_native_provider_choice_html(
         *, providers, authorize_path: str, code_challenge: str,
-        code_challenge_method: str, redirect_uri: str, state: str) -> str:
+        code_challenge_method: str, redirect_uri: str, state: str,
+        prefix: str = "") -> str:
     """Provider picker for a native authorize request with more than one interactive provider.
 
     Every link re-enters ``/auth/native/authorize`` with the SAME desktop PKCE inputs plus an
     explicit ``provider``, so the choice never leaves the validated native flow.
+
+    ``authorize_path`` already carries the prefix (the caller builds it from the request);
+    ``prefix`` is taken separately because it also governs the page's own font URLs.
     """
+    prefix = normalise_prefix(prefix)
     common = {"code_challenge": code_challenge, "code_challenge_method": code_challenge_method,
               "redirect_uri": redirect_uri, "state": state}
     buttons = []
@@ -483,8 +527,10 @@ def render_native_provider_choice_html(
         buttons.append(f'      <a class="provider-btn" href="{href}">'
                        f'Sign in with {html.escape(p.display_name)}</a>')
     if not buttons:
-        return _EMPTY_HTML
-    return _LOGIN_HTML_TEMPLATE.format(provider_buttons="\n".join(buttons), password_script="")
+        return _empty_html(prefix)
+    return _LOGIN_HTML_TEMPLATE.format(
+        provider_buttons="\n".join(buttons), password_script="",
+        font_base=html.escape(prefix, quote=True))
 
 
 def _render_password_form(provider, next_path: str) -> str:

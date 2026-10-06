@@ -2524,6 +2524,10 @@ def test_with_session_toolsets_keeps_desktop_ui_when_project_disabled(monkeypatc
 
 def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "mcp-off")
+    # Pin the session-platform resolution: HERMES_DESKTOP would tag this as a
+    # "desktop" session and fold desktop_ui into the GUI surface toolsets.
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",
@@ -2541,7 +2545,8 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
         config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
     )
 
-    # Sorted: ["memory", "project"]. `kanban` is a configurable opt-in and is
+    # Sorted: ["memory", "profiles", "project"]. Profiles is recovered as a
+    # non-configurable toolset; its check_fn still requires explicit opt-in. `kanban` is a configurable opt-in and is
     # never recovered onto a saved list; `project` is GUI-only, folded in by
     # _load_enabled_toolsets. Toolsets inside their first release
     # (_RECENTLY_SHIPPED_TOOLSETS) are back-filled onto saved lists that never
@@ -2550,15 +2555,18 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
 
     result = server._load_enabled_toolsets()
     assert result is not None
-    assert {"memory", "project"} <= set(result)
+    assert {"memory", "profiles", "project"} <= set(result)
     assert "kanban" not in result
-    assert set(result) - {"memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
+    assert set(result) - {"memory", "profiles", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
     err = capsys.readouterr().err
     assert "mcp-off" in err
 
 
 def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
+    # Same platform pin as above — GUI surface toolsets are client-dependent.
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",
@@ -2575,9 +2583,9 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
 
     result = server._load_enabled_toolsets()
     assert result is not None
-    assert {"memory", "project"} <= set(result)
+    assert {"memory", "profiles", "project"} <= set(result)
     assert "kanban" not in result
-    assert set(result) - {"memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
+    assert set(result) - {"memory", "profiles", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
     assert capsys.readouterr().err.strip()  # a fallback warning is printed
 
 

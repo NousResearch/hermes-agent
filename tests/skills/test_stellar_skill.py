@@ -257,6 +257,33 @@ def test_tx_result_success_and_failed_payment(mod):
     assert mod.decode_tx_result(_b64(struct.pack(">q", 100) + struct.pack(">i", -5)))["code"] == "txBAD_SEQ"
 
 
+@pytest.mark.parametrize("inner, label", [
+    (-1, "MALFORMED"), (-3, "SRC_NO_TRUST"), (-4, "SRC_NOT_AUTHORIZED"), (-5, "NO_DESTINATION"),
+    (-6, "NO_TRUST"), (-7, "NOT_AUTHORIZED"), (-8, "LINE_FULL"), (-9, "NO_ISSUER"), (-10, "-10"),
+])
+def test_payment_failure_codes_follow_xdr_order(mod, inner, label):
+    raw = (struct.pack(">q", 100) + struct.pack(">i", -1) + struct.pack(">I", 1)
+           + struct.pack(">i", 0) + struct.pack(">i", 1) + struct.pack(">i", inner))
+    assert mod.decode_tx_result(_b64(raw))["operations"] == [f"op0 payment: {label}"]
+
+
+def test_op_failure_tables_match_xdr_enum_sizes(mod):
+    """The tables are indexed positionally, so a missing name shifts every later code (PR review catch)."""
+    expected = {  # failure-code counts from Stellar-transaction.x *ResultCode enums
+        0: 4,    # CreateAccountResultCode
+        1: 9,    # PaymentResultCode
+        2: 12,   # PathPaymentStrictReceiveResultCode
+        6: 8,    # ChangeTrustResultCode
+        13: 12,  # PathPaymentStrictSendResultCode
+        24: 5,   # InvokeHostFunctionResultCode
+        25: 3,   # ExtendFootprintTTLResultCode
+        26: 3,   # RestoreFootprintResultCode
+    }
+    assert {k: len(v) for k, v in mod.OP_FAILURE_NAMES.items()} == expected
+    for names in mod.OP_FAILURE_NAMES.values():
+        assert len(set(names)) == len(names)
+
+
 def test_tx_result_fee_bump_unwraps_inner(mod):
     inner_ops = struct.pack(">I", 1) + struct.pack(">i", 0) + struct.pack(">i", 24) + struct.pack(">i", 0) + bytes(32)
     raw = struct.pack(">q", 200) + struct.pack(">i", 1) + bytes(32) + struct.pack(">q", 150) + struct.pack(">i", 0) + inner_ops

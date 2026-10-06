@@ -2399,7 +2399,10 @@ def _session_info(agent, session: dict | None = None) -> dict:
         from hermes_cli import __release_date__
         from hermes_cli.version_info import get_version_info
 
-        info.update(version=get_version_info().base_version, release_date=__release_date__)
+        # ``display_version`` (``<base>+<distance>``) is the same granularity the desktop's client
+        # label shows after its own ``shortVersion`` trim; ``base_version`` alone made the same
+        # commit read as two different versions on the statusbar (#133517).
+        info.update(version=get_version_info().display_version, release_date=__release_date__)
     live_agent = agent is not None and not sess.get("_compute_host_active")
     if live_agent:
         with contextlib.suppress(Exception):

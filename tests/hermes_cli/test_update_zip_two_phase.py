@@ -108,18 +108,26 @@ def test_commit_handles_entries_absent_from_the_install(tmp_path):
 
     assert (live / "brand_new" / "version.txt").read_text() == "new"
 
-def test_staging_clears_leftovers_from_an_interrupted_run(tmp_path):
+def test_commit_preserves_legitimate_legacy_suffix_paths(tmp_path):
     live, new = tmp_path / "live", tmp_path / "new"
     _live_tree(live, {"agent": "old"})
     _live_tree(new, {"agent": "new"})
-    stale = Path(f"{live / 'agent'}.hermes-update-staging")
-    stale.mkdir()
-    (stale / "junk.txt").write_text("from a previous crash")
+
+    legitimate = {}
+    for suffix in (".hermes-update-staging", ".hermes-update-old"):
+        path = live / f"agent{suffix}"
+        path.mkdir()
+        marker = path / "user-data.txt"
+        marker.write_text(suffix, encoding="utf-8")
+        legitimate[path] = suffix
 
     update_cmd._commit_staged_replacements(_stage_all(live, new, ["agent"]))
 
-    assert (live / "agent" / "version.txt").read_text() == "new"
-    assert not (live / "agent" / "junk.txt").exists()
+    assert (live / "agent" / "version.txt").read_text(encoding="utf-8-sig") == "new"
+    assert {
+        path: (path / "user-data.txt").read_text(encoding="utf-8-sig")
+        for path in legitimate
+    } == legitimate
 
 # ---------------------------------------------------------------------------
 # Shared venv helpers (#76105)
@@ -254,21 +262,39 @@ def test_venv_helpers_honour_an_explicit_platform_verdict():
 # Crash between "move dst aside" and "move staging in" (Phase 2 review HIGH)
 # ---------------------------------------------------------------------------
 
-def test_staging_restores_backup_when_dst_is_missing(tmp_path, monkeypatch):
-    """A previous run that died mid-swap leaves dst missing and the backup as
-    the ONLY copy of that entry. On retry, _stage_replacement must restore
-    the backup to dst BEFORE clearing leftovers — otherwise a staging failure
-    right after (disk exhaustion is likeliest exactly then) leaves a hole in
-    the install with nothing to roll back to."""
+def test_retry_recovers_only_its_owned_backup(tmp_path, monkeypatch):
+    """A crash between the two promotion renames leaves the updater-owned
+    backup as the only live copy. A retry recovers it without claiming paths
+    that merely have the updater's historical suffixes."""
     live, new = tmp_path / "live", tmp_path / "new"
-    live.mkdir()
+    _live_tree(live, {"agent": "old"})
     _live_tree(new, {"agent": "new"})
-    # Simulate the crashed state: dst gone, backup holds the old tree.
-    backup = live / "agent.hermes-update-old"
-    backup.mkdir()
-    (backup / "version.txt").write_text("old")
 
-    # Staging fails (disk full) on the fresh copy.
+    legitimate = {}
+    for suffix in (".hermes-update-staging", ".hermes-update-old"):
+        path = live / f"agent{suffix}"
+        path.mkdir()
+        marker = path / "user-data.txt"
+        marker.write_text(suffix, encoding="utf-8")
+        legitimate[path] = suffix
+
+    staged = _stage_all(live, new, ["agent"])
+    real_rename = os.rename
+    calls = {"n": 0}
+
+    def interrupted_rename(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise KeyboardInterrupt
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(update_cmd.os, "rename", interrupted_rename)
+    with pytest.raises(KeyboardInterrupt):
+        update_cmd._commit_staged_replacements(staged)
+    monkeypatch.undo()
+
+    assert not (live / "agent").exists()
+
     def boom(src, dst, *a, **kw):
         raise OSError(28, "No space left on device")
 
@@ -277,15 +303,11 @@ def test_staging_restores_backup_when_dst_is_missing(tmp_path, monkeypatch):
         update_cmd._stage_replacement(str(new / "agent"), str(live / "agent"))
     monkeypatch.undo()
 
-    # The old tree must have been restored to dst before the failure.
-    assert (live / "agent" / "version.txt").read_text() == "old"
-    assert not backup.exists()
-
-    # And a clean retry completes the update normally.
-    staged = _stage_all(live, new, ["agent"])
-    update_cmd._commit_staged_replacements(staged)
-    assert (live / "agent" / "version.txt").read_text() == "new"
-    assert not [p for p in os.listdir(live) if "hermes-update" in p]
+    assert (live / "agent" / "version.txt").read_text(encoding="utf-8-sig") == "old"
+    assert {
+        path: (path / "user-data.txt").read_text(encoding="utf-8-sig")
+        for path in legitimate
+    } == legitimate
 
 def test_commit_failure_plus_discard_leaves_no_staging_litter(tmp_path, monkeypatch):
     """Phase-2 failure must not orphan staging copies for unswapped entries.

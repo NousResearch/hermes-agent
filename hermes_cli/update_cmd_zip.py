@@ -8,6 +8,7 @@ import logging
 from contextlib import suppress
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,8 @@ from typing import Collection, Optional
 logger = logging.getLogger("hermes_cli.update_cmd")
 
 _ZIP_STAGING_ARTIFACT_SUFFIXES = ".hermes-update-staging", ".hermes-update-old"
+_ZIP_STAGING_SUFFIX, _ZIP_BACKUP_SUFFIX = _ZIP_STAGING_ARTIFACT_SUFFIXES
+_ZIP_STAGING_OWNER_RE = re.compile(r"[0-9a-f]{16}")
 
 # Single source of truth for entries the ZIP swap preserves — used by the dirty-tree filter and the swap loop.
 _ZIP_PRESERVED_TOP_LEVEL = {"venv", ".venv", "node_modules", ".git", ".env"}
@@ -39,7 +42,13 @@ _STASH_HINT = "  Stash or commit your changes, then rerun `hermes update`."
 
 def _remove_path(path: str, *, ignore_errors: bool = False) -> None:
     """Remove a dir or file; missing paths are a no-op."""
-    if os.path.isdir(path):
+    if os.path.islink(path):
+        if ignore_errors:
+            with suppress(OSError):
+                os.remove(path)
+        else:
+            os.remove(path)
+    elif os.path.isdir(path):
         shutil.rmtree(path, ignore_errors=True)
     elif os.path.exists(path):
         if ignore_errors:
@@ -64,18 +73,83 @@ def _atomic_replace_dir(src: str, dst: str) -> None:
     _commit_staged_replacements([(_stage_replacement(src, dst), dst)])
 
 
+def _backup_for_staging(staging: str) -> str:
+    """Return the rollback sibling bound to an updater-allocated staging path."""
+    if not staging.endswith(_ZIP_STAGING_SUFFIX):
+        raise ValueError(f"invalid ZIP staging path: {staging}")
+    return f"{staging[:-len(_ZIP_STAGING_SUFFIX)]}{_ZIP_BACKUP_SUFFIX}"
+
+
+def _owned_interrupted_pairs(dst: str) -> list[tuple[str, str]]:
+    """Find only paired artifacts whose unique owner token is bound to *dst*."""
+    parent = os.path.dirname(dst) or os.curdir
+    prefix = f"{os.path.basename(dst)}."
+    pairs: list[tuple[str, str]] = []
+    for entry in os.scandir(parent):
+        name = entry.name
+        if not name.startswith(prefix) or not name.endswith(_ZIP_STAGING_SUFFIX):
+            continue
+        owner = name[len(prefix):-len(_ZIP_STAGING_SUFFIX)]
+        if not _ZIP_STAGING_OWNER_RE.fullmatch(owner):
+            continue
+        staging = os.path.join(parent, name)
+        backup = _backup_for_staging(staging)
+        if os.path.lexists(backup):
+            pairs.append((staging, backup))
+    return pairs
+
+
+def _restore_owned_interrupted_replacement(dst: str) -> None:
+    """Restore the sole updater-owned backup when a crash left *dst* absent."""
+    if os.path.lexists(dst):
+        return
+    pairs = _owned_interrupted_pairs(dst)
+    if not pairs:
+        return
+    if len(pairs) != 1:
+        raise RuntimeError(f"multiple interrupted ZIP replacements found for {dst}")
+    staging, backup = pairs[0]
+    os.rename(backup, dst)
+    _remove_path(staging, ignore_errors=True)
+
+
+def _allocate_staging_path(src: str, dst: str) -> str:
+    """Exclusively reserve a unique sibling without claiming pre-existing paths."""
+    for _attempt in range(100):
+        owner = secrets.token_hex(8)
+        staging = f"{dst}.{owner}{_ZIP_STAGING_SUFFIX}"
+        backup = _backup_for_staging(staging)
+        if os.path.lexists(backup):
+            continue
+        try:
+            if os.path.isdir(src):
+                os.mkdir(staging)
+            else:
+                fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                os.close(fd)
+        except FileExistsError:
+            continue
+        if not os.path.lexists(backup):
+            return staging
+        _remove_path(staging, ignore_errors=True)
+    raise FileExistsError(f"could not allocate ZIP staging path beside {dst}")
+
+
 def _stage_replacement(src: str, dst: str) -> str:
     """Phase 1: copy *src* (dir or file) to a sibling staging path for *dst*; return it.
     Touches nothing live, so a failure here leaves the install untouched."""
-    staging = f"{dst}.hermes-update-staging"
-    backup = f"{dst}.hermes-update-old"
-    # A prior run may have died mid-swap leaving the backup as the ONLY copy. Restore it BEFORE
-    # clearing leftovers, else deleting it then failing to stage (disk exhaustion) leaves a hole.
-    if not os.path.exists(dst) and os.path.exists(backup):
-        os.rename(backup, dst)
-    for leftover in (staging, backup):
-        _remove_path(leftover)
-    (shutil.copytree if os.path.isdir(src) else shutil.copy2)(src, staging)
+    # A prior run may have died mid-swap leaving its uniquely paired backup as the ONLY copy. Restore
+    # only that owned backup; the historical fixed suffixes may be legitimate user paths.
+    _restore_owned_interrupted_replacement(dst)
+    staging = _allocate_staging_path(src, dst)
+    try:
+        if os.path.isdir(src):
+            shutil.copytree(src, staging, dirs_exist_ok=True)
+        else:
+            shutil.copy2(src, staging)
+    except BaseException:
+        _remove_path(staging, ignore_errors=True)
+        raise
     return staging
 
 
@@ -104,8 +178,10 @@ def _commit_staged_replacements(staged) -> None:
     swapped: list[tuple[str, str]] = []  # (dst, backup) in swap order; "" = absent
     try:
         for staging, dst in staged:
-            backup = f"{dst}.hermes-update-old"
-            if os.path.exists(dst):
+            backup = _backup_for_staging(staging)
+            if os.path.lexists(backup):
+                raise FileExistsError(f"ZIP rollback path already exists: {backup}")
+            if os.path.lexists(dst):
                 os.rename(dst, backup)
                 swapped.append((dst, backup))
             else:

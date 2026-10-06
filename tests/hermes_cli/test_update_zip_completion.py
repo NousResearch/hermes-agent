@@ -252,19 +252,38 @@ def test_zip_failure_recovers_pause_without_completion_mutations(zip_update, mon
 
 @pytest.mark.parametrize("entry", ["payload.txt", "tools"])
 def test_zip_recovers_crashed_backup_before_failed_copy_and_retry(zip_update, monkeypatch, entry):
+    import os
     import shutil
 
     root = zip_update.root
     target = root / entry
-    backup = root / (entry + ".hermes-update-old")
-    target.rename(backup)
-    leftover = root / (entry + ".hermes-update-staging")
-    leftover.write_text("interrupted copy", encoding="utf-8")
+    replacement = root.parent / f"replacement-{entry}"
+    if target.is_dir():
+        shutil.copytree(target, replacement)
+    else:
+        replacement.write_text("replacement", encoding="utf-8")
+    staged = update_cmd._stage_replacement(str(replacement), str(target))
+    rename = os.rename
+    calls = 0
+
+    def interrupt_promotion(src, dst):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise KeyboardInterrupt
+        return rename(src, dst)
+
+    with monkeypatch.context() as crash:
+        crash.setattr(os, "rename", interrupt_promotion)
+        with pytest.raises(KeyboardInterrupt):
+            update_cmd._commit_staged_replacements([(staged, str(target))])
+    assert not target.exists()
+
     function = "copytree" if entry == "tools" else "copy2"
     original = getattr(shutil, function)
 
     def fail(src, dst, *args, **kwargs):
-        if str(dst) == str(leftover):
+        if str(dst).startswith(f"{target}.") and str(dst).endswith(".hermes-update-staging"):
             raise OSError("copy refused after crash")
         return original(src, dst, *args, **kwargs)
 
@@ -274,10 +293,10 @@ def test_zip_recovers_crashed_backup_before_failed_copy_and_retry(zip_update, mo
             update_cmd_zip._download_and_swap_zip("main", "local fixture")
         assert error.value.code == 1
     witness = target / "code.py" if entry == "tools" else target
-    assert witness.read_text(encoding="utf-8") == ("retained" if entry == "tools" else "old")
+    assert witness.read_text(encoding="utf-8-sig") == ("retained" if entry == "tools" else "old")
     assert not list(root.glob("*.hermes-update-*"))
     update_cmd_zip._download_and_swap_zip("main", "local fixture")
-    assert witness.read_text(encoding="utf-8") == "new"
+    assert witness.read_text(encoding="utf-8-sig") == "new"
     assert not list(root.glob("*.hermes-update-*"))
 
 

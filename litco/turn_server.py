@@ -12,8 +12,8 @@ Contract (LitKit survey, Appendix D; execution ledger decision 5)::
 Every event is one SSE frame, ``event: <type>`` plus a JSON ``data`` line carrying
 ``type``, ``turnId``, ``stepId`` (monotonic per turn) and ``ts`` (ms since epoch) beside
 the event's own fields. Event order for a turn: ``goal_accepted`` first, ``final`` last,
-and in between ``assistant_delta`` / ``assistant_reset`` / ``tool_*`` / ``error_classified``
-/ ``loop_halted`` as the agent produces them.
+and in between ``assistant_delta`` / ``assistant_reset`` / ``tool_*`` / ``turn_progress`` /
+``error_classified`` / ``loop_halted`` as the agent produces them.
 
 Sessions: one LitKit thread = one ``sessionId`` = one Hermes session. Turns on the same
 ``sessionId`` run one at a time in arrival order; turns on different ``sessionId``s run

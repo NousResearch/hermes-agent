@@ -111,6 +111,8 @@ systemd reads `/etc/litco-agent/env` as root for the unit's `EnvironmentFile=`. 
 | `<PROVIDER>_API_KEY` or `LITCO_MODEL_API_KEY` | yes | Hermes provider resolution |
 | `SLACK_*`, `TELEGRAM_*` | yes | Hermes native adapters |
 
+`LITCO_MODEL` is only the profile default for a turn that names no model: LitKit sends the product's model and fallbacks on every turn (docs/litco.md, "Model: product-controlled"). `litco-agent-init` refuses (exit 78) a rendered profile that routes around them, such as `LITCO_MODEL_BASE_URL` on a CLIProxyAPI or tailnet host, and the gateway's turn platform runs the same check (`litco/config_guard.py`) before it serves `/health`.
+
 Two rules hold throughout. No script in this repo writes a secret; only cloud-init does, from user-data. And `litco-agent-init` reads only the variables in its `NON_SECRET_KEYS` list, so a template cannot pull in a secret: an unknown placeholder is an error. The tests check both.
 
 Like the LitKit worker fleet, secrets ride in user-data, and DigitalOcean's metadata API serves user-data to processes on the droplet for its lifetime. The droplet serves one matter, and the agent on it already holds these secrets in its environment.

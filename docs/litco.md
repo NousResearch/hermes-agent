@@ -6,7 +6,7 @@
 
 The turn server is a Hermes gateway platform named `litco_turn`. It is a bundled platform plugin, so the gateway discovers it with no change to core code, and it runs in the same process as cron, memory, skills, and the other channels (Slack, Telegram). The gateway enables it whenever `LITCO_HOST_SECRET` is set, or when `gateway.platforms.litco_turn.enabled` is true in `config.yaml`.
 
-Each turn runs as a Hermes `AIAgent` built the same way the API-server adapter builds one: the provider and model come from the profile's config, the toolsets come from `platform_toolsets.litco_turn`, and the transcript is the profile's SessionDB. The agent's streaming and tool callbacks are translated into LitKit's agent2 events (see `litco/hermes_runner.py`).
+Each turn runs as a Hermes `AIAgent` built the same way the API-server adapter builds one: the provider comes from the profile's config and the model from the turn (see "Model: product-controlled" below), the toolsets come from `platform_toolsets.litco_turn`, and the transcript is the profile's SessionDB. The agent's streaming and tool callbacks are translated into LitKit's agent2 events (see `litco/hermes_runner.py`).
 
 The server can also run on its own, as a sidecar started by the same systemd unit: `python -m litco.turn_server --host 127.0.0.1 --port 8765`. The gateway platform is the intended mode.
 
@@ -47,6 +47,10 @@ Body:
   "channel": "slack" | "web" | "telegram",
   "kind": "channel" | "dm",
   "budgetMs": 600000,
+  "model": "moonshotai/kimi-k3",
+  "fallbackModels": ["anthropic/claude-sonnet-5"],
+  "freshContext": false,
+  "progressAfterMs": 60000,
   "actor": {"id": "…", "name": "Raj Patel", "role": "Lawyer"},
   "threadContext": [{"seq": 3, "author": "Jane Doe", "role": "user", "text": "…", "at": "2026-09-29T10:02:00Z"}],
   "litkitChannel": {"id": "…", "slug": "depo-prep", "name": "depo prep", "topic": "…"}
@@ -54,6 +58,16 @@ Body:
 ```
 
 `matterId`, `sessionId`, and `text` are required. `channel` defaults to `web` and `kind` to `channel`. A `dm` turn requires `userId`. `budgetMs` is optional; without it, a turn has no time or token ceiling. Unknown fields are ignored.
+
+These fields carry the product's settings for the turn. All are optional; a malformed one is refused with 400 and the code shown.
+
+| Field | Meaning | Refused as |
+|---|---|---|
+| `budgetMs` | Wall-clock budget. When it runs out the turn is interrupted and ends with `loop_halted{reason:"budget_exhausted"}`. | `bad_budget` (not a positive number) |
+| `model` | The model for this turn, an OpenRouter-style `vendor/model` slug (1-200 characters, optional `:variant`). It runs on the profile's provider (`openrouter` on a real host). Absent: the profile's `model.default`. | `bad_model` |
+| `fallbackModels` | At most 4 slugs. The turn's whole fallback chain, in order, each on the profile's provider. Absent or `[]`: no fallback. The profile's own `fallback_providers` is never used. | `bad_fallback_models` |
+| `freshContext` | `true` starts the thread over: the host maps a new Hermes session to this `sessionId` before the run and sends no history. Later turns on the `sessionId` continue the new session. | `bad_fresh_context` (not a boolean) |
+| `progressAfterMs` | While the turn runs, a `turn_progress` frame after this many milliseconds and again every further interval, until `final`. Absent: no progress frames. | `bad_progress` (not a positive number) |
 
 The last three fields come from LitKit's matter channels, where several lawyers share a thread and Ana runs only when someone addresses her. All three are optional. A malformed value is dropped, not refused (`litco/thread_context.py`).
 
@@ -77,11 +91,25 @@ The response is `text/event-stream`. The header `X-Turn-Id` carries the turn id.
 | `tool_started` | `call{toolCallId,name}`, `args` | A tool call begins. |
 | `tool_progress` | `call`, `message` | Progress from a long tool, such as a delegated subagent. |
 | `tool_complete` | `call`, `result{status,summary,durationMs}` | A tool call ends. `status` is `ok` or `error`, and follows Hermes's own verdict: a terminal command with a non-zero exit, a result with an `error` field or `success: false`, and anything Hermes logs as "returned error" arrive as `error`. The summary never carries the tool's output, only a tool-supplied summary, an error message, an exit code (`command failed with exit code 1`), or the size of the result. A command held for approval did not run and did not fail: it arrives as `status: "ok"` with `held: true` and the summary `held for approval; not run` (see "Held commands" below). |
-| `error_classified` | `category`, `message`, `recovery` | The turn failed. |
+| `turn_progress` | `elapsedMs`, `activeTool`, `lastTool`, `toolCalls` | Only with `progressAfterMs`: every interval until `final`. `activeTool` is the name of a tool that started and has not completed (else `null`), `lastTool` the most recently completed tool (else `null`), `toolCalls` the number of tool calls started so far. `elapsedMs` counts from when the turn was accepted. |
+| `error_classified` | `category`, `code`, `retryable`, `message`, `recovery` | The turn did not complete (see "Errors" below). |
 | `loop_halted` | `reason`, `explanation` | The turn stopped early: `interrupted`, `budget_exhausted`, or `shutdown`. |
-| `final` | `text`, `citations`, `usage{inputTokens,outputTokens,cacheReadTokens?,cacheWriteTokens?}`, `durationMs`, `modelUsed?`, `deliverables?` | Always last. |
+| `final` | `text`, `citations`, `usage{inputTokens,outputTokens,cacheReadTokens?,cacheWriteTokens?}`, `durationMs`, `modelUsed?`, `providerUsed?`, `deliverables?` | Always last. `modelUsed`/`providerUsed` name the route that served the turn, a fallback's when one took over. `text` is `""` when the turn did not complete. |
 
 Hermes has no plan events, so `plan_drafted` and `plan_step_*` are never sent.
+
+#### Errors
+
+Runtime and Hermes text never reaches LitKit. Hermes ends a turn it could not finish with copy written for a terminal user ("Response Stopped — Repetition Detected … Switch to a different model with `/model`"); on 2026-10-06 that copy went out as `final.text` and was posted to a lawyer. Now:
+
+- A turn whose Hermes result is not completed (`partial` or `failed`, a `failure_reason`, or no answer text) ends with `error_classified` and `final.text == ""`. The app words the failure itself.
+- `code` is Hermes's `failure_reason` when it stamped one (`repetition`, `truncated`, `context_overflow`, `rate_limit`, `overloaded`, `timeout`, …), otherwise the category. `message` repeats the code; it is never prose.
+- `category` is one of `repetition`, `truncated`, `context_overflow`, `thinking_exhausted`, `timeout`, `auth`, `provider_outage`, `stream_closed`, `unknown`.
+- `retryable` is Hermes's `failure_retryable` (default `true`). A `repetition` failure is retryable: send the turn again, on another model or with `freshContext`.
+- As a last line of defence the server drops any `assistant_delta` that reads like Hermes runtime copy (it starts with "⚠", or names `/model`, `/reasoning`, `/compress`, "Repetition Detected", "Thinking Budget", "Context window full", "Your request was not processed", "This turn did not complete"), and a `final.text` that does fails the turn with code `runtime_notice`. Each drop logs a WARNING with the first 200 characters, so a leak can be found and fixed at its source.
+- Each failed turn logs one INFO line: turn id, code, model, elapsed time, tool-call count. The detail (the exception, Hermes's error string) stays in the host log.
+
+A repetition loop no longer runs until the provider gives up. While text streams on the chat-completions wire (OpenRouter), Hermes checks it each time it passes another 12,000 characters; a runaway loop closes the stream at that point (a WARNING names the redacted head and tail). The turn then moves to the next model in `fallbackModels`; only when none is left does it end with `code: "repetition"`.
 
 #### Held commands
 
@@ -111,9 +139,22 @@ Returns `{ok, version, hermesVersion, uptimeSeconds, activeTurns, matterId}`. No
 
 Returns the bytes of a file listed in `final.deliverables`. Ids that resolve outside a `deliverables/` folder get 404.
 
+## Model: product-controlled
+
+Ana is a product, and her model is a product setting. LitCo's product model settings (in litkit-app) choose the model and its fallbacks, and LitKit sends them on every turn as `model` and `fallbackModels`. The host never carries a route of its own: no Hermes profile fallback chain, no CLIProxyAPI or other proxy, no Claude Max or Codex subscription account. The profile's `model.default` is only the default for a turn that names no model.
+
+`litco/config_guard.py` enforces this at startup. The `litco_turn` platform reads `$HERMES_HOME/config.yaml` and `auth.json` before it starts the turn server, and refuses to start (an ERROR in the gateway log; `/health` is never served) when:
+
+- the config text, or the value of an endpoint variable (`LITCO_MODEL_BASE_URL`, `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, any `*_BASE_URL`), names a non-product route: `cliproxy`, `tail999258`, `claude-max`, `ncc1701d`, `santacruz`, `.ts.net:8317` (case-insensitive);
+- the config has a non-empty `fallback_providers` or `fallback_model`;
+- `model.base_url` is on such a host;
+- `auth.json` holds an `anthropic` or `openai-codex` OAuth (subscription) account.
+
+Secret values are never inspected or logged. `litco-agent-init` runs the same check on the profile it renders and exits 78 before writing anything.
+
 ## Sessions and concurrency
 
-One LitKit thread is one `sessionId`, and one `sessionId` is one Hermes session. A second turn on the same `sessionId` continues the conversation. Hermes may rotate its internal session id when it compacts a long conversation; the mapping from `sessionId` to the current Hermes id is kept in `$HERMES_HOME/litco_sessions.json`, so the thread follows the rotation.
+One LitKit thread is one `sessionId`, and one `sessionId` is one Hermes session. A second turn on the same `sessionId` continues the conversation, unless it sends `freshContext: true`, which starts a new Hermes session for the thread. Hermes may rotate its internal session id when it compacts a long conversation; the mapping from `sessionId` to the current Hermes id is kept in `$HERMES_HOME/litco_sessions.json`, so the thread follows the rotation.
 
 Turns on the same `sessionId` run one at a time, in arrival order. Turns on different `sessionId`s run concurrently. There is no global queue.
 
@@ -237,7 +278,8 @@ Results larger than 12,000 characters follow Hermes's spill convention: the full
 | Path | Role |
 |---|---|
 | `litco/turn_server.py` | aiohttp app: auth, parsing, SSE framing, per-session locks, budgets, interrupts, deliverables. |
-| `litco/hermes_runner.py` | Builds the `AIAgent` for a turn and maps Hermes callbacks to events. |
+| `litco/hermes_runner.py` | Builds the `AIAgent` for a turn (the turn's model and fallbacks) and maps Hermes callbacks and results to events and error codes. |
+| `litco/config_guard.py` | The startup check that the host's model route is product-controlled. |
 | `litco/thread_context.py` | Parses and caps `actor`, `threadContext`, `litkitChannel`; renders the thread block; strips the text-embedded one. |
 | `litco/assertion.py` | Host-secret comparison and the user-assertion MAC. |
 | `litco/homes.py` | Working-directory layout, deliverable ids, the deliverable rule, and the `litco_deliver_local` registry. |
@@ -254,5 +296,7 @@ Results larger than 12,000 characters follow Hermes's spill convention: the full
 ```
 uv venv .venv --python 3.14
 uv pip install --python .venv/bin/python -e ".[messaging]" --group dev
-.venv/bin/python -m pytest tests/litco -q
+.venv/bin/python -m pytest tests/litco tests/host -q
 ```
+
+The core Hermes changes behind the repetition handling (`agent/chat_completion_helpers.py`, `agent/turn_truncation.py`) are covered under `tests/agent/`; run those with `scripts/run_tests.sh tests/agent/test_streaming_repetition_guard.py tests/agent/test_continuation_repetition_guard.py`.

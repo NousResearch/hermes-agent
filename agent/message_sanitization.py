@@ -797,12 +797,14 @@ def stale_thinking_reaches_wire(
     base_url: Any,
     *,
     reasoning_replay_field: Any = None,
+    reasoning_echo: bool = False,
 ) -> bool:
     """True when stale assistant reasoning text is actually replayed on the wire for the route.
 
     The single wire-truth predicate the compaction TRIGGER estimator and the tail-budget
     walks must share: if they disagree, a reasoning-heavy session can look over-threshold
     to preflight yet fully tail-protected to the walk — an infinite compaction loop.
+    ``reasoning_echo`` is the resolved active runtime's legacy opt-in, not a config read.
     ``codex_responses`` never reads the text keys (continuity rides the encrypted sidecar).
     """
     if (api_mode or "") == "anthropic_messages":
@@ -813,6 +815,9 @@ def stale_thinking_reaches_wire(
         return False
     return (
         needs_reasoning_echo(provider, model, base_url)
+        # Native Anthropic conversion owns historical thinking retention; the
+        # legacy text echo opt-in cannot override its latest-turn-only policy.
+        or (reasoning_echo and (api_mode or "") != "anthropic_messages")
         or reasoning_replay_field in {"reasoning", "reasoning_content"}
     )
 

@@ -2133,7 +2133,7 @@ _SWITCH_SNAPSHOT_FIELDS = (
     "_codex_reasoning_replay_enabled", "_codex_reasoning_replay_rejected",
 )
 _MISSING = object()
-_SWITCH_SNAPSHOT_PRIVATE = ("_compressor_obj", "_compressor_replay")
+_SWITCH_SNAPSHOT_PRIVATE = ("_compressor_obj", "_compressor_replay", "_compressor_echo")
 
 
 def _snapshot_switch_state(agent) -> dict[str, Any]:
@@ -2148,6 +2148,7 @@ def _snapshot_switch_state(agent) -> dict[str, Any]:
     snapshot["_compressor_replay"] = getattr(
         compressor, "replay_historical_reasoning", _MISSING
     )
+    snapshot["_compressor_echo"] = getattr(compressor, "reasoning_echo", _MISSING)
     return snapshot
 
 
@@ -2164,6 +2165,10 @@ def _restore_switch_snapshot(agent, snapshot: dict[str, Any]) -> None:
     if compressor is not None and compressor_replay is not _MISSING:
         with contextlib.suppress(Exception):
             compressor.replay_historical_reasoning = compressor_replay
+    compressor_echo = snapshot.get("_compressor_echo", _MISSING)
+    if compressor is not None and compressor_echo is not _MISSING:
+        with contextlib.suppress(Exception):
+            compressor.reasoning_echo = compressor_echo
 
 
 def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mode, capabilities, old_norm, new_norm):
@@ -3530,6 +3535,7 @@ def intent_ack_continuation_mode(agent) -> str:
 def _sync_compressor_reasoning_replay(agent) -> None:
     compressor = getattr(agent, "context_compressor", None)
     if compressor is not None:
+        compressor.reasoning_echo = bool(getattr(agent, "_reasoning_echo_flag", False))
         compressor.replay_historical_reasoning = bool(
             reasoning_replay_field_for_api(agent)
         )

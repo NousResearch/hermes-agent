@@ -2065,6 +2065,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             replay_historical_reasoning=bool(
                 agent._reasoning_replay_field_for_api()
             ),
+            reasoning_echo=bool(getattr(agent, "_reasoning_echo_flag", False)),
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

@@ -249,7 +249,8 @@ def _order_flush_files(paths) -> list[tuple[Path, Optional[Dict[str, Any]]]]:
     for path in paths:
         try:
             payload = json.loads(path.read_text(encoding="utf-8-sig"))
-        except Exception:
+        # OSError: unreadable; ValueError: bad JSON or bytes; RecursionError: nesting too deep.
+        except (OSError, ValueError, RecursionError):
             payload = None
         if not isinstance(payload, dict):
             entries.append(((1, 0.0, 0.0, path.name), path, None))

@@ -8,6 +8,7 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.event import MessageEvent
 
 
 def _make_adapter(monkeypatch, **extra):
@@ -1031,6 +1032,111 @@ class TestBlueBubblesLateAttachmentRecovery:
         assert "+8613812345678" not in handled[0].text
         assert "[REDACTED]" in handled[0].text
 
+    @pytest.mark.asyncio
+    async def test_late_recovery_retries_handoff_refused_by_gateway(self, monkeypatch):
+        """A recovered file stays pending while the gateway refuses admission, then retries.
+
+        The recovery loop used to drop a downloaded file from ``pending`` as soon as its
+        delivery was dispatched, and the handoff was fire-and-forget, so a refused admission
+        was never re-attempted. The handoff is now awaited and a refused file stays pending
+        until it is accepted (or the window closes)."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        adapter.client = object()  # non-None: the recovery loop requires a live client
+        slept, _ = _record_sleeps(monkeypatch)
+        handled = []
+
+        async def flaky_admission(event):
+            handled.append(event)
+            if len(handled) >= 2:
+                event._gateway_accepted = True  # the second handoff is admitted
+
+        monkeypatch.setattr(adapter, "handle_message", flaky_admission)
+        fetch = AsyncMock(return_value="/tmp/refused.jpg")
+        monkeypatch.setattr(adapter, "_fetch_attachment_once", fetch)
+        adapter._late_recovery_pending.add("att-refused-1")
+
+        await adapter._recover_late_attachments(
+            [{"guid": "att-refused-1", "mimeType": "image/jpeg", "transferName": "late.jpg"}],
+            source=self._source(adapter))
+
+        assert slept == [5.0, 20.0]  # one refused round, then the retry that was admitted
+        assert fetch.await_count == 2  # the refused file was re-attempted, not forgotten
+        assert len(handled) == 2
+        assert handled[0].media_urls == ["/tmp/refused.jpg"]  # the refused handoff carried it...
+        assert handled[1].media_urls == ["/tmp/refused.jpg"]  # ...and the retry carried it again
+        assert adapter._late_recovery_pending == set()
+        assert "att-refused-1" in adapter._late_recovery_done
+        assert "att-refused-1" not in adapter._delivery_inflight
+
+    @pytest.mark.asyncio
+    async def test_late_recovery_abandons_refused_attachment_after_window(self, monkeypatch):
+        """Refused admissions keep retrying until the window closes, then give up cleanly."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        adapter.client = object()
+        # Bound the window so a broken retry loop fails the test instead of spinning for the
+        # real 15-minute window (each refusal below burns real time so the window can close).
+        monkeypatch.setattr("gateway.platforms.bluebubbles._LATE_ATTACHMENT_RECOVERY_WINDOW_S", 0.75)
+        slept, real_sleep = _record_sleeps(monkeypatch)
+        handled = []
+
+        async def refuse(event):
+            handled.append(event)  # never sets _gateway_accepted
+            await real_sleep(0.4)  # let real time pass so the window eventually closes
+
+        monkeypatch.setattr(adapter, "handle_message", refuse)
+        fetch = AsyncMock(return_value="/tmp/refused.jpg")
+        monkeypatch.setattr(adapter, "_fetch_attachment_once", fetch)
+        adapter._late_recovery_pending.add("att-refused-2")
+
+        await adapter._recover_late_attachments(
+            [{"guid": "att-refused-2", "mimeType": "image/jpeg"}], source=self._source(adapter))
+
+        assert slept == [5.0, 20.0]  # two refused rounds inside the window, then it expired
+        assert fetch.await_count == 2
+        assert len(handled) == 2
+        assert adapter._late_recovery_pending == set()
+        assert "att-refused-2" not in adapter._late_recovery_done  # never accepted → not done
+        assert "att-refused-2" not in adapter._delivery_inflight  # and no claim left behind
+
+    @pytest.mark.asyncio
+    async def test_cancelling_recovery_settles_and_cleans_up(self, monkeypatch):
+        """Cancelling the recovery task mid-handoff settles by receipt and cleans pending.
+
+        The in-flight handoff is cancelled with the recovery task: the event was already
+        accepted, so the claim must stay (no duplicate on replay), and the recovery loop's
+        finally must drop the guid from _late_recovery_pending."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        adapter.client = object()
+        slept, real_sleep = _record_sleeps(monkeypatch)
+        handoff_started = asyncio.Event()
+        never = asyncio.Event()
+
+        async def accept_then_block(event):
+            event._gateway_accepted = True
+            handoff_started.set()
+            await never.wait()  # cancelled before this returns
+
+        monkeypatch.setattr(adapter, "handle_message", accept_then_block)
+        monkeypatch.setattr(adapter, "_fetch_attachment_once", AsyncMock(return_value="/tmp/cancel.jpg"))
+        adapter._late_recovery_pending.add("att-cancel-rec-1")
+
+        task = asyncio.create_task(adapter._recover_late_attachments(
+            [{"guid": "att-cancel-rec-1", "mimeType": "image/jpeg"}], source=self._source(adapter)))
+        for _ in range(50):
+            if handoff_started.is_set():
+                break
+            await real_sleep(0)
+        assert handoff_started.is_set()  # the handoff is in flight when the task is cancelled
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert slept == [5.0]
+        assert "att-cancel-rec-1" not in adapter._late_recovery_pending  # loop cleanup ran
+        assert "att-cancel-rec-1" in adapter._late_recovery_done  # accepted → kept, no replay
+        assert "att-cancel-rec-1" not in adapter._delivery_inflight
+
 
 class TestBlueBubblesAttachmentDeduplication:
     """Attachment delivery claims are shared between the webhook path and late recovery."""
@@ -1195,3 +1301,174 @@ class TestBlueBubblesAttachmentDeduplication:
         assert adapter._late_recovery_pending == set()
         assert recovery.await_count == 0
         assert len(handled) == 1
+
+    @pytest.mark.asyncio
+    async def test_concurrent_webhooks_do_not_deliver_the_same_attachment_twice(self, monkeypatch):
+        """Two concurrent webhooks carrying A+B: only the claim winner may carry A.
+
+        Regression for the [A,B] + [A] double delivery: collector-1 downloads A and stalls on B
+        while collector-2 claims and delivers both. Collector-1 then loses A's claim, and its
+        already-built media list must not deliver A again — claims are attempted before the
+        event is built and only the media whose claim the dispatch won stays on the event."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        gate = asyncio.Event()
+        slow_b = {"armed": True}
+        downloads = []
+
+        async def fake_handle_message(event):
+            event._gateway_accepted = True
+            handled.append(event)
+
+        async def fake_download(guid, att):
+            downloads.append(guid)
+            if guid == "att-b" and slow_b["armed"]:
+                slow_b["armed"] = False
+                await gate.wait()  # the first collector stalls here while the second delivers
+            return f"/tmp/{guid}.jpg"
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "_download_attachment", fake_download)
+
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-race-1",
+                "text": "two photos",
+                "handle": {"address": "race-sender"},
+                "isFromMe": False,
+                "chats": [{"guid": "iMessage;+;dm-chat"}],
+                "attachments": [
+                    {"guid": "att-a", "mimeType": "image/jpeg"},
+                    {"guid": "att-b", "mimeType": "image/jpeg"},
+                ],
+            },
+        }
+
+        first = asyncio.create_task(adapter._handle_webhook(_FakeBlueBubblesRequest(payload)))
+        for _ in range(20):
+            if len(downloads) >= 2:
+                break
+            await asyncio.sleep(0)
+        assert not first.done()  # stalled in collector-1's B download
+        assert downloads == ["att-a", "att-b"]
+
+        second = asyncio.create_task(adapter._handle_webhook(_FakeBlueBubblesRequest(payload)))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        gate.set()
+        responses = await asyncio.gather(first, second)
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert [response.status for response in responses] == [200, 200]
+        assert downloads == ["att-a", "att-b", "att-a", "att-b"]  # one in-band attempt each
+        assert len(handled) == 2
+        assert handled[0].media_urls == ["/tmp/att-a.jpg", "/tmp/att-b.jpg"]  # winner keeps both
+        assert handled[1].media_urls == []  # loser carries neither, so A is not delivered twice
+        delivered = [path for event in handled for path in event.media_urls]
+        assert delivered.count("/tmp/att-a.jpg") == 1
+        assert "att-a" in adapter._late_recovery_done and "att-b" in adapter._late_recovery_done
+
+    @pytest.mark.asyncio
+    async def test_webhook_acknowledges_when_every_attachment_lost_its_claim(self, monkeypatch):
+        """A pure-attachment loser is acknowledged (200), not treated as missing fields.
+
+        Boundary decision: after claim filtering the message has no text and no media left,
+        but its fields were present and the concurrent delivery that won the claims carries
+        the content — answering 400 "missing message fields" would misreport a valid webhook."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            event._gateway_accepted = True
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "_download_attachment", AsyncMock(return_value="/tmp/lost.jpg"))
+        # The claim is won by a concurrent delivery between the download and the dispatch.
+        monkeypatch.setattr(adapter, "_claim_attachment_delivery", lambda guid: False)
+
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-lost-1",
+                "text": "",
+                "handle": {"address": "lost-sender"},
+                "isFromMe": False,
+                "chats": [{"guid": "iMessage;+;dm-chat"}],
+                "attachments": [{"guid": "att-lost-1", "mimeType": "image/jpeg"}],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200  # acknowledged: the winner already delivers the content
+        assert handled == []  # the losing collector dispatches nothing
+
+    @pytest.mark.asyncio
+    async def test_malformed_payload_releases_claimed_attachments(self, monkeypatch):
+        """A 400 early return must not leave attachment claims dangling.
+
+        Claims are taken before the sender/chat validation runs, so the malformed-payload
+        return path releases them; otherwise the guid would stay in flight forever and a
+        later replay could never deliver the file."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        monkeypatch.setattr(adapter, "_download_attachment", AsyncMock(return_value="/tmp/orphan.jpg"))
+
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-orphan-1",
+                "text": "",
+                "isFromMe": False,
+                # no handle / no chat fields: unresolvable sender and chat
+                "attachments": [{"guid": "att-orphan-1", "mimeType": "image/jpeg"}],
+            },
+        }))
+
+        assert response.status == 400  # still a malformed payload
+        assert "att-orphan-1" not in adapter._delivery_inflight  # ...but nothing stays claimed
+        assert "att-orphan-1" not in adapter._late_recovery_done
+
+
+class TestBlueBubblesCancellationSettlement:
+    """Cancellation settles claims against the event receipt, not a stale local snapshot."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_after_acceptance_keeps_delivery_claim(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        assert adapter._claim_attachment_delivery("att-cancel-1") is True
+
+        async def accept_then_cancel(event):
+            event._gateway_accepted = True  # accepted by the gateway...
+            raise asyncio.CancelledError()  # ...then the delivering task is cancelled
+
+        monkeypatch.setattr(adapter, "handle_message", accept_then_cancel)
+        event = MessageEvent(text="(attachment)", media_urls=["/tmp/cancel.jpg"],
+                             media_types=["image/jpeg"])
+        task = asyncio.create_task(adapter._deliver_and_settle(event, ["att-cancel-1"]))
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # Accepted work keeps its claim: a replay must not deliver the attachment again.
+        assert "att-cancel-1" in adapter._late_recovery_done
+        assert "att-cancel-1" not in adapter._delivery_inflight
+
+    @pytest.mark.asyncio
+    async def test_cancel_before_acceptance_releases_delivery_claim(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        assert adapter._claim_attachment_delivery("att-cancel-2") is True
+
+        async def cancel_without_acceptance(event):
+            raise asyncio.CancelledError()  # _gateway_accepted stays False
+
+        monkeypatch.setattr(adapter, "handle_message", cancel_without_acceptance)
+        event = MessageEvent(text="(attachment)", media_urls=["/tmp/cancel.jpg"],
+                             media_types=["image/jpeg"])
+        task = asyncio.create_task(adapter._deliver_and_settle(event, ["att-cancel-2"]))
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # Nothing was accepted: the claim is released so a replay can carry the attachment.
+        assert "att-cancel-2" not in adapter._late_recovery_done
+        assert "att-cancel-2" not in adapter._delivery_inflight

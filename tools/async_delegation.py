@@ -1103,8 +1103,14 @@ def _stalled_result(delegation_id: str, event_record: Dict[str, Any]) -> Dict[st
 # ── Observability + control ─────────────────────────────────────────────────
 def _children_activity_from_token(token: Any, now: float) -> Optional[List]:
     """Parse a progress token into per-child activity dicts (best-effort): delegate_tool
-    emits one ``(api_call_count, current_tool, last_activity_ts)`` tuple per child;
-    foreign token shapes degrade to ``None`` entries."""
+    emits one ``(api_call_count, current_tool, last_activity_ts, model, total_tokens)`` tuple per
+    child; foreign/older token shapes degrade to ``None`` entries.
+
+    ``model``/``tokens`` are what ``/agents`` (and its ``/tasks`` alias) render for a running child
+    (#6779). They are read positionally off the SAME tuple the stale monitor already samples rather
+    than through a second sampler, so a live listing costs one pass over the children. A token from a
+    producer that predates the widened tuple still projects its original two fields; an absent model
+    or token count stays absent so a UI renders "unknown" rather than a fabricated 0 spend."""
     try:
         parts = list(token)
     except TypeError:
@@ -1117,6 +1123,12 @@ def _children_activity_from_token(token: Any, now: float) -> Optional[List]:
         entry: Dict[str, Any] = {"api_calls": part[0], "current_tool": part[1]}
         if len(part) >= 3 and isinstance(part[2], (int, float)):
             entry["seconds_since_activity"] = round(max(0.0, now - float(part[2])), 1)
+        model = part[3] if len(part) >= 4 else None
+        if isinstance(model, str) and model.strip():
+            entry["model"] = model
+        tokens = part[4] if len(part) >= 5 else None
+        if isinstance(tokens, (int, float)):
+            entry["tokens"] = int(tokens)
         out.append(entry)
     return out
 

@@ -175,7 +175,8 @@ def _context_compressor_lines(agent, ctx, used: int) -> list[str]:
 
 def _agents_delegation_lines(d: dict) -> list[str]:
     """/agents rows for one background delegation. Live per-child activity comes from the
-    registry's progress sampler: api calls, current tool, seconds since last activity."""
+    registry's progress sampler: api calls, current tool, seconds since last activity, and the
+    model/tokens the child is actually spending (#6779 — this is also what `/tasks` renders)."""
     goal = _clip(" ".join(str(d.get("goal") or "").split()), 70)
     status = d.get("status", "?")
     row = f"- `{d.get('delegation_id', '?')}` · {status}"
@@ -194,8 +195,22 @@ def _agents_delegation_lines(d: dict) -> list[str]:
         doing = f"`{tool}`" if tool else t("gateway.agents.between_turns")
         part = t("gateway.agents.child_row", index=i + 1, calls=child.get("api_calls", "?"), doing=doing)
         idle = child.get("seconds_since_activity")
-        lines.append(part + (t("gateway.agents.active_ago", seconds=f"{idle:.0f}") if idle is not None else ""))
+        part += (t("gateway.agents.active_ago", seconds=f"{idle:.0f}") if idle is not None else "")
+        lines.append(part + _child_spend_suffix(child))
     return lines
+
+
+def _child_spend_suffix(child: dict) -> str:
+    """``Model: `x` · Total: N`` for one live child, from the labels /usage already localizes.
+    An unknown model or token count is omitted rather than rendered as an empty/zero spend."""
+    out = ""
+    model = _clean_str(child.get("model"))
+    if model:
+        out += " · " + t("gateway.usage.label_model", model=model)
+    tokens = child.get("tokens")
+    if isinstance(tokens, (int, float)):
+        out += " · " + t("gateway.usage.label_total", count=_fmt(int(tokens)))
+    return out
 
 
 def _usage_agent_stats_lines(agent) -> list[str]:

@@ -300,22 +300,26 @@ def _resolve_async_session_key(parent_agent: Any, origin_ui_session_id: str) -> 
 
 def _batch_progress_token(child_agents: List[Any]) -> tuple:
     """Progress token for the async registry's stale monitor: every child's (api_call_count, current_tool,
-    last_activity_ts). last_activity_ts ticks on streamed chunks, tool transitions and API-call start/completion,
+    last_activity_ts, model, total_tokens). last_activity_ts ticks on streamed chunks, tool transitions and API-call start/completion,
     so a child streaming a long response counts as alive; a fully frozen token past the threshold means the batch
     is wedged. ``in_tool`` is True while ANY child is inside a tool so slow tools get the higher ceiling (mirrors
     the sync heartbeat)."""
     # Progress token for the async registry's stale monitor: the combined (api_call_count, current_tool,
-    # last_activity_ts) of every child. last_activity_ts is ticked by _touch_activity on every streamed
+    # last_activity_ts, model, total_tokens) of every child. last_activity_ts is ticked by _touch_activity on every streamed
     # chunk ("receiving stream response"), every tool transition, and every API-call start/completion — so a
     # child streaming a long response is alive even though api_call_count only advances when the call
     # completes (same liveness signal as the compaction inactivity budget, PR #71508).
+    # model/total_tokens ride the SAME tuple rather than a second sampler: the model is immutable for a
+    # child but its token total advances on every call, so it doubles as extra liveness evidence and
+    # `/agents` / `/tasks` render it from one sample (#6779).
     parts = []
     in_tool = False
     for c in child_agents:
         try:
             summary = c.get_activity_summary()
             tool = summary.get("current_tool")
-            parts.append((summary.get("api_call_count", 0), tool, summary.get("last_activity_ts")))
+            parts.append((summary.get("api_call_count", 0), tool, summary.get("last_activity_ts"),
+                          getattr(c, "model", None), getattr(c, "session_total_tokens", None)))
             in_tool = in_tool or bool(tool)
         except Exception:
             parts.append(None)

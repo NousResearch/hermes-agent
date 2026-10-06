@@ -11,6 +11,26 @@ import pytest
 from tools.browser_tool_lifecycle import _kill_process_tree, _legacy_kill_process_tree
 
 
+@pytest.fixture
+def fake_process_table(monkeypatch):
+    """psutil for a MagicMock proc: the shared-group branch snapshots
+    psutil.Process(proc.pid).children() and SIGKILLs each one. Against the real
+    table, pid=999 is whatever the machine runs there, and when that is an
+    ancestor of the test worker the test SIGKILLs its own interpreter (seen as
+    a CRASHED file on macOS runners, whose PIDs are allocated system-wide)."""
+    import psutil
+
+    child = MagicMock()
+    queried = []
+
+    def process(pid):
+        queried.append(pid)
+        return MagicMock(children=MagicMock(return_value=[child]))
+
+    monkeypatch.setattr(psutil, "Process", process)
+    return queried, child
+
+
 @pytest.mark.platforms("posix")
 def test_posix_kills_process_group_term_then_kill(monkeypatch):
     proc = MagicMock(pid=999)
@@ -22,12 +42,13 @@ def test_posix_kills_process_group_term_then_kill(monkeypatch):
 
 
 @pytest.mark.platforms("posix")
-def test_posix_missing_process_returns_silently(monkeypatch):
+def test_posix_missing_process_returns_silently(monkeypatch, fake_process_table):
     def missing(pid):
         raise ProcessLookupError()
 
     monkeypatch.setattr(os, "getpgid", missing)
     _legacy_kill_process_tree(MagicMock(pid=999))
+    assert fake_process_table[0] == [999]
 
 
 @pytest.mark.platforms("posix")
@@ -68,7 +89,7 @@ def test_windows_taskkill_targets_tree_and_is_best_effort(error):
 
 
 @pytest.mark.platforms("posix")
-def test_posix_shared_group_is_never_killpgd(monkeypatch):
+def test_posix_shared_group_is_never_killpgd(monkeypatch, fake_process_table):
     """A child spawned without start_new_session shares OUR process group, so
     os.getpgid returns the caller's own pgid — killpg would signal the whole
     Hermes/test-runner tree. Only a group leader may be killpg'd; the direct
@@ -83,6 +104,9 @@ def test_posix_shared_group_is_never_killpgd(monkeypatch):
 
     assert killpg_calls == []
     proc.kill.assert_called_once()
+    queried, descendant = fake_process_table
+    assert queried == [999]
+    descendant.kill.assert_called_once()
 
 
 @pytest.mark.platforms("posix")

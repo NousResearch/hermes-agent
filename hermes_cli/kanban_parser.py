@@ -42,6 +42,13 @@ def _reason(help: str):
     return _arg("--reason", help=help)
 
 
+def _effort_choices(*extra: str) -> tuple[str, ...]:
+    """Use the storage layer's canonical effort enum for CLI choices."""
+    from hermes_constants import VALID_REASONING_EFFORTS
+
+    return ("none", *VALID_REASONING_EFFORTS, *extra)
+
+
 def _nonnegative_int(value: str) -> int:
     """argparse type for retention days: a negative window builds a future cutoff
     that matches every row, so reject it at the CLI boundary before any sweep."""
@@ -203,6 +210,10 @@ _SPECS = [
         _arg("--provider", dest="provider_override",
              help="Provider the --model belongs to (passed as --provider <name> to "
                   "the worker). Requires --model."),
+        _arg("--effort", dest="reasoning_effort", type=str.lower,
+             choices=_effort_choices(),
+             help="Pin this task's reasoning effort (passed as --reasoning <level>). "
+                  "'none' disables thinking; omit to inherit the assignee profile's setting."),
         _arg("--completion-contract", metavar="CONTRACT",
              help="local-only (default), OWNER/REPO for publication, or exact GitHub PR URL; required CI gates done."),
         _arg("--goal", action="store_true", dest="goal_mode",
@@ -256,7 +267,12 @@ _SPECS = [
         _arg("--provider",
              help="Provider the model belongs to (worker is spawned with "
                   "--provider <name>). Cleared together with the model."),
-    ], help="Set or clear a task's model/provider override (takes effect on the next dispatch)"),
+        _arg("--effort", dest="reasoning_effort", type=str.lower,
+             choices=_effort_choices("clear"),
+             help="Per-task reasoning effort (passed as --reasoning <level>). "
+                  "'none' disables thinking; 'clear' inherits the assignee profile's setting. "
+                  "Independent of the model override."),
+    ], help="Set or clear a task's model/provider/effort override (next dispatch)"),
     _cmd("reclaim", [_TASK_ID, _RECLAIM_REASON], help="Release an active worker claim on a running task"),
     _cmd("reassign", [
         _TASK_ID,

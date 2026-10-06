@@ -90,10 +90,13 @@ def test_local_git_install_configure_is_scoped(tmp_path, monkeypatch, request, o
     ensure.sync_venv(explicit=True)
     import pm.client
     sync = pm.client.sync_venv
-    transactions = []
     def record_sync(*args, **kwargs):
-        transactions.append(type(kwargs.get("plugins")).__name__)
-        return sync(*args, **kwargs)
+        # Publication/admission may use different PM inputs; neither may select
+        # memory before the provider's configuration has succeeded.
+        assert load_config()["memory"]["provider"] == "previous"
+        result = sync(*args, **kwargs)
+        assert load_config()["memory"]["provider"] == "previous"
+        return result
     monkeypatch.setattr(pm.client, "sync_venv", record_sync)
 
     repo = tmp_path / "repo"
@@ -142,6 +145,7 @@ def test_local_git_install_configure_is_scoped(tmp_path, monkeypatch, request, o
             return 0 if outcome == "decline-install" else 1
         if title == "Memory provider setup":
             return next(i for i, (label, desc) in enumerate(items) if "featured-local" in label)
+        assert load_config()["memory"]["provider"] == "previous"
         return -1 if outcome == "cancel" else 0
     monkeypatch.setattr(memory_setup, "_curses_select", select)
 
@@ -156,7 +160,6 @@ def test_local_git_install_configure_is_scoped(tmp_path, monkeypatch, request, o
         try:
             installed = owner / "plugins" / entry.name
             prompts.clear()
-            transactions.clear()
             config_before = (owner / "config.yaml").read_bytes()
             environment_before = selected_venv(core)
             if not installed.exists():
@@ -165,19 +168,21 @@ def test_local_git_install_configure_is_scoped(tmp_path, monkeypatch, request, o
                 if error is not None:
                     assert error.value.code == 1
                 assert len(prompts) == (0 if outcome in {"bad-pin", "decline-install"} else 1)
-                expected = [] if outcome in {"bad-pin", "decline-install"} else ["StagedUpdate"]
-                if outcome not in {"bad-pin", "decline-install", "decline-deps"}:
-                    expected.append("Selection")
-                assert transactions == expected
             current = load_config()
             if outcome not in {"bad-pin", "decline-install"}:
                 assert (installed / "__init__.py").read_text() == source
                 assert plugins_cmd_catalog.catalog_install_record(installed)["sha"] == sha
+            if outcome not in {"configure", "hook"}:
+                assert current["memory"]["provider"] == "previous"
             if outcome not in {"bad-pin", "decline-install", "decline-deps", "conflict"}:
                 assert entry.name in current["plugins"]["enabled"]
                 assert entry.name not in current["plugins"]["disabled"]
+                python = selected_venv(core) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+                admitted = subprocess.run([str(python), "-I", "-c",
+                    "import fixture_sdk; assert fixture_sdk.__version__ == '1.0'"],
+                    capture_output=True, text=True, timeout=30)
+                assert admitted.returncode == 0, admitted.stderr
             if outcome not in {"configure", "hook"}:
-                assert current["memory"]["provider"] == "previous"
                 assert not (owner / "native.json").exists()
                 if outcome in {"decline-deps", "conflict", "bad-pin", "decline-install"}:
                     assert entry.name not in current.get("plugins", {}).get("enabled", [])

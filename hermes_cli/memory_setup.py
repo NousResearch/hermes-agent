@@ -259,7 +259,7 @@ def _install_featured_provider(entry):
     """Install only after consent; leave memory selection to the setup flow."""
     from hermes_cli import plugins_cmd
     from hermes_cli.plugin_catalog import entry_capability_summary
-    from hermes_cli.config import load_config
+    from hermes_cli.plugins_admission import AdmissionRefused
 
     choice = _curses_select(
         f"Install {entry.title or entry.name}?\n{entry_capability_summary(entry)}",
@@ -270,13 +270,23 @@ def _install_featured_provider(entry):
     if choice != 1:
         _print_cancelled_setup()
         return None
-    # Enabling the package admits its dependencies through the normal PM
-    # transaction; it does NOT select memory.provider. Never retry a refusal
-    # through a separate dependency-preparation path.
-    plugins_cmd.cmd_install(entry.name, enable=True)
-    selection = load_config().get("plugins", {})
-    if (entry.name not in selection.get("enabled", [])
-            or entry.name in selection.get("disabled", [])):
+    # cmd_install(enable=True) selects memory.provider immediately. Publish
+    # without selection, then use the normal consent + package admission path
+    # (also used by Desktop), leaving provider selection to successful setup.
+    plugins_cmd.cmd_install(entry.name, enable=False)
+    target = plugins_cmd._user_installed_plugin_dir(entry.name)
+    if target is None:
+        print("\n  Plugin was not installed. Memory selection unchanged.\n")
+        return None
+    console = plugins_cmd._console()
+    consented, reason = plugins_cmd._install_plugin_python_deps(
+        plugins_cmd._read_manifest_for_install(target), target, console)
+    if not consented:
+        print(f"\n  Dependencies not prepared: {reason}. Memory selection unchanged.\n")
+        return None
+    try:
+        plugins_cmd._set_plugin_enabled(entry.name, enable=True, console=console)
+    except AdmissionRefused:
         print("\n  Plugin was not enabled. Memory selection unchanged.\n")
         return None
     match = _find_provider(_get_available_providers(), entry.name)

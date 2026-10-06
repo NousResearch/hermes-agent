@@ -130,4 +130,3 @@ def secret_literal_path(path: Path, value: Any) -> Optional[Path]:
         if isinstance(node, str | int | float):
             return node_path
     return None
-

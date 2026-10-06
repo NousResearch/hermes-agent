@@ -782,10 +782,15 @@ from pathlib import Path
 
 import pm.environments
 pm.environments.activate_dependencies = lambda root: None
+import hermes_cli._early_recovery as early_recovery
 import hermes_cli.venv_sync as venv_sync
 
 payload, ack, record, marker = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
-venv_sync.prepare_launch = lambda root, argv: Path(sys.executable)
+if sys.argv[5] == "source_update":
+    venv_sync.prepare_launch = lambda root, argv: Path(sys.executable)
+else:
+    venv_sync.prepare_launch = lambda root, argv: None
+    early_recovery.restore_interrupted_pull = lambda *args, **kwargs: True
 
 
 def relaunch(*args):
@@ -803,13 +808,14 @@ runpy.run_module("cron.scheduler", run_name="__main__", alter_sys=True)
 """
 
 
-def test_source_update_relaunch_replays_the_worker_before_its_ack(tmp_path):
-    """A worker whose ``hermes_bootstrap`` finishes a source update relaunches into an ``-I``
-    interpreter that ignores the pinned PYTHONPATH. Reached through ``run_agent`` inside
-    ``run_one_job``, that relaunch came after the ack: the payload was deleted, the marker
-    consumed, and the new process died on ``ruamel`` with the adopted run left ``unknown``.
-    The relaunch must instead replay the whole worker: payload unread, no ack, marker set,
-    re-running ``cron.scheduler`` as ``__main__``."""
+@pytest.mark.parametrize("cause", ["source_update", "interrupted_pull"])
+def test_relaunch_replays_the_worker_before_its_ack(tmp_path, cause):
+    """``run_agent``'s import may relaunch the process: ``hermes_bootstrap`` finishing a source
+    update (into an ``-I`` interpreter that ignores the pinned PYTHONPATH), or the restore of a
+    tree a killed ``hermes update`` half-wrote. Reached inside ``run_one_job``, either came after
+    the ack: the payload was deleted, the marker consumed, and the new process died on ``ruamel``
+    or found no payload, leaving the adopted run ``unknown``. The relaunch must instead replay
+    the whole worker: payload unread, no ack, marker set, the same worker re-run."""
     import cron.worker_bootstrap as worker_bootstrap
 
     repo_root = Path(worker_bootstrap.__file__).resolve().parent.parent
@@ -823,13 +829,16 @@ def test_source_update_relaunch_replays_the_worker_before_its_ack(tmp_path):
     env[worker_bootstrap.WORKER_MARKER] = "1"
     child = subprocess.run(
         [sys.executable, "-c", _RELAUNCH_PROBE, str(payload), str(ack), str(record),
-         worker_bootstrap.WORKER_MARKER],
+         worker_bootstrap.WORKER_MARKER, cause],
         cwd=repo_root, env=env, capture_output=True, text=True, timeout=120,
     )
     assert record.exists(), f"worker never relaunched (exit {child.returncode}): {child.stderr}"
     seen = json.loads(record.read_text())
     assert (seen["payload"], seen["ack"], seen["marker"]) == (True, False, "1")
-    assert "runpy.run_module('cron.scheduler', run_name='__main__'" in seen["command"][-1]
+    if cause == "source_update":
+        assert "runpy.run_module('cron.scheduler', run_name='__main__'" in seen["command"][-1]
+    else:
+        assert str(payload) in seen["command"]
 
 
 _REAL_BOOT_PROBE = """

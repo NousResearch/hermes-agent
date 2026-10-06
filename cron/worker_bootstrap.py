@@ -61,7 +61,14 @@ def finish_worker_boot() -> None:
     Not from ``worker_bootstrap()``: while ``-m cron.scheduler`` executes ``cron/__init__.py``,
     ``sys.argv[0]`` is still ``-m`` and ``__main__`` has no spec, so the relaunch command could
     not name the module to re-run. In ``__main__`` both are set.
+
+    ``run_agent``'s other import-time relaunch -- restoring a tree a killed ``hermes update``
+    half-wrote -- runs here too: the worker never loads ``hermes_cli.main``, so left to
+    ``run_one_job`` it re-executed the worker after the ack, onto a deleted payload.
     """
     import hermes_bootstrap  # noqa: F401
+    from hermes_cli import _early_recovery
 
+    if _early_recovery.restore_interrupted_pull():
+        _early_recovery.relaunch_after_restore()
     os.environ.pop(WORKER_MARKER, None)

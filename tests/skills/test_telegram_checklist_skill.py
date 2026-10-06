@@ -323,6 +323,41 @@ class TestProfileSettings(Base):
             with mock.patch.object(tc, "HERMES", home):
                 self.assertEqual(tc._session_path(), home / "telethon/selected.session")
 
+    def test_bare_config_sections_read_as_absent(self):
+        """A bare ``skills:`` / ``config:`` / ``telegram_checklist:`` header (the usual
+        way to comment a block out) parses to None, not {}; the offline commands must
+        treat it exactly like a missing section instead of refusing the whole file."""
+        for text in ("skills:\n",
+                     "skills:\n  config:\n",
+                     "skills:\n  config:\n    telegram_checklist:\n",
+                     "skills:\n  # config:\n  #   telegram_checklist:\n  #     chats: '-100123'\n"):
+            with self.subTest(config=text), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                (home / "config.yaml").write_text(text, encoding="utf-8")
+                with mock.patch.object(tc, "HERMES", home):
+                    self.assertEqual(tc._setting("chats", "absent"), "absent")
+                    self.assertEqual(tc._session_path(), tc.SESSION)
+                    code, out = run_json("create", "--title", "Tasks", "--task", "A", "--dry-run")
+                    self.assertEqual(code, 0, out)
+                    self.assertTrue(out["dry_run"])
+                    code, out = run_json("plan", "--file", write_plan(plan_dict()))
+                    self.assertEqual(code, 0, out)
+                    self.assertEqual(out["kind"], "plan")
+
+    def test_non_mapping_config_sections_fail_closed(self):
+        for text in ("- skills\n",
+                     "skills: 1\n",
+                     "skills:\n  config: [1]\n",
+                     "skills:\n  config:\n    telegram_checklist: chats\n"):
+            with self.subTest(config=text), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                (home / "config.yaml").write_text(text, encoding="utf-8")
+                with mock.patch.object(tc, "HERMES", home):
+                    code, out = dies_with(tc._setting, "chats")
+                self.assertEqual(code, 1)
+                self.assertFalse(out["ok"])
+                self.assertIn("config.yaml", out["error"])
+
 
 class TestCLIContract(Base):
     def test_help_exits_zero_with_usage(self):

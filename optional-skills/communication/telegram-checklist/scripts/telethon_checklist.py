@@ -191,16 +191,24 @@ def _setting(key, default=None):
     """Read non-secret settings from the launch profile; never migrate files."""
     if HERMES is None or not (HERMES / "config.yaml").exists():
         return default
+    unreadable = "cannot read telegram_checklist settings from profile config.yaml"
     try:
         try:
             import hermes_yaml as yaml
         except ImportError:
             import yaml
-        config = yaml.safe_load((HERMES / "config.yaml").read_text(encoding="utf-8-sig")) or {}
-        settings = config.get("skills", {}).get("config", {}).get("telegram_checklist", {})
+        settings = yaml.safe_load((HERMES / "config.yaml").read_text(encoding="utf-8-sig")) or {}
+        for section in ("skills", "config", "telegram_checklist"):
+            if not isinstance(settings, dict):
+                _die(unreadable)
+            # A bare "section:" header (the block commented out) parses to None, not {}:
+            # read it as absent, like a missing key; only a present non-mapping fails closed.
+            settings = settings.get(section) or {}
+        if not isinstance(settings, dict):
+            _die(unreadable)
         return settings.get(key, default)
     except Exception:  # health: allow BLE001 -- external YAML parser failures must fail closed as JSON
-        _die("cannot read telegram_checklist settings from profile config.yaml")
+        _die(unreadable)
 
 
 def _session_path():

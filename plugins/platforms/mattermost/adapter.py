@@ -511,8 +511,28 @@ class MattermostAdapter(BasePlatformAdapter):
             return None
         if has_mention:  # strip the @mention so the agent sees clean input
             for pattern in mention_patterns:
-                message_text = re.sub(re.escape(pattern), "", message_text, flags=re.IGNORECASE).strip()
+                # Absorb an optional **bold** wrapper, else "**@bot**" redacts to a literal "****".
+                message_text = re.sub(rf"(?:\*\*)?{re.escape(pattern)}(?:\*\*)?", "", message_text, flags=re.IGNORECASE)
+            message_text = message_text.replace("  ", " ").strip()  # collapse only the doubled space; newlines preserved
         return message_text
+
+    def _build_identity_prompt(self) -> str:
+        """Ephemeral system-prompt line naming the bot's handle (Slack parity), injected via the
+        per-turn ``channel_prompt`` seam: the channel gate strips the bot's own @mention, so in a
+        channel served by several bots a surviving peer handle must not read as "addressed to
+        someone else, not me"."""
+        name = (self._bot_username or "").strip().lstrip("@")
+        if not name:
+            return ""
+        return (
+            f"You are connected to this Mattermost server as the bot "
+            f'"@{name}". The adapter already applied mention routing in channels; '
+            f"treat every delivered turn as intentionally routed to you. Your "
+            f'routing mention "@{name}" may have been stripped from the visible '
+            f"text — a mention of any other handle in the message is not a "
+            f"mention of you, and is not evidence the post was addressed to "
+            f"someone else instead of you."
+        )
 
     async def _download_attachments(self, file_ids: List[str]) -> Tuple[List[str], List[str]]:
         """Download attachments now (URLs need auth headers downstream tools lack) → (paths, mime types)."""
@@ -584,10 +604,27 @@ class MattermostAdapter(BasePlatformAdapter):
             user_id=sender_id, user_name=data.get("sender_name", "").lstrip("@") or sender_id,
             thread_id=thread_id, message_id=post_id)
         from gateway.platforms.base import resolve_channel_prompt
-        await self.handle_message(MessageEvent(
-            text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,
-            media_urls=media_urls or None, media_types=media_types or None,
-            channel_prompt=resolve_channel_prompt(self.config.extra, channel_id, None)))
+        channel_prompt = resolve_channel_prompt(self.config.extra, channel_id, None)
+        if not is_dm:  # channels are mention-gated; anchor the bot's identity (DMs are already directed)
+            identity_prompt = self._build_identity_prompt()
+            if identity_prompt:
+                channel_prompt = (
+                    f"{identity_prompt}\n\n{channel_prompt}".strip()
+                    if channel_prompt
+                    else identity_prompt
+                )
+        await self.handle_message(
+            MessageEvent(
+                text=message_text,
+                message_type=msg_type,
+                source=source,
+                raw_message=post,
+                message_id=post_id,
+                media_urls=media_urls or None,
+                media_types=media_types or None,
+                channel_prompt=channel_prompt,
+            )
+        )
 
 
 # --- Plugin standalone-send (out-of-process cron delivery via Mattermost REST) ---

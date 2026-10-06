@@ -147,6 +147,57 @@ Edit any non-local entry later with the pencil button, or remove it with the
 trash button — removal asks for confirmation and reminds you that *"The
 instance itself is not touched — you can add it again any time."*
 
+### Troubleshooting an SSH connection
+
+Desktop runs SSH in batch mode and starts Hermes through a non-interactive
+remote shell. A command that works after an interactive `ssh user@host` login
+can therefore still be absent from the `PATH` that Desktop sees. Reproduce the
+same conditions from the desktop machine:
+
+```bash
+ssh -o BatchMode=yes -i ~/.ssh/id_ed25519 user@host \
+  'command -v hermes; hermes --version'
+```
+
+If that reports `hermes: command not found`, but the normal interactive shell
+can run Hermes, test the managed wrapper by its absolute path:
+
+```bash
+ssh -o BatchMode=yes -i ~/.ssh/id_ed25519 user@host \
+  '$HOME/.local/bin/hermes serve --help'
+```
+
+When the absolute-path command works, edit the registered SSH gateway and set
+**Hermes path** to the expanded remote path, for example
+`/home/alice/.local/bin/hermes`. Use the executable wrapper, not the install
+directory such as `/home/alice/.hermes/hermes-agent`; a directory is not a
+valid Hermes path. Also enter the key's absolute path in **Identity file**, or
+load a passphrase-protected key into the local SSH agent before testing:
+
+```bash
+ssh-add ~/.ssh/id_ed25519
+```
+
+If startup instead says that a remote Hermes update process is still running,
+do not start another update concurrently. Quit Desktop, then check the PID
+named in the message and the remote update log:
+
+```bash
+ssh user@host 'ps -o pid,ppid,stat,etime,cmd -p <pid>'
+ssh user@host 'tail -n 100 ~/.hermes/logs/update.log'
+```
+
+Let a live updater finish. If the PID no longer exists, run one interactive
+update by absolute path and wait for its final fleet version check before
+reopening Desktop:
+
+```bash
+ssh -t user@host '$HOME/.local/bin/hermes update'
+```
+
+The updater reconciles an abandoned in-progress marker itself. Do not delete
+the marker or kill a live updater merely to bypass the concurrency check.
+
 :::info The remote backend is a running `hermes serve` process
 Nothing here works unless the backend is actually up and reachable on the
 other machine. The desktop app attaches to it; it does not start it for you

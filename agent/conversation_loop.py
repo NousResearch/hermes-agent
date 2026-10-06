@@ -1715,6 +1715,7 @@ def run_conversation(
     ``{turn_id, current_turn_user_idx}`` pair is stamped beside the exact ``messages`` it
     addresses, after every history rewrite including post-turn micro-compaction.
     """
+    from agent.session_persistence import drop_ephemeral_scaffolding
     from agent.turn_context import export_current_turn_boundary
     from tools.vision_tools_history_budget import native_turn_images
 
@@ -1737,6 +1738,9 @@ def run_conversation(
             turn_author=turn_author,
             title_user_message=title_user_message,
         )
+    if isinstance(result, dict):
+        # The durable transcript never holds scaffolding; neither may the history hosts replay.
+        drop_ephemeral_scaffolding(result.get("messages"))
     result = export_current_turn_boundary(agent, result, user_message)
     _close_durable_failed_turn(agent, result)
     return result

@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -316,6 +317,14 @@ def test_interrupted_app_swap_is_rolled_back_at_the_next_run(tmp_path):
     assert not previous.exists() and not app.with_name("Hermes.app.new").exists()
 
 
+def _custodian(home: Path) -> str:
+    """The pid posix.sh names on line 1 before any update work starts: its custodian, which
+    outlives the hand-off so an old Desktop never reads a dead owner."""
+    log = home / "logs" / "desktop-update-handoff.log"
+    found = re.search(r"names its custodian pid (\d+)", log.read_text(encoding="utf-8-sig") if log.exists() else "")
+    return found.group(1) if found else ""
+
+
 def _ancestry(pid: int) -> list[int]:
     chain = []
     while pid > 1:
@@ -355,7 +364,7 @@ def test_script_killed_right_after_spawning_the_update_leaves_a_live_marker(tmp_
         script.wait(timeout=10)
         child = int(child_pid_file.read_text(encoding="utf-8-sig"))
         lines = marker.read_text(encoding="utf-8-sig").splitlines()
-        assert lines[0] == str(script.pid)
+        assert lines[0] == _custodian(home)  # never the killed hand-off
         assert lines[3].startswith("delegate:"), lines
         delegate = int(lines[3].split()[0].split(":")[1])
         assert delegate in _ancestry(child)  # the update process (or its exec-ing launcher)
@@ -367,8 +376,8 @@ def test_script_killed_right_after_spawning_the_update_leaves_a_live_marker(tmp_
 
         hold.touch()
         deadline = time.monotonic() + 30
-        while Path(f"/proc/{delegate}").exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
+        while (Path(f"/proc/{delegate}").exists() or marker.exists()) and time.monotonic() < deadline:
+            time.sleep(0.05)  # the custodian releases the marker once the delegate is gone
         reclaimed = _run(tmp_path, home, install, "--self-test-marker", "--no-marker-cleanup")
         assert reclaimed.returncode == 0, reclaimed.stdout + reclaimed.stderr
     finally:

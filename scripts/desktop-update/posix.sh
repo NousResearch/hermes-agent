@@ -131,9 +131,9 @@ marker_release() { # A7 rule 5, under the lock. Never while a survivor of the
   # that completion still mutates the checkout. Wait it out; past the bound,
   # leave the marker in place -- dead to every reader, and the Desktop's
   # reclaim helper refuses to delete it while the checkout lock is held.
-  # The line-2 refresher keeps running through that wait (an old Desktop
-  # would otherwise age-delete the marker 20 minutes into it) and stops only
-  # once the release is decided.
+  # The custodian (line 1, the line-2 refresher) keeps running through that
+  # wait (an old Desktop would otherwise age-delete the marker 20 minutes
+  # into it) and stops only once the marker is released.
   local waited=0
   [ "$MARKER_CLAIMED" -eq 1 ] && [ "$NO_MARKER_CLEANUP" -eq 0 ] || { marker_refresher_stop; return 0; }
   while checkout_lock_held; do
@@ -146,31 +146,45 @@ marker_release() { # A7 rule 5, under the lock. Never while a survivor of the
     fi
     sleep 1; waited=$((waited + 1))
   done
-  marker_refresher_stop
   marker_locked marker_release_locked
+  marker_refresher_stop
   MARKER_CLAIMED=0
 }
 RELEASE_WAIT_S=7200
 RELEASE_WAITED=0  # the R6 wait ran: the result written before it carries a stale finished_at
 
 # An older packaged Desktop judges a marker by lines 1 and 2 alone: a dead pid,
-# or a line 2 20 minutes old, and it deletes the marker and boots its backend.
-# From the claim until the release is decided (the update, every follow-up
-# step and the R6 wait above), keep line 2 young -- under the A7 lock and only
-# while line 1 is still our exact incarnation (marker_refresh_locked). If we
-# die first (SIGKILL runs no trap) while our update still runs or holds the
-# checkout lock, the refresher outlives us as its custodian (marker_custody).
+# or a line 2 20 minutes old, and it deletes the marker and boots its backend
+# -- it never looks at the delegate line or the A7 lock. We can be SIGKILLed
+# (no trap runs) while our update still runs or holds the checkout lock, and
+# a takeover after that death would leave an instant in which line 1 names a
+# dead pid. So before any update work starts, line 1 names a custodian that
+# outlives us: this refresher. From then on the marker's identity (MY_PID /
+# MY_CT) is the custodian's; it keeps line 2 young (marker_refresh_locked)
+# until the release is decided and, if we die first, keeps the marker until
+# our update and its survivors are gone (marker_custody). `exec sh` reports
+# its pid: bash 3.2 has no BASHPID.
 MARKER_REFRESHER=""
 marker_refresher_start() {
+  local ct
   [ "$MARKER_CLAIMED" -eq 1 ] && [ -z "$MARKER_REFRESHER" ] || return 0
   ( trap '' HUP INT QUIT TERM
+    CUSTODIAN_PID="$(exec sh -c 'echo "$PPID"')"; CUSTODIAN_CT="$(proc_ct "$CUSTODIAN_PID")"
     while :; do
       for ((_tick = 0; _tick < MARKER_REFRESH_EVERY_S; _tick++)); do
-        sleep 1; kill -0 "$MY_PID" 2>/dev/null || marker_custody
+        sleep 1; kill -0 $$ 2>/dev/null || marker_custody
       done
-      marker_locked marker_refresh_locked
+      MY_PID="$CUSTODIAN_PID" MY_CT="$CUSTODIAN_CT" marker_locked marker_refresh_locked
+      marker_locked marker_refresh_locked  # line 1 is still ours: the handover below failed
     done ) </dev/null >/dev/null 2>&1 &
   MARKER_REFRESHER=$!
+  ct="$(proc_ct "$MARKER_REFRESHER")"
+  if [ -n "$ct" ] && marker_locked marker_custody_take_locked "$MARKER_REFRESHER" "$ct"; then
+    MY_PID="$MARKER_REFRESHER" MY_CT="$ct"
+    log "update marker names its custodian pid $MY_PID (hand-off pid $$)"
+  else
+    log "WARNING: could not name the update marker's custodian; it takes over only if this hand-off dies"
+  fi
 }
 marker_refresher_stop() {
   [ -n "$MARKER_REFRESHER" ] || return 0
@@ -1152,7 +1166,7 @@ run_update() { # streams straight into the log (a killed run keeps its output);
   for sig in HUP INT QUIT; do trap "PENDING_SIGNAL=\${PENDING_SIGNAL:-$sig}" "$sig"; done
   rm -f "$go" 2>/dev/null
   ( trap - TERM
-    while [ ! -e "$go" ]; do kill -0 "$MY_PID" 2>/dev/null || exit 70; sleep 0.05; done
+    while [ ! -e "$go" ]; do kill -0 $$ 2>/dev/null || exit 70; sleep 0.05; done
     exec "${UPDATE_INVOKE[@]}" update --yes $GATEWAY_FLAG $KEEP_STASH "${TARGET_ARGS[@]}" ) >> "$LOG" 2>&1 <&0 &
   pid=$!
   if marker_add_delegate "$pid"; then

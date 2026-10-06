@@ -444,31 +444,31 @@ marker_refresh_locked() { # old packaged Desktops age a marker on line 2 (20 min
   marker_replace "$(marker_canonical "$M_PID" "$(marker_now)" "$M_CT" "$M_DPID" "$M_DCT")"$'\n'
 }
 
-marker_custody_take_locked() { # pid ct -> 0 iff the dead hand-off's claim now names this custodian
+marker_custody_take_locked() { # pid ct -> 0 iff our claim now names that custodian on line 1
   marker_read || return 1
   marker_judge "$SEEN"
   [ "$M_PID" = "$MY_PID" ] && [ "$J_OWNER_STATE" -eq 0 ] || return 1
-  if [ "$J_DELEGATE_STATE" -ne 2 ]; then
-    checkout_lock_held || return 1
-    M_DPID="" M_DCT=""
-  fi
+  [ "$J_DELEGATE_STATE" -eq 2 ] || M_DPID="" M_DCT=""
   marker_replace "$(marker_canonical "$1" "$(marker_now)" "$2" "$M_DPID" "$M_DCT")"$'\n'
 }
 
-marker_custody() { # posix.sh's refresher, once the hand-off is gone; never returns
-  # The hand-off's claim would name a dead pid while the `hermes update` it
-  # started (line 4) or a completion survivor still mutates the checkout, and
-  # an old packaged Desktop judges line 1 alone. So name ourselves on line 1
-  # until both are gone (bounded like the R6 wait), keep line 2 young, then
-  # release. Only the dead hand-off ever wrote a delegate, so an unlocked look
-  # that finds neither one nor a held checkout lock is final -- no need to wait
-  # out a busy A7 lock. `exec sh` reports our pid: bash 3.2 has no BASHPID.
-  local me ct dpid dct tick=0
-  marker_read && marker_parse "$SEEN" && { [ -n "$M_DPID" ] || checkout_lock_held; } || exit 0
-  me="$(exec sh -c 'echo "$PPID"')"; ct="$(proc_ct "$me")"
-  [ -n "$ct" ] && marker_locked marker_custody_take_locked "$me" "$ct" || exit 0
-  dpid="$M_DPID" dct="$M_DCT" MY_PID="$me" MY_CT="$ct"
-  log "update hand-off died while its update still holds the checkout; pid $me keeps the update marker"
+marker_custody() { # posix.sh's refresher (CUSTODIAN_PID/CT), once the hand-off is gone; never returns
+  # An old packaged Desktop judges line 1 alone, and a SIGKILLed hand-off runs
+  # no trap. So line 1 names this custodian, not the hand-off, from before the
+  # update work starts (posix.sh hands it over): when the hand-off dies, the
+  # `hermes update` it started (line 4) or a completion survivor may still
+  # mutate the checkout, and the marker already names a live owner. Keep line
+  # 2 young until both are gone (bounded like the R6 wait), then release. Had
+  # the handover failed, take the claim over now. Only the hand-off ever wrote
+  # a delegate, so an unlocked look is enough to decide.
+  local dpid dct tick=0
+  marker_read && marker_parse "$SEEN" || exit 0
+  if [ "$M_PID" != "$CUSTODIAN_PID" ]; then
+    { [ -n "$M_DPID" ] || checkout_lock_held; } && [ -n "$CUSTODIAN_CT" ] \
+      && marker_locked marker_custody_take_locked "$CUSTODIAN_PID" "$CUSTODIAN_CT" || exit 0
+  fi
+  dpid="$M_DPID" dct="$M_DCT" MY_PID="$CUSTODIAN_PID" MY_CT="$CUSTODIAN_CT"
+  log "update hand-off is gone; pid $MY_PID keeps the update marker while its update holds the checkout"
   while { [ -n "$dpid" ] && ident_alive "$dpid" "$dct"; } || checkout_lock_held; do
     [ "$tick" -lt "${RELEASE_WAIT_S:-7200}" ] || exit 0
     sleep 1; tick=$((tick + 1))

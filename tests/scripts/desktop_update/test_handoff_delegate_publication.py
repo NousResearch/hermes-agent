@@ -14,7 +14,7 @@ fcntl = pytest.importorskip("fcntl")
 pytestmark = pytest.mark.platforms("linux")
 
 from tests.scripts.desktop_update.test_desktop_update_posix_handoff_protocol import _env
-from tests.scripts.desktop_update.test_desktop_update_posix_marker import POSIX, _calls, _install
+from tests.scripts.desktop_update.test_desktop_update_posix_marker import POSIX, _calls, _custodian, _install
 
 
 @pytest.mark.parametrize("claim", ["missing", "foreign"])
@@ -50,7 +50,7 @@ def test_sidecar_timeout_never_releases_the_parked_update(tmp_path):
     lock_fd = None
     try:
         deadline = time.monotonic() + 30
-        while not (marker.exists() and marker.read_text().splitlines()[0] == str(script.pid)):
+        while not (marker.exists() and _custodian(home) and marker.read_text().splitlines()[0] == _custodian(home)):
             assert script.poll() is None and time.monotonic() < deadline
             time.sleep(0.005)
         lock_fd = os.open(str(marker) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)

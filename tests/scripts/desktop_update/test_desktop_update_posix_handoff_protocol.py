@@ -33,7 +33,7 @@ fcntl = pytest.importorskip("fcntl")  # windows-footgun: ok
 from tests.scripts.desktop_update.legacy_desktop_reader import legacy_read
 from tests.scripts.desktop_update.lineage_rule_cases import ENV_CASES, RULE_CASES
 from tests.scripts.desktop_update.lineage_rule_cases import FACTS as LINEAGE_FACTS
-from tests.scripts.desktop_update.test_desktop_update_posix_marker import POSIX, _calls, _ct, _install
+from tests.scripts.desktop_update.test_desktop_update_posix_marker import POSIX, _calls, _ct, _custodian, _install
 
 pytestmark = pytest.mark.platforms("linux")  # /proc ancestry and creation times
 
@@ -307,8 +307,9 @@ def test_marker_outlives_a_survivor_that_still_holds_the_checkout_lock(tmp_path)
             assert time.monotonic() < deadline and script.poll() is None, log.read_text(encoding="utf-8-sig")
             time.sleep(0.05)
         time.sleep(1.5)
-        assert script.poll() is None and marker.read_text(encoding="utf-8-sig").splitlines()[0] == str(script.pid)
-        assert _helper(tmp_path, home, install, "reclaim") == f"live {script.pid}"
+        custodian = _custodian(home)
+        assert script.poll() is None and marker.read_text(encoding="utf-8-sig").splitlines()[0] == custodian
+        assert _helper(tmp_path, home, install, "reclaim") == f"live {custodian}"
         os.killpg(script.pid, signal.SIGKILL); script.wait()  # windows-footgun: ok — linux-only test  # the script dies too: dead marker, lock still held
         assert _helper(tmp_path, home, install, "reclaim") == "held"
         assert marker.exists()
@@ -426,7 +427,7 @@ def test_line_two_stays_young_through_the_r6_release_wait(tmp_path):
         for _ in range(4):  # several refresh intervals, all inside the wait
             time.sleep(1.5)
             pid, started = marker.read_text(encoding="utf-8-sig").splitlines()[:2]
-            assert script.poll() is None and pid == str(script.pid)
+            assert script.poll() is None and pid == _custodian(home)
             assert time.time() - int(started) <= 3.5, started
     finally:
         completion.touch()
@@ -475,7 +476,7 @@ def test_script_killed_before_the_delegate_line_appears_runs_no_update(tmp_path)
     lock_fd = None
     try:
         deadline = time.monotonic() + 30
-        while not (marker.exists() and marker.read_text(encoding="utf-8-sig").split("\n")[0] == str(script.pid)):
+        while not (marker.exists() and _custodian(home) and marker.read_text(encoding="utf-8-sig").split("\n")[0] == _custodian(home)):
             assert time.monotonic() < deadline and script.poll() is None
             time.sleep(0.005)
         lock_fd = os.open(str(marker) + ".lock", os.O_RDWR | os.O_CREAT, 0o644)
@@ -486,8 +487,10 @@ def test_script_killed_before_the_delegate_line_appears_runs_no_update(tmp_path)
             time.sleep(0.01)
         time.sleep(0.5)  # the update child is spawned and parked behind the go-file
         children = [int(p) for p in Path(f"/proc/{script.pid}/task/{script.pid}/children").read_text(encoding="utf-8").split()]
-        # The (sub)shell that will exec `hermes update`; the other child is flock(1) waiting on us.
-        gate = [p for p in children if Path(f"/proc/{p}/comm").read_text(encoding="utf-8").strip() == "bash"]
+        # The (sub)shell that will exec `hermes update`; the others are flock(1) waiting on us and
+        # the custodian (it outlives the script by design).
+        gate = [p for p in children if Path(f"/proc/{p}/comm").read_text(encoding="utf-8").strip() == "bash"
+                and str(p) != _custodian(home)]
         assert gate, "the update child should exist before the delegate line is published"
         script.kill(); script.wait()
         time.sleep(1.0)
@@ -500,7 +503,11 @@ def test_script_killed_before_the_delegate_line_appears_runs_no_update(tmp_path)
             os.close(lock_fd)
         if script.poll() is None:
             script.kill(); script.wait()
-    assert _helper(tmp_path, home, install, "reclaim") == "reclaimed"
+    deadline = time.monotonic() + 30  # the custodian releases the marker: nothing holds the checkout
+    while (verdict := _helper(tmp_path, home, install, "reclaim")).startswith("live "):
+        assert time.monotonic() < deadline
+        time.sleep(0.1)
+    assert verdict in ("absent", "reclaimed")
 
 
 # ── bounded probes and the old-reader line-2 refresh ────────────────────────
@@ -564,9 +571,11 @@ def test_line_two_is_refreshed_only_while_the_claim_is_still_ours(tmp_path, proc
 
 def test_old_desktop_stays_parked_after_the_orchestrator_is_killed_while_the_update_holds_the_lock(tmp_path):
     """SIGKILL the hand-off once its delegate (`hermes update`) runs and a completion survivor holds
-    the checkout lock. The old reader judges line 1 alone, so a live custodian must take line 1
-    and keep line 2 young until custody ends -- through the delegate and the survivor -- and only
-    then release the marker."""
+    the checkout lock. The old reader judges line 1 alone, so line 1 must name a live custodian at
+    EVERY instant -- including the first read after the kill, made while this test holds the A7
+    lock so nothing can take the marker over yet (review 5423056011: a takeover after the death
+    left a gap in which the old reader deleted the marker) -- keep line 2 young through the
+    delegate and the survivor, and release the marker only then."""
     home, install = _install(tmp_path, legacy=True)
     marker = home / ".hermes-update-in-progress"
     hold, completion = tmp_path / "update-hold", tmp_path / "release-completion"
@@ -582,7 +591,14 @@ def test_old_desktop_stays_parked_after_the_orchestrator_is_killed_while_the_upd
             time.sleep(0.05)
         delegate = int(Path(str(hold) + ".pid").read_text(encoding="utf-8"))
         assert f"delegate:{delegate} " in marker.read_text(encoding="utf-8-sig")
-        script.kill(); script.wait()
+        a7 = os.open(str(marker) + ".lock", os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(a7, fcntl.LOCK_EX)  # no marker mutation (a takeover included) until we let go
+            script.kill(); script.wait()
+            seen = legacy_read(home)
+            assert seen["live"] is not None and seen["kept"], ("hand-off just died", seen)
+        finally:
+            os.close(a7)
         for phase in ("delegate", "survivor"):
             for _ in range(3):
                 time.sleep(1.5)

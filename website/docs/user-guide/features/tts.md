@@ -405,7 +405,7 @@ For TTS engines that can't be expressed as a single shell command — Python SDK
 | A single CLI reading text from a file/stdin and writing audio to a file/stdout | **Command provider** (no Python needed) |
 | Two or three CLIs chained with shell pipes | **Command provider** |
 | A Python SDK only — no CLI | **Plugin** |
-| Streaming bytes you want to deliver chunked (mid-generation voice bubbles) | **Plugin** (override `stream()`) |
+| An engine that emits audio as it synthesizes, and you want spoken replies to start on the first sentence | **Plugin** (set `streams_pcm`, override `stream()`) |
 | A voice-listing API used by `hermes setup` | **Plugin** (override `list_voices()`) |
 | OAuth refresh flow (not a static bearer token) | **Plugin** |
 
@@ -468,7 +468,8 @@ Override these on your provider class for richer integration:
 - `list_voices()` → list of `{id, display, language, gender, preview_url}` dicts shown in `hermes tools`.
 - `list_models()` → list of `{id, display, languages, max_text_length}` dicts.
 - `get_setup_schema()` → return `{name, badge, tag, env_vars: [{key, prompt, url}]}` to power the picker row in `hermes tools` / `hermes setup`. Without this, the plugin still works but its row in the picker is minimal.
-- `stream(text, *, voice, model, format, **extra)` → iterator yielding audio bytes for streaming delivery (default raises `NotImplementedError`).
+- `stream(text, *, voice, model, format, **extra)` → iterator yielding audio bytes (default raises `NotImplementedError`).
+- `streams_pcm = True` + `stream_sample_rate` (Hz) → join the streaming voice path (CLI/TUI voice mode, desktop read-aloud, gateway streaming audio). Hermes then calls `stream(text, format="pcm", voice=..., model=..., speed=...)` with the same `tts.voice` / `tts.model` / `tts.speed` that `synthesize()` gets, and expects raw int16 little-endian mono PCM at that rate. Both attributes and `is_available()` are read each time a reply starts, so they can be properties that reflect live state. Unlike `synthesize()`, `stream()` can be called for up to three consecutive sentences at once while earlier audio plays, so it must be thread-safe. Without a positive `stream_sample_rate`, or when `is_available()` is `False`, Hermes keeps synthesizing one sentence at a time.
 - `voice_compatible` property → set `True` if your output is Opus-compatible and the gateway should deliver it as a voice bubble (default `False` = regular audio attachment).
 - `warm()` / `release()` → called when a surface toggles speech output on / when the last lease across surfaces is released, while your provider is the configured `tts.provider` — preload or unload a local model server here. Both default to no-ops; exceptions are logged at debug and never fail the toggle.
 

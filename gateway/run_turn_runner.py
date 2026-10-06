@@ -75,6 +75,20 @@ class _ExecApprovalDeclined(RuntimeError):
     """
 
 
+def _stts_audible(stts) -> bool:
+    """True when a streaming-TTS consumer exists AND its adapter can actually stream audio.
+    Discord accepts no streaming PCM (base ``supports_streaming_tts`` returns False), so a consumer
+    there is silent and interim commentary must be spoken by the whole-clip path instead."""
+    if stts is None:
+        return False
+    try:
+        adapter = getattr(stts, "_adapter", None)
+        supports = getattr(adapter, "supports_streaming_tts", None)
+        return bool(callable(supports) and supports(stts._chat_id, stts._audio_format))
+    except Exception:
+        return False
+
+
 class TurnRunner:
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
@@ -986,6 +1000,13 @@ class TurnRunner:
                 if not already_streamed:
                     stts.on_delta(text)
                     stts.on_delta(None)
+            if not _stts_audible(stts) and str(text or "").strip():
+                # No streaming TTS (Discord voice): speak commentary as its own clip in the linked
+                # voice channel so a listener hears progress, not silence until the final reply.
+                check = getattr(self._runner, "_commentary_voice_guild", None)
+                speak = getattr(self._runner, "_speak_commentary", None)
+                if callable(check) and callable(speak) and check(ctx.source, message_type=ctx.message_type):
+                    self._schedule(speak(ctx.source, text, message_type=ctx.message_type), "voice commentary scheduling error")
             if stream_consumer is not None:
                 stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():

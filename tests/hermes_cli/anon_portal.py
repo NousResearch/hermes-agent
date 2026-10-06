@@ -40,6 +40,18 @@ class FakePortal:
         self.create_response: httpx.Response | None = None
         self.token_response: httpx.Response | None = None
         self.raise_transport: Exception | None = None
+        # Browser challenge (``hermes_cli.anon_challenge``). ``challenge_required`` makes the exchange
+        # answer 428 until the ticket settles; each status poll consumes one entry of
+        # ``challenge_statuses`` (then "none": a passed challenge detaches its ticket), and the
+        # exchange goes through once the list is drained unless ``challenge_never_clears``.
+        self.challenge_required = False
+        self.challenge_never_clears = False
+        self.challenge_statuses: list[str] = []
+        # Status polls answered with this HTTP error first (a 429 / 5xx blip), one per entry.
+        self.challenge_status_errors: list[int] = []
+        self.challenge_url = f"{PORTAL}/challenge?code=ticket"
+        self.optional_challenge = False
+        self.token_requests: list[dict] = []
 
     def creates(self) -> int:
         return [p for _, p in self.calls].count("/api/anonymous/create")
@@ -59,9 +71,26 @@ class FakePortal:
             self.minted += 1
             return httpx.Response(201, json={"user_id": f"nas_user:{self.minted}", "org_id": "nas_org:1",
                                              "token": f"anon_{self.minted:04d}", "idle_ttl_days": 14})
+        if path == "/api/anonymous/challenge/status":
+            if self.challenge_status_errors:
+                return httpx.Response(self.challenge_status_errors.pop(0), json={"error": "blip"})
+            if self.challenge_statuses:
+                return httpx.Response(200, json={"status": self.challenge_statuses.pop(0)})
+            if self.challenge_never_clears:
+                return httpx.Response(200, json={"status": "pending"})
+            self.challenge_required = False
+            return httpx.Response(200, json={"status": "none"})
         if path == "/api/anonymous/token":
+            self.token_requests.append(
+                {"body": json.loads(request.content), "user_agent": request.headers.get("user-agent")})
             if self.token_response is not None:
                 return self.token_response
+            if self.challenge_required:
+                return httpx.Response(428, json={
+                    "error": "challenge_required", "message": "A quick check first.",
+                    "challenges": [{"type": "browser", "url": self.challenge_url, "state": "pending",
+                                    "required": True, "expires_in": 600, "interval": 2}],
+                    "fallback_url": f"{PORTAL}/login"})
             token = json.loads(request.content)["token"]
             if token in self.dead_tokens:
                 return httpx.Response(404, json={"error": "unknown_token"})
@@ -69,6 +98,9 @@ class FakePortal:
                     "user_id": "nas_user:1", "org_id": "nas_org:1"}
             if self.inference_base_url:
                 body["inference_base_url"] = self.inference_base_url
+            if self.optional_challenge:
+                body["challenges"] = [{"type": "browser", "url": self.challenge_url, "state": "pending",
+                                       "required": False, "expires_in": 600, "interval": 2}]
             return httpx.Response(200, json=body)
         return httpx.Response(500, json={"error": f"unexpected {path}"})
 
@@ -99,6 +131,10 @@ def install_portal(monkeypatch, tmp_path, fake: FakePortal | None = None) -> Fak
     monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
     anon_auth.reset_mint_memo_for_tests()
     free_tier_bootstrap.reset_for_tests()
+    from hermes_cli import anon_challenge
+    anon_challenge.reset_for_tests()
+    monkeypatch.setattr(anon_challenge, "_sleep", lambda _seconds: None)
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
     # resolve_nous_access_token memoises the last token for 5 s per profile home (dict); a token minted
     # by an earlier test must not be served to this one.
     monkeypatch.setattr(auth_mod, "_RESOLVE_TOKEN_CACHE", {})

@@ -661,10 +661,41 @@ def _apply_nous_gateway_defaults(cfg: dict) -> list:
         return []
 
 
+def _endpoint_known_to_config(cfg: dict, base_url: str) -> bool:
+    """True when *base_url* is already an endpoint fact in *cfg*: the inline ``model.base_url``,
+    a ``providers.<slug>`` entry, or a ``custom_providers`` row. Comparison is trailing-slash
+    and case insensitive (``_save_custom_provider`` dedups the same way)."""
+    wanted = str(base_url or "").strip().rstrip("/").lower()
+    if not wanted:
+        return False
+
+    def _matches(value: Any) -> bool:
+        return str(value or "").strip().rstrip("/").lower() == wanted
+
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, dict) and _matches(model_cfg.get("base_url")):
+        return True
+    for section_key in ("providers", "custom_providers"):
+        section = cfg.get(section_key)
+        entries: Any = section if isinstance(section, list) else (
+            list(section.values()) if isinstance(section, dict) else [])
+        for entry in entries:
+            if isinstance(entry, dict) and _matches(entry.get("base_url") or entry.get("url") or entry.get("api")):
+                return True
+    return False
+
+
 def _register_custom_endpoint(base_url: str, api_key: str, model: str) -> None:
     """Register a named ``custom_providers`` entry for a custom/local endpoint (mirrors the
     ``hermes model`` custom flow) so the picker gets a proper ready row instead of a "needs
-    setup" dead-end. Dedups by base_url; never blocks the already-persisted assignment."""
+    setup" dead-end. Dedups by base_url; never blocks the already-persisted assignment.
+
+    SKIPPED when the endpoint is already a fact in the config (#76324): the CLI gateway setup
+    writes ``provider: custom`` with an inline ``base_url`` + ``api_mode``, and re-registering
+    that same endpoint as a named ``custom:<slug>`` row on every dashboard re-save is what let
+    the picker rewrite the CLI's shape into ``custom:<slug>`` + ``base_url: ''``. Only a
+    GENUINELY new endpoint gets a named row.
+    """
     try:
         from hermes_cli.main_provider_setup import _auto_provider_name, _save_custom_provider
 
@@ -728,6 +759,13 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     base_url, result = prepared or _prepare_main_assignment(cfg, provider, model, base_url, api_key)
     provider, model = result.target_provider, result.new_model
     provider_entry = _provider_entry(cfg, provider)
+    # Snapshot BEFORE the new assignment overwrites cfg["model"]: this is the state the user
+    # (CLI setup, a prior dashboard save) already had on disk, and it decides whether the
+    # endpoint is genuinely NEW (register a named custom_providers row) or already known
+    # (keep the existing shape — #76324).
+    provider_lc = provider.strip().lower()
+    endpoint_already_known = (
+        provider_lc in {"custom", "local"} and bool(base_url) and _endpoint_known_to_config(cfg, base_url))
     model_cfg = _apply_main_model_assignment(cfg.get("model", {}), result, api_key)
     _resolve_assignment_credentials(model_cfg, provider, provider_entry)
     cfg["model"] = model_cfg
@@ -735,7 +773,7 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     new_provider = provider.strip().lower()
     gateway_tools = _apply_nous_gateway_defaults(cfg) if new_provider == "nous" else []
     save_config(cfg)
-    if new_provider in {"custom", "local"} and base_url:
+    if new_provider in {"custom", "local"} and base_url and not endpoint_already_known:
         _register_custom_endpoint(base_url, api_key, model)
     # The serve process's boot record may still say "nothing configured"; the chat gates on it.
     reconcile_record()

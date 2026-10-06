@@ -53,6 +53,27 @@ def _get_event_state(app: "FastAPI"):
 
 _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
+def _unlink_active_session_file(path: Optional[Path]) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _discard_active_session_file(app: "FastAPI", channel: Optional[str], path: Optional[Path]) -> None:
+    _unlink_active_session_file(path)
+    if not channel or path is None:
+        return
+    try:
+        from hermes_cli.web_server import _get_pty_active_session_files
+        files = _get_pty_active_session_files(app)
+        if files.get(channel) == path:
+            files.pop(channel, None)
+    except Exception:  # health: allow BLE001 S110 -- marker cleanup must never mask the PTY teardown path it runs inside
+        pass
+
 
 def _ws_auth_mode() -> str:
     """Short label for the active WS auth mode — logged on every connection."""
@@ -458,6 +479,62 @@ def _lease_holder_pid(session_id: Optional[str], *, registry_home: Optional[str]
     return None
 
 
+async def _pump_keepalive_input(ws: "WebSocket", session: Any) -> None:
+    """Writer loop for a keep-alive /api/pty socket: forward client input to the
+    session's bridge, consuming resize escapes locally. On child EOF the drain
+    task closes the attached socket with 4410, which unparks ws.receive()."""
+    from hermes_cli.web_server_chat import _RESIZE_RE
+    while True:
+        try:
+            msg = await ws.receive()
+        except RuntimeError:  # receive() after the drain task already closed us
+            break
+        if msg.get("type") == "websocket.disconnect":
+            break
+        raw = msg.get("bytes")
+        if raw is None:
+            text = msg.get("text")
+            raw = text.encode("utf-8") if isinstance(text, str) else b""
+        if not raw:
+            continue
+        # Resize escape is consumed locally, never written to the PTY.
+        match = _RESIZE_RE.match(raw)
+        if match and match.end() == len(raw):
+            session.bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
+            continue
+        if not await session.write(ws, raw):
+            await _close_stalled_pty_input(ws, path="keepalive")
+            break
+
+
+async def _pty_channel_marker_state(
+    ws: WebSocket, resume: Optional[str], force_fresh: bool,
+) -> tuple[Optional[Path], bool, Optional[str]]:
+    """(active_session_file, marker_preexisting, resume) for the /api/pty handler.
+
+    A channel's marker may already belong to a live keep-alive PTY on that
+    channel — only a marker this handler allocates is its own to drop on
+    failure (#63553)."""
+    channel = _channel_or_close_code(ws)
+    if not channel:
+        return None, False, resume
+    from hermes_cli.web_server import _get_pty_active_session_files
+    marker_files = _get_pty_active_session_files(ws.app)
+    marker_preexisting = channel in marker_files
+
+    active_session_file = _active_session_file_for_channel(ws.app, channel)
+    if force_fresh:
+        resume = None
+        try:
+            active_session_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        marker_preexisting = False
+    elif not resume:
+        resume = _read_active_session_file(active_session_file)
+    return active_session_file, marker_preexisting, resume
+
+
 @router.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
     from hermes_cli.web_server_chat import PTY_REGISTRY, PtyBridge, PtyUnavailableError, _PTY_BRIDGE_AVAILABLE, _RESIZE_RE
@@ -486,24 +563,14 @@ async def pty_ws(ws: WebSocket) -> None:
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
     force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
-    active_session_file: Optional[Path] = None
+    active_session_file, marker_preexisting, resume = await _pty_channel_marker_state(ws, resume, force_fresh)
 
-    if channel:
-        active_session_file = _active_session_file_for_channel(ws.app, channel)
-        if force_fresh:
-            resume = None
-            try:
-                active_session_file.unlink(missing_ok=True)
-            except OSError:
-                pass
-        elif not resume:
-            resume = _read_active_session_file(active_session_file)
-            if resume:
-                # The client only pins the viewport to the bottom when it asked
-                # for `?resume=`; announce the implicit active-session replay so
-                # it gets the same follow-scroll treatment.
-                # See #93518.
-                await ws.send_json({"type": "resume", "id": resume})
+    if channel and not force_fresh and resume and resume != raw_resume:
+        # The client only pins the viewport to the bottom when it asked
+        # for `?resume=`; announce the implicit active-session replay so
+        # it gets the same follow-scroll treatment.
+        # See #93518.
+        await ws.send_json({"type": "resume", "id": resume})
 
     resolve_kwargs = {"resume": resume, "sidecar_url": sidecar_url, "profile": profile}
     if active_session_file is not None:
@@ -522,9 +589,13 @@ async def pty_ws(ws: WebSocket) -> None:
     try:
         argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
     except HTTPException as exc:  # unknown/invalid profile
+        if not marker_preexisting:
+            _discard_active_session_file(ws.app, channel, active_session_file)
         await _pty_fail(ws, exc)
         return
     except SystemExit as exc:  # _make_tui_argv sys.exit(1)s when node/npm is missing
+        if not marker_preexisting:
+            _discard_active_session_file(ws.app, channel, active_session_file)
         await _pty_fail(ws, exc)
         return
     except InstallError as exc:  # PM could not provide node; its remedy names the fix
@@ -551,9 +622,17 @@ async def pty_ws(ws: WebSocket) -> None:
             await _pty_fail(ws, exc)
             return
         except (FileNotFoundError, OSError) as exc:
+            if not marker_preexisting:
+                _discard_active_session_file(ws.app, channel, active_session_file)
             await _pty_fail(ws, exc)
             return
         await _legacy_pump(ws, bridge)
+        # The 1:1 PTY died with this socket; nothing survives to keep the
+        # breadcrumb, so drop the marker instead of leaking the entry (#63553).
+        # A preexisting marker belongs to a live keep-alive PTY on this channel
+        # — only the marker this handler allocated is ours to drop.
+        if not marker_preexisting:
+            _discard_active_session_file(ws.app, channel, active_session_file)
         return
 
     # Keep-alive path: the PTY outlives this socket; reattach by token.
@@ -561,10 +640,28 @@ async def pty_ws(ws: WebSocket) -> None:
         await PTY_REGISTRY.close_other_sessions(raw_attach_token, keep_key=attach_token)
         holder_pid = _lease_holder_pid(registry_resume, registry_home=(env or {}).get("HERMES_HOME"))
         await PTY_REGISTRY.close_orphaned_sessions(registry_resume, keep_key=attach_token, holder_pid=holder_pid)
-        session, _created = await PTY_REGISTRY.attach_or_spawn(attach_token, spawn=_spawn)
+        session, _created = await PTY_REGISTRY.attach_or_spawn(
+            attach_token,
+            spawn=_spawn,
+            active_session_file=active_session_file,
+        )
     except (PtyUnavailableError, FileNotFoundError, OSError, RegistryFull) as exc:
+        if not marker_preexisting:
+            _discard_active_session_file(ws.app, channel, active_session_file)
         await _pty_fail(ws, exc)
         return
+
+    if _created:
+        # This PTY now owns this marker for its entire keep-alive lifetime.
+        if channel and active_session_file is not None:
+            session.active_session_cleanup = (
+                lambda app=ws.app, ch=channel, path=active_session_file:
+                _discard_active_session_file(app, ch, path)
+            )
+    elif not marker_preexisting:
+        # A different channel attached to an already-existing PTY. The marker
+        # just allocated for this channel is not owned by that PTY.
+        _discard_active_session_file(ws.app, channel, active_session_file)
 
     # A fresh xterm can't rebuild the TUI from an arbitrary tail of alternate-
     # screen differential output; reused PTYs emit a full frame after replay.
@@ -582,27 +679,7 @@ async def pty_ws(ws: WebSocket) -> None:
     # it while detached. On child EOF it closes the attached socket with 4410,
     # which unparks ws.receive() — same half-open protection as the legacy pump.
     try:
-        while True:
-            try:
-                msg = await ws.receive()
-            except RuntimeError:  # receive() after the drain task already closed us
-                break
-            if msg.get("type") == "websocket.disconnect":
-                break
-            raw = msg.get("bytes")
-            if raw is None:
-                text = msg.get("text")
-                raw = text.encode("utf-8") if isinstance(text, str) else b""
-            if not raw:
-                continue
-            # Resize escape is consumed locally, never written to the PTY.
-            match = _RESIZE_RE.match(raw)
-            if match and match.end() == len(raw):
-                session.bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
-                continue
-            if not await session.write(ws, raw):
-                await _close_stalled_pty_input(ws, path="keepalive")
-                break
+        await _pump_keepalive_input(ws, session)
     except WebSocketDisconnect:
         pass
     finally:

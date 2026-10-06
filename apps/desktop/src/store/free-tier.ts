@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { runFreeTierChallenge } from '@/store/free-tier-challenge'
 import { onboardingSurfaceActive } from '@/store/onboarding-presence'
 import type { FreeTierStatus } from '@/types/hermes'
 
@@ -44,6 +45,9 @@ export async function refreshFreeTierStatus(requestGateway: FreeTierRequester): 
     }
 
     $freeTierStatus.set(status)
+    // A client that connected after the `free_tier.challenge` event still has
+    // a window to open; the run is de-duplicated per URL.
+    void runFreeTierChallenge(status.challenge, requestGateway)
 
     return status
   } catch {

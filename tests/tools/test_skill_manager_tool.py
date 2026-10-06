@@ -318,7 +318,11 @@ class TestPatchSkill:
         # finding, a small clean patch attaches no lint keys at all.
         from tools.skill_linter import _BODY_SOFT_BUDGET_CHARS
         filler = "- Prefer the native tool; the shell path loses the structured result.\n"
-        with _skill_dir(tmp_path):
+        # The 24k-body probe would first hit the 20k routing cap (local patch: a fat SKILL.md is
+        # a routing layer, skill_manage refuses body growth). This test targets the LINTER
+        # contract, so the routing guard is switched off via its config knob.
+        with patch("hermes_cli.config.load_config",
+                   return_value={"skills": {"routing_cap_chars": 0}}), _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             quiet = _patch_skill("my-skill", "Do the thing.", "Do the new thing.")
             grown = _patch_skill("my-skill", "Do the new thing.",

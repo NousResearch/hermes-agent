@@ -382,6 +382,8 @@ _MEMORY_REVIEW_PROMPT = (
 # Shared shape contract for anything written into a skill. The failure mode this prevents is the
 # hoarding library: one references/ file per session, incident narration instead of rules, PR numbers
 # and quotes as content, and duplicating what the repo's AGENTS.md / the tool schemas already teach.
+# Local patch (fryccer, re-port on upgrade): size-aware placement — see tools/skill_manager_tool.py
+# _routing_layer_size_guard.
 _LESSON_LAYER_BLOCK = (
     "What a skill IS: the instructions for doing a class of task the most efficient and correct "
     "way, to THIS user's specifications — the procedure, the tools and commands that work, the "
@@ -403,7 +405,12 @@ _LESSON_LAYER_BLOCK = (
     "descriptions, and other always-loaded context. A skill carries the WORKFLOW and the pitfalls; "
     "it does not restate the codebase map or a tool's parameter list.\n"
     "  • Always-on rules (standing user preferences, gates that apply to every instance of the "
-    "task) live in SKILL.md itself, whole. references/ is for depth that is only needed sometimes: "
+    "task) live in SKILL.md itself, whole — UNLESS that SKILL.md is already past the routing "
+    "threshold (`skills.routing_cap_chars`, default 20,000 chars): a SKILL.md that fat IS the "
+    "routing layer, and its knowledge lives in references/. Then add the rule to the most topical "
+    "existing references/ file (creating references/<topic>.md only when nothing fits) and touch "
+    "SKILL.md for at most a one-line pointer entry — skill_manage refuses larger body growth on "
+    "such skills. references/ is for depth that is only needed sometimes: "
     "a decision table, a recipe, a domain note — each file topical and reusable, never "
     "'<date>-<incident>.md'. Prefer extending an existing references/ file over creating one; "
     "a skill with dozens of one-off references is the failure shape, not the goal.\n"

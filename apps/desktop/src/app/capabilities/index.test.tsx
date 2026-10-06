@@ -267,8 +267,11 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
 
     render(<EmbeddedHubPicker installedNames={new Set(['web-research'])} profile={null} />)
 
-    // The picker is expanded by default — the hub iframe is live on mount.
-    expect(document.querySelector('iframe')).toBeTruthy()
+    // The picker is expanded by default — the hub iframe is live on mount
+    // with clipboard-write permitted so copying install commands works.
+    const iframe = document.querySelector('iframe')
+    expect(iframe).toBeTruthy()
+    expect(iframe?.getAttribute('allow')).toBe('clipboard-write')
 
     await act(async () => {
       window.dispatchEvent(

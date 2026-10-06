@@ -59,6 +59,7 @@
     "undici@^6": "6.29.0",
     "undici@^7": "7.30.0",
     "postcss": "8.5.23",
+    "source-map-js": "1.2.2",
     "tar": "7.5.22"
   },
   "engines": {

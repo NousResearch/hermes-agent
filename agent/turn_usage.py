@@ -22,6 +22,16 @@ from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_serve
 logger = logging.getLogger("agent.conversation_loop")
 
 
+def notify_run_usage(agent) -> None:
+    """Best-effort per-call notification for an API run; never change the turn outcome."""
+    callback = getattr(agent, "_run_usage_callback", None)
+    if callable(callback):
+        try:
+            callback()
+        except Exception:
+            logger.exception("Run usage notification failed")
+
+
 def _agent_session_source(agent: Any) -> str:
     """The surface the agent's own row create would stamp (``_ensure_db_session``), so an
     accounting guard that wins the row-creation race never mints an anonymous session."""
@@ -179,6 +189,7 @@ def record_response_usage(
     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+    notify_run_usage(agent)
     # Rolling history for status-bar averages (last 10).
     with suppress(Exception):
         hist = getattr(agent, "_api_latency_history", None)

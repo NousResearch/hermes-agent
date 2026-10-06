@@ -81,6 +81,8 @@ class PromptIntentLedger:
         route_identity: Any,
         text: Any,
         truncate_ordinal: Any,
+        truncate_row_id: Any = None,
+        truncate_message_id: Any = None,
     ) -> PromptIntentClaim:
         request_id = str(request_id or "").strip()
         if not request_id:
@@ -91,7 +93,7 @@ class PromptIntentLedger:
         request_digest = hashlib.sha256(request_id.encode("utf-8")).hexdigest()
         key = (str(profile_scope), request_digest)
         fingerprint_payload = json.dumps(
-            [route_identity, text, truncate_ordinal],
+            [route_identity, text, truncate_ordinal, truncate_row_id, truncate_message_id],
             ensure_ascii=False,
             default=str,
         ).encode("utf-8")

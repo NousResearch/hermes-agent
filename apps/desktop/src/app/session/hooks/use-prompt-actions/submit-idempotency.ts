@@ -12,7 +12,8 @@ export function createPromptSubmitIntent(storedSessionId: null | string) {
 export async function requestPromptSubmit(
   requestGateway: GatewayRequest,
   params: Record<string, unknown>,
-  timeoutMs: number
+  timeoutMs: number,
+  recoveryOptions?: { alsoTimeout: boolean }
 ): Promise<PromptSubmitResult> {
   try {
     return await requestGateway<PromptSubmitResult>('prompt.submit', params, timeoutMs)
@@ -28,6 +29,13 @@ export async function requestPromptSubmit(
     }
 
     const { client_request_id: _requestId, expected_stored_session_id: _storedId, ...legacyParams } = params
+
+    // A legacy submit may be accepted before its acknowledgement is lost.
+    // Without the intent ID, recovering that timeout would run a second turn.
+    // Explicit pre-handler refusals (busy / session not found) remain safe.
+    if (recoveryOptions) {
+      recoveryOptions.alsoTimeout = false
+    }
 
     return requestGateway<PromptSubmitResult>('prompt.submit', legacyParams, timeoutMs)
   }

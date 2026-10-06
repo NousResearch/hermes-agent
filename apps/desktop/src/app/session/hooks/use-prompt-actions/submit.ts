@@ -46,6 +46,7 @@ import { resolveSessionOwner, resolveSessionProfile } from '../use-session-actio
 
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
 import { createPromptSubmitIntent, requestPromptSubmit } from './submit-idempotency'
+import { createPromptSubmitReconciler } from './submit-result'
 import {
   acquireSubmitInFlight,
   type GatewayRequest,
@@ -621,17 +622,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       if (sessionId && ownershipStoredSessionId) {
         const provenRuntimeId = runtimeIdByStoredSessionIdRef.current.get(ownershipStoredSessionId)
+
         // A selected stored session requires positive ownership proof. A cache
         // miss is therefore unsafe too: the active runtime may belong to an
         // entirely different stored session, so resume the selected id instead
         // of sending to an unverified runtime.
-        const knownMismatch = provenRuntimeId !== sessionId
-
         const runtimeOwnedByOtherStored = Array.from(runtimeIdByStoredSessionIdRef.current.entries()).some(
           ([storedId, runtimeId]) => runtimeId === sessionId && storedId !== ownershipStoredSessionId
         )
 
-        if (knownMismatch || runtimeOwnedByOtherStored) {
+        if (provenRuntimeId !== sessionId || runtimeOwnedByOtherStored) {
           sessionId = null
         }
       }
@@ -886,6 +886,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
         const submitIntent = createPromptSubmitIntent(recoverStoredSessionId)
+        const recoveryOptions = { alsoTimeout: true }
+        const completion = createPromptSubmitReconciler(optimisticId)
 
         const submitParams = (targetId: string) => ({
           session_id: targetId,
@@ -921,6 +923,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // The identity the backend actually accepted: the live runtime id,
         // replaced below when a stale binding was recovered.
         let acceptedRuntimeSessionId = liveSessionId
+
         try {
           // A bot's chat is a tile scoped to the `bots` workspace; the primary chat is Sessions mode.
           noteMessageSent($sessionTiles.get().find(tile => tile.runtimeId === sessionId)?.workspaceMode ?? 'sessions')
@@ -929,9 +932,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             sessionId,
             recoverStoredSessionId,
             liveId =>
-              withSessionBusyRetry(() =>
-                requestPromptSubmit(requestGateway, submitParams(liveId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
-              ),
+              withSessionBusyRetry(() => {
+                updateSessionState(liveId, completion.capture, recoverStoredSessionId)
+
+                return requestPromptSubmit(requestGateway, submitParams(liveId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS, recoveryOptions)
+              }),
             {
               requestGateway,
               driftReason: sessionDriftReason,
@@ -954,30 +959,19 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 }
               }
             },
-            // A starved backend loop (#55578 symptom d) rejects the submit even
-            // though the stored session is fine — recover it like a dead id
-            // instead of erroring out and losing the session binding.
-            { alsoTimeout: true }
+            // Intent IDs make v9 timeout recovery safe. A strict legacy refusal
+            // disables timeout replay before the ID-less submit is dispatched.
+            recoveryOptions
           )
 
-          const rowId = submitted.result?.user_row_id
+          updateSessionState(
+            submitted.sessionId,
+            state => completion.reconcile(state, submitted.result),
+            recoverStoredSessionId
+          )
 
-          if (typeof rowId === 'number' && Number.isSafeInteger(rowId) && rowId > 0) {
-            // The worker may finish before this acknowledgement arrives. Bind
-            // only this send's optimistic occurrence; never reset live state or
-            // assume the newest user row still belongs to this RPC.
-            updateSessionState(submitted.sessionId, state => {
-              const index = state.messages.findIndex(message => message.id === optimisticId && message.role === 'user')
-
-              if (index < 0 || state.messages[index].rowId === rowId) {
-                return state
-              }
-
-              return {
-                ...state,
-                messages: state.messages.map((message, i) => (i === index ? { ...message, rowId } : message))
-              }
-            })
+          if (completion.settled) {
+            releaseBusy()
           }
 
           acceptedRuntimeSessionId = submitted.sessionId

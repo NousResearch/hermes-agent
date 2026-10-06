@@ -798,6 +798,9 @@ def _(rid, params: dict) -> dict:
     err, survivor_fields = _lock_in_submit_turn(
         rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind, _accept_intent)
     if err is not None:
+        # A failed history write never started a turn. Only this invocation's
+        # accepted reservation may be released; duplicate replies own no claim.
+        _abort_prompt_submit_intent(params, session, accepted=intent_checked)
         return err
     if turn_isolation:
         if turn_author:

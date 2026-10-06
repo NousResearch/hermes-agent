@@ -1,8 +1,10 @@
 import { act, render } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 
 import type { SessionInfo } from '@/types/hermes'
+
+import type { ClientSessionState } from '../../../types'
 
 import type { SubmitTextOptions } from './utils'
 
@@ -59,6 +61,7 @@ export interface HarnessHandle {
   steerPrompt: (text: string) => Promise<boolean>
   submitTextRaw: (text: string, options?: SubmitTextOptions) => Promise<boolean>
   submitText: (text: string, options?: SubmitTextOptions) => Promise<boolean>
+  updateSessionState: (sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) => void
 }
 
 export function Harness({
@@ -140,6 +143,20 @@ export function Harness({
     interimBoundaryPending: false
   } as never)
 
+  const updateSessionState = useCallback((
+    sessionId: string,
+    updater: (state: ClientSessionState) => ClientSessionState,
+    storedSessionId?: null | string
+  ) => {
+    // Seed with interrupted:true so we can prove a fresh submit clears it.
+    const next = updater(stateRef.current) as unknown as Record<string, unknown>
+    stateRef.current = next as never
+    onSeedState?.(next)
+    onUpdateState?.(sessionId, storedSessionId, next)
+
+    return next as never
+  }, [onSeedState, onUpdateState])
+
   const actions = usePromptActions({
     activeSessionId: activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId,
     activeSessionIdRef,
@@ -158,20 +175,13 @@ export function Harness({
     selectedStoredSessionIdRef,
     startFreshSessionDraft: () => undefined,
     sttEnabled: false,
-    updateSessionState: (sessionId, updater, storedSessionId) => {
-      // Seed with interrupted:true so we can prove a fresh submit clears it.
-      const next = updater(stateRef.current) as unknown as Record<string, unknown>
-      stateRef.current = next as never
-      onSeedState?.(next)
-      onUpdateState?.(sessionId, storedSessionId, next)
-
-      return next as never
-    }
+    updateSessionState
   })
 
   useEffect(() => {
     onReady({
       activeSessionIdRef,
+      updateSessionState,
       cancelRun: (...args: Parameters<typeof actions.cancelRun>) =>
         act(async () => actions.cancelRun(...args)) as Promise<void>,
       editMessage: (...args: Parameters<typeof actions.editMessage>) =>
@@ -197,7 +207,8 @@ export function Harness({
     actions.steerPrompt,
     actions.submitText,
     activeSessionIdRef,
-    onReady
+    onReady,
+    updateSessionState
   ])
 
   return null

@@ -501,11 +501,11 @@ def test_prompt_submit_deduplicates_lost_ack_retry_within_stored_session(
         )
 
         assert first["result"]["status"] == "streaming"
-        assert retry["result"] == {
-            "duplicate": True,
-            "messages": [],
-            "status": "complete",
-        }
+        assert retry["result"]["duplicate"] is True
+        assert retry["result"]["status"] == "complete"
+        assert len(retry["result"]["messages"]) == 1
+        assert retry["result"]["messages"][0]["text"] == params["text"]
+        assert retry["result"]["messages"][0]["row_id"] == db.get_messages("stored-a")[0]["id"]
         assert conflicting_reuse["error"]["code"] == 4020
         assert changed_route_reuse["error"]["code"] == 4020
         assert wrong_destination["error"]["code"] == 4019
@@ -519,6 +519,67 @@ def test_prompt_submit_deduplicates_lost_ack_retry_within_stored_session(
         server._sessions.pop("runtime-a", None)
         server._sessions.pop("runtime-a-recovered", None)
         db.close()
+
+
+def test_completed_duplicate_snapshot_projects_full_display_lineage(monkeypatch, tmp_path):
+    """Complete retries retain archived ancestors and omit model-only scaffolding."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("root", source="tui")
+    root_user = db.append_message("root", "user", "earlier question")
+    root_answer = db.append_message("root", "assistant", "earlier answer")
+    db.append_message("root", "user", "internal seed", display_kind="hidden")
+    db.archive_and_compact("root", [{"role": "assistant", "content": "model summary", "display_kind": "hidden"}])
+    db.end_session("root", "compression")
+    db.create_session("tip", source="tui", parent_session_id="root")
+    tip_user = db.append_message("tip", "user", "current question")
+    tip_answer = db.append_message("tip", "assistant", "current answer")
+    session = _session(
+        session_key="tip",
+        profile_home=tmp_path,
+        display_history_prefix=[{"role": "user", "content": "earlier question", "_row_id": root_user}],
+        history=[
+            {"role": "user", "content": "current question", "_row_id": tip_user},
+            {"role": "assistant", "content": "current answer", "_row_id": tip_answer},
+        ],
+    )
+    params = {"session_id": "runtime-tip", "client_request_id": "completed-display-intent", "text": "current question"}
+    monkeypatch.setattr(server, "_prompt_intents", PromptIntentLedger())
+    monkeypatch.setattr(server, "_session_db", lambda _session: contextlib.nullcontext(db))
+    try:
+        with session["history_lock"]:
+            assert server._claim_prompt_submit_intent(params, "accepted", session) is None
+            retry = server._claim_prompt_submit_intent(params, "retry", session)
+        messages = retry["result"]["messages"]
+        assert retry["result"]["status"] == "complete"
+        assert [message["text"] for message in messages] == [
+            "earlier question", "earlier answer", "current question", "current answer"]
+        assert [message["row_id"] for message in messages] == [root_user, root_answer, tip_user, tip_answer]
+        assert all("_row_id" not in message and "content" not in message for message in messages)
+    finally:
+        db.close()
+
+
+def test_completed_duplicate_snapshot_keeps_display_prefix_without_database(monkeypatch):
+    """The existing display prefix remains visible when the durable read is unavailable."""
+    session = _session(
+        display_history_prefix=[{"role": "user", "content": "prefix", "_row_id": 11}],
+        history=[
+            {"role": "user", "content": "hidden seed", "display_kind": "hidden"},
+            {"role": "assistant", "content": "answer", "_row_id": 12},
+        ],
+    )
+    params = {"session_id": "runtime-tip", "client_request_id": "completed-prefix-intent", "text": "prefix"}
+    monkeypatch.setattr(server, "_prompt_intents", PromptIntentLedger())
+    monkeypatch.setattr(server, "_session_db", lambda _session: contextlib.nullcontext(None))
+    with session["history_lock"]:
+        assert server._claim_prompt_submit_intent(params, "accepted", session) is None
+        retry = server._claim_prompt_submit_intent(params, "retry", session)
+    assert retry["result"]["messages"] == [
+        {"role": "user", "text": "prefix", "row_id": 11},
+        {"role": "assistant", "text": "answer", "row_id": 12},
+    ]
 
 
 def test_prompt_submit_releases_intent_when_agent_setup_fails(monkeypatch):
@@ -622,5 +683,85 @@ def test_busy_rewind_is_retried_instead_of_queued_without_truncation(monkeypatch
         assert response["error"]["code"] == 4009
         assert session.get("queued_prompt") is None
         assert len(ledger) == 0
+    finally:
+        server._sessions.pop("runtime-rewind", None)
+
+
+@pytest.mark.parametrize(
+    "anchor, first_value, reused_value",
+    [
+        ("truncate_before_row_id", 3, 1),
+        ("truncate_before_message_id", "cut", "keep"),
+        ("truncate_before_user_ordinal", 1, 0),
+    ],
+)
+def test_prompt_intent_reuse_conflicts_when_any_truncation_anchor_changes(
+    monkeypatch, anchor, first_value, reused_value
+):
+    ledger = PromptIntentLedger()
+    monkeypatch.setattr(server, "_prompt_intents", ledger)
+    session = _session()
+    params = {
+        "session_id": "runtime-rewind",
+        "expected_stored_session_id": "session-key",
+        "client_request_id": "same-rewind",
+        "text": "replacement",
+        anchor: first_value,
+    }
+
+    assert server._claim_prompt_submit_intent(params, "first", session) is None
+    assert server._claim_prompt_submit_intent(params, "retry", session)["result"]["duplicate"]
+    conflict = server._claim_prompt_submit_intent(
+        {**params, anchor: reused_value}, "changed-anchor", session
+    )
+
+    assert conflict["error"]["code"] == 4020
+    assert len(ledger) == 1
+
+
+def test_failed_rewind_persistence_releases_only_its_accepted_intent(monkeypatch):
+    ledger = PromptIntentLedger()
+    monkeypatch.setattr(server, "_prompt_intents", ledger)
+    threads = _defer_prompt_submit_thread(monkeypatch)
+    session = _session(history=[
+        {"role": "user", "content": "keep", "id": "keep"},
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "content": "replace", "id": "cut"},
+    ])
+
+    class FailingHistoryDB:
+        writes = 0
+
+        def replace_messages(self, *_args, **_kwargs):
+            self.writes += 1
+            raise OSError("disk full")
+
+    db = FailingHistoryDB()
+    monkeypatch.setattr(server, "_session_db", lambda _session: contextlib.nullcontext(db))
+    server._sessions["runtime-rewind"] = session
+    params = {
+        "session_id": "runtime-rewind",
+        "expected_stored_session_id": "session-key",
+        "client_request_id": "failed-rewind",
+        "text": "replacement",
+        "truncate_before_message_id": "cut",
+        "confirm_truncate": True,
+    }
+
+    try:
+        first = server.handle_request({"id": "first", "method": "prompt.submit", "params": params})
+        retry = server.handle_request({"id": "retry", "method": "prompt.submit", "params": params})
+        assert first["error"]["code"] == retry["error"]["code"] == 5008
+        assert db.writes == 2
+        assert len(ledger) == 0
+        assert not threads
+        assert session["running"] is False
+
+        # A duplicate response from the same path must retain the earlier claim.
+        assert server._claim_prompt_submit_intent(params, "accepted-before", session) is None
+        duplicate = server.handle_request({"id": "duplicate", "method": "prompt.submit", "params": params})
+        assert duplicate["result"]["duplicate"] is True
+        assert len(ledger) == 1
+        assert db.writes == 2
     finally:
         server._sessions.pop("runtime-rewind", None)

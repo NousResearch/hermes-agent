@@ -143,6 +143,8 @@ def _claim_prompt_submit_intent(
             ),
             text=params.get("text"),
             truncate_ordinal=params.get("truncate_before_user_ordinal"),
+            truncate_row_id=params.get("truncate_before_row_id"),
+            truncate_message_id=params.get("truncate_before_message_id"),
         )
     except (OSError, sqlite3.Error):
         logger.warning("prompt intent ledger unavailable", exc_info=True)
@@ -182,7 +184,7 @@ def _claim_prompt_submit_intent(
             # transcript here makes completion + hydration one atomic snapshot,
             # closing the race where an earlier session.resume saw the turn
             # streaming just before this duplicate observed it complete.
-            payload["messages"] = list(session.get("history", []))
+            payload["messages"] = _completed_prompt_submit_messages(session)
         return _ok(rid, payload)
     if claim is PromptIntentClaim.CONFLICT:
         return _err(
@@ -199,10 +201,18 @@ def _claim_prompt_submit_intent(
     )
 
 
-def _abort_prompt_submit_intent(params: dict, session: dict) -> None:
-    """Release an accepted intent when setup failed before agent execution."""
+def _completed_prompt_submit_messages(session: dict) -> list[dict]:
+    """Project the full display lineage while the submit holds history_lock."""
+    history = list(session.get("display_history_prefix") or []) + list(session.get("history") or [])
+    with _session_db(session) as db:
+        history = _live_visible_history(session, db, history)
+    return _history_to_messages(history, profile_home=session.get("profile_home"))
+
+
+def _abort_prompt_submit_intent(params: dict, session: dict, *, accepted: bool = True) -> None:
+    """Release only this invocation's accepted intent when setup failed before execution."""
     ledger = _prompt_intents
-    if ledger is None:
+    if ledger is None or not accepted:
         return
     ledger.abort(
         profile_scope=str(session.get("profile_home") or get_hermes_home()),

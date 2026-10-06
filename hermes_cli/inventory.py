@@ -692,13 +692,14 @@ def _append_unconfigured_rows(
     """Empty setup skeletons for canonical providers missing from ``rows`` — except the *current* one:
     if config.yaml still points at it but credentials are gone, keep a row carrying the saved model so
     GUI pickers don't silently snap to another provider."""
-    from hermes_cli.models import CANONICAL_PROVIDERS, _model_requires_account_discovery
+    from hermes_cli.models import _model_requires_account_discovery
+    from hermes_cli.models_catalog_static import listed_canonical_providers
 
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
     cur_model = str(ctx.current_model or "").strip()
     extras: list[dict] = []
-    for entry in CANONICAL_PROVIDERS:
+    for entry in listed_canonical_providers():
         if entry.slug.lower() in seen:
             continue
         if current_only and entry.slug.lower() != cur:

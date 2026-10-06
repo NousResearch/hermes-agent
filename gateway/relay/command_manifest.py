@@ -65,6 +65,7 @@ def build_relay_command_manifest() -> List[Dict[str, Any]]:
         _cmd("compress", "Compress conversation context"),
         _cmd("title", "Set or show the session title",
              _opt("text", "New title. Leave empty to show.")),
+        _cmd("retitle", "Regenerate the session title from recent conversation"),
         _cmd("resume", "Resume a previously-named session",
              _opt("name", "Session title or id")),
         _cmd("usage", "Show token usage for this session"),

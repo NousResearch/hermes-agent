@@ -112,3 +112,15 @@ class TestPerChatStreamSemantics:
         adapter._platform_by_chat["TG2"] = "telegram"
         with pytest.raises(NotImplementedError):
             await adapter.send_draft("TG2", 5, "x", metadata={})
+
+    @pytest.mark.asyncio
+    async def test_thread_rename_uses_secondary_platform_capability(self):
+        adapter, t = _multi_adapter(primary="slack", others=())
+        assert adapter.descriptor.supports_op("thread_rename") is False
+        t._descs["discord"] = _desc_for(
+            "discord", supported_ops=("send", "thread_rename")
+        )
+        adapter._platform_by_chat["D1"] = "discord"
+
+        assert await adapter.rename_thread("D1", "Session title") is True
+        assert [op["op"] for op in t.ops] == ["thread_rename"]

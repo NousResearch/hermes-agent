@@ -30,13 +30,13 @@ def db(tmp_path):
         pass
 
 
-def _corrupting_execute(match):
-    """Wrap ``execute`` so ``'rebuild'`` commands whose SQL satisfies *match* raise the
+def _corrupting_execute(match, command="rebuild"):
+    """Wrap ``execute`` so FTS *command* statements whose SQL satisfies *match* raise the
     corruption-class error; every other statement passes through."""
 
     def wrap(real_execute):
         def execute(sql, *args, **kwargs):
-            if "VALUES('rebuild')" in sql and match(sql):
+            if f"VALUES('{command}')" in sql and match(sql):
                 raise sqlite3.DatabaseError("database disk image is malformed")
             return real_execute(sql, *args, **kwargs)
 
@@ -45,7 +45,7 @@ def _corrupting_execute(match):
     return wrap
 
 
-def test_corruption_class_error_is_caused_rolled_back_and_reported(
+def test_corruption_class_error_is_caught_rolled_back_and_reported(
     db, monkeypatch, caplog
 ):
     """The exact production failure (#133375): every index rebuild raises DatabaseError.
@@ -62,15 +62,16 @@ def test_corruption_class_error_is_caused_rolled_back_and_reported(
     assert any("offline repair" in rec.message for rec in caplog.records)
 
 
-def test_one_corrupt_index_does_not_stop_the_remaining_indexes(db, monkeypatch):
-    """Only messages_fts is corrupt; trigram/cjk must still be rebuilt — the loop survives
+@pytest.mark.parametrize("method,command", [("rebuild_fts", "rebuild"), ("optimize_fts", "optimize")])
+def test_one_corrupt_index_does_not_stop_the_remaining_indexes(db, monkeypatch, method, command):
+    """Only messages_fts is corrupt; trigram/cjk must still be processed — the loop survives
     a corruption-class failure on one index. The trailing ``(`` keeps the match off
-    ``messages_fts_trigram``/``_cjk``."""
+    ``messages_fts_trigram``/``_cjk``. optimize_fts() shares the per-index loop shape."""
     monkeypatch.setattr(
         db._conn,
         "execute",
-        _corrupting_execute(lambda sql: sql.startswith("INSERT INTO messages_fts("))(
+        _corrupting_execute(lambda sql: sql.startswith("INSERT INTO messages_fts("), command)(
             db._conn.execute
         ),
     )
-    assert db.rebuild_fts() >= 1
+    assert getattr(db, method)() >= 1

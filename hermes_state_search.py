@@ -1287,7 +1287,7 @@ class SessionSearchMixin:
                 try:
                     self._conn.execute(f"INSERT INTO {tbl}({tbl}) VALUES('optimize')")
                     optimized += 1
-                except sqlite3.OperationalError as exc:
+                except sqlite3.DatabaseError as exc:  # SQLITE_CORRUPT is not an OperationalError
                     logger.warning("FTS optimize failed for %s: %s", tbl, exc)
         return optimized
 

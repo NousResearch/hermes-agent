@@ -9,6 +9,7 @@ must never shadow a shipped provider. Changing this order is a breaking change.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -72,6 +73,27 @@ def _is_memory_provider_dir(path: Path) -> bool:
     except OSError as exc:  # one mode-000 / ACL-denied child must not abort discovery
         logger.warning("Skipping unreadable plugin directory %s: %s", path, exc)
         return False
+
+
+def _defines_memory_provider(path: Path) -> bool:
+    """Parse (never import) the package's top-level modules for what ``_load_provider_from_dir`` can load:
+    a ``register_memory_provider(...)`` call or a ``MemoryProvider`` subclass. Unlike the discovery
+    heuristic, a docstring or comment naming the contract does not count."""
+    for module in sorted(path.glob("*.py")):
+        try:
+            tree = ast.parse(module.read_text(errors="replace", encoding="utf-8-sig"))
+        except (OSError, SyntaxError, ValueError):
+            continue
+        bases = {"MemoryProvider"} | {a.asname for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
+                                      for a in n.names if a.name == "MemoryProvider" and a.asname}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and "register_memory_provider" in (
+                    getattr(node.func, "attr", None), getattr(node.func, "id", None)):
+                return True
+            if isinstance(node, ast.ClassDef) and any(
+                    (getattr(b, "attr", None) or getattr(b, "id", None)) in bases for b in node.bases):
+                return True
+    return False
 
 
 def _is_bundled(provider_dir: Path) -> bool:

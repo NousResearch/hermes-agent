@@ -228,11 +228,13 @@ method("free_tier.ack_notice", params=ProfileParams, result=FreeTierAckNoticeRes
 class SharedMetricsConsentResult(Result):
     """The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while
     ``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults
-    are not an answer)."""
+    are not an answer) and it is not a ``reask``: an "off" from before the type-ahead fix, offered
+    once more with the reason."""
 
     enabled: bool
     send: bool
     decided: bool
+    reask: bool = False
 
 
 method("shared_metrics.status", params=ProfileParams, result=SharedMetricsConsentResult,
@@ -435,6 +437,62 @@ class ModelCapabilities(Result):
     can_disable_reasoning: bool | None = None
 
 
+class ProviderLimit(Result):
+    """``hermes_cli/inventory.py::_apply_limits`` — ``account``: the whole login is rate-limited until
+    ``resets_at`` (ISO, absent when unknown); ``models``: only these models are, each until its time."""
+
+    scope: Literal["account", "models"]
+    resets_at: str | None = None
+    models: dict[str, str] | None = None
+
+
+class ProviderUsageWindow(Result):
+    """One subscription usage window (``agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour
+    session or the weekly cap, with how much of it is spent and when it rolls over (ISO).
+
+    ``scope``: ``account`` — exhausting the window exhausts the whole login (Codex session/weekly,
+    so a limited account's resets_at must wait for it); ``model`` — the window caps only one model
+    family (Anthropic Opus/Sonnet weekly) and can never imply the account itself is out of quota."""
+
+    label: str
+    used_percent: float
+    resets_at: str | None = None
+    scope: Literal["account", "model"] = "account"
+
+
+class ProviderUsageAccount(Result):
+    """One account of a provider's credential pool (``hermes_cli/inventory.py::_pool_usage_accounts``).
+    ``id`` is a stable non-secret account identity (never a key or URL); ``label`` may be empty (UI
+    falls back to a localized "Account N"). ``windows`` is empty while the account's usage is not
+    yet known — state carries the meaning, never a fabricated gauge.
+
+    ``state``: ``ready`` — live quota below the cap (numeric windows present); ``limited`` — a live
+    credential-wide cooldown or exhausted account-scoped quota windows; ``unknown`` — no live
+    numeric windows (failed/empty fetch, stale snapshot, provider without a usage API);
+    ``unavailable`` — DEAD auth row (kept visible, never a quota row).
+
+    ``resets_at``: for a limited account, the LATEST of its exhausted account-scoped windows (or a
+    live cooldown when later); ``None`` when unknown (the frontend renders its own advisory, e.g.
+    the earliest limited sibling)."""
+
+    id: str
+    label: str = ""
+    windows: list[ProviderUsageWindow] = Field(default_factory=list)
+    state: Literal["ready", "limited", "unknown", "unavailable"]
+    resets_at: str | None = None
+
+
+class ProviderUsage(Result):
+    """``hermes_cli/inventory.py::_apply_usage`` — the provider's subscription usage, from cache.
+
+    Multi-entry credential pools carry ``accounts`` (one row per account; the legacy ``windows``
+    stays EMPTY there — a provider-wide percentage across different logins would be fabricated).
+    Single-account providers keep the legacy ``windows`` gauge."""
+
+    windows: list[ProviderUsageWindow] = Field(default_factory=list)
+    accounts: list[ProviderUsageAccount] | None = None
+
+
 class ModelOptionProvider(OpenModel):
     """One ``hermes_cli/inventory.py::build_models_payload`` provider row (the union of every field
     the builder sets; ``pricing_pending`` / ``free_tier_pending`` mark the cached-only path)."""
@@ -460,6 +518,8 @@ class ModelOptionProvider(OpenModel):
     free_tier_pending: bool | None = None
     free_tier_row: bool | None = None
     unavailable_models: list[str] | None = None
+    limit: ProviderLimit | None = None
+    usage: ProviderUsage | None = None
 
 
 class ModelOptionsResult(Result):

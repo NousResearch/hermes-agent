@@ -1364,7 +1364,7 @@ def my_callback(
 | `pattern_key` | `str` | Primary pattern key that triggered the approval (e.g. `"rm_rf"`, `"sudo"`) |
 | `pattern_keys` | `list[str]` | All pattern keys that matched |
 | `session_key` | `str` | Session identifier, useful for scoping notifications per-chat |
-| `surface` | `str` | `"cli"` for classic interactive-CLI prompts (dangerous commands, protected agent-instruction writes, consent prompts), `"gateway"` for async platform approvals (the Ink TUI and Desktop app also report `"gateway"` today), `"smart"` for auxiliary-LLM auto approve/deny decisions, or the caller's consent surface for MCP/vault prompts (`"mcp-elicitation/<server>"`, `"mcp-trust/<server>"`, `"vault-payment"`) |
+| `surface` | `str` | `"cli"` for classic interactive-CLI prompts (dangerous commands, protected agent-instruction writes, consent prompts), `"gateway"` for async platform approvals (the Ink TUI and Desktop app also report `"gateway"` today), `"smart"` for auxiliary-LLM auto approve/deny decisions, `"claude_sdk"` for claude-agent-sdk tool-permission prompts bridged through gateway approvals, or the caller's consent surface for MCP/vault prompts (`"mcp-elicitation/<server>"`, `"mcp-trust/<server>"`, `"vault-payment"`) |
 
 **Return value:** ignored. Hooks here are observer-only; they cannot veto or pre-answer the approval. Use [`pre_tool_call`](#pre_tool_call) to block a tool before it reaches the approval system.
 

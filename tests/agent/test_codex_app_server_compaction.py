@@ -4,7 +4,12 @@ from types import SimpleNamespace
 import pytest
 
 from agent.codex_runtime import _record_codex_app_server_compaction
-from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS, compress_context
+from agent.conversation_compression import (
+    COMPACTION_DONE_STATUS,
+    COMPACTION_STATUS,
+    COMPACTION_STATUS_KEY,
+    compress_context,
+)
 from agent.transports.codex_app_server_session import TurnResult
 
 
@@ -79,6 +84,10 @@ class DummyAgent:
     def _emit_status(self, message):
         self.statuses.append(message)
         self.status_callback("lifecycle", message)
+
+    def _emit_status_kind(self, kind, message, *, origin=None):
+        self.statuses.append(message)
+        self.status_callback(kind, message)
 
     def _emit_warning(self, message):
         self.warnings.append(message)
@@ -171,7 +180,7 @@ def test_codex_app_server_compression_failure_preserves_bookkeeping():
     assert agent.touch_calls[0] == "context compression started"
     assert agent.touch_calls[-1] == "context compression failed"
     assert agent.status_events == [
-        ("lifecycle", COMPACTION_STATUS),
+        (COMPACTION_STATUS_KEY, COMPACTION_STATUS),
         ("warn", "⚠ Codex app-server compaction failed: compact failed"),
     ]
 

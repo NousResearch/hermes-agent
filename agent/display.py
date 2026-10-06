@@ -18,6 +18,11 @@ from urllib.parse import urlsplit
 from utils import safe_json_loads
 from agent.i18n import t
 from agent.redact import redact_sensitive_text
+from agent.display_claude_sdk import (
+    SDK_CUTE_LINES, SDK_PREVIEW_BUILDERS, SDK_TOOL_VERBS, SDK_TOOL_VERBS_FOR_CONNECTOR,
+    SDK_TOOL_VERBS_NO_PREVIEW,
+)
+from agent.tool_identity import canonical_tool_args, canonical_tool_name
 from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
 
 logger = logging.getLogger(__name__)
@@ -141,6 +146,7 @@ def get_skin_tool_prefix() -> str:
 
 def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
     """Display emoji for a tool: skin ``tool_emojis`` override, then registry, then *default*."""
+    tool_name = canonical_tool_name(tool_name)
     skin = _get_skin()
     override = skin.tool_emojis.get(tool_name) if skin and skin.tool_emojis else None
     if override:
@@ -166,6 +172,21 @@ def _tail_trunc(text: str, limit: int | None) -> str:
     if not limit or limit <= 0 or len(text) <= limit:
         return text
     return "." * limit if limit <= 3 else text[:limit - 3] + "..."
+
+
+def build_terminal_preview_line(command: str, max_len: int | None) -> str:
+    """Render a shell command as one capped line for a progress preview.
+
+    Uses the same ``_oneline`` + ``_tail_trunc`` pair as every other
+    preview, so a command spends its whole budget on content. Taking only the
+    *first* source line instead wastes the budget precisely when the preview
+    matters most: shell commands routinely open with boilerplate (``set -e``,
+    a ``cd``, a variable assignment), so a 120-character budget could render
+    as ``set +e``. The result is a label, not a paste-able command — collapsing
+    newlines puts any interior ``#`` comment inline; verbose mode's fenced
+    block stays the copyable form.
+    """
+    return _tail_trunc(_oneline(command), max_len)
 
 
 def _clip(text: str, n: int) -> str:
@@ -471,6 +492,7 @@ _PREVIEW_BUILDERS = {
     "tool_call": _preview_bridge_call("tool_call"),
     "tool_search": _preview_bridge_call("tool_search"),
     "tool_describe": _preview_bridge_call("tool_describe"),
+    **SDK_PREVIEW_BUILDERS,
 }
 
 
@@ -483,6 +505,8 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         max_len = _tool_preview_max_len
     if not args:
         return None
+    args = canonical_tool_args(tool_name, args)
+    tool_name = canonical_tool_name(tool_name)
     args = redact_tool_args_for_display(tool_name, args) or args
     builder = _PREVIEW_BUILDERS.get(tool_name)
     if builder is not None:
@@ -522,16 +546,28 @@ _TOOL_VERB_TOOLS: frozenset[str] = frozenset({
     "skill_view", "skills_list", "skill_manage", "delegate_task", "cronjob_manage", "clarify",
     "memory", "todo_list",
 })
+# Verbs for tools the catalog does not carry; English until they earn keys in every locale.
+_UNCATALOGUED_TOOL_VERBS: dict[str, str] = {
+    "update_active_task": "Updating the active task",
+    **SDK_TOOL_VERBS,
+}
 
 
 def _tool_verb(tool_name: str) -> str | None:
-    return t(f"display.verb.{tool_name}") if tool_name in _TOOL_VERB_TOOLS else None
+    if tool_name in _TOOL_VERB_TOOLS:
+        return t(f"display.verb.{tool_name}")
+    return _UNCATALOGUED_TOOL_VERBS.get(tool_name)
 
 
-# Verbs that read better without the argument preview appended.
-_TOOL_VERBS_NO_PREVIEW: frozenset[str] = frozenset({"skills_list", "session_search"})
+# Verbs that read better without the argument preview appended: ``update_active_task`` takes
+# the whole record (echoing its first line would mislead).
+_TOOL_VERBS_NO_PREVIEW: frozenset[str] = frozenset({
+    "skills_list", "session_search", "update_active_task", *SDK_TOOL_VERBS_NO_PREVIEW,
+})
 # Verbs joined to the preview with " for " (search-style phrasing).
-_TOOL_VERBS_FOR_CONNECTOR: frozenset[str] = frozenset({"web_search", "search_files"})
+_TOOL_VERBS_FOR_CONNECTOR: frozenset[str] = frozenset({
+    "web_search", "search_files", *SDK_TOOL_VERBS_FOR_CONNECTOR,
+})
 
 _BRIDGE_GENERATING_TOOLS: frozenset[str] = frozenset({"tool_call", "tool_search", "tool_describe"})
 
@@ -567,17 +603,18 @@ def tool_row_emoji(tool_name: str, args: dict | None = None, default: str = "⚡
 def get_tool_verb(tool_name: str) -> str | None:
     """Friendly verb for a built-in tool, or None (labels disabled / no curated verb);
     callers compose ``f"{verb}{tool_verb_connector(tool)}{preview}"`` themselves."""
-    return _tool_verb(tool_name) if _friendly_tool_labels else None
+    return _tool_verb(canonical_tool_name(tool_name)) if _friendly_tool_labels else None
 
 
 def tool_verb_connector(tool_name: str) -> str:
     """Return the connector between a verb and its preview (" for " or " ")."""
-    return t("display.verb_connector.search" if tool_name in _TOOL_VERBS_FOR_CONNECTOR else "display.verb_connector.default")
+    return t("display.verb_connector.search" if canonical_tool_name(tool_name) in _TOOL_VERBS_FOR_CONNECTOR
+             else "display.verb_connector.default")
 
 
 def verb_drops_preview(tool_name: str) -> bool:
     """Whether the verb should render alone, without the argument preview."""
-    return tool_name in _TOOL_VERBS_NO_PREVIEW
+    return canonical_tool_name(tool_name) in _TOOL_VERBS_NO_PREVIEW
 
 
 def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) -> str | None:
@@ -589,6 +626,7 @@ def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) ->
     """
     if not tool_name or tool_name == "_thinking" or not _friendly_tool_labels:
         return None
+    tool_name = canonical_tool_name(tool_name)
     verb = _tool_verb(tool_name)
     phrase = (t("display.status_phrase.verb", verb=f"{verb[0].lower()}{verb[1:]}") if verb
               else t("display.status_phrase.using_tool", tool=tool_name))
@@ -1185,6 +1223,7 @@ _CUTE_LINES = {
     "execute_code": _cute_execute_code,
     "browser_exec": _cute_browser_exec,
     "delegate_task": _cute_delegate,
+    **SDK_CUTE_LINES,
 }
 
 

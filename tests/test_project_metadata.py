@@ -108,7 +108,7 @@ def test_lazy_installable_extras_excluded_from_all():
     # list so the test stays a contract — adding a new opt-in backend
     # means updating this list AND verifying [all] doesn't contain it.
     lazy_covered_extras = {
-        "anthropic", "bedrock",
+        "anthropic", "claude-agent-sdk", "bedrock",
         "exa", "firecrawl", "parallel-web",
         "fal",
         "edge-tts", "tts-premium",

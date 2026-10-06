@@ -405,7 +405,7 @@ async def test_default_executor_worker_is_seen_by_the_close_guard():
         return None
 
     async def _apply_result(*_a, **_kw):
-        pass
+        return False, False
 
     gw._hmwa_hygiene_build_agent = _build_agent
     gw._hmwa_hygiene_wait_for_summary = _wait_for_summary

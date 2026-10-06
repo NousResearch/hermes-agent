@@ -32,17 +32,24 @@ def ctx(tmp_path, monkeypatch):
     return inv, context
 
 
-def _rows(inv, context, **overrides):
+def _rows(inv, context, *, explicit_only=True, **overrides):
     context = dataclasses.replace(context, **overrides)
-    return inv.build_models_payload(context, explicit_only=True)["providers"]
+    return inv.build_models_payload(
+        context, explicit_only=explicit_only
+    )["providers"]
 
 
-def test_managed_custom_session_shows_only_the_local_row(ctx):
+@pytest.mark.parametrize("explicit_only", [False, True])
+def test_managed_custom_session_shows_only_the_local_row(ctx, explicit_only):
     inv, context = ctx
-    rows = _rows(inv, context,
-                 current_provider="custom",
-                 current_model="Qwen-A-UD-Q4_K_M",
-                 current_base_url=MANAGED["base_url"])
+    rows = _rows(
+        inv,
+        context,
+        explicit_only=explicit_only,
+        current_provider="custom",
+        current_model="Qwen-A-UD-Q4_K_M",
+        current_base_url=MANAGED["base_url"],
+    )
     slugs = [r["slug"] for r in rows]
     assert "llamacpp" in slugs
     assert "custom" not in slugs, (

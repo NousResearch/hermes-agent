@@ -24,8 +24,10 @@ _GROUP_ROOM = "!group:example.org"
 def _make_adapter(**extra):
     from plugins.platforms.matrix.adapter import MatrixAdapter
 
-    return MatrixAdapter(PlatformConfig(enabled=True, token="syt_test_token", extra={
+    adapter = MatrixAdapter(PlatformConfig(enabled=True, token="syt_test_token", extra={
         "homeserver": "https://matrix.example.org", "user_id": _SELF, **extra}))
+    adapter._user_id = _SELF  # pin "confirmed self" — the whoami resolution path is out of scope
+    return adapter
 
 
 class _Event:
@@ -83,6 +85,29 @@ def test_remember_event_is_idempotent_null_safe_and_bounded():
     assert len(adapter._processed_events_set) == cap  # evicted IDs leave the lookup set too
 
 
+@pytest.mark.asyncio
+async def test_every_send_path_records_its_event_for_echo_suppression():
+    """Wiring coverage (review test note): each send path — room message, content event,
+    reaction — records the returned event ID at send time, so the sync replay of our own
+    sends is dropped by _is_duplicate_event."""
+    adapter = _make_adapter()
+    calls = []
+
+    class _Client:
+        async def send_message_event(self, room_id, event_type, content):
+            calls.append(content)
+            return f"$wired-{len(calls)}"
+
+    adapter._client = _Client()
+
+    ids = [await adapter._send_room_message(_DM_ROOM, {"body": "one"}),
+           (await adapter._send_content_event(_DM_ROOM, {"body": "two"})).message_id,
+           await adapter._send_reaction(_DM_ROOM, "$target", "✅")]
+    assert ids == ["$wired-1", "$wired-2", "$wired-3"]
+    for ev_id in ids:
+        assert adapter._is_duplicate_event(ev_id)  # replay of any send path is an echo
+
+
 # --- Layer 2: hermes_* transaction-ID echoes (other processes' sends) -----------------------
 
 @pytest.mark.asyncio
@@ -117,10 +142,35 @@ async def test_self_chat_off_keeps_upstream_behavior(monkeypatch):
     assert handled == []
 
 
-# --- Scoping: DM-classified rooms or MATRIX_HOME_ROOM only, never groups ---------------------
+@pytest.mark.asyncio
+async def test_unresolved_identity_never_treats_strangers_as_owner():
+    """`_is_self_sender` is fail-closed — True for EVERY sender while `_user_id` is unresolved.
+    The self-chat branch must never consume that heuristic as "the owner is typing", or every DM
+    from every other user reaches the agent (review finding #1)."""
+    adapter = _make_adapter(**{"self_chat": "true"})
+    adapter._user_id = ""  # whoami has not resolved yet
+    handled = []
+    _wire(adapter, handled)
+    await adapter._on_room_message(_Event(sender="@stranger:example.org", unsigned={}, event_id="$stranger"))
+    assert handled == []
+
 
 @pytest.mark.asyncio
-async def test_group_rooms_never_trigger_self_chat_unless_home_room(monkeypatch):
+async def test_group_room_is_never_self_chat_even_when_home_room(monkeypatch):
+    """`MATRIX_HOME_ROOM` is a delivery target (/sethome writes it from any chat) — it must not
+    license self-chat in a group room (review finding #2)."""
+    monkeypatch.setenv("MATRIX_HOME_ROOM", _GROUP_ROOM)
+    adapter = _make_adapter(**{"self_chat": "true"})
+    handled = []
+    _wire(adapter, handled)
+    await adapter._on_room_message(_Event(room_id=_GROUP_ROOM, event_id="$homegroup"))
+    assert handled == []
+
+
+# --- Scoping: DM-classified rooms only, never groups -----------------------------------------
+
+@pytest.mark.asyncio
+async def test_group_rooms_never_trigger_self_chat(monkeypatch):
     monkeypatch.delenv("MATRIX_HOME_ROOM", raising=False)
     adapter = _make_adapter(**{"self_chat": "true"})
     handled = []
@@ -128,21 +178,15 @@ async def test_group_rooms_never_trigger_self_chat_unless_home_room(monkeypatch)
     await adapter._on_room_message(_Event(room_id=_GROUP_ROOM, event_id="$group"))
     assert handled == []  # a group room is never self-chat
 
-    monkeypatch.setenv("MATRIX_HOME_ROOM", _GROUP_ROOM)
-    await adapter._on_room_message(_Event(room_id=_GROUP_ROOM, event_id="$home"))
-    assert len(handled) == 1  # the configured home room always qualifies
-
 
 @pytest.mark.asyncio
-async def test_self_chat_room_scope_fails_closed(monkeypatch):
-    monkeypatch.setenv("MATRIX_HOME_ROOM", "!home:example.org")
+async def test_self_chat_room_scope_fails_closed():
     adapter = _make_adapter()
 
     async def is_dm(room_id):
         return room_id == _DM_ROOM
 
     adapter._is_dm_room = is_dm
-    assert await adapter._is_self_chat_room("!home:example.org")  # home room, not DM
     assert await adapter._is_self_chat_room(_DM_ROOM)  # DM classification
     assert not await adapter._is_self_chat_room(_GROUP_ROOM)
 

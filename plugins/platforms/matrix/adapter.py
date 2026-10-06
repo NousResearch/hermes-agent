@@ -1977,12 +1977,18 @@ class MatrixAdapter(BasePlatformAdapter):
         own = (self._user_id or "").strip().lower()
         return not own or sender.strip().lower() == own
 
+    def _is_confirmed_self_sender(self, sender: str) -> bool:
+        """True only when we KNOW the sender is the bot account (resolved ``_user_id``, compared
+        like ``_is_self_sender``). Never True on an unresolved identity: ``_is_self_sender``'s
+        fail-closed heuristic ("can't prove it isn't us") must not be read as "the owner is
+        typing" — that would turn every DM from every other user into owner input (#15763)."""
+        own = (self._user_id or "").strip().lower()
+        return bool(own) and sender.strip().lower() == own
+
     async def _is_self_chat_room(self, room_id: str) -> bool:
-        """Self-chat triggers only in DM-classified rooms (incl. a 1-member 'Notes to self' room)
-        or the configured MATRIX_HOME_ROOM — never react to your own messages in group rooms."""
-        home_room = _get_scoped_secret("MATRIX_HOME_ROOM", "").strip()
-        if home_room and room_id == home_room:
-            return True
+        """Self-chat triggers only in DM-classified rooms (incl. a 1-member notes-to-self room) —
+        never in group rooms. MATRIX_HOME_ROOM is deliberately NOT an override: it is a delivery
+        target that /sethome can write from any chat, groups included."""
         try:
             return await self._is_dm_room(room_id)
         except Exception:
@@ -2053,10 +2059,11 @@ class MatrixAdapter(BasePlatformAdapter):
         logger.debug(
             "Matrix: callback fired — event %s from %s in %s", getattr(event, "event_id", "?"), sender, room_id)
         if self._is_self_sender(sender):
-            if not self._self_chat:
+            if not self._self_chat or not self._is_confirmed_self_sender(sender):
                 return
-            # Self-chat mode (MATRIX_SELF_CHAT=true): messages you type from your own account are
-            # user input (the WhatsApp bridge self-chat equivalent). Echo suppression, two layers:
+            # Self-chat mode (MATRIX_SELF_CHAT=true): CONFIRMED owner messages become user input
+            # (the WhatsApp bridge self-chat equivalent; an unresolved _user_id keeps the
+            # fail-closed drop above). Echo suppression, two layers:
             #   1. sends from OTHER processes (`hermes send`, cron standalone) carry a hermes_*
             #      transaction ID, echoed back in unsigned.transaction_id;
             #   2. sends through THIS adapter were recorded at send time and are dropped by the
@@ -2539,7 +2546,7 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _on_reaction(self, event: Any) -> None:
         sender = str(getattr(event, "sender", ""))
         if self._is_self_sender(sender):
-            if not self._self_chat:
+            if not self._self_chat or not self._is_confirmed_self_sender(sender):
                 return
             # Self-chat: your own reactions (approvals, picker picks) count; agent-sent reaction
             # echoes carry either a hermes_* txn (other processes) or are dropped by the

@@ -24,7 +24,12 @@ from tools.approval import (
     disable_session_yolo,
 )
 from tools.approval_context import reset_current_session_key, set_current_session_key
-from tools.approval_detection import _collapse_device_paths, _single_parse_only, _strip_shell_escapes
+from tools.approval_detection import (
+    _collapse_device_paths,
+    _shell_word_name,
+    _single_parse_only,
+    _strip_shell_escapes,
+)
 
 
 # Commands that MUST be hardline-blocked: every one destroys a whole disk.
@@ -198,6 +203,12 @@ _BLOCK_DEVICE_HARDLINE_BLOCK = [
     "wipefs -a ~/../dev/sda",
     "wipefs -a $HOME/../dev/sda",
     'bash -c "wipefs -a ..//dev/sda"',
+    # a plain relative prefix that is popped and then climbed above (review F5 on #122771)
+    "cat x > build/../../dev/sda",
+    "dd if=/dev/zero of=build/../../dev/sda",
+    "wipefs -a build/../../dev/sda",
+    "blkdiscard a/b/../../../dev/nvme0n1",
+    "shred -n 1 -z .git/../../dev/sda",
     # an escaped BACKSLASH in front of `>` is a literal backslash and then a real redirect
     'echo foo\\\\> "/dev/sda"',
     "echo foo\\\\> /dev/sda",
@@ -224,6 +235,15 @@ _BLOCK_DEVICE_HARDLINE_BLOCK = [
     "env -S bash -c 'dd if=/dev/zero of=/dev/sda'",
     "xargs -I{} /bin/bash -c 'cat {} > /dev/disk0'",
     'find . -exec "bash" -c "cat x > /dev/nvme0n1" \;',
+    # a variable whose value IS the shell names a shell (review F6 on #122771)
+    "xargs $SHELL -c 'eval echo hello \\> /dev/sda'",
+    "$SHELL -c 'cat x > /dev/sda'",
+    "${SHELL} -c 'wipefs -a /dev/sda'",
+    '"$SHELL" -c "cat x > /dev/disk0"',
+    "find . -exec $SHELL -c 'wipefs -a /dev/sda' \;",
+    "xargs $BASH -c 'dd if=/dev/zero of=/dev/sda'",
+    # a printer's argument piped into a shell is code again
+    "echo bash -c 'cat x > /dev/sda' | sh",
     "eval${IFS}echo${IFS}hello${IFS}\\>${IFS}/dev/sda",
     "echo hello \\> /dev/sda | bash",
     "echo $(eval echo hi \\> /dev/sda)",
@@ -375,6 +395,13 @@ _BLOCK_DEVICE_HARDLINE_ALLOW = [
     "find . -name '*.log' -exec sh -c 'echo {}' \;",
     "echo \"xargs bash -c 'cat x > /dev/sda'\"",
     "grep -c bash /etc/passwd",
+    # a printer's arguments are data it prints, never a command it runs (review F7 on #122771)
+    "echo bash -c 'cat x > /dev/sda'",
+    "printf '%s\\n' bash -c 'cat x > /dev/sda'",
+    "sudo echo bash -c 'cat x > /dev/sda'",
+    # a plain relative prefix that is only popped stays under the working directory
+    "shred -u src/dev/sda",
+    "wipefs -a build/../dev/sda-notes",
     # The operand lookahead must not read a trailing comment as the operand.
     "shred -u notes.txt # never do this to /dev/sda",
     # `-n`/`--no-act` is wipefs doing everything except the write: a diagnostic.
@@ -499,6 +526,8 @@ def clean_session(monkeypatch):
     "bash -c 'eval echo hello \\> /dev/sda'",
     "xargs bash -c 'eval echo hello \\> /dev/sda'",
     "eval${IFS}echo${IFS}hello${IFS}\\>${IFS}/dev/sda",
+    "wipefs -a build/../../dev/sda",
+    "xargs $SHELL -c 'eval echo hello \\> /dev/sda'",
 ])
 def test_yolo_cannot_bypass_disk_wipes(clean_session, monkeypatch, command):
     """These reached the approval tier at best (or no tier at all) — exactly what
@@ -532,8 +561,12 @@ def test_yolo_cannot_bypass_disk_wipes(clean_session, monkeypatch, command):
     ('"../dev/disk0"', '"/dev/disk0"'),
     # unchanged: a lone `.` and a directory under the working directory never climb, a variable
     # is not a spelling, a URL is not a path, and nothing that resolves outside /dev is touched
+    ("build/../../dev/sda", "/dev/sda"),
+    ("a/b/../../../dev/sda", "/dev/sda"),
+    (".git/../../dev/sda", "/dev/sda"),
     ("./dev/sdk/token.json", "./dev/sdk/token.json"),
     ("build/../dev/sda", "build/../dev/sda"),
+    ("src/dev/sda", "src/dev/sda"),
     ("~/dev/sdk/token.json", "~/dev/sdk/token.json"),
     ("/home/alice/dev/sda", "/home/alice/dev/sda"),
     ("$D/sda", "$D/sda"),
@@ -542,6 +575,21 @@ def test_yolo_cannot_bypass_disk_wipes(clean_session, monkeypatch, command):
 ])
 def test_device_path_spellings_collapse_to_the_node(spelling, resolved):
     assert _collapse_device_paths(spelling) == resolved
+
+
+# A word names a shell by its basename, or by being a variable whose value IS the shell.
+@pytest.mark.parametrize("word,name", [
+    ("bash", "bash"),
+    ("/bin/bash", "bash"),
+    ("b\\ash", "bash"),
+    ("$SHELL", "sh"),
+    ("${SHELL}", "sh"),
+    ('"$SHELL"', "sh"),
+    ("$BASH", "sh"),
+    ("$CMD", "$cmd"),
+])
+def test_a_shell_naming_variable_names_a_shell(word, name):
+    assert _shell_word_name(word) == name
 
 
 # Escapes are read left to right, the way the shell reads them: `\>` is a literal argument and
@@ -598,6 +646,9 @@ def test_only_a_lone_printer_is_a_single_parse(command, single):
     ("echo hello \\> out | bash", True),
     ('echo "eval is a word" \\> out', False),
     ("printf '%s' hello \\> out", False),
+    ("SHELL=/bin/bash; echo x | xargs $SHELL -c 'eval echo hello \\> out'", True),
+    ("echo bash -c 'echo hi > out'", False),
+    ("echo bash -c 'echo hi > out' | sh", True),
 ])
 def test_bash_agrees_which_escaped_redirects_write(tmp_path, script, writes):
     subprocess.run(

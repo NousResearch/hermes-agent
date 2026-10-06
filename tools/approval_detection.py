@@ -219,10 +219,26 @@ _SHELL_NAMES = ("bash", "sh", "zsh", "ksh", "dash")
 _SHELL_NAMES_RE = "|".join(_SHELL_NAMES)
 
 
+# Variables whose value IS the shell: ``$SHELL -c '...'`` and ``xargs $SHELL -c '...'`` run whatever
+# shell the user has, so the word names a shell even though no shell name is spelled out (review F6 on
+# #122771). Any other expansion (``$(which bash)``, ``$CMD``) is the execution boundary's to resolve.
+_SHELL_NAMING_VARIABLES = frozenset({"SHELL", "BASH", "ZSH_NAME"})
+_SHELL_NAMING_VARIABLE_RE = re.compile(r'\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?')
+
+
+def _shell_word_name(word: str) -> str:
+    """The executable a shell word names, as a lowercase basename; a shell-naming variable answers ``sh``."""
+    name = _deobfuscate_shell_word_for_detection(word)
+    match = _SHELL_NAMING_VARIABLE_RE.fullmatch(name.strip("\"'"))
+    if match and match.group(1).upper() in _SHELL_NAMING_VARIABLES:
+        return "sh"
+    return os.path.basename(name).lower()
+
+
 def _contains_shell_carrier(command: str) -> bool:
     """Return whether any command-position word is a shell-carrying command."""
     return any(
-        os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() in _SHELL_CARRIER_NAMES
+        _shell_word_name(word) in _SHELL_CARRIER_NAMES
         for _, _, word in _iter_shell_command_word_spans(command)
     )
 
@@ -667,9 +683,18 @@ def _strip_shell_escapes(command: str, *, live_operators: bool = False) -> str:
 # ``$HOME/../dev/sda`` -- is read as reaching the root: the classifier cannot see the working directory,
 # and from /tmp (or, as root, from ~) that IS /dev/sda (review P1 #2 on #120926). A lone ``.`` never
 # climbs, so ``./dev/sdk/token.json`` stays a relative file, and ``build/../dev/sda`` is a path under the
-# working directory, not the device. What no spelling rule can see -- ``D=/dev; wipefs -a $D/sda``,
-# ``cd /dev && wipefs -a sda`` -- is the execution boundary's to resolve.
-_DEVICE_PATH_TOKEN_RE = re.compile(r'(?<![\w.~$/:-])(\$\{?\w+\}?|~|\.\.?|)(/[^\s;&|<>()"\'`]*)')
+# working directory, not the device (``build/../../dev/sda`` climbs above it and is). What no spelling
+# rule can see -- ``D=/dev; wipefs -a $D/sda``, ``cd /dev && wipefs -a sda`` -- is the execution
+# boundary's to resolve.
+# The head is what the path starts from: a variable, ``~``, ``.``/``..``, a plain relative segment
+# (``build``), or nothing for an absolute path. A plain segment sits on the stack like any other, so
+# ``build/../dev/sda`` pops it and stays under the working directory while ``build/../../dev/sda``
+# pops it and then climbs, which is the device (review F5 on #122771).
+_DEVICE_PATH_TOKEN_RE = re.compile(
+    r'(?<![\w.~$/:-])'
+    r'(\$\{?\w+\}?|~|\.\.?(?=/)|\.?[^\s;&|<>()"\'`=:/$~.][^\s;&|<>()"\'`=:/]*|)'
+    r'(/[^\s;&|<>()"\'`]*)'
+)
 
 
 def _collapse_device_paths(command: str) -> str:
@@ -678,7 +703,8 @@ def _collapse_device_paths(command: str) -> str:
         if "dev" not in rest.lower():
             return token
         rooted = head in ("", "..")
-        stack: list[str] = []
+        plain = head not in ("", ".", "..", "~") and not head.startswith("$")
+        stack: list[str] = [head] if plain else []
         for segment in rest.split("/"):
             if segment in ("", "."):
                 continue
@@ -1179,7 +1205,7 @@ def _execution_flag_findings(command: str):
         for start, _, word in _iter_shell_command_word_spans(segment):
             executable = _deobfuscate_shell_word_for_detection(word)
             tokens = _shell_segment_tokens(segment, start)
-            executable_name = os.path.basename(executable).lower()
+            executable_name = _shell_word_name(word)
             family = _interpreter_family(executable)
             if tokens is None:
                 if family is not None or executable_name in _READ_TOOL_EXEC_FLAGS:
@@ -1224,15 +1250,21 @@ def _dispatched_shell_findings(command: str):
     shell exactly the payload ``bash -c '...'`` would get at command position, and the payload is a
     quoted argument the positionless rules read as prose. Any command can carry a shell as an
     argument, so it is the shell word that is looked for, anywhere in the segment, never the
-    dispatcher. _execution_flag_findings owns the shells at command position; this owns the rest,
-    with the same payload parser, so the two cannot disagree on what a ``-c`` carries."""
+    dispatcher; ``$SHELL`` counts as one. _execution_flag_findings owns the shells at command
+    position; this owns the rest, with the same payload parser, so the two cannot disagree on what
+    a ``-c`` carries."""
     for segment in _iter_top_level_shell_segments(command):
-        command_starts = {start for start, _, _ in _iter_shell_command_word_spans(segment)}
+        command_words = list(_iter_shell_command_word_spans(segment))
+        # A printer's arguments are data it prints, never a command it runs: ``echo bash -c '...'``
+        # invokes echo alone (review F7 on #122771). Piped into a shell it is code again, and that
+        # shell is a carrier at command position, so the raw scan already sees the payload.
+        if any(_shell_word_name(word) in _SINGLE_PARSE_COMMAND_NAMES for _, _, word in command_words):
+            continue
+        command_starts = {start for start, _, _ in command_words}
         for start, end in _iter_unquoted_word_spans(segment):
             if start in command_starts:
                 continue
-            name = os.path.basename(_deobfuscate_shell_word_for_detection(segment[start:end])).lower()
-            if name not in _SHELL_NAMES:
+            if _shell_word_name(segment[start:end]) not in _SHELL_NAMES:
                 continue
             tokens = _shell_segment_tokens(segment, start)
             if not tokens:

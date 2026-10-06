@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	bindResumeSessionFromControlMessage,
 	isViewportPinnedToBottom,
 	parseResumeControlMessage,
 	shouldFollowPtyOutput,
@@ -55,6 +56,18 @@ describe("parseResumeControlMessage", () => {
 		expect(
 			parseResumeControlMessage('{"type":"resume","id":"sess-123"}'),
 		).toBe("sess-123");
+	});
+
+	it("binds an already-running PTY session from its channel control frame", () => {
+		let boundSessionId: string | null = null;
+		const result = bindResumeSessionFromControlMessage(
+			'{"type":"resume","id":"already-running-session"}',
+			(sessionId) => {
+				boundSessionId = sessionId;
+			},
+		);
+		expect(result).toBe("already-running-session");
+		expect(boundSessionId).toBe("already-running-session");
 	});
 
 	it("ignores plain ANSI banner text sent as a text frame", () => {

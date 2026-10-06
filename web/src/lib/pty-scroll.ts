@@ -76,3 +76,14 @@ export function parseResumeControlMessage(data: string): string | null {
 	}
 	return null;
 }
+
+export function bindResumeSessionFromControlMessage(
+	data: string,
+	onSessionIdChange: (sessionId: string) => void,
+): string | null {
+	const sessionId = parseResumeControlMessage(data);
+	if (sessionId) {
+		onSessionIdChange(sessionId);
+	}
+	return sessionId;
+}

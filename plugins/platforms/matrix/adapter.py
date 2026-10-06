@@ -790,48 +790,6 @@ def ensure_matrix_deps() -> bool:
     return True
 
 
-class _CryptoStateStore:
-    """StateStore shim for OlmMachine (MemoryStateStore lacks is_encrypted/get_encryption_info/
-    find_shared_rooms); falls back to a homeserver state query when the store has no info."""
-
-    def __init__(self, client_state_store: Any, joined_rooms: set, client=None):
-        self._ss = client_state_store
-        self._joined_rooms = joined_rooms
-        self._client = client
-        # MemoryStateStore has no set_encryption_info, so cache homeserver answers here.
-        self._enc_info_cache: dict = {}
-
-    async def is_encrypted(self, room_id: str) -> bool:
-        return (await self.get_encryption_info(room_id)) is not None
-
-    async def get_encryption_info(self, room_id: str):
-        info = await self._ss.get_encryption_info(room_id) if hasattr(self._ss, "get_encryption_info") else None
-        if info is not None:
-            return info
-        if room_id in self._enc_info_cache:
-            return self._enc_info_cache[room_id]
-        if self._client is None:
-            return None
-        try:
-            from mautrix.types import EventType as _ET, RoomEncryptionStateEventContent as _Enc, RoomID as _RID
-            raw = await self._client.get_state_event(_RID(room_id), _ET.ROOM_ENCRYPTION)
-        except Exception as exc:
-            logger.debug("Matrix: homeserver encryption-info query failed for %s: %s", room_id, exc)
-            return None
-        if not raw:
-            return None
-        content = raw if isinstance(raw, _Enc) else _Enc.deserialize(
-            raw.serialize() if hasattr(raw, "serialize") else raw)
-        if hasattr(self._ss, "set_encryption_info"):
-            with suppress(Exception):
-                await self._ss.set_encryption_info(_RID(room_id), content)
-        self._enc_info_cache[room_id] = content
-        return content
-
-    async def find_shared_rooms(self, user_id: str) -> list:
-        return list(self._joined_rooms)  # all joined rooms: correct for a single-user bot
-
-
 class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
@@ -893,6 +851,8 @@ class MatrixAdapter(BasePlatformAdapter):
         from collections import deque
         self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
         self._processed_events_set: set = set()
+        # Rooms already warned for dropping encrypted events this process lifetime (#131778).
+        self._warned_encrypted_drop_rooms: Set[str] = set()
         self._threads = ThreadParticipationTracker("matrix")  # require_mention bypass
         self._parked_voices = ParkedVoices()  # unmentioned voice awaiting a bare @mention
         self._require_mention: bool = self._parse_require_mention(config)
@@ -1255,6 +1215,7 @@ class MatrixAdapter(BasePlatformAdapter):
             if not _store_was_reset and not await self._migrate_legacy_crypto_pickle(
                     crypto_store, crypto_db, _acct_id, _pickle_key):
                 logger.warning("Matrix: crypto pickle migration failed — E2EE may not work correctly")
+            from plugins.platforms.matrix.adapter_crypto import _CryptoStateStore
             crypto_state = _CryptoStateStore(state_store, self._joined_rooms, client)
             olm = OlmMachine(client, crypto_store, crypto_state)
             olm.share_keys_min_trust = TrustState.UNVERIFIED
@@ -1923,6 +1884,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if rooms_join or initial:
             self._joined_rooms.update(rooms_join.keys())
             self._invalidate_room_identities()
+        self._warn_encrypted_drops(rooms_join, client)
         nb = sync_data.get("next_batch")  # incremental syncs resume from here
         if nb:
             await client.sync_store.put_next_batch(nb)
@@ -1935,6 +1897,33 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.warning("Matrix: %s: %s", "initial sync event dispatch error" if initial else "sync event dispatch error", exc)
         self._schedule_pending_invite_joins(sync_data)
         return nb
+
+    def _warn_encrypted_drops(self, rooms_join: Dict[str, Any], client: Any) -> None:
+        """Fail loud when encrypted room events arrive but no decryptor is attached (#131778).
+
+        With E2EE off, or after the optional mode degraded (missing deps / failed setup) and
+        kept the connection, ``m.room.encrypted`` timeline events dispatch to an empty
+        ROOM_ENCRYPTED handler set — mautrix drops them without a trace, so an encrypted room
+        looks connected but deaf: syncs succeed, no errors, no warnings. One warning per room
+        per process; with a decryptor attached, mautrix's own machinery already reports
+        decryption failures."""
+        if getattr(client, "crypto", None) is not None:
+            return
+        for room_id, room_data in rooms_join.items():
+            if room_id in self._warned_encrypted_drop_rooms:
+                continue
+            events = room_data.get("timeline", {}).get("events", [])
+            if any(isinstance(ev, dict) and ev.get("type") == "m.room.encrypted" for ev in events):
+                self._warned_encrypted_drop_rooms.add(room_id)
+                if self._e2ee_mode == "off":
+                    cause = f"{_E2EE_INSTALL_HINT}, then set MATRIX_E2EE_MODE=optional (or required)"
+                else:
+                    cause = (f"E2EE mode is {self._e2ee_mode} but the decryptor was not set up at connect; "
+                             "see the earlier Matrix E2EE warning for the cause")
+                logger.warning(
+                    "Matrix: dropping encrypted messages in %s — this process has no E2EE decryptor. %s. "
+                    "Without it, messages in encrypted rooms never reach the agent.",
+                    room_id, cause)
 
     async def _dispatch_sync(self, sync_data: Dict[str, Any]) -> None:
         """Dispatch a sync response through the mautrix event machinery."""

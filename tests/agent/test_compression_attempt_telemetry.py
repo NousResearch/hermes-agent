@@ -221,7 +221,7 @@ def test_automatic_compaction_counts_once_in_shared_metrics(monkeypatch):
         compress_context(agent, _messages(), "system prompt", approx_tokens=80_000)
 
     assert [compression_fields(**kw) for kw in calls] == [
-        {"trigger": "auto", "outcome": "success", "context_fill_bucket": "75_to_90"}
+        {"trigger": "auto", "outcome": "success", "context_fill_bucket": "75_to_90", "failure_class": "none"}
     ]
 
 
@@ -249,7 +249,9 @@ def test_structural_no_op_is_counted_skipped_with_the_compressors_class(caplog, 
     assert compressed == messages
     payload = _extract_telemetry(caplog)
     assert (payload["commit_status"], payload["failure_class"]) == ("aborted", "no_compressible_window")
-    assert [compression_fields(**kw)["outcome"] for kw in recorded] == ["skipped"]
+    assert [(f["outcome"], f["failure_class"]) for f in (compression_fields(**kw) for kw in recorded)] == [
+        ("skipped", "no_compressible_window")
+    ]
 
 
 @pytest.mark.parametrize(

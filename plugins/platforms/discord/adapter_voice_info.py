@@ -8,7 +8,26 @@ from typing import Any, Dict, Optional
 class DiscordVoiceInfoMixin:
     _voice_clients: dict[int, Any]
     _voice_receivers: dict[int, Any]
+    _voice_text_channels: dict[int, Any]
+    _voice_sources: dict[int, Dict[str, Any]]
     _client: Any
+    discard_pending_voice_input: Any
+
+    def _bind_voice_text_channel(self, guild_id: int, text_channel_id: Any, source: Optional[dict]) -> None:
+        """A programmatic join's transcription binding, on every path: cold join, same voice channel and
+        move. The already-connected paths returned before writing it, so a successful join to another
+        text channel kept answering in the old one. Moving to another text channel drops speech captured
+        for the old one (as ``/voice join`` does) and, unless a new source is given, the old channel's
+        bound source, whose chat would otherwise keep routing turns into the old conversation."""
+        if text_channel_id is not None:
+            previous = self._voice_text_channels.get(guild_id)
+            if previous is not None and previous != text_channel_id:
+                self.discard_pending_voice_input(guild_id)
+                if source is None:
+                    self._voice_sources.pop(guild_id, None)
+            self._voice_text_channels[guild_id] = text_channel_id
+        if source is not None:
+            self._voice_sources[guild_id] = source
 
     def get_voice_channel_info(self, guild_id: int) -> Optional[Dict[str, Any]]:
         """Return voice channel info (name, members, count, speaking user IDs) or None if not connected."""

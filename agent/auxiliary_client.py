@@ -5397,23 +5397,21 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
         return _resolve_api_key_branch(req, pconfig, resolve_api_key_provider_credentials)
     if auth_type == "external_process":
         return _resolve_external_process_branch(req, resolve_external_process_provider_credentials(provider))
-    if auth_type == "vertex":
-        client, final_model = _build_vertex_client(provider, req.model)
-    elif auth_type == "aws_sdk":
-        client, final_model = _build_bedrock_client(provider, req.model, raw_codex=req.raw_codex)
-    elif auth_type in {"oauth_device_code", "oauth_external"}:
+    from agent.auxiliary_client_registry import REGISTRY_AUTHTYPE_ARMS
+    arm = REGISTRY_AUTHTYPE_ARMS.get(auth_type)
+    if arm is not None:
+        return arm(req)
+    if auth_type in {"oauth_device_code", "oauth_external"}:
         # nous / openai-codex / xai-oauth already returned from their explicit branches.
         _log_once_debug(_LOGGED_UNSUPPORTED_OAUTH_KEYS, provider,
                         "resolve_provider_client: OAuth provider %s not "
                         "directly supported, try 'auto'", provider)
         return None, None
-    else:
-        # The first occurrence surfaces a real schema-drift bug; per-call retries stay silent.
-        _log_once_debug(_LOGGED_UNHANDLED_AUTHTYPE_KEYS, (auth_type, provider),
-                        "resolve_provider_client: unhandled auth_type %s for %s",
-                        auth_type, provider)
-        return None, None
-    return _route_client(req, client, final_model) if client is not None else (None, None)
+    # The first occurrence surfaces a real schema-drift bug; per-call retries stay silent.
+    _log_once_debug(_LOGGED_UNHANDLED_AUTHTYPE_KEYS, (auth_type, provider),
+                    "resolve_provider_client: unhandled auth_type %s for %s",
+                    auth_type, provider)
+    return None, None
 
 
 # Explicit providers with a dedicated branch; anything else falls through to named custom

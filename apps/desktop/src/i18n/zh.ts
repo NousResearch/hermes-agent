@@ -18,7 +18,7 @@ export const zh = defineLocale({
       '共享指标只包含有上限的计数，绝不包含提示词、文件、路径或错误文本。收集仅在本地进行；发送给 Nous 需要另行同意。',
     whatIsCollected: '收集哪些内容',
     collectedIntro: '仅限有上限的计数：',
-    collectedActivity: '活动、会话时长、结果和错误类别',
+    collectedActivity: '活动、会话时长、结果和错误类别，包括记忆写入或上下文压缩被拒绝、失败或跳过时的原因（来自固定列表）',
     collectedModels: '模型路由和 token 总量',
     collectedNames: '内置工具、命令和目录项名称',
     collectedMilestones: '分桶的设置计数',

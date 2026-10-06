@@ -336,16 +336,35 @@ def _kb_completed(task, payload: dict, title: str) -> str:
 
 
 def _kb_timed_out(task, payload: dict, title: str) -> str:
-    with contextlib.suppress(TypeError, ValueError):
-        return f" timed out (max_runtime={int(payload.get('limit_seconds') or 0)}s); will retry"
-    return " timed out (max_runtime=0s); will retry"
+    budget_used = payload.get("budget_used")
+    budget_max = payload.get("budget_max")
+    if budget_used is not None and budget_max is not None:
+        # Iteration-budget exhaustion carries budget_used/budget_max, not a
+        # wall-clock limit: render it as such and never invent max_runtime=0s
+        # (#79399).
+        core = f" iteration budget exhausted ({budget_used}/{budget_max})"
+    else:
+        limit = None
+        with contextlib.suppress(TypeError, ValueError):
+            if payload.get("limit_seconds"):
+                limit = int(payload["limit_seconds"])
+        if limit is None:
+            # Legacy events / metadata-less payloads: fall back to the task's
+            # configured runtime rather than an invented zero.
+            limit = getattr(task, "max_runtime_seconds", None)
+            limit = int(limit) if limit else None
+        core = f" timed out (max_runtime={limit if limit is not None else '?'}s)"
+    # Only a task that will actually be respawned may promise a retry (#79399).
+    retry = "; will retry" if getattr(task, "status", "") == "ready" else ""
+    return f"{core}{retry}"
 
 
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.
 _KANBAN_EVENT_FORMATTERS = {
     "completed": ("✔", _kb_completed),
     "blocked": ("⏸", lambda t, p, title: " blocked" + (f": {str(p.get('reason'))[:160]}" if p.get("reason") else "")),
-    "gave_up": ("✖", lambda t, p, title: " gave up after repeated spawn failures"
+    "gave_up": ("✖", lambda t, p, title: " gave up after repeated failures"
+                + (f" ({p['trigger_outcome']})" if p.get("trigger_outcome") else "")
                 + (f"\n{str(p.get('error'))[:200]}" if p.get("error") else "")),
     "crashed": ("✖", lambda t, p, title: " worker crashed (pid gone); dispatcher will retry"),
     "timed_out": ("⏱", _kb_timed_out),

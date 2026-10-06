@@ -124,24 +124,36 @@ class TestOAuthFlagOnRefresh:
         assert result is True
         assert agent._anthropic_api_key == new
 
-    def test_refresh_moves_every_holder_of_the_revoked_token(self, agent):
-        """Claude Code revokes the old token on refresh. The compressor forwards its OWN
-        ``api_key`` as the aux main_runtime, so if only the native client moves, every
-        compression summary 401s ("OAuth access token has been revoked") for the session's life."""
+    def test_compression_before_any_request_sends_the_refreshed_token(self, agent):
+        """Claude Code revokes the old token on refresh. Manual /compress and turn-start compaction
+        run before any main request, so compress_context must refresh first and move every holder
+        (the compressor forwards its OWN ``api_key``), or the summary 401s for the session's life."""
+        from agent.conversation_compression import compress_context
+
         old, new = "sk-ant-oat01-old", "sk-ant-oat01-new"
+        seen = []
         agent.api_mode, agent.provider = "anthropic_messages", "anthropic"
         agent._anthropic_base_url = "https://api.anthropic.com"
         agent._anthropic_client = MagicMock()
         agent.api_key = agent._anthropic_api_key = agent.context_compressor.api_key = old
         agent._primary_runtime = {"api_key": old, "anthropic_api_key": old, "compressor_api_key": old}
+        agent._compression_feasibility_checked = True
+        cc = agent.context_compressor
+
+        def fake_compress(_messages, **_kwargs):
+            seen.append(cc.api_key)
+            return [{"role": "user", "content": "[summary]"}, {"role": "assistant", "content": "tail"}]
 
         with (
             patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
             patch.object(AIAgent, "_build_direct_anthropic_client", return_value=MagicMock()),
+            patch.object(cc, "compress", side_effect=fake_compress),
         ):
-            assert agent._try_refresh_anthropic_client_credentials() is True
+            compress_context(agent, [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}],
+                             "system", approx_tokens=100_000, force=True)
 
-        assert agent._anthropic_api_key == agent.api_key == agent.context_compressor.api_key == new
+        assert seen == [new]
+        assert agent._anthropic_api_key == agent.api_key == new
         assert set(agent._primary_runtime.values()) == {new}
 
     def test_auxiliary_main_route_uses_refreshed_token(self, agent):

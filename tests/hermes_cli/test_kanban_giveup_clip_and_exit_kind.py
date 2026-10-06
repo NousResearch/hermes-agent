@@ -121,3 +121,19 @@ def _gave_up_payload(exit_code: int) -> dict:
 )
 def test_gave_up_event_carries_exit_kind(kanban_home, exit_code, expected):
     assert _gave_up_payload(exit_code)["exit_kind"] == expected
+
+
+@pytest.mark.parametrize("outcome", ["timed_out", "spawn_failed"])
+def test_gave_up_without_a_worker_exit_still_carries_the_key(kanban_home, outcome):
+    """A timeout or a failed spawn has no classified worker exit. The key is still present
+    (``None``) so a consumer can index it on every ``gave_up``; ``trigger_outcome`` names the cause."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="t", assignee="a", max_retries=1)
+        assert kbd._record_task_failure(conn, tid, error="boom", outcome=outcome)
+        row = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='gave_up'", (tid,),
+        ).fetchone()
+        payload = json.loads(row["payload"])
+    assert "exit_kind" in payload
+    assert payload["exit_kind"] is None
+    assert payload["trigger_outcome"] == outcome

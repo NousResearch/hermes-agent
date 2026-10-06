@@ -1445,6 +1445,10 @@ def _record_task_failure(
             "error": error,
             "trigger_outcome": outcome,
             "retry_status": retry_status,
+            # Present on every ``gave_up``. The crash path overrides it with the classified
+            # worker exit; a timeout or a failed spawn observed no exit, so it stays ``None``
+            # and ``trigger_outcome`` names the cause.
+            "exit_kind": None,
         }
         run_id = None
         if end_run:

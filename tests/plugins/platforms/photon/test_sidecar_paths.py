@@ -18,7 +18,7 @@ import plugins.platforms.photon.sidecar_paths as sidecar_paths
 
 def _seed_source(source: Path, *, with_node_modules: bool = False) -> None:
     source.mkdir(parents=True, exist_ok=True)
-    for name in sidecar_paths._MIRROR_FILES:
+    for name in (*sidecar_paths._MIRROR_FILES, "index.mjs"):
         (source / name).write_text(f"// {name}\n", encoding="utf-8")
     if with_node_modules:
         (source / "node_modules").mkdir()
@@ -86,6 +86,28 @@ def test_mirror_refresh_updates_changed_files_and_keeps_node_modules(
     assert resolved == mirror
     assert (mirror / "index.mjs").read_text(encoding="utf-8") == "// index.mjs v2\n"
     assert (mirror / "node_modules" / "installed.txt").exists()
+
+
+def test_mirror_copies_every_sidecar_module(tmp_path, monkeypatch) -> None:
+    """index.mjs imports sibling modules; a mirror missing one cannot start."""
+    import re
+
+    monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    _freeze_writability(monkeypatch, writable=False)
+    import shutil
+
+    # The real sidecar files, minus node_modules: a read-only install that must mirror.
+    source = tmp_path / "src"
+    shutil.copytree(sidecar_paths.SOURCE_SIDECAR_DIR, source, ignore=shutil.ignore_patterns("node_modules"))
+    mirror = sidecar_paths.resolve_sidecar_dir(source)
+
+    assert mirror == tmp_path / "home" / "photon" / "sidecar"
+    imports = set(re.findall(r'from "\./([\w-]+\.mjs)"', (source / "index.mjs").read_text(encoding="utf-8")))
+    assert {"send-format.mjs", "stream-staleness.mjs", "poll-votes.mjs"} <= imports
+    copied = {path.name for path in mirror.iterdir()}
+    assert {path.name for path in source.glob("*.mjs")} | {"package.json", "package-lock.json"} <= copied
+    assert imports <= copied
 
 
 @pytest.mark.platforms("linux")

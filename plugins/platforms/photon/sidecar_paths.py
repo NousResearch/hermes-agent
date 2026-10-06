@@ -20,10 +20,9 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 SOURCE_SIDECAR_DIR = Path(__file__).parent / "sidecar"
-# Files that define the sidecar; node_modules is deliberately absent (baked on managed
-# images or installed by npm in the mirror).
-_MIRROR_FILES = ("index.mjs", "package.json", "package-lock.json", "patch-spectrum-mixed-attachments.mjs",
-                 "poll-votes.mjs")
+# Files that define the sidecar, plus every ``*.mjs`` module (index.mjs imports siblings);
+# node_modules is deliberately absent (baked on managed images or installed by npm in the mirror).
+_MIRROR_FILES = ("package.json", "package-lock.json")
 # Tests monkeypatch these module globals directly; the accessors honor a non-None value.
 _SIDECAR_DIR: Optional[Path] = None
 # Written by `hermes photon install-sidecar` on npm failure so check_requirements() can
@@ -59,6 +58,11 @@ def _lock_newer_than_install(sidecar_dir: Path) -> bool:
         return False
 
 
+def mirror_file_names(source: Path) -> list[str]:
+    """Names copied into a read-only install's mirror: package files and all ES modules."""
+    return [*_MIRROR_FILES, *sorted(path.name for path in source.glob("*.mjs"))]
+
+
 def resolve_sidecar_dir(source_dir: Optional[Path] = None) -> Path:
     """Return the directory the sidecar should run from (see module doc)."""
     source = Path(source_dir) if source_dir is not None else SOURCE_SIDECAR_DIR
@@ -74,7 +78,7 @@ def resolve_sidecar_dir(source_dir: Optional[Path] = None) -> Path:
     mirror = get_hermes_home() / "photon" / "sidecar"
     try:
         mirror.mkdir(parents=True, exist_ok=True)
-        for name in _MIRROR_FILES:
+        for name in mirror_file_names(source):
             src, dst = source / name, mirror / name
             if src.exists() and (not dst.exists() or not filecmp.cmp(str(src), str(dst), shallow=False)):
                 shutil.copy2(str(src), str(dst))

@@ -819,6 +819,19 @@ function Stage-Repository {
                 }
             }
             Disable-TreelessGraphWrites $InstallDir
+            # A treeless (tree:0) checkout from a late-September installer downloads whole
+            # directory snapshots again on every history walk (#129514). Fetch its trees once; the
+            # new filter is recorded only after that succeeds, so `hermes update` retries otherwise.
+            $partialFilter = Invoke-Native { git -C $InstallDir config --get remote.origin.partialclonefilter }
+            if ("$partialFilter".Trim() -eq 'tree:0') {
+                Invoke-Logged -MayFail "Fetching directory history once (treeless checkout)" { git -C $InstallDir -c gc.auto=0 -c maintenance.auto=false fetch --refetch --filter=blob:none origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
+                if ($LASTEXITCODE) {
+                    Write-Warn "could not fetch the directory history; the next hermes update retries it"
+                } else {
+                    Invoke-Native { git -C $InstallDir config remote.origin.partialclonefilter blob:none }
+                    if ($LASTEXITCODE) { Write-Warn "could not record the blobless filter in $InstallDir" }
+                }
+            }
         }
         Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
         if ($LASTEXITCODE) { Fail "git fetch failed" }

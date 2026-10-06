@@ -7,6 +7,7 @@
 
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
+import type { CronReasoningEffortOption } from '@/types/hermes'
 
 import type { AuxTaskCopyMap } from './types_aux_tasks'
 import type { BootTranslations } from './types_boot'
@@ -2763,6 +2764,8 @@ export interface Translations {
     deliverNeedsHomeChannel: string
     modelLabel: string
     modelDefault: string
+    reasoningLabel: string
+    reasoningLabels: Record<CronReasoningEffortOption, string>
     customScheduleLabel: string
     customPlaceholder: string
     customHint: string

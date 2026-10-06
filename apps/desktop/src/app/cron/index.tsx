@@ -76,11 +76,15 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 import { BlueprintSlotControl, blueprintSlotHelp, cleanBlueprintFieldError, initialBlueprintValues } from './blueprints'
 import { mutateAndRefreshCronJobs, refreshCronJobs, triggerAndRefreshCronJobs } from './cron-actions'
 import {
+  CRON_REASONING_VALUES,
   cronEditorUpdates,
   cronModelChoiceValue,
+  cronReasoningEffortToWire,
+  type CronReasoningValue,
   jobDescription,
   jobIsScriptOnly,
   lastErrorSummary,
+  normalizeCronReasoningEffort,
   parseCronDeliveryTargets,
   parseCronModelChoiceValue,
   toggleCronDeliveryTarget,
@@ -158,6 +162,10 @@ function jobModel(job: CronJob): string {
 
 function jobProvider(job: CronJob): string {
   return asText(job.provider).trim()
+}
+
+function jobReasoningEffort(job: CronJob): CronReasoningValue {
+  return normalizeCronReasoningEffort(job.reasoning_effort)
 }
 
 function cronParts(expr: string): null | string[] {
@@ -578,7 +586,8 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
           schedule: values.schedule,
           name: values.name || undefined,
           deliver: values.deliver || DEFAULT_DELIVER,
-          ...(values.model.trim() ? { model: values.model.trim(), provider: values.provider.trim() || undefined } : {})
+          ...(values.model.trim() ? { model: values.model.trim(), provider: values.provider.trim() || undefined } : {}),
+          reasoning_effort: cronReasoningEffortToWire(values.reasoningEffort)
         })
       )
 
@@ -817,6 +826,7 @@ function CronJobDetail({ busy, c, job, onEdit, onOpenSession, onPauseResume, onT
   const scriptOnly = jobIsScriptOnly(job)
   const description = jobDescription(job)
   const modelOverride = jobModel(job)
+  const reasoningOverride = jobReasoningEffort(job)
 
   return (
     <PanelDetail>
@@ -846,7 +856,10 @@ function CronJobDetail({ busy, c, job, onEdit, onOpenSession, onPauseResume, onT
               value: formatTime(job.next_run_at)
             },
             { label: c.deliverLabel, value: c.deliveryLabels[deliver] ?? deliver },
-            ...(modelOverride ? [{ label: c.modelLabel, value: modelOverride }] : [])
+            ...(modelOverride ? [{ label: c.modelLabel, value: modelOverride }] : []),
+            ...(reasoningOverride !== 'inherit'
+              ? [{ label: c.reasoningLabel, value: c.reasoningLabels[reasoningOverride] ?? reasoningOverride }]
+              : [])
           ]}
         />
 
@@ -1105,6 +1118,9 @@ function CronEditorDialog({
   // Per-job model override encoded as an opaque provider/model pair.
   // MODEL_DEFAULT_VALUE = follow the global default.
   const [modelChoice, setModelChoice] = useState(MODEL_DEFAULT_VALUE)
+  // Per-job reasoning effort. 'inherit' = follow config resolution at fire
+  // time; see CRON_REASONING_VALUES in cron-job-model.ts.
+  const [reasoningEffort, setReasoningEffort] = useState<CronReasoningValue>('inherit')
   // Blueprint fills typed slots (time/enum/weekdays/text) instead of the raw
   // cron fields; the backend renders the prompt + schedule from them.
   const [slotValues, setSlotValues] = useState<Record<string, string>>({})
@@ -1161,6 +1177,7 @@ function CronEditorDialog({
     setModelChoice(
       initial && jobModel(initial) ? cronModelChoiceValue(jobProvider(initial), jobModel(initial)) : MODEL_DEFAULT_VALUE
     )
+    setReasoningEffort(initial ? jobReasoningEffort(initial) : 'inherit')
     setSlotValues({})
     setTemplateChoice(editor.mode === 'create' ? (editor.blueprintKey ?? CUSTOM_TEMPLATE) : CUSTOM_TEMPLATE)
     setError(null)
@@ -1240,6 +1257,7 @@ function CronEditorDialog({
         name: name.trim(),
         prompt: prompt.trim(),
         provider: override?.provider ?? '',
+        reasoningEffort,
         schedule: schedule.trim()
       })
     } catch (err) {
@@ -1432,6 +1450,26 @@ function CronEditorDialog({
               </Field>
             )}
 
+            {!scriptOnlyJob && (
+              <Field htmlFor="cron-reasoning" label={c.reasoningLabel} optional optionalLabel={c.optional}>
+                <Select
+                  onValueChange={value => setReasoningEffort(normalizeCronReasoningEffort(value))}
+                  value={reasoningEffort}
+                >
+                  <SelectTrigger className="h-9 rounded-md" id="cron-reasoning">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CRON_REASONING_VALUES.map(value => (
+                      <SelectItem key={value} value={value}>
+                        {c.reasoningLabels[value] ?? value}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            )}
+
             {schedulePreset === 'custom' ? (
               <Field htmlFor="cron-schedule" label={c.customScheduleLabel}>
                 <Input
@@ -1489,6 +1527,8 @@ interface EditorValues {
   prompt: string
   /** Provider slug for the model override ('' = none). */
   provider: string
+  /** Per-job reasoning effort ('inherit' = follow config resolution). */
+  reasoningEffort: CronReasoningValue
   schedule: string
 }
 

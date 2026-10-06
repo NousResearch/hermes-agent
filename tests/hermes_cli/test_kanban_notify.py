@@ -802,6 +802,7 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     import json
     with kbc.connect() as conn:
         event = [e for e in kb.list_events(conn, tid) if e.kind == "completed"][-1]
+        assert isinstance(event.payload, dict)
         payload = dict(event.payload)
         payload["artifacts"].append(str(kb.task_attachments_dir(tid) / "vanished.pdf"))
         with kb.write_txn(conn):

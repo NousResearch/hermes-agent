@@ -189,11 +189,15 @@ def test_completion_delivers_original_bytes_after_workspace_mutation(tmp_path, m
     artifact.write_bytes(b"modified by worker after completion")
 
     class ReadingAdapter(_ArtifactAdapter):
+        def __init__(self):
+            super().__init__()
+            self.uploaded: list[tuple[str, bytes]] = []
+
         async def send_document(self, *, file_path, **kwargs):
-            self.documents.append((file_path, Path(file_path).read_bytes()))
+            self.uploaded.append((file_path, Path(file_path).read_bytes()))
 
     adapter = ReadingAdapter()
     asyncio.run(GatewayKanbanWatchersMixin()._deliver_kanban_artifacts(
         adapter=adapter, chat_id="chat", metadata={}, event_payload=payload, task=task, board=board,
     ))
-    assert adapter.documents == [(str(kb.task_attachments_dir(task_id, board=board) / "report.pdf"), b"original report")]
+    assert adapter.uploaded == [(str(kb.task_attachments_dir(task_id, board=board) / "report.pdf"), b"original report")]

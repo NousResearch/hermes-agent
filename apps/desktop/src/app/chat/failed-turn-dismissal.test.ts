@@ -25,7 +25,35 @@ const answer = (id: string): ChatMessage => ({
   parts: [{ type: 'text', text: 'answer' }]
 })
 
+/** A saved assistant reply (`mergeStoredAssistantErrors` grafted the error
+ * onto durable content — rowId present, parts intact). */
+const savedReplyWithGraftedError = (id: string, rowId: number): ChatMessage => ({
+  id,
+  role: 'assistant',
+  rowId,
+  parts: [{ type: 'text', text: 'saved partial answer' }],
+  error: 'Connection error.',
+  pending: false
+})
+
 describe('clearDismissedErrorRows', () => {
+  it('keeps a saved reply with a grafted error, clearing only the error', () => {
+    const saved = savedReplyWithGraftedError('assistant-saved', 77)
+    const after = answer('answer-next')
+
+    const dismissed = clearDismissedErrorRows([user('stored-user'), saved, after], 'assistant-saved')
+
+    expect(dismissed).toHaveLength(3)
+    expect(dismissed.map(message => message.id)).toEqual(['stored-user', 'assistant-saved', 'answer-next'])
+
+    const kept = dismissed[1]
+    expect(kept.rowId).toBe(77)
+    expect(kept.parts).toEqual(saved.parts)
+    expect(kept.error).toBeUndefined()
+    expect(kept.errorSurface).toBeUndefined()
+    expect(kept.pending).toBe(false)
+  })
+
   it('removes a bare error and its optimistic companion user row', () => {
     const messages = [user('user-1723000000000-abc123'), error('failed'), user('stored-next'), answer('answer-next')]
 

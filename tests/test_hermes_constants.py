@@ -477,6 +477,65 @@ class TestSecureParentDir:
         assert len(called_with) == 1
         assert called_with[0] == (str(real_dir), 0o700)
 
+    @pytest.mark.platforms("posix")
+    def test_hermes_home_parent_honors_home_mode(self, tmp_path, monkeypatch):
+        """Regression test for #133577: the home's mode is operator policy, so with
+        HERMES_HOME_MODE=0701 saving a credential directly into the home (auth.json)
+        must leave the home traversable, not re-lock it to 0700 (the #6991 escape
+        hatch that apply_secure_dir_policy honours but secure_parent_dir bypassed)."""
+        home = tmp_path / "hermes-home"
+        home.mkdir()
+        home.chmod(0o701)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_HOME_MODE", "0701")
+        monkeypatch.setattr(hermes_constants, "_container_or_chmod_skipped", lambda: False)
+
+        secure_parent_dir(home / "auth.json")
+        assert home.stat().st_mode & 0o777 == 0o701
+
+    @pytest.mark.platforms("posix")
+    def test_hermes_home_parent_default_still_700(self, tmp_path, monkeypatch):
+        """Without HERMES_HOME_MODE the home parent is still tightened to owner-only —
+        the default policy of apply_secure_dir_policy, not the old hard-coded chmod."""
+        home = tmp_path / "hermes-home"
+        home.mkdir()
+        home.chmod(0o755)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.delenv("HERMES_HOME_MODE", raising=False)
+        monkeypatch.setattr(hermes_constants, "_container_or_chmod_skipped", lambda: False)
+
+        secure_parent_dir(home / "auth.json")
+        assert home.stat().st_mode & 0o777 == 0o700
+
+    @pytest.mark.platforms("posix")
+    def test_profile_home_parent_honors_home_mode(self, tmp_path, monkeypatch):
+        """A credential saved directly into the profile ``home/`` dir also follows the
+        home-mode policy (#133577 mentions both directories)."""
+        home = tmp_path / "hermes-home"
+        profile_home = home / "home"
+        profile_home.mkdir(parents=True)
+        profile_home.chmod(0o701)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_HOME_MODE", "0701")
+        monkeypatch.setattr(hermes_constants, "_container_or_chmod_skipped", lambda: False)
+
+        secure_parent_dir(profile_home / "creds.json")
+        assert profile_home.stat().st_mode & 0o777 == 0o701
+
+    @pytest.mark.platforms("posix")
+    def test_secret_subdir_parent_still_700_with_home_mode(self, tmp_path, monkeypatch):
+        """HERMES_HOME_MODE relaxes only the home itself: a secret-only subdirectory
+        keeps the owner-only 0700 hardening even when the escape hatch is set."""
+        home = tmp_path / "hermes-home"
+        secret_dir = home / "secret-cache"
+        secret_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_HOME_MODE", "0701")
+        monkeypatch.setattr(hermes_constants, "_container_or_chmod_skipped", lambda: False)
+
+        secure_parent_dir(secret_dir / "token.json")
+        assert secret_dir.stat().st_mode & 0o777 == 0o700
+
 
 @pytest.mark.platforms("posix")  # POSIX shell stubs; Windows uses .cmd shims
 class TestAgentBrowserRunnable:

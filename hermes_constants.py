@@ -599,7 +599,15 @@ def profile_cli_selector() -> str:
 
 
 def secure_parent_dir(path: Path) -> None:
-    """Chmod ``0o700`` on *path*'s parent, refusing ``/`` and top-level dirs (misresolved HERMES_HOME)."""
+    """Chmod ``0o700`` on *path*'s parent, refusing ``/`` and top-level dirs (misresolved HERMES_HOME).
+
+    The parent may BE the effective hermes home (credential files like ``auth.json`` live directly
+    in it) or its profile ``home/`` dir: there the operator's directory-mode policy wins over the
+    blanket ``0700`` — :func:`apply_secure_dir_policy` honours ``HERMES_HOME_MODE`` (e.g. ``0701``
+    to let a web server traverse a served home subdir), managed installs and containers, so saving
+    credentials must not re-lock a deliberately relaxed home (#133577 — the #6991 escape hatch
+    reintroduced via ``_save_private_json``). Secret-only directories keep the owner-only ``0700``.
+    """
     parent = path.parent.resolve()
     if parent == Path("/") or len(parent.parts) < 3:
         return
@@ -615,8 +623,22 @@ def secure_parent_dir(path: Path) -> None:
             "normally stored under the hermes home directory instead.", parent, _INSTALL_ROOT,
         )
         return
+    if _is_home_policy_dir(parent):
+        apply_secure_dir_policy(parent)
+        return
     with contextlib.suppress(OSError):
         os.chmod(parent, 0o700)
+
+
+def _is_home_policy_dir(parent: Path) -> bool:
+    """True when resolved *parent* is the effective hermes home or its profile ``home/`` dir — the
+    directories whose mode is operator policy (``HERMES_HOME_MODE`` / managed / container), not
+    per-secret hardening (#133577)."""
+    candidates = [get_hermes_home()]
+    if profile_home := _profile_home_path():
+        candidates.append(Path(profile_home))
+    key = os.path.normcase(str(parent))
+    return key in {os.path.normcase(str(c.expanduser().resolve())) for c in candidates}
 
 
 def _norm_home_path(path: str | None) -> str:

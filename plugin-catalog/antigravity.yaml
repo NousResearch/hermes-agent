@@ -1,12 +1,12 @@
 name: antigravity
 repo: https://github.com/zeyxx/hermes-antigravity
-sha: db67f980868dac23b2b182efce1e081db39f0327
+sha: 8240c8b8b4f6c3eeaa3b5e5a6ea6151b5e830d0d
 description: "Google Antigravity / Cloud Code Assist inference for Hermes Agent through a native direct-API transport (no vendor CLI): interactive OAuth PKCE login, multi-account registry, quota failover to the next account. Disclosure — unofficial, not affiliated with Google. hermes auth add antigravity runs a browser PKCE sign-in against Google OAuth and Cloud Code Assist endpoints (cloudcode-pa.googleapis.com, daily-cloudcode-pa.googleapis.com, googleapis.com userinfo) and stores tokens in the Hermes credential pool plus a profile-scoped registry file (owner-only); ANTIGRAVITY_ACCESS_TOKEN / ANTIGRAVITY_REFRESH_TOKEN override. Presents Google's public Antigravity desktop OAuth client id (byte-identical to the official app; installed-app clients are non-confidential) — maintainer ruling requested (rule 11). As a login fallback it reads (never writes) other tools' token files (~/.gemini/antigravity-cli/antigravity-oauth-token, ~/.pi/agent/auth.json) — disclosed for a trust-tier call (rule 11). Non-interactive runs fail fast with a clear error. Endpoint use is outside official Antigravity support and may carry account risk."
 maintainer: zeyxx
 tier: community
 category: models
 docs_url: https://github.com/zeyxx/hermes-antigravity#readme
-version: "1.2.0"
+version: "1.3.0"
 requires_hermes: ">=0.20.0"
 platforms: []
 capabilities:

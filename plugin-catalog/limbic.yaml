@@ -1,21 +1,7 @@
 name: limbic
 repo: https://github.com/dyiapanis/limbic
 sha: 2aa69d02e1c0faa34e10b2a472647d4d10286e6f
-description: >-
-  Self-organising memory provider (MemoryProvider ABC): local SQLite (WAL) with
-  sqlite-vec KNN + FTS5 hybrid recall, adaptive trust scoring, activation
-  maturation, interference-based forgetting, NLI-based correction detection and
-  synaptic atrophy. No LLM cost — all lifecycle mechanisms are deterministic.
-  Disclosure — on first use it downloads ~2.5GB of ONNX models (Arctic Embed 2.0
-  L embedding, ~2.1GB; MiniLMv2-L6-mnli-xnli NLI, ~430MB) plus spaCy NER models
-  from huggingface.co, cached locally (~/.cache/limbic/); downloads are
-  atomic and bounded by a 60s socket timeout so unattended runs fail cleanly
-  instead of hanging. All memory data stays local (limbic.db under HERMES_HOME);
-  no telemetry, no credentials read, no network egress after first use. Tools
-  (remember/recall) and lifecycle hooks dispatch via the MemoryManager from the
-  registered provider — this entry registers a MemoryProvider only, so
-  provides_tools/provides_hooks are empty. PolyForm Noncommercial 1.0.0
-  (source-available; commercial use requires a separate license).
+description: "Self-organising memory provider (MemoryProvider ABC): local SQLite (WAL) with sqlite-vec KNN + FTS5 hybrid recall, adaptive trust scoring, activation maturation, interference-based forgetting, NLI-based correction detection and synaptic atrophy. No LLM cost — all lifecycle mechanisms are deterministic. Tools (remember/recall) and lifecycle hooks dispatch via the MemoryManager from the registered provider — this entry registers a MemoryProvider only, so provides_tools/provides_hooks are empty. Disclosure — on first use downloads ~2.5GB of ONNX models (Arctic Embed 2.0 L, MiniLMv2 NLI) from huggingface.co at pinned commits with hash checks into ~/.cache/limbic/ (outside HERMES_HOME); spaCy NER models are not downloaded and must be installed manually for entity extraction; memory stays local in limbic.db under HERMES_HOME, and hermes backup adds VACUUM snapshots under HERMES_HOME/backups; no telemetry. PolyForm Noncommercial 1.0.0 (commercial use requires a separate license)."
 maintainer: dyiapanis
 tier: community
 category: memory

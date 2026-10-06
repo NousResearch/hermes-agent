@@ -2145,8 +2145,9 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    sid = params.get("session_id", "")
     try:
-        with _manual_compress_turn(sid := params.get("session_id", ""), session):
+        with _manual_compress_turn(sid, session):
             return _compress_live(rid, sid, session, _str_param(params, "focus_topic"))
     except CompressionBusy as e:
         return _err(rid, 4009, str(e))

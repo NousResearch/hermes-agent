@@ -1182,8 +1182,7 @@ DEFAULT_CONFIG = {
             "unload_after_idle_seconds": 0,  # 0 = never; e.g. 300 frees the model after 5min
         },
         "groq": {
-            # whisper-large-v3, whisper-large-v3-turbo, distil-whisper-large-v3-en
-            "model": "whisper-large-v3-turbo",
+            "model": "whisper-large-v3-turbo",  # whisper-large-v3-turbo, whisper-large-v3
             "language": "",  # auto-detect; set "en", "es", ... to force
         },
         "openai": {

@@ -15,6 +15,7 @@ from hermes_cli.config import (
     read_raw_config,
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
+from tools.transcription_common import STT_MODEL_CATALOG
 from tools.wake_word import _PROVIDER_PREFERENCE
 
 if TYPE_CHECKING:
@@ -123,17 +124,14 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "Text-to-speech provider",
         "edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper",
     ),
-    # "mistral" temporarily removed — mistralai PyPI package quarantined
-    # (malicious 2.4.6 release on 2026-05-12). Restore once available.
-    "stt.provider": _select("Speech-to-text provider", "local", "groq", "openai", "xai", "elevenlabs"),
+    "stt.provider": _select(
+        "Speech-to-text provider", "local", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra"),
     "stt.local.model": _select("Local faster-whisper model size", "tiny", "base", "small", "medium", "large-v3"),
-    "stt.groq.model": _select(
-        "Groq Whisper model", "whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"
-    ),
-    "stt.openai.model": _select(
-        "OpenAI transcription model", "whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"
-    ),
-    "stt.elevenlabs.model_id": _select("ElevenLabs Scribe model", "scribe_v2", "scribe_v1"),
+    "stt.groq.model": _select("Groq Whisper model", *STT_MODEL_CATALOG["groq"]),
+    "stt.openai.model": _select("OpenAI transcription model", *STT_MODEL_CATALOG["openai"]),
+    "stt.mistral.model": _select("Mistral Voxtral transcription model", *STT_MODEL_CATALOG["mistral"]),
+    "stt.xai.model": _select("xAI transcription model", *STT_MODEL_CATALOG["xai"]),
+    "stt.elevenlabs.model_id": _select("ElevenLabs Scribe model", *STT_MODEL_CATALOG["elevenlabs"]),
     "display.skin": _select("CLI visual theme", "default", "ares", "mono", "slate"),
     "dashboard.theme": _select(
         "Web dashboard visual theme", "default", "midnight", "ember", "mono", "cyberpunk", "rose"

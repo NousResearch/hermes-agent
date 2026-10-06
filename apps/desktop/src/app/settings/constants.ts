@@ -249,9 +249,9 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'terminal.backend': ['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'],
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
-  // Speech-to-text backends — kept in sync with the stt block in
-  // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
-  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
+  // Speech-to-text backends — kept in sync with BUILTIN_STT_PROVIDERS in
+  // tools/transcription_common.py (local_command is auto-detected, not picked).
+  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs', 'deepinfra'],
   // How the desktop voice conversation is wired — tools/voice_live.py owns the
   // gpt-live branch (one full-duplex voice model delegating to Hermes).
   'voice.voice_chat_mode': ['chained', 'gpt-live'],
@@ -359,8 +359,11 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
     'kittentts',
     'piper'
   ],
+  // STT model lists mirror STT_MODEL_CATALOG in tools/transcription_common.py.
   'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'gpt-transcribe'],
+  'stt.groq.model': ['whisper-large-v3-turbo', 'whisper-large-v3'],
   'stt.mistral.model': ['voxtral-mini-latest', 'voxtral-mini-2602'],
+  'stt.xai.model': ['grok-voice-transcribe-2.0', 'grok-voice-transcribe-1.0'],
   'tts.openai.model': ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
   'tts.elevenlabs.model_id': [
     'eleven_v3',
@@ -389,6 +392,10 @@ export const FREE_INPUT_KEYS = new Set([
   'tts.elevenlabs.voice_id',
   'tts.elevenlabs.model_id',
   'stt.openai.model',
+  'stt.groq.model',
+  'stt.mistral.model',
+  'stt.xai.model',
+  'stt.deepinfra.model',
   'tts.gemini.model',
   'tts.gemini.voice',
   'tts.xai.voice_id',
@@ -490,6 +497,12 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     },
     mistral: {
       model: 'Mistral STT Model'
+    },
+    xai: {
+      model: 'xAI STT Model'
+    },
+    deepinfra: {
+      model: 'DeepInfra STT Model'
     },
     elevenlabs: {
       modelId: 'ElevenLabs STT Model',
@@ -800,6 +813,8 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.openai.model',
       'stt.groq.model',
       'stt.mistral.model',
+      'stt.xai.model',
+      'stt.deepinfra.model',
       'stt.elevenlabs.model_id',
       'stt.elevenlabs.language_code',
       'stt.elevenlabs.tag_audio_events',

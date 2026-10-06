@@ -41,9 +41,24 @@ SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", 
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
-# Known model sets for auto-correction
-OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"}
-GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
+# Per-provider model catalogs keyed by ``stt.<provider>`` section, default first. This one table
+# feeds the `hermes tools` picker, the dashboard selects and the auto-correction sets below.
+# DeepInfra has no static list: its picker reads the live catalog.
+STT_MODEL_CATALOG = {
+    "local": ["base", "tiny", "small", "medium", "large-v3"],
+    "groq": ["whisper-large-v3-turbo", "whisper-large-v3"],
+    "openai": ["whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"],
+    "mistral": ["voxtral-mini-latest", "voxtral-mini-2602"],
+    "xai": ["grok-voice-transcribe-2.0", "grok-voice-transcribe-1.0"],
+    "elevenlabs": ["scribe_v2", "scribe_v1"]}
+# ElevenLabs historically uses ``model_id`` instead of ``model``.
+STT_MODEL_CONFIG_KEY = {"elevenlabs": "model_id"}
+
+# Known model sets for auto-correction. Groq shut distil-whisper-large-v3-en down on
+# 2025-08-23 (console.groq.com/docs/deprecations); a config still naming it is remapped.
+OPENAI_MODELS = frozenset(STT_MODEL_CATALOG["openai"])
+GROQ_MODELS = frozenset(STT_MODEL_CATALOG["groq"])
+RETIRED_GROQ_MODELS = frozenset({"distil-whisper-large-v3-en"})
 
 # Providers with native handlers. Kept in sync with ``agent.transcription_registry._BUILTIN_NAMES``
 # (a regression test fails on drift); plugins may not register under these names and the

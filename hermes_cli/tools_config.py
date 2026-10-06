@@ -256,13 +256,13 @@ TOOL_CATEGORIES = {
                  stt_provider="openai", **_NOUS, managed_nous_feature="stt",
                  override_env_vars=["VOICE_TOOLS_OPENAI_KEY", "OPENAI_API_KEY"]),
             _row("OpenAI", "paid", "whisper-1, gpt-4o-transcribe, gpt-transcribe", [_OPENAI_VOICE_KEY], stt_provider="openai"),
-            _row("Groq", "free tier", "Whisper large-v3 family — very fast",
+            _row("Groq", "free tier", "whisper-large-v3-turbo, whisper-large-v3 — very fast",
                  [_key("GROQ_API_KEY", "Groq API key", "https://console.groq.com/keys")], stt_provider="groq"),
             _row("xAI", tag="Grok Voice Transcribe — uses xAI Grok OAuth or XAI_API_KEY", stt_provider="xai", post_setup="xai_grok"),
             _row("ElevenLabs Scribe", "paid", "scribe_v2 — diarization + audio-event tagging", [_ELEVENLABS_KEY],
                  stt_provider="elevenlabs"),
-            # Mistral Voxtral STT intentionally omitted — mistralai PyPI package quarantined (malicious 2.4.6
-            # release, 2026-05-12). Restore alongside the dashboard stt.provider option.
+            _row("Mistral Voxtral", "paid", "voxtral-mini-latest — multilingual",
+                 [_key("MISTRAL_API_KEY", "Mistral API key", "https://console.mistral.ai/")], stt_provider="mistral"),
             _row("DeepInfra", "paid", "Live STT catalog from api.deepinfra.com", [_DEEPINFRA_KEY], stt_provider="deepinfra"),
         ],
     },

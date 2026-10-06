@@ -20,7 +20,8 @@ from utils import is_truthy_value
 from tools.transcription_audio import _transcode_audio_for_stt
 from tools.transcription_common import (
     DEFAULT_GROQ_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL,
-    GROQ_BASE_URL, GROQ_MODELS, OPENAI_BASE_URL, OPENAI_MODELS, STTResponseError, XAI_STT_BASE_URL,
+    GROQ_BASE_URL, GROQ_MODELS, OPENAI_BASE_URL, OPENAI_MODELS, RETIRED_GROQ_MODELS, STTResponseError,
+    XAI_STT_BASE_URL,
     _error_result, _get_stt_section, _lazy_ensure_quietly, _log_prompt_unsupported, _ok_result,
     normalize_xai_stt_model)
 
@@ -104,7 +105,7 @@ def _transcribe_groq(
         return _error_result("GROQ_API_KEY not set")
     if not _HAS_OPENAI:
         return _error_result("openai package not installed")
-    if model_name in OPENAI_MODELS:  # auto-correct an OpenAI-only model
+    if model_name in OPENAI_MODELS | RETIRED_GROQ_MODELS:  # OpenAI-only or shut-down model
         logger.info("Model %s not available on Groq, using %s", model_name, DEFAULT_GROQ_STT_MODEL)
         model_name = DEFAULT_GROQ_STT_MODEL
     language = language or _resolve_stt_language("groq")
@@ -142,7 +143,7 @@ def _transcribe_openai(
     if not _HAS_OPENAI:
         return _error_result("openai package not installed")
     # Auto-correct a Groq-only model on the native OpenAI path only (third-party endpoints may serve it).
-    if provider_label == "openai" and model_name in GROQ_MODELS:
+    if provider_label == "openai" and model_name in GROQ_MODELS | RETIRED_GROQ_MODELS:
         logger.info("Model %s not available on OpenAI, using %s", model_name, DEFAULT_STT_MODEL)
         model_name = DEFAULT_STT_MODEL
 

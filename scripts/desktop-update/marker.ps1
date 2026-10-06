@@ -387,15 +387,18 @@ function Test-CheckoutLockHeld {
     # could not bind also locks one of the 16 lease bytes just past it (R5b): a leased
     # child outlives a killed owner and keeps the checkout busy. Probe all 1+16 bytes
     # in one LockFile (it fails if ANY of them is held) and give them straight back.
+    # A lock file that exists but cannot be opened or probed (denied, opened without
+    # sharing) counts as held, like marker.sh and the Desktop's own probe: reclaim
+    # needs a provably free checkout.
     $path = Get-CheckoutLockPath
     if (-not $path -or -not [System.IO.File]::Exists($path)) { return $false }
     $fs = $null
     try {
         $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
             ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
-    } catch { return $false }
+    } catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { return $false } catch { return $true }
     try {
-        try { $fs.Lock(1048576, 17) } catch [System.IO.IOException] { return $true }
+        try { $fs.Lock(1048576, 17) } catch { return $true }
         try { $fs.Unlock(1048576, 17) } catch {}
         return $false
     } finally {

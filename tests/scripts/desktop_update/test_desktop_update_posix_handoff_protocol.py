@@ -337,6 +337,32 @@ def test_reclaim_without_a_marker_reports_held_while_the_checkout_lock_is_held(t
     assert _helper(tmp_path, home, install, "reclaim") == "absent"
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root opens a mode-000 file")
+@pytest.mark.parametrize("tool", ["perl", "python3", "flock"])
+def test_an_unreadable_checkout_lock_counts_as_held(tmp_path, tool):
+    """kshitij P2: a lock file that exists but cannot be opened (root-owned after `sudo hermes
+    update`) read `not held`, while the Desktop's own probe (checkout_held) reads `held` -- so the
+    local reclaim deleted a dead marker the remote helper kept. Fail closed, every probe tool."""
+    if shutil.which(tool) is None:
+        pytest.skip(f"{tool} is not installed")
+    home, install = _install(tmp_path, legacy=True)
+    lock = install / ".hermes-update.lock"
+    probe = (f"log() {{ :; }}; MARKER=/dev/null INSTALL_ROOT={shlex.quote(str(install))} MARKER_LOCK_TOOL={tool}; "
+             f". {shlex.quote(str(MARKER_SH))}; checkout_lock_held && echo held || echo free")
+    def held() -> str:
+        return subprocess.run(["bash", "-c", probe], capture_output=True, text=True, timeout=30).stdout.strip()
+    assert held() == "free"  # absent
+    lock.touch(); lock.chmod(0)
+    try:
+        assert held() == "held"
+        if tool == "perl":  # end to end: the Desktop's reclaim keeps the dead marker
+            (home / ".hermes-update-in-progress").write_text(f"999999\n{int(time.time())}\nct:1.000\n", encoding="utf-8")
+            assert _helper(tmp_path, home, install, "reclaim") == "held"
+    finally:
+        lock.chmod(0o644)
+    assert held() == "free"
+
+
 def test_release_waits_for_the_survivor_then_removes_the_marker(tmp_path):
     home, install = _install(tmp_path, legacy=True)
     completion = tmp_path / "release-completion"

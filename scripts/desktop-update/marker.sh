@@ -531,7 +531,9 @@ checkout_lock_held() { # 0 iff some process holds the checkout kernel lock right
   # take and the drop are two consecutive syscalls in one process that opened
   # the file itself -- no process exit, wait or shell work in between. flock(1)
   # can only take it on a shell fd, so there the hold spans flock(1)'s exit and
-  # our close. No tool: held (fail closed, the release waits).
+  # our close. No tool, or a lock file that exists but cannot be opened (root-
+  # owned after `sudo hermes update`): held -- fail closed like the Desktop's
+  # own probe (checkout_held): reclaim needs a provably free checkout.
   local path rc tool="$MARKER_LOCK_TOOL_FORCED"
   path="$(checkout_lock_path)"
   [ -f "$path" ] || return 1
@@ -545,7 +547,7 @@ checkout_lock_held() { # 0 iff some process holds the checkout kernel lock right
   case "$tool" in
     perl)
       perl -MFcntl=:flock -e '
-        open(my $f, "<", $ARGV[0]) or exit 2;
+        open(my $f, "<", $ARGV[0]) or exit($!{ENOENT} ? 3 : 2);
         flock($f, LOCK_EX | LOCK_NB) or exit 1;
         flock($f, LOCK_UN); exit 0' "$path"; rc=$? ;;
     python3)
@@ -553,6 +555,8 @@ checkout_lock_held() { # 0 iff some process holds the checkout kernel lock right
 import fcntl, os, sys
 try:
     fd = os.open(sys.argv[1], os.O_RDONLY)
+except FileNotFoundError:
+    sys.exit(3)
 except OSError:
     sys.exit(2)
 try:
@@ -561,12 +565,12 @@ except OSError:
     sys.exit(1)
 fcntl.flock(fd, fcntl.LOCK_UN)' "$path"; rc=$? ;;
     flock)
-      { exec 8<"$path"; } 2>/dev/null || return 1
+      { exec 8<"$path"; } 2>/dev/null || { [ -e "$path" ]; return $?; }
       flock -x -n 8; rc=$?
       exec 8<&- ;;  # closing our probe fd releases it when we did get it
     *) rc=1 ;;
   esac
-  [ "$rc" -eq 1 ]
+  [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]  # 3: it vanished since the -f look
 }
 
 # ── helper ops for the Desktop (it never mutates the marker itself) ──────────

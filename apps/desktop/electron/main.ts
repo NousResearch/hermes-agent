@@ -448,6 +448,7 @@ import {
 } from './pool-spawn-coordinator'
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
+import { CHALLENGE_PARTITION, createChallengeWindows, parseChallengeRequest } from './challenge-window'
 import { createPortalSession } from './portal-session'
 import {
   createKeepAwake,
@@ -8167,6 +8168,17 @@ const { hasLivePortalSession, hasPortalAccessToken, renewPortalAccessSilently, o
     createWindow: options => new BrowserWindow(options),
     rememberLog
   })
+
+// The free tier's browser challenge (hermes_cli/anon_challenge.py): the portal
+// page runs in a hidden window of its own partition, revealed only if it asks
+// for the human. See electron/challenge-window.ts.
+const freeTierChallengeWindows = createChallengeWindows({
+  isReady: () => app.isReady(),
+  getSession: () => session.fromPartition(CHALLENGE_PARTITION),
+  resolvePortalBaseUrl,
+  createWindow: options => new BrowserWindow(options),
+  rememberLog
+})
 
 // Discover the hosted (Hermes Cloud) agents the signed-in user can see. Calls
 // the NAS trimmed-summary endpoint over the partition-bound net, so the portal
@@ -18476,6 +18488,12 @@ ipcMain.on('hermes:devtools:disable-f12', (_event, on) => {
   } catch (error) {
     rememberLog(`[disable-f12] write failed: ${error.message}`)
   }
+})
+
+ipcMain.handle('hermes:freeTierChallenge:run', (_event, payload) => {
+  const request = parseChallengeRequest(payload)
+
+  return request ? freeTierChallengeWindows.run(request) : 'refused'
 })
 
 ipcMain.handle('hermes:openExternal', async (_event, url) => {

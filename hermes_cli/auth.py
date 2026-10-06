@@ -1830,7 +1830,22 @@ def resolve_nous_access_token(
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
     refresh_skew_seconds: int = ACCESS_TOKEN_REFRESH_SKEW_SECONDS) -> str:
-    """Resolve a refresh-aware Nous Portal access token for managed tool gateways."""
+    """Resolve a refresh-aware Nous Portal access token for managed tool gateways.
+
+    A free-tier exchange may be answered with a browser challenge (``anon_challenge``); it is worked
+    here, after the exchange's locks have unwound, and the exchange is then run once more."""
+    from hermes_cli.anon_challenge import run_with_challenge
+    return run_with_challenge(lambda: _resolve_nous_access_token(
+        timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle,
+        refresh_skew_seconds=refresh_skew_seconds))
+
+
+def _resolve_nous_access_token(
+    *,
+    timeout_seconds: float,
+    insecure: Optional[bool],
+    ca_bundle: Optional[str],
+    refresh_skew_seconds: int) -> str:
     # Only a default-TLS resolution is memoised; error paths never populate the memo.
     memoable = not insecure and ca_bundle is None
     cache_key = hermes_home_key()

@@ -77,6 +77,40 @@ def test_status_is_pull_from_local_state_and_ack_persists_on_the_identity(guest,
     assert status["available"] is False and status["notice_pending"] is False
 
 
+def test_status_carries_the_pending_browser_challenge_and_drops_it_once_cleared(guest):
+    """A client that connects after the ``free_tier.challenge`` event still learns there is a
+    window to open; once the challenge is worked, the field is gone."""
+    from hermes_cli import anon_challenge
+    assert "challenge" not in _call("free_tier.status")
+
+    challenge = anon_challenge.BrowserChallenge(
+        "https://portal.example.test/challenge?code=t", True, 600, 2, "A quick check first.")
+    anon_challenge._set_pending(challenge)
+    try:
+        assert _call("free_tier.status")["challenge"] == challenge.as_payload()
+    finally:
+        anon_challenge._clear_pending()
+    assert "challenge" not in _call("free_tier.status")
+
+
+def test_window_outcomes_are_scoped_and_do_not_grant_auth(guest, tmp_path):
+    from hermes_cli import anon_challenge
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    a = anon_challenge.BrowserChallenge("https://portal.example.test/challenge?code=a", True, 600, 2, "check")
+    b = anon_challenge.BrowserChallenge("https://portal.example.test/challenge?code=b", False, 600, 2, "check")
+    anon_challenge._set_pending(a)
+    scope = set_hermes_home_override(tmp_path / "secondary")
+    try:
+        anon_challenge._set_pending(b)
+        assert not anon_challenge.record_host_outcome(a.url, 0, "done")
+        assert anon_challenge.pending_challenge()["url"] == b.url
+    finally:
+        reset_hermes_home_override(scope)
+    assert _call("free_tier.status")["challenge"]["url"] == a.url
+    assert _call("free_tier.challenge_result", {"url": a.url, "outcome": "error"}) == {"accepted": True}
+    assert _call("free_tier.status")["challenge"]["url"] == a.url
+
+
 def test_billing_state_answers_the_free_tier_locally(guest, monkeypatch):
     import agent.billing_view as bv
     monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: pytest.fail("free tier must not call the portal"))

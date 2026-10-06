@@ -1054,10 +1054,13 @@ def resolve_nous_runtime_credentials(
     identity is set up once, transparently -- the one client rule covering both reap and claim.
     """
     from hermes_cli.anon_auth import AnonCredentialDead, clear_dead_guest, ensure_portal_identity
+    from hermes_cli.anon_challenge import run_with_challenge
     try:
-        return _resolve_nous_runtime_credentials(
+        # A free-tier exchange may be answered with a browser challenge; it is worked here, after
+        # the exchange's locks have unwound, and the exchange is then run once more.
+        return run_with_challenge(lambda: _resolve_nous_runtime_credentials(
             timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle,
-            force_refresh=force_refresh, stale_access_token=stale_access_token)
+            force_refresh=force_refresh, stale_access_token=stale_access_token))
     except AnonCredentialDead as dead_exc:
         from hermes_cli.auth import get_provider_auth_state
         from hermes_cli.anon_auth import ANON_ACCOUNT_LOCKED
@@ -1068,8 +1071,8 @@ def resolve_nous_runtime_credentials(
             raise
         if ensure_portal_identity(explicit=True, timeout_seconds=timeout_seconds) is None:
             raise
-        return _resolve_nous_runtime_credentials(
-            timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle)
+        return run_with_challenge(lambda: _resolve_nous_runtime_credentials(
+            timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle))
 
 
 def _resolve_nous_runtime_credentials(
@@ -1201,7 +1204,10 @@ def _compute_nous_auth_status() -> Dict[str, Any]:
     base_status = _nous_status_from_state(
         state, logged_in=bool(state.get("access_token")), source="auth_store")
     try:
-        creds = resolve_nous_runtime_credentials()
+        # A status paint must not park on (or open a browser for) a free-tier challenge.
+        from hermes_cli.anon_challenge import background_caller
+        with background_caller():
+            creds = resolve_nous_runtime_credentials()
         refreshed_state = get_provider_auth_state("nous") or state
         base_status.update({
             "logged_in": True,

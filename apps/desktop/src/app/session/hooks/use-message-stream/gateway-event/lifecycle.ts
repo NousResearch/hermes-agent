@@ -3,6 +3,8 @@ import type { HermesSkin } from '@hermes/shared/skin'
 
 import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { clearClarifyRequest } from '@/store/clarify'
+import { runFreeTierChallenge } from '@/store/free-tier-challenge'
+import { activeGatewayConnectionId, requestGatewayForAgent } from '@/store/gateway'
 import {
   notifyCronChanged,
   notifyPairingChanged,
@@ -49,6 +51,21 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     if (fromActiveSource()) {
       notifySetupReady()
     }
+
+    return true
+  }
+
+  if (event.type === 'free_tier.challenge') {
+    // The account service wants a browser challenge cleared before it mints
+    // the free-tier token. The backend polls for the result on its own; this
+    // only gets the page loaded (hidden). Any source's challenge is worth
+    // running: it is the install's identity, not the focused session's.
+    const connectionId = event.connectionId ?? activeGatewayConnectionId()
+    const profile = event.profile ?? deps.activeGatewayProfile
+
+    void runFreeTierChallenge(payload, result =>
+      requestGatewayForAgent(connectionId, profile, 'free_tier.challenge_result', result)
+    )
 
     return true
   }

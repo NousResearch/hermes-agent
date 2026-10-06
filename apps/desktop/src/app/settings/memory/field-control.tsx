@@ -29,24 +29,57 @@ export function FieldTitle({ field }: { field: MemoryProviderField }) {
   )
 }
 
-// Values are edited as strings; the backend coerces them to native types.
-export function FieldControl({
-  controlId,
-  field,
-  invalid,
-  value,
-  onChange,
-  onCommit
-}: {
+type FieldControlProps = {
   controlId?: string
   field: MemoryProviderField
   invalid?: boolean
   value: string
   onChange: (value: string) => void
-  // Present on autosaving surfaces: discrete controls commit on change, text-like
-  // controls commit on blur. Absent (the modal), edits stay drafts until Save.
+  // Autosaving surfaces commit discrete choices immediately and text on blur.
+  // The managed form omits this so edits remain drafts until Save.
   onCommit?: (value: string) => void
-}) {
+}
+
+function SelectControl({ controlId, field, invalid, value, onChange }: FieldControlProps) {
+  if (field.searchable) {
+    return (
+      <SearchableSelect
+        disabled={field.read_only}
+        emptyMessage={field.placeholder || 'No options found.'}
+        id={controlId}
+        invalid={invalid}
+        onChange={onChange}
+        options={field.options.map(option => ({ label: option.label, value: option.value }))}
+        placeholder={field.search_placeholder || 'Search options...'}
+        required={field.required}
+        value={value}
+      />
+    )
+  }
+
+  return (
+    <Select disabled={field.read_only} onValueChange={onChange} value={value}>
+      <SelectTrigger
+        aria-invalid={invalid || undefined}
+        aria-required={field.required || undefined}
+        className={CONTROL_TEXT}
+        id={controlId}
+      >
+        <SelectValue placeholder={field.placeholder || undefined} />
+      </SelectTrigger>
+      <SelectContent>
+        {field.options.map(option => (
+          <SelectItem key={option.value} value={option.value}>
+            {option.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
+// Values are edited as strings; the backend coerces them to native types.
+export function FieldControl({ controlId, field, invalid, value, onChange, onCommit }: FieldControlProps) {
   const set = (next: string) => {
     onChange(next)
     onCommit?.(next)
@@ -102,41 +135,7 @@ export function FieldControl({
   }
 
   if (field.kind === 'select') {
-    if (field.searchable) {
-      return (
-        <SearchableSelect
-          disabled={field.read_only}
-          emptyMessage={field.placeholder || 'No options found.'}
-          id={controlId}
-          invalid={invalid}
-          onChange={set}
-          options={field.options.map(option => ({ label: option.label, value: option.value }))}
-          placeholder={field.search_placeholder || 'Search options...'}
-          required={field.required}
-          value={value}
-        />
-      )
-    }
-
-    return (
-      <Select disabled={field.read_only} onValueChange={set} value={value}>
-        <SelectTrigger
-          aria-invalid={invalid || undefined}
-          aria-required={field.required || undefined}
-          className={CONTROL_TEXT}
-          id={controlId}
-        >
-          <SelectValue placeholder={field.placeholder || undefined} />
-        </SelectTrigger>
-        <SelectContent>
-          {field.options.map(option => (
-            <SelectItem key={option.value} value={option.value}>
-              {option.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    )
+    return <SelectControl controlId={controlId} field={field} invalid={invalid} onChange={set} value={value} />
   }
 
   if (field.kind === 'segmented') {

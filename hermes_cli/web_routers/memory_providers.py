@@ -710,9 +710,9 @@ async def run_memory_provider_action(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception:
+    except Exception as exc:
         _log.exception("POST /api/memory/providers/%s/actions/%s failed", name, action)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
 @router.get("/api/memory/providers/{name}/operations/{operation_id}")

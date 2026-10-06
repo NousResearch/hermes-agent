@@ -91,7 +91,7 @@ def start(provider, action: str, payload: dict, *, hermes_home: str) -> dict:
             }
         except ValueError as exc:
             outcome = {"status": "failed", "message": str(exc)}
-        except BaseException as exc:
+        except BaseException as exc:  # health: allow BLE001 -- Provider failures, including SystemExit, become sanitized terminal job states.
             # A setup helper may exit; it must not leave an immortal running job.
             outcome = {
                 "status": "failed",

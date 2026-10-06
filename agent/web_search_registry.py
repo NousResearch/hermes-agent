@@ -50,8 +50,12 @@ def _read_config_key(*path: str) -> Optional[str]:
 
 
 def _configured_backend(capability: str) -> Optional[str]:
-    """``web.<capability>_backend`` (preferred) or ``web.backend`` (shared fallback)."""
-    return _read_config_key("web", f"{capability}_backend") or _read_config_key("web", "backend")
+    """``web.<capability>_backend`` (preferred) or ``web.backend`` (shared fallback). The managed ``nous``
+    selection names no provider: it is served by Perplexity (search) and Firecrawl (extract)."""
+    configured = _read_config_key("web", f"{capability}_backend") or _read_config_key("web", "backend")
+    if configured and configured.lower() == "nous":
+        return "perplexity" if capability == "search" else "firecrawl"
+    return configured
 
 
 # Paid providers first so existing paid setups don't get downgraded to a free

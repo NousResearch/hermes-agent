@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { exec as execCallback } from 'node:child_process'
+import { exec as execCallback, spawn } from 'node:child_process'
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -629,15 +629,20 @@ test.runIf(process.platform !== 'win32')(
     const exited = (await exec(`sh -c 'echo $$'`)).stdout.trim()
     // The updater's v2 claim: pid, started_at, creation-time line (A2), then tagged lines.
     const deadClaim = `${exited}\n${Math.floor(Date.now() / 1000)}\nct:1700000000.125\n`
+    // A delegate is live only at its real creation time (the judge checks pid AND ct, so a reused
+    // pid cannot impersonate it): record the spawn time, well inside the 2 s tolerance.
+    const delegateCt = (Date.now() / 1000).toFixed(3)
+    const delegate = spawn('sleep', ['30'], { stdio: 'ignore' })
 
     try {
       await writeFile(marker, deadClaim)
       assert.equal((await observe()).marker, 'dead', 'a dead v2 claim is dead, never malformed')
-      await writeFile(marker, `${deadClaim}delegate:${process.pid} ct:1700000001.500\n`)
+      await writeFile(marker, `${deadClaim}delegate:${delegate.pid} ct:${delegateCt}\n`)
       const delegated = await observe()
       assert.equal(delegated.marker, 'live', 'a live delegate keeps the update live')
-      assert.equal(delegated.markerPid, process.pid)
+      assert.equal(delegated.markerPid, delegate.pid)
     } finally {
+      delegate.kill()
       await rm(home, { force: true, recursive: true })
     }
   }

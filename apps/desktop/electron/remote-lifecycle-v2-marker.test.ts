@@ -25,6 +25,9 @@ test.runIf(process.platform === 'linux')(
     await new Promise(resolve => exited.once('exit', resolve))
     // The updater's v2 claim: pid, started_at, creation-time line (A2), then tagged lines.
     const deadClaim = `${exited.pid}\n${Math.floor(Date.now() / 1000)}\nct:1700000000.125\n`
+    // A delegate is live only at its real creation time (the judge checks pid AND ct, so a reused
+    // pid cannot impersonate it): record the spawn time, well inside the 2 s tolerance.
+    const delegateCt = (Date.now() / 1000).toFixed(3)
     const delegate = spawn('sleep', ['30'], { argv0: 'hermes-update', stdio: 'ignore' })
     let mutexHolder: ReturnType<typeof spawn> | undefined
 
@@ -35,7 +38,7 @@ test.runIf(process.platform === 'linux')(
       await assertRemoteInstallUpdateClear(ssh, home)
       await assert.rejects(readFile(marker), 'a confirmed-dead v2 claim is cleared, not left UNCERTAIN')
 
-      const delegated = `${deadClaim}run:abc\ndelegate:${delegate.pid} ct:1700000001.500\n`
+      const delegated = `${deadClaim}run:abc\ndelegate:${delegate.pid} ct:${delegateCt}\n`
       await writeFile(marker, delegated)
       await assert.rejects(() => assertRemoteInstallUpdateClear(ssh, home), refused)
       assert.equal(await readFile(marker, 'utf8'), delegated, 'a live delegate keeps the claim')
@@ -58,5 +61,7 @@ test.runIf(process.platform === 'linux')(
       mutexHolder?.kill()
       await rm(home, { force: true, recursive: true })
     }
-  }
+  },
+  // A held marker mutex makes the gate wait out its 10 s acquisition window before refusing.
+  30_000
 )

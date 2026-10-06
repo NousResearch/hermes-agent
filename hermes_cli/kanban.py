@@ -1366,9 +1366,14 @@ Read-only commands are safe while an agent is running.\
 """
 
 
-def run_slash(rest: str) -> str:
+def run_slash(rest: str, *, update_process_env: bool = False) -> str:
     """Execute a ``/kanban …`` string (``rest`` = everything after ``/kanban``) and return captured
-    stdout/stderr. Shared by the interactive CLI and the gateway so formatting is identical."""
+    stdout/stderr. Shared by the interactive CLI and the gateway so formatting is identical.
+
+    Interactive CLI/TUI callers opt into updating their process-local board pin
+    after a successful switch. The gateway leaves it disabled because its process
+    serves multiple concurrent sessions.
+    """
     import io
 
     # Non-posix split (Windows) keeps backslashes as path separators but
@@ -1420,6 +1425,8 @@ def run_slash(rest: str) -> str:
         return f"⚠ /kanban usage error\n{body}" if body else "⚠ /kanban usage error"
     except argparse.ArgumentError as exc:
         return f"⚠ /kanban usage error\n{_usage_for_error()}\n{exc}"
+
+    args._kanban_update_process_env = bool(update_process_env)
 
     with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
         try:

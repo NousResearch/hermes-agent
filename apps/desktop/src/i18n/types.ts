@@ -1443,6 +1443,9 @@ export interface Translations extends NoticeTranslations {
       /** Recommended-badge tooltip by resolver branch; unknown keys (newer
        *  backend) simply show no tooltip. */
       recommendedReason: Record<string, string>
+      /** CPU-build wording for the two Recommended reasons whose GPU-build copy
+       *  asserts GPU placement; unknown keys show no tooltip. */
+      recommendedReasonCpu: Record<string, string>
       noRecommendationTitle: string
       noRecommendationDetail: string
       noRecommendationAction: string
@@ -1486,6 +1489,8 @@ export interface Translations extends NoticeTranslations {
       placementResident: string
       placementSpilled: string
       placementResidentTip: string
+      placementResidentCpu: string
+      placementResidentTipCpu: string
       placementSpilledTip: string
       loadingPill: string
       ejectTip: string

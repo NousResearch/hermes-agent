@@ -331,6 +331,100 @@ describe('LocalModelsSettings', () => {
     )
   })
 
+  it('does not call a CPU runtime model GPU-resident', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      runtime_backend: 'cpu'
+    })
+    await renderFullPane()
+
+    expect(screen.queryByText('Fits your GPU')).toBeNull()
+    expect(screen.getAllByText('Uses system RAM').length).toBeGreaterThan(0)
+  })
+
+  it('renders unified memory once instead of as both GPU memory and RAM', async () => {
+    mocked.getLocalHardware.mockResolvedValue({
+      ...BASE_HARDWARE,
+      uma: true,
+      vram_total_bytes: 32 * 2 ** 30,
+      ram_total_bytes: 32 * 2 ** 30
+    })
+    await renderFullPane()
+
+    expect(await screen.findByText(/Unified memory/)).toBeTruthy()
+    expect(screen.queryByText(/32\.0 GB GPU memory/)).toBeNull()
+    expect(screen.queryByText(/32\.0 GB RAM/)).toBeNull()
+    expect(screen.getByText(/Unified memory \(32\.0 GB\)/)).toBeTruthy()
+  })
+
+  it('still grants the GPU-resident pill under a GPU runtime', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      runtime_backend: 'cuda'
+    })
+    await renderFullPane()
+    await screen.findByText('Qwen3.6 27B')
+
+    expect(screen.getByText('Fits your GPU')).toBeTruthy()
+  })
+
+  it('keeps the Recommended tooltip honest under a cpu runtime', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      runtime_backend: 'cpu'
+    })
+    mocked.getLocalCatalog.mockResolvedValue({
+      models: [{ ...FITTING_MODEL, recommended_reason: 'fastest-resident' }]
+    })
+    await renderFullPane()
+    await screen.findByText('Qwen3.6 27B')
+
+    fireEvent.pointerMove(screen.getByText('Recommended'))
+    fireEvent.pointerEnter(screen.getByText('Recommended'))
+
+    // The GPU-build wording ('running entirely in GPU memory') would assert
+    // GPU placement under a ready·cpu badge.
+    await waitFor(() =>
+      expect(screen.getAllByText(/running entirely in system memory/).length).toBeGreaterThan(0)
+    )
+    expect(screen.queryByText(/entirely in GPU memory/)).toBeNull()
+  })
+
+  it('does not claim GPU residency for a loaded model under a cpu runtime', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      runtime_backend: 'cpu',
+      server_running: true,
+      loaded_models: { 'Hermes-4.3-36B-Q5_K_M': 'loaded' },
+      models: [{ id: 'Hermes-4.3-36B-Q5_K_M', size_bytes: 25 * 2 ** 30, size_label: '25.0 GB' }],
+      placement: {
+        'Hermes-4.3-36B-Q5_K_M': {
+          granted_window_label: '96K',
+          spilled: false,
+          window: 98304,
+          window_label: '96K'
+        }
+      }
+    })
+    mocked.getLocalCatalog.mockResolvedValue({ models: [] })
+    renderPane()
+
+    await screen.findByText('Hermes-4.3-36B-Q5_K_M')
+
+    // Live placement: resident on a cpu build means system memory, not GPU.
+    // The pill renders its window and placement as sibling text nodes, so
+    // match on the pill's own textContent.
+    const placementPill = screen.getByText(
+      (content, element): boolean => element?.textContent === '96K · all in RAM'
+    )
+    expect(placementPill).toBeTruthy()
+    expect(screen.queryByText('all on GPU')).toBeNull()
+  })
+
   it('enables downloads only once the runtime is installed', async () => {
     mocked.getLocalModelsStatus.mockResolvedValue({
       ...BASE_STATUS,

@@ -1629,11 +1629,12 @@ class SessionSessionsMixin:
         transcript drift. Both checks run inside the same write transaction as deletion.
         With ``exclude_active_write_guards``, raises :class:`SessionActiveWriteGuardError` if the row
         is protected by an active turn lease or compression lock."""
-        removed_ids: List[str] = []
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
-        def _do(conn):
+        # _execute_write re-runs _do after a rollback: the removed ids are the committed attempt's return
+        # value, so a rolled-back attempt never authorizes file cleanup for rows the retry kept.
+        def _do(conn) -> List[str]:
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
-                return False
+                return []
             target_ids = (
                 [session_id, *_collect_delegate_child_ids(conn, [session_id])]
                 if exclude_active_write_guards or expected_ids is not None else None
@@ -1644,13 +1645,13 @@ class SessionSessionsMixin:
                     f"session '{session_id}' (or a delegate child) has an active turn lease or compression lock"
                 )
             if expected_ids is not None and expected_ids != set(target_ids):
-                return False
+                return []
             if expected_display_messages is not None and any(
                 self._display_messages_from_conn(conn, covered_id) != expected
                 for covered_id, expected in expected_display_messages.items()
             ):
-                return False
-            removed_ids.extend(_delete_delegate_children(conn, [session_id]))
+                return []
+            removed_ids = list(_delete_delegate_children(conn, [session_id]))
             conn.execute(  # orphan remaining children (branches) so FK is satisfied
                 "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),
             )
@@ -1658,11 +1659,11 @@ class SessionSessionsMixin:
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.append(session_id)
-            return True
-        deleted = self._execute_write(_do)
+            return removed_ids
+        removed_ids = self._execute_write(_do) or []
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
-        return bool(deleted)
+        return bool(removed_ids)
 
     def delete_session_if_empty(self, session_id: str, sessions_dir: Optional[Path] = None) -> bool:
         """Delete *session_id* only if it has no messages, no title and no children; check and delete
@@ -1707,29 +1708,29 @@ class SessionSessionsMixin:
         unique_ids = list({sid for sid in session_ids or () if isinstance(sid, str) and sid})
         if not unique_ids:
             return 0
-        removed_ids: list[str] = []
-        def _do(conn):
+        # Returns (deleted roots, every removed id incl. delegate children, guarded roots) of the attempt that
+        # commits: _execute_write re-runs _do after a rollback, and neither file cleanup nor the caller's
+        # skipped_ids may see a rolled-back attempt.
+        def _do(conn) -> Tuple[List[str], List[str], List[str]]:
             existing = [row["id"] for chunk in _id_chunks(unique_ids) for row in conn.execute(
                 f"SELECT id FROM sessions WHERE id IN ({_session_ids_placeholders(chunk)})", chunk,
             ).fetchall()]
             if not existing:
-                return 0
+                return [], [], []
+            active_ids: set = set()
             if exclude_active_write_guards:
                 # A root is skipped when it or any delegate child it would cascade is guarded, so the
                 # cascade below never deletes a guarded row reported back as kept.
                 # One batched check first; per-root attribution only when something is guarded.
-                active_ids: set = set()
                 if self._guarded_ids(conn, [*existing, *_collect_delegate_child_ids(conn, existing)]):
                     active_ids = {
                         sid for sid in existing
                         if self._guarded_ids(conn, [sid, *_collect_delegate_child_ids(conn, [sid])])
                     }
                 existing = [sid for sid in existing if sid not in active_ids]
-                if skipped_ids is not None:
-                    skipped_ids.extend(sorted(active_ids))
                 if not existing:
-                    return 0
-            removed_ids.extend(_delete_delegate_children(conn, existing))
+                    return [], [], sorted(active_ids)
+            removed_ids = list(_delete_delegate_children(conn, existing))
             for chunk in _id_chunks(existing):
                 ph = _session_ids_placeholders(chunk)
                 conn.execute(  # orphan children whose parent is in the kill list (FK)
@@ -1739,11 +1740,13 @@ class SessionSessionsMixin:
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.extend(existing)
-            return len(existing)
-        count = self._execute_write(_do)
+            return existing, removed_ids, sorted(active_ids)
+        deleted, removed_ids, active_ids = self._execute_write(_do)
+        if skipped_ids is not None:
+            skipped_ids.extend(active_ids)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
-        return count
+        return len(deleted)
 
     # Shared by count_empty_sessions / delete_empty_sessions so badge and sweep agree. message_count
     # counts live rows only (rewind/compaction keep dropped turns as active = 0): NOT EXISTS is authority.
@@ -1760,28 +1763,27 @@ class SessionSessionsMixin:
 
     def delete_empty_sessions(self, sessions_dir: Optional[Path] = None) -> int:
         """Delete every empty, ended, non-archived session in one transaction, orphaning (not cascading)
-        children; transcript files are swept too."""
-        removed_ids: list[str] = []
-        def _do(conn):
-            session_ids = {row["id"] for row in conn.execute(
+        children; transcript files are swept too. Cleanup uses the committed attempt's ids (_do's return),
+        never ids collected by an attempt that rolled back and was retried."""
+        def _do(conn) -> List[str]:
+            removed_ids = [row["id"] for row in conn.execute(
                 f"SELECT id FROM sessions WHERE {self._EMPTY_SESSION_WHERE}"
-            ).fetchall()}
-            if not session_ids:
-                return 0
-            for chunk in _id_chunks(session_ids):
+            ).fetchall()]
+            if not removed_ids:
+                return []
+            for chunk in _id_chunks(removed_ids):
                 ph = _session_ids_placeholders(chunk)
                 conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk)
                 # DELETE FROM messages: a row inserted between the SELECT and here
                 # would otherwise dangle (clean FK state).
                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
-                removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)
-            return len(session_ids)
-        count = self._execute_write(_do)
+            return removed_ids
+        removed_ids = self._execute_write(_do) or []
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
-        return count
+        return len(removed_ids)
 
     def archive_sessions(
         self, older_than_days: Optional[float] = None, source: str = None, **filters,

@@ -1,6 +1,9 @@
+import os
 import time
 from contextlib import closing
+
 import pytest
+
 from hermes_cli.sessions_cmd import _note_pinned_skipped
 from hermes_state import SessionDB
 
@@ -85,4 +88,44 @@ def test_prune_keeps_the_compressed_segments_of_a_chat_still_in_use(tmp_path, ca
         assert {c["id"] for c in db.list_prune_candidates(older_than_days=90, whole_lineages=True)} == idle
         assert db.prune_sessions(older_than_days=90) == len(idle)
         assert db.get_compression_lineage("live-3") == ["live", "live-2", "live-3"]
+        assert not any(db.get_session(sid) for sid in idle)
+
+
+def test_auto_prune_guarded_tip_keeps_compression_ancestors(tmp_path):
+    with closing(SessionDB(tmp_path / "state.db")) as db:
+        def seed_lineage(prefix):
+            db.create_session(prefix, source="cli")
+            db.publish_compression_child(
+                parent_session_id=prefix,
+                child_session_id=f"{prefix}-2",
+                source="cli",
+                messages=[{"role": "user", "content": "summary", "timestamp": 1.0}],
+                require_compression_lease=False,
+            )
+            db.publish_compression_child(
+                parent_session_id=f"{prefix}-2",
+                child_session_id=f"{prefix}-3",
+                source="cli",
+                messages=[{"role": "user", "content": "summary", "timestamp": 1.0}],
+                require_compression_lease=False,
+            )
+            db.end_session(f"{prefix}-3", "done")
+            ids = [prefix, f"{prefix}-2", f"{prefix}-3"]
+            db._execute_write(lambda conn: conn.executemany(
+                "UPDATE sessions SET started_at = 1, last_activity_at = 1, ended_at = 2 WHERE id = ?",
+                [(sid,) for sid in ids],
+            ))
+            return ids
+
+        guarded = seed_lineage("guarded")
+        idle = seed_lineage("idle")
+        holder = f"pid={os.getpid()}:cmp=prune-lineage"
+        assert db.try_acquire_compression_lock("guarded-3", holder, ttl_seconds=300.0)
+
+        assert db.prune_sessions(
+            older_than_days=None,
+            last_active_before=10.0,
+            exclude_active_write_guards=True,
+        ) == len(idle)
+        assert db.get_compression_lineage("guarded-3") == guarded
         assert not any(db.get_session(sid) for sid in idle)

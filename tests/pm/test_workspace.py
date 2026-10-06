@@ -120,6 +120,30 @@ def test_sync_failure_is_never_a_conflict(layout, monkeypatch):
     assert not isinstance(excinfo.value, ws.ResolutionConflict)
 
 
+def test_virtual_member_pyproject_gets_version(tmp_path):
+    """Regression: a plugin whose pyproject is tooling-only (no [project], no
+    [build-system]) becomes a *virtual* workspace member. pm rewrites its
+    pyproject to carry a [project].name; uv requires [project].version (or a
+    dynamic entry) in every [project] table, so a bare name made `uv lock`
+    fail for the whole generation (hermes-lcm, whose pyproject is ruff-only).
+    """
+    import tomllib
+
+    plugin = tmp_path / "plug"
+    plugin.mkdir()
+    (plugin / "engine.py").write_text("x = 1\n")
+    (plugin / "pyproject.toml").write_text(
+        "[tool.ruff]\ntarget-version = \"py311\"\n[tool.ruff.lint]\nselect = [\"F\"]\n"
+    )
+    root = tmp_path / "gen"
+    member = ws._workspace_member(plugin, root, identity=plugin)
+    document = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8-sig"))
+    project = document["project"]
+    assert project["name"].startswith("hermes-plugin-")
+    # uv fails without version or a dynamic entry declaring one.
+    assert "version" in project or "version" in project.get("dynamic", [])
+
+
 def test_staging_root_and_env_are_honored_without_live_mutation(layout, monkeypatch):
     tmp, core, _, _ = layout
     staging = tmp / "staging-ws"

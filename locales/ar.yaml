@@ -2392,6 +2392,7 @@ cli:
     session_not_found: "الجلسة غير موجودة: {session_id}"
     compressed_into: "ضُغطت الجلسة {session_id} في {descendant}؛ جارٍ استئناف الجلسة المتفرّعة مع نصّ محادثتك."
     cannot_resume: "تعذّر استئناف الجلسة: {error}"
+    kanban_owned: "⛔ الجلسة {session_id} هي نص جلسة عامل Kanban. استئنافها هنا سينشئ كاتبًا لا يستطيع لوح Kanban مراقبته أو الإشراف عليه — بدلًا من ذلك أعد المحاولة أو ارفع الحظر عن البطاقة على اللوحة ليمتلك المُرسِل التشغيل التالي."
     cannot_resume_prefix: "تعذّر استئناف الجلسة:"
     resumed_session: "↻ استُؤنفت الجلسة"
     counts_one: "({count} رسالة من المستخدم، {total} رسائل إجمالًا)"

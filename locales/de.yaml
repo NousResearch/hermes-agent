@@ -2392,6 +2392,7 @@ cli:
     session_not_found: "Sitzung nicht gefunden: {session_id}"
     compressed_into: "Sitzung {session_id} wurde in {descendant} komprimiert; die Nachfolgesitzung wird mit Ihrem Transkript fortgesetzt."
     cannot_resume: "Sitzung kann nicht fortgesetzt werden: {error}"
+    kanban_owned: "⛔ Sitzung {session_id} ist ein Kanban-Worker-Transkript. Das Fortsetzen würde hier einen Schreiber erzeugen, den das Kanban-Board weder beobachten noch überwachen kann — versuche stattdessen, die Karte auf dem Board erneut zu starten oder zu entblocken, damit der Dispatcher den nächsten Lauf besitzt."
     cannot_resume_prefix: "Sitzung kann nicht fortgesetzt werden:"
     resumed_session: "↻ Sitzung fortgesetzt"
     counts_one: "({count} Benutzernachricht, {total} Nachrichten insgesamt)"

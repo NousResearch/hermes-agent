@@ -2392,6 +2392,7 @@ cli:
     session_not_found: "Sessie nie gevind nie: {session_id}"
     compressed_into: "Sessie {session_id} is in {descendant} saamgepers; die afstammeling word met jou transkripsie hervat."
     cannot_resume: "Kan nie sessie hervat nie: {error}"
+    kanban_owned: "⛔ Sessie {session_id} is 'n Kanban-werker-transkripsie. Om dit hier te hervat sou 'n skrywer skep wat die Kanban-raad nie kan waarneem of toesien hou nie — probeer eerder die kaart op die raad weer of ontblok dit, sodat die dispatcher die volgende lopie besit."
     cannot_resume_prefix: "Kan nie sessie hervat nie:"
     resumed_session: "↻ Sessie hervat"
     counts_one: "({count} gebruikersboodskap, {total} boodskappe altesaam)"

@@ -2392,6 +2392,7 @@ cli:
     session_not_found: "Seisiún gan a aimsiú: {session_id}"
     compressed_into: "Dlúthaíodh an seisiún {session_id} isteach i {descendant}; ag atosú an tsleachta le do thraschríbhinn."
     cannot_resume: "Ní féidir an seisiún a atosú: {error}"
+    kanban_owned: "⛔ Is tras-scríbhinn oibrithe Kanban é an seisiún {session_id}. Athfhachtóirí a chur ar bun anseo a dhéanfadh scríbhneoir nach féidir le clár Kanban a fheiceáil ná a mhaorú — ina áit sin, bain triail arís ar an gcárta ar an gclár nó díbhlocáil é, ionas go mbeidh an cláróir ina thine ar an rith chugainn."
     cannot_resume_prefix: "Ní féidir an seisiún a atosú:"
     resumed_session: "↻ Seisiún atosaithe"
     counts_one: "({count} teachtaireacht úsáideora, {total} teachtaireacht san iomlán)"

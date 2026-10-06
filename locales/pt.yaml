@@ -2392,6 +2392,7 @@ cli:
     session_not_found: "Sessão não encontrada: {session_id}"
     compressed_into: "A sessão {session_id} foi comprimida em {descendant}; retomando a descendente com sua transcrição."
     cannot_resume: "Não foi possível retomar a sessão: {error}"
+    kanban_owned: "⛔ A sessão {session_id} é a transcrição de um worker do Kanban. Retomá-la aqui criaria um escritor que o quadro Kanban não consegue observar nem supervisionar — em vez disso, tente novamente ou desbloqueie o cartão no quadro, para que o dispatcher possua a próxima execução."
     cannot_resume_prefix: "Não foi possível retomar a sessão:"
     resumed_session: "↻ Sessão retomada"
     counts_one: "({count} mensagem do usuário, {total} mensagens no total)"

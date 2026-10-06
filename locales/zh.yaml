@@ -2392,6 +2392,7 @@ cli:
     session_not_found: "未找到会话：{session_id}"
     compressed_into: "会话 {session_id} 已被压缩进 {descendant}；将使用你的记录恢复后继会话。"
     cannot_resume: "无法恢复会话：{error}"
+    kanban_owned: "⛔ 会话 {session_id} 是 Kanban 工作线程的记录。在此恢复会创建一个 Kanban 看板无法观察或监督的写入者——请改为在看板上重试或解除卡片的阻塞，让调度器拥有下一次运行。"
     cannot_resume_prefix: "无法恢复会话："
     resumed_session: "↻ 已恢复会话"
     counts_one: "（{count} 条用户消息，共 {total} 条消息）"

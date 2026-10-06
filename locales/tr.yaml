@@ -2392,6 +2392,7 @@ cli:
     session_not_found: "Oturum bulunamadı: {session_id}"
     compressed_into: "{session_id} oturumu {descendant} içine sıkıştırıldı; transkriptinizle alt oturum sürdürülüyor."
     cannot_resume: "Oturum sürdürülemiyor: {error}"
+    kanban_owned: "⛔ Oturum {session_id} bir Kanban çalışanı transkriptidir. Burada sürdürmek, Kanban panosunun gözlemleyip denetleyemeyeceği bir yazıcı oluşturur — bunun yerine kartı panoda yeniden deneyin veya engelini kaldırın, böylece bir sonraki çalışmayı dispatch sahibi olur."
     cannot_resume_prefix: "Oturum sürdürülemiyor:"
     resumed_session: "↻ Oturum sürdürüldü"
     counts_one: "({count} kullanıcı mesajı, toplam {total} mesaj)"

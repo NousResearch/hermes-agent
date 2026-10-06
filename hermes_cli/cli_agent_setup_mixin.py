@@ -787,6 +787,16 @@ class CLIAgentSetupMixin:
             session_meta,
             lambda rid: self._console_print(
                 f"[dim]{_escape(t('cli.resume.compressed_into', session_id=self.session_id, descendant=rid))}[/]"))
+        # A Kanban worker transcript resumes only through a dispatcher-owned run (#68779) —
+        # an ordinary CLI resume would be a live writer the board cannot observe. Refuse AND
+        # fall back to a fresh session id, so this process never appends to the worker row.
+        from hermes_cli.kanban_resume_guard import kanban_resume_refusal
+        if (kanban_refusal := kanban_resume_refusal(self._session_db, self.session_id)):
+            self._console_print(f"[bold red]{_escape(kanban_refusal)}[/]")
+            self._resumed = False
+            from hermes_state_ids import new_session_id
+            self.session_id = new_session_id(self.session_start)
+            return False
         resume_limit_error = self._resume_history_limit_error()
         if resume_limit_error:
             self._resume_history_error = resume_limit_error

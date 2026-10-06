@@ -998,6 +998,13 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         if resolved is None:
             return
         target_id, session_meta = resolved
+        # A Kanban worker transcript must not become this chat's write-capable continuation
+        # (#68779): the resumed conversation would be a writer the Kanban board cannot
+        # observe, and unblocking the card could dispatch a competing worker. Keep the
+        # CURRENT session instead of switching.
+        from hermes_cli.kanban_resume_guard import kanban_resume_refusal
+        if (kanban_refusal := kanban_resume_refusal(self._session_db, target_id)):
+            return _cp(f"  {kanban_refusal}")
         if target_id == self.session_id:
             return _cp(f"  {_t('resume.already_on')}")
         old_session_id = self.session_id

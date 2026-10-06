@@ -2392,6 +2392,7 @@ cli:
     session_not_found: "找不到工作階段：{session_id}"
     compressed_into: "工作階段 {session_id} 已壓縮為 {descendant}；將以你的對話紀錄恢復後續的工作階段。"
     cannot_resume: "無法恢復工作階段：{error}"
+    kanban_owned: "⛔ 工作階段 {session_id} 是 Kanban 工作執行緒的記錄。在此恢復會建立一個 Kanban 看板無法觀察或監督的寫入者——請改為在看板上重試或解除卡片的封鎖，讓調度器擁有下一次執行。"
     cannot_resume_prefix: "無法恢復工作階段："
     resumed_session: "↻ 已恢復工作階段"
     counts_one: "（{count} 則使用者訊息，共 {total} 則訊息）"

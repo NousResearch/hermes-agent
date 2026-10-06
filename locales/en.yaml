@@ -2493,6 +2493,7 @@ cli:
     compressed_into: "Session {session_id} was compressed into {descendant}; resuming the descendant with your transcript."
     cannot_resume: "Cannot resume session: {error}"
     cannot_resume_prefix: "Cannot resume session:"
+    kanban_owned: "⛔ Session {session_id} is a Kanban worker transcript. Resuming it here would create a writer the Kanban board cannot observe or supervise — retry or unblock the card on the board instead, so the dispatcher owns the next run."
     resumed_session: "↻ Resumed session"
     counts_one: "({count} user message, {total} total messages)"
     counts_other: "({count} user messages, {total} total messages)"

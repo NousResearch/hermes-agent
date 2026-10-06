@@ -2392,6 +2392,7 @@ cli:
     session_not_found: "세션을 찾을 수 없어요: {session_id}"
     compressed_into: "세션 {session_id}은(는) {descendant}(으)로 압축됐어요. 기록과 함께 후속 세션을 재개해요."
     cannot_resume: "세션을 재개할 수 없어요: {error}"
+    kanban_owned: "⛔ 세션 {session_id}은(는) Kanban 워커의 기록입니다. 여기서 재개하면 Kanban 보드가 관찰하거나 감독할 수 없는 작성자가 생깁니다 — 대신 보드에서 카드를 재시도하거나 차단을 해제하여 디스패처가 다음 실행을 소유하도록 하세요."
     cannot_resume_prefix: "세션을 재개할 수 없어요:"
     resumed_session: "↻ 세션 재개됨"
     counts_one: "(사용자 메시지 {count}개, 전체 메시지 {total}개)"

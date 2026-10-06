@@ -2392,6 +2392,7 @@ cli:
     session_not_found: "セッションが見つかりません: {session_id}"
     compressed_into: "セッション {session_id} は {descendant} に圧縮されました。トランスクリプトを引き継いで後続セッションを再開します。"
     cannot_resume: "セッションを再開できません: {error}"
+    kanban_owned: "⛔ セッション {session_id} は Kanban ワーカーのトランスクリプトです。ここで再開すると、Kanban ボードが観察・監督できない書き込みプロセスが生じます。代わりにボード上でカードを再試行するかブロック解除し、次の実行はディスパッチャーに所有させてください。"
     cannot_resume_prefix: "セッションを再開できません:"
     resumed_session: "↻ セッションを再開しました"
     counts_one: "（ユーザーメッセージ {count} 件、合計 {total} 件）"

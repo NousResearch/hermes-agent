@@ -2665,6 +2665,7 @@ cli:
     session_not_found: "Session introuvable : {session_id}"
     compressed_into: "La session {session_id} a été compressée dans {descendant} ; reprise de la session descendante avec votre transcription."
     cannot_resume: "Impossible de reprendre la session : {error}"
+    kanban_owned: "⛔ La session {session_id} est la transcription d'un worker Kanban. La reprendre ici créerait un écrivain que le tableau Kanban ne peut ni observer ni superviser — relance ou débloque plutôt la carte sur le tableau, afin que le dispatcher possède la prochaine exécution."
     cannot_resume_prefix: "Impossible de reprendre la session :"
     resumed_session: "↻ Session reprise"
     counts_one: "({count} message utilisateur, {total} messages au total)"

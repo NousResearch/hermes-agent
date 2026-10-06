@@ -2409,6 +2409,7 @@ cli:
     session_not_found: "A munkamenet nem található: {session_id}"
     compressed_into: "A(z) {session_id} munkamenet a(z) {descendant} munkamenetbe lett tömörítve; a leszármazottat folytatom az átiratoddal."
     cannot_resume: "A munkamenet nem folytatható: {error}"
+    kanban_owned: "⛔ A(z) {session_id} munkamenet egy Kanban-worker átirata. Itt folytatva egy olyan írót hozna létre, amelyet a Kanban-tábla nem tud megfigyelni vagy felügyelni — ehelyett próbáld újra vagy oldd fel a kártyát a táblán, hogy a dispatcher legyen a következő futás tulajdonosa."
     cannot_resume_prefix: "A munkamenet nem folytatható:"
     resumed_session: "↻ Munkamenet folytatva"
     counts_one: "({count} felhasználói üzenet, összesen {total} üzenet)"

@@ -854,7 +854,16 @@ def _resume_follow_tip(ctx: _Resume) -> None:
 def _resume_guard(ctx: _Resume) -> dict | None:
     """Refuse a runaway transcript before any history read (sessions.max_resume_messages). Deferred /
     omit_messages / lazy paths load the TIP segment only and are guarded tip-only (a lineage count rejected
-    exactly the well-compressed chats). Metadata fallback for lightweight adaptor DBs; fails OPEN on errors."""
+    exactly the well-compressed chats). Metadata fallback for lightweight adaptor DBs; fails OPEN on errors.
+
+    Kanban worker transcripts refuse FIRST and fail CLOSED on a positive match (#68779): a
+    resumed Desktop/TUI session would be a write-capable writer with none of the dispatcher
+    ownership env, invisible to the board while a re-dispatch can start a competing writer
+    in the same workspace. One guard for every resume shape below (cold / eager / deferred /
+    lazy / live-reuse) — no slash worker is ever built for a refused session."""
+    from hermes_cli.kanban_resume_guard import kanban_resume_refusal
+    if (kanban_refusal := kanban_resume_refusal(ctx.db, ctx.target)) is not None:
+        return _err(ctx.rid, 4132, kanban_refusal)
     from hermes_state import SessionResumeTooLargeError, resolved_max_resume_messages
     tip_only = ctx.lazy or ctx.omit_messages or (ctx.defer_history and not ctx.eager_build)
     try:

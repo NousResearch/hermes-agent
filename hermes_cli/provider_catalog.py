@@ -67,7 +67,7 @@ def provider_catalog() -> list[ProviderDescriptor]:
     """One descriptor per provider in the ``hermes model`` universe (:data:`CANONICAL_PROVIDERS`,
     auto-extended by provider plugins). Auth/env from ``PROVIDER_REGISTRY``; display metadata from
     ``ProviderProfile`` with canonical/env fallbacks so profile-less providers still resolve."""
-    from hermes_cli.models import CANONICAL_PROVIDERS
+    from hermes_cli.models_catalog_static import listed_canonical_providers
     PROVIDER_REGISTRY = _safe_import("hermes_cli.auth", "PROVIDER_REGISTRY", {})
     OPTIONAL_ENV_VARS = _safe_import("hermes_cli.config", "OPTIONAL_ENV_VARS", {})
     # Overlays carry auth_type for providers with no registry/profile entry — notably the ``moa``
@@ -79,7 +79,7 @@ def provider_catalog() -> list[ProviderDescriptor]:
     except Exception:
         profiles = {}
     out: list[ProviderDescriptor] = []
-    for order, entry in enumerate(CANONICAL_PROVIDERS):
+    for order, entry in enumerate(listed_canonical_providers()):
         slug = entry.slug
         cfg = PROVIDER_REGISTRY.get(slug)
         prof = profiles.get(slug)

@@ -832,8 +832,8 @@ def _provider_has_credentials(pid: str) -> bool:
 
 
 def list_available_providers() -> list[dict[str, str]]:
-    """``{id, label, aliases, authenticated}`` for every provider usable with ``provider:model``,
-    derived from :data:`CANONICAL_PROVIDERS` (shared with ``hermes model`` and ``/model``)."""
+    """``{id, label, aliases, authenticated}`` per listed provider (shared with ``hermes model`` / ``/model``)."""
+    from hermes_cli.models_catalog_static import listed_canonical_providers
     aliases_for: dict[str, list[str]] = {}
     for alias, canonical in _PROVIDER_ALIASES.items():
         aliases_for.setdefault(canonical, []).append(alias)
@@ -843,7 +843,7 @@ def list_available_providers() -> list[dict[str, str]]:
             "label": _PROVIDER_LABELS.get(pid, pid),
             "aliases": aliases_for.get(pid, []),
             "authenticated": _provider_has_credentials(pid)}
-        for pid in [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]]
+        for pid in [p.slug for p in listed_canonical_providers()] + ["custom"]]
 
 
 def parse_model_input(
@@ -1620,25 +1620,6 @@ def _azure_foundry_catalog(normalized: str, force_refresh: bool) -> Optional[lis
         return None
 
 
-def _solstice_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
-    """Curated picker list for Solstice (per-user-quota).
-
-    The ``:generateContentPerUserQuota`` endpoint has no public model catalog to probe — a
-    per-user token gets 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT from ``/v1alpha/models`` — so the
-    profile's VERIFIED ``fallback_models`` is the only safe source. Returns None when the
-    profile is unavailable so the generic path still runs.
-    """
-    from providers import get_provider_profile
-
-    try:
-        profile = get_provider_profile("solstice")
-    except Exception:
-        return None
-    if profile is not None and profile.fallback_models:
-        return list(profile.fallback_models)
-    return list(_PROVIDER_MODELS.get("solstice", [])) or None
-
-
 # Per-provider catalog sources tried before the generic profile fetch. A fetcher returning None
 # falls through to the profile/curated path; a list is returned as-is (even empty).
 _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
@@ -1659,9 +1640,7 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
     "openai-api": _openai_catalog,
     "custom": _custom_catalog,
     "bedrock": _bedrock_catalog,
-    "azure-foundry": _azure_foundry_catalog,
-    # No live catalog: OAuth-only per-user-quota provider; curated verified ids only.
-    "solstice": _solstice_catalog}
+    "azure-foundry": _azure_foundry_catalog}
 
 
 # ``-free`` slugs the relay still LISTS but no longer serves: the Go-only twin (``ox-alpha-free``)

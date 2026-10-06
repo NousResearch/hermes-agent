@@ -52,12 +52,10 @@ class ProviderProfile:
     description: str = ""        # e.g. "GMI Cloud (multi-model direct API)" — picker subtitle
     signup_url: str = ""         # e.g. "https://www.gmicloud.ai/" — shown during setup
 
-    # True when the provider is pre-release / not for public listing.
-    # list_providers() excludes hidden profiles unless the provider's own
-    # enable predicate passes (see providers/__init__._hidden_provider_enabled).
-    # The provider still resolves by name via get_provider_profile() when the
-    # user configures it explicitly — hiding is about *discovery surfaces*
-    # (picker, setup, auth lists), not about blocking direct config.
+    # True when the provider is pre-release / not for public listing. Discovery surfaces (provider
+    # pickers, the setup provider list, the dashboard accounts tab) skip it unless ``listed()``
+    # says otherwise; resolution by name is untouched, so an explicit ``model.provider`` /
+    # ``hermes auth add <name>`` keeps working.
     hidden: bool = False
 
     # ── Auth & endpoints ─────────────────────────────────────
@@ -312,6 +310,18 @@ class ProviderProfile:
         cold.
         """
         return None
+
+    def listed(self) -> bool:
+        """Whether discovery surfaces may offer this provider.
+
+        Every non-``hidden`` profile is listed. A ``hidden`` (pre-release) one surfaces once the user
+        opted in by name (``hermes auth add <name>`` put a row in its credential pool), so the
+        pickers can then offer it. Reads auth.json only: it runs on every picker build.
+        """
+        if not self.hidden:
+            return True
+        from hermes_cli.auth import read_credential_pool  # lazy: providers/ must not import hermes_cli at load
+        return bool(read_credential_pool(self.name))
 
     def create_client(self, **client_kwargs: Any) -> Any | None:
         """Return a provider-specific client, or ``None`` for the standard one.

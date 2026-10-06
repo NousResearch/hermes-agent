@@ -82,7 +82,6 @@ import {
   forgetSessionOwnerHintsForSession,
   requestSessionResume,
   sessionMatchesStoredId,
-  sessionOwnerRouteFromRow,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
@@ -108,7 +107,7 @@ import { useKeybinds } from '../hooks/use-keybinds'
 import { useHudHandoff } from '../hud/handoff'
 import { ModelPickerOverlay } from '../model-picker-overlay'
 import { ModelVisibilityOverlay } from '../model-visibility-overlay'
-import { mainChatOccupied, openSession, openSessionFromPicker } from '../open-session'
+import { mainChatOccupied, openSession, openSessionFromPicker, openSessionFromRow } from '../open-session'
 import { PetGenerateOverlay } from '../pet-generate/pet-generate-overlay'
 import { FileActionDialogs } from '../right-sidebar/file-actions'
 import { RemoteFolderPicker } from '../right-sidebar/files/remote-picker'
@@ -1121,28 +1120,22 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   }, [navigate])
 
   // One owner-aware door for "open a stored session from a list row" — the
-  // sessions sidebar, the Cron page's run history and the command center all
-  // funnel here. The clicked ROW is the identity, not its bare id: two
-  // profiles can hold twins with the same stored id (#92454), and an id-only
-  // resume resolves against whichever cached row is found first — the user
-  // clicks a row previewing profile A (or a cron run served by an SSH backend)
-  // and the resume dials the ambient backend instead, so the transcript never
-  // loads (#82527). Pin the row's own (connection, profile) as the resume owner
-  // before navigating; untagged rows (single-profile installs and the legacy
-  // primary-SSH path) keep the ambient/id-only path. Clear any stale explicit
-  // hint first: older builds incorrectly persisted those rows as `local`,
-  // which made a remote session click switch to the Mac backend and fail with
-  // "session not found".
+  // sessions sidebar, the Cron page's run history, the command center and the
+  // session switcher all funnel here. The clicked ROW is the identity, not its
+  // bare id: two profiles can hold twins with the same stored id (#92454), and
+  // an id-only resume resolves against whichever cached row is found first, so
+  // the resume dials the ambient backend and the transcript never loads
+  // (#82527). `openSessionFromRow` owns that policy; the id-only path stays
+  // for callers that have no row to read an owner from.
   const openStoredSession = (sessionId: string, session?: SessionInfo) => {
-    const ownerRoute = sessionOwnerRouteFromRow(session)
+    if (session) {
+      openSessionFromRow(session, navigate)
 
-    if (ownerRoute) {
-      requestSessionResume(sessionId, ownerRoute)
-    } else {
-      forgetSessionOwnerHintsForSession(sessionId)
-      requestSessionResume(sessionId)
+      return
     }
 
+    forgetSessionOwnerHintsForSession(sessionId)
+    requestSessionResume(sessionId)
     openSession(sessionId, navigate)
   }
 

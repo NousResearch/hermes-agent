@@ -12,7 +12,7 @@ import {
   onSwitcherTabDown,
   onSwitcherTabUp,
   openOrAdvanceSwitcher,
-  slotSessionId,
+  slotSession,
   SWITCHER_REVEAL_MS
 } from './session-switcher'
 
@@ -28,7 +28,7 @@ const tabTap = (direction: 1 | -1 = 1) => {
   const target = openOrAdvanceSwitcher(direction)
   onSwitcherTabUp()
 
-  return target
+  return target?.id ?? null
 }
 
 beforeEach(() => {
@@ -100,16 +100,16 @@ describe('openOrAdvanceSwitcher', () => {
     openOrAdvanceSwitcher(1)
     onSwitcherTabUp()
 
-    expect(commitOnCtrlUp()).toBe('c')
+    expect(commitOnCtrlUp()?.id).toBe('c')
   })
 })
 
-describe('slotSessionId', () => {
+describe('slotSession', () => {
   it('reads the armed snapshot while browsing is pending', () => {
     seed(['a', 'b', 'c'], 'a')
     tabTap()
     $sessions.set([session('x')])
 
-    expect(slotSessionId(2)).toBe('b')
+    expect(slotSession(2)?.id).toBe('b')
   })
 })

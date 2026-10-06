@@ -15,7 +15,14 @@
  *     the bridge has no session-window support.
  */
 import type { WorkspaceMode } from '@/contrib/types'
-import { $activeSessionId, $selectedStoredSessionId, markSessionRead } from '@/store/session'
+import {
+  $activeSessionId,
+  $selectedStoredSessionId,
+  forgetSessionOwnerHintsForSession,
+  markSessionRead,
+  requestSessionResume,
+  sessionOwnerRouteFromRow
+} from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import {
   focusedSessionNeedsRoute,
@@ -27,6 +34,7 @@ import {
   setSessionTileWorkspaceScope
 } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
+import type { SessionInfo } from '@/types/hermes'
 
 import { $workspaceIsPage, sessionRoute } from './routes'
 
@@ -92,6 +100,39 @@ export function openSessionFromPicker(
   const resolved = workspaceScope.workspaceMode === 'bots' && intent === 'in-place' ? 'stack' : intent
 
   openSession(storedSessionId, navigate, resolved, workspaceScope)
+}
+
+/**
+ * The one owner-aware door for "open a stored session FROM A LIST ROW".
+ *
+ * A row is the identity, not its bare id: stored ids are only unique PER
+ * PROFILE (#92454), so a cross-profile list can hold two rows sharing one id.
+ * The row's own (connection, profile) is pinned as the resume owner first,
+ * because a session-scoped RPC only means anything on the backend that owns
+ * the session's profile. An id-only resume dials the ambient backend instead,
+ * so the transcript never loads (#82527). Untagged rows (single-profile
+ * installs, the legacy primary-SSH path) are owned by whichever backend
+ * returned them, so a stale explicit hint is dropped rather than honored.
+ *
+ * Every surface that opens a row funnels here: the sessions sidebar, the cron
+ * run history, the command center, and the session switcher.
+ */
+export function openSessionFromRow(
+  row: Pick<SessionInfo, 'connection_id' | 'id' | 'profile'>,
+  navigate: OpenSessionNavigate,
+  intent: OpenSessionIntent = 'in-place',
+  workspaceScope: OpenSessionWorkspaceScope = { workspaceMode: 'sessions' }
+): void {
+  const ownerRoute = sessionOwnerRouteFromRow(row)
+
+  if (ownerRoute) {
+    requestSessionResume(row.id, ownerRoute)
+  } else {
+    forgetSessionOwnerHintsForSession(row.id)
+    requestSessionResume(row.id)
+  }
+
+  openSession(row.id, navigate, intent, workspaceScope)
 }
 
 /**

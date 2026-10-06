@@ -14,17 +14,47 @@ import json
 import re
 import subprocess
 from pathlib import Path
+from typing import Mapping
 from urllib.parse import quote
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)")
 
+# Dispatcher-side auto-completion for SLM/small-model workers (#126626): the
+# worker runs as a pure text-in-text-out function (no lifecycle tools or
+# guidance) and a clean rc=0 auto-completes the card from its captured output.
+AUTO_COMPLETION_CONTRACT = "auto"
+
+# Env pin the dispatcher sets on an auto worker so tool filtering and prompt
+# assembly can recognise it without a DB round-trip.
+KANBAN_COMPLETION_CONTRACT_ENV = "HERMES_KANBAN_COMPLETION_CONTRACT"
+
+
+def is_auto_contract(value: str | None) -> bool:
+    """True when *value* selects dispatcher-side auto-completion."""
+    return value == AUTO_COMPLETION_CONTRACT
+
+
+def is_auto_worker_env(env: Mapping | None = None) -> bool:
+    """True when this worker runs under the auto completion contract."""
+    import os
+
+    source = env if env is not None else os.environ
+    try:
+        return source.get(KANBAN_COMPLETION_CONTRACT_ENV) == AUTO_COMPLETION_CONTRACT
+    except Exception:
+        return False
+
 
 def validate_contract(value: str | None) -> str:
     if value is None or value == "local-only":
         return "local-only"
+    if value == AUTO_COMPLETION_CONTRACT:
+        return value
     if not isinstance(value, str) or not (_REPO.fullmatch(value) or _PR.fullmatch(value)):
-        raise ValueError("completion_contract must be local-only, OWNER/REPO, or an exact GitHub PR URL")
+        raise ValueError(
+            "completion_contract must be local-only, auto, OWNER/REPO, or an exact GitHub PR URL"
+        )
     return value
 
 

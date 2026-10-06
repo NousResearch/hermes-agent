@@ -145,6 +145,9 @@ class DispatchResult:
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    auto_completed: list[str] = field(default_factory=list)
+    """Task ids with ``completion_contract='auto'`` whose worker exited rc=0
+    and were completed by the dispatcher from the captured output (#126626)."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -1135,6 +1138,7 @@ class _CrashSweep:
 
     crashed: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)
+    auto_completed: list[str] = field(default_factory=list)
     # ``(task_id, pid, claimer, dead_worker)``: accounted after the txn via
     # ``_record_task_failure`` (needs its own write_txn).
     crash_details: list[tuple[str, int, str, _DeadWorker]] = field(default_factory=list)
@@ -1143,9 +1147,159 @@ class _CrashSweep:
     exited_hook_payloads: list[dict] = field(default_factory=list)
 
 
+def _task_completion_contract(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """This task's ``completion_contract``, or None when the row is gone."""
+    try:
+        row = conn.execute(
+            "SELECT completion_contract FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    try:
+        return row["completion_contract"]
+    except Exception:
+        try:
+            return row[0]
+        except Exception:
+            return None
+
+
+def _is_auto_completion_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True when *task_id* opts into dispatcher-side auto-completion."""
+    try:
+        from hermes_cli.kanban_pr_acceptance import is_auto_contract
+    except Exception:
+        return _task_completion_contract(conn, task_id) == "auto"
+    return is_auto_contract(_task_completion_contract(conn, task_id))
+
+
+def _try_auto_complete_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    worker_output: str,
+    *,
+    pid: Optional[int] = None,
+    exit_code: Optional[int] = None,
+) -> bool:
+    """Complete an ``auto``-contract task from its worker's captured output.
+
+    Runs outside any outer write txn (``complete_task`` owns its own
+    transactions plus post-commit side effects). Returns True when the card
+    reached ``done``. Empty output or any refusal returns False so the caller
+    falls back to the normal protocol-violation reclaim.
+    """
+    text = (worker_output or "").strip()
+    if not text:
+        return False
+    try:
+        return bool(
+            _kb.complete_task(
+                conn,
+                task_id,
+                result=text,
+                summary=text,
+                metadata={
+                    "auto_completed": True,
+                    "completion_contract": "auto",
+                    "worker_pid": pid,
+                    "exit_code": exit_code if exit_code is not None else 0,
+                },
+            )
+        )
+    except Exception:
+        _kb._log.debug(
+            "kanban dispatch: auto-complete failed for task %s", task_id, exc_info=True,
+        )
+        return False
+
+
+def _auto_complete_dead_workers(
+    conn: sqlite3.Connection, board: Optional[str] = None,
+) -> tuple[list[str], list[dict]]:
+    """Auto-complete ``auto``-contract workers that exited cleanly (rc=0).
+
+    Runs BEFORE the generic dead-worker reclaim txn: a completed card leaves
+    ``running`` so the reclaim pass skips it. Returns
+    ``(completed_ids, hook_payloads)``. A card with empty captured output or a
+    refused completion stays ``running`` for the normal protocol-violation path.
+    """
+    completed: list[str] = []
+    hook_payloads: list[dict] = []
+    try:
+        rows = conn.execute(
+            "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, "
+            "assignee, completion_contract, current_run_id "
+            "FROM tasks "
+            "WHERE status = 'running' AND worker_pid IS NOT NULL"
+        ).fetchall()
+    except Exception:
+        return completed, hook_payloads
+    host_prefix = _kb._host_prefix()
+    for row in rows:
+        try:
+            lock = row["claim_lock"] or ""
+        except Exception:
+            continue
+        if not lock.startswith(host_prefix):
+            continue
+        try:
+            contract = row["completion_contract"]
+        except Exception:
+            contract = _task_completion_contract(conn, row["id"])
+        try:
+            from hermes_cli.kanban_pr_acceptance import is_auto_contract
+
+            is_auto = is_auto_contract(contract)
+        except Exception:
+            is_auto = contract == "auto"
+        if not is_auto:
+            continue
+        try:
+            started_at = _kb._row_get(row, "started_at")
+            if started_at is not None and time.time() - started_at < _kb._resolve_crash_grace_seconds():
+                continue
+            if _worker_alive(row["worker_pid"], _kb._row_get(row, "worker_started_at")):
+                continue
+            pid = int(row["worker_pid"])
+        except Exception:
+            continue
+        dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
+        if dead.kind != "clean_exit":
+            continue
+        worker_output = (dead.event_payload.get("worker_output") or "").strip()
+        if not worker_output:
+            continue
+        run_id = _kb._row_get(row, "current_run_id")
+        try:
+            run_id = int(run_id) if run_id is not None else None
+        except (TypeError, ValueError):
+            run_id = None
+        if _try_auto_complete_task(conn, row["id"], worker_output, pid=pid, exit_code=dead.code):
+            completed.append(row["id"])
+            hook_payloads.append({
+                "task_id": row["id"],
+                "assignee": row["assignee"],
+                "run_id": run_id,
+                "worker_pid": pid,
+                "exit_kind": dead.kind,
+                "exit_code": dead.code,
+                "outcome": "completed",
+                "retry_status": "done",
+            })
+    return completed, hook_payloads
+
+
 def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
     """Release every host-local ``running`` task whose worker PID is dead."""
     sweep = _CrashSweep()
+    # Auto-contract cards that exited cleanly complete from captured output
+    # first (outside any outer txn); completed rows leave ``running`` so the
+    # generic reclaim below skips them.
+    auto_completed, auto_hooks = _auto_complete_dead_workers(conn, board=board)
+    sweep.auto_completed.extend(auto_completed)
+    sweep.exited_hook_payloads.extend(auto_hooks)
     with _kb.write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee "
@@ -1299,8 +1453,9 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     Restores the source phase immediately (no waiting for the claim TTL), for
     tasks claimed by *this host* only — other hosts' PIDs are meaningless.
     Clean exit while ``running`` is a protocol violation with a bounded
-    violation-only retry budget; ``KANBAN_RATE_LIMIT_EXIT_CODE`` is a quota
-    wall, released WITHOUT counting a failure and surfaced via the
+    violation-only retry budget, except for ``auto``-contract cards which
+    complete from the worker's captured output; ``KANBAN_RATE_LIMIT_EXIT_CODE``
+    is a quota wall, released WITHOUT counting a failure and surfaced via the
     ``_last_rate_limited`` attribute (the return stays crashed-only).
     """
     sweep = _reclaim_dead_workers(conn, board=board)
@@ -1311,6 +1466,7 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     # requeues did NOT count a failure and are NOT crashes.
     detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
     detect_crashed_workers._last_rate_limited = sweep.rate_limited  # type: ignore[attr-defined]
+    detect_crashed_workers._last_auto_completed = sweep.auto_completed  # type: ignore[attr-defined]
     # Fired only now, after the reclaim txn AND breaker accounting have
     # committed, so subscribers always observe fully durable board state.
     if sweep.exited_hook_payloads and _kb._kanban_observer_consumed("on_kanban_worker_exited"):
@@ -2201,6 +2357,7 @@ def _run_reclaim_phase(
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
+    result.auto_completed.extend(getattr(detect_crashed_workers, "_last_auto_completed", []))
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 
@@ -2740,6 +2897,36 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)
 
 
+def _is_auto_task(task: Task) -> bool:
+    """True when *task* runs under the dispatcher-side auto contract."""
+    try:
+        from hermes_cli.kanban_pr_acceptance import is_auto_contract
+
+        return is_auto_contract(getattr(task, "completion_contract", None))
+    except Exception:
+        return getattr(task, "completion_contract", None) == "auto"
+
+
+def _worker_prompt(task: Task) -> str:
+    """User prompt for the worker run: the task body for ``auto`` workers.
+
+    SLMs cannot follow the lifecycle protocol, so an auto worker runs as a
+    pure text-in-text-out function with the card's own text — not the
+    ``work kanban task <id>`` indirection that requires a ``kanban_show``
+    round-trip first.
+    """
+    if _is_auto_task(task):
+        parts = [
+            p.strip()
+            for p in ((getattr(task, "title", "") or ""), (getattr(task, "body", "") or ""))
+            if p and p.strip()
+        ]
+        prompt = "\n\n".join(parts).strip()
+        if prompt:
+            return prompt
+    return f"work kanban task {task.id}"
+
+
 def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
     """Build the ``hermes -p <profile> --cli ... chat -q ...`` worker command."""
     cmd = [
@@ -2771,7 +2958,7 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     worker_toolsets = _resolve_worker_cli_toolsets(hermes_home)
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
-    cmd.extend(["chat", "-q", f"work kanban task {task.id}"])
+    cmd.extend(["chat", "-q", _worker_prompt(task)])
     # goal_mode rides the same `-q` path: cli.py runs the judge loop there too, so the
     # worker log keeps its live tool feed (forcing -Q blanked it).
     return cmd
@@ -2909,6 +3096,18 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+    # Auto contract (#126626): pure text-in-text-out worker — no lifecycle
+    # tools or guidance. Pinned so tool filtering works without a DB lookup.
+    if _is_auto_task(task):
+        try:
+            from hermes_cli.kanban_pr_acceptance import (
+                AUTO_COMPLETION_CONTRACT,
+                KANBAN_COMPLETION_CONTRACT_ENV,
+            )
+
+            env[KANBAN_COMPLETION_CONTRACT_ENV] = AUTO_COMPLETION_CONTRACT
+        except Exception:
+            env["HERMES_KANBAN_COMPLETION_CONTRACT"] = "auto"
     # Goal-loop mode (Ralph-style /goal judge loop in cli.py quiet-mode path).
     # Only set when enabled so non-goal tasks keep a clean env.
     if task.goal_mode:

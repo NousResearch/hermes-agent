@@ -286,9 +286,16 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
         )
     # Kanban lifecycle: resolved once at __init__ (_kanban_worker_guidance);
     # fallback paths must also limit task protocol guidance to dispatcher workers.
+    # ``auto`` workers never get lifecycle guidance (pure text-in-text-out, #126626).
     _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
     if _kanban_guidance is None and "kanban_show" in names and owned_kanban_task():
-        _kanban_guidance = KANBAN_GUIDANCE
+        try:
+            from hermes_cli.kanban_pr_acceptance import is_auto_worker_env
+
+            _is_auto = is_auto_worker_env()
+        except Exception:
+            _is_auto = os.getenv("HERMES_KANBAN_COMPLETION_CONTRACT") == "auto"
+        _kanban_guidance = "" if _is_auto else KANBAN_GUIDANCE
     tool_guidance = [
         memory_guidance,
         SESSION_SEARCH_GUIDANCE if "session_search" in names else None,

@@ -118,7 +118,7 @@ test.runIf(process.platform === 'win32')(
           ].join(';')
         )
       ],
-      { stdio: ['ignore', 'pipe', 'inherit'] }
+      { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true }
     )
 
     try {
@@ -130,7 +130,7 @@ test.runIf(process.platform === 'win32')(
       updater.kill()
       await new Promise(resolve => updater.once('exit', resolve))
       await assertWindowsRemoteInstallUpdateClear(
-        sshWith(async (probe: string) => (await run(probe)).stdout),
+        sshWith((probe: string, options: SshExecOptions = {}) => runLocalWindowsCommand(probe, options.stdinData)),
         root
       )
       // The dead claim is deleted inside the hold; the missing python then fails the spawn itself.

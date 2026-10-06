@@ -948,6 +948,7 @@ def judge_goal(
     contract: Optional[GoalContract] = None,
     active_delegations: int = 0,
     mode: str = "goal",
+    evidence: Optional[str] = None,
 ) -> Tuple[str, str, bool, Optional[Dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
@@ -993,8 +994,11 @@ def judge_goal(
     system_prompt = JUDGE_SYSTEM_PROMPT
     if mode == "supergoal":
         from hermes_cli.supergoal_prompts import JUDGE_SYSTEM_PROMPT as supergoal_policy, judge_prompt
+        from hermes_cli.supergoal_evidence import head_tail
         system_prompt = supergoal_policy
-        prompt = judge_prompt(**common, contract=contract, subgoals=clean_subgoals)
+        common["goal"] = head_tail(goal, 2000)
+        common["response"] = head_tail(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS)
+        prompt = judge_prompt(**common, contract=contract, subgoals=clean_subgoals, evidence=evidence)
 
     try:
         raw = _call_goal_judge_llm(call_llm, system_prompt, prompt, timeout)
@@ -1590,10 +1594,17 @@ class GoalManager:
                 return self._budget_pause(state, "gate_failed", gate_decision.get("reason", ""), note=" (a quality gate is still failing)")
             return gate_decision
 
+        judge_options: Dict[str, Any] = {}
+        if state.mode == "supergoal":
+            from hermes_cli.supergoal_evidence import collect_evidence
+            judge_options = {
+                "mode": state.mode,
+                "evidence": collect_evidence(_get_session_db(), self.session_id, state.created_at),
+            }
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None, background_processes=background_processes,
             contract=state.contract if state.has_contract() else None, active_delegations=active_delegations,
-            **({"mode": state.mode} if state.mode == "supergoal" else {}),
+            **judge_options,
         )
         if changed := self._superseded_supergoal_decision():
             return changed

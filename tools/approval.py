@@ -641,6 +641,24 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
     pipe-to-interpreter, terminal injection) are caught even when the pattern detector misses.
     An un-importable tirith honours ``security.tirith_fail_open``: fail-closed means block,
     since nobody can approve.
+
+    Both findings are dropped PER KEY via ``_is_permanently_approved`` — the same filter
+    the attended path applies — so a ``command_allowlist`` entry means the same thing
+    headlessly as it does interactively. This is the *pattern-key* allowlist; the
+    command-TEXT allowlist is a separate, earlier floor
+    (``_command_matches_permanent_allowlist``). Without this filter an "Always allow"
+    answer persisted to config.yaml was silently inert in every ``-q`` / cron session,
+    which is where it matters most.
+
+    Filtering per key rather than short-circuiting the whole function is load-bearing:
+    an allowlisted PATTERN key must still let the tirith content scan run, so
+    allowlisting ``recursive delete`` cannot also buy a pass on an unrelated
+    homograph-URL or pipe-to-interpreter finding in the same command.
+
+    Permanent approvals only, deliberately: a session approval can only be minted by a
+    human answering a prompt (``_persist_choice``) and no prompt runs in an unattended
+    context, so consulting session state here could only ever widen the gate on state
+    no headless caller can legitimately hold.
     """
     if ctx.mode() != "deny":
         return None
@@ -666,7 +684,8 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
             "BLOCKED: the Tirith security scanner could not be imported and security.tirith_fail_open is false, "
             f"so this command cannot be silently allowed — and {ctx.clause}. "
             f"Find an alternative approach, install tirith, or set approvals.{ctx.cfg_key}: approve in config.yaml.")}
-    if tirith.get("action") in ("block", "warn"):
+    if tirith.get("action") in ("block", "warn") and not _is_permanently_approved(
+            _tirith_approval_key(tirith)):
         return block(_format_tirith_description(tirith))
     return None
 
@@ -1145,6 +1164,18 @@ def _format_tirith_description(tirith_result: dict) -> str:
     return "Security scan — " + "; ".join(parts)
 
 
+def _tirith_approval_key(tirith_result: dict) -> str:
+    """The approval key for a tirith finding: ``tirith:<first rule_id>``.
+
+    Shared by the attended gate and ``_unattended_deny`` so an allowlist entry
+    matches the same key in both, and editing the derivation cannot silently
+    revoke a stored approval in only one of them.
+    """
+    findings = tirith_result.get("findings") or []
+    rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
+    return f"tirith:{rule_id}"
+
+
 def _tirith_scan(command: str) -> dict:
     """Tirith result for the interactive flow; an un-importable scanner allows
     (default) or, under fail-closed, synthesizes a HIGH warn finding that goes
@@ -1207,9 +1238,7 @@ def check_all_command_guards(command: str, env_type: str,
     warnings = []
     session_key = get_current_session_key()
     if tirith_result["action"] in {"block", "warn"}:
-        findings = tirith_result.get("findings") or []
-        rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
-        tirith_key = f"tirith:{rule_id}"
+        tirith_key = _tirith_approval_key(tirith_result)
         if not is_approved(session_key, tirith_key):
             warnings.append((tirith_key, _format_tirith_description(tirith_result), True))
     if is_dangerous and not is_approved(session_key, pattern_key):

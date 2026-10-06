@@ -18,6 +18,13 @@ _TEMPLATE_MARKER_RE = re.compile(
 )
 _MIN_BATCH_GOAL_LEN = 10
 
+# Fields accepted on a tasks=[...] entry: the delegate_task task schema plus `role`,
+# which the legacy single-goal wrapper sets internally and dispatch reads per task.
+# Anything else — most notably a per-task `model`/`provider` pin, which the
+# delegation layer never forwards — is rejected loudly instead of silently
+# ignored. See #118825.
+_ALLOWED_TASK_KEYS = ("goal", "context", "output_schema", "images", "group", "role")
+
 def _recover_tasks_from_json_string(tasks: Any) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
     """``(parsed_list, None)`` for a JSON-array string, ``(None, error)`` for a bad string, ``(None, None)`` otherwise."""
     if not isinstance(tasks, str):
@@ -98,6 +105,14 @@ def _normalize_task_list(
     for i, task in enumerate(task_list):
         if not isinstance(task, dict):
             return None, f"Task {i} must be an object, got {type(task).__name__}."
+        unknown = sorted(set(task) - set(_ALLOWED_TASK_KEYS))
+        if unknown:
+            return None, (
+                f"Task {i} has unknown field(s): {', '.join(unknown)}. Per-task entries accept "
+                f"only: {', '.join(_ALLOWED_TASK_KEYS)}. A per-task model or provider pin is not "
+                f"supported here — pin the model globally via the delegation config section "
+                f"instead of a task field."
+            )
         if not task.get("goal", "").strip():
             return None, f"Task {i} is missing a 'goal'."
     # The single-goal form is exempt from the batch gate (short goals are valid there).

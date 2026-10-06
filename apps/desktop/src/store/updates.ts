@@ -18,6 +18,7 @@ import type {
 } from '@/global'
 import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
 import { translateNow } from '@/i18n'
+import { assessDesktopUpdateApply } from '@/lib/update-apply-gate'
 import { persistString, storedString } from '@/lib/storage'
 import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connections'
 import { reconnectGateway } from '@/store/gateway-reconnect'
@@ -63,6 +64,7 @@ export const $updateStatus = atom<DesktopUpdateStatus | null>(null)
 export const $backendUpdateStatus = atom<DesktopUpdateStatus | null>(null)
 export const $backendUpdateApply = atom<UpdateApplyState>(IDLE)
 export const $backendUpdateChecking = atom<boolean>(false)
+export const $activeBackendContract = atom<number | null>(null)
 
 export type UpdateTarget = 'client' | 'backend'
 export const $updateOverlayTarget = atom<UpdateTarget>('client')
@@ -178,6 +180,7 @@ function isInstallMethodToastSnoozed(): boolean {
  * doesn't nag on every thread switch.
  */
 export function reportBackendContract(contract: number | undefined): void {
+  $activeBackendContract.set(typeof contract === 'number' && Number.isInteger(contract) && contract >= 0 ? contract : null)
   const reported = contract ?? 0
 
   if (reported >= REQUIRED_BACKEND_CONTRACT) {
@@ -415,7 +418,7 @@ export function startActiveUpdate(target?: UpdateTarget): void {
   const effective = target ?? activeUpdateTarget()
   $updateOverlayTarget.set(effective)
   $updateOverlayOpen.set(true)
-  void (effective === 'backend' ? applyBackendUpdate() : applyUpdates())
+  void (effective === 'backend' ? applyBackendUpdate() : checkUpdates({ force: true }).then(() => applyUpdates()))
 }
 
 /**
@@ -615,6 +618,7 @@ export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): 
     const previous = $updateStatus.get()
 
     const fallback: DesktopUpdateStatus = {
+      ...previous,
       supported: previous?.supported ?? true,
       branch: previous?.branch,
       error: 'check-failed',
@@ -641,6 +645,12 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
 
   if (!bridge) {
     return { ok: false, error: 'unavailable', message: 'Desktop bridge unavailable.' }
+  }
+
+  const preflight = assessDesktopUpdateApply($updateStatus.get(), $activeBackendContract.get())
+
+  if (!preflight.safeToUpdate) {
+    return { ok: false, error: preflight.reason, message: `Update blocked: ${preflight.reason}` }
   }
 
   dismissNotification(UPDATE_TOAST_ID)

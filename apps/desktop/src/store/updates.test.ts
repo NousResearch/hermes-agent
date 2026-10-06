@@ -118,13 +118,18 @@ const registryOf = (ids: string[]) => ({
   connections: ids.map(id => ({ id, kind: id === 'local' ? 'local' : 'remote', label: id }))
 })
 
-const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus => ({
-  supported: true,
-  behind: 3,
-  targetSha: 'sha-a',
-  fetchedAt: 0,
-  ...over
-})
+const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus => {
+  reportBackendContract(REQUIRED_BACKEND_CONTRACT)
+  return {
+    supported: true,
+    behind: 3,
+    targetSha: 'a'.repeat(40),
+    targetRequiredBackendContract: REQUIRED_BACKEND_CONTRACT,
+    updateAvailable: true,
+    fetchedAt: 0,
+    ...over
+  }
+}
 
 const lastToast = () => notifySpy.mock.calls.at(-1)?.[0] as { action: { onClick: () => void }; onDismiss: () => void }
 
@@ -241,7 +246,7 @@ describe('maybeNotifyUpdateAvailable', () => {
   })
 
   it('does nothing when already up to date', () => {
-    maybeNotifyUpdateAvailable(status({ behind: 0 }))
+    maybeNotifyUpdateAvailable(status({ behind: 0, updateAvailable: false }))
     expect(notifySpy).not.toHaveBeenCalled()
   })
 
@@ -482,7 +487,7 @@ describe('requestActiveUpdate', () => {
     notifySpy.mockClear()
     dismissSpy.mockClear()
     applyClientMock.mockReset().mockResolvedValue({ ok: true, handedOff: true })
-    checkClientMock.mockReset().mockResolvedValue(status({ behind: 0 }))
+    checkClientMock.mockReset().mockResolvedValue(status({ behind: 3 }))
     updateHermesSpy.mockReset().mockResolvedValue({ ok: true, name: 'update' })
     checkHermesUpdateSpy.mockReset().mockResolvedValue({
       install_method: 'git',
@@ -980,6 +985,7 @@ describe('applyUpdates terminal state', () => {
     dismissSpy.mockClear()
     applyMock.mockReset()
     resetUpdateApplyState()
+    $updateStatus.set(status())
     $updateOverlayOpen.set(true)
     ;(globalThis as unknown as { window: unknown }).window = {
       hermesDesktop: { updates: { apply: applyMock } }

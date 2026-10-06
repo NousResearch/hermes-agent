@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 import { buildDesktopBackendEnv } from '../backend-env'
 import { resolveInstallationLauncher } from '../updater-process'
 import { hiddenWindowsChildOptions } from '../windows-child-options'
+import { parseRequiredBackendContract } from '../update-contract'
 
 import type { UpdaterStatusWire } from './index'
 
@@ -24,6 +25,18 @@ export interface SourceUpdateProbe {
 }
 
 const execute: typeof execFile.__promisify__ = promisify(execFile)
+
+async function targetContract(probe: SourceUpdateProbe, targetSha: string | undefined): Promise<number | null> {
+  if (!/^[0-9a-f]{40}$/i.test(targetSha ?? '')) return null
+  try {
+    const result = await execute(probe.git, ['show', `${targetSha}:apps/desktop/src/store/updates.ts`], hiddenWindowsChildOptions({
+      cwd: probe.updateRoot, encoding: 'utf8', timeout: 30000, windowsHide: process.platform === 'win32'
+    }))
+    return parseRequiredBackendContract(result.stdout)
+  } catch {
+    return null
+  }
+}
 
 export function sourceUpdateEnvironment(updateRoot: string, hermesHome: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
@@ -116,6 +129,8 @@ export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<Source
   if (selection.behind === -1) {
     selection.behind = null
   }
+
+  selection.targetRequiredBackendContract = await targetContract(probe, selection.targetSha)
 
   return selection
 }

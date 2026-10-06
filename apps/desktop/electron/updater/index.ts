@@ -63,6 +63,7 @@ export interface UpdaterStatusWire {
   retirement?: ChannelRetirementStatus
   latestTag?: string | null
   targetSha?: string
+  targetRequiredBackendContract?: number | null
   commits?: { sha: string; summary: string; author: string; at: number }[]
   dirty?: boolean
   hermesRoot?: string

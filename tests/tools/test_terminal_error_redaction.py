@@ -85,7 +85,7 @@ def test_successful_output_keeps_command_aware_redactor(monkeypatch):
 
     calls = []
 
-    def fake_redact_terminal_output(output, command):
+    def fake_redact_terminal_output(output, command, *, source_backend):
         calls.append((output, command))
         return "command-aware output"
 

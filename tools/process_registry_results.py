@@ -51,9 +51,13 @@ def save_completed_result(session) -> None:
 
     with session._lock:
         record = {key: getattr(session, key) for key in _RESULT_FIELDS}
+        record["pid_scope"] = session.pid_scope
         record["output"] = session.output_buffer[-MAX_OUTPUT_CHARS:]
     # Live-output opt-out must not persist raw credentials in durable receipts.
-    record["output"] = redact_terminal_output(record["output"], record["command"], force=True)
+    record["output"] = redact_terminal_output(
+        record["output"], record["command"], force=True,
+        source_backend="local" if session.pid_scope == "host" else None,
+    )
     record["command"] = redact_sensitive_text(record["command"], code_file=True, force=True)
     directory = get_hermes_home() / "logs" / "process-results"
     try:
@@ -110,6 +114,7 @@ def load_completed_results(prefix: str = "") -> dict:
             session = ProcessSession(
                 **{key: record[key] for key in _RESULT_FIELDS},
                 exited=True, output_buffer=record["output"],
+                pid_scope=record.get("pid_scope", ""),
             )
             session._completion_event.set()
             results[session.id] = session

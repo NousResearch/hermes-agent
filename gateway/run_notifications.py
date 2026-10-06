@@ -1934,7 +1934,10 @@ class GatewayNotificationsMixin:
             _command = getattr(session, "command", "") or ""
             new_output = transform_process_output(new_output, command=_command, returncode=session.exit_code,
                                                   task_id=getattr(session, "task_id", "") or "")
-            new_output = redact_terminal_output(new_output, _command)
+            new_output = redact_terminal_output(
+                new_output, _command,
+                source_backend="local" if getattr(session, "pid_scope", None) == "host" else None,
+            )
             # redact_terminal_output() is unforced (raw when security.redact_secrets is off); this goes
             # straight to the adapter, so apply the same unconditional floor as agent-notify.
             new_output = _redact_gateway_user_facing_secrets(new_output)
@@ -1972,7 +1975,10 @@ class GatewayNotificationsMixin:
         _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
         _raw = transform_process_output(_raw, command=_command, returncode=session.exit_code,
                                         task_id=getattr(session, "task_id", "") or "") if _raw else _raw
-        _raw = redact_terminal_output(_raw, _command)
+        _raw = redact_terminal_output(
+            _raw, _command,
+            source_backend="local" if getattr(session, "pid_scope", None) == "host" else None,
+        )
         # Keep the last ~2000 chars snapped to a line boundary, with a marker when cut.
         _LIMIT = 2000
         # Truncate at line boundaries so notifications never start mid-line (fixes #23284). Keep the last

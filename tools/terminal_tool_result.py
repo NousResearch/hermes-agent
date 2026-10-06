@@ -167,7 +167,7 @@ def _failure_hint(command: str, returncode: int, output: str, exit_note) -> Opti
     return None
 
 
-def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
+def _redact_spill_file(path, total_chars, command, source_backend) -> list[tuple[str, Any]]:
     """Spill handle so the model can read the omitted middle instead of
     re-running. The collector wrote it raw; redact it with the same pass so no
     secret persists unmasked on disk. On failure drop the handle (and file)."""
@@ -180,7 +180,7 @@ def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
         raw_spill = Path(path).read_text(encoding="utf-8-sig", errors="replace")
         # lstat-checked unlink + exclusive create: the redacted copy can't
         # be diverted through a symlink planted since the collector's write.
-        write_text_exclusive(Path(path), redact_terminal_output(strip_ansi(raw_spill), command),
+        write_text_exclusive(Path(path), redact_terminal_output(strip_ansi(raw_spill), command, source_backend=source_backend),
                              private=True, overwrite=True, errors="replace")
     except Exception:
         logger.debug("spill redaction failed; dropping spill handle", exc_info=True)
@@ -239,7 +239,9 @@ def finalize_foreground_result(
     # commands (env/printenv/set/export/declare) the output IS a KEY=value credential dump, so
     # redact_terminal_output runs the ENV pass (code_file=False) to mask opaque tokens with no vendor
     # prefix. Real prefixes, auth headers, JWTs, private keys are masked in both modes. See issue #43025.
-    output = redact_terminal_output(output.strip(), command) if output else ""
+    # A cached executor can outlive a config change; only the executor attests locality.
+    source_backend = "local" if getattr(env, "is_local", None) is True else None
+    output = redact_terminal_output(output.strip(), command, source_backend=source_backend) if output else ""
 
     exit_note = _interpret_exit_code(command, returncode)
     failure_hint = _failure_hint(command, returncode, output, exit_note)
@@ -261,7 +263,7 @@ def finalize_foreground_result(
     optional_fields: list[tuple[str, Any]] = [
         ("cwd", changed_cwd),
         ("environment_recreated", _ENV_RECREATED_NOTE if result.get("environment_recreated") else None),
-        *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command),
+        *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command, source_backend),
         ("verification_evidence", _verification_evidence(
             command, command_cwd, session_id or task_id or effective_task_id or "default",
             returncode, output)),

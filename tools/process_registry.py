@@ -2679,14 +2679,16 @@ def _redact_process_result(result: dict) -> dict:
     from agent.redact import redact_sensitive_text, redact_terminal_output
 
     command = result.get("command") or ""
+    session = process_registry.get(str(result.get("session_id") or ""))
+    source_backend = "local" if session is not None and session.pid_scope == "host" else None
     # The hook's task_id is the process OWNER's (poll/log/wait results carry only session_id).
     task_id = str(result.get("task_id") or "")
-    if not task_id and (session := process_registry.get(str(result.get("session_id") or ""))) is not None:
+    if not task_id and session is not None:
         task_id = str(getattr(session, "task_id", "") or "")
     for key in ("output", "output_preview"):
         if isinstance(value := result.get(key), str) and value:
             value = transform_process_output(value, command=command, returncode=result.get("exit_code"), task_id=task_id)
-            result[key] = redact_terminal_output(value, command)
+            result[key] = redact_terminal_output(value, command, source_backend=source_backend)
     if isinstance(command, str) and command:
         result["command"] = redact_sensitive_text(command, code_file=True)
     return result

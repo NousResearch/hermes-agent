@@ -1075,53 +1075,53 @@ class TestTerminalOutputRedaction:
 
     # ── .env file detection (issue #61352 v2) ──
 
-    def test_command_reads_secret_file_detection(self):
-        from agent.redact import _command_reads_secret_file
+    def test_command_secret_file_args_detection(self):
+        from agent.redact import _command_secret_file_args
         # Basic detection
-        assert _command_reads_secret_file("cat .env")
-        assert _command_reads_secret_file("cat .env.local")
-        assert _command_reads_secret_file("cat .env.production")
-        assert _command_reads_secret_file("cat .envrc")
-        assert _command_reads_secret_file("head .env")
-        assert _command_reads_secret_file("tail .env")
-        assert _command_reads_secret_file("type .env")
-        assert _command_reads_secret_file("nl .env")
-        assert _command_reads_secret_file("bat .env")
+        assert _command_secret_file_args("cat .env")
+        assert _command_secret_file_args("cat .env.local")
+        assert _command_secret_file_args("cat .env.production")
+        assert _command_secret_file_args("cat .envrc")
+        assert _command_secret_file_args("head .env")
+        assert _command_secret_file_args("tail .env")
+        assert _command_secret_file_args("type .env")
+        assert _command_secret_file_args("nl .env")
+        assert _command_secret_file_args("bat .env")
         # With flags
-        assert _command_reads_secret_file("cat -n .env")
-        assert _command_reads_secret_file("cat -A .env")
+        assert _command_secret_file_args("cat -n .env")
+        assert _command_secret_file_args("cat -A .env")
         # With paths
-        assert _command_reads_secret_file("cat ~/.hermes/.env")
-        assert _command_reads_secret_file("cat /home/user/project/.env")
-        assert _command_reads_secret_file("cat ./config/.env.local")
+        assert _command_secret_file_args("cat ~/.hermes/.env")
+        assert _command_secret_file_args("cat /home/user/project/.env")
+        assert _command_secret_file_args("cat ./config/.env.local")
         # In a pipeline / sequence
-        assert _command_reads_secret_file("cat .env | grep KEY")
-        assert _command_reads_secret_file("echo '---' && cat .env")
+        assert _command_secret_file_args("cat .env | grep KEY")
+        assert _command_secret_file_args("echo '---' && cat .env")
         # Windows-style backslash paths
-        assert _command_reads_secret_file("cat C:\\Users\\test\\.env")
+        assert _command_secret_file_args("cat C:\\Users\\test\\.env")
         # Quoted paths (plain split leaves the quotes attached)
-        assert _command_reads_secret_file('cat ".env"')
-        assert _command_reads_secret_file("cat '.env'")
+        assert _command_secret_file_args('cat ".env"')
+        assert _command_secret_file_args("cat '.env'")
         # Case-insensitive basename (macOS/Windows filesystems)
-        assert _command_reads_secret_file("cat .ENV")
+        assert _command_secret_file_args("cat .ENV")
 
-    def test_command_reads_secret_file_excludes_templates(self):
-        from agent.redact import _command_reads_secret_file
+    def test_command_secret_file_args_excludes_templates(self):
+        from agent.redact import _command_secret_file_args
         # Templates/examples should NOT trigger
-        assert not _command_reads_secret_file("cat .env.example")
-        assert not _command_reads_secret_file("cat .env.sample")
-        assert not _command_reads_secret_file("cat .env.template")
-        assert not _command_reads_secret_file("cat .env.dist")
+        assert not _command_secret_file_args("cat .env.example")
+        assert not _command_secret_file_args("cat .env.sample")
+        assert not _command_secret_file_args("cat .env.template")
+        assert not _command_secret_file_args("cat .env.dist")
 
-    def test_command_reads_secret_file_rejects_non_env_files(self):
-        from agent.redact import _command_reads_secret_file
-        assert not _command_reads_secret_file("cat config.py")
-        assert not _command_reads_secret_file("cat README.md")
-        assert not _command_reads_secret_file("cat .envrc.bak")  # .bak not in list
-        assert not _command_reads_secret_file("python app.py")
-        assert not _command_reads_secret_file("echo .env")  # echo is not a file-read cmd
-        assert not _command_reads_secret_file("")
-        assert not _command_reads_secret_file(None)
+    def test_command_secret_file_args_rejects_non_env_files(self):
+        from agent.redact import _command_secret_file_args
+        assert not _command_secret_file_args("cat config.py")
+        assert not _command_secret_file_args("cat README.md")
+        assert not _command_secret_file_args("cat .envrc.bak")  # .bak not in list
+        assert not _command_secret_file_args("python app.py")
+        assert not _command_secret_file_args("echo .env")  # echo is not a file-read cmd
+        assert not _command_secret_file_args("")
+        assert not _command_secret_file_args(None)
 
     def test_cat_env_file_masks_opaque_token(self):
         """cat .env → code_file=False → generic ENV pass redacts opaque keys."""
@@ -1401,6 +1401,193 @@ class TestSecretFileAssignmentRedaction:
         started = time.perf_counter()
         assert redact_sensitive_text(wide, force=True, file_read=True, secret_file=True) == wide
         assert time.perf_counter() - started < 1.0
+
+
+class TestCredentialStoreReads:
+    """Well-known credential stores (``~/.aws/credentials``, ``.netrc``, ``.pgpass``, ``.npmrc``,
+    ``.pypirc``, ``.git-credentials``) are secret-bearing sources: a read_file-style read and a
+    terminal ``cat`` of one must not hand the stored secret to the model, whatever its format."""
+
+    WEAK = "hunter2weak"  # a human password: no vendor prefix, not opaque-looking
+
+    @staticmethod
+    def _numbered(lines, start=1):
+        return "\n".join(f"{i}|{line}" for i, line in enumerate(lines, start))  # read_file gutter
+
+    @pytest.mark.parametrize("path, body", [
+        ("~/.aws/credentials", "[default]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\naws_secret_access_key = {pw}\n"),
+        ("C:\\Users\\bob\\.aws\\credentials","[work]\naws_secret_access_key={pw}\n"),
+        ("~/.aws/config", "[profile work]\nregion = us-east-1\naws_session_token = {pw}\n"),
+        ("~/.netrc", "machine api.example.com\n  login bob\n  password {pw}\n"),
+        ("C:\\Users\\bob\\_netrc", "machine api.example.com login bob password {pw}\n"),
+        ("/home/bob/.netrc", "machine api.example.com login bob password {pw}\n"),
+        ("~/.pgpass", "db.example.com:5432:app:bob:{pw}\n"),
+        ("~/.npmrc", "//registry.npmjs.org/:_authToken={pw}\n"),
+        ("~/.pypirc", "[pypi]\nusername = __token__\npassword = {pw}\n"),
+        ("~/.git-credentials", "https://bob:{pw}@github.com\n"),
+    ])
+    def test_read_file_and_terminal_cat_mask_the_stored_secret(self, path, body):
+        from agent.redact import redact_terminal_output
+
+        text = body.format(pw=self.WEAK)
+        read = redact_sensitive_text(self._numbered(text.splitlines()), force=True, file_read=True,
+                                     source_paths=(path,))
+        assert self.WEAK not in read and "«redacted" in read
+        assert self.WEAK not in redact_terminal_output(text, f"cat {path}", force=True)
+
+    # Legal layouts whose value is more than one whitespace-free token on the ``password`` line.
+    # The stdlib parser is the oracle for what the stored secret is.
+    @pytest.mark.parametrize("name, body", [
+        (".netrc", "machine fixture\nlogin bob\npassword\nhunter2weak\n"),
+        (".netrc", 'machine fixture login bob password "alpha bravo"\n'),
+        (".netrc", "machine fixture login bob password alpha\\ bravo\n"),
+        (".pypirc", "[pypi]\nusername = bob\npassword = alpha bravo\n"),
+        (".pypirc", "[pypi]\nusername = bob\npassword = alpha\n\tbravo\nrepository = https://x.example/\n"),
+    ])
+    def test_grammar_owned_value_is_masked_in_every_slice(self, tmp_path, name, body):
+        """A read_file page or search_files match can start after the ``password`` keyword, so
+        the value must be masked in whatever slice carries it, not only in the whole file."""
+        import configparser
+        import netrc
+
+        from agent.redact import redact_terminal_output
+
+        store = tmp_path / name
+        store.write_text(body, encoding="utf-8", newline="\n")
+        if name == ".netrc":
+            secret = netrc.netrc(str(store)).authenticators("fixture")[2]
+        else:
+            parser = configparser.RawConfigParser()
+            parser.read(store, encoding="utf-8")
+            secret = parser["pypi"]["password"]
+        words = secret.split()
+
+        lines = body.rstrip("\n").split("\n")
+        slices = {"terminal cat": redact_terminal_output(body, f"cat {store}", force=True)}
+        for i in range(len(lines)):
+            slices[f"page from line {i + 1}"] = redact_sensitive_text(
+                self._numbered(lines[i:], i + 1), force=True, file_read=True, source_paths=(str(store),))
+            slices[f"match on line {i + 1}"] = redact_sensitive_text(
+                lines[i], force=True, file_read=True, source_paths=(str(store),))
+        leaks = {where: out for where, out in slices.items() if any(w in out for w in words)}
+        assert not leaks
+
+    def test_public_neighbours_comments_and_macros_survive(self):
+        from agent.redact import redact_terminal_output
+
+        # ``#work`` and ``# work`` are both comments to CPython's netrc and to curl.
+        netrc_text = ("#work\n# work account\nmachine api.example.com\n  login bob\n  password hunter2weak\n"
+                      "macdef init\ncd /pub\n\n")
+        out = redact_sensitive_text(self._numbered(netrc_text.split("\n")), force=True, file_read=True,
+                                    source_paths=("~/.netrc",))
+        for kept in ("1|#work", "2|# work account", "3|machine api.example.com", "4|  login bob",
+                     "6|macdef init", "7|cd /pub"):
+            assert kept in out
+        assert "5|  password «redacted-secret»" in out
+        assert redact_terminal_output(netrc_text, "cat ~/.netrc", force=True) == netrc_text.replace(
+            "hunter2weak", "«redacted-secret»")
+
+        # Options are secret by the redactor's word-bounded key policy: ``author`` is not ``auth``.
+        pypirc = ("[distutils]\nindex-servers =\n    pypi\n    private\n\n[private]\n"
+                  "repository = https://bob:hunter2weak@pkgs.example/\nusername = bob\n; note\n"
+                  "author = Bob\nauthority = pkgs.example\n")
+        out = redact_sensitive_text(pypirc, force=True, file_read=True, source_paths=("~/.pypirc",))
+        assert out == pypirc.replace("hunter2weak", "«redacted-secret»")
+
+    # ``{store}`` is a real store file, ``{app}`` another file's lines; ``output`` is what the
+    # command prints.
+    @pytest.mark.parametrize("name, body, command, output", [
+        (".netrc", "machine api.example.com\nlogin bob\npassword {pw}\n", "cat {store} app.py", "{body}{app}"),
+        (".netrc", "machine api.example.com\nlogin bob\npassword {pw}\n", "cat app.py {store}", "{app}{body}"),
+        (".pgpass", "db.example.com:5432:app:bob:{pw}\n", "cat {store} app.py", "{body}{app}"),
+        (".pypirc", "[pypi]\nusername = bob\npassword = alpha {pw}\n", "cat {store} app.py", "{body}{app}"),
+        # A value line cut from its keyword: nothing in the text ties it to the store.
+        (".netrc", "machine a\nlogin bob\npassword\n{pw}\n", "tail -n 1 {store} && cat app.py", "{pw}\n{app}"),
+        (".netrc", "machine a\nlogin bob\npassword\n{pw}\n", "sed -n 4p {store} app.py", "{pw}\n{app}"),
+        (".pypirc", "[pypi]\npassword = alpha\n    {pw}\n", "awk 'NR==3' {store} app.py", "    {pw}\n{app}"),
+        # grep lines are attributed by their prefix; another file's hit is never parsed as the store.
+        (".netrc", "machine a\nlogin bob\npassword\n{pw}\n", "grep -rn {pw} {store} src",
+         "{store}:4:{pw}\nsrc/app.py:1:{app_line}\n"),
+        (".netrc", "machine a\npassword\n{pw}\n", "grep -rn password {store} src",
+         "{store}:2:password\nsrc/app.py:1:{app_line}\n"),
+    ])
+    def test_store_read_alongside_other_output_keeps_that_output(self, tmp_path, name, body, command, output):
+        """Terminal output that is not ONLY the store: the store's values are masked wherever
+        they appear, and the other file's lines are left intact."""
+        from agent.redact import redact_terminal_output
+
+        store = tmp_path / name
+        body = body.format(pw=self.WEAK)
+        store.write_text(body, encoding="utf-8", newline="\n")
+        app_lines = ["CANARY_ALPHA_LINE_ONE", "password = fetch()", "    CANARY_BETA_LINE_TWO"]
+        text = output.format(store=store, body=body, pw=self.WEAK, app_line=app_lines[1],
+                             app="".join(f"{line}\n" for line in app_lines))
+        out = redact_terminal_output(text, command.format(store=store, pw=self.WEAK), source_backend="local")
+        assert self.WEAK not in out
+        assert all(line in out for line in app_lines if line in text)
+
+    def test_mixed_output_fails_closed_when_the_store_values_are_unknown(self, tmp_path):
+        """Without the store's values a bare value line cannot be told from other output, so it
+        is masked: the store is not on this host (a remote backend), the host's copy is a
+        different file, or a stored value is too short to mask by value."""
+        from agent.redact import redact_terminal_output
+
+        missing = tmp_path / "remote" / ".netrc"
+        other = tmp_path / "host" / ".netrc"
+        other.parent.mkdir()
+        other.write_text("machine a\npassword\nsomethingElse42\n", encoding="utf-8", newline="\n")
+        for store in (missing, other):
+            out = redact_terminal_output(f"{self.WEAK}\nCANARY\n", f"tail -n 1 {store} && cat app.py",
+                                         source_backend="local")
+            assert self.WEAK not in out
+
+        short = tmp_path / "short" / ".netrc"
+        short.parent.mkdir()
+        short.write_text("machine a\npassword\npw1\n", encoding="utf-8", newline="\n")
+        out = redact_terminal_output("pw1\nCANARY\n", f"tail -n 1 {short} && cat app.py", source_backend="local")
+        assert "pw1" not in out
+
+    def test_mixed_redaction_forgets_a_secret_when_the_store_changes(self, tmp_path):
+        """A repeated mixed read reuses the host file only while it is unchanged.
+
+        After a rewrite the old password is no longer a stored value, so other
+        output may show it, and the new password is masked.
+        """
+        from agent.redact import redact_terminal_output
+
+        store = tmp_path / ".netrc"
+        old = "first-secret-value"
+        new = "second-secret-value"
+        store.write_text(f"machine a\nlogin bob\npassword {old}\n", encoding="utf-8", newline="\n")
+        command = f"tail -n 1 {store} && echo other"
+        out = redact_terminal_output(f"{old}\nCANARY\n", command, source_backend="local")
+        assert old not in out
+        assert "CANARY" in out
+        out = redact_terminal_output(f"{old}\nCANARY\n", command, source_backend="local")
+        assert old not in out
+
+        store.write_text(f"machine a\nlogin bob\npassword {new}\n", encoding="utf-8", newline="\n")
+        out = redact_terminal_output(f"{old}\n{new}\nCANARY\n", command, source_backend="local")
+        assert new not in out
+        assert old in out
+        assert "CANARY" in out
+
+    def test_every_credential_basename_has_a_grammar(self):
+        from agent.file_safety import _HOME_CREDENTIAL_BASENAMES
+        from agent.redact import _credential_store_format
+
+        assert all(_credential_store_format(f"~/{name}") for name in _HOME_CREDENTIAL_BASENAMES)
+
+    def test_lookalikes_and_shell_rc_lines_are_left_alone(self):
+        from agent.redact import _is_secret_file_arg, redact_terminal_output
+
+        # ``credentials`` alone is too generic: only the ``.aws`` parent makes it a store.
+        for path in ("docs/credentials", "~/credentials", "docs/config", "notes/netrc.md"):
+            assert not _is_secret_file_arg(path)
+            assert redact_terminal_output(f"password = {self.WEAK}\n", f"cat {path}") == f"password = {self.WEAK}\n"
+        # The store grammars never run on ordinary secret-file lines.
+        rc = "# password manager setup\nexport PATH=/a:/b:/c:/d:/e\nexport EDITOR=vim\n"
+        assert redact_terminal_output(rc, "cat ~/.bashrc", force=True) == rc
 
 
 class TestHermesHomePathClassification:

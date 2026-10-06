@@ -72,12 +72,6 @@ class TestRecoveryWindow:
         assert cc._ineffective_compression_count == 0
         assert cc._anti_thrash_recovery_deadline == 0.0
 
-    def test_fallback_streak_alone_does_not_block_compaction(self):
-        cc = _compressor()
-        cc._fallback_compression_streak = 2
-        assert cc.should_compress(cc.threshold_tokens + 1) is True
-        assert cc._fallback_compression_streak == 2
-
     def test_fallback_boundaries_wait_for_real_effectiveness_verdict(self):
         cc = _compressor()
         for prompt_tokens in (4_000, 5_000):

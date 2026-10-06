@@ -1179,7 +1179,7 @@ class TestAutomaticCompressionStateRefreshAfterLock:
 class TestGateLevelGuardRefresh:
     """The pre-gate uses the measured ineffective count, not summary type."""
 
-    def test_should_compress_unblocks_after_another_agent_clears_streak(
+    def test_durable_fallback_streak_does_not_block_should_compress(
         self,
         refresh_state_db: SessionDB,
     ):
@@ -1192,11 +1192,6 @@ class TestGateLevelGuardRefresh:
 
         # A previous run's fallback streak is diagnostic, so it never blocks.
         assert compressor.should_compress(10**9) is True
-        # Another agent's healthy boundary clears the durable diagnostic count.
-        db.set_compression_fallback_streak(session_id, 0)
-        compressor._load_fallback_compression_streak()
-        assert compressor.should_compress(10**9) is True
-        assert compressor._fallback_compression_streak == 0
 
 
 

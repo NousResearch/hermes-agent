@@ -225,7 +225,7 @@ TOOLSETS = {
     "hermes-bluebubbles": _bundle("BlueBubbles iMessage bot toolset - Apple iMessage via local BlueBubbles server"),
     "hermes-email": _bundle("Email bot toolset - interact with Hermes via email (IMAP/SMTP)"),
     "hermes-mattermost": _bundle("Mattermost bot toolset - self-hosted team messaging (full access)"),
-    "hermes-matrix": _bundle("Matrix bot toolset - decentralized encrypted messaging (full access)", ["matrix_read", "matrix_image_packs", "matrix_reaction", "matrix_followup"]),
+    "hermes-matrix": _bundle("Matrix bot toolset - decentralized encrypted messaging (full access)", ["matrix_read", "matrix_image_packs", "matrix_reaction", "matrix_followup", "present_menu"]),
     "hermes-dingtalk": _bundle("DingTalk bot toolset - enterprise messaging platform (full access)"),
     "hermes-feishu": _bundle("Feishu/Lark bot toolset - enterprise messaging via Feishu/Lark (full access)", _FEISHU_TOOLS),
     "hermes-weixin": _bundle("Weixin bot toolset - personal WeChat messaging via iLink (full access)"),

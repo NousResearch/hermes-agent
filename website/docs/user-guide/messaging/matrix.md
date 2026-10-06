@@ -569,9 +569,10 @@ Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any authori
 
 #### Agent reaction menus
 
-Enable **Reaction Menus** through `hermes tools`, or add `reaction_menu` to
-`platform_toolsets.matrix` in `config.yaml`. The toolset is disabled by default
-and is available only in Matrix sessions. Restart the gateway or start a new
+Enable **Reaction Menus** through `hermes tools`, or explicitly list
+`reaction_menu` or `hermes-matrix` in `platform_toolsets.matrix` in `config.yaml`.
+Menus remain disabled when Matrix uses its implicit platform default, and they
+are available only in Matrix sessions. Restart the gateway or start a new
 session after changing toolsets.
 
 The agent can call `present_menu` with a question and one to five choices. Each

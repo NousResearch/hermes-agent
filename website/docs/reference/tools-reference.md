@@ -171,7 +171,9 @@ Tools for driving desktop [Projects](../user-guide/cli.md) — named, multi-fold
 
 ## `reaction_menu` toolset
 
-Matrix sessions only. Off by default and not part of `hermes-matrix`: enable **Reaction Menus** in `hermes tools` or add `reaction_menu` to `platform_toolsets.matrix`. See [Agent reaction menus](../user-guide/messaging/matrix.md#agent-reaction-menus).
+Matrix sessions only and off by default. Enable **Reaction Menus** in `hermes tools`, or explicitly list `reaction_menu` or `hermes-matrix` in `platform_toolsets.matrix`. See [Agent reaction menus][matrix-reaction-menus].
+
+[matrix-reaction-menus]: ../user-guide/messaging/matrix.md#agent-reaction-menus
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|

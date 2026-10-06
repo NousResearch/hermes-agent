@@ -27,6 +27,30 @@ def test_menu_toolset_requires_matrix_opt_in(platform, configured, expected):
     assert ("present_menu" in tools) is expected
 
 
+@pytest.mark.parametrize(
+    "platform,expected",
+    [("matrix", True), ("cli", False), ("telegram", False), ("api_server", False)],
+)
+def test_explicit_matrix_bundle_enables_menus_only_for_matrix(platform, expected):
+    from toolsets import resolve_toolset
+
+    config = {"platform_toolsets": {platform: ["hermes-matrix"]}}
+    configured = {
+        tool
+        for toolset in _get_platform_tools(config, platform)
+        for tool in resolve_toolset(toolset)
+    }
+    default = {
+        tool
+        for toolset in _get_platform_tools({}, platform)
+        for tool in resolve_toolset(toolset)
+    }
+    assert {
+        "configured": "present_menu" in configured,
+        "default": "present_menu" in default,
+    } == {"configured": expected, "default": False}
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rejection", ["actor", "unauthorized", "revoked", "room", "target", "key", "removed", "expired", "approval", "picker"])
 async def test_menu_choice_is_scoped_and_consumed_once(monkeypatch, rejection):

@@ -291,6 +291,27 @@ def resolve_moa_preset(config: Any, name: str | None = None) -> dict[str, Any]:
     return deepcopy(preset)
 
 
+def apply_user_moa_presets(merged: dict[str, Any], raw: Any) -> None:
+    """Treat an explicit user MoA preset map as authoritative.
+
+    ``moa.presets`` is a named map. Generic default merging must not union the
+    schema's built-in names into a user map, because that resurrects presets
+    the user deleted. An omitted ``moa.presets`` key still receives defaults;
+    an explicit empty map remains empty. Called by the config load/merge paths
+    right after ``_deep_merge``.
+    """
+    raw_moa = raw.get("moa") if isinstance(raw, dict) else None
+    if not isinstance(raw_moa, dict) or "presets" not in raw_moa:
+        return
+    raw_presets = raw_moa.get("presets")
+    if not isinstance(raw_presets, dict):
+        return
+    merged_moa = merged.get("moa")
+    if not isinstance(merged_moa, dict):
+        return
+    merged_moa["presets"] = deepcopy(raw_presets)
+
+
 def exact_moa_preset_name(config: Any, text: str) -> str | None:
     """Return the preset name iff ``text`` exactly matches an *enabled* preset.
 

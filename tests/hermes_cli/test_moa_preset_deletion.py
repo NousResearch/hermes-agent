@@ -23,7 +23,6 @@ import threading
 from pathlib import Path
 
 import pytest
-import yaml
 
 from hermes_cli.web_models import MoaConfigPayload, MoaModelSlot, MoaPresetPayload
 from hermes_cli.web_routers.models import set_moa_models
@@ -38,12 +37,17 @@ def _preset(model: str) -> MoaPresetPayload:
 
 
 def _on_disk(home) -> dict:
-    return yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
+    from ruamel.yaml import YAML
+
+    return YAML(typ="rt").load((home / "config.yaml").read_text(encoding="utf-8")) or {}
 
 
 def _seed(home, monkeypatch, moa: dict, **sections) -> None:
+    from ruamel.yaml import YAML
+
     monkeypatch.setenv("HERMES_HOME", str(home))
-    (home / "config.yaml").write_text(yaml.safe_dump({"moa": moa, **sections}), encoding="utf-8")
+    with (home / "config.yaml").open("w", encoding="utf-8") as fh:
+        YAML(typ="rt").dump({"moa": moa, **sections}, fh)
 
 
 def _three_presets() -> dict:

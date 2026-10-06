@@ -1568,6 +1568,128 @@ async def test_nested_retry_review_supersedes_the_retracted_outgoing_candidate(
 
 
 @pytest.mark.asyncio
+async def test_inline_retry_completes_ownership_after_the_outgoing_task_released_the_guard(
+    monkeypatch,
+):
+    """The runner's ``/retry`` handler nests the retried turn through a synthetic event it builds
+    itself. The inline dispatch captured the session guard before calling the handler, and the
+    nested turn reaches the runner's carrier lookup only after several awaits — by then the
+    outgoing task's send may have completed and its unwind released that guard. The nested
+    completion then lands on the synthetic event, which no delivery path reads: the live-turn
+    token would stay registered for the process lifetime, every later automatic review on the
+    session refused as ``live_turn_active``, and the retried turn's own candidate lost. The
+    handler must leave its nested completion where the delivery owner reads it: on the command
+    event, completed with the inline send's outcome.
+    """
+    import gateway.run_turn as run_turn_module
+
+    monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
+    adapter = BasePlatformAdapter(
+        PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
+    )
+    monkeypatch.setattr(adapter.config, "typing_indicator", False, raising=False)
+    runner = object.__new__(GatewayRunner)
+    session_id = "released-guard-retry-session"
+    session_key = "released-guard-retry-key"
+    profile_key = review_admission.current_profile_key()
+    guard = asyncio.Event()
+    adapter._active_sessions[session_key] = guard  # the outgoing turn: reply on the wire
+    sends, spawns = [], []
+
+    def _spawn(**kwargs):
+        spawns.append((
+            kwargs["messages_snapshot"][0]["content"],
+            review_admission.other_live_turn(
+                session_id, kwargs["_spawning_turn_token"], profile_key
+            ),
+        ))
+
+    agent = types.SimpleNamespace(
+        session_id=session_id, _spawn_background_review=_spawn
+    )
+
+    class _InlineThread:
+        def __init__(self, *, target, args=(), kwargs=None, daemon=None, name=None):
+            self._run = lambda: target(*args, **(kwargs or {}))
+
+        def start(self):
+            self._run()
+
+    monkeypatch.setattr(
+        run_turn_module,
+        "threading",
+        types.SimpleNamespace(
+            Thread=_InlineThread, Lock=threading.Lock, Event=threading.Event
+        ),
+    )
+
+    async def _resolve(event, _source):
+        # The outgoing task's send completed while /retry was rewinding the transcript: its
+        # unwind released the guard before the nested turn reached the carrier lookup.
+        adapter._cleanup_finished_session_task(session_key, guard)
+        return event.source, types.SimpleNamespace(session_id=session_id), session_key
+
+    async def _prepare(event, *_args):
+        # No guard is left: the runner parked this turn's completion on the nested event.
+        admission = event._gateway_review_delivery_complete.__self__
+        admission.bind_agent(agent)
+        admission.capture_candidate(
+            agent,
+            [{"role": "user", "content": event.text}],
+            review_memory=True,
+            review_skills=False,
+        )
+        return "reply", []
+
+    async def _get_or_create_session(_source):
+        return types.SimpleNamespace(session_id=session_id, last_prompt_tokens=0)
+
+    async def _load_transcript(_session_id):
+        return [
+            {"role": "user", "content": "retried prompt"},
+            {"role": "assistant", "content": "retracted reply"},
+        ]
+
+    async def _rewrite_transcript(_session_id, _history, **_kwargs):
+        return True
+
+    async def _nested(event):
+        return await runner._handle_message_with_agent(
+            event, event.source, session_key, 2
+        )
+
+    runner._hmwa_resolve_session = _resolve
+    runner._hmwa_prepare_turn = _prepare
+    runner._delivery_adapter_for = lambda _source: adapter
+    runner._record_model_friction = lambda *_args, **_kwargs: None
+    runner.session_store = store = types.SimpleNamespace()
+    runner._async_session_store = types.SimpleNamespace(
+        _store=store,
+        get_or_create_session=_get_or_create_session,
+        load_transcript=_load_transcript,
+        rewrite_transcript=_rewrite_transcript,
+    )
+    runner._handle_message = _nested
+
+    async def _handler(event):
+        return await runner._handle_retry_command(event)
+
+    async def _send(chat_id, content, reply_to=None, metadata=None):
+        sends.append(content)
+        return SendResult(success=True, message_id=f"sent-{len(sends)}")
+
+    adapter.set_message_handler(_handler)
+    adapter.send = _send
+
+    await adapter._handle_message_while_active(_event(text="/retry"), session_key)
+
+    assert sends == ["reply"]
+    assert adapter._active_sessions == {}
+    assert review_admission.other_live_turn(session_id, None, profile_key) is False
+    assert spawns == [("retried prompt", False)]
+
+
+@pytest.mark.asyncio
 async def test_reset_command_guard_swap_does_not_strand_the_turns_review_ownership(
     monkeypatch,
 ):

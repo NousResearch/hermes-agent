@@ -296,6 +296,27 @@ class _GatewayReviewAdmission:
         return spawner
 
 
+def rehome_review_delivery_completion(nested_event: Any, carrier: Any) -> None:
+    """Move a completion a nested turn left on its own synthetic event onto ``carrier``.
+
+    ``_handle_message_with_agent`` parks a turn's review-ownership completion on the live
+    session guard and falls back to the turn's event only when the adapter holds no guard. A
+    handler that nests a turn through an event it built itself (``/retry``) can meet that
+    fallback: the inline dispatch read the guard before calling the handler, and the outgoing
+    task whose reply was on the wire unwound — releasing the guard — before the nested turn
+    reached its carrier lookup. No delivery path reads the synthetic event, so the token would
+    stay live for the process lifetime. ``carrier`` is the event the handler was dispatched
+    with, which both the inline dispatch and a background task read once the handler returns;
+    a command event never carries a completion of its own, so nothing is overwritten.
+    """
+    completion = getattr(nested_event, "_gateway_review_delivery_complete", None)
+    if nested_event is carrier or not callable(completion):
+        return
+    with suppress(Exception):
+        delattr(nested_event, "_gateway_review_delivery_complete")
+    carrier._gateway_review_delivery_complete = completion
+
+
 def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
     """One verdict for "this failed turn is a context overflow", shared by transcript persistence
     (#1630 skip) and the user-facing reply so the two can never disagree.

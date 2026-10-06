@@ -425,9 +425,18 @@ class GatewaySessionCommandsMixin:
             return t("gateway.retry.failed_unchanged")
         session_entry.last_prompt_tokens = 0  # transcript was truncated
         self._record_model_friction("retry", source, session_entry.session_id)
-        return await self._handle_message(MessageEvent(
+        retried = MessageEvent(
             text=last_user_msg, message_type=MessageType.TEXT, source=source,
-            raw_message=event.raw_message, channel_prompt=event.channel_prompt))
+            raw_message=event.raw_message, channel_prompt=event.channel_prompt)
+        try:
+            return await self._handle_message(retried)
+        finally:
+            # Dispatched inline while the outgoing turn's reply is on the wire, the nested turn
+            # parks its review-ownership completion on the session guard — unless the outgoing
+            # task's unwind released that guard first, when it falls back to ``retried``, which no
+            # delivery path reads. The command event is what the dispatch reads once this returns.
+            from gateway.run_turn import rehome_review_delivery_completion
+            rehome_review_delivery_completion(retried, event)
 
     def _record_model_friction(self, signal: str, source, session_id: str, turns: int = 1) -> None:
         """Slash dispatch does not install the routed profile's scope, so a multiplexed runner

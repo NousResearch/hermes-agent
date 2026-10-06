@@ -1673,13 +1673,17 @@ def _marker_is_stale(written_at: str, ttl_s: int) -> bool:
 
 def _read_live_pid_marker(path: Path, ttl_s: int) -> Optional[tuple[dict[str, Any], int, Any]]:
     """``(record, target_pid, target_start_time)`` for a usable marker, else None. Malformed/expired
-    markers can never match anyone, so they are unlinked here (must not wedge a new instance)."""
+    markers can never match anyone, so they are unlinked here (must not wedge a new instance) --
+    except a request stamped ``accepted`` (``update_pause_record.mark_stop_accepted``): expired, it
+    matches nobody, but it can be the only trace that a still-draining gateway accepted an update's
+    stop, so it stays until that pause is settled."""
     record = _read_json_file(path)
     if not record:
         return None
     target_pid = _pid_from_record(record, "target_pid")
     if target_pid is None or _marker_is_stale(record.get("written_at") or "", ttl_s):
-        _unlink_quietly(path)
+        if record.get("accepted") is not True:
+            _unlink_quietly(path)
         return None
     return record, target_pid, record.get("target_start_time")
 

@@ -212,6 +212,10 @@ def _record_update_step(step: str, ok: bool, detail: str = "") -> None:
 # otherwise leaves `hermes update` on "Fetching updates..." forever (#93759, #95777). Five
 # minutes is generous for a scoped single-branch fetch and still ends in a real error.
 NETWORK_GIT_TIMEOUT_SECONDS = 300
+# Git's overall subprocess timeout is a last resort.  A transport that receives no
+# bytes at all should fail earlier, while a slow but active transfer should keep going.
+NETWORK_GIT_LOW_SPEED_LIMIT = 1
+NETWORK_GIT_LOW_SPEED_TIME_SECONDS = 60
 
 
 def _record_update_skip(step: str, reason: str) -> None:
@@ -255,9 +259,26 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     Every spawn carries ``windows_hide_flags()``: the updater's git children run under the
     console-less desktop backend, and a bare spawn flashes a console window each (#117781)."""
     from hermes_cli._subprocess_compat import windows_hide_flags
+    operation = args[0] if args else "command"
     # ``_no_prompt_git_kwargs()`` already carries the hide flags for network
     # calls, so layer them instead of passing the keyword twice.
-    spawn_kwargs = {"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()} if network else {}
+    if network:
+        spawn_kwargs = {"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()}
+        # Let libcurl distinguish a dead-stalled transport from a merely slow fetch.
+        # Process-local config via the environment preserves the command shape used by
+        # callers while leaving the user's Git configuration unchanged.
+        env = spawn_kwargs["env"]
+        try:
+            config_count = int(env.get("GIT_CONFIG_COUNT", "0"))
+        except (TypeError, ValueError):
+            config_count = 0
+        env["GIT_CONFIG_COUNT"] = str(config_count + 2)
+        env[f"GIT_CONFIG_KEY_{config_count}"] = "http.lowSpeedLimit"
+        env[f"GIT_CONFIG_VALUE_{config_count}"] = str(NETWORK_GIT_LOW_SPEED_LIMIT)
+        env[f"GIT_CONFIG_KEY_{config_count + 1}"] = "http.lowSpeedTime"
+        env[f"GIT_CONFIG_VALUE_{config_count + 1}"] = str(NETWORK_GIT_LOW_SPEED_TIME_SECONDS)
+    else:
+        spawn_kwargs = {}
     spawn_kwargs.setdefault("creationflags", windows_hide_flags())
     try:
         return subprocess.run(
@@ -270,7 +291,7 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
         # so every caller's existing stderr path prints one clear line.
         result = subprocess.CompletedProcess(
             exc.cmd, 124, stdout="",
-            stderr=f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s (a stalled remote, or a transfer too large for the limit)")
+            stderr=f"git {operation} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s (a stalled remote, or a transfer too large for the limit)")
         if check:
             raise subprocess.CalledProcessError(124, exc.cmd, output="", stderr=result.stderr) from exc
         return result

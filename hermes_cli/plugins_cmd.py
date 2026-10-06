@@ -740,9 +740,26 @@ _BUNDLED_DEFAULT_ON_KINDS = frozenset({"backend", "platform", "model-provider"})
 
 def _default_on(dir_path, source: str) -> bool:
     """True when a plugin is active without a ``plugins.enabled`` entry (portable ``plugin.json``
-    packages have no kind, so never). Model providers load through providers/ discovery from any
-    source (``gate_manifest``); the other default-on kinds only when bundled."""
-    manifest_file = _native_manifest_file(Path(dir_path))
+    packages have no kind, so never). Bundled default-on kinds always; a user model provider only
+    where providers/ discovery loads it (``providers._scan_home_layer``): a
+    ``plugins/model-providers/<name>/`` child whose kind is model-provider, or a flat
+    ``plugins/<name>/`` child declaring exactly ``kind: model-provider``. Discovery imports any other
+    ``model-providers/`` child too, but nothing calls its ``register(ctx)``, so it is not on.
+
+    Entry-point rows store ``module:attr`` in the path slot. That string is not a directory;
+    opening it as one is WinError 123 on Windows and aborts the whole plugin list.
+    """
+    path = Path(dir_path)
+    if not path.is_dir():
+        return False
+    if source != "bundled":
+        from providers import _declares_model_provider_kind
+        root = _plugins_dir()
+        if path.name.startswith(("_", ".")) or path.parent not in (root, root / "model-providers"):
+            return False
+        if path.parent == root:
+            return _declares_model_provider_kind(path)
+    manifest_file = _native_manifest_file(path)
     if manifest_file is None:
         return False
     try:
@@ -787,11 +804,11 @@ def _discover_all_plugins() -> list:
     in ``PluginManager.discover_and_load`` order: bundled, user, then entry points — which never
     displace a directory plugin of the same key (see ``PluginManager._discover_and_load_inner``)."""
     seen: dict = {}
-    # memory/, context_engine/ and model-providers/ load through dedicated registries, not the
+    # memory/, context_engine/, computer_use/ and model-providers/ load through dedicated registries, not the
     # PluginManager opt-in surface, so listing them as toggleable plugins would mislead.
     from hermes_cli.plugins import discover_entrypoint_manifests, get_bundled_plugins_dir
     for base, source, skip in (
-        (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "model-providers"}),
+        (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "computer_use", "model-providers"}),
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)

@@ -51,16 +51,24 @@ class _TerminalSlot:
             # shell state later, after the previous result has been persisted.
             config = tt._get_env_config()
             if isinstance(ref.args.get("command"), str):
-                from tools.approval_context import set_current_observability_context, reset_current_observability_context
-                tokens = set_current_observability_context(
-                    tool_call_id=ref.call_id, session_id=self.batch.agent.session_id or "",
-                    turn_id=getattr(self.batch.agent, "_current_turn_id", "") or "",
-                )
-                try:
-                    self.guard_key = (ref.args["command"], config["env_type"], tt._docker_has_host_access(config))
-                    self.decision = tt._check_all_guards(*self.guard_key)
-                finally:
-                    reset_current_observability_context(tokens)
+                from tools.approval_preflight import requires_runtime_preflight
+                if config["env_type"] != "local" or not requires_runtime_preflight(ref.args["command"]):
+                    from tools.approval_context import set_current_observability_context, reset_current_observability_context
+                    tokens = set_current_observability_context(
+                        tool_call_id=ref.call_id, session_id=self.batch.agent.session_id or "",
+                        turn_id=getattr(self.batch.agent, "_current_turn_id", "") or "",
+                    )
+                    try:
+                        self.guard_key = (ref.args["command"], config["env_type"], tt._docker_has_host_access(config))
+                        self.decision = tt._check_all_guards(*self.guard_key)
+                    finally:
+                        reset_current_observability_context(tokens)
+                else:
+                    # Cwd/process identity is resolved only in the real execution
+                    # path.  Preparing a decision here would authorize incomplete
+                    # evidence and bypass the execution-time recheck.
+                    self.guard_key = None
+                    self.decision = None
         finally:
             self.preparing = False
             self.ready.set()

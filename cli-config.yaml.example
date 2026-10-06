@@ -557,6 +557,16 @@ terminal:
 # =============================================================================
 # Security Scanning (tirith)
 # =============================================================================
+# Optional Smart Approval policy for local terminal commands already flagged by
+# the approval guard. Empty by default: existing files require owner approval.
+# List only directories whose contents you explicitly consider disposable.
+# Simple non-recursive rm targets within these roots may be assessed by the
+# reviewer; identity is checked again before execution. Other backends keep
+# their existing approval behavior. This does not disable security scanning.
+# approvals:
+#   mode: smart
+#   disposable_roots: []       # Example: [~/scratch/generated-output]
+#
 # Optional pre-exec command security scanning via tirith.
 # Detects homograph URLs, pipe-to-shell, terminal injection, env manipulation.
 # Install: brew install sheeki03/tap/tirith

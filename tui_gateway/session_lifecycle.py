@@ -128,11 +128,19 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     if (canonical := _canonical_ledger_refusal(session)) is not None:
         return canonical
     if session.get("active_session_lease") is not None:
+
+
+    held = session.get("active_session_lease")
+    if held is not None and not _lease_lost_to_another_backend(sid, session, held):
         return None
+    handed_over = held is not None
     key = str(session.get("session_key") or "")
     lease, limit_message = _claim_active_session_slot(
         key, live_session_id=sid, surface=_session_source(session), profile_home=session.get("profile_home"))
     if limit_message is None:
+        if handed_over and not _reload_history_after_handover(sid, session):
+            lease.release()
+            return _SESSION_OWNERSHIP_UNAVAILABLE
         _evict_other_session_leases(sid, key)
         _attach_lease(session, lease)
         return None
@@ -142,79 +150,42 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     return limit_message
 
 
-_CANONICAL_PENDING_SQL = """SELECT status FROM session_admissions WHERE target_session_id=? AND status!='terminal'
-    UNION ALL SELECT status FROM worker_executions WHERE session_id=? AND status!='terminal' LIMIT 1"""
-
-
-def _end_unless_ledger_busy(db, session_id: str, session_key, end_reason: str) -> bool:
-    """End *session_id*'s row unless the gateway's durable ledger still holds work for it; True when
-    the row may end (ended now, or already ended). The check and the stamp share one write txn.
-
-    A viewer process (a dashboard, a second Desktop window) runs this reaper for a session the
-    owning gateway is still executing; stamping it ended mid-turn made the owner treat its own live
-    route as stale (#54878) and replace the conversation (#140642). The ledger names a local session
-    by its logical id (the row's ``chat_id``), so the physical id, the key and that id are checked: a
-    ``local-`` id, or the lineage owner its receipt names (an adopted conversation keeps its legacy id)."""
-    execute_write = getattr(db, "_execute_write", None)
-    if execute_write is None:
-        db.end_session(session_id, end_reason)
-        return True
-
-    def write(conn):
-        row = conn.execute("SELECT chat_id FROM sessions WHERE id=?", (session_id,)).fetchone()
-        ids = {session_id, str(session_key or "")}
-        if row is not None and str(row[0] or "").startswith("local-"):
-            ids.add(str(row[0]))
-        from hermes_state_local import local_lineage_owner
-        ids.add(local_lineage_owner(conn, session_id))
-        for sid in filter(None, ids):
-            if conn.execute(_CANONICAL_PENDING_SQL, (sid, sid)).fetchone() is not None:
-                return False
-        db._end_and_bump(conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
-                         (time.time(), end_reason, session_id), session_id, end_reason)
-        return True
-
-    if execute_write(write):
-        return True
-    logger.info("Preserving session %s during %s: the gateway's ledger still holds its turn", session_id, end_reason)
-    return False
-
-
-def _canonical_ledger_refusal(session: dict):
-    """Refusal when the gateway's durable ledger still holds work for this stored session, else None.
-
-    The registry lease only fences other legacy backends. A session a gateway once owned can carry
-    an ``unknown`` admission (outcome lost across an owner restart: never replayed, only Discard
-    resolves it), queued input or a running worker; a legacy turn would run past that barrier
-    and write the transcript beside the canonical FIFO. Checked on every turn, not only at the
-    first claim, because a gateway may admit work while this backend still holds its lease."""
-    import sqlite3
-    from hermes_cli.active_sessions import (
-        ActiveSessionRefusal, SESSION_COORDINATION_UNAVAILABLE, SESSION_NOT_OWNED)
-    key = str(session.get("session_key") or "")
-    if not key:
-        return None
-    try:
-        with _session_db(session) as db:
-            read_ctx = getattr(db, "_read_ctx", None)
-            if read_ctx is None:
-                return None
-            with read_ctx() as conn:
-                row = next(iter(conn.execute(_CANONICAL_PENDING_SQL, (key, key))), None)
-    except sqlite3.Error:
-        logger.warning("canonical ledger read failed for %s", key, exc_info=True)
-        return ActiveSessionRefusal(_SESSION_OWNERSHIP_UNAVAILABLE, SESSION_COORDINATION_UNAVAILABLE)
-    if row is None:
-        return None
-    logger.info("Refusing legacy turn for %s: canonical ledger holds %s work", key, row[0])
-    refusal = ActiveSessionRefusal(
-        f"Session {key} has {'outcome-unknown' if row[0] == 'unknown' else 'pending'} work in the gateway's "
-        "durable queue. Resume it through the gateway (hermes chat --resume, Desktop or the TUI) to "
-        "resolve it; nothing was run here.", SESSION_NOT_OWNED)
     # prompt.submit forwards a typed prompt to the owner's FIFO for work that ends on its own
-    # (tui_gateway/owner_forward.py); an ``unknown`` admission is never forwarded past.
+    # (tui_gateway/owner_forward.py); an unknown admission is never forwarded past.
     refusal.ledger_status = row[0]
     return refusal
+
+
+def _lease_lost_to_another_backend(sid: str, session: dict, lease) -> bool:
+    """True, with the dead lease dropped, when another backend process replaced it.
+
+    allow_session_takeover lets a second hermes serve on the same HERMES_HOME (Desktop's
+    child next to an always-on backend, an SSH --isolated serve) replace this runtime's
+    registry entry, and nothing signals this process. Without the check the in-memory lease kept
+    passing every later turn, so both processes wrote one session from two snapshots. One locked
+    registry read per turn; an unreadable registry keeps the lease (no worse than before)."""
+    from hermes_cli.active_sessions import active_session_lease_is_current
+
+    if active_session_lease_is_current(lease) is not False:
+        return False
+    logger.info("Session %s lost its lease for %s to another backend", sid, session.get("session_key"))
+    with session["history_lock"]:
+        session.pop("active_session_lease", None)
+        session["_lease_taken_over"] = True
+    return True
+
+
+def _reload_history_after_handover(sid: str, session: dict) -> bool:
+    """Continue from the stored transcript the other backend extended, not this runtime's snapshot.
+    False when it cannot be read: replaying the stale snapshot would drop the other side's turns."""
+    history = _load_durable_truncation_history(session)
+    if history is None:
+        logger.warning("Session %s: could not reload the transcript after a handover", sid)
+        return False
+    with session["history_lock"]:
+        session["history"] = history
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+    return True
 
 
 def _evict_other_session_leases(current_sid: str, key: str, sessions_dict: dict | None = None, lock=None) -> None:

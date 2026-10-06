@@ -246,3 +246,27 @@ async def test_control_and_clarify_messages_bypass_text_debounce():
     adapter._message_handler.assert_awaited_once_with(answer)
     assert session_key not in adapter._text_debounce
     assert session_key not in adapter._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_pre_gateway_route_hook_selects_busy_lane_before_key_derivation(monkeypatch):
+    adapter = _make_adapter()
+    started = []
+
+    def _fake_start(event, session_key, *, interrupt_event=None):
+        started.append(session_key)
+        return True
+
+    async def _route_hook(name, **kwargs):
+        assert name == "pre_gateway_route"
+        assert kwargs["event"].text == "doorbell"
+        return [{"session_route_suffix": "doorbell-issue-58"}]
+
+    adapter._start_session_processing = _fake_start  # type: ignore[method-assign]
+    monkeypatch.setattr("hermes_cli.lifecycle.ainvoke_hook", _route_hook)
+
+    event = _make_event("doorbell")
+    await adapter.handle_message(event)
+
+    assert event.source.session_route_suffix == "doorbell-issue-58"
+    assert started == ["agent:main:telegram:dm:12345:route:doorbell-issue-58"]

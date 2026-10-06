@@ -14,6 +14,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
+from gateway.session import SessionSource, build_session_key
 from gateway.platforms.yuanbao import DispatchMiddleware, InboundContext, YuanbaoAdapter
 from gateway.profile_routing import parse_profile_routes
 
@@ -67,3 +68,30 @@ def test_adapter_batch_key_equals_runner_session_key(owner):
     assert queued == [runner_key], (queued, runner_key)
     assert seen == [runner_key]
     assert adapter._processing_msg_ids == {runner_key: "m1"}
+
+
+def test_explicit_session_route_suffix_isolated_without_changing_default_key():
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="8830235172",
+        user_id="8830235172",
+        chat_type="dm",
+    )
+
+    assert build_session_key(source) == "agent:main:telegram:dm:8830235172"
+
+    source.session_route_suffix = "doorbell-issue-58"
+
+    assert build_session_key(source) == "agent:main:telegram:dm:8830235172:route:doorbell-issue-58"
+
+
+def test_unsafe_session_route_suffix_does_not_change_key():
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="8830235172",
+        user_id="8830235172",
+        chat_type="dm",
+        session_route_suffix="doorbell:issue/58",
+    )
+
+    assert build_session_key(source) == "agent:main:telegram:dm:8830235172"

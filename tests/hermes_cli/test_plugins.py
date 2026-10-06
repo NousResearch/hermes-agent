@@ -919,6 +919,24 @@ class TestPluginHooks:
         assert len(results) == 1
         assert results[0] == {"action": "skip", "reason": "test"}
 
+    def test_pre_gateway_route_collects_route_suffix(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "preroute_plugin",
+            register_body=(
+                'ctx.register_hook("pre_gateway_route", '
+                'lambda **kw: {"session_route_suffix": "task-58"})'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert mgr.invoke_hook("pre_gateway_route", event=object(), adapter=object()) == [
+            {"session_route_suffix": "task-58"}
+        ]
+
 
     def test_request_hooks_are_invokeable(self, tmp_path, monkeypatch):
         plugins_dir = tmp_path / "hermes_test" / "plugins"

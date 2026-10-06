@@ -431,7 +431,7 @@ from gateway.platforms.base_exec_approval import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionSource, build_session_key, is_valid_session_route_suffix
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
@@ -2489,6 +2489,27 @@ class BasePlatformAdapter(ABC):
             self.name, getattr(source, "chat_id", "?"))
         return True
 
+    async def _apply_pre_gateway_route(self, event: "MessageEvent") -> None:
+        """Apply a plugin-selected, validated local route before session-key derivation.
+
+        This hook cannot change content, authorization, identity, or explicitly routed events.
+        Missing, malformed, or failing plugin results preserve the legacy session key.
+        """
+        source = getattr(event, "source", None)
+        if source is None or (event.metadata or {}).get("gateway_session_key"):
+            return
+        try:
+            from hermes_cli.lifecycle import ainvoke_hook
+            results = await ainvoke_hook("pre_gateway_route", event=event, adapter=self)
+        except Exception:
+            logger.warning("[%s] pre_gateway_route invocation failed", self.name, exc_info=True)
+            return
+        for result in results:
+            suffix = result.get("session_route_suffix") if isinstance(result, dict) else None
+            if is_valid_session_route_suffix(suffix):
+                source.session_route_suffix = suffix
+                return
+
     def _session_key_profile(self, source: Optional[Any] = None) -> Optional[str]:
         """Profile namespace for an adapter-derived session key. Ingress runs BEFORE the runner
         stamps ``source.profile``, so without this every bot in a multiplexed gateway shares one
@@ -4057,6 +4078,7 @@ class BasePlatformAdapter(ABC):
         # Identity FIRST: every key below (routing check, guard lookup, batch lane) derives from it.
         if self._drop_unresolved(event):
             return
+        await self._apply_pre_gateway_route(event)
         expected_session_key = str((event.metadata or {}).get("gateway_session_key") or "").strip()
         # Explicitly routed events already name their destination; recovering a
         # different topic would redirect them and yield before the session claim.

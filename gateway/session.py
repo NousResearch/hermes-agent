@@ -98,6 +98,9 @@ class SessionSource:
     # over the authenticated relay WebSocket. ``platform`` is the UNDERLYING platform, not
     # ``relay``, so authz must key upstream trust off THIS flag.
     delivered_via_upstream_relay: bool = False
+    # Ephemeral, plugin-supplied lane discriminator. It is deliberately omitted from wire
+    # serialization: only trusted local gateway code may select an alternate session lane.
+    session_route_suffix: Optional[str] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         # Mirror scope_id/guild_id onto each other (scope_id wins) so readers of EITHER agree.
@@ -679,6 +682,15 @@ def _canonical_participant(source: SessionSource) -> Optional[str]:
     return participant_id
 
 
+def is_valid_session_route_suffix(value: object) -> bool:
+    """Whether a plugin-provided suffix is safe to append to a logical session key."""
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= 128
+        and all(char.isalnum() or char in "._-" for char in value)
+    )
+
+
 def build_session_key(
     source: SessionSource, group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False, profile: Optional[str] = None,
@@ -720,6 +732,9 @@ def build_session_key(
     user_part = [str(participant_id)] if isolate_user and participant_id else []
     thread_part = [thread_id] if thread_id else []
     parts += user_part + thread_part if is_dm else thread_part + user_part
+    route_suffix = getattr(source, "session_route_suffix", None)
+    if is_valid_session_route_suffix(route_suffix):
+        parts += ["route", route_suffix]
     return ":".join(str(part) for part in parts)
 
 

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ChatSessionList } from './ChatSessionList'
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const { getSessions } = vi.hoisted(() => ({ getSessions: vi.fn() }))
 
@@ -20,7 +20,7 @@ vi.mock('@nous-research/ui/ui/components/button', () => ({
     prefix,
     size,
     ...props
-  }: React.ButtonHTMLAttributes<HTMLButtonElement>) => {
+  }: React.ButtonHTMLAttributes<HTMLButtonElement> & { ghost?: boolean; outlined?: boolean; size?: string }) => {
     void ghost
     void outlined
     void prefix

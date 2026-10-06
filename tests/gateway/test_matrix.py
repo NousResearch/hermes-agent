@@ -678,11 +678,59 @@ class TestMatrixMarkdownToHtml:
         )
         assert self.adapter._markdown_to_html(text) == html
 
+    @pytest.mark.parametrize("tag", ["script", "style"])
+    @pytest.mark.parametrize(
+        "closing", ["", " extra", None, "nested", "unmatched-repeat"]
+    )
+    def test_html_sanitizer_preserves_placeholders_outside_unsafe_body(
+        self, tag, closing
+    ):
+        from plugins.platforms.matrix.adapter import _sanitize_matrix_html
+
+        if closing == "nested":
+            other = "style" if tag == "script" else "script"
+            text = (
+                f"<x><{tag}>A<{other}>B</x></{other}><{other}>C</{tag}><y>"
+                '<b onclick="x">later</b>'
+            )
+            html = "&lt;x&gt;&lt;y&gt;<b>later</b>"
+        elif closing == "unmatched-repeat":
+            text = f"<{tag}>" * 128 + '<x> visible <b onclick="x">later</b>'
+            html = f"&lt;{tag}&gt;" * 128 + "&lt;x&gt; visible <b>later</b>"
+        elif closing is None:
+            text = f'<x><{tag}>visible <b onclick="x">later</b> <y>'
+            html = f"&lt;x&gt;&lt;{tag}&gt;visible <b>later</b> &lt;y&gt;"
+        else:
+            text = (
+                f"<x><{tag}>hidden </x><b>hidden</b></{tag}{closing}><y>"
+                '<b onclick="x">later</b> <a href="javascript:alert(1)">bad</a> '
+                '<a href="https://example.org" onclick="x">safe</a>'
+            )
+            html = (
+                "&lt;x&gt;&lt;y&gt;<b>later</b> <a>bad</a> "
+                '<a href="https://example.org">safe</a>'
+            )
+
+        assert _sanitize_matrix_html(text) == html
+
+    @pytest.mark.parametrize("tag", ["script", "style"])
+    @pytest.mark.parametrize("closing", ["", " extra", None])
+    def test_markdown_renderer_preserves_placeholders_outside_unsafe_body(
+        self, tag, closing
+    ):
+        if closing is None:
+            text = f"<x><{tag}>visible **later** <y>"
+            html = f"&lt;x&gt;&lt;{tag}&gt;visible <strong>later</strong> &lt;y&gt;"
+        else:
+            text = f"<x><{tag}>hidden </x><b>hidden</b></{tag}{closing}><y> **later** &"
+            html = "&lt;x&gt;&lt;y&gt; <strong>later</strong> &amp;"
+
+        assert self.adapter._markdown_to_html(text) == html
+
 
 # ---------------------------------------------------------------------------
 # Helper: display name extraction
 # ---------------------------------------------------------------------------
-
 
 
 # ---------------------------------------------------------------------------

@@ -258,6 +258,20 @@ def _split_reply_fallback(body: str) -> tuple[str, str]:
     return (head, "") if idx >= len(lines) else (head + "\n", "\n".join(lines[idx:]))
 
 
+@dataclass(frozen=True)
+class _MatrixRawTextCheckpoint:
+    tag: str
+    parts_index: int
+    undo_index: int
+
+
+@dataclass(frozen=True)
+class _MatrixUnknownTagUndo:
+    tag: str
+    index: int
+    fragment: str | None
+
+
 class _MatrixHtmlSanitizer(HTMLParser):
     """Allowlist sanitizer for Matrix-compatible formatted HTML."""
 
@@ -270,6 +284,9 @@ class _MatrixHtmlSanitizer(HTMLParser):
         super().__init__(convert_charrefs=False)
         self._parts: list[str] = []
         self._unknown_open: dict[str, list[int]] = {}
+        self._raw_text_open: list[_MatrixRawTextCheckpoint] = []
+        self._raw_text_positions: dict[str, list[int]] = {}
+        self._unknown_undo: list[_MatrixUnknownTagUndo] = []
 
     def set_cdata_mode(self, *_args, **_kwargs) -> None:
         # HTMLParser reads the content after <title>, <script>, <plaintext> and similar start tags as raw
@@ -301,19 +318,58 @@ class _MatrixHtmlSanitizer(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
+        if tag in {"script", "style"}:
+            self._raw_text_positions.setdefault(tag, []).append(
+                len(self._raw_text_open)
+            )
+            self._raw_text_open.append(
+                _MatrixRawTextCheckpoint(
+                    tag,
+                    len(self._parts),
+                    len(self._unknown_undo),
+                )
+            )
         if tag in self._ALLOWED_TAGS:
             self._parts.append(f"<{tag}>" if tag in self._VOID_TAGS else f"<{tag}{self._safe_attrs(tag, attrs)}>")
             return
         # The plain body shows an argument placeholder such as <name> as text, so an unknown start tag
         # stays visible unless a matching end tag follows.
+        if self._raw_text_open:
+            self._unknown_undo.append(
+                _MatrixUnknownTagUndo(tag, len(self._parts), None)
+            )
         self._unknown_open.setdefault(tag, []).append(len(self._parts))
         self._parts.append(_html_escape(self.get_starttag_text() or ""))
 
+    def _restore_raw_text(self, checkpoint: _MatrixRawTextCheckpoint) -> None:
+        del self._parts[checkpoint.parts_index :]
+        for undo in reversed(self._unknown_undo[checkpoint.undo_index :]):
+            if undo.fragment is None:
+                self._unknown_open[undo.tag].pop()
+                continue
+            self._unknown_open.setdefault(undo.tag, []).append(undo.index)
+            # A closing tag can remove a placeholder before this body began.
+            if undo.index < len(self._parts):
+                self._parts[undo.index] = undo.fragment
+        del self._unknown_undo[checkpoint.undo_index :]
+
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if positions := self._raw_text_positions.get(tag):
+            index = positions[-1]
+            self._restore_raw_text(self._raw_text_open[index])
+            while len(self._raw_text_open) > index:
+                opened_tag = self._raw_text_open.pop().tag
+                self._raw_text_positions[opened_tag].pop()
+            return
         if tag not in self._ALLOWED_TAGS:
             if opened := self._unknown_open.get(tag):
-                self._parts[opened.pop()] = ""
+                index = opened.pop()
+                if self._raw_text_open:
+                    self._unknown_undo.append(
+                        _MatrixUnknownTagUndo(tag, index, self._parts[index])
+                    )
+                self._parts[index] = ""
             return
         if tag in self._VOID_TAGS:
             return

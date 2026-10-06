@@ -8,7 +8,9 @@ import { $selectedStoredSessionId } from './session'
 
 // A chat surface: the primary's workspace or a session tile. Everything else a
 // zone can show — the sessions list, Files, Terminal, a preview tab — is chrome.
-const isChatPane = (paneId?: string): boolean => paneId === 'workspace' || Boolean(paneId?.startsWith('session-tile:'))
+export const TILE_PANE_PREFIX = 'session-tile:'
+
+const isChatPane = (paneId?: string): boolean => paneId === 'workspace' || Boolean(paneId?.startsWith(TILE_PANE_PREFIX))
 
 // Chrome can own keyboard focus, but working in it (navigating the sessions
 // list, browsing Files, typing in Terminal) must not replace the chat being
@@ -46,7 +48,7 @@ export const $focusedTreePaneId = computed(
         : findGroupOfPane(tree, 'workspace')?.active
     }
 
-    if (active?.startsWith('session-tile:')) {
+    if (active?.startsWith(TILE_PANE_PREFIX)) {
       return active
     }
 
@@ -55,7 +57,7 @@ export const $focusedTreePaneId = computed(
     if (workspaceMode === 'bots' && tree) {
       const mainActive = findGroupOfPane(tree, 'workspace')?.active
 
-      if (mainActive?.startsWith('session-tile:')) {
+      if (mainActive?.startsWith(TILE_PANE_PREFIX)) {
         return mainActive
       }
     }
@@ -73,8 +75,6 @@ export const $focusedTreePaneId = computed(
  *  `session-states` ⇄ `preview` a load cycle. The inputs (the layout tree and
  *  the primary selection) are both leaf stores, so every consumer can share one
  *  derivation without dragging session-states in. */
-export const TILE_PANE_PREFIX = 'session-tile:'
-
 export const $focusedSessionIsTile = computed($focusedTreePaneId, active =>
   Boolean(active?.startsWith(TILE_PANE_PREFIX))
 )

@@ -109,7 +109,9 @@ function capabilityServedBy(provider: ToolProvider, backend: null | string | und
     return Boolean(viaNous)
   }
 
-  return Boolean(provider.web_backend && backend === provider.web_backend && !viaNous)
+  // Rows sharing a backend name (cloud vs self-hosted Firecrawl) are told apart by the server's
+  // is_active, which knows which one's credential is set.
+  return Boolean(provider.web_backend && backend === provider.web_backend && !viaNous && provider.is_active)
 }
 
 interface EnvVarFieldProps {

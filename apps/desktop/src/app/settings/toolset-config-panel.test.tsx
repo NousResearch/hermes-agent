@@ -899,7 +899,7 @@ describe('ToolsetConfigPanel', () => {
             env_vars: [],
             post_setup: null,
             requires_nous_auth: false,
-            is_active: false,
+            is_active: true,
             status: 'ready',
             web_backend: 'firecrawl',
             capabilities: ['search', 'extract']
@@ -969,6 +969,31 @@ describe('ToolsetConfigPanel', () => {
       expect(within(nousRow).queryByText('Extract backend')).toBeNull()
       expect(within(byokRow).getByText('Extract backend')).toBeTruthy()
       expect(within(byokRow).queryByText('Search backend')).toBeNull()
+    })
+
+    it('marks only the configured row of two sharing one backend name', async () => {
+      // Cloud and self-hosted Firecrawl share web_backend 'firecrawl'; the server's is_active says which
+      // one's credential is set, and only that row carries the capability pills.
+      const selfHosted = {
+        ...webConfig().providers[1],
+        name: 'Firecrawl Self-Hosted',
+        badge: 'free · self-hosted',
+        is_active: false,
+        status: 'needs_keys' as const
+      }
+
+      getToolsetConfig.mockResolvedValue(
+        webConfig({ active_search_backend: 'firecrawl', providers: [selfHosted, webConfig().providers[1]] })
+      )
+
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="web" />)
+
+      const cloudRow = await screen.findByRole('button', { name: /^Firecrawl(?! Self)/ })
+      const selfRow = screen.getByRole('button', { name: /^Firecrawl Self-Hosted/ })
+      expect(within(cloudRow).getByText('Search backend')).toBeTruthy()
+      expect(within(cloudRow).getByText('Extract backend')).toBeTruthy()
+      expect(within(selfRow).queryByText('Search backend')).toBeNull()
+      expect(within(selfRow).queryByText('Extract backend')).toBeNull()
     })
   })
 })

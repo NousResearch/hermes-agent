@@ -115,7 +115,9 @@ class _ReplyContext:
     is_own_message: bool = False
 
     @classmethod
-    def from_quote(cls, quote: object, chat_info: dict, incoming_id: Optional[str]) -> "_ReplyContext":
+    def from_quote(
+        cls, quote: object, chat_info: dict, incoming_id: Optional[str]
+    ) -> "_ReplyContext":
         if not isinstance(quote, dict):
             return cls()
 
@@ -126,7 +128,9 @@ class _ReplyContext:
         elif isinstance(shared_id, str) and shared_id:
             message_id = f"simplex:quote:shared:{shared_id}"
         else:
-            message_id = f"simplex:quote:item:{incoming_id}" if incoming_id is not None else None
+            message_id = (
+                f"simplex:quote:item:{incoming_id}" if incoming_id is not None else None
+            )
 
         content = quote.get("content")
         text = content.get("text") if isinstance(content, dict) else None
@@ -147,8 +151,10 @@ class _ReplyContext:
                 author_name = _display_name(member, "memberProfile") or None
 
         return cls(
-            message_id=message_id, text=text if isinstance(text, str) else None,
-            author_id=author_id, author_name=author_name,
+            message_id=message_id,
+            text=text if isinstance(text, str) else None,
+            author_id=author_id,
+            author_name=author_name,
             is_own_message=direction_type in ("directSnd", "groupSnd"),
         )
 
@@ -438,13 +444,24 @@ class SimplexAdapter(BasePlatformAdapter):
             timestamp = datetime.now(tz=UTC)
         item_id = meta.get("itemId")
         message_id = str(item_id) if item_id is not None else None
-        reply = _ReplyContext.from_quote(chat_item_data.get("quotedItem"), chat_info, message_id)
+        reply = _ReplyContext.from_quote(
+            chat_item_data.get("quotedItem"), chat_info, message_id
+        )
         msg_event = MessageEvent(
-            source=source, text=text or "", message_type=msg_type, media_urls=media_urls,
-            media_types=media_types, timestamp=timestamp, raw_message=chat_item,
-            message_id=message_id, reply_to_message_id=reply.message_id, reply_to_text=reply.text,
-            reply_to_author_id=reply.author_id, reply_to_author_name=reply.author_name,
-            reply_to_is_own_message=reply.is_own_message)
+            source=source,
+            text=text or "",
+            message_type=msg_type,
+            media_urls=media_urls,
+            media_types=media_types,
+            timestamp=timestamp,
+            raw_message=chat_item,
+            message_id=message_id,
+            reply_to_message_id=reply.message_id,
+            reply_to_text=reply.text,
+            reply_to_author_id=reply.author_id,
+            reply_to_author_name=reply.author_name,
+            reply_to_is_own_message=reply.is_own_message,
+        )
         logger.debug("SimpleX: message from %s in %s: %s", _redact_id(sender_id), chat_id[:20], (text or "")[:50])
         if msg_type == MessageType.TEXT and text:  # batch rapid-fire text into one combined message
             self._enqueue_text_event(msg_event)

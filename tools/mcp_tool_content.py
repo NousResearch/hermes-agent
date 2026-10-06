@@ -5,7 +5,7 @@ embedded resources."""
 import base64
 import logging
 import mimetypes
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import mcp_field
 from tools.mcp_tool_schema import mcp_prefixed_tool_name
@@ -123,6 +123,55 @@ def _cache_mcp_media_block(block, kind: str, writer: str, ext_for, *, cap_what: 
 def _cache_mcp_image_block(block) -> str:
     """Cache an ``ImageContent`` block and return a ``MEDIA:<path>`` tag ("" on any failure)."""
     return _cache_mcp_media_block(block, "image", "cache_image_from_bytes", _mcp_image_extension_for_mime_type)
+
+
+_MCP_NATIVE_IMAGE_MAX = 4  # images attached natively from one tool result; the rest stay MEDIA: paths
+
+
+def _mcp_native_image_part(path: str) -> Optional[Dict[str, Any]]:
+    """``image_url`` part for one cached MCP image, sized like every other native embed (the result is
+    re-sent each later turn: ``vision.embed_target_bytes``, 1568 px long edge, JPEG) and normalized to a
+    provider-accepted format (BMP and friends → PNG). None when the file cannot be embedded."""
+    from pathlib import Path
+    from tools.vision_tools import _EMBED_MAX_DIMENSION, _MAX_BASE64_BYTES, _resize_image_for_vision
+    from tools.vision_tools_history_budget import resolve_embed_target_bytes
+    from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes, _normalize_to_supported_image
+    src = Path(path)
+    mime = _detect_image_mime_type_from_bytes(src.read_bytes())
+    if not mime:
+        return None
+    normalized, mime, err = _normalize_to_supported_image(src, mime)
+    if err or normalized is None:
+        return None
+    try:
+        url = _resize_image_for_vision(normalized, mime_type=mime, max_base64_bytes=resolve_embed_target_bytes(),
+                                       max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
+    finally:
+        if normalized != src:
+            normalized.unlink(missing_ok=True)
+    return {"type": "image_url", "image_url": {"url": url}} if len(url) <= _MAX_BASE64_BYTES else None
+
+
+def _mcp_result_with_native_images(text: str, image_paths: List[str]) -> Any:
+    """*text* as-is, or the ``_multimodal`` envelope carrying the call's cached images when the active route
+    takes images inside tool results — the same gate as ``vision_analyze`` and ``computer_use`` captures
+    (``agent.image_input_mode``, an explicit ``auxiliary.vision`` backend, catalog vision, provider support).
+    The text half keeps the ``MEDIA:`` paths so sharing and full-resolution reads still work. Any failure
+    keeps the text: the paths already carry the images."""
+    if not image_paths:
+        return text
+    try:
+        from tools.vision_tools import _should_use_native_vision_fast_path
+        if not _should_use_native_vision_fast_path():
+            return text
+        parts = [p for p in map(_mcp_native_image_part, image_paths[:_MCP_NATIVE_IMAGE_MAX]) if p]
+    except Exception:  # deliberate boundary: the MEDIA: paths already carry the images, so any failure keeps the text
+        logger.debug("MCP native image attach failed, keeping MEDIA: paths", exc_info=True)
+        return text
+    if not parts:
+        return text
+    attached = text + "\n\nThe image(s) from this call are attached — inspect them with your native vision."
+    return {"_multimodal": True, "content": [{"type": "text", "text": attached}, *parts], "text_summary": text}
 
 
 def _cache_mcp_audio_block(block) -> str:

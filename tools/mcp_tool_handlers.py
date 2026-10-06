@@ -18,7 +18,7 @@ from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import _exc_str, _sanitize_error, mcp_field, _core
 from tools import mcp_tool_loop as _loop
 from tools.mcp_tool_content import (
-    _MCP_HARD_RESULT_CAP_CHARS, _base_mime, _cache_mcp_audio_block, _cache_mcp_image_block,
+    _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block, _mcp_result_with_native_images,
     _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
     _truncate_mcp_text_result)
 from tools.mcp_tool_errors import _is_auth_error, _is_session_expired_error
@@ -437,13 +437,16 @@ def _error_result_text(result) -> str:
     return "".join(str(t) for t in texts if t)
 
 
-def _render_content_blocks(result, server_name: str) -> Tuple[str, int]:
+def _render_content_blocks(result, server_name: str) -> Tuple[str, int, List[str]]:
     """Text passes through; image/audio blocks are cached (MEDIA: tags); resource blocks are
     materialized rather than silently dropped; unsupported blocks become an inline drop notice
-    (kimi-code#3227). Returns ``(text, usable_parts)`` — the count of REAL rendered blocks
-    (whitespace-only text and drop notices excluded) that the structuredContent arbitration uses."""
+    (kimi-code#3227). Returns ``(text, usable_parts, image_paths)``: ``usable_parts`` counts REAL
+    rendered blocks (whitespace-only text and drop notices excluded) for the structuredContent
+    arbitration; ``image_paths`` are the files THIS call's image blocks were cached to — never
+    parsed back out of the text, where a server-written ``MEDIA:`` line could name any local file."""
     parts: List[str] = []
     usable_parts = 0
+    image_paths: List[str] = []
     # MCP tool results can also include ImageContent blocks (screenshot / Blockbench / Playwright etc.);
     # cache those via the gateway's image-cache helper so they flow through Hermes' MEDIA: tag convention
     # and out to messaging adapters that render images natively. Without this, image blocks were silently
@@ -456,7 +459,10 @@ def _render_content_blocks(result, server_name: str) -> Tuple[str, int]:
             if block.text.strip():
                 usable_parts += 1
             continue
-        rendered = _cache_mcp_image_block(block) or _cache_mcp_audio_block(block) or _render_mcp_resource_block(block, server_name)
+        image = _cache_mcp_image_block(block)
+        if image.startswith("MEDIA:"):
+            image_paths.append(image[len("MEDIA:"):])
+        rendered = image or _cache_mcp_audio_block(block) or _render_mcp_resource_block(block, server_name)
         if rendered:
             parts.append(rendered)
             usable_parts += 1
@@ -470,7 +476,7 @@ def _render_content_blocks(result, server_name: str) -> Tuple[str, int]:
             # believing the tool returned less than it did, with no way to recover.
             parts.append(_render_mcp_dropped_block_notice(block, block_type))
     # Hard-cap pathological payloads; ordinary large results pass to spillover.
-    return _truncate_mcp_text_result("\n".join(parts)), usable_parts
+    return _truncate_mcp_text_result("\n".join(parts)), usable_parts, image_paths
 
 
 def _capped_structured_content(result):
@@ -514,79 +520,9 @@ def _content_dual_emits_structured(result, structured) -> bool:
     return False
 
 
-_MCP_INLINE_IMAGE_MAX = 4  # most images inlined from one tool result
-_MCP_INLINE_IMAGE_MAX_B64 = 12_000_000  # ~9 MB of pixels; past this the MEDIA: path stands alone
-_MCP_MULTIMODAL_ROUTE_CACHE: Dict[Tuple[str, str, str], bool] = {}
-
-
-def _route_takes_multimodal_tool_results() -> bool:
-    """True when the active main model can consume an image INSIDE a tool result.
-
-    Reuses the shared capture gate rather than adding a second predicate: it already fails CLOSED
-    toward text when provider/model metadata is missing, which is what is wanted here -- a
-    multimodal tool result sent to a text-only route is a hard 400/404 at the provider boundary.
-    Any failure keeps the MEDIA: tag, so a broken config degrades instead of breaking the call."""
-    try:
-        from agent.auxiliary_client import _read_main_model, _read_main_provider
-        from hermes_cli.config import load_config
-        from hermes_constants import hermes_home_key
-        from tools.computer_use.vision_routing import should_route_capture_to_aux_vision
-
-        provider, model = _read_main_provider() or "", _read_main_model() or ""
-        key = (hermes_home_key(), str(provider), str(model))
-        if (cached := _MCP_MULTIMODAL_ROUTE_CACHE.get(key)) is not None:
-            return cached
-        # Aux routing means "this route cannot read the image itself" -- invert it.
-        decision = not bool(should_route_capture_to_aux_vision(provider, model, load_config()))
-        _MCP_MULTIMODAL_ROUTE_CACHE[key] = decision
-        return decision
-    except Exception:
-        logger.debug("MCP multimodal route check failed; keeping MEDIA: tags", exc_info=True)
-        return False
-
-
-def _mcp_inline_image_parts(result) -> List[Dict[str, Any]]:
-    """OpenAI-shaped image_url parts for a result's ImageContent blocks.
-
-    Empty when there are none, the payload is malformed, or the inline budget is spent: an MCP
-    server may return many large images, and each one rides the cached prefix for the rest of the
-    conversation. The MEDIA: path stays in the text half, so nothing is lost by declining."""
-    parts: List[Dict[str, Any]] = []
-    budget = _MCP_INLINE_IMAGE_MAX_B64
-    for block in (getattr(result, "content", None) or []):
-        if len(parts) >= _MCP_INLINE_IMAGE_MAX:
-            break
-        data = getattr(block, "data", None)
-        mime = _base_mime(mcp_field(block, "mime_type", "mimeType"))
-        if not data or not mime.startswith("image/"):
-            continue
-        if len(data) > budget:
-            logger.debug("MCP image block exceeds the inline budget; the MEDIA: path stands alone")
-            break
-        budget -= len(data)
-        parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
-    return parts
-
-
-def _render_call_tool_result(result, server_name: str):
-    """``CallToolResult`` -> handler payload: the JSON string, or the multimodal envelope when the
-    result carries images AND the route can read them (registry._normalize_handler_result accepts
-    the envelope from any tool). The text half keeps the MEDIA: paths, so sharing and later
-    full-resolution reads still work; the image half is what the model actually sees. Errors stay
-    text -- an error payload has nothing to show."""
-    text = _render_call_tool_result_text(result, server_name)
-    if mcp_field(result, "is_error", "isError", False):
-        return text
-    images = _mcp_inline_image_parts(result)
-    if not images or not _route_takes_multimodal_tool_results():
-        return text
-    return {"_multimodal": True,
-            "content": [{"type": "text", "text": text}, *images],
-            "text_summary": text}
-
-
-def _render_call_tool_result_text(result, server_name: str) -> str:
-    """Pure: ``CallToolResult`` -> handler JSON. ``content`` and ``structuredContent`` are both
+def _render_call_tool_result(result, server_name: str, image_paths: Optional[List[str]] = None) -> str:
+    """Pure: ``CallToolResult`` -> handler JSON (``image_paths``, when given, receives the files this
+    call's image blocks were cached to). ``content`` and ``structuredContent`` are both
     forwarded, except that a ``structuredContent`` whose JSON also sits verbatim in a text block
     (the spec's backwards-compat dual-emit; compared as parsed JSON) is dropped, because that copy
     would reach the model twice (kimi-code#3234). Any other usable text — a status line, a prose
@@ -598,7 +534,9 @@ def _render_call_tool_result_text(result, server_name: str) -> str:
     (structuredContent-only servers); ``_meta`` minus reserved keys is always surfaced."""
     if mcp_field(result, "is_error", "isError", False):
         return tool_error(_sanitize_error(_truncate_mcp_text_result(_error_result_text(result) or "MCP tool returned an error")))
-    text_result, usable_parts = _render_content_blocks(result, server_name)
+    text_result, usable_parts, cached_images = _render_content_blocks(result, server_name)
+    if image_paths is not None:
+        image_paths.extend(cached_images)
     structured = _capped_structured_content(result)
     meta = _strip_reserved_meta_keys(mcp_field(result, "meta", "meta"))
     # A str here is the over-cap truncation stand-in (wire structuredContent is always an object): next to
@@ -623,9 +561,11 @@ def _render_call_tool_result_text(result, server_name: str) -> str:
         return json.dumps({"result": text_result}, ensure_ascii=False)
 
 
-def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
-    """Sync registry handler (``handler(args_dict, **kwargs) -> str | dict``) calling an MCP tool via the
-    background loop. A dict is the multimodal envelope -- see ``_render_call_tool_result``."""
+def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *, native_images: bool = False):
+    """Sync handler (``handler(args_dict, **kwargs)``) calling an MCP tool via the background loop. Always a JSON
+    string, except with ``native_images`` (the registry handler the agent loop dispatches): a result carrying
+    images then becomes the ``_multimodal`` envelope when the active route takes images in tool results.
+    Direct callers (plugins' ``ctx.call_mcp``) keep the string contract and the ``MEDIA:`` paths."""
     op = f"tools/call {tool_name}"
 
     def _handler(args: dict, **kwargs) -> Any:
@@ -639,6 +579,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         # Only a tool annotated readOnlyHint=True is replayed after session expiry; a 401 is always
         # pre-dispatch so the auth recoverer keeps its retry for every tool.
         read_only = _tool_is_read_only(server_name, tool_name)
+        image_paths: List[str] = []  # the LAST attempt's cached images (a recoverer may retry _call)
 
         async def _call():
             async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
@@ -649,16 +590,19 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     server._pending_call_context = None
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
-            return _render_call_tool_result(result, server_name)
+            image_paths.clear()
+            return _render_call_tool_result(result, server_name, image_paths)
 
         def _on_failure(exc):
             _core._bump_server_error(server_name)
             logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name, exc)
         session_expired = partial(_handle_session_expired_and_retry, call_may_have_side_effects=not read_only)
-        return _dispatch(
+        text = _dispatch(
             server_name, server, op, _call, tool_timeout,
             (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
             _on_failure, record_outcome=True)
+        # Off the MCP loop on purpose: the image resize is CPU work that must not stall other servers' I/O.
+        return _mcp_result_with_native_images(text, image_paths) if native_images and not _result_is_error(text) else text
     return _handler
 
 

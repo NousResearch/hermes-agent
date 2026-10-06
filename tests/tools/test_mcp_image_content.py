@@ -119,3 +119,49 @@ class TestCacheMcpImageBlock:
         tag = _cache_mcp_image_block(block)
         assert tag.startswith("MEDIA:")
         assert tag.endswith(".jpg"), f"expected .jpg extension, got {tag!r}"
+
+
+class TestNativeImageAttach:
+    """The registry handler hands a vision route the pixels through the shared native gate; the image is
+    re-encoded from the sniffed cache file within the embed budget, never the server's raw payload."""
+
+    def _call(self, monkeypatch, tmp_path, cfg):
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+        from PIL import Image
+        from tools import mcp_tool, mcp_tool_handlers
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        buf = __import__("io").BytesIO()
+        Image.new("RGB", (3000, 2000), (20, 90, 200)).save(buf, "PNG")  # past the 1568 px embed edge
+        result = SimpleNamespace(isError=False, structuredContent=None, meta=None, content=[
+            SimpleNamespace(type="text", text="snapshot"),
+            SimpleNamespace(type="image", data=base64.b64encode(buf.getvalue()).decode(), mimeType="image/png")])
+        session = SimpleNamespace(call_tool=AsyncMock(return_value=result))
+        server = SimpleNamespace(session=session, _rpc_lock=None)
+
+        def run(factory, timeout=30):
+            async def go():
+                server._rpc_lock = asyncio.Lock()
+                return await factory()
+            return asyncio.run(go())
+
+        with patch.dict(mcp_tool._servers, {"srv": server}), \
+             patch("tools.mcp_tool_loop._run_on_mcp_loop", side_effect=run), \
+             patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("agent.auxiliary_client._read_main_provider", return_value="anthropic"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="claude-opus-4-5"), \
+             patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            return mcp_tool_handlers._make_tool_handler("srv", "snap", 30, native_images=True)({})
+
+    def test_vision_route_gets_a_resized_envelope_and_keeps_the_media_path(self, tmp_path, monkeypatch):
+        out = self._call(monkeypatch, tmp_path, {})
+        assert isinstance(out, dict) and out["_multimodal"] is True
+        url = out["content"][1]["image_url"]["url"]
+        from tools.vision_tools_history_budget import resolve_embed_target_bytes
+        assert url.startswith("data:image/jpeg;base64,") and len(url) <= resolve_embed_target_bytes()
+        assert "MEDIA:" in out["text_summary"]
+
+    def test_image_input_mode_text_keeps_the_string_result(self, tmp_path, monkeypatch):
+        out = self._call(monkeypatch, tmp_path, {"agent": {"image_input_mode": "text"}})
+        assert isinstance(out, str) and "MEDIA:" in out

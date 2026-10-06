@@ -1,0 +1,11 @@
+{
+  "name": "olympus",
+  "label": "Olympus",
+  "description": "Read-only Hermes Agent workstation monitor: profiles, routes, skills, Kanban, gateways, sessions, and health.",
+  "icon": "Activity",
+  "version": "1.0.3",
+  "tab": { "path": "/olympus", "position": "end" },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

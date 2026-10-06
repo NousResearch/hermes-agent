@@ -256,6 +256,7 @@ class GatewayVoiceMixin:
         member = guild.get_member(int(user_id)) if guild else None
         display_name = getattr(member, "display_name", None)
         user_name = display_name if isinstance(display_name, str) and display_name else None
+        channel = client.get_channel(int(text_ch_id)) if client else None
         if source_data := getattr(adapter, "_voice_sources", {}).get(guild_id):
             source = SessionSource.from_dict(source_data)
             # get_member() is cache-only: on a miss the /voice join invoker keeps the name bound at
@@ -268,14 +269,19 @@ class GatewayVoiceMixin:
             # (run.py exports it as HERMES_SESSION_MESSAGE_ID for reply anchoring).
             source.message_id = None
         else:
+            # A programmatic join binds no source: build the one a typed message in that channel carries
+            # (group, or thread under its parent, with the guild), else the turn keys another session.
             user_name = user_name or GatewayVoiceMixin._cached_user_display_name(client, user_id)
-            source = SessionSource(
-                platform=Platform.DISCORD, chat_id=str(text_ch_id), user_id=str(user_id),
-                user_name=user_name or str(user_id), chat_type="channel",
-                profile=getattr(adapter, "_owner_profile", None))
+            thread_id = None
+            if channel is not None and callable(split := getattr(adapter, "_thread_id_and_chat_for_channel", None)):
+                thread_id, _ = split(channel)
+            parent_id = adapter._get_parent_channel_id(channel) if thread_id else None
+            source = adapter.build_source(
+                chat_id=str(text_ch_id), chat_type="thread" if thread_id else "group", user_id=str(user_id),
+                user_name=user_name or str(user_id), thread_id=thread_id, guild_id=str(guild_id),
+                parent_chat_id=parent_id)
         # The stored source is a join-time copy; a typed message reads the channel's current name and
         # topic, so a rename or topic edit would otherwise flip the pinned prompt on every switch.
-        channel = client.get_channel(int(text_ch_id)) if client else None
         if channel is not None and callable(labels := getattr(adapter, "_guild_channel_labels", None)):
             if isinstance(current := labels(channel), tuple):
                 source.chat_name, source.chat_topic = current

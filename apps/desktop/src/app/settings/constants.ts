@@ -625,9 +625,14 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   agent: {
     imageInputMode: 'Controls how image attachments are sent to the model.',
-    maxTurns: 'Upper bound for tool-calling turns before Hermes stops a run.'
+    maxTurns: 'Upper bound for tool-calling turns before Hermes stops a run.',
+    serviceTier: 'Fast mode: fast = always, auto = first N seconds of each turn, cold = first turn only.'
+  },
+  delegation: {
+    reasoningEffort: 'Reasoning effort for delegated subagents.'
   },
   terminal: {
+    backend: 'Where terminal commands run.',
     cwd: 'Default project folder for tool and terminal work.',
     persistentShell:
       'SSH backend: keep exported variables between commands. Off starts each command from the login environment; the working directory always carries over.',

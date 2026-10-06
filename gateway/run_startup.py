@@ -918,8 +918,10 @@ class GatewayStartupMixin:
         # so this line is the source of truth for the process lifetime.
         with suppress(Exception):
             # Redaction status: ON by default (#17691).
+            from agent.redact import redaction_flag_enabled
+
             _redact_raw = os.getenv("HERMES_REDACT_SECRETS", "true")
-            if _redact_raw.lower() in {"1", "true", "yes", "on"}:
+            if redaction_flag_enabled(_redact_raw):
                 logger.info(
                     "Secret redaction: ENABLED (tool output, logs, and chat "
                     "responses are scrubbed before delivery)"

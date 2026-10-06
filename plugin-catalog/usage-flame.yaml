@@ -1,12 +1,8 @@
-# Community catalog entry — usage-flame  
+# Community catalog entry — usage-flame
 name: usage-flame
 repo: https://github.com/maxshafransky-a11y/hermes-usage-flame
 sha: "a8602cb3d58a2b0af12b6c638aa1add785f2d449"   # tag v1.0.1
-description: >-
-  Pinned glowing chip + fire-themed panel with live subscription-quota windows
-  (remaining %, reset countdown, burn-rate pace and run-out forecast with
-  sparkline history) for every provider Hermes reports usage for. 12 color
-  themes and fonts, RU/EN, zero dependencies, works on Windows.
+description: "Pinned glowing chip + fire-themed panel with live subscription-quota windows (remaining %, reset countdown, burn-rate pace and run-out forecast with sparkline history) for every provider Hermes reports usage for. 12 color themes and fonts, RU/EN, zero dependencies, works on Windows. Disclosure — runs hermes usage --json through the Desktop gateway (cli.exec) every 1–15 minutes and sweeps up to 8 providers every 15 minutes; each run queries that provider's usage endpoint with the credential Hermes already holds. Reads the composer's selected provider from Desktop localStorage. No network calls of its own."
 maintainer: maxshafransky-a11y
 tier: community
 category: desktop

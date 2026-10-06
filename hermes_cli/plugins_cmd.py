@@ -39,7 +39,7 @@ from hermes_cli.plugins_cmd_install import (  # noqa: F401
     _read_manifest_for_install, cmd_install, dashboard_install_plugin,
 )
 from hermes_cli.plugins_cmd_listing import (  # noqa: F401
-    _filter_plugin_entries, cmd_list, cmd_show,
+    _filter_plugin_entries, cmd_compat, cmd_list, cmd_show,
 )
 from hermes_cli.plugins_cmd_remove import (  # noqa: F401
     _remove_plugin_core, cmd_remove, dashboard_remove_user_plugin,
@@ -209,33 +209,6 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
             scan_result=result)
     logger.info("plugin scan passed for %s: %s", plugin_dir.name, reason)
     return result
-
-
-def _preserved_files_note(exc: PluginScanBlocked, merged: list[str]) -> str:
-    """Scan-block text for a tree that also holds user files preserved from the installed copy."""
-    preserved = set(merged)
-    findings = exc.scan_result.findings if exc.scan_result is not None else ()
-    hits = sorted({f.file for f in findings if f.file in preserved})
-    if hits:
-        note = ("These findings come from user files preserved from the installed copy: "
-                f"{', '.join(hits)}. Move or remove them and retry the update.")
-    else:
-        note = "The scanned tree included user files preserved from the installed copy."
-    return f"{exc}\n\n{note}"
-
-
-def _scan_merged_tree(plugin_dir: Path, identifier: str, merged: Optional[list[str]], **kwargs):
-    """:func:`_scan_plugin_tree` for a candidate that may hold carried user files (*merged*).
-
-    A block then names the findings that sit in those files, so user data does not read as a
-    malicious upstream revision; the original block stays chained as the cause.
-    """
-    try:
-        return _scan_plugin_tree(plugin_dir, identifier, **kwargs)
-    except PluginScanBlocked as exc:
-        if not merged:
-            raise
-        raise PluginScanBlocked(_preserved_files_note(exc, merged), scan_result=exc.scan_result) from exc
 
 
 def _plugins_dir() -> Path:
@@ -521,6 +494,73 @@ def ensure_basic_auth_plugin_enabled_in_config(cfg: dict) -> bool:
     return True
 
 
+_WEB_BACKEND_CONFIG_KEYS = ("backend", "search_backend", "extract_backend")
+
+
+def _hyphen_underscore_variants(name: str) -> set:
+    variants = {name}
+    if "-" in name:
+        variants.add(name.replace("-", "_"))
+    if "_" in name:
+        variants.add(name.replace("_", "-"))
+    return variants
+
+
+def _configured_web_backend_disable_aliases(vendor: str) -> set:
+    """Canonical ``web/<vendor>`` plus leaf and hyphen/underscore aliases."""
+    aliases = set()
+    for name in _hyphen_underscore_variants(vendor):
+        aliases.update((name, f"web/{name}", f"web-{name}"))
+    return aliases
+
+
+def _selected_web_backend_vendors(cfg: dict) -> set:
+    web_cfg = cfg.get("web")
+    if not isinstance(web_cfg, dict):
+        return set()
+    selected = set()
+    for key in _WEB_BACKEND_CONFIG_KEYS:
+        raw = web_cfg.get(key)
+        if not isinstance(raw, str):
+            continue
+        name = raw.strip().lower()
+        if name:
+            selected.add(name)
+    return selected
+
+
+def ensure_configured_web_backend_plugin_enabled_in_config(cfg: dict) -> bool:
+    """Drop configured bundled web-backend plugins from ``plugins.disabled`` in *cfg*.
+
+    Bundled ``kind: backend`` plugins auto-load unless denied. A configured
+    ``web.backend`` / ``web.search_backend`` / ``web.extract_backend`` that also
+    sits in ``plugins.disabled`` leaves web_search/web_extract broken after
+    plugin opt-in. Returns True when ``plugins.disabled`` changed.
+    """
+    try:
+        if not isinstance(cfg, dict):
+            return False
+        vendors = _selected_web_backend_vendors(cfg)
+        if not vendors:
+            return False
+        plugins_cfg = cfg.get("plugins")
+        if not isinstance(plugins_cfg, dict):
+            return False
+        disabled = plugins_cfg.get("disabled")
+        if not isinstance(disabled, list):
+            return False
+        drop = set()
+        for vendor in vendors:
+            drop |= _configured_web_backend_disable_aliases(vendor)
+        new_disabled = [item for item in disabled if item not in drop]
+        if new_disabled == disabled:
+            return False
+        plugins_cfg["disabled"] = new_disabled
+        return True
+    except Exception:
+        return False
+
+
 def _discard_key_and_leaf(names: set, key: str) -> None:
     """Drop *key* and its bare leaf (``observability/langfuse`` -> ``langfuse``) from *names*, so a
     stale legacy bare-name entry can't keep vetoing the canonical key."""
@@ -647,8 +687,7 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         if plugin in LEGACY_RELAY_PLUGIN_KEYS:
             _fail(console, (
                 f"[red]Plugin '{plugin}' was removed.[/red] Relay lifecycle is owned "
-                "by Hermes core; configure a standard user or system Relay plugins.toml, or use "
-                f"{RELAY_PLUGINS_CONFIG_ENV} for an explicit user-file override."))
+                f"by Hermes core; configure {RELAY_PLUGINS_CONFIG_ENV} instead."))
 
     _refuse_legacy_relay(name)
     resolved = _resolve_plugin_key_and_source(name)
@@ -1009,6 +1048,7 @@ _PLUGIN_ACTIONS = {
     "list": lambda args: cmd_list(args),
     "ls": lambda args: cmd_list(args),
     "doctor": lambda args: cmd_plugin_doctor(args.target, ci=getattr(args, "ci", False)),
+    "compat": lambda args: cmd_compat(args),
     "pack": _action_pack,
     "show": lambda args: cmd_show(args.name),
     "info": lambda args: _catalog().cmd_info(args.name),
@@ -1023,3 +1063,11 @@ def plugins_command(args) -> None:
     if handler is None:
         _fail(_console(), f"[red]Unknown plugins action: {action}[/red]")
     handler(args)
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import importlib.metadata  # noqa: F401,E402
+# ---- END PLUGIN-COMPAT ----

@@ -11,7 +11,8 @@
  * - `held` / `busy` / `live <pid>` => an update still owns the checkout: keep waiting;
  * - `reclaimed` / `absent` => nothing runs: proceed;
  * - no marker at all => the helper is asked too (it checks the checkout lock
- *   under the same rule); only its `held` keeps the gate closed, any other
+ *   under the same rule) unless no checkout lock file exists, which is the
+ *   script's own "not held"; only its `held` keeps the gate closed, any other
  *   answer proceeds as before;
  * - `unsupported` (older checkout, no helper) => proceed without deleting
  *   (dead = not running, as before minus the deletion) — unless this process
@@ -83,6 +84,12 @@ export interface LiveMarkerProbeOptions {
   hermesHome: string
   /** The script helper `reclaim`, or null when the checkout's script predates protocol 2. */
   reclaim: (() => Promise<MarkerHelperVerdict>) | null
+  /**
+   * False when the script would answer "not held" for a missing checkout
+   * lock: with no marker the helper is then not spawned (on Windows a
+   * powershell.exe load on every boot's critical path).
+   */
+  checkoutLockMayBeHeld?: () => boolean
   createTime?: CreateTimeProbe
   onLiveMarker?: (marker: { startedAt: number | null; runId: string | null }) => void
   /** Every answer that comes from a running helper verdict (boot progress, the blocked screen). */
@@ -320,8 +327,17 @@ interface HelperSubject {
   run: { startedAt: number | null; runId: string | null }
 }
 
-function helperSubject(inspection: MarkerInspection, hermesHome: string): HelperSubject | null {
+function helperSubject(
+  inspection: MarkerInspection,
+  hermesHome: string,
+  checkoutLockMayBeHeld: (() => boolean) | undefined
+): HelperSubject | null {
   if (inspection.state === 'absent') {
+    // No lock file is the script's own "not held": nothing to ask.
+    if (checkoutLockMayBeHeld?.() === false) {
+      return null
+    }
+
     return { holdId: ABSENT_HOLD_ID, absent: true, label: 'no update marker', ownerPid: null, run: { startedAt: null, runId: null } }
   }
 
@@ -376,6 +392,7 @@ async function failedAfterV1Start(hermesHome: string, marker: UpdateMarker | nul
 export function liveMarkerProbe({
   hermesHome,
   reclaim,
+  checkoutLockMayBeHeld,
   createTime,
   onLiveMarker,
   onHeld,
@@ -405,7 +422,7 @@ export function liveMarkerProbe({
       return true
     }
 
-    const subject = reclaim ? helperSubject(inspection, hermesHome) : null
+    const subject = reclaim ? helperSubject(inspection, hermesHome, checkoutLockMayBeHeld) : null
 
     if (!subject || !reclaim) {
       return false

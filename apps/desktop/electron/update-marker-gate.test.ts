@@ -27,7 +27,7 @@ import {
   UpdateHoldBoard
 } from './update-marker-gate'
 import { cleanupMarkerFixtures, deadPid, liveOwner, minutesAgo, tmpHome } from './update-marker.test-helpers'
-import { runMarkerHelper } from './updater/marker-helper'
+import { checkoutLockMayBeHeld, runMarkerHelper } from './updater/marker-helper'
 import { cleanupFakeCheckouts, fakeHelperCheckout } from './updater/marker-helper.test-helpers'
 
 // The old held ceiling (scripts' RELEASE_WAIT_S); the gate must not honour it.
@@ -317,6 +317,26 @@ describe.skipIf(process.platform === 'win32')('gate over a dead marker (R6)', ()
     fs.writeFileSync(markerPath(home), `${owner.pid}\n${minutesAgo(1)}\n`)
     assert.equal(await hasLiveMarker(), true)
     assert.deepEqual(helperCalls(home), [])
+  })
+
+  // Review K132354 (helper always spawned): no marker and no checkout lock file
+  // is the script's own "not held", so the normal boot spawns nothing.
+  test('no marker and no checkout lock file: the helper is never spawned; a lock file asks it', async () => {
+    const { root, home } = fakeHelperCheckout()
+    fs.writeFileSync(path.join(home, 'helper-verdict'), 'held')
+
+    const probe = () =>
+      liveMarkerProbe({
+        hermesHome: home,
+        reclaim: () => runMarkerHelper('reclaim', { updateRoot: root, hermesHome: home, isWindows: false }),
+        checkoutLockMayBeHeld: () => checkoutLockMayBeHeld(root, false)
+      })()
+
+    assert.equal(await probe(), false)
+    assert.deepEqual(helperCalls(home), [], 'nothing to ask: the boot path spawns no helper')
+    fs.writeFileSync(path.join(root, '.hermes-update.lock'), '')
+    assert.equal(await probe(), true, 'the lock file exists: only the script can tell whether it is held')
+    assert.equal(helperCalls(home).length, 1)
   })
 
   // Review 5411223284: with no marker the gate opened without asking whether

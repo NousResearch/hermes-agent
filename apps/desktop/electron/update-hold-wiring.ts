@@ -21,7 +21,7 @@ import {
   startAnywayLogLine,
   UpdateHoldBoard
 } from './update-marker-gate'
-import { runMarkerHelper } from './updater/marker-helper'
+import { checkoutLockMayBeHeld, runMarkerHelper } from './updater/marker-helper'
 
 export interface MarkerGateCallbacks {
   onLiveMarker?: (marker: { startedAt: number | null; runId: string | null }) => void
@@ -54,6 +54,7 @@ export function markerGateProbe(host: MarkerGateHost, { onLiveMarker, onHeld, on
     onHeld,
     onOverride,
     log: host.log,
+    checkoutLockMayBeHeld: () => checkoutLockMayBeHeld(host.updateRoot(), host.isWindows),
     // A missing or pre-protocol-2 script answers `unsupported`; one that
     // exists but cannot be read answers `error` (R8 M5).
     reclaim: () =>

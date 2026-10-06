@@ -1440,32 +1440,47 @@ class TestSenderAuthentication(unittest.TestCase):
 
     def test_auth_pass_authenticates(self):
         """PurelyMail and other MTAs stamp auth=pass for authenticated senders."""
+        # Bare auth=pass is trusted when the receiving authserv_id domain aligns with the From domain:
         for ar in (
             "purelymail.com; auth=pass",
             "purelymail.com; auth=pass (login)",
             "purelymail.com (auth relay); auth=pass",
+        ):
+            ok, reason = self._verify("user@purelymail.com", [ar], authserv_id="purelymail.com")
+            self.assertTrue(ok, (ar, reason))
+            self.assertEqual(reason, "auth=pass")
+
+        # When properties are present, fully-qualified aligned identities pass:
+        for ar in (
             "purelymail.com; auth=pass header.from=example.com",
             "purelymail.com; auth=pass smtp.auth=admin@example.com",
-            "purelymail.com; auth=pass smtp.auth=admin",
+            "purelymail.com; auth=pass header.d=example.com",
         ):
             ok, reason = self._verify("admin@example.com", [ar], authserv_id="purelymail.com")
             self.assertTrue(ok, (ar, reason))
             self.assertEqual(reason, "auth=pass")
 
     def test_auth_pass_misaligned_or_failing_rejected(self):
-        """Misaligned sender properties, failing verdicts, or multiple auth clauses reject."""
-        for ar in (
-            "purelymail.com; auth=fail",
-            "purelymail.com; auth=pass header.from=evil.test",
-            "purelymail.com; auth=pass smtp.auth=attacker@evil.test",
-            "purelymail.com; auth=pass smtp.auth=otheruser",
-            "purelymail.com; auth=pass; auth=pass",
-            "purelymail.com; auth=pass; auth=fail",
-            "purelymail.com; dmarc=fail (auth=pass)",
-            'purelymail.com; dmarc=fail reason="auth=pass"',
+        """Misaligned sender properties, domainless smtp.auth, bare pass on mismatched domain, or multiple auth clauses reject."""
+        for from_addr, ar in (
+            # 1. Bare auth=pass from receiving MTA must not authenticate a different arbitrary domain (review defect)
+            ("victim@victim.test", "purelymail.com; auth=pass"),
+            # 2. Domainless smtp.auth values must not authenticate an arbitrary From domain merely because local part matches
+            ("admin@example.com", "purelymail.com; auth=pass smtp.auth=admin"),
+            ("victim@victim.test", "purelymail.com; auth=pass smtp.auth=victim"),
+            ("admin@example.com", "purelymail.com; auth=pass smtp.auth=otheruser"),
+            # 3. Fully qualified misaligned identity
+            ("admin@example.com", "purelymail.com; auth=pass smtp.auth=attacker@evil.test"),
+            ("admin@example.com", "purelymail.com; auth=pass header.from=evil.test"),
+            # 4. Failing verdicts, ambiguous multiple clauses, or comments containing fake tokens
+            ("admin@example.com", "purelymail.com; auth=fail"),
+            ("admin@example.com", "purelymail.com; auth=pass; auth=pass"),
+            ("admin@example.com", "purelymail.com; auth=pass; auth=fail"),
+            ("admin@example.com", "purelymail.com; dmarc=fail (auth=pass)"),
+            ("admin@example.com", 'purelymail.com; dmarc=fail reason="auth=pass"'),
         ):
-            ok, reason = self._verify("admin@example.com", [ar], authserv_id="purelymail.com")
-            self.assertFalse(ok, (ar, reason))
+            ok, reason = self._verify(from_addr, [ar], authserv_id="purelymail.com")
+            self.assertFalse(ok, (from_addr, ar, reason))
 
 
 def test_oversized_cron_output_is_delivered_as_one_whole_email():

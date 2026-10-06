@@ -399,13 +399,25 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         domains = []
         for p, v in props:
             if p in ("header.from", "header.d"):
-                domains.append(_domain_of(v))
+                if d := _domain_of(v):
+                    domains.append(d)
             elif p in ("smtp.auth", "smtp.mailfrom", "smtp.from", "envelope-from"):
+                # Must be a fully-qualified address or domain containing '@' or '.'
+                # A domainless username (e.g. smtp.auth=user) does not authenticate a From domain
                 if "@" in v or "." in v:
-                    domains.append(_domain_of(v))
-                elif v.lower() != from_addr.partition("@")[0].lower():
+                    if d := _domain_of(v):
+                        domains.append(d)
+                else:
                     return False
-        return all(_domains_aligned(d, from_domain) for d in domains)
+        # If the auth clause supplied a matching From-domain header or aligned smtp.auth identity:
+        if domains and all(_domains_aligned(d, from_domain) for d in domains):
+            return True
+        # Purelymail / internal MTA provider invariant:
+        # Bare 'auth=pass' stamped by the receiving server whose authserv_id matches the
+        # sender's From domain (or is the receiving server domain where From is on the same domain)
+        if not props and _domains_aligned(authserv_id, from_domain):
+            return True
+        return False
 
     if len(results["dmarc"]) > 1:
         return False, "ambiguous dmarc result"

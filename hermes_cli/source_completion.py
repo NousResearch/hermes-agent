@@ -36,6 +36,7 @@ def complete_source_checkout(
     pre_update_version: str | None = None,
     completion_message: str | None = None,
     announce: str | None = None,
+    report_completion: bool = True,
 ) -> bool:
     """Publish commands, build the products, then run post-build maintenance.
 
@@ -65,7 +66,7 @@ def complete_source_checkout(
             root, desktop=desktop, assume_yes=assume_yes, gateway_mode=gateway_mode,
             pre_update_snapshot_id=pre_update_snapshot_id,
             pre_update_version=pre_update_version,
-            completion_message=completion_message, announce=announce,
+            completion_message=completion_message, announce=announce, report_completion=report_completion,
         )
     finally:
         lock.release()
@@ -81,6 +82,7 @@ def _complete_locked(
     pre_update_version: str | None,
     completion_message: str | None,
     announce: str | None,
+    report_completion: bool = True,
 ) -> bool:
     """The completion body; callers hold the update lock already."""
     from hermes_cli.source_build import build_update_products
@@ -106,6 +108,7 @@ def _complete_locked(
         had_desktop_app_before_update=desktop,
         pre_update_version=pre_update_version,
         completion_message=completion_message,
+        report_completion=report_completion,
     )
     if complete:
         from hermes_cli.source_stamp import write_source_stamp

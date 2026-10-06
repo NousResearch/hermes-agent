@@ -199,16 +199,14 @@ def _complete_selected(request: dict) -> None:
         gateway_mode=request["gateway_mode"], pre_update_snapshot_id=request["snapshot_id"],
         pre_update_version=request["pre_update_version"],
         completion_message=request.get("completion_message"),
+        report_completion=False,
         announce=None if request.get("completion_message") else "\n✓ Code updated!")
     from hermes_cli.update_receipt import record_stage
     record_stage("build", "success" if complete else "failed")
     if complete:
         from hermes_cli.venv_sync import clear_completion
         clear_completion(root)
-    # systemctl's KillMode=mixed fallback can kill this whole cgroup. Publish the
-    # gateway watcher's status BEFORE that operation, and demote on later failure.
-    if request["gateway_mode"]:
-        update_cmd._write_gateway_update_exit_code(complete)
+
     if request.get("no_gateway_restart", False):
         from hermes_cli.update_receipt import record_skip
 
@@ -271,9 +269,7 @@ def _finish(request: dict, result_path: Path) -> int:
         reason = f"{type(exc).__name__}: {exc}"
         print(f"✗ Source update completion failed: {reason}")
     finally:
-        if code and request["gateway_mode"]:
-            from hermes_cli.update_cmd import _write_gateway_update_exit_code
-            _write_gateway_update_exit_code(False)
+
         # The new interpreter owns recovery too. The original parent's atexit
         # token is updated from the response; it acts only if this process dies.
         try:
@@ -290,6 +286,17 @@ def _finish(request: dict, result_path: Path) -> int:
             "schema": 1, "update_id": request["receipt"]["update_id"], "exit_code": code,
             "receipt": terminal_receipt, "windows_resume": request["windows_resume"],
         })
+        if request["gateway_mode"]:
+            from hermes_cli.update_cmd import _write_gateway_update_exit_code
+
+            _write_gateway_update_exit_code(code == 0 and bool(terminal_receipt) and terminal_receipt.get("outcome") == "success")
+    if code == 0 and terminal_receipt and terminal_receipt.get("outcome") == "success":
+        from hermes_cli.update_cmd_maint import _print_update_completion, _update_complete_message
+
+        message = ("✓ Code update complete; gateway restart deferred (--no-gateway-restart)."
+                   if request.get("no_gateway_restart", False) else
+                   request.get("completion_message") or _update_complete_message(request["pre_update_version"]))
+        _print_update_completion(message)
     return code
 
 

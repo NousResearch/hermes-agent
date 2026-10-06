@@ -456,8 +456,21 @@ def _spawn_hermes_action(
     """Spawn ``hermes <subcommand>`` detached (via ``hermes_cli.main``) and record the handle."""
     from hermes_cli.web_server import PROJECT_ROOT
     _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    action_id = (env_overrides or {}).get("HERMES_ACTION_ID")
+    if name == "hermes-update":
+        from hermes_cli.web_update_action import write_update_admission
+        # Replacement can succeed before directory fsync fails. Retire the old
+        # registries first so even a refused admission cannot inherit its result.
+        for registry in (_ACTION_RESULTS, _ACTION_IDS, _ACTION_PROCS, _ACTION_COMMANDS):
+            registry.pop(name, None)
+        write_update_admission(_ACTION_LOG_DIR, action_id)
     log_file = open(_ACTION_LOG_DIR / _ACTION_LOG_FILES[name], "ab", buffering=0)
-    log_file.write(f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode())
+    start = action_id if name == "hermes-update" and action_id and re.fullmatch(r"[0-9a-f]{32}", action_id) else time.strftime('%Y-%m-%d %H:%M:%S')
+    log_file.write(f"\n=== {name} started {start} ===\n".encode())
+    if name == "hermes-update":
+        # The dashboard may die before the updater writes its own banner or receipt.
+        # Admit the exact attempt durably before launching any child.
+        os.fsync(log_file.fileno())
 
     from hermes_cli._launchers import runtime_command
     cmd = runtime_command(PROJECT_ROOT, subcommand)

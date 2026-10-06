@@ -3695,6 +3695,14 @@ def main():
         cmd_version(args)
         return
 
+    if args.command == "update" and not any(
+        getattr(args, flag, False)
+        for flag in ("plan", "check", "list_venv_holders", "install_id", "set_channel", "no_gateway_restart")
+    ):
+        from hermes_cli.update_process import isolate_update_process
+
+        isolate_update_process()
+
     # --yolo must be set *before* plugin discovery: tools.approval freezes
     # _YOLO_MODE_FROZEN at import; set later (inside cmd_chat) it does nothing.
     if getattr(args, "yolo", False):

@@ -1468,6 +1468,13 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             f"=== hermes-update completed {action_id} ===\n",
             encoding="utf-8",
         )
+        from hermes_constants import get_hermes_home
+
+        receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+        receipt_dir.mkdir(parents=True, exist_ok=True)
+        (receipt_dir / "latest.json").write_text(json.dumps({
+            "update_id": action_id, "outcome": "success", "finished_at": "2026-08-17T11:20:00+00:00",
+        }), encoding="utf-8")
         monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path)
         monkeypatch.setattr(_web_server_gateway, "_ACTION_PROCS", {})
         monkeypatch.setattr(_web_server_gateway, "_ACTION_RESULTS", {})

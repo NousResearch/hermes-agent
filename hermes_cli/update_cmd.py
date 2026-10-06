@@ -1198,7 +1198,9 @@ def _begin_update_receipt_and_plan(args):
     with _best_effort('Update receipt unavailable: %s'):
         # See #74973, #81193, #85753, #88848, #91277.
         from hermes_cli.update_receipt import begin_update_receipt
-        begin_update_receipt()
+        action_id = os.environ.get("HERMES_ACTION_ID", "")
+        correlation_id = action_id if len(action_id) == 32 and all(char in "0123456789abcdef" for char in action_id) else None
+        begin_update_receipt(correlation_id=correlation_id)
         _record_update_initiator()
 
     # Plan phase: snapshot runtimes/supervisors/version (read-only; probe failure records

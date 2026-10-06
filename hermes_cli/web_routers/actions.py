@@ -6,11 +6,13 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 
 import asyncio
 import contextlib
+import json
 import logging
 import re
 import secrets
 import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -137,6 +139,34 @@ def _durable_completed_update_action_id(lines: List[str]) -> Optional[str]:
     return completed_action_id if completed_action_id and last_completed > last_start else None
 
 
+def _durable_started_update_action_id(lines: List[str]) -> Optional[str]:
+    """Recover an admitted dashboard attempt, never a legacy timestamp banner."""
+    for line in reversed(lines):
+        if line.startswith("=== hermes-update started "):
+            match = re.fullmatch(r"=== hermes-update started ([0-9a-f]{32}) ===", line.strip())
+            return match.group(1) if match else None
+    return None
+
+
+def _legacy_admission_precedes_update(admission_lines: List[str], update_lines: List[str]) -> bool:
+    """Legacy banners are ordering barriers, not ids; only a later exact completion can recover."""
+    def latest_start(lines: List[str], prefix: str) -> Optional[datetime]:
+        for line in reversed(lines):
+            if line.startswith(prefix):
+                try:
+                    return datetime.fromisoformat(line.removeprefix(prefix).removesuffix(" ==="))
+                except ValueError:
+                    return None
+        return None
+
+    admission = latest_start(admission_lines, "=== hermes-update started ")
+    update = latest_start(update_lines, "=== hermes update started ")
+    try:
+        return admission is not None and update is not None and admission < update
+    except TypeError:
+        return False
+
+
 @router.post("/api/gateway/restart")
 async def restart_gateway(profile: Optional[str] = None):
     """Kick off a ``hermes gateway restart`` in the background."""
@@ -220,6 +250,16 @@ def _update_refused(error: str, message: str, update_command: str) -> Dict[str, 
 @router.post("/api/hermes/update")
 async def update_hermes():
     """Kick off ``hermes update`` in the background."""
+    # Reuse an admitted live update before checking whether a NEW attempt is
+    # allowed. Refusal recording must not replace its identity, process or log.
+    existing = _ACTION_PROCS.get("hermes-update")
+    if existing is not None and existing.poll() is None:
+        response = {"ok": True, "pid": existing.pid, "name": "hermes-update", "already_running": True}
+        action_id = _ACTION_IDS.get("hermes-update")
+        if action_id:
+            response["action_id"] = action_id
+        return response
+
     if is_commit_build(_server_path("PROJECT_ROOT")):
         return _update_refused("commit-build", COMMIT_BUILD_UPDATE_MESSAGE, "")
 
@@ -238,14 +278,6 @@ async def update_hermes():
             _UPDATE_REFUSAL_ERROR_CODES.get(refusal.code, "update_not_in_place"), refusal.message, refusal.update_command,
         )
         record_refusal_receipt(refusal)
-        return response
-
-    existing = _ACTION_PROCS.get("hermes-update")
-    if existing is not None and existing.poll() is None:
-        response = {"ok": True, "pid": existing.pid, "name": "hermes-update", "already_running": True}
-        action_id = _ACTION_IDS.get("hermes-update")
-        if action_id:
-            response["action_id"] = action_id
         return response
 
     action_id = secrets.token_hex(16)
@@ -328,24 +360,70 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
 
 
 def _completed_exit_code(
-    result: Optional[Dict[str, Any]], durable_action_id: Optional[str], receipt: Optional[Dict[str, Any]],
+    result: Optional[Dict[str, Any]], action_id: Optional[str], receipt: Optional[Dict[str, Any]],
 ) -> Optional[int]:
     """Exit code for an action with no live process: in-memory result, else durable evidence."""
     if result is not None:
         return result.get("exit_code")
-    if durable_action_id:
-        return 0
-    if receipt is not None and receipt.get("outcome") in ("success", "partial"):
-        # No in-memory result and no log marker (e.g. log rotated), but the
-        # receipt proves a completed run: report its outcome rather than a
-        # null clients time out on. ``partial`` maps to exit 1 like the CLI.
+    if (receipt is not None and receipt.get("finished_at")
+            and receipt.get("update_id")
+            and action_id and receipt["update_id"] == action_id
+            and receipt.get("outcome") in ("success", "partial", "failed", "refused")):
+        # The correlated terminal receipt survives dashboard restarts and log rotation.
+        # All non-success terminal outcomes map to the CLI's failure result.
         return 0 if receipt["outcome"] == "success" else 1
     return None
 
 
+def _update_activity(log_dir: Path, action_id: Optional[str]) -> Optional[bool]:
+    """Liveness evidence independent of marker age; unreadable processes mean unknown."""
+    import psutil
+
+    try:
+        marker = (log_dir.parent / ".hermes-update-in-progress").read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        marker = None
+    except OSError:
+        return None
+    if marker is not None:
+        try:
+            pid = int(marker.splitlines()[0])
+            if pid > 0 and psutil.Process(pid).status() not in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
+                return True
+        except psutil.NoSuchProcess:
+            pass
+        except (ValueError, IndexError, psutil.AccessDenied):
+            return None
+    uncertain = False
+    try:
+        for process in psutil.process_iter():
+            try:
+                if process.status() in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
+                    continue
+                environment = process.environ()
+                if action_id and environment.get("HERMES_ACTION_ID") == action_id:
+                    return True
+                if not action_id:
+                    # Old/corrupt admissions cannot correlate env ids; use the
+                    # canonical updater matcher, never an argv substring.
+                    import shlex
+                    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+                    if _hermes_holder_subcommand(shlex.join(process.cmdline())) == "update":
+                        return True
+            except psutil.NoSuchProcess:
+                continue
+            except psutil.AccessDenied:
+                uncertain = True
+    except psutil.Error:
+        return None
+    return None if uncertain else False
+
+
 @status_router.get("/api/actions/{name}/status")
-async def get_action_status(name: str, lines: int = 200):
-    """Tail an action log and report whether the process is still running."""
+async def get_action_status(name: str, lines: int = 200, action_id: Optional[str] = None):
+    """Tail the current action, or resolve an exact dashboard update attempt."""
+    if action_id is not None and re.fullmatch(r"[0-9a-f]{32}", action_id) is None:
+        raise HTTPException(status_code=400, detail="action_id must be a lowercase 32-hex id")
     log_file_name = _ACTION_LOG_FILES.get(name)
     if log_file_name is None:
         raise HTTPException(status_code=404, detail=f"Unknown action: {name}")
@@ -355,10 +433,40 @@ async def get_action_status(name: str, lines: int = 200):
     tail = _tail_lines(log_dir / log_file_name, requested_lines)
 
     durable_update_action_id = None
+    update_action_id = None
     update_receipt_summary = None
     if name == "hermes-update":
-        durable_update_action_id = _durable_completed_update_action_id(_tail_lines(log_dir / "update.log", 2000))
-        if durable_update_action_id:
+        update_lines = _tail_lines(log_dir / "update.log", 2000)
+        durable_update_action_id = _durable_completed_update_action_id(update_lines)
+        admission_lines = _tail_lines(log_dir / log_file_name, 2000)
+        from hermes_cli.web_update_action import read_update_admission
+        admission, has_record = read_update_admission(log_dir)
+        admitted_action_id = admission["action_id"] if admission else (
+            None if has_record else _durable_started_update_action_id(admission_lines)
+        )
+        if (not has_record and admitted_action_id and admitted_action_id != durable_update_action_id
+                and f"=== hermes-update completed {admitted_action_id} ===" in update_lines):
+            # A later CLI start superseded this already-completed dashboard attempt.
+            admitted_action_id = None
+        has_admission = any(line.startswith("=== hermes-update started ") for line in admission_lines)
+        legacy_completed_id = durable_update_action_id if (
+            not has_record and (
+                not (log_dir / log_file_name).exists()
+                or (has_admission and _legacy_admission_precedes_update(admission_lines, update_lines))
+            )
+        ) else None
+        update_action_id = _ACTION_IDS.get(name) or admitted_action_id or legacy_completed_id
+        if action_id is not None and update_action_id is not None and action_id != update_action_id:
+            # A later admission owns the registries and log, not the requested run.
+            receipt = _latest_update_receipt_summary(action_id)
+            exit_code = _completed_exit_code(None, action_id, receipt)
+            response = {"name": name, "action_id": action_id,
+                        "state": "finished" if exit_code is not None else "superseded",
+                        "running": False, "exit_code": exit_code, "pid": None, "lines": []}
+            if exit_code is not None:
+                response["receipt"] = receipt
+            return response
+        if durable_update_action_id and durable_update_action_id == update_action_id:
             marker = f"=== hermes-update completed {durable_update_action_id} ==="
             if marker not in tail:
                 tail = [*tail, marker][-requested_lines:]
@@ -367,14 +475,14 @@ async def get_action_status(name: str, lines: int = 200):
         # dashboard restarting itself mid-action). Surface it so clients READ
         # the outcome instead of inferring it from liveness probes.
         # See #81193, #87359, #91277.
-        update_receipt_summary = _latest_update_receipt_summary()
+        update_receipt_summary = _latest_update_receipt_summary(update_action_id) if update_action_id else None
 
     proc = _ACTION_PROCS.get(name)
     if proc is None:
         result = _ACTION_RESULTS.get(name)
         running = False
         pid = result.get("pid") if result else None
-        exit_code = _completed_exit_code(result, durable_update_action_id, update_receipt_summary)
+        exit_code = _completed_exit_code(result, update_action_id, update_receipt_summary)
     else:
         exit_code = proc.poll()
         running = exit_code is None
@@ -385,38 +493,71 @@ async def get_action_status(name: str, lines: int = 200):
             _finish_action(name, exit_code, pid)
 
     response = {"name": name, "running": running, "exit_code": exit_code, "pid": pid, "lines": tail}
-    if durable_update_action_id:
-        response["action_id"] = durable_update_action_id
+    if name == "hermes-update":
+        response["state"] = ("running" if running else "finished" if exit_code is not None
+                             else "pending" if update_action_id else "unknown")
+        # A deadline alone cannot fail a slow update. Only an expired durable
+        # admission plus confirmed absence of live evidence ends automatic polling.
+        admitted_at = admission["admitted_at"] if admission else None
+        if admitted_at is None:
+            # Legacy/invalid identity: activity timestamps only bound the wait,
+            # never establish an outcome or permit recovery of an old receipt.
+            activity = []
+            for path in (log_dir / "hermes-update-action.json", log_dir / log_file_name, log_dir / "update.log"):
+                try:
+                    activity.append(path.stat().st_mtime)
+                except OSError:
+                    pass
+            admitted_at = max(activity) if activity else None
+        if (not running and exit_code is None and admitted_at is not None
+                and time.time() - admitted_at >= 20 * 60
+                and _update_activity(log_dir, update_action_id) is False):
+            response["state"] = "abandoned"
+    if update_action_id:
+        response["action_id"] = update_action_id
     if update_receipt_summary is not None:
         response["receipt"] = update_receipt_summary
     return response
 
 
-def _read_latest_receipt() -> Optional[Dict[str, Any]]:
-    """Latest update receipt, or None on any failure (never raises)."""
+def _read_latest_receipt(action_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Latest receipt, or the exact update's archive when the shared pointer moved."""
     try:
         from hermes_cli.update_receipt import read_latest_receipt
-        return read_latest_receipt() or None
+        receipt = read_latest_receipt() or None
+        if action_id is None:
+            return receipt if receipt and not receipt.get("kind") else None
+        if receipt and receipt.get("update_id") == action_id and not receipt.get("kind"):
+            return receipt
+        directory = get_hermes_home() / "logs" / "update_receipts"
+        for path in directory.glob(f"update_*_{action_id}.json"):
+            try:
+                receipt = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(receipt, dict) and receipt.get("update_id") == action_id and not receipt.get("kind"):
+                return receipt
     except Exception:
         return None
+    return None
 
 
-def _latest_update_receipt_summary() -> Optional[Dict[str, Any]]:
-    """Compact summary of the latest receipt (written by EVERY ``hermes update`` run,
-    incl. refused/failed), or None; never raises. Steps/skips stay in the full endpoint.
+def _latest_update_receipt_summary(action_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Compact summary of the latest or action-correlated ``hermes update`` receipt,
+    incl. refused/failed, or None; never raises. Steps/skips stay in the full endpoint.
 
     Phase-1 bullet 3 (#91277): the receipt (written by EVERY ``hermes update`` run since #91283, including
     refused and failed ones, with a ``latest.json`` pointer) is the durable success signal the Desktop and
     dashboard should read instead of inferring outcomes from liveness probes across the update's stop/start
     gap (#81193, #87359).
     """
-    receipt = _read_latest_receipt()
+    receipt = _read_latest_receipt(action_id)
     if not receipt:
         return None
     try:
         post = receipt.get("post_update") or {}
         return {
-            **{k: receipt.get(k) for k in ("outcome", "started_at", "finished_at")},
+            **{k: receipt.get(k) for k in ("update_id", "outcome", "started_at", "finished_at")},
             "pre_sha": (receipt.get("pre_update") or {}).get("sha"),
             "post_sha": post.get("sha"), "post_version": post.get("version"),
             "fleet_states": sorted({str(e.get("state")) for e in receipt.get("fleet") or [] if isinstance(e, dict)}),

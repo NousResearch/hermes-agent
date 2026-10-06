@@ -5,16 +5,10 @@ docs of config.yaml.
 """
 
 
-#: Image every container terminal backend (docker/modal/daytona/singularity) uses unless the
-#: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
-#: (the 3.14 pin shipped between the two without a migration); a saved config still holding one
-#: is the template copied, and the config migration unsets it, never a user's own pin.
-DEFAULT_SANDBOX_IMAGE = "nousresearch/hermes-sandbox:desktop"
-LEGACY_SANDBOX_IMAGES = ("nikolaik/python-nodejs:python3.11-nodejs20", "nikolaik/python-nodejs:python3.14-nodejs22")
-LEGACY_SANDBOX_IMAGE = LEGACY_SANDBOX_IMAGES[0]
-# Vercel Sandbox managed image (Vercel deprecated its `runtime` presets in Aug 2026).
-DEFAULT_VERCEL_IMAGE = "vercel/sandbox/universal:latest"
-LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choice
+from hermes_cli.config_images import (  # noqa: F401 -- re-exported constants
+    DEFAULT_SANDBOX_IMAGE, DEFAULT_VERCEL_IMAGE, LEGACY_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGES,
+    LEGACY_VERCEL_RUNTIME,
+)
 
 
 def _aux(timeout, *, reasoning_effort=True, **extra):
@@ -1166,6 +1160,7 @@ DEFAULT_CONFIG = {
         # Client-side ffmpeg silence trim before cloud upload (local whisper uses VAD): silence
         # inflates upload time, billing and hallucinations. Failure = raw upload.
         "cloud_trim_silence": True,
+        "cloud_vad_gate": False,  # drop no-speech clips before a cloud upload (fail-open)
         "cloud_trim_threshold_db": -40,  # quieter than this counts as silence
         "cloud_trim_keep_ms": 300,  # how much of each pause survives (natural pacing)
         "local": {

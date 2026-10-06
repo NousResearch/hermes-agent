@@ -1257,12 +1257,148 @@ def _relaunch_verify_timeout_s(profiles: dict, unmapped: list, pid_exists) -> fl
     return float(GATEWAY_RESTART_WATCHER_TIMEOUT_S) + _RELAUNCH_VERIFY_TIMEOUT_S
 
 
-def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: list) -> None:
-    """Gate success on the shared liveness poll: a truthy launch only proves the watcher was created.
+def _profile_home_for_verify(name: str):
+    """Home dir for a relaunched profile; ``None`` when unresolvable (best-effort, never raises)."""
+    try:
+        from hermes_cli.profiles import get_profile_dir
+        return Path(get_profile_dir(str(name)))
+    except Exception:
+        return None
 
-    A parent Job Object denying CREATE_BREAKAWAY_FROM_JOB can kill the gateway on updater teardown;
-    ``all_profiles=True`` covers the fleet. Vouched PIDs are persisted so a death AFTER updater exit
-    is reported by the next CLI invocation (best-effort)."""
+
+def _recorded_profile_pids(home) -> tuple[int | None, int | None]:
+    """``(recorded_pid, live_pid)`` from a profile home's ``gateway.pid``; ``(None, None)`` when unreadable.
+
+    Pure read — the file is never unlinked. ``live_pid`` is set only for a process that is alive
+    and passes the PID-reuse guard; a file naming a dead PID is positive evidence the gateway is
+    down, distinct from a missing file (a slow boot that has not written it yet).
+    """
+    try:
+        from gateway.status import _live_pid_from_record, _pid_from_record, _read_pid_record
+        record = _read_pid_record(Path(home) / "gateway.pid")
+        return _pid_from_record(record), _live_pid_from_record(record)
+    except Exception:
+        return None, None
+
+
+def _restarted_service_statuses(token: dict) -> dict[str, str | None]:
+    """SCM status per service restarted in this resume; ``None`` = unreadable (best-effort, never raises).
+
+    ``sc start`` succeeding only proves the service process exists, not that its gateway child
+    survived — this status is the supervisor half of the liveness check (the gateway half comes
+    from the profile PID files). An unreadable probe (non-Windows, AccessDenied) must never fail
+    verification by itself.
+    """
+    statuses: dict[str, str | None] = {}
+    for name in map(str, token.get("restarted_services") or []):
+        try:
+            statuses[name] = str(_win_service(name)[1].status())
+        except Exception:
+            statuses[name] = None
+    return statuses
+
+
+def _unfiltered_gateway_pids() -> list[int]:
+    """Process-table gateway PIDs without the install-scope filter (best-effort, never raises).
+
+    The scope filter drops gateways whose home is unreadable (service-logon processes hide their
+    environment) — exactly the gateways a service restart brings back. Only unmapped relaunches
+    (no PID file to answer through) may be vouched for by this scan; mapped profiles and
+    services answer through their own PID files so a foreign gateway can never vouch for them.
+    """
+    try:
+        from hermes_cli.gateway import find_gateway_pids
+        return [int(pid) for pid in find_gateway_pids(all_profiles=True)]
+    except Exception:
+        return []
+
+
+def _expected_service_profile_names(token: dict) -> dict[str, str]:
+    """``{profile: service}`` for restarted SCM services with a known profile mapping."""
+    service_profiles = token.get("service_profiles") or {}
+    restarted = {str(name) for name in (token.get("restarted_services") or [])}
+    return {str(profile): str(service) for service, profile in service_profiles.items() if str(service) in restarted}
+
+
+def _live_recorded_pids(names) -> list[int]:
+    """Live PID-file PIDs for the given profile names (best-effort, never raises)."""
+    pids: list[int] = []
+    for name in names:
+        home = _profile_home_for_verify(name)
+        if home is None:
+            continue
+        _recorded, live = _recorded_profile_pids(home)
+        if live:
+            pids.append(int(live))
+    return pids
+
+
+def _missing_relaunched_gateways(
+    token: dict, profiles: dict, unmapped: list, ready_pids: set[int],
+    service_statuses: dict[str, str | None], unfiltered_pids: set[int] = frozenset(),
+) -> list[str]:
+    """Names of expected gateways with no liveness evidence; ``[]`` = the relaunch is verified.
+
+    A mapped profile/service is covered by a live PID file, or — when it holds no record (slow
+    boot, stubbed probe) — by enough distinct scope-filtered fleet processes to cover EVERY
+    such record-less profile (one fleet process vouches for at most one profile: a single
+    hit cannot vouch for two missing files, and a live sibling's PID cannot vouch for a
+    missing one). A PID file naming a dead process is positive proof of death: a fleet hit
+    is then somebody else's gateway, never ours (#126076 false pass). Restarted services
+    additionally fail on a readable non-``running`` SCM status. Unmapped relaunches (no PID
+    file) are covered by either fleet scan.
+    """
+    missing: list[str] = []
+    service_profile_names = _expected_service_profile_names(token)
+    expected = sorted(set(map(str, profiles or {})) | set(service_profile_names))
+    records: dict[str, tuple[int | None, int | None]] = {}
+    live_pids: set[int] = set()
+    for name in expected:
+        home = _profile_home_for_verify(name)
+        recorded, live = (None, None) if home is None else _recorded_profile_pids(home)
+        records[name] = (recorded, live)
+        if live:
+            with suppress(Exception):
+                live_pids.add(int(live))
+    unclaimed: set[int] = set()
+    for pid in ready_pids or set():
+        with suppress(Exception):
+            if int(pid) > 0 and int(pid) not in live_pids:
+                unclaimed.add(int(pid))
+    missing_file_count = sum(1 for name in expected if records[name][1] is None and records[name][0] is None)
+    fleet_covers_missing = missing_file_count > 0 and len(unclaimed) >= missing_file_count
+    for name in expected:
+        recorded, live = records[name]
+        if live or (recorded is None and fleet_covers_missing):
+            continue
+        if name in service_profile_names:
+            missing.append(f"service {service_profile_names[name]!r} gateway (profile {name!r}) is not alive")
+        else:
+            missing.append(f"profile {name!r} is not alive")
+    restarted = sorted({str(name) for name in (token.get("restarted_services") or [])})
+    for name in restarted:
+        status = service_statuses.get(name)
+        if status is not None and status != "running":
+            missing.append(f"service {name!r} SCM status: {status}")
+        elif status is None and name not in {s for s in service_profile_names.values()}:
+            if not ready_pids and not unfiltered_pids:
+                missing.append(f"service {name!r} is not alive")
+    relaunched_unmapped = [entry for entry in (unmapped or []) if entry.get("argv") and entry.get("pid")]
+    if relaunched_unmapped and not ready_pids and not unfiltered_pids:
+        count = len(relaunched_unmapped)
+        missing.append(f"{count} unmapped gateway process{'es' if count != 1 else ''} {'are' if count != 1 else 'is'} not alive")
+    return missing
+
+
+def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: list) -> None:
+    """Gate success on OUR relaunched gateways being alive — never on any fleet process.
+
+    A truthy launch only proves the restart watcher was created, and a parent Job Object
+    denying CREATE_BREAKAWAY_FROM_JOB can kill the gateway on updater teardown (#48820), so
+    success requires liveness evidence for every relaunched kind (see
+    ``_missing_relaunched_gateways``). Vouched PIDs are persisted so a death AFTER updater
+    exit is reported by the next CLI invocation (best-effort).
+    """
     with _abort_on_error("Could not load Windows gateway liveness helpers"):
         from gateway.status import _pid_exists
         from hermes_cli import gateway_windows
@@ -1270,17 +1406,41 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
     ready_pids = gateway_windows._wait_for_gateway_ready(
         timeout_s=timeout_s, all_profiles=True, pid_filter=_owned_gateway_pids
     )
-    if not ready_pids:
+    ready: set[int] = set()
+    for pid in ready_pids or []:
+        with suppress(Exception):
+            if int(pid) > 0:
+                ready.add(int(pid))
+    service_statuses = _restarted_service_statuses(token)
+    missing = _missing_relaunched_gateways(token, profiles, unmapped, ready, service_statuses)
+    unfiltered: set[int] = set()
+    if missing and not ready:
+        # The scope filter drops gateways whose home is unreadable (service-logon processes);
+        # an unfiltered scan still proves OUR unmapped relaunches without trusting a foreign
+        # fleet for mapped profiles/services (their PID files already answered).
+        for pid in _unfiltered_gateway_pids():
+            with suppress(Exception):
+                if int(pid) > 0:
+                    unfiltered.add(int(pid))
+        if unfiltered:
+            missing = _missing_relaunched_gateways(token, profiles, unmapped, ready, service_statuses, unfiltered)
+    if missing:
         token["profiles"] = dict(profiles)
         token["unmapped"] = list(unmapped)
         print(
             "\n  ⚠ Windows gateway restart could not be verified — no stable gateway process appeared after relaunch.\n"
             "    (The respawned gateway may have been killed by a parent Job Object during updater teardown, #48820.)\n"
+            f"    Missing: {'; '.join(missing)}\n"
             "    Recover with: hermes gateway restart"
         )
         raise RuntimeError("Windows gateway relaunch after update was not verified alive")
+    service_profile_names = _expected_service_profile_names(token)
+    vouched = set(ready) | set(_live_recorded_pids([*map(str, profiles or {}), *service_profile_names]))
+    if unmapped and any(entry.get("argv") and entry.get("pid") for entry in unmapped) and not ready:
+        vouched |= unfiltered
     with suppress(Exception):
-        gateway_windows._write_start_attestation(ready_pids, "post-update relaunch")
+        if vouched:
+            gateway_windows._write_start_attestation(sorted(vouched), "post-update relaunch")
 
 
 def _resume_windows_gateways_after_update(token: dict | None) -> None:
@@ -1312,10 +1472,14 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
                 raise RuntimeError("Windows gateway cold-start was not verified")
             token["cold_start_if_installed"] = False
         _cold_start_attested_profiles(token)
+        if token.get("restarted_services"):
+            # Service-only resume: ``sc start`` success never proved the gateway child survived
+            # (#126076), so the restarted services get the same liveness gate as a relaunch.
+            _verify_relaunched_gateways_alive(token, {}, [])
         token["resume_needed"] = False
         return
     relaunched, unmapped_relaunched = _relaunch_paused_gateways(token, profiles, unmapped)
-    if relaunched or unmapped_relaunched:
+    if relaunched or unmapped_relaunched or token.get("restarted_services"):
         _verify_relaunched_gateways_alive(token, profiles, unmapped)
     if relaunched:
         print(f"\n  ✓ Restarting Windows gateway profile(s): {', '.join(relaunched)}")

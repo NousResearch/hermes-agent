@@ -18,6 +18,7 @@ SETUP_PROFILE_NAME = "hermes-setup"
 SETUP_PROFILE_DESCRIPTION = "Where Hermes met you — walks your first run, then checks in as you find your feet."
 SETUP_CHAT_TITLE = "Welcome to Hermes"
 MAX_FAILED_STARTS = 3
+RETURNING_USER_FLAG = "setup_intro"  # config.yaml onboarding.seen.<flag>, see settle_returning_user
 _FRESH_STATE = {"intro": "unseen", "failed_starts": 0}
 _CARDS_DIR = "setup-cards"
 _SETUP_TOOLSETS = ["setup", "start_chat", "connections", "no_mcp"]
@@ -120,7 +121,47 @@ def onboarding_eligible() -> bool:
 
 def read_state() -> dict:
     found = find_setup_profile()
-    return dict(_FRESH_STATE) if found is None else _read_state(found[1])
+    if found is not None:
+        return _read_state(found[1])
+    return {**_FRESH_STATE, "intro": "seen"} if _returning_user_latched() else dict(_FRESH_STATE)
+
+
+def settle_returning_user() -> None:
+    """Latch the intro as seen for an install that was used before the first-run guide existed.
+
+    Only a first launch (no setup profile yet) can be a returning user; once the guide has started
+    its own marker is the authority. The latch is separate from the marker so an install that never
+    gets a setup profile still reads as ``seen`` on every later boot.
+    """
+    if find_setup_profile() is not None or _returning_user_latched():
+        return
+    if _install_has_history():
+        from agent.onboarding import mark_seen
+        mark_seen(get_hermes_home() / "config.yaml", RETURNING_USER_FLAG)
+
+
+def _returning_user_latched() -> bool:
+    from agent.onboarding import is_seen
+    from hermes_cli.config import read_user_config_raw
+    return is_seen(read_user_config_raw(get_hermes_home() / "config.yaml"), RETURNING_USER_FLAG)
+
+
+def _install_has_history() -> bool:
+    """A session row in the launch home, or a profile the user made. A fresh boot creates neither:
+    it leaves an empty ``state.db``, ``auth.json`` (the free-tier mint) and ``SOUL.md``, which is
+    why the signal is a session row and not a file."""
+    if any(not (path / profiles_mod.SETUP_PROFILE_MARKER).is_file()
+           for path in profiles_mod._iter_named_profile_dirs()):
+        return True
+    db_path = get_hermes_home() / "state.db"
+    if not db_path.is_file():
+        return False
+    from hermes_state_registry import acquire, release_or_close
+    db = acquire(db_path)
+    try:
+        return db.session_count_ge(1)
+    finally:
+        release_or_close(db)
 
 
 def record_failed_start() -> dict:

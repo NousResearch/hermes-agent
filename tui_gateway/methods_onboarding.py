@@ -49,8 +49,12 @@ def _(rid, params: dict) -> dict:
 
 @method("onboarding.state")
 def _(rid, params: dict) -> dict:
-    from hermes_cli.setup_profile import read_state
-    return _onboarding_state_result(rid, read_state)
+    from hermes_cli.setup_profile import read_state, settle_returning_user
+
+    def settle_then_read() -> dict:
+        settle_returning_user()
+        return read_state()
+    return _onboarding_state_result(rid, settle_then_read)
 
 
 @method("onboarding.record_failed_start")

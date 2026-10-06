@@ -9,7 +9,7 @@ import importlib
 import logging
 import os
 import re
-from typing import Any, List, Optional
+from typing import Any, Iterable, List, Optional
 from urllib.parse import urlparse
 from tools.mcp_tool_common import _sanitize_error, _core
 from tools.mcp_tool_node_abi import NodeAbiMismatchError
@@ -91,15 +91,18 @@ def _is_streamable_http_rejection(exc: BaseException) -> bool:
 
 
 _HTTP_REJECTION_BODY_CHARS = 300
+_HTTP_REJECTION_REDACTION_MARGIN = 4096  # bytes past the excerpt window still read for redaction
 
 
-def _make_http_rejection_recorder(sink: dict):
+def _make_http_rejection_recorder(sink: dict, redaction_values=()):
     """httpx response hook for the owned Streamable HTTP client: remembers the last 4xx/5xx the server
     sent (status, method, URL, head of the body). mcp >= 2.0 folds a non-2xx whose body it cannot
     parse as a JSON-RPC error into the opaque ``-32603 Server returned an error response`` — the
     status and the server's own words (e.g. ``400 {"code":-32020,"message":"Unsupported
     MCP-Protocol-Version"}``) never reach the exception, so this is the only place they can be
-    observed. SSE bodies are never read (a stream would block the hook)."""
+    observed. SSE bodies are never read (a stream would block the hook). The URL and the whole
+    (transport-capped) body are redacted with the attempt's values BEFORE the excerpt is cut or its
+    whitespace collapsed: a reflected credential split by the cut could no longer be matched."""
 
     async def _record(response):
         if response.status_code < 400:
@@ -108,11 +111,16 @@ def _make_http_rejection_recorder(sink: dict):
         if response.headers.get("content-type", "").split(";")[0].strip().lower() != "text/event-stream":
             try:
                 raw = await response.aread()  # buffered: the SDK's own aread() afterwards sees the same bytes
-                body = " ".join(raw[:_HTTP_REJECTION_BODY_CHARS * 4].decode("utf-8", "replace").split())
+                # A bounded prefix, not the whole (up to 10 MiB) body: this hook runs on the shared
+                # MCP loop. The margin keeps a value that straddles the excerpt cut whole for matching.
+                window = raw[:_HTTP_REJECTION_BODY_CHARS * 4 + _HTTP_REJECTION_REDACTION_MARGIN]
+                text = _sanitize_error(window.decode("utf-8", "replace"), redaction_values)
+                body = " ".join(text[:_HTTP_REJECTION_BODY_CHARS * 4].split())
             except Exception:  # the failure itself is still reported, just without the body
                 body = ""
         sink.update(status=response.status_code, method=response.request.method,
-                    url=str(response.request.url), body=body[:_HTTP_REJECTION_BODY_CHARS])
+                    url=_sanitize_error(str(response.request.url), redaction_values),
+                    body=body[:_HTTP_REJECTION_BODY_CHARS])
 
     return _record
 
@@ -180,13 +188,13 @@ def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
     try:
         parsed = urlparse(stripped)
     except Exception as exc:  # urlparse is very permissive — belt and braces
-        raise _bad(f"{stripped!r} ({exc})") from exc
+        raise _bad("could not parse url") from exc
     if parsed.scheme.lower() not in {"http", "https"}:
-        raise _bad(f"scheme must be http or https, got {parsed.scheme!r} ({stripped!r})")
+        raise _bad("scheme must be http or https")
     if not parsed.netloc:
-        raise _bad(f"missing host ({stripped!r})")
+        raise _bad("missing host")
     if not parsed.hostname:  # ``urlparse`` accepts ``http://:8080`` (empty host, explicit port)
-        raise _bad(f"missing hostname ({stripped!r})")
+        raise _bad("missing hostname")
     return stripped
 
 
@@ -243,7 +251,7 @@ def _resolve_identity_header(server_name: str, config: dict):
         from hermes_cli.profiles import get_active_profile_name
         return (name.strip(), get_active_profile_name())
     if value_from != "static":
-        return _ignore("value_from must be 'static' or 'profile' (got %r)", value_from)
+        return _ignore("value_from must be 'static' or 'profile'")
     value = raw.get("value")
     if not isinstance(value, str) or not value.strip():
         return _ignore("with value_from: static requires a non-empty string 'value'")
@@ -257,8 +265,8 @@ def _apply_identity_header(server_name: str, config: dict, headers: dict) -> dic
     if name is None:
         return headers
     if any(key.lower() == name.lower() for key in headers):
-        logger.debug("MCP server '%s': identity_header '%s' already set via explicit "
-                     "headers config — keeping the explicit value", server_name, name)
+        logger.debug("MCP server '%s': identity_header already set via explicit "
+                     "headers config — keeping the explicit value", server_name)
     else:
         headers[name] = value
     return headers
@@ -413,7 +421,7 @@ def _iter_exception_nodes(exc: BaseException) -> List[BaseException]:
     return ordered
 
 
-def _format_connect_error(exc: BaseException) -> str:
+def _format_connect_error(exc: BaseException, redaction_values: Iterable[str] = ()) -> str:
     """Render nested MCP connection errors into an actionable short message."""
     nodes = _iter_exception_nodes(exc)
 
@@ -431,7 +439,7 @@ def _format_connect_error(exc: BaseException) -> str:
         messages: List[str] = []
         for current in nodes:
             # A group's own str() is opaque — only its children speak; a message-less leaf still names its type.
-            text = "" if getattr(current, "exceptions", None) else str(current).strip()
+            text = "" if getattr(current, "exceptions", None) else _sanitize_error(str(current), redaction_values).strip()
             if text:
                 messages.append(text)
             elif not _exc_children(current):
@@ -440,16 +448,16 @@ def _format_connect_error(exc: BaseException) -> str:
 
     abi = next((node for node in nodes if isinstance(node, NodeAbiMismatchError)), None)
     if abi is not None:  # already the whole story, remedy included; the SDK's "Connection closed" adds nothing
-        return _sanitize_error(str(abi))
+        return _sanitize_error(str(abi), redaction_values)
     missing = _find_missing()
     if not missing:
-        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages()))[:3]))
+        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages()))[:3]), redaction_values)
     message = f"missing executable '{missing}'"
     if os.path.basename(missing) in {"npx", "npm", "node"}:
         message += (" (ensure Node.js is installed and PATH includes its bin directory, "
                     "or set mcp_servers.<name>.command to an absolute path and include "
                     "that directory in mcp_servers.<name>.env.PATH)")
-    return _sanitize_error(message)
+    return _sanitize_error(message, redaction_values)
 
 
 def _optional_types(module: str, *names: str) -> list:

@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from hermes_cli.stderr_timestamp import stamp_line, timestamp
-from tools.mcp_tool_common import _env_ref_name, _prepend_path
+from tools.mcp_tool_common import _env_ref_name, _prepend_path, _sanitize_error
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -445,20 +445,34 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
     return None
 
 
-def _interpolate_env_vars(value):
+def _interpolate_env_vars(value, env_overrides: Optional[Dict[str, str]] = None,
+                          secrets_used: Optional[List[str]] = None):
     """Recursively resolve ``${VAR}`` / Cursor ``${env:VAR}`` placeholders and context vars. Env
     refs resolve from the active profile's secret scope when multiplexing (the routed profile's
-    value, not another profile's in ``os.environ``). Unset vars keep the literal placeholder."""
-    from agent.secret_scope import get_secret as _get_secret
+    value, not another profile's in ``os.environ``). Unset vars keep the literal placeholder.
+    *secrets_used* collects each value a profile/process secret actually substituted (never a
+    context var, a process-global setting or an unresolved placeholder): it may land only in a
+    ``url`` with no header/env literal to redact it by."""
+    from agent.secret_scope import _is_global_env, get_secret as _get_secret
     if isinstance(value, str):
         def _replace(m):
             resolver = _CONTEXT_VAR_RESOLVERS.get(m.group(1).strip())
-            return resolver() if resolver is not None else (_get_secret(_env_ref_name(m.group(1)), m.group(0)) or m.group(0))
+            if resolver is not None:
+                return resolver()
+            name = _env_ref_name(m.group(1))
+            if env_overrides is not None and name in env_overrides:
+                return env_overrides[name]
+            secret = _get_secret(name, m.group(0))
+            if not secret:
+                return m.group(0)
+            if secrets_used is not None and secret != m.group(0) and not _is_global_env(name):
+                secrets_used.append(secret)
+            return secret
         return _ENV_VAR_PATTERN.sub(_replace, value)
     if isinstance(value, dict):
-        return {k: _interpolate_env_vars(v) for k, v in value.items()}
+        return {k: _interpolate_env_vars(v, env_overrides, secrets_used) for k, v in value.items()}
     if isinstance(value, list):
-        return [_interpolate_env_vars(v) for v in value]
+        return [_interpolate_env_vars(v, env_overrides, secrets_used) for v in value]
     return value
 
 
@@ -507,6 +521,106 @@ def _warn_hidden_whitespace(server_name: str, config: dict) -> List[str]:
     return flagged
 
 
+def _load_mcp_server_env(config: dict) -> Dict[str, str]:
+    """Load one MCP server's optional env file into an isolated mapping."""
+    from pathlib import Path
+
+    raw_path = config.get("env_file")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return {}
+
+    interpolated_path = _interpolate_env_vars(raw_path.strip())
+    if not isinstance(interpolated_path, str):
+        return {}
+
+    env_path = os.path.expanduser(interpolated_path)
+    if not os.path.isabs(env_path):
+        terminal_cwd = (os.environ.get("TERMINAL_CWD") or "").strip()
+        if not (os.path.isabs(terminal_cwd) and os.path.isdir(terminal_cwd)):
+            terminal_cwd = os.getcwd()
+        env_path = os.path.abspath(os.path.join(terminal_cwd, env_path))
+
+    env_path_obj = Path(env_path)
+    if not env_path_obj.is_file():
+        logger.warning(
+            "MCP env_file does not exist; falling back to profile/process secrets"
+        )
+        return {}
+    if not os.access(env_path_obj, os.R_OK):
+        logger.warning(
+            "MCP env_file is not readable; falling back to profile/process secrets"
+        )
+        return {}
+
+    try:
+        from agent.secret_scope import load_env_file
+
+        return load_env_file(env_path_obj, strict=True)
+    except Exception:
+        logger.warning(
+            "MCP env_file could not be read; falling back to profile/process secrets"
+        )
+        return {}
+
+
+class _ResolvedMCPServerConfig(dict):
+    """Keep each resolving read's secrets out of mapping serializers and name-keyed state.
+
+    Configs can outlive a reload (lazy startup) or overlap another probe for the same
+    server/profile. Their immutable snapshots must therefore travel with the config,
+    not be replaced by a later read. Only the ordinary config fields are serialized.
+    """
+
+    __slots__ = ("_redaction_values",)
+
+    def __init__(self, config: dict, redaction_values: tuple[str, ...]):
+        super().__init__(config)
+        self._redaction_values = redaction_values
+
+    def copy(self):
+        return _ResolvedMCPServerConfig(self, self._redaction_values)
+
+
+def _mcp_redaction_values(config: dict) -> tuple[str, ...]:
+    """Use the resolving snapshot, never reopen a possibly rotated env file.
+
+    External callers passing plain, already-resolved dicts have no overlay history:
+    deliberately fall back to literal env/header values plus the sanitizer's regexes.
+    Preserve the resolver's returned config (or its copy()) for full overlay redaction.
+    """
+    if isinstance(config, _ResolvedMCPServerConfig):
+        return config._redaction_values
+    return tuple(
+        value for field in ("env", "headers")
+        if isinstance(config.get(field), dict)
+        for value in config[field].values()
+        if isinstance(value, str)
+    )
+
+
+def _rerender_resolved(config: dict) -> dict:
+    """Re-render ``${VAR}`` refs (under the caller's secret scope) without dropping the resolving
+    snapshot: a secret rendered only into the ``url`` has no header literal to fall back on."""
+    secrets_used: List[str] = []
+    rendered = _interpolate_env_vars(config, secrets_used=secrets_used)
+    if isinstance(config, _ResolvedMCPServerConfig):
+        return _ResolvedMCPServerConfig(
+            rendered, config._redaction_values + tuple(secrets_used) + _mcp_redaction_values(rendered))
+    return rendered
+
+
+def _resolve_mcp_server_config(config: dict) -> dict:
+    """Resolve once, retaining the exact overlay for the lifetime of this config."""
+    if isinstance(config, _ResolvedMCPServerConfig):
+        return config
+    server_env = _load_mcp_server_env(config)
+    secrets_used: List[str] = []
+    resolved = _interpolate_env_vars(config, server_env, secrets_used)
+    return _ResolvedMCPServerConfig(
+        resolved, tuple(server_env.values()) + tuple(secrets_used) + _mcp_redaction_values(resolved),
+    )
+
+
 def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     """Drop exfiltration-shaped MCP configs before any stdio spawn path."""
     try:
@@ -517,7 +631,8 @@ def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     for name, cfg in servers.items():
         issues = validate_mcp_server_entry(name, cfg) if isinstance(cfg, dict) else None
         if issues:
-            logger.warning("Skipping suspicious MCP server '%s': %s", name, "; ".join(issues))
+            logger.warning("Skipping suspicious MCP server '%s': %s", name,
+                           _sanitize_error("; ".join(issues), _mcp_redaction_values(cfg)))
         else:
             safe_servers[name] = cfg
     return safe_servers
@@ -553,10 +668,18 @@ def _load_mcp_config() -> Dict[str, dict]:
             pass
         safe_servers: Dict[str, dict] = {}
         for name, cfg in _filter_suspicious_mcp_servers(servers if isinstance(servers, dict) else {}).items():
-            interpolated = _interpolate_env_vars(cfg)
+            if not isinstance(cfg, dict):
+                logger.warning(
+                    "Skipping MCP server '%s': invalid configuration (expected a mapping)",
+                    name,
+                )
+                continue
+            interpolated = _resolve_mcp_server_config(cfg)
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)
                 safe_servers[name] = interpolated
+        # Interpolation can turn placeholders into blocked command/argument shapes.
+        safe_servers = _filter_suspicious_mcp_servers(safe_servers)
         _portable_mcp_servers(safe_servers)
         return safe_servers
     except Exception as exc:

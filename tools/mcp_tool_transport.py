@@ -12,9 +12,9 @@ from typing import Dict, Optional, Set
 from utils import normalize_proxy_url
 from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
 from agent import runtime_cwd as _runtime_cwd
-from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
+from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _format_connect_error, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes
-from tools.mcp_tool_common import _core
+from tools.mcp_tool_common import _core, _exc_str, _sanitize_error
 from tools.mcp_tool_node_abi import node_abi_error
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_lifecycle as _lifecycle
@@ -193,7 +193,7 @@ class MCPServerTransportMixin:
             except Exception as exc:
                 if isinstance(exc, asyncio.TimeoutError) or not should_fallback(exc):
                     raise
-                logger.info(log_fmt, self.name, exc, *log_extra)
+                logger.info(log_fmt, self.name, _sanitize_error(_exc_str(exc), self._redaction_values), *log_extra)
                 try:
                     return await call(fallback)
                 except Exception as fallback_exc:
@@ -204,11 +204,13 @@ class MCPServerTransportMixin:
                             or not _handshake_answered_with_unsupported_version(exc)):
                         raise
                     logger.info("MCP server '%s': server/discover also failed (%s) — completing the handshake "
-                                "at %s, the version this client offered", self.name, fallback_exc,
+                                "at %s, the version this client offered", self.name,
+                                _sanitize_error(_exc_str(fallback_exc), self._redaction_values),
                                 _core.LATEST_HANDSHAKE_VERSION)
                     return await asyncio.wait_for(self._complete_handshake_at_offered_version(session),
                                                   timeout=connect_timeout)
-        mode = str((self._config or {}).get("protocol", "auto")).lower().strip()
+        raw_mode = str((self._config or {}).get("protocol", "auto"))
+        mode = raw_mode.lower().strip()
         if mode in ("stateless", "modern", "2026-07-28"):
             return await attempt("discover", "initialize", lambda exc: True,
                                  "MCP server '%s': server/discover rejected (%s) despite "
@@ -217,7 +219,8 @@ class MCPServerTransportMixin:
             return await call("initialize")
         if mode != "auto":
             logger.warning("MCP server '%s': unknown protocol=%r — treating as 'auto' "
-                           "(valid: auto, stateless, legacy)", self.name, mode)
+                           "(valid: auto, stateless, legacy)", self.name,
+                           _sanitize_error(raw_mode, self._redaction_values))
         # mcp 1.x has no server/discover client — nothing to fall back to.
         return await attempt(
             "initialize", "discover", lambda exc: _handshake_rejected_as_modern(exc) and hasattr(session, "discover"),
@@ -472,8 +475,10 @@ class MCPServerTransportMixin:
             return  # DNS/connect/timeout/transport error — let the SDK try.
         if not _non_mcp_2xx(resp):
             return
-        ct_base = _content_type_base(resp)
-        raise NonMcpEndpointError(f"MCP server '{self.name}' at {url} returned Content-Type '{ct_base}', not an MCP "
+        # Protocol decisions use normalized types; diagnostics must redact the raw
+        # header before split/strip/lower can destroy an exact configured value.
+        ct_display = _sanitize_error(resp.headers.get("content-type", ""), self._redaction_values)
+        raise NonMcpEndpointError(f"MCP server '{self.name}' at the configured URL returned Content-Type '{ct_display}', not an MCP "
             f"response (expected one of: {', '.join(self._MCP_CONTENT_TYPES)}). The URL most likely "
             "points at a web page rather than an MCP endpoint — check it resolves to a Streamable "
             "HTTP / SSE endpoint (e.g. https://host/mcp, not https://host/).")
@@ -503,7 +508,8 @@ class MCPServerTransportMixin:
                 or not self._ready.is_set()):
             raise eg
         logger.debug("MCP server '%s': transport TaskGroup exited after a live session "
-                     "(%r) — reconnecting immediately instead of backing off", self.name, eg)
+                     "(%s: %s) — reconnecting immediately instead of backing off", self.name,
+                     type(eg).__name__, _format_connect_error(eg, self._redaction_values))
         return "reconnect"
 
     def _build_oauth_auth(self, url: str, config: dict):
@@ -515,7 +521,8 @@ class MCPServerTransportMixin:
             from tools.mcp_oauth_manager import get_manager
             return get_manager().get_or_build_provider(self.name, url, config.get("oauth"))
         except Exception as exc:
-            logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
+            logger.warning("MCP OAuth setup failed for '%s' (%s): %s", self.name,
+                           type(exc).__name__, _sanitize_error(_exc_str(exc), self._redaction_values))
             raise
 
     def _sse_transport(self, url: str, headers: dict, connect_timeout: float,
@@ -570,7 +577,7 @@ class MCPServerTransportMixin:
         inner_transport = httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                                **({"headers": headers} if headers else {}),
-                               "event_hooks": {"response": [_make_http_rejection_recorder(self._http_rejection)]},
+                               "event_hooks": {"response": [_make_http_rejection_recorder(self._http_rejection, self._redaction_values)]},
                                "transport": _make_mcp_body_cap_transport(httpx, inner_transport),
                                **_present(mounts=_mcp_proxy_mounts(httpx, url, ssl_verify, client_cert, self.name),
                                           auth=oauth_auth)}
@@ -596,7 +603,7 @@ class MCPServerTransportMixin:
         # publish another endpoint's identity alongside this session.
         self._resolved_identity = _registration._identity_digest(inputs)
         url, headers = inputs
-        logger.debug("MCP server '%s': connecting to %s", self.name, url)
+        logger.debug("MCP server '%s': connecting to %s", self.name, _sanitize_error(url, self._redaction_values))
         self._http_rejection = {}  # last 4xx/5xx the owned client saw this attempt (recorder hook)
         # Seed MCP-Protocol-Version (user override wins) from the HANDSHAKE version, not the latest: a
         # 2026-07-28 header routes the handshake-era ``initialize()`` onto the envelope ladder, which rejects it.
@@ -619,7 +626,10 @@ class MCPServerTransportMixin:
         except Exception as exc:
             # The SDK folds a non-2xx it cannot parse into ``-32603 Server returned an error response``;
             # the recorder hook kept the status/URL/body the server actually sent (#114350, #113359).
-            http_detail = _describe_http_failure(exc, self._http_rejection)
+            # The recorded URL and body can carry a credential rendered into the URL or reflected by
+            # the server: redact before it reaches a log line or a composed ConnectionError.
+            raw_detail = _describe_http_failure(exc, self._http_rejection)
+            http_detail = _sanitize_error(raw_detail, self._redaction_values)
             # SSE-only servers (or their load balancers) reject the Streamable HTTP chunked
             # ``initialize`` POST — with a 400-family status or an opaque SDK INTERNAL_ERROR —
             # previously a permanent failure with 0 active tools unless the user set
@@ -630,7 +640,7 @@ class MCPServerTransportMixin:
             # transport mismatch — ``_is_streamable_http_rejection`` matches neither), and never
             # with ``strict_redirect_headers`` (SSE cannot enforce that boundary).
             if (self._ever_connected or common[-1] or not _is_streamable_http_rejection(exc)):
-                if http_detail != str(_unwrap_exception_group(exc)):  # opaque SDK error + a recorded rejection
+                if raw_detail != str(_unwrap_exception_group(exc)):  # opaque SDK error + a recorded rejection
                     raise ConnectionError(f"MCP server '{self.name}': Streamable HTTP connect failed "
                                           f"({http_detail})") from exc
                 raise
@@ -649,7 +659,8 @@ class MCPServerTransportMixin:
                 raise ConnectionError(
                     f"MCP server '{self.name}': both Streamable HTTP and SSE transports failed "
                     f"(Streamable HTTP: {http_detail}; SSE: "
-                    f"{_unwrap_exception_group(sse_exc)}). Check the URL points at an MCP "
+                    f"{_sanitize_error(str(_unwrap_exception_group(sse_exc)), self._redaction_values)}). "
+                    "Check the URL points at an MCP "
                     "endpoint, or pin `transport: sse` if the server is SSE-only.") from sse_exc
 
     # -------------------------------------------------------------- discovery

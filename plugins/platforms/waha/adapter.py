@@ -21,6 +21,21 @@ the ``default`` profile); splitting senders across Hermes profiles is deliberate
 reimplemented here — it is ``gateway.profile_routes`` (``gateway/profile_routing.py``), the same
 generic mechanism Discord/Telegram secondary-profile routing already uses. ``build_source()``
 resolves the owning profile per inbound chat_id for free.
+
+Inbound media (image + voice note): this WAHA instance runs the NOWEB engine with media download
+enabled (the default — neither ``WHATSAPP_DOWNLOAD_MEDIA=false`` nor ``WAHA_EVENTS_DOWNLOAD_MEDIA``
+is set in its ``.env``), so every ``hasMedia`` event carries a ``payload.media.url`` pointing at
+WAHA's own ``/api/files/{fileId}`` endpoint — never inline base64. That endpoint requires the same
+``X-Api-Key`` auth as the rest of the REST API (WAHA's documented default), so
+``_download_media_bytes`` fetches it authenticated and streamed under the shared
+``gateway.max_inbound_media_bytes`` cap (``validate_inbound_media_size``) — the save+validate work
+itself is NOT reimplemented, it goes straight into ``cache_image_from_bytes``/
+``cache_audio_from_bytes`` (``gateway/platforms/base.py``), same as every other adapter. A voice
+note vs. a shared audio file is distinguished via NOWEB's raw engine data
+(``payload._data.message.audioMessage.ptt``) — an engine-specific field (the docs say ``_data``
+"can be different for each engine"), acceptable since this instance is pinned to NOWEB. Once
+cached, the gateway's own STT pipeline (``gateway/run_voice.py``) transcribes
+``MessageType.VOICE``/``AUDIO`` attachments automatically — no transcription logic lives here.
 """
 
 from __future__ import annotations
@@ -33,6 +48,7 @@ import json
 import logging
 import mimetypes
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from gateway.config import Platform, PlatformConfig
@@ -40,7 +56,10 @@ from gateway.platforms._shared import (
     coerce_port, extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     seed_extra_from_env as _seed_extra_from_env, apply_yaml_bridge as _apply_yaml_bridge, send_error,
 )
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import (
+    BasePlatformAdapter, SendResult, cache_audio_from_bytes_async, cache_image_from_bytes_async,
+    get_inbound_media_max_bytes, validate_inbound_media_size,
+)
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import MessageDeduplicator, redact_phone
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
@@ -114,6 +133,27 @@ def _extract_mentioned_ids(data: Dict[str, Any]) -> List[str]:
         if mentioned:
             return [d for m in mentioned if (d := _digits(m))]
     return []
+
+
+def _is_ptt_audio(data: Dict[str, Any]) -> bool:
+    """True for a WhatsApp voice note (push-to-talk) vs. a regular shared audio file. NOWEB's raw
+    engine data mirrors Baileys' own ``audioMessage.ptt`` flag (see module docstring)."""
+    audio = ((data.get("message") or {}).get("audioMessage")) or {}
+    return bool(audio.get("ptt"))
+
+
+DEFAULT_IMAGE_EXT = ".jpg"
+DEFAULT_AUDIO_EXT = ".ogg"
+
+
+def _guess_media_ext(mimetype: str, filename: Optional[str], default: str) -> str:
+    """Best-effort file extension: the filename's own suffix first, then a MIME guess, else
+    ``default``. Cosmetic only — ``cache_image_from_bytes``/``cache_audio_from_bytes`` validate
+    the actual bytes (magic-byte sniff / container sniff), not this extension."""
+    if filename and (suffix := Path(filename).suffix):
+        return suffix
+    base_mime = (mimetype or "").split(";")[0].strip()
+    return (mimetypes.guess_extension(base_mime) if base_mime else None) or default
 
 
 class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
@@ -383,7 +423,80 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         expected = hmac.new(self._hmac_secret.encode(), raw_body, hashlib.sha512).hexdigest()
         return hmac.compare_digest(provided, expected)
 
-    def _build_message_event(self, payload: Dict[str, Any]) -> Optional[MessageEvent]:
+    async def _download_media_bytes(self, url: str) -> Optional[bytes]:
+        """Authenticated, streamed-and-capped GET of a WAHA ``media.url`` (``/api/files/{id}``,
+        same ``X-Api-Key`` as every other WAHA endpoint by default). Streams under
+        ``gateway.max_inbound_media_bytes`` instead of buffering the whole body first — the cap
+        itself is the shared ``validate_inbound_media_size`` every adapter's cache_*_from_bytes
+        path enforces, not a second implementation of the limit."""
+        max_bytes = get_inbound_media_max_bytes()
+        try:
+            async with self._http_session.get(
+                    url, headers=self._auth_headers(), timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                if resp.status != 200:
+                    logger.warning("[waha] Media download failed: HTTP %s for %s", resp.status, url)
+                    return None
+                content_length = resp.headers.get("Content-Length")
+                if content_length:
+                    try:
+                        validate_inbound_media_size(int(content_length), media_type="media", max_bytes=max_bytes)
+                    except (ValueError, TypeError) as e:
+                        logger.warning("[waha] Rejected inbound media (declared size): %s", e)
+                        return None
+                chunks: List[bytes] = []
+                total = 0
+                async for chunk in resp.content.iter_chunked(65536):
+                    total += len(chunk)
+                    try:
+                        validate_inbound_media_size(total, media_type="media", max_bytes=max_bytes)
+                    except ValueError as e:
+                        logger.warning("[waha] Rejected inbound media (streamed size): %s", e)
+                        return None
+                    chunks.append(chunk)
+                return b"".join(chunks)
+        except Exception as e:
+            logger.warning("[waha] Media download error for %s: %s", url, e)
+            return None
+
+    async def _collect_inbound_media(
+            self, payload: Dict[str, Any], data: Dict[str, Any]) -> tuple[MessageType, list, list]:
+        """``hasMedia`` -> ``(message_type, media_urls, media_types)`` for image/voice attachments
+        (this adapter's scoped content types); anything else (video, document, sticker) is left
+        unhandled for now and reported at debug level. Save+validate is NOT reimplemented here —
+        downloaded bytes go straight into ``cache_image_from_bytes``/``cache_audio_from_bytes``."""
+        if not payload.get("hasMedia"):
+            return MessageType.TEXT, [], []
+        media = payload.get("media") or {}
+        media_url, mimetype = media.get("url"), str(media.get("mimetype") or "").lower()
+        if media.get("error"):
+            logger.warning("[waha] WAHA reported a media download error, skipping attachment: %s", media["error"])
+            return MessageType.TEXT, [], []
+        if not media_url:
+            logger.info("[waha] hasMedia=true but media.url is null (not downloaded by WAHA) — skipping attachment")
+            return MessageType.TEXT, [], []
+        if mimetype.startswith("image/"):
+            raw = await self._download_media_bytes(media_url)
+            if raw is None:
+                return MessageType.TEXT, [], []
+            ext = _guess_media_ext(mimetype, media.get("filename"), DEFAULT_IMAGE_EXT)
+            try:
+                path = await cache_image_from_bytes_async(raw, ext=ext)
+            except ValueError as e:
+                logger.warning("[waha] Rejected inbound image: %s", e)
+                return MessageType.TEXT, [], []
+            return MessageType.PHOTO, [path], [mimetype or "image/jpeg"]
+        if mimetype.startswith("audio/"):
+            raw = await self._download_media_bytes(media_url)
+            if raw is None:
+                return MessageType.TEXT, [], []
+            ext = _guess_media_ext(mimetype, media.get("filename"), DEFAULT_AUDIO_EXT)
+            path = await cache_audio_from_bytes_async(raw, ext=ext)
+            msg_type = MessageType.VOICE if _is_ptt_audio(data) else MessageType.AUDIO
+            return msg_type, [path], [mimetype or "audio/ogg"]
+        logger.debug("[waha] Skipping unsupported inbound media type: %s", mimetype or "unknown")
+        return MessageType.TEXT, [], []
+
+    async def _build_message_event(self, payload: Dict[str, Any]) -> Optional[MessageEvent]:
         """Normalize a WAHA ``message`` event payload into a MessageEvent, LID-robust (see module
         docstring): identity is resolved per-message by preferring a non-``@lid`` JID candidate."""
         data = payload.get("_data") or {}
@@ -407,6 +520,9 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         }
         if not self._should_process_message(normalized):
             return None
+        # Media is downloaded only AFTER the authorization/gating check passes above — an
+        # unauthorized sender's attachment is never fetched.
+        message_type, media_urls, media_types = await self._collect_inbound_media(payload, data)
         chat_name = payload.get("pushName") or data.get("notifyName") or None
         body = normalized["body"]
         if is_group:
@@ -416,7 +532,8 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             chat_id=chat_id, chat_name=chat_name, chat_type="group" if is_group else "dm",
             user_id=sender_id, user_name=chat_name, message_id=message_id)
         return MessageEvent(
-            text=body, message_type=MessageType.TEXT, source=source, raw_message=payload, message_id=message_id)
+            text=body, message_type=message_type, source=source, raw_message=payload,
+            message_id=message_id, media_urls=media_urls, media_types=media_types)
 
     async def _handle_webhook(self, request: web.Request) -> web.Response:
         if (request.content_length or 0) > self._max_body_bytes:
@@ -449,7 +566,7 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if msg_id and self._dedup.is_duplicate(msg_id):
             return web.json_response({"status": "duplicate"})
         try:
-            event = self._build_message_event(payload)
+            event = await self._build_message_event(payload)
         except Exception as e:
             logger.error("[waha] Error building message event: %s", e, exc_info=True)
             return web.json_response({"status": "error"}, status=200)  # ack — WAHA would otherwise retry forever

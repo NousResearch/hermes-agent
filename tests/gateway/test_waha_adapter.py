@@ -12,15 +12,18 @@ No change-detector tests: every assertion is a behavior contract (two pieces of 
 proven red on the unfixed code.
 """
 
+import base64
 import hashlib
 import hmac
 import json
 import os
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.event import MessageType
 
 
 def _make_adapter(**extra_overrides):
@@ -69,23 +72,26 @@ class TestBuildMessageEventIdentity:
             "_data": {"key": {"remoteJid": lid, "remoteJidAlt": phone}},
         }
 
-    def test_dm_chat_id_resolves_to_phone_jid_not_lid(self):
+    @pytest.mark.asyncio
+    async def test_dm_chat_id_resolves_to_phone_jid_not_lid(self):
         adapter = _make_adapter(dm_policy="allowlist", allow_from=["27842233445"])
-        event = adapter._build_message_event(self._dm_payload())
+        event = await adapter._build_message_event(self._dm_payload())
         assert event is not None
         assert event.source.chat_id == "27842233445@s.whatsapp.net"
         assert "@lid" not in event.source.chat_id
 
-    def test_dm_without_remote_jid_alt_falls_back_to_lid(self):
+    @pytest.mark.asyncio
+    async def test_dm_without_remote_jid_alt_falls_back_to_lid(self):
         """No phone form anywhere in the payload (older engine/edge case): degrade to the lid,
         never crash or drop the message."""
         adapter = _make_adapter(dm_policy="allowlist", allow_from=["999999"])
         payload = {"id": "msg1", "from": "999999@lid", "fromMe": False, "body": "hi", "_data": {"key": {}}}
-        event = adapter._build_message_event(payload)
+        event = await adapter._build_message_event(payload)
         assert event is not None
         assert event.source.chat_id == "999999@lid"
 
-    def test_group_sender_resolves_participant_to_phone_jid(self):
+    @pytest.mark.asyncio
+    async def test_group_sender_resolves_participant_to_phone_jid(self):
         adapter = _make_adapter(dm_policy="disabled", group_policy="open")
         payload = {
             "id": "msg1", "from": "120000@g.us", "fromMe": False, "body": "hello",
@@ -93,24 +99,27 @@ class TestBuildMessageEventIdentity:
             "_data": {"key": {"remoteJid": "120000@g.us", "participant": "27800000002@lid",
                               "participantAlt": "27800000002@s.whatsapp.net"}},
         }
-        event = adapter._build_message_event(payload)
+        event = await adapter._build_message_event(payload)
         assert event is not None
         assert event.source.chat_id == "120000@g.us"  # group JID itself, no LID ambiguity
         assert event.source.user_id == "27800000002@s.whatsapp.net"
 
-    def test_broadcast_chat_is_dropped(self):
+    @pytest.mark.asyncio
+    async def test_broadcast_chat_is_dropped(self):
         adapter = _make_adapter(dm_policy="open")
         payload = {"id": "m1", "from": "status@broadcast", "fromMe": False, "body": "story", "_data": {}}
-        assert adapter._build_message_event(payload) is None
+        assert await adapter._build_message_event(payload) is None
 
-    def test_unauthorized_dm_sender_is_dropped(self):
+    @pytest.mark.asyncio
+    async def test_unauthorized_dm_sender_is_dropped(self):
         adapter = _make_adapter(dm_policy="allowlist")  # empty allow_from -> nobody admitted
-        event = adapter._build_message_event(self._dm_payload())
+        event = await adapter._build_message_event(self._dm_payload())
         assert event is None
 
-    def test_allowlisted_dm_sender_is_admitted(self):
+    @pytest.mark.asyncio
+    async def test_allowlisted_dm_sender_is_admitted(self):
         adapter = _make_adapter(dm_policy="allowlist", allow_from=["27842233445"])
-        event = adapter._build_message_event(self._dm_payload())
+        event = await adapter._build_message_event(self._dm_payload())
         assert event is not None
         assert event.text == "hi"
 
@@ -120,13 +129,14 @@ class TestMultiSenderOneAccountRouting:
     account; distinct senders MUST resolve to distinct chat_ids so gateway.profile_routes (core,
     untouched) can split them to different profiles by chat_id."""
 
-    def test_two_distinct_senders_resolve_to_distinct_chat_ids(self):
+    @pytest.mark.asyncio
+    async def test_two_distinct_senders_resolve_to_distinct_chat_ids(self):
         adapter = _make_adapter(dm_policy="allowlist", allow_from=["27800000001", "27800000002"])
-        rob = adapter._build_message_event({
+        rob = await adapter._build_message_event({
             "id": "m1", "from": "27800000001@lid", "fromMe": False, "body": "hi",
             "_data": {"key": {"remoteJidAlt": "27800000001@s.whatsapp.net"}},
         })
-        ashleigh = adapter._build_message_event({
+        ashleigh = await adapter._build_message_event({
             "id": "m2", "from": "27800000002@lid", "fromMe": False, "body": "hi",
             "_data": {"key": {"remoteJidAlt": "27800000002@s.whatsapp.net"}},
         })
@@ -134,6 +144,198 @@ class TestMultiSenderOneAccountRouting:
         assert rob.source.chat_id != ashleigh.source.chat_id
         assert rob.source.chat_id == "27800000001@s.whatsapp.net"
         assert ashleigh.source.chat_id == "27800000002@s.whatsapp.net"
+
+
+# ── Inbound image + voice note attachments ───────────────────────────────────
+
+class _FakeMediaContent:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    async def iter_chunked(self, n):
+        for i in range(0, len(self._body), n):
+            yield self._body[i:i + n]
+
+
+class _FakeMediaResponse:
+    def __init__(self, status=200, headers=None, body=b""):
+        self.status = status
+        self.headers = headers or {}
+        self.content = _FakeMediaContent(body)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeHttpSession:
+    """A session whose .get() always returns the same canned response, regardless of URL."""
+
+    def __init__(self, response):
+        self._response = response
+
+    def get(self, url, headers=None, timeout=None):
+        return self._response
+
+
+class _ExplodingSession:
+    """Raises if touched -- proves media is never fetched for a gated-out sender."""
+
+    def get(self, *a, **k):
+        raise AssertionError("must not fetch media for a blocked/unauthorized sender")
+
+
+# A real minimal 1x1 transparent PNG, so cache_image_from_bytes's magic-byte validation passes.
+_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg=="
+
+
+def _png_bytes() -> bytes:
+    return base64.b64decode(_PNG_B64)
+
+
+def _ogg_bytes() -> bytes:
+    return b"OggS" + b"\x00" * 64  # real Ogg container magic ("OggS")
+
+
+def _media_dm_payload(*, body="", media=None, data_extra=None):
+    return {
+        "id": "msg1", "from": "27842233445@lid", "fromMe": False, "body": body,
+        "hasMedia": True, "media": media or {},
+        "_data": {"key": {"remoteJidAlt": "27842233445@s.whatsapp.net"}, **(data_extra or {})},
+    }
+
+
+class TestInboundMedia:
+    """Image + voice-note attachment handling (_collect_inbound_media / _download_media_bytes)."""
+
+    @pytest.mark.asyncio
+    async def test_inbound_image_is_cached_and_tagged_photo(self):
+        adapter = _make_adapter(dm_policy="allowlist", allow_from=["27842233445"])
+        png = _png_bytes()
+        adapter._http_session = _FakeHttpSession(
+            _FakeMediaResponse(headers={"Content-Length": str(len(png))}, body=png))
+
+        payload = _media_dm_payload(
+            body="check this out",
+            media={"url": "http://localhost:3000/api/files/abc.jpg", "mimetype": "image/jpeg",
+                   "filename": "photo.jpg"})
+        event = await adapter._build_message_event(payload)
+        assert event is not None
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_types == ["image/jpeg"]
+        assert len(event.media_urls) == 1
+        assert Path(event.media_urls[0]).exists()
+
+    @pytest.mark.asyncio
+    async def test_inbound_voice_note_is_tagged_voice_not_generic_audio(self):
+        adapter = _make_adapter(dm_policy="allowlist", allow_from=["27842233445"])
+        adapter._http_session = _FakeHttpSession(_FakeMediaResponse(body=_ogg_bytes()))
+
+        payload = _media_dm_payload(
+            media={"url": "http://localhost:3000/api/files/voice.ogg", "mimetype": "audio/ogg; codecs=opus"},
+            data_extra={"message": {"audioMessage": {"ptt": True}}})
+        event = await adapter._build_message_event(payload)
+        assert event is not None
+        assert event.message_type == MessageType.VOICE
+
+    @pytest.mark.asyncio
+    async def test_inbound_shared_audio_file_is_tagged_audio_not_voice(self):
+        """Same mimetype family as a voice note, but ptt=False -- a regular shared audio file
+        must NOT be classified as a voice note (distinguishes the two per decision #3's follow-up)."""
+        adapter = _make_adapter(dm_policy="allowlist", allow_from=["27842233445"])
+        adapter._http_session = _FakeHttpSession(_FakeMediaResponse(body=_ogg_bytes()))
+
+        payload = _media_dm_payload(
+            media={"url": "http://localhost:3000/api/files/song.ogg", "mimetype": "audio/ogg"},
+            data_extra={"message": {"audioMessage": {"ptt": False}}})
+        event = await adapter._build_message_event(payload)
+        assert event is not None
+        assert event.message_type == MessageType.AUDIO
+
+    @pytest.mark.asyncio
+    async def test_media_download_rejected_over_the_shared_size_cap(self):
+        """Must not buffer unbounded: a declared Content-Length over the shared inbound cap is
+        rejected before the body is read, and the message is still delivered without the
+        attachment rather than dropped outright."""
+        from gateway.platforms.base import get_inbound_media_max_bytes
+
+        adapter = _make_adapter(dm_policy="allowlist", allow_from=["27842233445"])
+        oversized = get_inbound_media_max_bytes() + 1
+        adapter._http_session = _FakeHttpSession(
+            _FakeMediaResponse(headers={"Content-Length": str(oversized)}, body=b""))
+
+        payload = _media_dm_payload(
+            body="see attached", media={"url": "http://localhost:3000/api/files/huge.jpg", "mimetype": "image/jpeg"})
+        event = await adapter._build_message_event(payload)
+        assert event is not None
+        assert event.text == "see attached"
+        assert event.media_urls == []
+
+    @pytest.mark.asyncio
+    async def test_media_url_fetch_uses_api_key_auth_header(self):
+        adapter = _make_adapter(dm_policy="allowlist", allow_from=["27842233445"], api_key="secret-key-123")
+        captured = {}
+        png = _png_bytes()
+
+        class _Session:
+            def get(self, url, headers=None, timeout=None):
+                captured["url"], captured["headers"] = url, headers
+                return _FakeMediaResponse(body=png)
+
+        adapter._http_session = _Session()
+        payload = _media_dm_payload(
+            media={"url": "http://localhost:3000/api/files/abc.jpg", "mimetype": "image/jpeg"})
+        await adapter._build_message_event(payload)
+        assert captured["headers"].get("X-Api-Key") == "secret-key-123"
+        assert captured["url"] == "http://localhost:3000/api/files/abc.jpg"
+
+    @pytest.mark.asyncio
+    async def test_hasmedia_true_but_no_url_does_not_crash_and_drops_attachment(self):
+        """WAHA can report hasMedia=true with a null media.url (its own download failed) -- must
+        degrade gracefully, never raise, and still deliver whatever text/caption there is."""
+        adapter = _make_adapter(dm_policy="allowlist", allow_from=["27842233445"])
+        adapter._http_session = _ExplodingSession()
+        payload = _media_dm_payload(body="look", media={"url": None, "mimetype": "image/jpeg"})
+        event = await adapter._build_message_event(payload)
+        assert event is not None
+        assert event.text == "look"
+        assert event.media_urls == []
+
+    @pytest.mark.asyncio
+    async def test_media_download_error_reported_by_waha_drops_attachment_not_message(self):
+        adapter = _make_adapter(dm_policy="allowlist", allow_from=["27842233445"])
+        adapter._http_session = _ExplodingSession()
+        payload = _media_dm_payload(
+            body="oops", media={"url": "http://localhost:3000/api/files/x.jpg",
+                                 "mimetype": "image/jpeg", "error": "ENOENT"})
+        event = await adapter._build_message_event(payload)
+        assert event is not None
+        assert event.media_urls == []
+
+    @pytest.mark.asyncio
+    async def test_unsupported_media_type_is_skipped_without_crashing(self):
+        """Video/document/sticker are out of this scope's content types -- must not raise, just
+        deliver the message without an attachment."""
+        adapter = _make_adapter(dm_policy="allowlist", allow_from=["27842233445"])
+        adapter._http_session = _ExplodingSession()
+        payload = _media_dm_payload(
+            body="a video", media={"url": "http://localhost:3000/api/files/clip.mp4", "mimetype": "video/mp4"})
+        event = await adapter._build_message_event(payload)
+        assert event is not None
+        assert event.media_urls == []
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_sender_media_is_never_downloaded(self):
+        """Authorization gating runs BEFORE any media fetch -- an unauthorized sender's attachment
+        bytes are never requested over the network."""
+        adapter = _make_adapter(dm_policy="allowlist", allow_from=[])  # nobody admitted
+        adapter._http_session = _ExplodingSession()
+        payload = _media_dm_payload(
+            media={"url": "http://localhost:3000/api/files/abc.jpg", "mimetype": "image/jpeg"})
+        event = await adapter._build_message_event(payload)
+        assert event is None
 
 
 # ── Webhook HMAC verification ────────────────────────────────────────────────

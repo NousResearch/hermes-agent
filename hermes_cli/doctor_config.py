@@ -312,8 +312,11 @@ def _validate_auxiliary_config(config_path, issues: list) -> None:
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from utils import base_url_hostname
     aux = read_user_config_raw(config_path).get("auxiliary")
+    # "main" follows the active main provider (auxiliary_client._normalize_aux_provider) and is not a
+    # routed pin — its resolvability is the model.provider check's job, so resolving it here would only
+    # duplicate that finding or false-flag a working config (#133816).
     routed = {name: block for name, block in (aux.items() if isinstance(aux, dict) else ())
-              if isinstance(block, dict) and str(block.get("provider") or "").strip().lower() not in ("", "auto")}
+              if isinstance(block, dict) and str(block.get("provider") or "").strip().lower() not in ("", "auto", "main")}
     ok = []
     for task, block in sorted(routed.items()):
         provider, model, base_url, api_key = (str(block.get(k) or "").strip() or None for k in ("provider", "model", "base_url", "api_key"))

@@ -1525,7 +1525,8 @@ def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
 
 def test_doctor_reports_auxiliary_blocks_that_do_not_resolve(tmp_path, monkeypatch):
     """A routed auxiliary.<task> block that the runtime resolver rejects is a doctor finding, not a
-    silent fall-back to the main model (#116055); a resolvable one is not flagged."""
+    silent fall-back to the main model (#116055); a resolvable one is not flagged, and ``main`` —
+    an alias for the active main provider, not a routed pin — is skipped like ``auto`` (#133816)."""
     import hermes_yaml as yaml
     from hermes_cli import doctor_config
 
@@ -1534,6 +1535,8 @@ def test_doctor_reports_auxiliary_blocks_that_do_not_resolve(tmp_path, monkeypat
     cfg_file.write_text(yaml.safe_dump({"auxiliary": {
         "background_review": {"provider": "no-such-provider", "model": "m"},
         "compression": {"provider": "openai", "model": "gpt-x", "base_url": "https://gateway.example/v1", "api_key": "gw"},
+        "vision": {"provider": "main", "model": "m", "api_mode": "codex_responses"},
+        "tts": {"provider": "MAIN", "model": "m"},
     }}))
     issues = []
     doctor_config._validate_auxiliary_config(cfg_file, issues)

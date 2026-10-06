@@ -62,7 +62,14 @@ export const zhHantBoot = {
     message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`
   },
   butterbar: {
-    goTo: (index, total) => `顯示第 ${index} 則通知，共 ${total} 則`
+    goTo: (index, total) => `顯示第 ${index} 則通知，共 ${total} 則`,
+    legal: {
+      before: '使用 Hermes Agent 即表示受我們的',
+      terms: '服務條款',
+      between: '和',
+      privacy: '隱私權政策',
+      after: '約束。'
+    }
   },
 
   updates: {

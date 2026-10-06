@@ -58,7 +58,14 @@ export const arBoot = {
     message: reason => `العرض البرمجي نشط — تم اكتشاف شاشة بعيدة (${reason}). تم تعطيل تسريع GPU لمنع الوميض.`
   },
   butterbar: {
-    goTo: (index, total) => `عرض الإشعار ${index} من ${total}`
+    goTo: (index, total) => `عرض الإشعار ${index} من ${total}`,
+    legal: {
+      before: 'يخضع استخدام Hermes Agent لـ',
+      terms: 'شروط الخدمة',
+      between: ' و',
+      privacy: 'سياسة الخصوصية',
+      after: ' الخاصة بنا.'
+    }
   },
   updates: {
     discontinuedTitle: 'لم يعد إصدار Hermes هذا مدعومًا',

@@ -119,6 +119,7 @@ import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { terminalPaletteToggle } from '../right-sidebar/terminal/reveal-focus'
 import { $workspaceIsPage, WORKSPACE_PAGE_HEADER_AREA } from '../routes'
 import { Butterbar } from '../shell/butterbar'
+import { TermsButterbar } from '../shell/terms-butterbar'
 
 import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-presets'
 import { bindLayoutSides } from './layout-sides'
@@ -857,6 +858,7 @@ export function ContribController() {
           {/* Notices registered through `registerButterbar` / `useButterbar`;
               renders nothing while none are registered. */}
           <Butterbar />
+          <TermsButterbar />
           {statusbarVisible && <WiredPane part="statusbar" />}
         </div>
       </ContribWiring>

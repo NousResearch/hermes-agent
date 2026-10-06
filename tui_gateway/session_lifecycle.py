@@ -46,14 +46,14 @@ def _start_session_work(target, *, name: str, session: dict | None = None):
         raise
 
 
-def _notify_session_boundary(event_type: str, session_id: str | None, platform: str | None = None) -> None:
+def _notify_session_boundary(event_type: str, session_id: str | None, platform: str | None = None, **kwargs) -> None:
     """Fire session lifecycle hooks with CLI parity."""
     with contextlib.suppress(Exception):
         from hermes_cli.lifecycle import finalize_session, invoke_hook
         if event_type == "on_session_finalize":
-            finalize_session(session_id=session_id, platform=_resolve_agent_platform(platform))
+            finalize_session(session_id=session_id, platform=_resolve_agent_platform(platform), **kwargs)
         else:
-            invoke_hook(event_type, session_id=session_id, platform=_resolve_agent_platform(platform))
+            invoke_hook(event_type, session_id=session_id, platform=_resolve_agent_platform(platform), **kwargs)
 
 
 _SESSION_OWNERSHIP_UNAVAILABLE = "Hermes could not safely reserve this session. Try again."

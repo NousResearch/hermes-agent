@@ -418,3 +418,30 @@ def test_midprune_resumed_write_is_rescued(tmp_path: Path) -> None:
     log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
     assert f"rescued {str(entry)!r} " in log, log
     assert f"removed {str(entry)!r} (" not in log, log
+
+
+def test_midprune_vanished_entry_is_recorded_not_counted(tmp_path: Path) -> None:
+    """The third state beside rescued and kept: an entry deleted by an outside actor
+    during the reap window is recorded as vanished — not a rescue (no touch happened),
+    not a scan failure (nothing is unreadable), and never counted as removed (we did
+    not remove it). Pins the tri-state audit born in the P3 review of #134173."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "doomed-lane"
+    entry.mkdir()
+    (entry / "old-output.md").write_text("stale content\n", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    for path in (entry / "old-output.md", entry):
+        os.utime(path, (ancient, ancient))
+
+    def remove_during_reap(root, doomed, *args, **kwargs):
+        # An outside actor (a lane's own cleanup) deletes the entry mid-prune.
+        shutil.rmtree(entry)
+        return 0
+
+    with patch("hermes_constants_scratch.reap_processes_rooted_in", remove_during_reap):
+        assert prune_scratch_dir(scratch) == 0  # gone, but not by our hand
+    assert not entry.exists()
+    log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
+    assert f"entry {str(entry)!r} vanished" in log, log
+    assert f"rescued {str(entry)!r} " not in log, log
+    assert "re-scan failed" not in log, log

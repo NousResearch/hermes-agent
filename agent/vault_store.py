@@ -141,6 +141,11 @@ def normalize_origin(url_or_origin: str) -> str:
     host = (parts.hostname or "").lower()
     if not scheme or not host:
         raise VaultError(f"could not parse origin from {value!r}")
+    if ":" in host:
+        # urlsplit().hostname strips IPv6 brackets; a bare host like
+        # http://fd00:db8::1 is not a serialized origin and never matches
+        # the browser's location.origin, so put the brackets back.
+        host = f"[{host}]"
     try:
         port = parts.port
     except ValueError as exc:

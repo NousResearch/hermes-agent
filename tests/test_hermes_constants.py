@@ -423,7 +423,7 @@ class TestSecureParentDir:
         secure_parent_dir(target2)
         assert called_with2 == [], "must not chmod dirs inside the install tree"
 
-    def test_install_tree_siblings_still_hardened(self, monkeypatch):
+    def test_install_tree_siblings_still_hardened(self, monkeypatch, tmp_path):
         """Paths OUTSIDE the install tree must still be chmod'd.
 
         Negative boundary for the install-tree exclusion (#93050): the guard
@@ -432,7 +432,11 @@ class TestSecureParentDir:
         still receive parent-dir hardening. Pins that the exclusion cannot
         silently widen into a string-prefix match.
         """
-        install_root = Path(hermes_constants.__file__).resolve().parent
+        # A synthetic install root, never the real one: on an install.sh layout the sibling
+        # below IS a real home directory (``~/.hermes/hermes-agent-data``) and the tripwire in
+        # tests/home_io_guard.py rightly refuses to probe it.
+        install_root = tmp_path / "hermes"
+        install_root.mkdir()
 
         # Prefix-named sibling of the install root (/opt/hermes-data/...).
         prefix_sibling = Path(str(install_root) + "-data")

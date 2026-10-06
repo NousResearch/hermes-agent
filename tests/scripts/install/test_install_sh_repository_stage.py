@@ -97,6 +97,44 @@ def test_commit_pin_must_come_from_the_installed_branch(tmp_path):
     assert _git(tmp_path / "install", "rev-parse", "HEAD") == on_branch
 
 
+def test_complete_marker_records_installed_head_not_requested_pin(tmp_path):
+    origin = _origin(tmp_path / "origin")
+    requested = _git(origin, "rev-parse", "HEAD")
+    installed = _commit(origin, "newer")
+    install = tmp_path / "install"
+    subprocess.run(["git", "clone", "-q", str(origin), str(install)], check=True)
+    result = _run(tmp_path, f"INSTALL_COMMIT={requested}\nstage_complete")
+    assert result.returncode == 0, result.stdout + result.stderr
+    marker = json.loads((install / ".hermes-bootstrap-complete").read_text())
+    assert marker["pinnedCommit"] == installed
+    assert marker["pinnedCommit"] != requested
+
+
+def test_source_completion_does_not_inherit_ci_ref(tmp_path):
+    origin = _origin(tmp_path / "origin")
+    install = tmp_path / "install"
+    subprocess.run(["git", "clone", "-q", str(origin), str(install)], check=True)
+    # Avoid the full build; probe the spawned child's real environment.
+    fake_python = install / "fake-python"
+    fake_python.write_text('#!/bin/sh\n[ -z "${GITHUB_SHA:-}" ] && '
+                           '[ -z "${GITHUB_REF_NAME:-}" ] && [ -z "${GITHUB_HEAD_REF:-}" ]\n')
+    fake_python.chmod(0o755)
+    body = '''
+bootstrap_python() { boot_py="$HERMES_INSTALL_DIR/fake-python"; }
+desktop_product_present() { return 1; }
+wire_shell_path() { :; }
+run_logged() {
+    shift
+    "$@" || return
+}
+stage_products
+[ "$GITHUB_SHA" = stale ] && [ "$GITHUB_REF_NAME" = old ] && [ "$GITHUB_HEAD_REF" = older ]
+'''
+    result = _run(tmp_path, body, env={"GITHUB_SHA": "stale", "GITHUB_REF_NAME": "old",
+                                       "GITHUB_HEAD_REF": "older"})
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_commitless_checkout_is_moved_aside_and_recloned(tmp_path):
     origin = _origin(tmp_path / "origin")
     install = tmp_path / "install"

@@ -775,7 +775,10 @@ stage_products() {
     if [ "$INCLUDE_DESKTOP" = true ] || desktop_product_present; then
         args+=(--desktop)
     fi
+    # This is a local install, even when launched from CI. Do not let the
+    # caller's CI ref override the checkout's HEAD/dirty state in the stamp.
     (cd "$INSTALL_DIR" && run_logged "Building the hermes command and apps" \
+        env -u GITHUB_SHA -u GITHUB_REF_NAME -u GITHUB_HEAD_REF \
         "$boot_py" -I -B -X utf8 hermes_cli/source_completion.py "${args[@]}") \
         || fail "app products or command publication failed"
     wire_shell_path
@@ -830,8 +833,10 @@ stage_gateway() {
 
 stage_complete() {
     local commit
-    commit="$INSTALL_COMMIT"
-    [ -n "$commit" ] || commit=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null) || commit=""
+    # Record the checkout actually installed, not the requested pin when a
+    # protected, newer checkout was retained. Keep the pin as an archive fallback.
+    commit=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null) || commit=""
+    [ -n "$commit" ] || commit="$INSTALL_COMMIT"
     if [ -n "$commit" ]; then
         printf '{\n  "schemaVersion": 1,\n  "pinnedCommit": "%s",\n  "pinnedBranch": "%s",\n  "completedAt": "%s"\n}\n' \
             "$commit" "$BRANCH" "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" > "$INSTALL_DIR/.hermes-bootstrap-complete.tmp"

@@ -111,7 +111,6 @@ class CatalogEntry:
     decode_fraction: float = 1.0
     architecture: str = ""
     lazy_table_bytes: int = 0   # mapped PLE table; launch_args must enable lazy-mode
-    auto_recommend: bool = True
 
     def profile(self, variant: QuantVariant) -> ModelProfile:
         layers = ([(LayerKind.FULL, self.per_layer_f16)] * self.full_layers
@@ -226,7 +225,7 @@ def recommended_entry(budget: HardwareBudget,
     eligible entry runs resident; spilled models remain available for explicit selection.
     """
     pool = CATALOG if entries is None else entries
-    fitting = [(e, c) for e in pool if e.auto_recommend and (c := select_variant(e, budget)) is not None]
+    fitting = [(e, c) for e in pool if (c := select_variant(e, budget)) is not None]
     if not fitting:
         return None
 
@@ -279,7 +278,6 @@ _SCALAR_FIELDS = {
     "n_vocab": (int, 0), "sampling": (dict, {}), "min_engine": (str, ""),
     "quality": (int, 0), "decode_fraction": (float, 1.0),
     "architecture": (str, ""), "lazy_table_bytes": (int, 0),
-    "auto_recommend": (bool, True),
 }
 
 

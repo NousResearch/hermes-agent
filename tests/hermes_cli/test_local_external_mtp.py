@@ -67,8 +67,6 @@ def test_external_mtp_split_model_is_priced_and_launched_as_one_recipe(tmp_path,
     assert profile.weights_bytes == 60 << 30  # lazy PLE is mapped, not fully resident
     roomy = HardwareBudget(81 << 30, 102 << 30, 0, uma=True)
     assert not isinstance(entry.launch_plan(variant, roomy).decision, PhysicsRefusal)
-    if not entry.auto_recommend:
-        assert catalog.recommended_entry(roomy, (entry,)) is None
     missing = presets.preset_for_model(first, roomy, set())
     assert missing.refusal and "draft" in missing.refusal.lower()
     assets = bootstrap.assets_dir()

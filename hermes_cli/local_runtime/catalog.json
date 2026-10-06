@@ -41,7 +41,6 @@
     },
     {
       "id": "qwen3.8-flash-next",
-      "auto_recommend": false,
       "display_name": "Qwen3.8 Flash Next",
       "description": "Large mixture-of-experts with MTP acceleration; fits 128GB RTX Spark",
       "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",

@@ -30,8 +30,26 @@ def register(session_key: str, confirm_id: str, command: str,
              handler: Callable[[str], Awaitable[Optional[str]]]) -> None:
     """Register a pending confirm, superseding any prior one for the session."""
     with _lock:
+        prior = _pending.get(session_key)
+        if prior:
+            _clear_entry(prior)
         _pending[session_key] = {"confirm_id": confirm_id, "command": command,
                                  "handler": handler, "created_at": time.time()}
+
+
+def _clear_entry(entry: Dict[str, Any]) -> None:
+    """Remove every routing alias referring to one pending confirmation."""
+    for key, candidate in list(_pending.items()):
+        if candidate is entry:
+            _pending.pop(key, None)
+
+
+def register_alias(session_key: str, alias_key: str) -> None:
+    """Make one pending confirmation reachable under another exact route key."""
+    with _lock:
+        entry = _pending.get(session_key)
+        if entry and alias_key != session_key:
+            _pending[alias_key] = entry
 
 
 def get_pending(session_key: str) -> Optional[Dict[str, Any]]:
@@ -42,9 +60,11 @@ def get_pending(session_key: str) -> Optional[Dict[str, Any]]:
 
 
 def clear(session_key: str) -> None:
-    """Drop the pending confirm for ``session_key`` without running it."""
+    """Drop a pending confirm and any exact-route aliases without running it."""
     with _lock:
-        _pending.pop(session_key, None)
+        entry = _pending.get(session_key)
+        if entry:
+            _clear_entry(entry)
 
 
 def _is_stale(entry: Dict[str, Any], timeout: float) -> bool:
@@ -56,8 +76,8 @@ def clear_if_stale(session_key: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -
     with _lock:
         entry = _pending.get(session_key)
         stale = bool(entry and _is_stale(entry, timeout))
-        if stale:
-            _pending.pop(session_key, None)
+        if stale and entry:
+            _clear_entry(entry)
         return stale
 
 
@@ -72,8 +92,8 @@ async def resolve(session_key: str, confirm_id: str, choice: str,
         entry = _pending.get(session_key)
         if not entry or entry.get("confirm_id") != confirm_id:
             return None
-        # Pop before running so duplicate callbacks (button double-click) cannot run it twice.
-        _pending.pop(session_key, None)
+        # Clear every exact-route alias before running so duplicate replies cannot run it twice.
+        _clear_entry(entry)
         if _is_stale(entry, timeout):
             return None
         handler = entry.get("handler")

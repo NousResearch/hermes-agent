@@ -77,3 +77,45 @@ def test_stale_override_without_managed_browser_returns_none(tmp_path, monkeypat
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "missing-store"))
     monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", str(tmp_path / "deleted-chrome"))
     assert chromium_executable() is None
+
+
+@pytest.mark.platforms("posix")
+def test_nonexecutable_override_without_managed_browser_returns_none(tmp_path, monkeypatch):
+    from hermes_cli.browser_runtime import chromium_executable
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "missing-store"))
+    override = tmp_path / "unexecutable-chrome"
+    override.write_bytes(b"not executable")
+    override.chmod(0o644)
+    monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", str(override))
+    assert chromium_executable() is None
+
+
+@pytest.mark.platforms("posix")
+def test_bare_path_override_resolves_via_path_lookup(tmp_path, monkeypatch):
+    """A bare command name (``AGENT_BROWSER_EXECUTABLE_PATH=google-chrome``) that PATH
+    resolves must be accepted, not just an absolute/relative file path."""
+    from hermes_cli.browser_runtime import chromium_executable
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "missing-store"))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    binary = bin_dir / "google-chrome"
+    binary.write_text("#!/bin/sh\necho fake-chrome\n")
+    binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", "google-chrome")
+    assert chromium_executable() == "google-chrome"
+
+
+@pytest.mark.platforms("posix")
+def test_bare_path_override_not_on_path_returns_none(tmp_path, monkeypatch):
+    from hermes_cli.browser_runtime import chromium_executable
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "missing-store"))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
+    monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", "not-a-real-browser-binary")
+    assert chromium_executable() is None

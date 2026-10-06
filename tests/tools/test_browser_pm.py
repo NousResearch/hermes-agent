@@ -205,6 +205,21 @@ def test_stale_chromium_override_is_removed_from_child_environment(browser_store
     assert "AGENT_BROWSER_EXECUTABLE_PATH" not in session._agent_browser_command_env(str(tmp_path))
 
 
+@pytest.mark.platforms("posix")
+def test_bare_path_chromium_override_resolves_via_path_lookup(browser_store, monkeypatch, tmp_path):
+    """A bare ``AGENT_BROWSER_EXECUTABLE_PATH=google-chrome`` that PATH resolves must be
+    treated as installed and must survive into the agent-browser child environment."""
+    bin_dir = tmp_path / "chrome-bin"
+    bin_dir.mkdir()
+    binary = bin_dir / "google-chrome"
+    binary.write_text("#!/bin/sh\necho fake-chrome\n")
+    binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", "google-chrome")
+    assert install._chromium_installed()
+    assert session._agent_browser_command_env(str(tmp_path))["AGENT_BROWSER_EXECUTABLE_PATH"] == "google-chrome"
+
+
 def test_restricted_path_discovers_external_browser_without_execution(browser_store, monkeypatch, tmp_path):
     _, store, _ = browser_store
     external_bin = tmp_path / "external-homebrew" / "bin"

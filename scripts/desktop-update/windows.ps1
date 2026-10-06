@@ -145,6 +145,19 @@ function Write-HandoffLog([string]$Message) {
     Write-Host $line
 }
 
+# Each hand-off appends the whole update output to the hand-off log. Roll it over (same 5 MiB
+# ceiling as update.log, one previous generation) only after a clean run: a failed or manual
+# run stays in this file, which is the one Desktop's "Open log" button reveals.
+function Invoke-HandoffLogRollover {
+    try {
+        if ((Test-Path -LiteralPath $LogPath) -and ((Get-Item -LiteralPath $LogPath).Length -ge 5MB)) {
+            Move-Item -LiteralPath $LogPath -Destination "$LogPath.1" -Force -ErrorAction Stop
+        }
+    } catch {
+        Write-HandoffLog "WARNING: could not roll over the hand-off log: $($_.Exception.Message)"
+    }
+}
+
 # ── The shim: repo-owned HTML in a chromeless default-browser app window ───
 # The window is a veneer, not a participant: the update runs identically with
 # or without it (default browser missing/failed degrades to the WinForms card below,
@@ -1780,6 +1793,7 @@ try {
                 Show-ManualFinale $finalMsg
             }
             Close-ProgressWindow
+            if (-not $manualAction -and ($cameBack -or -not $RelaunchExe)) { Invoke-HandoffLogRollover }
         }
     }
     if ($null -ne $savedConsoleInputMode) { [HermesHandoff.ConsoleInput]::Restore($savedConsoleInputMode) }

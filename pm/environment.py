@@ -286,6 +286,14 @@ class PythonEnvironment:
             env = {key: value for key, value in env.items() if not is_index_redirect(key)}
         env.update(UV_PYTHON=str(self.python), UV_PROJECT_ENVIRONMENT=str(self.destination),
                    UV_CACHE_DIR=str(self.cache), UV_PYTHON_DOWNLOADS="never")
+        # CMake 4 removed compatibility with cmake_minimum_required(VERSION < 3.5),
+        # so an sdist carrying an old minimum dies at CONFIGURE time, before any
+        # compile error is reachable — python-olm (via mautrix[encryption]) vendors
+        # libolm with VERSION 3.4. Every build uv drives is a backend subprocess of
+        # this one env, so the floor lands on all of them: `uv sync` and the
+        # `uv pip install` requirements tier alike. A caller that supplies its own
+        # policy version (a newer floor, or an opt-out) keeps it.
+        env.setdefault("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
         with tempfile.TemporaryDirectory(prefix="pm-uv-config-") as config:
             env.update(XDG_CONFIG_HOME=config, XDG_CONFIG_DIRS=config)
             command = [str(self.uv), *args]

@@ -6,12 +6,30 @@ Auxiliary clients (vision, title generation, etc.) must mirror the main
 agent: explicit ``HTTPS_PROXY`` / ``NO_PROXY`` env vars only, via a custom
 keepalive transport that suppresses automatic system-proxy detection.
 """
+import socket
 from unittest.mock import patch
 
 import httpx
+import pytest
 
 from agent.auxiliary_client import _create_openai_client, _openai_http_client_kwargs
 from agent.process_bootstrap import _get_proxy_for_base_url
+
+
+@pytest.fixture
+def live_proxy_port():
+    """A real listening loopback port.
+
+    The transport liveness probe treats a dead loopback proxy as "dial direct", so a test that
+    wants the proxy HONORED must point at a port that actually accepts connections — a
+    kernel-assigned free port here, not a hardcoded 7897 that only works when Clash is up.
+    """
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(16)
+    yield server
+    server.close()
 
 
 def _pool_types(http_client) -> list:
@@ -23,11 +41,11 @@ def _pool_types(http_client) -> list:
 
 
 @patch("agent.auxiliary_client.OpenAI")
-def test_create_openai_client_routes_via_env_proxy(mock_openai, monkeypatch):
+def test_create_openai_client_routes_via_env_proxy(mock_openai, monkeypatch, live_proxy_port):
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("HTTPS_PROXY", f"http://127.0.0.1:{live_proxy_port.getsockname()[1]}")
 
     _create_openai_client(
         api_key="test-key",
@@ -44,14 +62,15 @@ def test_create_openai_client_routes_via_env_proxy(mock_openai, monkeypatch):
 
 
 
-def test_get_proxy_for_base_url_respects_no_proxy(monkeypatch):
+def test_get_proxy_for_base_url_respects_no_proxy(monkeypatch, live_proxy_port):
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    proxy_url = f"http://127.0.0.1:{live_proxy_port.getsockname()[1]}"
+    monkeypatch.setenv("HTTPS_PROXY", proxy_url)
     monkeypatch.setenv("NO_PROXY", "internal.example.com")
 
     assert _get_proxy_for_base_url("https://litellm.internal.example.com/v1") is None
-    assert _get_proxy_for_base_url("https://api.openai.com/v1") == "http://127.0.0.1:7897"
+    assert _get_proxy_for_base_url("https://api.openai.com/v1") == proxy_url
 
 

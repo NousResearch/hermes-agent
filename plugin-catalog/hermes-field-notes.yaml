@@ -1,17 +1,17 @@
 name: hermes-field-notes
 repo: https://github.com/itpartypattaya/hermes-field-notes
-sha: d71a04c1dc9dee515242e9e4cb6660c8bd60b89e
-description: "Field notes for a Hermes install: search known pitfalls before debugging and record new ones with root cause; register every local core edit as a patch note with a declarative checks file, then verify read-only after each hermes update (OK / MISSING / UPSTREAMED / N/A / UNKNOWN with reason) and list core files changed outside the registry. Ships 41 pitfalls verified against 0.21.5. Optional pinned Telegram dashboard edited in place by an hourly no_agent cron job. Portable Agent Plugins v1 package (plugin.json + skills/); no tools, hooks, middleware or env vars; never edits the core or runs patch scripts. Disclosure — network: Telegram Bot API only when the dashboard is enabled (reads the agent's TELEGRAM_BOT_TOKEN from env or ~/.hermes/.env), and the public GitHub API without credentials (latest release and compare, cached 12 h; upstream.check=false disables). Writes: the notes store, ~/.hermes/cache/field-notes-state.json, a copy of the cron script in ~/.hermes/scripts and one cron job when install_cron.py is run."
+sha: 9cb3b1800c4ce5d05498dbc686abc01448499d3b
+description: "Field notes for a Hermes install: search known pitfalls before debugging and record new ones with root cause; register every local core edit as a patch note with a declarative checks file, then verify read-only after each hermes update (OK / MISSING / UPSTREAMED / N/A / UNKNOWN with reason) and list core files changed outside the registry. Ships 41 pitfalls and 10 patch recipes verified against 0.21.5. Optional pinned Telegram dashboard edited in place by an hourly no_agent cron job. Portable Agent Plugins v1 package (plugin.json + skills/); no tools, hooks, middleware or env vars; never edits the core or runs patch scripts. Disclosure — network: Telegram Bot API only when the dashboard is enabled (reads the agent's TELEGRAM_BOT_TOKEN from env or ~/.hermes/.env), and the public GitHub API without credentials (latest release and compare, cached 12 h; upstream.check=false disables). Writes: the notes store, ~/.hermes/cache/field-notes-state.json, a copy of the cron script in ~/.hermes/scripts and one cron job when install_cron.py is run."
 maintainer: itpartypattaya
 tier: community
 category: tools
 requires_hermes: ">=0.21"
-docs_url: https://github.com/itpartypattaya/hermes-field-notes/blob/d71a04c1dc9dee515242e9e4cb6660c8bd60b89e/README.md
-version: "1.1.0"
-image: "https://raw.githubusercontent.com/itpartypattaya/hermes-field-notes/d71a04c1dc9dee515242e9e4cb6660c8bd60b89e/docs/banner.png"
+docs_url: https://github.com/itpartypattaya/hermes-field-notes/blob/9cb3b1800c4ce5d05498dbc686abc01448499d3b/README.md
+version: "1.2.0"
+image: "https://raw.githubusercontent.com/itpartypattaya/hermes-field-notes/9cb3b1800c4ce5d05498dbc686abc01448499d3b/docs/banner.png"
 screenshots:
-- "https://raw.githubusercontent.com/itpartypattaya/hermes-field-notes/d71a04c1dc9dee515242e9e4cb6660c8bd60b89e/docs/how-it-works.png"
-- "https://raw.githubusercontent.com/itpartypattaya/hermes-field-notes/d71a04c1dc9dee515242e9e4cb6660c8bd60b89e/docs/patch-lifecycle.png"
+- "https://raw.githubusercontent.com/itpartypattaya/hermes-field-notes/9cb3b1800c4ce5d05498dbc686abc01448499d3b/docs/how-it-works.png"
+- "https://raw.githubusercontent.com/itpartypattaya/hermes-field-notes/9cb3b1800c4ce5d05498dbc686abc01448499d3b/docs/patch-lifecycle.png"
 platforms: []
 capabilities:
   provides_tools: []

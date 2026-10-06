@@ -7,6 +7,7 @@ imported lazily inside each function (no import cycle; test patches stay effecti
 
 import json
 import logging
+import math
 import re
 from contextlib import suppress
 import os
@@ -329,21 +330,22 @@ def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: se
         return False
 
 
-def _marker_owed_gateways(inventory: object) -> set[tuple[str, str]] | None:
-    """The ``("gateway", profile)`` set a marker's inventory owes; None when it recorded none.
+def _marker_gateway_obligations(inventory: object) -> tuple[set[tuple[str, str]] | None, list[dict]]:
+    """Gateway profiles and recorded process IDs owed by a marker.
 
     Raises ValueError for a malformed or unsupported inventory, which keeps the marker.
     """
     from hermes_cli.update_cmd_fleet_gatewayless import runtime_outside_gateway_evidence
 
     if inventory is None:
-        return None
+        return None, []
     if not isinstance(inventory, dict) or inventory.get("version") != 1:
         raise ValueError("unsupported fleet-restart inventory")
     runtimes = inventory.get("runtimes")
     if not isinstance(runtimes, list):
         raise ValueError("fleet-restart inventory has no runtime list")
     owed: set[tuple[str, str]] = set()
+    recorded: list[dict] = []
     for runtime in runtimes:
         if not isinstance(runtime, dict):
             raise ValueError("fleet-restart inventory row is not an object")
@@ -353,7 +355,25 @@ def _marker_owed_gateways(inventory: object) -> set[tuple[str, str]] | None:
         if runtime.get("kind") != "gateway" or not isinstance(profile, str) or not profile.strip() or profile == "unknown":
             raise ValueError("fleet-restart inventory row is not an identified gateway")
         owed.add(("gateway", profile))
-    return owed
+        pid = runtime.get("pid")
+        if pid is not None:
+            if type(pid) is not int or pid <= 0:
+                raise ValueError("fleet-restart inventory row has an invalid pid")
+            recorded.append(runtime)
+    return owed, recorded
+
+
+def _recorded_gateway_was_replaced(runtime: dict, marker_started: float) -> bool:
+    """A live PID still born before the marker is the recorded process, not a successor."""
+    import psutil
+
+    try:
+        created = float(psutil.Process(runtime["pid"]).create_time())
+    except psutil.NoSuchProcess:
+        return True
+    except (psutil.Error, ValueError, TypeError):
+        return False
+    return math.isfinite(created) and created > marker_started
 
 
 def _discharge_gatewayless_marker(checkout_sha: str, expected_sha: str) -> bool:
@@ -403,6 +423,10 @@ def _marker_only_restart_obsolete() -> bool:
     Discharging here strands nobody: the same row is still accounted at update time by
     ``update_inventory.report_unaccounted_runtimes``, which prints it and exits 1 when the restart
     phase never touched it — this marker only stops re-warning about it on every later startup.
+
+    A current row for a profile can hide an older gateway still running for that same profile
+    when discovery prefers the new gateway's socket. If the inventory recorded a PID, that
+    process must be gone or its PID must have been recycled since the marker was armed.
     """
     from hermes_cli.update_cmd_fleet_checkout import checkout_contains
 
@@ -411,7 +435,10 @@ def _marker_only_restart_obsolete() -> bool:
         if fields is None:
             return False
         expected_sha = fields.get("expected_sha", "").strip()
-        owed = _marker_owed_gateways(json.loads(fields.get("inventory", "null")))
+        owed, recorded = _marker_gateway_obligations(json.loads(fields.get("inventory", "null")))
+        marker_started = float(fields.get("started", "")) if recorded else 0.0
+        if recorded and (not math.isfinite(marker_started) or marker_started <= 0):
+            return False
     except (OSError, UnicodeError, ValueError):
         return False
     if owed is not None and not owed:
@@ -453,6 +480,8 @@ def _marker_only_restart_obsolete() -> bool:
             return False  # stale / down / unknown-identity row still owes the restart
     if owed is not None and not owed <= covered:
         return False  # A gateway this marker owns is absent (down) or unidentifiable.
+    if any(not _recorded_gateway_was_replaced(runtime, marker_started) for runtime in recorded):
+        return False  # Current profile coverage does not prove its recorded process stopped.
     _clear_fleet_restart_pending_marker()
     logger.debug(
         "Fleet-restart-pending marker discharged: %d gateway(s) already serve %s",

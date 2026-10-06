@@ -175,6 +175,8 @@ class TestRedactMcpProbeText:
         if inner.startswith("(?:") and inner.endswith(")"):
             inner = inner[3:-1]
         for name in inner.split("|"):
+            if not name.replace("-", "").isalnum():  # a name pattern (x-<name>-key), not a literal
+                name = "x-acme-key"
             out = redact_mcp_probe_text({name: OPAQUE_API_KEY}.__repr__())
             _assert_fully_redacted(out)
 

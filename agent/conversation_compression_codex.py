@@ -1,6 +1,6 @@
 """Codex app-server compaction cooldown lookup.
 
-Sibling of ``agent/conversation_compression.py`` (the facade), which late-imports it at its call site;
+Split from ``agent/conversation_compression.py`` (facade size cap), which imports it at module level;
 this module must never import the facade (import cycle). It logs under the facade's logger name so log
 consumers keep one source.
 """

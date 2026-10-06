@@ -30,6 +30,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
+from agent.conversation_compression_codex import _codex_compaction_cooldown_remaining
 from agent.conversation_compression_telemetry import _emit_aborted_attempt_telemetry, _emit_compression_attempt_telemetry
 from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
@@ -4329,7 +4330,6 @@ def _compress_context_via_codex_app_server(
     elif not force:
         # Automatic entrypoints honor the compressor-owned cooldown: a recent compaction
         # failed, and retrying every turn is what thrashes.
-        from agent.conversation_compression_codex import _codex_compaction_cooldown_remaining
         _cooldown_remaining = _codex_compaction_cooldown_remaining(agent)
         if _cooldown_remaining > 0:
             skip_reason = f"failure cooldown active for {_cooldown_remaining:.0f}s"

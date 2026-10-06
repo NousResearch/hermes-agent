@@ -930,7 +930,6 @@ class ClientLifecycleMixin:
                 rt[k] = new_token
         # The turn's aux runtime was published before the first request triggered this refresh, so
         # same-turn `auto` aux calls (approvals, goal judge, plugin llm) would still send the revoked token.
-        # Mutated in place: the refresh may run in a request worker's copied Context.
         from agent.auxiliary_key_rotation import rotate_runtime_main_api_key
         rotate_runtime_main_api_key(old_token, new_token)
         return True

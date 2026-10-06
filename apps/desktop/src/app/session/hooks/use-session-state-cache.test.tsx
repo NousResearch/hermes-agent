@@ -2,7 +2,7 @@ import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { type MutableRefObject, useLayoutEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { clearDismissedErrorRows } from '@/app/chat/failed-turn-dismissal'
+import { dismissFailedTurn } from '@/app/chat/failed-turn-dismissal'
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import type { ChatMessage } from '@/lib/chat-messages'
@@ -1008,12 +1008,10 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
       cache.updateSessionState('thread-A', state => ({ ...state, messages: recoveredTail }))
     })
 
-    $messages.set(clearDismissedErrorRows($messages.get(), 'assistant-a-partial'))
+    // Drive the real dismissal path (ContribWiring's dismissError body): it
+    // must update BOTH the live view and the cached state in one call.
     act(() => {
-      cache.updateSessionState('thread-A', state => ({
-        ...state,
-        messages: clearDismissedErrorRows(state.messages, 'assistant-a-partial')
-      }))
+      dismissFailedTurn('thread-A', 'assistant-a-partial', cache.updateSessionState)
     })
 
     expect($messages.get().map(message => message.id)).toEqual(authoritative.map(message => message.id))

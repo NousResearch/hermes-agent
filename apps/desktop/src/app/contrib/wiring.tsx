@@ -72,7 +72,6 @@ import {
   $currentCwd,
   $freshDraftReady,
   $gatewayState,
-  $messages,
   $messagingSessions,
   $resumeExhaustedSessionId,
   $resumeFailedSessionId,
@@ -98,7 +97,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { closeWorkspaceTab } from '../chat/close-tab'
 import { requestComposerInsert } from '../chat/composer/focus'
-import { clearDismissedErrorRows } from '../chat/failed-turn-dismissal'
+import { dismissFailedTurn } from '../chat/failed-turn-dismissal'
 import { useComposerActions } from '../chat/hooks/use-composer-actions'
 import { CommandPalette } from '../command-palette'
 import { triggerAndRefreshCronJobs } from '../cron/cron-actions'
@@ -836,14 +835,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         return
       }
 
-      // View first: the cache update below triggers a re-sync that reads
-      // $messages as the error-preservation baseline.
-      setMessages(clearDismissedErrorRows($messages.get(), messageId))
-
-      updateSessionState(runtimeSessionId, state => ({
-        ...state,
-        messages: clearDismissedErrorRows(state.messages, messageId)
-      }))
+      dismissFailedTurn(runtimeSessionId, messageId, updateSessionState)
     },
     [activeSessionIdRef, updateSessionState]
   )

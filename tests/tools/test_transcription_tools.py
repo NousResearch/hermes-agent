@@ -780,6 +780,63 @@ class TestTranscribeMistral:
         assert "RuntimeError" in result["error"]
         assert "secret-key-leaked" not in result["error"]
 
+    def test_config_base_url_becomes_server_url(self, monkeypatch, sample_ogg, mock_mistral_module):
+        """stt.mistral.base_url reaches the SDK as server_url.
+
+        Endpoint parity with tts.mistral.base_url and with the other STT
+        providers that read base_url from their own config block.
+        """
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        mock_result = MagicMock()
+        mock_result.text = "routed"
+        mock_mistral_module.audio.transcriptions.complete.return_value = mock_result
+
+        config = {"mistral": {"base_url": "http://localhost:4004/v1/proxy/"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config):
+            from tools.transcription_tools import _transcribe_mistral
+            result = _transcribe_mistral(sample_ogg, "voxtral-mini-latest")
+
+        assert result["success"] is True
+        import sys
+        kwargs = sys.modules["mistralai.client"].Mistral.call_args.kwargs
+        # Trailing slash stripped, same normalization the other providers apply.
+        assert kwargs["server_url"] == "http://localhost:4004/v1/proxy"
+        assert kwargs["api_key"] == "test-key"
+
+    def test_no_base_url_keeps_sdk_default(self, monkeypatch, sample_ogg, mock_mistral_module):
+        """Unconfigured, no server_url is passed at all, so the SDK keeps its own endpoint."""
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        monkeypatch.delenv("STT_MISTRAL_BASE_URL", raising=False)
+        mock_result = MagicMock()
+        mock_result.text = "default"
+        mock_mistral_module.audio.transcriptions.complete.return_value = mock_result
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("tools.transcription_cloud.MISTRAL_STT_BASE_URL", ""):
+            from tools.transcription_tools import _transcribe_mistral
+            result = _transcribe_mistral(sample_ogg, "voxtral-mini-latest")
+
+        assert result["success"] is True
+        import sys
+        assert "server_url" not in sys.modules["mistralai.client"].Mistral.call_args.kwargs
+
+    def test_env_base_url_used_when_config_is_silent(self, monkeypatch, sample_ogg, mock_mistral_module):
+        """STT_MISTRAL_BASE_URL applies when the config block sets nothing."""
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        monkeypatch.setenv("STT_MISTRAL_BASE_URL", "http://gateway.internal/v1")
+        mock_result = MagicMock()
+        mock_result.text = "from env"
+        mock_mistral_module.audio.transcriptions.complete.return_value = mock_result
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}):
+            from tools.transcription_tools import _transcribe_mistral
+            result = _transcribe_mistral(sample_ogg, "voxtral-mini-latest")
+
+        assert result["success"] is True
+        import sys
+        kwargs = sys.modules["mistralai.client"].Mistral.call_args.kwargs
+        assert kwargs["server_url"] == "http://gateway.internal/v1"
+
 # ============================================================================
 # _get_provider — Mistral
 # ============================================================================

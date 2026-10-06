@@ -20,7 +20,7 @@ from utils import is_truthy_value
 from tools.transcription_audio import _transcode_audio_for_stt
 from tools.transcription_common import (
     DEFAULT_GROQ_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL, GROQ_BASE_URL, GROQ_MODELS,
-    OPENAI_BASE_URL, OPENAI_MODELS, STTResponseError, XAI_STT_BASE_URL, _error_result, _get_stt_section,
+    MISTRAL_STT_BASE_URL, OPENAI_BASE_URL, OPENAI_MODELS, STTResponseError, XAI_STT_BASE_URL, _error_result, _get_stt_section,
     _lazy_ensure_quietly, _log_prompt_unsupported, _ok_result)
 
 # Log-record parity with the origin module.
@@ -193,14 +193,25 @@ def _transcribe_mistral(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> Dict[str, Any]:
     """Transcribe with the ``mistralai`` SDK (``/v1/audio/transcriptions``); requires ``MISTRAL_API_KEY``."""
-    from tools.transcription_tools import _resolve_provider_key, _resolve_stt_language
+    from hermes_cli.config import get_env_value
+    from tools.transcription_tools import _load_stt_config, _resolve_provider_key, _resolve_stt_language
     api_key = _resolve_provider_key("MISTRAL_API_KEY", "mistral")
     if not api_key:
         return _error_result("MISTRAL_API_KEY not set")
+    # Endpoint parity with every other STT provider and with tts.mistral: the SDK
+    # calls it server_url. Unset, the SDK keeps its own default, so this changes
+    # nothing for an install that does not configure it.
+    mistral_config = _get_stt_section(_load_stt_config(), "mistral")
+    base_url = str(
+        mistral_config.get("base_url") or get_env_value("STT_MISTRAL_BASE_URL") or MISTRAL_STT_BASE_URL
+    ).strip().rstrip("/")
+    client_kwargs: Dict[str, Any] = {"api_key": api_key}
+    if base_url:
+        client_kwargs["server_url"] = base_url
     try:
         _lazy_ensure_quietly("mistral")
         from mistralai.client import Mistral
-        with Mistral(api_key=api_key) as client, open(file_path, "rb") as audio_file:
+        with Mistral(**client_kwargs) as client, open(file_path, "rb") as audio_file:
             # Language: hook override > stt.mistral.language > stt.language > env > auto.
             language = language or _resolve_stt_language("mistral")
             result = client.audio.transcriptions.complete(

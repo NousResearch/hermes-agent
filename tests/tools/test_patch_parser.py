@@ -435,6 +435,88 @@ class TestValidationPhase:
         assert result.success is False
         assert "hunk 2" in result.error.lower()
 
+    def test_context_hint_places_a_hunk_whose_block_repeats(self):
+        """Picking one of several matches is the @@ hint's job: apply searches a window around it.
+        Validation runs first and must accept every hunk apply would place — the same hunk in the
+        same file cannot be both valid and invalid depending on which phase looks at it."""
+        body = "    value = compute()\n    return value\n"
+        filler = "".join(f"# filler line {i:02d}\n" for i in range(40))  # > the window's 500-char lead
+        content = f"def first():\n{body}\n{filler}\ndef second():\n{body}"
+        patch = """\
+*** Begin Patch
+*** Update File: m.py
+@@ def second(): @@
+-    return value
++    return value + 1
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        written = {}
+
+        class FakeFileOps:
+            def read_file_raw(self, path):
+                return SimpleNamespace(content=written.get(path, content), error=None)
+
+            def write_file(self, path, new, pre_content=None):
+                written[path] = new
+                return SimpleNamespace(error=None)
+
+        result = apply_v4a_operations(ops, FakeFileOps())
+        assert result.success is True, result.error
+        first, second = written["m.py"].split("def second():")
+        assert "return value + 1" in second and "return value + 1" not in first
+
+    def test_ambiguous_hunk_error_offers_a_remedy_patch_mode_accepts(self):
+        """An ambiguous hunk was found, not missing, and replace_all is a replace-mode flag patch
+        mode ignores — the error must say which, and not steer the model to a flag it cannot use."""
+        patch = """\
+*** Begin Patch
+*** Update File: a.py
+-x = 0
++x = 1
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        class FakeFileOps:
+            def read_file_raw(self, path):
+                return SimpleNamespace(content="a = 1\nx = 0\nb = 2\nx = 0\n", error=None)
+
+        result = apply_v4a_operations(ops, FakeFileOps())
+        assert result.success is False
+        assert "ambiguous" in result.error and "not found" not in result.error, result.error
+        assert "replace_all" not in result.error, result.error
+
+    def test_repeated_context_hint_does_not_pick_a_block(self):
+        """A hint that occurs twice identifies neither of two identical blocks; windowing on its
+        first occurrence silently edited the first block. The hunk is ambiguous and nothing is
+        written, as for an addition-only hunk whose hint repeats."""
+        filler = "".join(f"# filler line {i:03d}\n" for i in range(150))  # > the 2000-char window
+        content = f"# MARK\nold = 0\n{filler}# MARK\nold = 0\n"
+        patch = """\
+*** Begin Patch
+*** Update File: m.py
+@@ MARK @@
+-old = 0
++old = 1
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        written = {}
+
+        class FakeFileOps:
+            def read_file_raw(self, path):
+                return SimpleNamespace(content=content, error=None)
+
+            def write_file(self, path, new, pre_content=None):
+                written[path] = new
+                return SimpleNamespace(error=None)
+
+        result = apply_v4a_operations(ops, FakeFileOps())
+        assert result.success is False, written
+        assert "ambiguous" in result.error, result.error
+        assert written == {}
+
     def test_add_onto_existing_file_fails_and_preserves_contents(self):
         """An Add targeting a path that already exists must fail validation and
         leave the original bytes untouched (no silent overwrite)."""
@@ -497,7 +579,7 @@ class TestValidationPhase:
 
         result = apply_v4a_operations(ops, FakeFileOps())
         assert result.success is True, result.error
-        assert state["rewrite.py"] == "fresh = True"
+        assert state["rewrite.py"] == "fresh = True\n"
 
 
 class TestApplyDelete:
@@ -859,6 +941,41 @@ class TestMoveThenUpdateSameFile:
         result = apply_v4a_operations(ops, fo)
         assert result.success is False
         assert "already exists" in (result.error or "")
+
+
+class TestAddFileTrailingNewline:
+    """Add File ends every '+' line with a newline, as Codex's apply_patch does.
+
+    Regression: _apply_add joined the '+' lines with '\\n', so every added file
+    lacked a final newline (``while read`` loops dropped the last line).
+    """
+
+    @staticmethod
+    def _add(body):
+        ops, err = parse_v4a_patch(f"*** Begin Patch\n*** Add File: new.txt\n{body}*** End Patch")
+        assert err is None
+        fo = _DictFileOps({})
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is True, getattr(result, "error", None)
+        return fo.files["new.txt"]
+
+    def test_added_file_ends_with_newline(self):
+        assert self._add("+alpha\n+beta\n+gamma\n") == "alpha\nbeta\ngamma\n"
+
+    def test_empty_last_plus_line_is_a_blank_line(self):
+        assert self._add("+alpha\n+\n") == "alpha\n\n"
+
+    def test_crlf_patch_body_writes_lf_terminators(self):
+        assert self._add("+alpha\r\n+beta\r\n") == "alpha\nbeta\n"
+
+    def test_add_without_lines_creates_an_empty_file(self):
+        assert self._add("") == ""
+
+    def test_later_update_validates_against_the_final_newline(self):
+        # The validation overlay must hold the bytes _apply_add writes: a same-patch
+        # Update whose hunk ends with a blank context line matches only with the "\n".
+        body = "+a = 1\n+b = 2\n*** Update File: new.txt\n@@\n a = 1\n-b = 2\n+b = 3\n \n"
+        assert self._add(body) == "a = 1\nb = 3\n"
 
 
 class TestCrlfPatchBody:

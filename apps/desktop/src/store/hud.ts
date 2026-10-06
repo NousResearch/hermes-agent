@@ -17,7 +17,7 @@ import { atom } from 'nanostores'
 
 import { requestComposerDraftSync } from '@/store/composer'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $sessions, ownerLookupSessionRows, rememberedSessionProfile } from '@/store/session'
+import { ownerLookupSessionRows, rememberedSessionProfile } from '@/store/session'
 import { isHudWindow } from '@/store/windows'
 
 /** Whether a HUD window is currently up. In the HUD's own renderer this is

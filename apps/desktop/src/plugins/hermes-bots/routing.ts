@@ -112,23 +112,28 @@ export function setBotsWorkspaceOwner(
   // scope). An owner_removed row (connection gone) stays blocked: there is
   // no backend to fetch from.
   let target: { kind: 'blocked'; message: string } | { kind: 'route'; route: ProfileRoute }
+
   if (!bot) {
     target = { kind: 'blocked', message: blockedMessage }
   } else {
     const resolved = resolveBotConnectionRoute(bot)
+
     if (resolved.route) {
       target = { kind: 'route', route: resolved.route }
     } else if (resolved.status === 'not_scoped') {
       const name = String(bot?.name || '').trim() || 'default'
+
       const connectionId = String(
         bot?.connectionId || bot?.route?.connectionId || 'local'
       ).trim() || 'local'
+
       const route: ProfileRoute = {
         connectionId,
         mode: connectionId === 'local' ? 'local' : 'remote',
         profile: name,
         targetProfile: String(bot?.targetProfile || bot?.route?.targetProfile || name).trim() || name,
       }
+
       target = { kind: 'route', route }
     } else {
       target = { kind: 'blocked', message: blockedMessage }

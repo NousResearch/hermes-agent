@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 
+import {
+  $workspaceMode,
+  $workspaceNewSessionTarget,
+} from '@/components/pane-shell/workspace-scope'
 import { getApiRequestConnection, listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
 import { sameCronSignature } from '@/lib/session-signatures'
 import {
@@ -9,10 +13,6 @@ import {
   normalizeSessionSource
 } from '@/lib/session-source'
 import { gatewayActivationEpoch } from '@/store/gateway'
-import {
-  $workspaceMode,
-  $workspaceNewSessionTarget,
-} from '@/components/pane-shell/workspace-scope'
 import {
   $pinnedSessionIds,
   $sessionsLimit,
@@ -200,6 +200,7 @@ export function botModeFetchScope(profileScope: string): { displayProfile: strin
   }
 
   const fetchProfile = String(target.route.profile || '').trim() || 'default'
+
   const displayProfile =
     String(target.route.targetProfile || target.route.profile || '').trim() || fetchProfile
 
@@ -233,6 +234,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     // the same way a profile switch does.
     const currentBotFetch = botModeFetchScope(profileScopeRef.current)
     const currentProfile = currentBotFetch?.fetchProfile ?? sidebarProfileForScope(profileScopeRef.current)
+
     if (currentProfile !== sessionProfile) {
       return
     }
@@ -302,8 +304,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       const displayProfile = botFetch?.displayProfile ?? sessionProfile
 
       const currentBotFetch = botModeFetchScope(profileScopeRef.current)
+
       const currentProfile =
         currentBotFetch?.fetchProfile ?? sidebarProfileForScope(profileScopeRef.current)
+
       if (currentProfile !== sessionProfile) {
         return
       }
@@ -392,6 +396,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     const liveProfile =
       botModeFetchScope(profileScopeRef.current)?.fetchProfile ??
       sidebarProfileForScope(profileScopeRef.current)
+
     if (liveProfile !== sessionProfile) {
       return
     }
@@ -416,8 +421,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       const displayProfile = botFetch?.displayProfile ?? sessionProfile
 
       const currentBotFetch = botModeFetchScope(profileScopeRef.current)
+
       const currentProfile =
         currentBotFetch?.fetchProfile ?? sidebarProfileForScope(profileScopeRef.current)
+
       if (!shouldPublish() || currentProfile !== sessionProfile) {
         return
       }
@@ -624,6 +631,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       const liveScope =
         botModeFetchScope(profileScopeRef.current)?.fetchProfile ??
         sidebarProfileForScope(profileScopeRef.current)
+
       if (shouldPublish() && liveScope === sessionProfile) {
         void refreshCronJobs()
       }

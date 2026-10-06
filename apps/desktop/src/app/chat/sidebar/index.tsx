@@ -6,6 +6,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
+import {
+  $workspaceMode,
+  $workspaceNewSessionTarget,
+} from '@/components/pane-shell/workspace-scope'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu'
@@ -33,10 +37,6 @@ import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId } from '@/store/connections'
 import { $cronJobs } from '@/store/cron'
 import { recordAction } from '@/store/desktop-metrics'
-import {
-  $workspaceMode,
-  $workspaceNewSessionTarget,
-} from '@/components/pane-shell/workspace-scope'
 import { $interfaceMode, $showsAdvancedChrome, shownInMode } from '@/store/interface-mode'
 import { $bindings } from '@/store/keybinds'
 import {
@@ -536,6 +536,7 @@ export function ChatSidebar({
   // the opaque owner key and never imports the Bots plugin.
   const workspaceMode = useStore($workspaceMode)
   const workspaceTarget = useStore($workspaceNewSessionTarget)
+
   const botDisplayProfile =
     profileScope === ALL_PROFILES || workspaceMode !== 'bots'
       ? null
@@ -544,6 +545,7 @@ export function ChatSidebar({
             workspaceTarget.route.targetProfile || workspaceTarget.route.profile || ''
           ).trim() || null
         : null
+
   // Fetch uses the logical route (alias-aware override); display matches the
   // backend stamps (target). For local bots both are the bot name.
   const displayScope = botDisplayProfile ?? profileScope

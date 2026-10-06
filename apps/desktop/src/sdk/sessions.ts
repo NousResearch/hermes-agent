@@ -5,7 +5,7 @@ import {
   setSidebarSessionOrderManual,
   unpinSession
 } from '@/store/layout'
-import { $sessions, ownerLookupSessionRows, sessionMatchesStoredId, sessionPinId } from '@/store/session'
+import { ownerLookupSessionRows, sessionMatchesStoredId, sessionPinId } from '@/store/session'
 import { setSessionColorOverride } from '@/store/session-color'
 
 /** Pins and colours are keyed by the DURABLE (lineage-root) id so they survive

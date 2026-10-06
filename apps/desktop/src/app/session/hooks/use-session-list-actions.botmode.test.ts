@@ -33,7 +33,6 @@ import {
   $sessions,
   ownerLookupSessionRows,
   setMessagingSessions,
-  setSessions,
 } from '@/store/session'
 
 import { botModeFetchScope } from './use-session-list-actions'

@@ -627,6 +627,26 @@ def try_acquire_active_session(
     return lease, None
 
 
+def active_session_lease_is_current(lease: ActiveSessionLease) -> Optional[bool]:
+    """Whether ``lease`` still owns its registry slot; ``None`` when the registry is unreadable.
+
+    ``allow_session_takeover`` lets another BACKEND PROCESS sharing this registry replace the
+    lease, and nothing signals the old process: its runtime must check before each turn, or
+    two processes write one stored session from two snapshots. Inert tokens (borrowed,
+    unkeyed) and released leases own nothing to lose.
+    """
+    if not lease.enabled or lease.released or not lease.session_id:
+        return True
+    state_path, lock_path = _lease_paths(lease)
+    try:
+        with _FileLock(lock_path):
+            entries = _read_entries(state_path, strict=True)
+    except Exception as exc:
+        logger.debug("Could not verify active-session lease %s: %s", lease.lease_id, exc)
+        return None
+    return any(str(e.get("lease_id") or "") == lease.lease_id for e in entries)
+
+
 def release_active_session(lease: ActiveSessionLease) -> None:
     # Prefer the registry the lease was acquired against: the caller may be
     # running under a profile HERMES_HOME override.

@@ -132,7 +132,7 @@ def compression_failure_class(outcome: str, failure_class: Any) -> str:
     ``exception:<Type>`` / ``rollback:<Type>`` keep only the prefix (the type name may be a plugin's)."""
     if outcome == "success":
         return "none"
-    value = _norm(failure_class).split(":", 1)[0]
+    value = _norm(failure_class if isinstance(failure_class, str) else None).split(":", 1)[0]
     if not value:
         return "unknown"
     return value if value in contract.COMPRESSION_FAILURE_CLASSES - {"none", "unknown"} else "other"

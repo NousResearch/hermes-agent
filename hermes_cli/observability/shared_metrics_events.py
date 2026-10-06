@@ -83,13 +83,15 @@ def finish_compression_attempt(
     pending, _compression_attempt.pending = getattr(_compression_attempt, "pending", None), None
     if not pending:
         return
+    # Classify the stored value, so the outcome and the recorded reason always agree.
+    reason = fields_.compression_failure_class("failed", failure_class)
     outcome = (
         "success" if commit_status == "committed"
-        else "skipped" if failure_class in _SKIPPED_COMPRESSION_CLASSES else "failed"
+        else "skipped" if reason in _SKIPPED_COMPRESSION_CLASSES else "failed"
     )
     record_compression(
         trigger=pending[0], outcome=outcome, tokens_before=pending[1], context_length=context_length,
-        failure_class=failure_class,
+        failure_class=reason,
     )
     if outcome == "success" and agent is not None:
         from .shared_metrics_efficiency import record_cache_break

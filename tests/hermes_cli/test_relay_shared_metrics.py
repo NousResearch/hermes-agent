@@ -1136,7 +1136,7 @@ def test_v2_task_and_tool_rows_recorded_before_an_upgrade_still_package(tmp_path
     }
 
 
-def test_failure_class_rows_validate_and_v3_rows_still_drain(tmp_path):
+def test_failure_class_rows_validate_and_v3_rows_still_drain(tmp_path, monkeypatch):
     """v4 adds failure_class to compression and memory rows: a free-form compressor class collapses to
     a closed name before it is stored, and rows counted before the upgrade (v3 shape) still package."""
     from hermes_cli.observability.shared_metrics_fields import compression_fields
@@ -1158,6 +1158,14 @@ def test_failure_class_rows_validate_and_v3_rows_still_drain(tmp_path):
         "exception:AcmeCorpSecretError": "exception", "rollback:KeyboardInterrupt": "rollback",
         "acme_engine_reason": "other", None: "unknown",
     }
+    # The skip/fail verdict reads the same normalized class that is stored, so they cannot disagree.
+    from hermes_cli.observability import shared_metrics_events as events
+
+    recorded = []
+    monkeypatch.setattr(events, "record_compression", lambda **kw: recorded.append(kw))
+    events.begin_compression_attempt("auto", 1)
+    events.finish_compression_attempt("aborted", "  Lock_Contended ", 10)
+    assert [(kw["outcome"], kw["failure_class"]) for kw in recorded] == [("skipped", "lock_contended")]
 
     [package_path] = store.create_and_export_package()
     package = json.loads(package_path.read_text(encoding="utf-8"))

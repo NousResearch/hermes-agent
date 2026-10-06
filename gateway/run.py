@@ -1688,8 +1688,29 @@ def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     already skips ``active``."""
     from hermes_cli.profiles import get_active_profile_name, get_profile_dir
 
+    # A named profile with ``gateway.standalone: true`` is an explicit upstream
+    # per-profile opt-out from the host multiplexer. In that mode the gateway
+    # itself serves only the launch profile, so its cron ticker must have the
+    # same scope; otherwise the multiplex ticker still walks every profile.
+    if not getattr(config, "multiplex_profiles", False):
+        active = get_active_profile_name() or "default"
+        try:
+            return [(active, get_profile_dir(active))]
+        except Exception:
+            return []
+
     homes = _multiplex_profile_homes(config)
+    from hermes_cli.profiles import configured_profile_scope
+    cron_scope = configured_profile_scope("cron_profile_scope")
+    if cron_scope is not None:
+        known = {name for name, _home in homes}
+        unknown = sorted(cron_scope - known)
+        if unknown:
+            logger.warning("gateway.cron_profile_scope names unknown profiles; ignoring: %s", unknown)
+        homes = [(name, home) for name, home in homes if name in cron_scope]
     active = get_active_profile_name() or "default"  # launch profile, pre-identity (ticker boot)
+    if cron_scope is not None and active not in cron_scope:
+        return homes
     if any(name == active for name, _home in homes):
         return homes
     try:

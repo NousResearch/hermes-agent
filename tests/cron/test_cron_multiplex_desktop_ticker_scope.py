@@ -154,3 +154,39 @@ def test_desktop_ticker_gates_on_profile_gateway_running(tmp_path, monkeypatch, 
     assert all(gate(name, home) for name, home in homes)
     running.update(home for _, home in homes)
     assert not any(gate(name, home) for name, home in homes)
+
+
+def test_standalone_gateway_cron_scope_is_launch_profile_only(monkeypatch, tmp_path):
+    """The upstream named-profile standalone shim must scope cron like adapters."""
+    from types import SimpleNamespace
+    from gateway import run
+
+    main_home = tmp_path / "main"
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "main")
+    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: main_home)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profiles_to_serve",
+        lambda multiplex, **_kw: [("default", tmp_path / "default"), ("main", main_home),
+                                  ("maskar", tmp_path / "maskar")],
+    )
+
+    scoped = run._cron_tick_profile_homes(SimpleNamespace(multiplex_profiles=False))
+    assert scoped == [("main", main_home)]
+
+    multiplexed = run._cron_tick_profile_homes(SimpleNamespace(multiplex_profiles=True))
+    assert [name for name, _ in multiplexed] == ["default", "main", "maskar"]
+
+
+def test_cron_profile_scope_filters_multiplex_ticker(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from gateway import run
+
+    homes = [("default", tmp_path / "default"), ("main", tmp_path / "main"),
+             ("maskar", tmp_path / "maskar")]
+    monkeypatch.setattr(run, "_multiplex_profile_homes", lambda _config: homes)
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "main")
+    monkeypatch.setattr(
+        "hermes_cli.profiles.configured_profile_scope",
+        lambda key: {"main"} if key == "cron_profile_scope" else None,
+    )
+    assert run._cron_tick_profile_homes(SimpleNamespace(multiplex_profiles=True)) == [homes[1]]

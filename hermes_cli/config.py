@@ -980,7 +980,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     # Top-level forms read/bridged by gateway/config.py:
     "group_sessions_per_user", "thread_sessions_per_user",
     "stt_echo_transcripts", "reset_triggers", "always_log_local", "filter_silence_narration",
-    "multiplex_profiles", "profile_routes", "platforms", "require_mention",
+    "multiplex_profiles", "profile_routes", "profile_scope", "cron_profile_scope", "platforms", "require_mention",
     "unauthorized_dm_behavior", "signal", "allow_all_users",
     "timeouts",          # unified timeout resolution section (agent/deadline.py)
 }

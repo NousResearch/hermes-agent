@@ -1046,6 +1046,39 @@ def profile_is_parked(home: Path) -> bool:
 
 _parked_default_warned: set[Path] = set()
 
+_PROFILE_SCOPE_CACHE: dict[str, tuple[tuple[int, int], frozenset[str] | None]] = {}
+
+
+def configured_profile_scope(key: str) -> frozenset[str] | None:
+    """Read an optional host-level profile scope without changing profile data."""
+    from hermes_constants import get_default_hermes_root
+    cfg_path = Path(get_default_hermes_root()) / "config.yaml"
+    try:
+        stat_result = cfg_path.stat()
+        signature = (stat_result.st_mtime_ns, stat_result.st_size)
+    except OSError:
+        return None
+    cached = _PROFILE_SCOPE_CACHE.get(key)
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    try:
+        import yaml
+        raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        gateway = raw.get("gateway") if isinstance(raw, dict) else None
+        value = gateway.get(key) if isinstance(gateway, dict) else None
+    except Exception as exc:
+        logger.warning("Could not read gateway.%s profile scope: %s", key, exc)
+        value = []
+    if value is None:
+        scope = None
+    elif not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+        logger.warning("gateway.%s must be a non-empty-string list; failing closed", key)
+        scope = frozenset()
+    else:
+        scope = frozenset(item.strip() for item in value)
+    _PROFILE_SCOPE_CACHE[key] = (signature, scope)
+    return scope
+
 
 def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
                       include_parked: bool = False) -> List[Tuple[str, Path]]:
@@ -1072,6 +1105,13 @@ def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
     serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs()
                  if (include_standalone or not profile_is_standalone(entry))
                  and (include_parked or not profile_is_parked(entry)))
+    scope = configured_profile_scope("profile_scope")
+    if scope is not None and not include_standalone and not include_parked:
+        known = {name for name, _home in serve}
+        unknown = sorted(scope - known)
+        if unknown:
+            logger.warning("gateway.profile_scope names unknown profiles; ignoring: %s", unknown)
+        serve = [(name, home) for name, home in serve if name in scope]
     return serve
 
 

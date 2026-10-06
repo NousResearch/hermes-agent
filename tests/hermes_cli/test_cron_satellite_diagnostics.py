@@ -27,7 +27,7 @@ def served_root(tmp_path, monkeypatch):
     # Model the default gateway's identity, not merely a live pytest PID. The satellite has no lock.
     monkeypatch.setattr(
         "gateway.status.is_gateway_runtime_lock_active",
-        lambda lock_path=None: lock_path == root / "gateway.lock",
+        lambda lock_path=None, **_: lock_path == root / "gateway.lock",
     )
     monkeypatch.setattr("gateway.status._read_process_cmdline", lambda pid: "hermes gateway run")
     root.joinpath("gateway.pid").write_text(json.dumps({"pid": os.getpid()}))

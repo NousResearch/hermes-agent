@@ -747,14 +747,15 @@ def _filter_venv_launcher_stubs(pids: list[int]) -> list[int]:
     return [p for p in pids if p not in drop]
 
 
-def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = False) -> list:
+def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = False,
+                      *, cleanup_stale: bool = True) -> list:
     """Find running gateway PIDs for the current profile, or every profile with ``all_profiles`` (``hermes update``)."""
     _exclude = set(exclude_pids or set())
     pids: list[int] = []
     if not all_profiles:
         try:
             from gateway.status import get_running_pid
-            _append_unique_pid(pids, get_running_pid(), _exclude)
+            _append_unique_pid(pids, get_running_pid(cleanup_stale=cleanup_stale), _exclude)
         except Exception:
             pass
     for pid in _get_service_pids(all_profiles=all_profiles):

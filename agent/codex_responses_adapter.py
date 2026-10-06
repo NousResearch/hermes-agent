@@ -562,7 +562,8 @@ def _chat_messages_to_responses_input(
     ``is_github_responses``: drops ``id`` from replayed message items (Copilot 401s on stale ids).
     ``current_issuer_kind`` / ``current_issuer_model``: provenance guard; items stamped by another issuer or
     model drop. Legacy items carrying only an endpoint stamp replay on a matching issuer.
-    ``native_compaction_eligible``: THIS request carries ``context_management``; gates both replaying ``compaction``
+    ``native_compaction_eligible``: THIS request may replay a native checkpoint (OpenAI
+    ``context_management`` or an xAI ``/responses/compact`` checkpoint); gates both replaying ``compaction``
     checkpoints and ``prune_pre_checkpoint_items``. Checkpoints persist across model swaps / compression flips / resume,
     so without the gate one checkpoint would erase pre-checkpoint history on a model that cannot decrypt it (lossless:
     local history is never truncated).
@@ -579,8 +580,9 @@ def _chat_messages_to_responses_input(
     even for short ids (see #32716). ``phase``/ ``status``/``content`` are still replayed; only ``id`` is
     unsafe to reuse across a Copilot connection.
     ``native_compaction_eligible`` mirrors, for THIS request, the decision made by
-    ``native_compaction.native_compaction_context_management`` — it is True only when that gate returned a
-    payload, i.e. when the request actually carries ``context_management``. It controls two things that must
+    ``native_compaction.native_compaction_eligible`` — True when OpenAI would send
+    ``context_management``, or when the direct xAI route may replay a ``/responses/compact``
+    checkpoint. It controls two things that must
     never outlive the gate: replaying ``type: "compaction"`` checkpoint items, and restructuring the wire
     around them (``prune_pre_checkpoint_items``). Checkpoints are persisted in the ``codex_reasoning_items``
     sidecar and survive a mid-session model swap, a ``compression.enabled: false`` flip, the rejection kill
@@ -707,9 +709,9 @@ def _native_responses_replay_items(
     if getattr(agent, "api_mode", None) != "codex_responses" or not isinstance(messages, list):
         return None
     route = classify_responses_route(agent)._asdict()
-    from agent.native_compaction import native_compaction_context_management
+    from agent.native_compaction import native_compaction_eligible
     from agent.fast_mode import effective_request_overrides
-    if not native_compaction_context_management(agent, **route):
+    if not native_compaction_eligible(agent, **route):
         return None
     # The wire model may be rewritten per request (fast mode); provenance must match what the transport stamps.
     effective_model = effective_request_overrides(agent).get("model", getattr(agent, "model", None))

@@ -1,9 +1,11 @@
-"""Native OpenAI Responses server-side compaction on supported OpenAI routes.
+"""Native Responses server-side compaction on supported OpenAI and xAI routes.
 
 ``context_management=[{"type": "compaction", "compact_threshold": N}]`` makes the server
 summarize older context into an opaque ``compaction`` item once the input crosses N tokens.
 Deliberately narrow: gpt-5.6 on api.openai.com or the ChatGPT Codex backend, plus gpt-6-astra
-(and its ``-900k`` picker alias) on official Codex OAuth. The local compressor
+(and its ``-900k`` picker alias) on official Codex OAuth. Direct xAI (provider ``xai``,
+api.x.ai, grok-4.7 family) is eligible for the explicit ``POST /v1/responses/compact``
+checkpoint and never receives ``context_management``. The local compressor
 stays armed as fallback (native threshold clamped below the local trigger); compaction items
 ride the ``codex_reasoning_items`` sidecar. No transport imports (shared gate, no cycles).
 """
@@ -41,14 +43,39 @@ def is_native_compaction_model(
     )
 
 
+def is_xai_native_compaction_model(model: Optional[str]) -> bool:
+    """Whether *model* is a Grok 4.7 family identifier (same normalisation as
+    ``model_metadata.is_grok_46_family``)."""
+    name = (model or "").strip().lower().replace("_", "-").rsplit("/", 1)[-1]
+    return name == "grok-4.7" or name.startswith("grok-4.7-")
+
+
+def is_direct_xai_route(base_url: Optional[str], *, provider: Optional[str] = None) -> bool:
+    """True for provider ``xai`` with an empty base_url or hostname ``api.x.ai``.
+
+    ``xai-oauth`` and every other host stay out — relays and lookalike hosts included.
+    """
+    if (provider or "").strip().lower() != "xai":
+        return False
+    if not (base_url or "").strip():
+        return True
+    try:
+        hostname = (urlsplit(base_url or "").hostname or "").lower()
+    except ValueError:
+        return False
+    return hostname == "api.x.ai"
+
+
 def resolve_native_compaction_capabilities(
     *, model: Optional[str], base_url: Optional[str], provider: Optional[str] = None, is_codex_backend: bool = False,
 ) -> Dict[str, bool]:
     """Resolve the native-compaction capability for a runtime destination (a resolved ``False``
     is distinct from "unresolved" and must survive model switches unchanged)."""
     direct_default = (provider or "").strip().lower() == "openai" and not base_url
-    return {"native_compaction": is_native_compaction_model(model, provider=provider, base_url=base_url) and (
-        direct_default or is_direct_openai_route(base_url, is_codex_backend=is_codex_backend))}
+    openai = is_native_compaction_model(model, provider=provider, base_url=base_url) and (
+        direct_default or is_direct_openai_route(base_url, is_codex_backend=is_codex_backend))
+    xai = is_direct_xai_route(base_url, provider=provider) and is_xai_native_compaction_model(model)
+    return {"native_compaction": openai or xai}
 
 
 def is_direct_openai_route(base_url: Optional[str], *, is_codex_backend: bool = False) -> bool:
@@ -138,6 +165,36 @@ def native_compaction_context_management(agent: Any, *, is_codex_backend: bool, 
     local_trigger = getattr(compressor, "threshold_tokens", None) if compressor is not None else None
     threshold = resolve_compact_threshold(getattr(agent, "codex_responses_compact_threshold", None), local_trigger)
     return [{"type": "compaction", "compact_threshold": threshold}]
+
+
+def native_compaction_eligible(
+    agent: Any, *, is_codex_backend: bool, is_xai_responses: bool = False, is_github_responses: bool = False,
+) -> bool:
+    """Whether THIS request may replay a native compaction checkpoint.
+
+    True when the OpenAI ``context_management`` payload would be sent, or when the
+    direct xAI route may call ``POST /v1/responses/compact``. xAI never receives
+    ``context_management`` — that field stays None via
+    :func:`native_compaction_context_management`.
+    """
+    if native_compaction_context_management(
+        agent, is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
+        is_github_responses=is_github_responses,
+    ) is not None:
+        return True
+    if not is_xai_responses:
+        return False
+    capabilities = getattr(agent, "runtime_capabilities", None)
+    if isinstance(capabilities, dict) and not capabilities.get("native_compaction", False):
+        return False
+    if not getattr(agent, "codex_responses_native_compaction", False) or not getattr(agent, "compression_enabled", True):
+        return False
+    if getattr(agent, "compression_checkpoint_required", False) is True:
+        _warn_native_compaction_suppressed_by_checkpoint_gate()
+        return False
+    if not is_direct_xai_route(getattr(agent, "base_url", None), provider=getattr(agent, "provider", None)):
+        return False
+    return is_xai_native_compaction_model(getattr(agent, "model", None))
 
 
 # Retention budgets for plaintext user messages / local summaries carried across a native

@@ -116,8 +116,12 @@ import type { ClientSessionState } from '../../types'
 
 import { pinnedOwnerCount, pinnedStoredSessionIdsForOwner, releaseStoredSessionPins } from './session-context-drift'
 import { applySessionInfoStatePatch, sessionInfoStatePatch } from './use-message-stream/utils'
+import {
+  clearSingleFlightSessionResumeState,
+  setSessionResumeProfileCountOverride,
+  singleFlightSessionResume
+} from './use-prompt-actions/single-flight-resume'
 import { captureSteeringSession } from './use-prompt-actions/steering-session'
-import { singleFlightSessionResume } from './use-prompt-actions/single-flight-resume'
 import { useSessionActions } from './use-session-actions'
 import {
   createPersistedDisplayTranscriptProvenance,
@@ -1728,6 +1732,9 @@ describe('resumeSession failure recovery', () => {
   afterEach(() => {
     cleanup()
     vi.useRealTimers()
+    // Module-level single-flight state (in-flight promises, recovered-runtime
+    // cache, profile-count override) must not leak across tests.
+    clearSingleFlightSessionResumeState()
     setActiveSessionId(null)
     setResumeFailedSessionId(null)
     setSessionStartedAt(null)
@@ -1948,6 +1955,8 @@ describe('resumeSession failure recovery', () => {
 
   it('times out when joining an earlier never-settling resume and releases the shared flight for retry', async () => {
     vi.useFakeTimers()
+    // One configured profile: probe window (30s) + resume RPC window (30s).
+    setSessionResumeProfileCountOverride(() => 1)
 
     let resumeCalls = 0
 
@@ -1987,7 +1996,7 @@ describe('resumeSession failure recovery', () => {
     let firstResume!: Promise<unknown>
     await act(async () => {
       firstResume = resume!('stored-1', true)
-      await vi.advanceTimersByTimeAsync(35_000)
+      await vi.advanceTimersByTimeAsync(60_000)
       await firstResume
     })
 

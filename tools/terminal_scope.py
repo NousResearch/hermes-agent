@@ -121,6 +121,7 @@ def build_profile_terminal_scope(
                 scope[env_var] = _terminal_env_value(value)
 
     _apply({**_TOOL_LEVEL_DEFAULTS, **(DEFAULT_CONFIG.get("terminal") or {})})
+    default_image = scope.get("TERMINAL_DOCKER_IMAGE")
     env_path = home / ".env"
     if env_path.exists():
         # load_env_file swallows OSError by design (secret scope fails soft); an unreadable
@@ -131,10 +132,21 @@ def build_profile_terminal_scope(
             raise TerminalPolicyUnavailable(f"cannot read {env_path}: {exc}") from exc
         from agent.secret_scope import load_env_file
 
-        scope.update((k, str(v)) for k, v in load_env_file(env_path).items()
-                     if k.startswith("TERMINAL_"))
+        profile_env = load_env_file(env_path)
+        scope.update((k, str(v)) for k, v in profile_env.items() if k.startswith("TERMINAL_"))
+        # Provenance, not value: an image WRITTEN in the profile's .env is the user's choice even when
+        # it spells the default (same rule apply_terminal_config_to_env applies to a set env var).
+        image_pinned = "TERMINAL_DOCKER_IMAGE" in profile_env
+    else:
+        image_pinned = False
     if env_overlay:
-        scope.update((k, str(v)) for k, v in env_overlay.items() if k.startswith("TERMINAL_"))
+        scope.update((k, str(v)) for k, v in env_overlay.items()
+                     if k.startswith("TERMINAL_") and k != "TERMINAL_DOCKER_IMAGE_PINNED")
+        # The overlay is the LAUNCHER's environment: its pin verdict is about the launcher's profile and
+        # is never inherited, and the bridge backfills TERMINAL_DOCKER_IMAGE for defaults too, so only a
+        # value that differs from the default can prove a choice made there.
+        if env_overlay.get("TERMINAL_DOCKER_IMAGE") not in (None, default_image):
+            image_pinned = True
     # Read config.yaml directly, not via read_raw_config() (which collapses "missing" and
     # "unparseable" into {}): present-but-unparseable must fail closed.
     config_path = home / "config.yaml"
@@ -153,6 +165,8 @@ def build_profile_terminal_scope(
         raw_terminal = raw.get("terminal") if isinstance(raw, dict) else None
         if isinstance(raw_terminal, dict):
             _apply(raw_terminal)
+            image_pinned = image_pinned or "docker_image" in raw_terminal
+    scope["TERMINAL_DOCKER_IMAGE_PINNED"] = "1" if image_pinned else "0"
     _resolve_scope_cwd_placeholder(scope)
     return scope
 
@@ -197,27 +211,3 @@ def install_and_reset_profile_terminal_scope(hermes_home: "Any") -> Iterator[Non
         yield
     finally:
         reset_terminal_scope(token)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def install_refusal_scope(reason: str) -> Token:
-    """Install a refusal scope after :class:`TerminalPolicyUnavailable`.
-
-    Terminal execution under this scope is rejected (fail closed) instead of
-    running under the launch process's ambient policy.
-    """
-    return _terminal_scope_var.set(TerminalPolicyRefusal(reason))
-
-@contextmanager
-def terminal_scope(mapping: Optional[Dict[str, str]]) -> Iterator[None]:
-    """Context manager form of set/reset_terminal_scope."""
-    token = set_terminal_scope(mapping)
-    try:
-        yield
-    finally:
-        reset_terminal_scope(token)
-# ---- END PLUGIN-COMPAT ----

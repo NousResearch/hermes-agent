@@ -578,6 +578,62 @@ def test_unscoped_staleness_check_reads_the_key_owner_store(multiplex_homes):
     assert store._is_session_ended_in_db(entry.session_id) is True
 
 
+def test_cached_agent_dead_check_reads_the_routed_profile_store(multiplex_homes):
+    """The agent cache's dead-session guard reads the store of the profile that owns the key (#118862).
+
+    Once routing has moved a key to another session, the cached agent's session id is in neither
+    the routing index nor the owner hints, so resolving its store from the id falls back to the
+    launch home. A routed profile's row never lives there: the guard answered from the wrong store
+    (a live row read as gone, an ended row read as live) while the default profile, whose store the
+    launch store happens to be, was judged correctly. A -> B -> A: default, routed, default again.
+    """
+    import threading
+    from types import SimpleNamespace
+
+    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+    from gateway.run_turn_runner import TurnRunner
+
+    root, profile = multiplex_homes
+    store = _multiplex_store(root)
+    default_source = SessionSource(platform=Platform.TELEGRAM, chat_id="555", user_id="u1")
+
+    def guard(entry, current_sid):
+        cache = {entry.session_key: (object(), "sig", 0, entry.session_id)}
+        turn = TurnRunner(
+            SimpleNamespace(session_store=store),
+            SimpleNamespace(session_key=entry.session_key, session_id=current_sid),
+        )
+        return turn._cached_sid_is_dead(threading.Lock(), cache)
+
+    previous_multiplex = is_multiplex_active()
+    set_multiplex_active(True)
+    try:
+        # A: the default profile's cached agent is bound to a live row in the launch store.
+        a_entry = store.get_or_create_session(default_source)
+        assert guard(a_entry, "some-other-live-session") == (a_entry.session_id, False)
+
+        # B: the routed profile's row lives only in profiles/fitness/state.db. Routing has moved
+        # the key on while this process's cached agent still holds the old id: that id is in no
+        # index, so only the key names its store (the launch store has never heard of it).
+        token = set_hermes_home_override(str(profile))
+        try:
+            b_entry = store.get_or_create_session(_profile_source())
+            with store._lock:
+                store._entries.pop(b_entry.session_key)
+            # Live in B's store -> reuse, exactly as the default profile is judged above.
+            assert guard(b_entry, "some-other-live-session") == (b_entry.session_id, False)
+            store._db.end_session(b_entry.session_id, "session_reset")  # ended outside the gateway
+            assert guard(b_entry, "some-other-live-session") == (b_entry.session_id, True)
+        finally:
+            reset_hermes_home_override(token)
+
+        # A again: B's scope and B's ended row change nothing for the default profile.
+        assert guard(a_entry, "some-other-live-session") == (a_entry.session_id, False)
+        assert _session_ids(root / "state.db") == {a_entry.session_id}
+    finally:
+        set_multiplex_active(previous_multiplex)
+
+
 def test_default_namespace_keeps_ambient_resolution(multiplex_homes):
     """Guardrail: the legacy ``agent:main`` namespace must not change stores.
 

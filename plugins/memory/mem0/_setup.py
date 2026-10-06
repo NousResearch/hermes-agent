@@ -517,19 +517,3 @@ def post_setup(hermes_home: str, config: dict) -> None:
     if handler is None:
         handler = _MODE_PICKER[_curses_select("  Select mode", _MODE_ITEMS, 0)]
     handler(hermes_home, config, flags)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def has_oss_flags() -> bool:
-    """Check if OSS-related flags are present in sys.argv."""
-    flags = parse_flags(sys.argv[1:])
-    if flags["mode"] == "oss":
-        return True
-    if any(flags.get(k) for k in ("oss_llm_key", "oss_vector_path", "oss_vector_url")):
-        return True
-    return False
-# ---- END PLUGIN-COMPAT ----

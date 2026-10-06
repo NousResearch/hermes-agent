@@ -2,7 +2,14 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { backendOwnedByApp, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
+import {
+  type ActiveWork,
+  backendOwnedByApp,
+  mergeActiveWork,
+  normalizeActiveWork,
+  quitPromptFor,
+  shouldGuardWindowClose
+} from './quit-guard'
 
 test('normalizeActiveWork drops junk and keeps the count at least the title count', () => {
   assert.deepEqual(normalizeActiveWork(null), { count: 0, titles: [] })
@@ -93,3 +100,50 @@ for (const primaryRouteKind of ['remote', 'cloud'] as const) {
     assert.notDeepEqual(prompt.buttons, ['Keep Running', 'Quit Anyway'])
   })
 }
+
+// -- shouldGuardWindowClose -------------------------------------------------
+
+test('shouldGuardWindowClose guards active work on the last chat window', () => {
+  assert.equal(shouldGuardWindowClose({ count: 1, titles: ['Fix login'] }, false, false, false), true)
+  assert.equal(shouldGuardWindowClose({ count: 3, titles: ['a', 'b', 'c'] }, false, false, false), true)
+})
+
+test('shouldGuardWindowClose does not guard when no work is active', () => {
+  assert.equal(shouldGuardWindowClose({ count: 0, titles: [] }, false, false, false), false)
+})
+
+test('shouldGuardWindowClose does not guard the macOS close gesture', () => {
+  // Closing the primary window there is a "stay in Dock" gesture, not a quit.
+  assert.equal(shouldGuardWindowClose({ count: 2, titles: ['Fix login'] }, false, true, false), false)
+})
+
+test('shouldGuardWindowClose does not guard during a handoff', () => {
+  // Update / swap / uninstall relaunch: the app is replacing itself.
+  assert.equal(shouldGuardWindowClose({ count: 2, titles: ['Fix login'] }, true, false, false), false)
+})
+
+test('shouldGuardWindowClose does not guard a non-final chat window', () => {
+  assert.equal(shouldGuardWindowClose({ count: 1, titles: ['Fix login'] }, false, false, true), false)
+})
+
+// -- lastActiveWorkSeen fallback semantics (via mergeActiveWork) ---------------
+
+test('mergeActiveWork keeps a live count when the per-window map reads empty', () => {
+  // A stream can reload its webContents mid-turn, dropping its map entry
+  // before the guard runs; the cached summary must still count the turn.
+  const mapWork = mergeActiveWork([]) // map reads empty
+  const cached: ActiveWork = { count: 2, titles: ['Fix login'] }
+  const merged = mergeActiveWork([mapWork, cached])
+  assert.equal(merged.count, 2)
+  assert.deepEqual(merged.titles, ['Fix login'])
+})
+
+test('an idle cache does not resurrect finished work', () => {
+  // The cache is only refreshed by real publishes, so count=0 clears it.
+  const merged = mergeActiveWork([
+    { count: 0, titles: [] },
+    { count: 0, titles: [] }
+  ])
+
+  assert.equal(merged.count, 0)
+})

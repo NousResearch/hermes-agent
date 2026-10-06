@@ -16,7 +16,7 @@ import {
   setNativeNotifyKind
 } from './native-notifications'
 import { __resetNativeNotifyBaselineForTests, markNativeNotifyBaseline } from './notify-baseline'
-import { $approvalRequest, clearAllPrompts, setApprovalRequest } from './prompts'
+import { $approvalRequest, APPROVAL_RESPOND_REQUEST_TIMEOUT_MS, clearAllPrompts, setApprovalRequest } from './prompts'
 import { markSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
 import { setActiveSessionId } from './session'
 import { dropSessionState, publishSessionState } from './session-states'
@@ -319,7 +319,13 @@ describe('respondToApprovalAction', () => {
 
     await respondToApprovalAction('bg', 'approve')
 
-    expect(request).toHaveBeenCalledWith('approval.respond', { all: false, choice: 'once', session_id: 'bg' })
+    expect(request).toHaveBeenCalledWith(
+      'approval.respond',
+      { all: false, choice: 'once', session_id: 'bg' },
+      // #55433: the respond RPC carries an explicit deadline covering the backend's approvals window.
+      APPROVAL_RESPOND_REQUEST_TIMEOUT_MS,
+      undefined
+    )
     expect($approvalRequest.get()).toBeNull()
   })
 
@@ -328,12 +334,18 @@ describe('respondToApprovalAction', () => {
     setApprovalRequest({ command: 'first', description: 'first', requestId: 'r1', sessionId: 'bg' })
     setApprovalRequest({ command: 'second', description: 'second', requestId: 'r2', sessionId: 'bg' })
     await respondToApprovalAction('bg', 'approve:r1')
-    expect(request).toHaveBeenCalledWith('approval.respond', {
-      all: false,
-      choice: 'once',
-      request_id: 'r1',
-      session_id: 'bg'
-    })
+    expect(request).toHaveBeenCalledWith(
+      'approval.respond',
+      {
+        all: false,
+        choice: 'once',
+        request_id: 'r1',
+        session_id: 'bg'
+      },
+      // #55433: the respond RPC carries an explicit deadline covering the backend's approvals window.
+      APPROVAL_RESPOND_REQUEST_TIMEOUT_MS,
+      undefined
+    )
     expect($approvalRequest.get()?.requestId).toBe('r2')
     await respondToApprovalAction('bg', 'approve:r1')
     expect($approvalRequest.get()?.requestId).toBe('r2')
@@ -341,7 +353,13 @@ describe('respondToApprovalAction', () => {
 
   it('rejects via approval.respond {choice: "deny"}', async () => {
     await respondToApprovalAction('bg', 'reject')
-    expect(request).toHaveBeenCalledWith('approval.respond', { all: false, choice: 'deny', session_id: 'bg' })
+    expect(request).toHaveBeenCalledWith(
+      'approval.respond',
+      { all: false, choice: 'deny', session_id: 'bg' },
+      // #55433: the respond RPC carries an explicit deadline covering the backend's approvals window.
+      APPROVAL_RESPOND_REQUEST_TIMEOUT_MS,
+      undefined
+    )
   })
 
   it('ignores unknown action ids', async () => {

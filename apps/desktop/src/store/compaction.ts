@@ -4,13 +4,14 @@ import { atom, computed } from 'nanostores'
 // transcript looks like it reset; per-session so a background chat can't
 // clobber the foreground view.
 const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
+const hasSession = (sessions: Record<string, true>, key: string): boolean => Object.hasOwn(sessions, key)
 
 export const $compactingSessions = atom<Record<string, true>>({})
 
 /** Is `sessionId` compacting? Per-session because a transcript may be a tile,
  *  and a tile must never wear the primary chat's compaction state. */
 export function sessionCompacting(sessionId: null | string) {
-  return computed($compactingSessions, sessions => keyFor(sessionId) in sessions)
+  return computed($compactingSessions, sessions => hasSession(sessions, keyFor(sessionId)))
 }
 
 export function setSessionCompacting(sessionId: string | null | undefined, active: boolean): void {
@@ -18,7 +19,7 @@ export function setSessionCompacting(sessionId: string | null | undefined, activ
   const sessions = $compactingSessions.get()
 
   if (active) {
-    if (key in sessions) {
+    if (hasSession(sessions, key)) {
       return
     }
 
@@ -27,7 +28,7 @@ export function setSessionCompacting(sessionId: string | null | undefined, activ
     return
   }
 
-  if (!(key in sessions)) {
+  if (!hasSession(sessions, key)) {
     return
   }
 

@@ -1170,10 +1170,12 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     # https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-xai-grok-4-6.html
     "xai.grok-4.6": 500_000,
     # Anthropic Claude: 1M GA vs 200K. The 1M entries must match agent/model_metadata.py
-    # DEFAULT_CONTEXT_LENGTHS or context compresses early.
+    # DEFAULT_CONTEXT_LENGTHS or context compresses early — Opus 5 reached that table and not this
+    # one, so the offline path resolved 128K for a 1M model (#74263); the pairing is now tested.
     **dict.fromkeys((
-        "anthropic.claude-fable-5", "anthropic.claude-fable", "anthropic.claude-sonnet-5", "anthropic.claude-opus-4-8",
-        "anthropic.claude-opus-4-7", "anthropic.claude-opus-4-6", "anthropic.claude-sonnet-4-6",
+        "anthropic.claude-fable-5", "anthropic.claude-fable", "anthropic.claude-sonnet-5", "anthropic.claude-opus-5",
+        "anthropic.claude-opus-4-8", "anthropic.claude-opus-4-7",
+        "anthropic.claude-opus-4-6", "anthropic.claude-sonnet-4-6",
     ), 1_000_000),
     **dict.fromkeys((
         "anthropic.claude-sonnet-4-5", "anthropic.claude-haiku-4-5", "anthropic.claude-opus-4", "anthropic.claude-sonnet-4",
@@ -1280,114 +1282,3 @@ def _resolve_inference_profile_model_id(profile_arn: str, region: str = "") -> s
         logger.debug("Inference profile resolution skipped for %s: %s", profile_arn, exc)
     _inference_profile_model_cache[profile_arn] = resolved
     return resolved
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-CONTEXT_OVERFLOW_PATTERNS = [
-    re.compile(r"ValidationException.*(?:input is too long|max input token|input token.*exceed)", re.IGNORECASE),
-    re.compile(r"ValidationException.*(?:exceeds? the (?:maximum|max) (?:number of )?(?:input )?tokens)", re.IGNORECASE),
-    re.compile(r"ModelStreamErrorException.*(?:Input is too long|too many input tokens)", re.IGNORECASE),
-]
-
-OVERLOAD_PATTERNS = [
-    re.compile(r"ModelNotReadyException", re.IGNORECASE),
-    re.compile(r"ModelTimeoutException", re.IGNORECASE),
-    re.compile(r"InternalServerException", re.IGNORECASE),
-]
-
-THROTTLE_PATTERNS = [
-    re.compile(r"ThrottlingException", re.IGNORECASE),
-    re.compile(r"Too many concurrent requests", re.IGNORECASE),
-    re.compile(r"ServiceQuotaExceededException", re.IGNORECASE),
-]
-
-def call_converse_stream(
-    region: str,
-    model: str,
-    messages: List[Dict],
-    tools: Optional[List[Dict]] = None,
-    max_tokens: Optional[int] = 4096,
-    temperature: Optional[float] = None,
-    top_p: Optional[float] = None,
-    stop_sequences: Optional[List[str]] = None,
-    guardrail_config: Optional[Dict] = None,
-) -> SimpleNamespace:
-    """Call Bedrock ConverseStream API and return an OpenAI-compatible response.
-
-    Consumes the full stream and returns the assembled response. For true
-    streaming with delta callbacks, use ``iter_converse_stream()`` instead.
-    """
-    client = _get_bedrock_runtime_client(region)
-    kwargs = build_converse_kwargs(
-        model=model,
-        messages=messages,
-        tools=tools,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        top_p=top_p,
-        stop_sequences=stop_sequences,
-        guardrail_config=guardrail_config,
-    )
-
-    try:
-        response = client.converse_stream(**kwargs)
-    except Exception as exc:
-        retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
-        if retry_kwargs is not None:
-            return normalize_converse_stream_events(
-                client.converse_stream(**retry_kwargs)
-            )
-        redacted_retry_kwargs = recover_from_redacted_reasoning_rejection(exc, kwargs)
-        if redacted_retry_kwargs is not None:
-            return normalize_converse_stream_events(
-                client.converse_stream(**redacted_retry_kwargs)
-            )
-        if is_streaming_access_denied_error(exc):
-            # IAM allows bedrock:InvokeModel but not
-            # InvokeModelWithResponseStream — permanent for this session.
-            # Fall back to the non-streaming converse() path.
-            logger.info(
-                "bedrock: converse_stream denied by IAM on (region=%s, model=%s) — "
-                "falling back to non-streaming converse().",
-                region, model,
-            )
-            return normalize_converse_response(client.converse(**kwargs))
-        if is_stale_connection_error(exc):
-            logger.warning(
-                "bedrock: stale-connection error on converse_stream(region=%s, "
-                "model=%s): %s — evicting cached client so the next call reconnects.",
-                region, model, type(exc).__name__,
-            )
-            invalidate_runtime_client(region)
-        raise
-    return normalize_converse_stream_events(response)
-
-def is_context_overflow_error(error_message: str) -> bool:
-    """Return True if the error indicates the input context was too large.
-
-    When this returns True, the agent should compress context and retry
-    rather than treating it as a fatal error.
-    """
-    return any(p.search(error_message) for p in CONTEXT_OVERFLOW_PATTERNS)
-
-def classify_bedrock_error(error_message: str) -> str:
-    """Classify a Bedrock error for retry/failover decisions.
-
-    Returns:
-      - ``"context_overflow"`` — input too long, compress and retry
-      - ``"rate_limit"`` — throttled, backoff and retry
-      - ``"overloaded"`` — model temporarily unavailable, retry with delay
-      - ``"unknown"`` — unclassified error
-    """
-    if is_context_overflow_error(error_message):
-        return "context_overflow"
-    if any(p.search(error_message) for p in THROTTLE_PATTERNS):
-        return "rate_limit"
-    if any(p.search(error_message) for p in OVERLOAD_PATTERNS):
-        return "overloaded"
-    return "unknown"
-# ---- END PLUGIN-COMPAT ----

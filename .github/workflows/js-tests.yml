@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest-32-core
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
       - name: Set up the locked JS build toolchain
         id: node
         uses: ./.github/actions/setup-pm
@@ -53,7 +53,7 @@ jobs:
       # makes the archive larger.
       - name: Restore node_modules
         id: node-modules-cache
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             node_modules

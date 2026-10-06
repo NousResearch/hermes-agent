@@ -252,6 +252,11 @@ function Initialize-HermesArm64BuildTools {
         Invoke-HermesBuildCommand (Join-Path $vcpkgRoot 'bootstrap-vcpkg.bat') @('-disableMetrics') 'Building vcpkg'
     }
     $env:VCPKG_ROOT = $vcpkgRoot
+    # vcpkg resolves Visual Studio itself and takes the newest instance, which may lack the
+    # native arm64 toolset even though the instance above has it: the arm64-windows triplet
+    # then fails with "Unable to find a valid toolchain" and the whole update aborts. Point
+    # vcpkg at the instance VsDevCmd was initialized against, unless the caller pinned one.
+    if (-not $env:VCPKG_VISUAL_STUDIO_PATH) { $env:VCPKG_VISUAL_STUDIO_PATH = $vs }
     # The install tree can be cached independently of the discovered checkout.
     if (-not $OpenSSLRoot) { $OpenSSLRoot = $vcpkgRoot }
     $env:OPENSSL_DIR = Install-HermesArm64OpenSSL -Vcpkg (Join-Path $vcpkgRoot 'vcpkg.exe') -Root $OpenSSLRoot

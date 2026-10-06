@@ -300,12 +300,3 @@ def extract_cache_put(
             _save_index(index)
     except Exception as exc:  # noqa: BLE001 — cache writes are best-effort
         logger.debug("Failed to cache web extract for %s: %s", url, exc)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Any  # noqa: F401,E402
-from typing import List  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

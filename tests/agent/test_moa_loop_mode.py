@@ -1019,6 +1019,7 @@ def test_late_completing_interrupted_reference_feeds_accounting_sink(monkeypatch
     """A reference still in flight at interrupt time gets a placeholder in
     the results, but its eventual REAL accounting must reach the sink."""
     import threading
+    import time
 
     from agent import moa_loop
 
@@ -1065,10 +1066,14 @@ def test_late_completing_interrupted_reference_feeds_accounting_sink(monkeypatch
 
     # …then completes late; its real billed usage must reach the sink.
     release.set()
-    assert sink_seen.wait(timeout=5), "late accounting sink never called"
-    label, acct = sink_calls[0]
-    assert "wedged" in label
-    assert acct.usage.input_tokens == 21
+    # Under load the poll loop can see the interrupt before it collects the fast slot too, so fast may
+    # also arrive late and first; the contract is about the wedged slot's row, not sink ordering.
+    deadline = time.monotonic() + 5
+    while not any("wedged" in label for label, _ in sink_calls) and time.monotonic() < deadline:
+        sink_seen.wait(timeout=0.2)
+    wedged = [acct for label, acct in sink_calls if "wedged" in label]
+    assert wedged, f"late accounting for the wedged slot never reached the sink: {[l for l, _ in sink_calls]}"
+    assert wedged[0].usage.input_tokens == 21
 
 
 def test_facade_does_not_cache_interrupted_reference_results(monkeypatch, tmp_path):

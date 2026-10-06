@@ -46,7 +46,7 @@ _FEATURES: Dict[str, _FeatureSpec] = {
         ("PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"),
     ),
     "image_gen": _FeatureSpec(
-        "Image generation", True, "fal", "fal-queue", ("image_gen", "provider"), "Image generation (FAL)", "FAL key",
+        "Image generation", True, "fal", "fal-queue", ("image_gen", "provider"), "Image generation", "FAL key",
     ),
     "video_gen": _FeatureSpec(
         "Video generation", False, "fal-video", "fal-queue", ("video_gen", "provider"), "Video generation (FAL)", "FAL key",
@@ -283,6 +283,17 @@ def _web_feature(web_cfg: Dict[str, object], tool_enabled: bool, managed: bool, 
         current_provider=backend or search_backend or extract_backend or "",
         explicit_configured=bool(backend or search_backend or extract_backend),
     )
+
+
+def managed_image_partner(config: Dict[str, object]) -> Optional[str]:
+    """Partner the image request is dispatched to (``"FAL"``, ``"Krea"`` or ``"Nous Portal"``);
+    ``None`` when a direct vendor owns it. Reads the stored values the way the runtime dispatcher
+    does, so the label and the route cannot disagree."""
+    from tools.image_generation_managed import FAL, KREA, PORTAL, managed_route
+
+    section = _section(config, "image_gen")
+    return {FAL: "FAL", KREA: "Krea", PORTAL: "Nous Portal"}.get(
+        managed_route(section.get("provider"), section.get("model")))
 
 
 def _fal_feature(key: str, tool_enabled: bool, direct: bool, managed: bool, selected: Optional[str]) -> NousFeatureState:
@@ -700,25 +711,3 @@ def _run_nous_portal_login_only(*, capability: str) -> bool:
     except Exception as exc:
         print(f"  Nous Portal login failed: {exc}")
         return False
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'managed_nous_tools_enabled': ('tools.tool_backend_helpers', 'managed_nous_tools_enabled'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

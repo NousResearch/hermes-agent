@@ -493,12 +493,3 @@ for _schema, _handler, _emoji in _TOOLS:
         name=_schema["name"], toolset="hermes-yuanbao", schema=_schema, handler=_handler,
         check_fn=_check_yuanbao, is_async=True, emoji=_emoji,
     )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import List  # noqa: F401,E402
-from typing import Optional  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

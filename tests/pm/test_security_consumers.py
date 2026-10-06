@@ -314,6 +314,8 @@ def test_tirith_failed_cold_scans_make_one_attempt_then_explicit_can_retry(consu
         real_get(handler)
     monkeypatch.setattr(RangeHandler, "do_GET", record)
     tirith.check_command_security("echo hello")
+    for thread in tirith._install_threads.values():
+        thread.join(10)
     first_attempt = list(requests)
     assert first_attempt
     tirith.check_command_security("echo hello")

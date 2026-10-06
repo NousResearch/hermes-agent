@@ -42,11 +42,59 @@ def complete_source_checkout(
     Returns the SQLite runtime verdict: a positive unsafe-runtime probe withholds
     success here exactly as it does at the end of an update.
     """
+    from hermes_cli.update_lock import UpdateLock, describe_holder
+
+    root = Path(root)
+    # This tail is the last mutating step of an install or update, and its product
+    # builds run for minutes. A gateway restarted while it runs (launchd KeepAlive,
+    # a service manager, a second `hermes` launch) reaches the same tail through
+    # venv_sync, and `hermes update` runs its own: two completions then build the
+    # same output directories concurrently and race on install-stamp.json (#123376).
+    # Claim the shared update lock so stacked completions serialize. A tail whose
+    # orchestrator already holds the lock (venv_sync's interrupted-update finish,
+    # the updater's completion child) runs under its parent's claim, exactly as
+    # `hermes update` does under the desktop handoff pid.
+    lock = UpdateLock()
+    if not lock.acquire():
+        raise RuntimeError(
+            f"an update is still running ({describe_holder(lock.holder)}); "
+            "wait for it to exit, then relaunch Hermes"
+        )
+    try:
+        return _complete_locked(
+            root, desktop=desktop, assume_yes=assume_yes, gateway_mode=gateway_mode,
+            pre_update_snapshot_id=pre_update_snapshot_id,
+            pre_update_version=pre_update_version,
+            completion_message=completion_message, announce=announce,
+        )
+    finally:
+        lock.release()
+
+
+def _complete_locked(
+    root: Path,
+    *,
+    desktop: bool,
+    assume_yes: bool,
+    gateway_mode: bool,
+    pre_update_snapshot_id: str | None,
+    pre_update_version: str | None,
+    completion_message: str | None,
+    announce: str | None,
+) -> bool:
+    """The completion body; callers hold the update lock already."""
     from hermes_cli.source_build import build_update_products
     from hermes_cli.update_cmd_maint import _run_post_update_maintenance
     from hermes_cli.venv_sync import publish_launchers
 
-    root = Path(root)
+    try:
+        from hermes_cli._subprocess_compat import expose_pm_git
+
+        # The builds, the release-history refresh and the install stamp all run
+        # git; a fresh Windows machine has only PM's.
+        expose_pm_git(root)
+    except Exception as exc:  # noqa: BLE001 — git-less steps below still complete
+        print(f"⚠ Could not provide git for the source completion: {exc}", file=sys.stderr)
     publish_launchers(root)
     build_update_products(root, desktop=desktop)
     if announce:

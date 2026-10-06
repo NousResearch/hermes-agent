@@ -153,6 +153,54 @@ test('channel packaging reuses admitted identity and rejects unsupported or unsa
   }, /identity/)
 })
 
+test('a channel that copies the stable identity packages and runs as the regular app', (): void => {
+  process.env.HERMES_DESKTOP_VARIANT = 'bundled'
+
+  for (const file of ['../product-identity.cjs', '../electron-builder.config.cjs']) {
+    delete require.cache[require.resolve(file)]
+  }
+
+  const stable: PackagingFacts = {
+    identity: require('../product-identity.cjs'),
+    config: require('../electron-builder.config.cjs')
+  }
+
+  const { identity: official } = stable
+
+  const branded: PackagingFacts = load({
+    ...request(),
+    identity: {
+      token: 'ab12cd34ef56ab78',
+      displayName: official.displayName,
+      appId: official.appId,
+      appNamePascal: official.appNamePascal,
+      artifactNamePascal: official.artifactNamePascal,
+      cliName: official.cliName,
+      windowsExecutableName: official.windowsExecutableName,
+      msixAppIdWithOrg: official.msixAppIdWithOrg
+    }
+  })
+
+  // A token would make the runtime pin a userData dir that installed stable doesn't use.
+  assert.equal(branded.identity.token, undefined)
+  assert.equal(branded.identity.appId, official.appId)
+  assert.equal(branded.config.extraMetadata?.productName, stable.config.extraMetadata?.productName)
+  assert.equal(branded.config.extraMetadata?.name, stable.config.extraMetadata?.name)
+  assert.equal(branded.config.artifactName, stable.config.artifactName)
+
+  assert.equal(
+    applyDesktopIdentity(
+      {
+        getPath: (): string => assert.fail('stable userData must not be relocated'),
+        setPath: (): void => assert.fail('stable userData must not be relocated'),
+        setName: (): void => assert.fail('stable name must not change')
+      },
+      branded.identity
+    ),
+    null
+  )
+})
+
 test('channel stamps verify the real checkout and retain source version and native ownership', async (): Promise<void> => {
   const {
     resolveStamp,
@@ -329,6 +377,7 @@ test('actual MSIX manifest writer consumes the channel quad across rollover inst
       'apps/desktop/update-feed.cjs',
       'apps/desktop/assets/msix-manifest.xml',
       'apps/desktop/scripts/before-build.mjs',
+      'apps/desktop/scripts/mac-icon.cjs',
       'apps/desktop/scripts/mac-sign.mjs',
       'apps/desktop/scripts/payload-digests.mjs',
       'apps/desktop/scripts/utils.mjs',
@@ -352,6 +401,7 @@ test('actual MSIX manifest writer consumes the channel quad across rollover inst
     for (const tree of ['pm', 'scripts/releases']) {
       fs.cpSync(path.join(repo, tree), path.join(root, tree), { recursive: true })
     }
+
     fs.symlinkSync(path.join(repo, 'node_modules'), path.join(root, 'node_modules'), 'junction')
     const assets: string = path.join(app, 'assets/appx')
     fs.mkdirSync(assets)

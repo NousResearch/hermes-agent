@@ -411,3 +411,27 @@ class TestPerProviderReasoningEcho:
         # Flag should be restored from snapshot
         assert agent._reasoning_echo_flag is True
         assert agent.model == "glm-5.2"
+
+
+from agent.message_sanitization import normalize_provider_tool_call_ids
+
+def test_normalize_provider_parallel_ids_is_deterministic_and_preserves_composite():
+    calls = [
+        {"id": "chatcmpl-tool-alpha|item-a", "call_id": "chatcmpl-tool-alpha|item-a"},
+        {"id": "chatcmpl-tool-beta", "call_id": "chatcmpl-tool-beta"},
+    ]
+    normalize_provider_tool_call_ids(calls)
+    first = [c.copy() for c in calls]
+    normalize_provider_tool_call_ids(calls)
+    assert calls == first
+    assert calls[0]["id"].endswith("|item-a")
+    assert all(c["id"].startswith("call_") for c in calls)
+
+def test_normalize_provider_ids_leaves_single_and_mixed_batches_unchanged():
+    for calls in [
+        [{"id": "chatcmpl-tool-alpha"}],
+        [{"id": "chatcmpl-tool-alpha"}, {"id": "call_1"}],
+    ]:
+        before = [c.copy() for c in calls]
+        normalize_provider_tool_call_ids(calls)
+        assert calls == before

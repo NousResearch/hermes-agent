@@ -82,8 +82,9 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
     db = _open_session_db_for_profile(profile, read_only=True)
     try:
         cutoff = time.time() - (days * 86400)
+        # Local calendar day, per-row (DST-correct), the same day /insights uses (agent/insights.py).
         daily = _rows(db, """
-            SELECT date(started_at, 'unixepoch') as day,
+            SELECT date(started_at, 'unixepoch', 'localtime') as day,
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
                    SUM(cache_read_tokens) as cache_read_tokens,

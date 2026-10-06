@@ -244,6 +244,61 @@ class TestCommandBoundaryFinalization:
         assert len(list(directory.glob("update_*.json"))) == 1
 
 
+def _desktop_correlated_receipt(home, correlation):
+    """Desktop's managed SSH receipt lookup (managed-ssh-update.ts ``receipt()``)."""
+    directory = home / "logs" / "update_receipts"
+    for path in sorted(directory.glob("update_*.json"), key=lambda p: p.stat().st_mtime_ns, reverse=True):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("correlation_id") != correlation:
+            continue
+        if payload.get("outcome") == "running" or not payload.get("finished_at"):
+            continue
+        return payload
+    return None
+
+
+class TestLauncherCorrelation:
+    """Desktop matches the remote receipt by HERMES_UPDATE_CORRELATION_ID (#101516)."""
+
+    CORRELATION = "1e7cb007-a6f8-4f6c-badb-d80e204942bf"
+
+    def test_receipt_carries_launcher_correlation(self, receipt_home, monkeypatch):
+        monkeypatch.setenv("HERMES_UPDATE_CORRELATION_ID", self.CORRELATION)
+        ur.begin_update_receipt()
+        update_id = ur.current_correlation_id()
+        _finalize("success")
+
+        payload = _desktop_correlated_receipt(receipt_home, self.CORRELATION)
+        assert payload is not None
+        assert payload["outcome"] == "success"
+        # update_id stays the CLI's own id (pm sync receipts bind to it).
+        assert payload["update_id"] == update_id != self.CORRELATION
+
+    def test_handoff_receipt_keeps_correlation(self, receipt_home, monkeypatch):
+        monkeypatch.setenv("HERMES_UPDATE_CORRELATION_ID", self.CORRELATION)
+        ur.begin_update_receipt()
+        pre_swap = dict(ur._current.get().data)
+        with ur.update_receipt_scope():
+            # The post-swap interpreter need not inherit the env var.
+            monkeypatch.delenv("HERMES_UPDATE_CORRELATION_ID")
+            ur.begin_update_receipt(previous=pre_swap, correlation_id=pre_swap["update_id"])
+            _finalize("success")
+        assert _desktop_correlated_receipt(receipt_home, self.CORRELATION) is not None
+
+    def test_legacy_handoff_receipt_gains_correlation(self, receipt_home, monkeypatch):
+        # A pre-swap receipt from an older updater has no correlation_id field.
+        monkeypatch.setenv("HERMES_UPDATE_CORRELATION_ID", self.CORRELATION)
+        ur.begin_update_receipt(previous={"update_id": "abc123", "steps": []}, correlation_id="abc123")
+        _finalize("success")
+        assert _desktop_correlated_receipt(receipt_home, self.CORRELATION)["update_id"] == "abc123"
+
+    def test_no_launcher_correlation_is_null(self, receipt_home, monkeypatch):
+        monkeypatch.delenv("HERMES_UPDATE_CORRELATION_ID", raising=False)
+        ur.begin_update_receipt()
+        _finalize("success")
+        assert ur.read_latest_receipt()["correlation_id"] is None
+
+
 class TestFleetClassification:
     def _fleet_with(self, monkeypatch, tmp_path, record, expected_sha="a" * 40):
         """Run collect_fleet_versions against one fake default profile."""

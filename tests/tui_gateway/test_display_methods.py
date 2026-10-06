@@ -240,3 +240,29 @@ def test_thumbnail_grabbed_across_a_takeover_is_suppressed(monkeypatch, _fresh_l
     monkeypatch.setattr(thumbnail, "thumbnail_data_url", grab_while_human_takes_over)
     result = _call(server, "display.thumbnail", {})["result"]
     assert result["data_url"] is None and result["suppressed"] == "human_has_control", result
+
+
+def test_switch_sandbox_image_decides_only_a_pending_switch(monkeypatch, tmp_path):
+    """The pane's button: refused when nothing is pending (a stale pane cannot rewrite config);
+    otherwise the decision is made through the same module the CLI offer uses and the fresh
+    status rides back."""
+    import tui_gateway.server as server
+    from hermes_cli import sandbox_image_switch as sw
+    from tools.bot_desktop import runtime
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(sw, "pending", lambda: None)
+    resp = _call(server, "display.switchSandboxImage", {"approve": True})
+    assert "error" in resp and "pending" in resp["error"]["message"]
+
+    decided = []
+    switch = sw.PendingSwitch("old/base:1", "nousresearch/hermes-sandbox:desktop", ["hermes-a"])
+    monkeypatch.setattr(sw, "pending", lambda: switch)
+    monkeypatch.setattr(sw, "decide", lambda s, approve: decided.append((s, approve)) or s.target_image)
+    monkeypatch.setattr(runtime, "status", lambda profile=None: runtime.DesktopStatus(
+        profile="default", supported=True, installed=True, missing=[], running=False, pid=None, display=None,
+        socket=None, geometry="1280x800", install_command=None, browser=None))
+    resp = _call(server, "display.switchSandboxImage", {"approve": False})
+    assert decided == [(switch, False)]
+    assert resp["result"]["docker_image"] == "nousresearch/hermes-sandbox:desktop"
+    assert resp["result"]["running"] is False and "lease" in resp["result"]

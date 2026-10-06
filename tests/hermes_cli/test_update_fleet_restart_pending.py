@@ -1068,3 +1068,72 @@ def test_second_profile_attaches_to_completed_host_restart(monkeypatch):
     # A stamp for other code proves nothing about this checkout.
     host_obligation.mark_host_restart_completed("def456")
     assert update_cmd_fleet._fleet_restart_skip_reason(None) is None
+
+
+# ── SHA-less inventory-less obligations discharge on live-fleet evidence (#125952) ──
+#
+# A no-op update whose head capture failed armed the host record with expected_sha=""
+# and no inventory. The reader bailed out on the empty SHA before the fleet check, so
+# the warning could never clear even with every live gateway current on the checkout.
+
+
+def test_startup_warn_discharged_when_sha_less_marker_fleet_current(monkeypatch, capsys):
+    checkout = "e" * 40
+    path = host_obligation.host_obligation_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "version": 1, "started": 0.0, "pid": 424242, "armed_by_profile": "default", "expected_sha": "",
+    }), encoding="utf-8")
+    _patch_marker_sha(monkeypatch, checkout)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": checkout, "code_version": "0.21.5", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""
+    assert not update_cmd_fleet._fleet_restart_obligation_armed()
+
+
+def test_startup_warn_kept_when_sha_less_marker_fleet_is_all_external(monkeypatch, capsys):
+    """Every live gateway serving ANOTHER checkout root says nothing about this checkout's code:
+    the SHA-less marker stays armed exactly as it does with no fleet at all."""
+    checkout = "e" * 40
+    path = host_obligation.host_obligation_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "version": 1, "started": 0.0, "pid": 424242, "armed_by_profile": "default", "expected_sha": "",
+    }), encoding="utf-8")
+    _patch_marker_sha(monkeypatch, checkout)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "other", "pid": 43, "code_sha": "f" * 40, "code_version": "0.21.5", "state": "external",
+             "code_root": "/elsewhere/hermes-agent"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
+
+
+def test_completion_arms_obligation_with_checkout_sha_when_head_capture_empty(monkeypatch):
+    """The armer must never record the poisoned shape: an empty head capture falls back to the
+    checkout identity the reader compares the fleet against."""
+    checkout = "e" * 40
+    _patch_marker_sha(monkeypatch, checkout)
+    armed = []
+    monkeypatch.setattr(update_cmd, "_write_fleet_restart_pending_marker", lambda **kw: armed.append(kw["expected_sha"]))
+    monkeypatch.setattr(update_cmd, "run_completion", lambda request: {"exit_code": 0})
+    monkeypatch.setattr(update_cmd, "_accept_completion_pm_receipt", lambda *a: None)
+    monkeypatch.setattr(update_cmd, "adopt_retired_channel", lambda request: False)
+
+    update_cmd._complete_source_update(
+        {"expected_sha": "", "receipt": {"update_id": "u1"}, "windows_resume": None})
+
+    assert armed == [checkout]

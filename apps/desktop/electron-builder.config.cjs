@@ -25,7 +25,8 @@ const {
   artifactNamePascal,
   windowsExecutableName,
   channel,
-  msixAppIdWithOrg
+  msixAppIdWithOrg,
+  token
 } = require('./product-identity.cjs')
 
 // `storeMsix` is optional on the identity type but guaranteed present when
@@ -51,6 +52,7 @@ function mustStoreMsix(value) {
 // with the .appinstaller generator so the manifest and the App Installer can
 // never drift (see scripts/msix-shared.mjs).
 const { OUT_OF_STORE_PUBLISHER, channelBuildRequest, stageChannelManifest } = require('../../scripts/msix-shared.mjs')
+const { macIconResource } = require('./scripts/mac-icon.cjs')
 const channelRequest = channelBuildRequest()
 
 /** @typedef {import("app-builder-lib").Configuration} Configuration */
@@ -102,7 +104,8 @@ module.exports = {
     name: appNamePascal,
     // Electron bootstrap reads package.productName before main.ts. Keep the
     // shipped stable default, but isolate nonstable userData from first access.
-    ...(channelRequest || appNamePascal !== artifactNamePascal ? { productName: displayName } : {}),
+    // A stable-branded channel has no token and keeps stable's userData.
+    ...((channelRequest && token) || appNamePascal !== artifactNamePascal ? { productName: displayName } : {}),
     desktopName: appId
   },
   directories: {
@@ -138,6 +141,13 @@ module.exports = {
     unpack: ['**/*.node', '**/prebuilds/**', 'dist/**']
   },
   mac: {
+    // macOS 26 masks every icon into its own squircle: the layered Icon
+    // Composer package lets the system do that with the ring following the
+    // outline, while `assets/icon.icns` stays the artwork for macOS <= 15.
+    // electron-builder compiles `.icon` with actool >= 26 only, so hosts
+    // without Xcode 26 fall back to the .icns alone (see scripts/mac-icon.cjs);
+    // after-pack.mjs restores our full-resolution .icns either way.
+    icon: macIconResource(__dirname),
     // The afterSign hook owns notarization, including keychain-profile builds.
     notarize: false,
     // The packaged client reads this generated app-update.yml by default.
@@ -163,7 +173,9 @@ module.exports = {
       NSRemindersFullAccessUsageDescription: `${displayName} needs full access to Reminders to read and manage reminders when explicitly requested.`,
       NSScreenCaptureUsageDescription: `${displayName} captures the screen when you ask the agent to screenshot or record it.`,
       NSLocalNetworkUsageDescription: `${displayName} connects to devices on your local network when a plugin or feature you enable requests it.`,
-      NSAppleMusicUsageDescription: `${displayName} accesses your music library when a plugin or feature you enable requests it.`
+      NSAppleMusicUsageDescription: `${displayName} accesses your music library when a plugin or feature you enable requests it.`,
+      NSContactsUsageDescription: `${displayName} uses Contacts access when you ask it to read or update your address book.`,
+      NSAppleEventsUsageDescription: `${displayName} uses Apple Events to automate apps you explicitly ask it to control.`
     },
     target: ['dmg', 'zip'],
     sign: createMacSigner({
@@ -185,6 +197,12 @@ module.exports = {
   dmg: {
     // Avoid the failing optional APFS shrink pass; keep compressed conversion.
     shrink: false,
+    // The volume icon defaults to the packager's icns, which is actool's 256px
+    // fallback whenever `mac.icon` is the Icon Composer package. Ship our own
+    // drive-with-the-girl artwork instead (dmgbuild's badge option can only
+    // paste onto the stock removable-drive icon). It lives in packaging/ with
+    // the background so the `files` whitelist keeps it out of the app bundle.
+    icon: 'packaging/dmg-volume.icns',
     title: 'Hermes Agent Installer',
     // A prebuilt .tiff on purpose, not a PNG plus a @2x sibling: dmg-builder's
     // PNG path runs `tiffutil -cathidpicheck`, which on macOS 26 rewrites both
@@ -216,6 +234,10 @@ module.exports = {
     executableName: windowsExecutableName,
     legalTrademarks: displayName,
     target: ['msix'],
+    // The updaters' relaunch waiter is PowerShell run outside the package. The
+    // sealed payload's snapshot omits scripts/, so it ships as a resource
+    // (RELAUNCH_WAITER_SCRIPT in electron/updater/relaunch-waiter.ts).
+    extraResources: [{ from: 'scripts/update-relaunch-waiter.ps1', to: 'update-relaunch-waiter.ps1' }],
     ...windowsSigning()
   },
   msix: {

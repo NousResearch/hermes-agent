@@ -100,7 +100,10 @@ _NO_XHIGH_CLAUDE_SUBSTRINGS = ("claude-opus-4-6", "claude-opus-4.6", "claude-son
 # Adaptive families where thinking is mandatory: ``thinking: {"type": "disabled"}`` answers HTTP
 # 400 (Portal flags them ``reasoning.mandatory``). The failure is asymmetric — a missing entry
 # 400s the turn, a spurious one only leaves thinking on — so when in doubt, add the family.
-_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable",)
+_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable", "claude-opus-5-5", "claude-opus-5.5")
+# Families whose documented "off" is ``thinking: {"type": "between_tools"}`` (no up-front thinking,
+# short notes between tool calls): ``disabled`` 400s there with a message pointing at it.
+_BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS = ("claude-sonnet-5-5", "claude-sonnet-5.5")
 
 
 def _is_claude_model(model: str | None) -> bool:
@@ -190,7 +193,7 @@ def _accepts_thinking_disable(model: str) -> bool:
     return (
         _is_claude_model(model)
         and _supports_adaptive_thinking(model)
-        and not _model_matches(model, _MANDATORY_THINKING_CLAUDE_SUBSTRINGS)
+        and not _model_matches(model, _MANDATORY_THINKING_CLAUDE_SUBSTRINGS + _BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS)
     )
 
 
@@ -263,6 +266,19 @@ def _claude_code_candidates() -> List[str]:
             if os.path.isfile(path):
                 seen.setdefault(path)
     return list(seen)
+
+
+def find_claude_code_cli(command: str) -> Optional[str]:
+    """Path of a bare Claude Code command name on PATH, else in an install prefix; None for any other command.
+
+    Core's own presence checks (external-process providers, ``claude setup-token``) ask this so they
+    agree with version detection about whether the CLI is installed under a GUI/service PATH."""
+    if command not in _CLAUDE_CODE_NAMES:
+        return None
+    from hermes_platform.resolver import locate_command
+
+    found = locate_command(command, known_dirs=_CLAUDE_CODE_PREFIXES).command
+    return found[0] if found else None
 
 
 def _detect_claude_code_version() -> str:
@@ -590,6 +606,8 @@ def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max
         # Adaptive models think by DEFAULT, so omitting the parameter is not a disable — the user
         # silently keeps paying. Mandatory-thinking models 400 on the disable, so they keep the
         # omission: a silently-ignored disable beats a dead turn.
+        if _model_matches(model, _BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS):
+            return {"thinking": {"type": "between_tools"}}
         return {"thinking": {"type": "disabled"}} if _accepts_thinking_disable(model) else {}
     if "haiku" in model.lower():
         return {}
@@ -847,47 +865,3 @@ def create_anthropic_message(
                 "%sAnthropic Messages stream unavailable; falling back to messages.create(): %s", log_prefix, exc
             )
     return messages_api.create(**{k: v for k, v in api_kwargs.items() if k != "stream"})
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import Path  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
-import copy  # noqa: F401,E402
-import json  # noqa: F401,E402
-import os  # noqa: F401,E402
-import platform  # noqa: F401,E402
-import secrets  # noqa: F401,E402
-import stat  # noqa: F401,E402
-from urllib.parse import urlparse  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'CredentialPersistError': ('agent.anthropic_credentials', 'CredentialPersistError'),
-    'base_url_host_matches': ('utils', 'base_url_host_matches'),
-    'base_url_hostname': ('utils', 'base_url_hostname'),
-    'claude_code_credentials_path': ('agent.anthropic_credentials', 'claude_code_credentials_path'),
-    'get_hermes_home': ('hermes_constants', 'get_hermes_home'),
-    'is_claude_code_token_valid': ('agent.anthropic_credentials', 'is_claude_code_token_valid'),
-    'is_rotation_consumed_uncommitted': ('agent.anthropic_credentials', 'is_rotation_consumed_uncommitted'),
-    'mark_rotation_consumed_uncommitted': ('agent.anthropic_credentials', 'mark_rotation_consumed_uncommitted'),
-    'read_claude_code_credentials': ('agent.anthropic_credentials', 'read_claude_code_credentials'),
-    'read_hermes_oauth_credentials': ('agent.anthropic_credentials', 'read_hermes_oauth_credentials'),
-    'refresh_anthropic_oauth_pure': ('agent.anthropic_credentials', 'refresh_anthropic_oauth_pure'),
-    'resolve_anthropic_token': ('agent.anthropic_credentials', 'resolve_anthropic_token'),
-    'run_hermes_oauth_login_pure': ('agent.anthropic_credentials', 'run_hermes_oauth_login_pure'),
-    'run_oauth_setup_token': ('agent.anthropic_credentials', 'run_oauth_setup_token'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

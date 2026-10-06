@@ -42,9 +42,8 @@ def _compressor_ctor_default(name: str, fallback: Any) -> Any:
 def _default_threshold_tokens_cap():
     """The cap a fresh agent build installs when the key is absent: DEFAULT_CONFIG's
     ``compression.threshold_tokens``. agent_init reads the MERGED config, so "no key in
-    config.yaml" still installs the 256K default at construction; key removal here must
-    restore that same value. ``None`` instead would re-derive the uncapped ratio trigger
-    (500K on a 1M-window model) and the default cap would be gone after the first turn
+    config.yaml" installs that default at construction; key removal here must restore the
+    same value, or a live session would diverge from a rebuilt one after the first turn
     (#117093). An explicit ``threshold_tokens: null`` stays ratio-only — the key is present,
     so ``.get`` returns it untouched."""
     from hermes_cli.config_defaults import DEFAULT_CONFIG
@@ -245,8 +244,13 @@ def _compress_session_history(
     # RPC thread: bind the session cwd, or the boundary prompt rebuild resolves the backend's cwd and
     # persists a prompt every other process then rejects as stale runtime (fresh build, no tools pin).
     tokens = _set_session_context(session.get("session_key") or "", cwd=_session_cwd(session))
+    def snapshot_is_current():
+        with session["history_lock"]:
+            return int(session.get("history_version", 0)) == history_version
+
     try:
-        result = compress_now(agent, before_messages, request, task_id=session.get("session_key") or "default")
+        result = compress_now(agent, before_messages, request, task_id=session.get("session_key") or "default",
+                              snapshot_is_current=snapshot_is_current)
     finally:
         _clear_session_context(tokens)
     if result.status == "preview":

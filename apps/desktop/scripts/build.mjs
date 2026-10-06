@@ -10,6 +10,9 @@ export function buildSourceDesktop({ source = repoRoot, icons, run = execFileSyn
   const app = join(source, 'apps/desktop')
   const step = (script, args = []) => run(process.execPath, [join(source, script), ...args], { cwd: app, stdio: 'inherit' })
   step('apps/desktop/scripts/assert-root-install.mjs')
+  // Stamp before the flavored icons land: they overwrite committed files, and
+  // the stamp's git check would then call the checkout dirty.
+  step('apps/desktop/scripts/write-build-stamp.mjs')
   // Default-brand icons are committed; only flavored release builds pass --icons.
   icons = resolve(icons ?? source)
   if (icons !== source) {
@@ -17,7 +20,8 @@ export function buildSourceDesktop({ source = repoRoot, icons, run = execFileSyn
     // prepared pixels; do not create another Python environment to redraw them.
     cpSync(join(icons, 'apps/desktop/assets'), join(app, 'assets'), { recursive: true })
   }
-  step('apps/desktop/scripts/write-build-stamp.mjs')
+  // locales/_keys.desktop.json is a committed artifact (i18n-keys.test.mjs pins it to en.ts);
+  // the build must not write into the checkout — a dirty tree breaks `hermes update`.
   step('apps/desktop/scripts/stage-native-deps.mjs')
   step('scripts/build/desktop.mjs', ['--source', source, '--icons', icons,
     '--stamp', join(app, 'build/install-stamp.json'), '--native-deps', join(app, 'build/native-deps'), '--out', join(app, 'dist')])

@@ -114,3 +114,23 @@ def test_unconfigured_or_disabled_features_are_quiet(configured_update, capfd):
         assert "MCP servers" not in out
         assert "Feishu / Lark:" not in out
         assert not (root / ".update-incomplete").exists()
+
+
+def test_update_installs_the_extras_configured_features_need(monkeypatch, tmp_path, capsys):
+    """#124228: an enabled platform's SDK joins the environment instead of only a warning."""
+    from hermes_cli import main_install_repair as repair
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "x"\nversion = "0"\n'
+        "[project.optional-dependencies]\ndiscord = []\ngoogle-chat = []\nmcp = []\n", encoding="utf-8")
+    monkeypatch.setattr(repair, "_configured_features_missing_deps", lambda: [
+        ("Discord", "discord hint", "discord"), ("Google Chat", "chat hint", "google_chat"),
+        ("IRC", "irc hint", "irc"), ("MCP servers", "mcp hint", "mcp")])
+    calls = []
+    monkeypatch.setattr(pm, "sync_venv", lambda extras, **kwargs: calls.append((extras, kwargs)))
+    repair._install_configured_features_missing_deps(tmp_path)
+    assert calls == [(["discord", "google-chat", "mcp"],
+                      {"explicit": True, "project_root": tmp_path, "evict_incompatible_plugins": True})]
+    out = capsys.readouterr().out
+    assert "IRC: irc hint" in out
+    assert "Discord" not in out and "MCP servers" not in out

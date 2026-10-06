@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta
 
 from hermes_cli.logs import (
+    LOG_FILES,
     _extract_level,
     _extract_logger_name,
     _line_matches_component,
@@ -10,6 +11,7 @@ from hermes_cli.logs import (
     _parse_line_timestamp,
     _parse_since,
     _read_last_n_lines,
+    _read_tail,
 )
 
 # ---------------------------------------------------------------------------
@@ -35,6 +37,15 @@ class TestParseLineTimestamp:
     def test_standard_format(self):
         ts = _parse_line_timestamp("2026-04-11 10:23:45 INFO gateway.run: msg")
         assert ts == datetime(2026, 4, 11, 10, 23, 45)
+
+    def test_iso_t_separated_update_and_handoff_stamps(self):
+        # posix.sh: date +%Y-%m-%dT%H:%M:%S%z; windows.ps1: yyyy-MM-ddTHH:mm:ssK
+        assert _parse_line_timestamp("2026-09-29T21:36:18+08:00 update| step done") == datetime(
+            2026, 9, 29, 21, 36, 18
+        )
+        assert _parse_line_timestamp("2026-09-29T21:36:18Z step stalled") == datetime(
+            2026, 9, 29, 21, 36, 18
+        )
 
 class TestExtractLevel:
     def test_info(self):
@@ -121,6 +132,99 @@ class TestReadTail:
         assert len(result) == 5
         assert "line 9" in result[-1]
 
+    def test_unstamped_lines_share_the_verdict_of_the_record_above(self, tmp_path):
+        old = (datetime.now() - timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S,000")
+        new = datetime.now().strftime("%Y-%m-%d %H:%M:%S,000")
+        frames = ["Traceback (most recent call last):\n", '  File "x.py", line 1, in f\n']
+        log_file = tmp_path / "errors.log"
+        log_file.write_text("".join([
+            "orphan tail of a record that started before the window\n",
+            f"{old} ERROR gateway.run: old failure\n", *frames, "ValueError: old\n",
+            f"{new} INFO tools.x: multi-line info\n", "  info continuation\n",
+            f"{new} ERROR gateway.run: new failure\n", *frames, "ValueError: new\n",
+        ]))
+        since = datetime.now() - timedelta(hours=1)
+        from hermes_logging import COMPONENT_PREFIXES
+
+        def read(**filters):
+            return "".join(_read_tail(log_file, 50, has_filters=True, **filters))
+
+        assert read(since=since) == "".join([
+            f"{new} INFO tools.x: multi-line info\n", "  info continuation\n",
+            f"{new} ERROR gateway.run: new failure\n", *frames, "ValueError: new\n",
+        ])
+        new_failure = "".join([f"{new} ERROR gateway.run: new failure\n", *frames, "ValueError: new\n"])
+        assert read(since=since, min_level="WARNING") == new_failure
+        assert read(since=since, component_prefixes=COMPONENT_PREFIXES["gateway"]) == new_failure
+        # No time/level filter: the orphan lines before the first stamp stay visible.
+        assert read(session_filter="orphan") == "orphan tail of a record that started before the window\n"
+
 # ---------------------------------------------------------------------------
 # LOG_FILES registry
 # ---------------------------------------------------------------------------
+
+def _python_log_line(logger_name: str) -> str:
+    import logging
+
+    from agent.redact import RedactingFormatter
+    from hermes_logging import _LOG_FORMAT
+
+    record = logging.LogRecord(logger_name, logging.WARNING, __file__, 1, "sample", None, None)
+    record.session_tag = ""
+    return RedactingFormatter(_LOG_FORMAT).format(record)
+
+
+def _mcp_output_line() -> str:
+    import io
+
+    from tools.mcp_tool_config import _StderrTee
+
+    log = io.StringIO()
+    tee = _StderrTee(log)
+    tee.sink.write(b"server says hello\n")
+    tee.close()
+    return log.getvalue()
+
+
+def _update_log_line() -> str:
+    """The update.log run banner hermes_cli.main_dashboard writes on every update."""
+    import datetime as dt
+
+    return f"\n=== hermes update started {dt.datetime.now().isoformat(timespec='seconds')} ===\n".lstrip()
+
+
+def _handoff_log_line() -> str:
+    """A desktop-update-handoff.log line from scripts/desktop-update/posix.sh's log()."""
+    import subprocess
+
+    line = subprocess.run(
+        ["bash", "-c", 'log() { echo "$(date +%Y-%m-%dT%H:%M:%S%z) $1"; }; log "update| → Checking if desktop app needs rebuilding..."'],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    return line.rstrip("\n")
+
+
+def _log_file_samples() -> dict:
+    """One line per LOG_FILES entry, produced by that file's real writer where Python can run it."""
+    return {
+        "agent": _python_log_line("run_agent"),
+        "errors": _python_log_line("run_agent"),
+        "gateway": _python_log_line("gateway.run"),
+        "gui": _python_log_line("hermes_cli.web_server"),
+        # Written by TypeScript; apps/desktop/electron/desktop-log-line.test.ts pins the same shape.
+        "desktop": "2026-09-28 13:18:46,062 [hermes] [boot] ready",
+        "mcp": _mcp_output_line(),
+        # update.log mirrors raw update output; handoff lines carry the shim's ISO-8601 stamp.
+        "update": _update_log_line(),
+        "handoff": _handoff_log_line(),
+    }
+
+
+def test_every_log_file_writes_a_stamp_hermes_logs_since_can_read():
+    samples = _log_file_samples()
+    assert set(samples) == set(LOG_FILES), "add a real sample line for each new LOG_FILES entry"
+    for name, line in samples.items():
+        assert _parse_line_timestamp(line) is not None, (name, line)
+    # gateway.error.log (launchd stderr, not in LOG_FILES) uses the shared stamper.
+    from hermes_cli.stderr_timestamp import stamp_line
+    assert _parse_line_timestamp(stamp_line("raw gateway stderr")) is not None

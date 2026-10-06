@@ -83,6 +83,44 @@ try {
 '@ -ErrorAction Stop
     $script:Win32 = $true
 } catch { $script:Win32 = $false }
+# Console selection must never hold the hand-off (#103222). The console is
+# hidden by design (wrapHandoffForDetachedConsole), but an older Desktop or a
+# manual run can leave it visible, and conhost blocks every write to it while a
+# selection is active: the child output replayed after `hermes update` exited
+# stalled on Write-Host until the user pressed Esc, and the result, marker
+# cleanup and relaunch waited behind it. QuickEdit goes off for the run (so a
+# stray click cannot start a selection) and the console echo is skipped while
+# one is active; the log file keeps every line either way.
+try {
+    Add-Type -Namespace HermesHandoff -Name ConsoleInput -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential)] public struct SelectionInfo { public uint Flags; public uint Anchor; public ulong Window; }
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+static extern IntPtr CreateFile(string name, uint access, uint share, IntPtr attributes, uint disposition, uint flags, IntPtr template);
+[DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+[DllImport("kernel32.dll")] static extern bool GetConsoleMode(IntPtr handle, out uint mode);
+[DllImport("kernel32.dll")] static extern bool SetConsoleMode(IntPtr handle, uint mode);
+[DllImport("kernel32.dll")] static extern bool GetConsoleSelectionInfo(out SelectionInfo info);
+
+// stdin is NUL under the Desktop spawn, so open the console input buffer itself.
+static uint? Swap(Func<uint, uint> change) {
+    IntPtr input = CreateFile("CONIN$", 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+    if (input == new IntPtr(-1)) return null;
+    try {
+        uint mode;
+        if (!GetConsoleMode(input, out mode) || !SetConsoleMode(input, change(mode))) return null;
+        return mode;
+    } finally { CloseHandle(input); }
+}
+// ENABLE_EXTENDED_FLAGS (0x80) makes conhost honour the cleared ENABLE_QUICK_EDIT_MODE (0x40).
+public static uint? DisableQuickEdit() { return Swap(mode => (mode & ~0x40u) | 0x80u); }
+public static void Restore(uint mode) { Swap(_ => mode); }
+public static bool Selecting() {
+    SelectionInfo info;
+    return GetConsoleSelectionInfo(out info) && (info.Flags & 1u) != 0; // CONSOLE_SELECTION_IN_PROGRESS
+}
+'@ -ErrorAction Stop
+    $script:ConsoleInput = $true
+} catch { $script:ConsoleInput = $false }
 # Render UTF-8 glyphs (checkmarks, arrows) correctly in our own console echo
 # too; the legacy conhost default OEM codepage shows them as mojibake.
 try {
@@ -103,6 +141,7 @@ $script:UiStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 function Write-HandoffLog([string]$Message) {
     $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
     try { Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8 } catch {}
+    if ($script:ConsoleInput -and [HermesHandoff.ConsoleInput]::Selecting()) { return }
     Write-Host $line
 }
 
@@ -1210,6 +1249,26 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     return @{ Code = $code; Output = $all; TreeQuiesced = (-not $stalled -or $proc.HasExited); StartedAfterJobAssignment = $true }
 }
 
+# `hermes update` can COMPLETE (its output carries "✓ Update complete!") and
+# still be killed with the idle-watchdog sentinel 124: the post-update phase
+# (gateway restart hand-off) stayed alive and silent past the ceiling, so
+# Invoke-HermesStep terminated the tree (#96205). The install is done; failing
+# would keep the old Desktop and a legacy install would re-run the whole update.
+# Surface success so the hand-off verifies, restores the gateways and relaunches.
+# Only 124 is remapped, and never when anything after the banner reports a
+# failure: the restart/verify phase prints "✗ Update not complete", "Update
+# incomplete — …", "✗ <unit> failed to come back after restart" or
+# "verification incomplete" there. \u2717 (✗) stays an escape: Windows
+# PowerShell reads this BOM-less script as ANSI, never as UTF-8.
+function Resolve-HermesUpdateOutcome($StepResult) {
+    $banner = if ($StepResult.Output) { $StepResult.Output.LastIndexOf('Update complete!') } else { -1 }
+    if ($StepResult.Code -eq 124 -and $banner -ge 0 -and $StepResult.Output.Substring($banner) -notmatch 'incomplete|not complete|\u2717') {
+        Write-HandoffLog "update completed before the idle watchdog killed its finalizing step (exit 124); treating it as success, not retrying (#96205)"
+        $StepResult.Code = 0
+    }
+    return $StepResult
+}
+
 function Set-InstallRootCurrentDirectory([string]$Root) {
     $resolved = [System.IO.Path]::GetFullPath($Root)
     [Environment]::CurrentDirectory = $resolved
@@ -1465,6 +1524,7 @@ exit 3
     exit 0
 }
 
+$savedConsoleInputMode = if ($script:ConsoleInput) { [HermesHandoff.ConsoleInput]::DisableQuickEdit() } else { $null }
 try {
     New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
     Remove-Item -LiteralPath $ResultPath -Force -ErrorAction SilentlyContinue
@@ -1598,6 +1658,7 @@ try {
     Publish-UiProgress "Updating code and dependencies"
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
+    $res = Resolve-HermesUpdateOutcome $res
 
     # Retry only the identified pre-PM update-boundary transition. Current
     # update/build failures propagate and must not trigger another owner.
@@ -1611,6 +1672,7 @@ try {
         # legacy one being converted until this run succeeds.
         $updateArgs = $runtimeArgs + @('update', '--yes') + $gatewayArg + $forceArg + $targetArgs
         $res = Invoke-HermesStep $pythonExe $updateArgs 'update'
+        $res = Resolve-HermesUpdateOutcome $res
     }
 
     # Pre-PM updates reported a successful exit with a failed build warning.
@@ -1633,7 +1695,7 @@ try {
         $verify = Invoke-HermesStep $verifyCommand[0] $verifyArgs 'verify'
         if ($verify.Code -ne 0) {
             $finalCode = 8
-            $finalMsg = "The updated Hermes runtime or Desktop build failed verification. Repair the installation and review antivirus quarantine before retrying."
+            $finalMsg = "Hermes was updated, but the new Desktop build could not be verified. Nothing was removed. If Hermes does not start normally, run 'hermes desktop --force-build' in a terminal to rebuild it."
             Write-HandoffLog $finalMsg
             exit $finalCode
         }
@@ -1720,4 +1782,5 @@ try {
             Close-ProgressWindow
         }
     }
+    if ($null -ne $savedConsoleInputMode) { [HermesHandoff.ConsoleInput]::Restore($savedConsoleInputMode) }
 }

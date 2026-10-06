@@ -52,34 +52,3 @@ def summarize_server(name: str, cfg: dict, plugin: str | None = None) -> Dict[st
         "tools": cfg.get("tools"),
         "source": "plugin" if plugin is not None else "config",
         "plugin": plugin}
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Optional  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
-
-def resolve_profile(rid, params, err_fn) -> Tuple[Optional[Any], Optional[dict]]:
-    """Resolve the optional ``profile`` param to a HERMES_HOME override token.
-
-    Returns ``(token, error)``: ``token`` is None for the launch profile (no
-    override) or an opaque reset token; ``error`` is a JSON-RPC error dict
-    (built via ``err_fn``) when the named profile doesn't exist. Callers reset
-    ``token`` in a finally via :func:`reset_profile`.
-    """
-    profile = str(params.get("profile") or "").strip()
-    if not profile:
-        return None, None
-    from hermes_cli.profiles import get_profile_dir
-    from hermes_constants import set_hermes_home_override
-
-    try:
-        profile_dir = get_profile_dir(profile)
-    except ValueError:
-        return None, err_fn(rid, 4064, f"profile '{profile}' not found")
-    if not profile_dir or not profile_dir.is_dir():
-        return None, err_fn(rid, 4064, f"profile '{profile}' not found")
-    return set_hermes_home_override(str(profile_dir)), None
-# ---- END PLUGIN-COMPAT ----

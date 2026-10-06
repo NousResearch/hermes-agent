@@ -376,7 +376,7 @@ def _nous_shared_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
         return
     with _file_lock(
         lock_path, _nous_shared_lock_holder, timeout_seconds,
-        "Timed out waiting for shared Nous auth lock"):
+        f"Timed out waiting for shared Nous auth lock ({lock_path})"):
         yield
 
 
@@ -1327,7 +1327,11 @@ def _pool_first_oauth_status(
                         "logged_in": True, "auth_store": str(_auth_file_path()),
                         "last_refresh": getattr(entry, "last_refresh", None),
                         "auth_mode": auth_mode,
-                        "source": f"pool:{getattr(entry, 'label', 'unknown')}", "api_key": api_key}
+                        "source": f"pool:{getattr(entry, 'label', 'unknown')}", "api_key": api_key,
+                        # The host this entry's key belongs to, so a caller never pairs it with
+                        # another provider default (#121486).
+                        "base_url": str(getattr(entry, "runtime_base_url", None)
+                                        or getattr(entry, "base_url", None) or "").rstrip("/")}
             if on_pool_miss is not None and (degraded := on_pool_miss()):
                 return degraded
     except Exception:
@@ -1338,7 +1342,7 @@ def _pool_first_oauth_status(
             "logged_in": True, "auth_store": str(_auth_file_path()),
             "last_refresh": creds.get("last_refresh"),
             "auth_mode": creds.get("auth_mode"), "source": creds.get("source"),
-            "api_key": creds.get("api_key")}
+            "api_key": creds.get("api_key"), "base_url": creds.get("base_url") or ""}
     except AuthError as exc:
         return {"logged_in": False, "auth_store": str(_auth_file_path()), "error": str(exc)}
 
@@ -1476,6 +1480,7 @@ def _pick_nous_model_after_login(
         get_curated_nous_model_ids,
         check_nous_free_tier,
         partition_nous_models_by_tier,
+        union_with_nous_on_sale_models,
         union_with_portal_free_recommendations,
         union_with_portal_paid_recommendations,
     )
@@ -1505,6 +1510,9 @@ def _pick_nous_model_after_login(
             union_with_portal_free_recommendations if free_tier
             else union_with_portal_paid_recommendations)
         model_ids, pricing = union(model_ids, pricing, _portal)
+        if not free_tier:
+            # Paid users also see every model on sale right now (same rule as `hermes model`).
+            model_ids = union_with_nous_on_sale_models(model_ids, pricing)
         _before_policy = model_ids
         model_ids = restrict_to_nous_policy(model_ids, _policy_allowed, rescue_empty=True)
         _policy_narrowed = model_ids != _before_policy

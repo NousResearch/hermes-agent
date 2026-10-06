@@ -247,9 +247,6 @@ export default defineConfig(({ command }) => ({
     host: '127.0.0.1',
     port: 5174,
     strictPort: true,
-    warmup: {
-      clientFiles: ['./src/components/intro-reveal/intro-root.tsx']
-    },
     fs: {
       allow: fsAllow
     }

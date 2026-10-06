@@ -24,6 +24,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { RELAY_DELIVER_TIMEOUT_MS } from './relay-budget'
 import type { ProfileRoute } from './types'
 
 const { clearBotAttentionMock, hostMock, noteBotAttentionMock, UnboundedCache } = vi.hoisted(() => ({
@@ -34,6 +35,7 @@ const { clearBotAttentionMock, hostMock, noteBotAttentionMock, UnboundedCache } 
       get: () => {
         try {
           const raw = window.localStorage.getItem('hermes.desktop.pluginDecisions.v2')
+
           return raw ? (JSON.parse(raw) as Record<string, boolean>) : {}
         } catch {
           return {}
@@ -54,7 +56,12 @@ const { clearBotAttentionMock, hostMock, noteBotAttentionMock, UnboundedCache } 
   }
 }))
 
-vi.mock('@hermes/plugin-sdk', () => ({ host: hostMock, LruCache: UnboundedCache }))
+// relay.ts imports ./shared, which holds the $pendingBotOpen atom.
+vi.mock('@hermes/plugin-sdk', async () => {
+  const { atom } = await import('nanostores')
+
+  return { atom, host: hostMock, LruCache: UnboundedCache }
+})
 
 vi.mock('./data', () => ({
   botHandle: (name: string) => (name === 'default' ? 'hermes' : name),
@@ -65,11 +72,15 @@ vi.mock('./data', () => ({
 const RELAY_PUSH_DEBOUNCE_MS = 250
 const RELAY_DRAIN_INTERVAL_MS = 30_000
 
-const route = (id: string): ProfileRoute => ({
+const route = (
+  id: string,
+  options: { mode?: ProfileRoute['mode']; primary?: true; profile?: string } = {}
+): ProfileRoute => ({
   connectionId: id,
-  mode: 'remote',
-  profile: 'default',
-  targetProfile: 'default'
+  mode: options.mode ?? 'remote',
+  ...(options.primary === true ? { primary: true } : {}),
+  profile: options.profile ?? 'default',
+  targetProfile: options.profile ?? 'default'
 })
 
 /** Every RPC through one table, recording what each connection was asked. */
@@ -147,6 +158,7 @@ beforeEach(() => {
   hostMock.profileRoutes = vi.fn(async () => [route('a'), route('b')])
   hostMock.requestProfile = vi.fn(async () => ({}))
   hostMock.retainProfileSocket = vi.fn(() => vi.fn())
+  delete hostMock.connections
 })
 
 afterEach(() => {
@@ -352,6 +364,66 @@ describe('the 30s drain does not open a gateway socket with nothing to deliver (
 })
 
 describe('relay-route socket retention (#93594)', () => {
+  it('does not poll or retain the non-primary local source of a remote-primary Desktop', async () => {
+    hostMock.profileRoutes = vi.fn(async () => [
+      route('remote-primary', { primary: true }),
+      route('remote-primary', { primary: true, profile: 'research' }),
+      route('local', { mode: 'local' }),
+      route('local', { mode: 'local', profile: 'research' })
+    ])
+    const pins = trackRetention()
+    const calls = respondWith(() => ({ envelopes: [] }))
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    await pushAndSettle()
+
+    // Only the sole remaining connection's one-time roster clear goes out; the local source is never polled.
+    expect(calls).toEqual([{ connectionId: 'remote-primary', method: 'bot_relay.roster.sync', params: { agents: [] } }])
+    expect(pins).toHaveLength(0)
+
+    stopBotRelay()
+  })
+
+  it('preserves local-primary, multi-remote, and fail-open peer sets', async () => {
+    for (const routes of [
+      [route('local', { mode: 'local', primary: true }), route('remote-peer')],
+      [route('remote-primary', { primary: true }), route('remote-peer')],
+      [route('remote-primary'), route('local', { mode: 'local' })],
+      [route('remote-primary', { primary: true }), route('local', { mode: 'local', primary: true })],
+      [
+        route('remote-primary', { primary: true }),
+        route('remote-primary', { profile: 'research' }),
+        route('local', { mode: 'local' })
+      ],
+      [
+        route('remote-primary', { primary: true }),
+        route('local', { mode: 'local' }),
+        route('unexpected-local', { mode: 'local' })
+      ],
+      [
+        route('remote-primary', { primary: true }),
+        { ...route('remote-peer'), primary: false } as unknown as ProfileRoute,
+        route('local', { mode: 'local' })
+      ]
+    ]) {
+      hostMock.profileRoutes = vi.fn(async () => routes)
+      const pins = trackRetention()
+      const calls = respondWith(() => ({ envelopes: [] }))
+      const { startBotRelay, stopBotRelay } = await loadRelay()
+
+      startBotRelay()
+      await vi.advanceTimersByTimeAsync(0)
+      await pushAndSettle()
+
+      expect(new Set(calls.map(call => call.connectionId))).toEqual(new Set(routes.map(item => item.connectionId)))
+      expect(pins.map(pin => pin.route.connectionId)).toEqual([...new Set(routes.map(item => item.connectionId))])
+
+      stopBotRelay()
+    }
+  })
+
   it('pins each connection ONCE across many drain ticks', async () => {
     const pins = trackRetention()
 
@@ -446,6 +518,147 @@ describe('relay-route socket retention (#93594)', () => {
 })
 
 describe('the roster loop pushes the OTHER connections’ agents', () => {
+  it.each([false, true])('discards a stopped roster fetch (restart=%s)', async restart => {
+    let release!: () => void
+
+    const held = new Promise<void>(resolve => {
+      release = resolve
+    })
+
+    let first = true
+    let failB = false
+
+    const calls = respondWith(async call => {
+      if (call.method === 'profiles.list') {
+        if (call.connectionId === 'b' && failB) {
+          throw new Error('temporary profile lookup failure')
+        }
+
+        if (call.connectionId === 'b' && first) {
+          first = false
+          await held
+
+          return { profiles: [{ name: 'stale' }] }
+        }
+
+        return { profiles: [{ name: 'current' }] }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(calls.filter(call => call.method === 'profiles.list')).toHaveLength(2)
+    stopBotRelay()
+
+    if (restart) {
+      startBotRelay()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(calls.filter(call => call.method === 'bot_relay.roster.sync')).toHaveLength(2)
+    }
+
+    release()
+    await vi.advanceTimersByTimeAsync(0)
+    const syncs = calls.filter(call => call.method === 'bot_relay.roster.sync')
+    expect(syncs).toHaveLength(restart ? 2 : 0)
+    expect(
+      syncs.every(call => (call.params.agents as Array<{ profile: string }>).every(row => row.profile === 'current'))
+    ).toBe(true)
+
+    if (restart) {
+      // A late old response must not poison the new run's fallback cache.
+      failB = true
+      await vi.advanceTimersByTimeAsync(60_000)
+      const later = calls.filter(call => call.method === 'bot_relay.roster.sync').slice(2)
+      expect(later).toHaveLength(2)
+      expect(
+        later.every(call => (call.params.agents as Array<{ profile: string }>).every(row => row.profile === 'current'))
+      ).toBe(true)
+    }
+
+    stopBotRelay()
+  })
+
+  it('a stale run finishing does not free the restarted run’s busy flag', async () => {
+    const holds: Record<string, { release: () => void; promise: Promise<void> }> = {}
+
+    for (const id of ['stale', 'current']) {
+      let release!: () => void
+
+      const promise = new Promise<void>(resolve => {
+        release = resolve
+      })
+
+      holds[id] = { promise, release }
+    }
+
+    const seen: Record<string, number> = { a: 0, b: 0 }
+
+    const calls = respondWith(async call => {
+      if (call.method === 'profiles.list') {
+        seen[call.connectionId] += 1
+
+        // Run 1 parks on b, the restarted run parks on a.
+        if (call.connectionId === 'b' && seen.b === 1) {
+          await holds.stale.promise
+        } else if (call.connectionId === 'a' && seen.a === 2) {
+          await holds.current.promise
+        }
+
+        return { profiles: [{ name: call.connectionId }] }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+    const listCount = () => calls.filter(call => call.method === 'profiles.list').length
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    stopBotRelay()
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(listCount()).toBe(4)
+
+    // The stale run lands while the restarted run is still in flight; the
+    // next tick must still see that run's busy flag, not start a third.
+    holds.stale.release()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(listCount()).toBe(4)
+
+    holds.current.release()
+    await vi.advanceTimersByTimeAsync(0)
+    stopBotRelay()
+  })
+
+  it('does not clear a sole gateway after stopping during label lookup', async () => {
+    let release!: () => void
+
+    const held = new Promise<void>(resolve => {
+      release = resolve
+    })
+
+    hostMock.profileRoutes = vi.fn(async () => [route('a')])
+    hostMock.connections = vi.fn(async () => {
+      await held
+
+      return []
+    })
+    const calls = respondWith(() => ({}))
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(hostMock.connections).toHaveBeenCalled()
+    stopBotRelay()
+    release()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(calls.filter(call => call.method === 'bot_relay.roster.sync')).toEqual([])
+    delete hostMock.connections
+  })
+
   it('gives each gateway a union roster that excludes its own agents', async () => {
     const calls = respondWith(call => {
       if (call.method === 'profiles.list') {
@@ -639,6 +852,13 @@ describe('the drain loop wires drain → deliver → reply', () => {
       connectionId: 'b',
       params: { message: 'status?', profile: 'ops' }
     })
+
+    // #93911: the deliver deadline must outlive the backend's own turn bound.
+    const deliverCall = (hostMock.requestProfile as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([, method]) => method === 'bot_relay.deliver'
+    )
+
+    expect(deliverCall?.[3]).toBe(RELAY_DELIVER_TIMEOUT_MS)
     expect(calls.find(call => call.method === 'bot_relay.reply')).toMatchObject({
       connectionId: 'a',
       params: { id: 'env-1', reply: 'all green' }

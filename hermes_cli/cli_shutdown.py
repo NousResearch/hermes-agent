@@ -302,22 +302,61 @@ def _wait_for_oneshot_background_completions(cli) -> None:
 
 
 def _finalize_single_query(cli) -> None:
-    """Close one-shot CLI resources before releasing the active session lease."""
-    from cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _wait_for_oneshot_background_completions
+    """Settle the session, then release its lease, then linger as a bystander.
+
+    Three phases, in this order:
+
+    1. **Session-owned settlement** — the durable flush (transcript retry, token
+       drain, ``end_session``), the finalize hook, and memory-provider session
+       finalization. Providers finalize THIS session's remote state at
+       ``on_session_end`` (OpenViking synchronously commits ``sessions/{sid}``,
+       Supermemory flushes pending turns stamped with the session id), so this
+       belongs inside ownership — post-release it would run while a successor
+       may already be mid-turn on the session. The flush runs first: memory
+       shutdown can issue aux-LLM calls and nothing after it may fail in a way
+       that loses the turn (#88583). Settlement is best-effort by design:
+       failures are logged and the release still happens, because the failure
+       mode to avoid is an exited process pinning the lease — a dangling open
+       row is recoverable (session_recovery reaps stale rows), a wedged lease
+       is not.
+    2. **Ownership handoff** — release the active-session lease. Every turn of
+       the run (main turn, kanban goal loop, notify-completion follow-ups) has
+       finished and the success path has no session-owned writes left, so a
+       waiting delivery may acquire and resume the session immediately:
+       releasing only at process exit let an alive-but-idle one-shot refuse
+       deliveries for the whole exit linger (bounded, minutes) after its turn
+       had ended (#118826 / #122770).
+    3. **Process-only work, lease-free** — the bounded linger for
+       notify_on_complete children (pipe drain, the boundary the one-shot path
+       itself declares "NOT part of the spawner's delivery", #113608) and
+       resource teardown. ``_run_cleanup``'s memory-shutdown call is idempotent
+       (``_memory_provider_shutdown``), so its post-release repeat is a no-op;
+       neither it nor the linger touches session rows.
+
+    Releasing between settlement and the linger is what prevents the handoff race:
+    a successor that acquires and reopens the session can never receive this
+    process's stale ``cli_close`` end-stamp, because phase 1 has already run it.
+    """
+    import cli as cli_module
+    from cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _shutdown_agent_memory_provider, _wait_for_oneshot_background_completions
     try:
-        # Order matters: linger for spawned background work BEFORE any teardown (the
-        # parent owns those children's stdout pipes); then the durable flush, since
-        # memory-provider shutdown inside _run_cleanup can issue aux-LLM calls and
-        # nothing after it may fail in a way that loses the turn.
-        for step, what in (
-            (_wait_for_oneshot_background_completions, "background completion wait"),
-            (_flush_one_shot_session_store, "session store flush"),
-        ):
-            try:
-                step(cli)
-            except Exception:
-                logger.debug("one-shot %s failed", what, exc_info=True)
+        try:
+            _flush_one_shot_session_store(cli)
+        except Exception:
+            logger.debug("one-shot session store flush failed", exc_info=True)
         _notify_single_query_session_finalize(cli)
-        _run_cleanup(notify_session_finalize=False)
+        try:
+            # A failed goal-loop re-init leaves cli.agent None while the agent
+            # that ran the turns is still the module's active ref.
+            _shutdown_agent_memory_provider(getattr(cli, "agent", None) or cli_module._active_agent_ref)
+        except Exception:
+            logger.debug("one-shot memory provider shutdown failed", exc_info=True)
     finally:
+        # Even a failed settlement must not pin the lease: the failure mode to avoid
+        # at all costs is a dead-ish process holding ownership, not a dangling row.
         cli._release_active_session()
+    try:
+        _wait_for_oneshot_background_completions(cli)
+    except Exception:
+        logger.debug("one-shot background completion wait failed", exc_info=True)
+    _run_cleanup(notify_session_finalize=False)

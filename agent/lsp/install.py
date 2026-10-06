@@ -242,9 +242,17 @@ def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> 
     pm = _node_package_manager()
     if pm is None:
         return None
-    # Managed Node first: $HERMES_HOME/node isn't on an arbitrary process's
-    # PATH, so a bare which() would miss the Node that Hermes installed.
+    # npm is Hermes's own PM-managed copy, never the user's; pnpm/yarn are an explicit user choice.
     pm_bin = find_node_executable(pm)
+    if pm_bin is None and pm == "npm":
+        try:
+            import pm as pm_store
+
+            pm_store.ensure("npm")
+            pm_bin = find_node_executable("npm")
+        except Exception as exc:  # noqa: BLE001 — a refused/failed PM install skips this server, never the session
+            logger.warning("[install] cannot install %s: managed npm unavailable (%s)", pkg, exc)
+            return None
     if pm_bin is None:
         # Deliberately no silent fallback to npm: a pnpm/yarn choice is usually a supply-chain policy.
         logger.warning("[install] cannot install %s: lsp.package_manager is %r but no usable %s was found "
@@ -254,7 +262,9 @@ def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> 
     install_targets = [pkg] + list(extra_pkgs or [])
     cmd = [pm_bin, *_NODE_PM_ARGV[pm](str(staging)), *install_targets]
     logger.info("[install] %s %s", pm, " ".join(cmd[1:]))
-    if not _run_installer(pm, pkg, cmd, timeout=300, env=with_hermes_node_path()):
+    from tools.environments.local import hermes_subprocess_env
+    # Package install scripts are third-party code: scrubbed env, never Hermes' credentials.
+    if not _run_installer(pm, pkg, cmd, timeout=300, env=with_hermes_node_path(hermes_subprocess_env())):
         return None
     found = _first_existing(staging / "node_modules" / ".bin" / bin_name)
     if found is not None:
@@ -273,7 +283,9 @@ def _install_go(pkg: str, bin_name: str) -> Optional[str]:
         return None
     staging = hermes_lsp_bin_dir()
     logger.info("[install] go install %s (GOBIN=%s)", pkg, staging)
-    if not _run_installer("go", pkg, [go, "install", pkg], timeout=600, env={**os.environ, "GOBIN": str(staging)}):
+    from tools.environments.local import hermes_subprocess_env
+    env = {**hermes_subprocess_env(), "GOBIN": str(staging)}
+    if not _run_installer("go", pkg, [go, "install", pkg], timeout=600, env=env):
         return None
     bin_path = (staging / bin_name).with_suffix(".exe") if _is_windows() else staging / bin_name
     if bin_path.exists():

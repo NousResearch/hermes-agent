@@ -137,11 +137,9 @@ class TestSubprocessEnvironment:
         env = bu_cli._base_subprocess_env()
         assert env["ANONYMIZED_TELEMETRY"] == "false"
 
-    def test_subprocess_env_strips_parent_python_import_paths(self, monkeypatch):
-        """#83427/#84841/#86006/#86104: the browser-use CLI runs under its
-        own Python — inherited PYTHONPATH/PYTHONHOME pointing at Hermes's
-        venv make it import wrong-ABI C-extensions (pydantic_core) and
-        crash. Both must be stripped; unrelated vars survive."""
+    def test_subprocess_env_replaces_parent_python_import_paths(self, monkeypatch):
+        """#83427/#84841/#86006/#86104: an inherited PYTHONPATH/PYTHONHOME must never reach the
+        harness child; PYTHONPATH is replaced by the harness's own site dir, unrelated vars survive."""
         import sys
         from types import ModuleType
 
@@ -152,10 +150,11 @@ class TestSubprocessEnvironment:
             "KEEP_ME": "yes",
         }
         monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
+        monkeypatch.setattr(bu_cli, "_harness_site_dir", lambda: "/harness-site")
 
         env = bu_cli._base_subprocess_env()
 
-        assert "PYTHONPATH" not in env
+        assert env["PYTHONPATH"] == "/harness-site"
         assert "PYTHONHOME" not in env
         assert env["KEEP_ME"] == "yes"
 
@@ -250,6 +249,33 @@ class TestVaultSupervisorAttach:
 
         assert result["success"] is True
         assert _fake_supervisor_registry == [("t-vault", "ws://127.0.0.1:47000/devtools/browser/t-vault")]
+
+
+class TestBackendSwapRetargetsDaemons:
+    def test_browser_swap_restarts_every_daemon_on_the_new_endpoint(self, tmp_path, monkeypatch):
+        """/browser connect|disconnect swap the endpoint inside cleanup_all_browsers(). The harness daemon
+        latches BU_CDP_* when it starts and outlives every call, so without a stop there every later
+        browser_exec, named or not, kept driving the browser from before the swap."""
+        from tools.browser_tool_lifecycle import cleanup_all_browsers
+
+        # Like browser-harness: one daemon per BU_NAME latches its first endpoint; --reload stops it.
+        cli = _fake_cli(tmp_path, f'''
+latch="{tmp_path}/daemon-${{BU_NAME:-default}}"
+if [ "${{1:-}}" = "--reload" ]; then rm -f "$latch"; exit 0; fi
+cat > /dev/null
+[ -f "$latch" ] || echo "$BU_CDP_URL" > "$latch"
+cat "$latch"
+''')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        monkeypatch.setattr("tools.browser_tool_cdp._resolve_cdp_override", lambda url: url)
+        drive = lambda **kw: json.loads(bu_cli.browser_exec("print(1)", task_id="t-swap", **kw))["output"].strip()
+
+        monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9400")
+        assert drive() == drive(session="research") == "http://127.0.0.1:9400"
+
+        cleanup_all_browsers()
+        monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9401")
+        assert drive() == drive(session="research") == "http://127.0.0.1:9401"
 
 
 class TestVaultEgressRedaction:

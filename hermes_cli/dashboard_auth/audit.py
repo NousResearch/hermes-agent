@@ -14,6 +14,8 @@ from typing import Any
 
 _log = logging.getLogger(__name__)
 _write_lock = threading.Lock()
+_MAX_FIELD_LENGTH = 256
+_TRUNCATION_MARKER = "...[truncated]"
 
 # Field names that must never appear in the log raw; matching kwargs are dropped.
 _REDACTED_FIELDS: frozenset = frozenset({
@@ -49,26 +51,31 @@ def _resolve_log_path() -> Path:
     return get_hermes_home() / "logs" / "dashboard-auth.log"
 
 
+def _bounded_value(value: Any) -> Any:
+    """Bound strings, including nested values and non-JSON object representations."""
+    if isinstance(value, dict):
+        return {k: _bounded_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_bounded_value(v) for v in value]
+    if not isinstance(value, (str, int, float, bool, type(None))):
+        value = repr(value)
+    if isinstance(value, str) and len(value) > _MAX_FIELD_LENGTH:
+        return value[:_MAX_FIELD_LENGTH - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
+    return value
+
+
 def audit_log(event: AuditEvent, **fields: Any) -> None:
     """Append one event; token-like fields dropped, log dir created. Write failures are logged at
     WARNING but never raise — auth must not fail because the audit logger broke."""
-    entry = {
-        "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
-        "event": event.value,
-        **{k: v for k, v in fields.items() if k not in _REDACTED_FIELDS}}
-    line = json.dumps(entry, separators=(",", ":")) + "\n"
-    path = _resolve_log_path()
     try:
+        entry = {
+            "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "event": event.value,
+            **{k: _bounded_value(v) for k, v in fields.items() if k not in _REDACTED_FIELDS}}
+        line = json.dumps(entry, separators=(",", ":")) + "\n"
+        path = _resolve_log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         with _write_lock, open(path, "a", encoding="utf-8") as f:
             f.write(line)
     except Exception as e:
         _log.warning("dashboard-auth audit log write failed: %s", e)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

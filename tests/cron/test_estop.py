@@ -160,6 +160,9 @@ class _FakeEvent:
     def __init__(self):
         self.source = _FakeSource()
 
+    def get_command(self) -> str | None:
+        return None
+
 
 @pytest.mark.asyncio
 async def test_gateway_new_turn_gets_paused_reply(hermes_home):

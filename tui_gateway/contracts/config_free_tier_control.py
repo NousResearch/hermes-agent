@@ -2,7 +2,8 @@
 image generation and structured session control.
 
 Handlers: ``tui_gateway/methods_config.py`` (``config.get``, ``setup.*``, ``diagnostics.share_nous``),
-``methods_config_set.py`` (``config.set``), ``methods_free_tier.py``, ``methods_complete.py``
+``methods_config_set.py`` (``config.set``), ``methods_free_tier.py``, ``methods_shared_metrics.py``,
+``methods_complete.py``
 (``model.options``), ``methods_connectors.py``, ``methods_images.py``, ``methods_session_control.py``
 and ``methods_session.py`` (``verification.status``).
 """
@@ -14,7 +15,7 @@ from typing import Literal
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import OpenModel, ProfileParams, SessionLiveInfo
+from .common import OkResult, OpenModel, ProfileParams, SessionLiveInfo
 from .registry import method
 
 # ── config.get ────────────────────────────────────────────────────────────────────────────────
@@ -112,17 +113,21 @@ method("config.set", params=ConfigSetParams, result=ConfigSetResult,
 
 class SetupStatusResult(Result):
     """``provider_configured`` is the loose answer; the boot record's fields (``ready``,
-    ``free_tier``, ``other_providers``, ``inference_provider``) ride along on the launch profile.
-    An unknown ``profile`` answers ``ok=False`` + ``error``."""
+    ``free_tier_account``, ``free_tier_route``, ``other_providers``, ``inference_provider``) ride along
+    on the launch profile. An unknown ``profile`` answers ``ok=False`` + ``error``."""
 
     provider_configured: bool | None = None
     ready: bool | None = None
-    free_tier: bool | None = None
+    free_tier_account: bool | None = None
+    free_tier_route: bool | None = None
     other_providers: bool | None = None
     inference_provider: str | None = None
     profile: str | None = None
     ok: bool | None = None
     error: str | None = None
+    error_code: str | None = None
+    retryable: bool | None = None
+    retry_after: int | None = None
 
 
 method("setup.status", params=ProfileParams, result=SetupStatusResult,
@@ -134,7 +139,7 @@ class SetupRuntimeCheckParams(ProfileParams):
 
 
 class SetupRuntimeCheckResult(Result):
-    """``ok=False`` + ``error`` when the resolved model can't be served; ``free_tier`` says the
+    """``ok=False`` + ``error`` when the resolved model can't be served; ``free_tier_route`` says the
     selected route is the welcome host."""
 
     ok: bool
@@ -142,7 +147,7 @@ class SetupRuntimeCheckResult(Result):
     model: str | None = None
     source: str | None = None
     error: str | None = None
-    free_tier: bool | None = None
+    free_tier_route: bool | None = None
     profile: str | None = None
 
 
@@ -178,7 +183,7 @@ method("diagnostics.share_nous", params=DiagnosticsShareNousParams, result=Diagn
 
 class FreeTierStatusResult(Result):
     """``available`` = an identity exists AND the tier is on; whether inference runs on it is
-    ``setup.runtime_check.free_tier``'s question."""
+    ``setup.runtime_check.free_tier_route``'s question."""
 
     has_guest: bool
     enabled: bool
@@ -186,6 +191,10 @@ class FreeTierStatusResult(Result):
     notice_pending: bool
     model: str
     label: str
+    error: str | None = None
+    error_code: str | None = None
+    retryable: bool | None = None
+    retry_after: int | None = None
 
 
 method("free_tier.status", params=ProfileParams, result=FreeTierStatusResult,
@@ -196,6 +205,9 @@ class FreeTierProvisionResult(Result):
     has_guest: bool
     enabled: bool
     error: str | None = None
+    error_code: str | None = None
+    retryable: bool | None = None
+    retry_after: int | None = None
 
 
 method("free_tier.provision", params=ProfileParams, result=FreeTierProvisionResult,
@@ -208,6 +220,187 @@ class FreeTierAckNoticeResult(Result):
 
 method("free_tier.ack_notice", params=ProfileParams, result=FreeTierAckNoticeResult,
        doc="Mark the one-time availability notice as shown on the free-tier identity.")
+
+
+# ── shared metrics consent ────────────────────────────────────────────────────────────────────
+
+
+class SharedMetricsConsentResult(Result):
+    """The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while
+    ``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults
+    are not an answer) and it is not a ``reask``: an "off" from before the type-ahead fix, offered
+    once more with the reason."""
+
+    enabled: bool
+    send: bool
+    decided: bool
+    reask: bool = False
+
+
+method("shared_metrics.status", params=ProfileParams, result=SharedMetricsConsentResult,
+       doc="Pure read of the focused profile's shared-metrics opt-ins (collection, upload, answered).")
+
+
+class SharedMetricsSetParams(ProfileParams):
+    """``send`` is ignored unless ``enabled``; ``first_run`` marks the Desktop first-run answer."""
+
+    enabled: bool
+    send: bool = False
+    first_run: bool = False
+
+
+method("shared_metrics.set", params=SharedMetricsSetParams, result=SharedMetricsConsentResult,
+       doc="Write both shared-metrics opt-ins at once (send requires collection) and reconcile consent windows.")
+
+
+class SharedMetricsSlashCommandParams(ProfileParams):
+    """``command`` is the raw typed name (no leading ``/``, no args); the backend canonicalizes it
+    against the published registry. ``session_id`` scopes the count to that session's profile."""
+
+    command: str
+    session_id: str | None = None
+
+
+class SharedMetricsSlashCommandResult(Result):
+    ok: bool
+
+
+method("shared_metrics.slash_command", params=SharedMetricsSlashCommandParams,
+       result=SharedMetricsSlashCommandResult,
+       doc="Count one user-typed slash command (fire-and-forget; a no-op unless shared metrics are on).")
+
+
+class SharedMetricsStartupLatencyParams(ProfileParams):
+    """``elapsed_ms`` = the client's own launch (TUI process start / Desktop app start) to ready
+    (TUI gateway ready / Desktop backend attached), measured once per launch by the client. The
+    client names its surface because a Desktop may attach to a URL/cloud backend where
+    ``HERMES_DESKTOP`` is unset; without it the backend falls back to its own client detection.
+    ``launch_id`` is an opaque per-launch token the backend latches on (never recorded), so a
+    reconnect re-sending the same launch counts once while a new launch counts again."""
+
+    elapsed_ms: float
+    surface: Literal["desktop_attach", "tui"] | None = None
+    launch_id: str | None = None
+
+
+class SharedMetricsStartupLatencyResult(Result):
+    ok: bool
+
+
+method("shared_metrics.startup_latency", params=SharedMetricsStartupLatencyParams,
+       result=SharedMetricsStartupLatencyResult,
+       doc="Record one client launch-to-ready latency (fire-and-forget; a no-op unless shared metrics are on).")
+
+
+# ---- v4 reliability ----
+class SharedMetricsUpdateRunParams(ProfileParams):
+    """One Desktop PACKAGED self-update (electron-updater / App Installer / Store). Source-checkout
+    hand-offs run ``hermes update`` and are counted from its receipt, never here. Raw words; the
+    backend buckets them: ``outcome`` success|failed|noop|refused, ``failed_stage``
+    download|verify|apply|restart, ``mechanism`` the updater strategy kind, ``duration_ms`` wall
+    time, ``from_commit_date`` the updated-from build's commit time (epoch seconds) when known."""
+
+    outcome: str
+    failed_stage: str | None = None
+    mechanism: str | None = None
+    duration_ms: float | None = None
+    from_commit_date: float | None = None
+
+
+class SharedMetricsUpdateRunResult(Result):
+    ok: bool
+
+
+method("shared_metrics.update_run", params=SharedMetricsUpdateRunParams, result=SharedMetricsUpdateRunResult,
+       doc="Count one Desktop packaged self-update outcome (fire-and-forget; a no-op unless shared metrics are on).")
+# ---- end v4 reliability ----
+
+
+# ---- v5 desktop ----
+class SharedMetricsDesktopFeatureUseParams(ProfileParams):
+    """``area`` is a Desktop surface id (``command_palette``, ``terminal_pane``, ``settings_<view>`` …);
+    the backend collapses anything outside its closed set to ``other``."""
+
+    area: str
+
+
+method("shared_metrics.desktop_feature_use", params=SharedMetricsDesktopFeatureUseParams,
+       result=OkResult,
+       doc="Count one Desktop area used today (fire-and-forget; once per area per UTC day; a no-op unless on).")
+
+
+class SharedMetricsDesktopFrictionParams(ProfileParams):
+    """``kind`` notice_dismissed|error_toast|renderer_crash|backend_disconnect|slow_frame; ``detail`` a
+    closed code-defined word for that kind (notice id, error category, crash reason, drop reason, frame
+    duration bucket), never message text."""
+
+    kind: str
+    detail: str
+
+
+method("shared_metrics.desktop_friction", params=SharedMetricsDesktopFrictionParams,
+       result=OkResult,
+       doc="Count one Desktop friction event (fire-and-forget; capped per day; a no-op unless on).")
+
+
+class SharedMetricsDesktopOnboardingParams(ProfileParams):
+    """``step`` a Desktop first-run step id; ``event`` reached|completed|abandoned."""
+
+    step: str
+    event: str
+
+
+method("shared_metrics.desktop_onboarding", params=SharedMetricsDesktopOnboardingParams,
+       result=OkResult,
+       doc="Count one Desktop first-run step transition (fire-and-forget; once per step+event; a no-op unless on).")
+
+
+class SharedMetricsDesktopDislikeParams(ProfileParams):
+    """``signal`` quick_close|cancelled|setting_off_default|rage_click|undo|feature_disabled; ``target`` a
+    closed code-defined id for that signal (area, flow, action, undo path, feature toggle); ``setting`` a
+    config key for setting_off_default only (the value is never sent — the backend compares it to the
+    default)."""
+
+    signal: str
+    target: str = ""
+    setting: str | None = None
+
+
+method("shared_metrics.desktop_dislike", params=SharedMetricsDesktopDislikeParams,
+       result=OkResult,
+       doc="Count one Desktop dislike signal (fire-and-forget; capped per signal per day; a no-op unless on).")
+
+
+class SharedMetricsDesktopModeDay(Params):
+    mode: Literal["bots", "sessions"]
+    active_ms: float = 0
+    messages_sent: int = 0
+
+
+class SharedMetricsDesktopActionDay(Params):
+    action: str
+    via: Literal["click", "menu", "palette", "shortcut"]
+    count: int
+
+
+class SharedMetricsDesktopDailyParams(ProfileParams):
+    """One finished UTC day of Desktop use, aggregated on the client. ``day`` (YYYY-MM-DD) only latches
+    a resend and is never recorded; the raw counts are bucketed by the backend."""
+
+    day: str
+    bot_count: int = 0
+    modes: list[SharedMetricsDesktopModeDay] = Field(default_factory=list)
+    actions: list[SharedMetricsDesktopActionDay] = Field(default_factory=list)
+
+
+class SharedMetricsDesktopDailyResult(Result):
+    recorded: bool
+
+
+method("shared_metrics.desktop_daily", params=SharedMetricsDesktopDailyParams,
+       result=SharedMetricsDesktopDailyResult,
+       doc="Record one finished Desktop day (mode use + button presses); recorded=false keeps it for a retry.")
+# ---- end v5 desktop ----
 
 
 # ── model.options ─────────────────────────────────────────────────────────────────────────────
@@ -239,8 +432,65 @@ class ModelCapabilities(Result):
     """``hermes_cli/inventory.py::_apply_capabilities``."""
 
     fast: bool
+    ultrafast: bool = False
     reasoning: bool
     can_disable_reasoning: bool | None = None
+
+
+class ProviderLimit(Result):
+    """``hermes_cli/inventory.py::_apply_limits`` — ``account``: the whole login is rate-limited until
+    ``resets_at`` (ISO, absent when unknown); ``models``: only these models are, each until its time."""
+
+    scope: Literal["account", "models"]
+    resets_at: str | None = None
+    models: dict[str, str] | None = None
+
+
+class ProviderUsageWindow(Result):
+    """One subscription usage window (``agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour
+    session or the weekly cap, with how much of it is spent and when it rolls over (ISO).
+
+    ``scope``: ``account`` — exhausting the window exhausts the whole login (Codex session/weekly,
+    so a limited account's resets_at must wait for it); ``model`` — the window caps only one model
+    family (Anthropic Opus/Sonnet weekly) and can never imply the account itself is out of quota."""
+
+    label: str
+    used_percent: float
+    resets_at: str | None = None
+    scope: Literal["account", "model"] = "account"
+
+
+class ProviderUsageAccount(Result):
+    """One account of a provider's credential pool (``hermes_cli/inventory.py::_pool_usage_accounts``).
+    ``id`` is a stable non-secret account identity (never a key or URL); ``label`` may be empty (UI
+    falls back to a localized "Account N"). ``windows`` is empty while the account's usage is not
+    yet known — state carries the meaning, never a fabricated gauge.
+
+    ``state``: ``ready`` — live quota below the cap (numeric windows present); ``limited`` — a live
+    credential-wide cooldown or exhausted account-scoped quota windows; ``unknown`` — no live
+    numeric windows (failed/empty fetch, stale snapshot, provider without a usage API);
+    ``unavailable`` — DEAD auth row (kept visible, never a quota row).
+
+    ``resets_at``: for a limited account, the LATEST of its exhausted account-scoped windows (or a
+    live cooldown when later); ``None`` when unknown (the frontend renders its own advisory, e.g.
+    the earliest limited sibling)."""
+
+    id: str
+    label: str = ""
+    windows: list[ProviderUsageWindow] = Field(default_factory=list)
+    state: Literal["ready", "limited", "unknown", "unavailable"]
+    resets_at: str | None = None
+
+
+class ProviderUsage(Result):
+    """``hermes_cli/inventory.py::_apply_usage`` — the provider's subscription usage, from cache.
+
+    Multi-entry credential pools carry ``accounts`` (one row per account; the legacy ``windows``
+    stays EMPTY there — a provider-wide percentage across different logins would be fabricated).
+    Single-account providers keep the legacy ``windows`` gauge."""
+
+    windows: list[ProviderUsageWindow] = Field(default_factory=list)
+    accounts: list[ProviderUsageAccount] | None = None
 
 
 class ModelOptionProvider(OpenModel):
@@ -268,6 +518,8 @@ class ModelOptionProvider(OpenModel):
     free_tier_pending: bool | None = None
     free_tier_row: bool | None = None
     unavailable_models: list[str] | None = None
+    limit: ProviderLimit | None = None
+    usage: ProviderUsage | None = None
 
 
 class ModelOptionsResult(Result):

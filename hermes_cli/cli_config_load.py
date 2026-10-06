@@ -24,14 +24,16 @@ def _cli():
     return cli
 
 
-def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
-    """Load prefill messages (JSON array) from *file_path*; relative to ~/.hermes/; missing/empty -> []."""
-    from cli import _hermes_home
+def _load_prefill_messages(file_path: str, base_dir: Path | None = None) -> List[Dict[str, Any]]:
+    """Load prefill messages (JSON array) from *file_path*; missing/empty -> [].
+
+    Relative paths resolve against *base_dir*, defaulting to the CLI's hermes home.
+    """
     if not file_path:
         return []
     path = Path(file_path).expanduser()
     if not path.is_absolute():
-        path = _hermes_home / path
+        path = (base_dir or _cli()._hermes_home) / path
     if not path.exists():
         logger.warning("Prefill messages file not found: %s", path)
         return []
@@ -67,16 +69,13 @@ def _parse_reasoning_config(effort) -> dict | None:
 
 
 def _parse_service_tier_config(raw: str) -> str | None:
-    """Parse a persisted fast-mode preference: None, "priority", "auto", or "cold"."""
-    value = str(raw or "").strip().lower()
-    if not value or value in {"normal", "default", "standard", "off", "none"}:
-        return None
-    if value in {"fast", "priority", "on"}:
-        return "priority"
-    if value in {"auto", "cold"}:
-        return value
-    logger.warning("Unknown service_tier '%s', ignoring", raw)
-    return None
+    """Parse a persisted fast-mode preference: None, "priority", "ultrafast", "auto", or "cold"."""
+    from agent.fast_mode import NORMAL_TIER_WORDS, parse_service_tier
+
+    tier = parse_service_tier(raw)
+    if tier is None and str(raw or "").strip().lower() not in NORMAL_TIER_WORDS:
+        logger.warning("Unknown service_tier '%s', ignoring", raw)
+    return tier
 
 
 # terminal.<key> -> TERMINAL_<KEY> env var. Container-resource keys apply to docker,
@@ -85,7 +84,7 @@ _TERMINAL_ENV_MAPPINGS = {
     key: f"TERMINAL_{key.upper()}"
     for key in (
         "degraded_mode", "cwd", "timeout", "home_mode", "lifetime_seconds", "docker_image",
-        "docker_forward_env", "singularity_image", "modal_image", "daytona_image", "vercel_runtime",
+        "docker_forward_env", "singularity_image", "modal_image", "daytona_image", "vercel_runtime", "vercel_image",
         "ssh_host", "ssh_user", "ssh_port", "ssh_key", "container_cpu", "container_memory",
         "container_disk", "container_persistent", "docker_volumes", "docker_env", "docker_extra_args",
         "docker_shm_size", "docker_mount_cwd_to_workspace", "docker_network", "docker_run_as_host_user",
@@ -182,7 +181,7 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
 
 def _cli_config_defaults():
     """Built-in defaults for every config key the CLI reads (the file overlays these)."""
-    img = "nikolaik/python-nodejs:python3.11-nodejs20"
+    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as img
     return {
         "model": {"default": "", "base_url": "", "provider": "auto"},
         "terminal": {

@@ -183,16 +183,3 @@ def check_website_access(url: str, config_path: Optional[Path] = None) -> Option
                 "message": f"Blocked by website policy: '{host}' matched rule '{pattern}' from {source}",
             }
     return None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def invalidate_cache() -> None:
-    """Force the next ``check_website_access`` call to re-read config."""
-    global _cached_policy
-    with _cache_lock:
-        _cached_policy = None
-# ---- END PLUGIN-COMPAT ----

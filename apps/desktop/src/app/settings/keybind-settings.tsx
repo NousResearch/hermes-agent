@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useContext, useMemo, useState } from 'react'
 
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Kbd, KbdCombo } from '@/components/ui/kbd'
@@ -278,28 +279,30 @@ function KeybindRow({ action }: { action: KeybindActionMeta }) {
       {isDefault ? (
         combos.length > 0 ? (
           <Tip label={k.clear}>
-            <button
+            <Button
               aria-label={k.clear}
-              className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground/70 opacity-0 transition-all hover:bg-(--ui-control-active-background) hover:text-foreground group-hover:opacity-100"
+              className="shrink-0 text-(--ui-text-tertiary) opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
               onClick={() => clearBinding(action.id)}
-              type="button"
+              size="icon-xs"
+              variant="ghost"
             >
               <Codicon name="close" size="0.8125rem" />
-            </button>
+            </Button>
           </Tip>
         ) : (
           <span aria-hidden className="size-6 shrink-0" />
         )
       ) : (
         <Tip label={k.reset}>
-          <button
+          <Button
             aria-label={k.reset}
-            className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground/70 opacity-0 transition-all hover:bg-(--ui-control-active-background) hover:text-foreground group-hover:opacity-100"
+            className="shrink-0 text-(--ui-text-tertiary) opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
             onClick={() => resetBinding(action.id)}
-            type="button"
+            size="icon-xs"
+            variant="ghost"
           >
             <Codicon name="discard" size="0.8125rem" />
-          </button>
+          </Button>
         </Tip>
       )}
     </div>

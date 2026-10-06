@@ -3,7 +3,8 @@
 ~/.hermes/skills/, tracking each synced skill's origin hash in .bundled_manifest (v2 "name:hash"
 lines; v1 plain names auto-migrate). NEW skills are copied and recorded; EXISTING skills update
 only when bundled changed AND the user copy still matches the origin hash (else user-customized
--> SKIP); user-DELETED skills are not re-added; upstream-REMOVED ones leave the manifest."""
+-> SKIP); user-DELETED skills are not re-added; upstream-REMOVED ones leave the manifest once no active or
+archived copy remains (the entry is that copy's only built-in provenance record)."""
 
 import hashlib
 import logging
@@ -430,9 +431,17 @@ def sync_skills(quiet: bool = False) -> dict:
             _update_existing_skill(st, skill_name, skill_src, dest, bundled_hash)
         else:
             st.skipped += 1  # in manifest but not on disk — user deleted it
-    # Clean manifest entries for skills removed upstream. Skipped when opted out: bundled_skills
+    # Clean manifest entries for skills removed upstream once no copy is left. A dropped built-in still
+    # on disk (active or archived) keeps its entry: it is the only provenance record, and without it the
+    # copy reads as agent-authored ("Learned", editable) (#95415). Skipped when opted out: bundled_skills
     # is only the essential set there, so cleaning would drop tracking for everything else.
-    cleaned = [] if essential_only else sorted(set(st.manifest) - {name for name, _ in bundled_skills})
+    removed = [] if essential_only else sorted(set(st.manifest) - {name for name, _ in bundled_skills})
+    present = set()
+    if removed:  # curator archive is flat: directory name == skill name
+        archive = _skills_dir() / ".archive"
+        present = {_read_skill_name(md, md.parent.name) for md in _iter_active_skill_mds()} | (
+            {p.name for p in archive.iterdir() if p.is_dir()} if archive.is_dir() else set())
+    cleaned = [name for name in removed if name not in present]
     for name in cleaned:
         del st.manifest[name]
     _seed_category_descriptions(
@@ -483,39 +492,3 @@ if __name__ == "__main__":
     if backfilled := result.get("optional_provenance_backfilled"):
         parts.append(f"{len(backfilled)} official optional backfilled")
     print(f"\nDone: {', '.join(parts)}. {result['total_bundled']} total bundled.")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import PurePosixPath  # noqa: F401,E402
-from datetime import datetime  # noqa: F401,E402
-import json  # noqa: F401,E402
-from datetime import timezone  # noqa: F401,E402
-
-def is_bundled_skills_opt_out() -> bool:
-    """Return True if the active profile carries the opt-out marker."""
-    return (_hermes_home() / NO_BUNDLED_SKILLS_MARKER).exists()
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'atomic_replace': ('utils', 'atomic_replace'),
-    'diff_bundled_skill': ('tools.skills_sync_bundled_ops', 'diff_bundled_skill'),
-    'list_user_modified_bundled_skills': ('tools.skills_sync_bundled_ops', 'list_user_modified_bundled_skills'),
-    'remove_pristine_bundled_skills': ('tools.skills_sync_bundled_ops', 'remove_pristine_bundled_skills'),
-    'reset_bundled_skill': ('tools.skills_sync_bundled_ops', 'reset_bundled_skill'),
-    'restore_official_optional_skill': ('tools.skills_sync_optional', 'restore_official_optional_skill'),
-    'set_bundled_skills_opt_out': ('tools.skills_sync_bundled_ops', 'set_bundled_skills_opt_out'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

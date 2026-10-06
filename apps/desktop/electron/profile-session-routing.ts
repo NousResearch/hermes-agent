@@ -4,6 +4,21 @@ interface SessionListResponse {
   [key: string]: unknown
 }
 
+/** HTTP status an error carries (the REST helpers stamp `err.statusCode`), NaN when none. */
+function httpStatusOf(error: unknown): number {
+  return Number(error && typeof error === 'object' ? (error as { statusCode?: unknown }).statusCode : NaN)
+}
+
+/** True when a remote rejected a profile-scoped read because it cannot serve
+ * that scope: 400 (invalid profile param) or 404 (profile does not exist).
+ * Auth (401/403), transport, and 5xx failures are real errors — retrying
+ * those would just relabel the failure. */
+export function isRemoteProfileScopeError(error: unknown): boolean {
+  const status = httpStatusOf(error)
+
+  return status === 400 || status === 404
+}
+
 export interface ProfileSessionsResponse extends SessionListResponse {
   profile_totals: Record<string, number>
 }
@@ -11,6 +26,30 @@ export interface ProfileSessionsResponse extends SessionListResponse {
 type FetchJsonForProfile = (profile: string | null, path: string) => Promise<unknown>
 
 const REMOTE_SESSION_PAGE_LIMIT = 100
+
+/** Whether a read asks for the cross-profile Sessions list used by grouping. */
+export function isAllProfilesSessionListRequest(method: string | undefined, path: string | undefined): boolean {
+  if ((method || 'GET').toUpperCase() !== 'GET' || !path) {
+    return false
+  }
+
+  let url: URL
+
+  try {
+    url = new URL(path, 'http://desktop.local')
+  } catch {
+    return false
+  }
+
+  if (url.pathname === '/api/profiles/sessions') {
+    return (url.searchParams.get('profile') || 'all').trim() === 'all'
+  }
+
+  return (
+    url.pathname === '/api/profiles/sessions/sidebar' &&
+    (url.searchParams.get('recents_profile') || 'all').trim() === 'all'
+  )
+}
 
 function rowsOf(data: unknown): unknown[] {
   if (!data || typeof data !== 'object' || !('sessions' in data)) {
@@ -231,13 +270,163 @@ export function assembleSidebarSessionSlices(recents: unknown, cron: unknown, me
  *  tags, and dedupes, so it stays unit-testable. */
 export interface RegistrySessionSource {
   connectionId: string
-  /** 'ssh' backends each run AS one remote profile; anything else is a shared
-   *  host serving every profile via ?profile=. */
+  /** 'ssh' and forced-local backends each run as one profile; anything else is
+   *  a shared host serving every profile via ?profile=. */
   kind: string
   backends: Array<{ descriptor: unknown; profileLabel: null | string }>
 }
 
+type PinnedRegistrySessionSource = Pick<RegistrySessionSource, 'connectionId'> &
+  Partial<Pick<RegistrySessionSource, 'backends' | 'kind'>>
+
+/**
+ * A pinned registry request may use the aggregate route only when that
+ * gateway is part of the already-pooled sources. Otherwise the aggregate
+ * would look healthy while silently omitting the gateway the renderer asked
+ * for, so the caller must keep the normal direct route instead.
+ *
+ * The legacy local/primary route is represented by the base aggregate rather
+ * than a registry source and is therefore handled by the caller separately.
+ */
+export function hasPinnedRegistrySessionSource(
+  connectionId: string | null | undefined,
+  profile: string | null | undefined,
+  sources: readonly PinnedRegistrySessionSource[],
+  baseCoversLocal = true
+): boolean {
+  const required = String(connectionId ?? '').trim()
+  const selectedProfile = String(profile ?? '').trim()
+
+  if (!required || (required === 'local' && baseCoversLocal)) {
+    return true
+  }
+
+  const source = sources.find(candidate => candidate.connectionId === required)
+
+  if (!source) {
+    return false
+  }
+
+  // Shared remote and cloud hosts serve every profile from one backend. An
+  // absent profile is also allowed because the route can still be an explicit
+  // all-profiles request without an ambient renderer profile.
+  if (!selectedProfile || selectedProfile === 'all' || !source.kind || !source.backends) {
+    return true
+  }
+
+  if (source.kind !== 'ssh' && source.kind !== 'local') {
+    return true
+  }
+
+  return source.backends.some(({ profileLabel }) => (profileLabel || 'default') === selectedProfile)
+}
+
+/** include the local registry source when the primary aggregate is remote */
+export function shouldIncludeLocalRegistrySessionSource(
+  connectionId: string | null | undefined,
+  baseCoversLocal = true
+): boolean {
+  return Boolean(String(connectionId ?? '').trim()) || !baseCoversLocal
+}
+
 type GetJsonForDescriptor = (descriptor: unknown, path: string) => Promise<unknown>
+
+/** Read one registry source without sending a page larger than the backend cap. */
+async function fetchSessionRowsInPages(
+  basePath: string,
+  searchParams: URLSearchParams,
+  getPage: (path: string) => Promise<unknown>
+): Promise<unknown[] | null> {
+  const requestedLimit = Number(searchParams.get('limit'))
+  const requestedOffset = Number(searchParams.get('offset') || '0')
+
+  const needsPaging =
+    Number.isInteger(requestedLimit) &&
+    requestedLimit > REMOTE_SESSION_PAGE_LIMIT &&
+    Number.isInteger(requestedOffset) &&
+    requestedOffset >= 0
+
+  try {
+    if (!needsPaging) {
+      return rowsOf(await getPage(`${basePath}?${searchParams}`))
+    }
+
+    const sessions: unknown[] = []
+    const backfilled: unknown[] = []
+    const seenIds = new Set<string>()
+    const backfilledIds = new Set<string>()
+    let pageOffset = requestedOffset
+    let targetOffset = requestedOffset + requestedLimit
+
+    while (pageOffset < targetOffset) {
+      const pageParams = new URLSearchParams(searchParams)
+      const pageLimit = Math.min(REMOTE_SESSION_PAGE_LIMIT, targetOffset - pageOffset)
+      pageParams.set('limit', String(pageLimit))
+      pageParams.set('offset', String(pageOffset))
+
+      const page = await getPage(`${basePath}?${pageParams}`)
+      const pageRows = rowsOf(page)
+
+      const total = nonNegativeNumber(page && typeof page === 'object' ? (page as { total?: unknown }).total : null)
+
+      const windowedCount =
+        total !== null ? Math.min(pageLimit, Math.max(0, total - pageOffset)) : Math.min(pageLimit, pageRows.length)
+
+      for (const row of pageRows.slice(0, windowedCount)) {
+        const id = sessionId(row)
+
+        if (id && seenIds.has(id)) {
+          continue
+        }
+
+        if (id) {
+          seenIds.add(id)
+          backfilledIds.delete(id)
+        }
+
+        sessions.push(row)
+      }
+
+      for (const row of pageRows.slice(windowedCount)) {
+        const id = sessionId(row)
+
+        if ((id && seenIds.has(id)) || (id && backfilledIds.has(id))) {
+          continue
+        }
+
+        if (id) {
+          backfilledIds.add(id)
+        }
+
+        backfilled.push(row)
+      }
+
+      if (total !== null) {
+        targetOffset = Math.min(targetOffset, total)
+      }
+
+      pageOffset += pageLimit
+    }
+
+    for (const row of backfilled) {
+      const id = sessionId(row)
+
+      if (id && seenIds.has(id)) {
+        continue
+      }
+
+      if (id) {
+        seenIds.add(id)
+      }
+
+      sessions.push(row)
+    }
+
+    return sessions
+  } catch {
+    return null
+  }
+}
 
 /**
  * Every connected registry gateway's session rows for the unified Sessions
@@ -260,8 +449,8 @@ export async function fetchRegistrySessionRows(
 ): Promise<unknown[]> {
   const rows: unknown[] = []
 
-  const tag = (data: unknown, connectionId: string, profileLabel: null | string) => {
-    for (const row of rowsOf(data)) {
+  const tag = (sourceRows: unknown[], connectionId: string, profileLabel: null | string) => {
+    for (const row of sourceRows) {
       if (!row || typeof row !== 'object') {
         continue
       }
@@ -282,17 +471,18 @@ export async function fetchRegistrySessionRows(
 
   await Promise.all(
     sources.map(async source => {
-      if (source.kind === 'ssh') {
-        // Each ssh-scoped backend serves its own state.db natively.
+      if (source.kind === 'ssh' || source.kind === 'local') {
+        // Each ssh-scoped or forced-local backend serves its own state.db
+        // natively.
         await Promise.all(
           source.backends.map(async ({ descriptor, profileLabel }) => {
             const params = new URLSearchParams(searchParams)
             params.delete('profile')
 
-            const data = await getJson(descriptor, `/api/sessions?${params}`).catch(() => null)
+            const sourceRows = await fetchSessionRowsInPages('/api/sessions', params, path => getJson(descriptor, path))
 
-            if (data) {
-              tag(data, source.connectionId, profileLabel || 'default')
+            if (sourceRows) {
+              tag(sourceRows, source.connectionId, profileLabel || 'default')
             }
           })
         )
@@ -311,17 +501,19 @@ export async function fetchRegistrySessionRows(
       const params = new URLSearchParams(searchParams)
       params.set('profile', 'all')
 
-      let data = await getJson(shared.descriptor, `/api/profiles/sessions?${params}`).catch(() => null)
+      let sourceRows = await fetchSessionRowsInPages('/api/profiles/sessions', params, path =>
+        getJson(shared.descriptor, path)
+      )
 
-      if (!data) {
+      if (!sourceRows) {
         // Older remote without the aggregator: its own default-profile list.
         const flat = new URLSearchParams(searchParams)
         flat.delete('profile')
-        data = await getJson(shared.descriptor, `/api/sessions?${flat}`).catch(() => null)
+        sourceRows = await fetchSessionRowsInPages('/api/sessions', flat, path => getJson(shared.descriptor, path))
       }
 
-      if (data) {
-        tag(data, source.connectionId, null)
+      if (sourceRows) {
+        tag(sourceRows, source.connectionId, null)
       }
     })
   )
@@ -367,13 +559,120 @@ export function spliceRegistrySessionRows(
   return { added }
 }
 
+/**
+ * The remote-profile query scope for a per-profile override read: the remote
+ * alias when the override is a managed SSH connection with a configured
+ * `remoteProfile` (the remote knows THAT name, not the Desktop label), else
+ * the Desktop profile name itself. Empty only for an empty profile — every
+ * concrete scope, `default` included, is named on the wire so a multi-profile
+ * backend opens that profile's state.db instead of its launch profile's.
+ */
+export function remoteProfileQueryScope(profile: string, remoteProfileAlias?: null | string): string {
+  const configured = String(remoteProfileAlias || '').trim()
+
+  if (configured && configured !== 'default') {
+    return configured
+  }
+
+  return String(profile || '').trim()
+}
+
+/** Options for {@link fetchRemoteProfileSessions}. */
+export interface RemoteProfileSessionsOptions {
+  /** Managed-SSH `remoteProfile` mapping, when the remote knows the profile
+   * under a different name than the Desktop label. */
+  remoteProfileAlias?: null | string
+}
+
+/**
+ * #64999: stamp a remote session list's rows WITHOUT manufacturing labels.
+ * The remote's own `profile` stamp is authoritative — overwriting it with the
+ * Desktop connection-scope name relabeled rows from the backend's other
+ * profiles (one remote URL shared by `wife` and `dad` scopes showed the launch
+ * profile's sessions under both). The legacy label only backfills rows an
+ * older remote returned unowned.
+ *
+ * Mutates and returns `rows` in place, mirroring the old splice behavior.
+ */
+export function tagRemoteSessionRows(rows: unknown[], scope: string): unknown[] {
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') {
+      continue
+    }
+
+    const session = row as Record<string, unknown>
+    const owned = typeof session.profile === 'string' && session.profile.trim() !== ''
+
+    if (!owned) {
+      session.profile = scope
+    }
+
+    if (session.profile === scope) {
+      session.is_default_profile = false
+    }
+  }
+
+  return rows
+}
+
+/**
+ * #64999: a per-session read/mutation against a per-profile override must be
+ * scoped for a multi-profile remote (an unscoped /api/sessions/{id} opens the
+ * backend's launch-profile state.db, so a resume 4007s even though the row
+ * exists — under its real owner). Returns the path with the owner scope
+ * applied; a legacy single-profile scope (`''`) keeps the path bare.
+ */
+export function pathWithRemoteOwnerScope(path: string, scope: string): string {
+  const scoped = String(scope || '').trim()
+
+  if (!scoped) {
+    return path
+  }
+
+  const url = new URL(path, 'http://hermes.local')
+  url.searchParams.set('profile', scoped)
+
+  return `${url.pathname}${url.search}${url.hash}`
+}
+
 export async function fetchRemoteProfileSessions(
   profile: string,
   searchParams: URLSearchParams,
-  fetchJsonForProfile: FetchJsonForProfile
+  fetchJsonForProfile: FetchJsonForProfile,
+  options: RemoteProfileSessionsOptions = {}
 ): Promise<SessionListResponse> {
   const params = new URLSearchParams(searchParams)
-  params.delete('profile') // the remote serves its own database
+  // #64999: a per-profile override can point at a MULTI-profile backend — one
+  // `hermes serve` hosting several profiles — and an unscoped /api/sessions
+  // reads whichever profile the backend process was launched under. Name the
+  // scope so the rows provably belong to it; the remote's own stamps then
+  // carry the authoritative identity (main.ts no longer relabels).
+  const scope = remoteProfileQueryScope(profile, options.remoteProfileAlias)
+
+  const fetchPage = async (pageParams: URLSearchParams): Promise<SessionListResponse> => {
+    pageParams.delete('profile')
+
+    if (scope) {
+      pageParams.set('profile', scope)
+
+      try {
+        return (await fetchJsonForProfile(profile, `/api/sessions?${pageParams}`)) as SessionListResponse
+      } catch (error) {
+        // A remote that rejects the scope (400 unknown profile / 404 profile
+        // does not exist) proves it serves a single launch profile natively —
+        // the legacy shape this code was written for. Fall back to the
+        // remote's own database exactly as before; auth/transport/5xx errors
+        // are real failures and propagate.
+        if (!isRemoteProfileScopeError(error)) {
+          throw error
+        }
+
+        pageParams.delete('profile')
+      }
+    }
+
+    return (await fetchJsonForProfile(profile, `/api/sessions?${pageParams}`)) as SessionListResponse
+  }
 
   const requestedLimit = Number(params.get('limit'))
   const requestedOffset = Number(params.get('offset') || '0')
@@ -385,7 +684,7 @@ export async function fetchRemoteProfileSessions(
     requestedOffset >= 0
 
   if (!needsPaging) {
-    return (await fetchJsonForProfile(profile, `/api/sessions?${params}`)) as SessionListResponse
+    return fetchPage(params)
   }
 
   const sessions: unknown[] = []
@@ -402,7 +701,7 @@ export async function fetchRemoteProfileSessions(
     pageParams.set('limit', String(pageLimit))
     pageParams.set('offset', String(pageOffset))
 
-    const page = (await fetchJsonForProfile(profile, `/api/sessions?${pageParams}`)) as SessionListResponse
+    const page = await fetchPage(pageParams)
     firstPage ??= page
 
     const total = nonNegativeNumber(page.total)

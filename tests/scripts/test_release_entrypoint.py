@@ -12,6 +12,8 @@ import threading
 
 import pytest
 
+from scripts.releases.versioning import tag_record
+
 
 def git(repo, *args):
     return subprocess.check_output(["git", *args], cwd=repo, text=True, encoding="utf-8").strip()
@@ -98,7 +100,7 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
     assert result["url"] == "https://github.com/example/hermes-agent/releases/tag/untagged-0123abcd"
     assert result["final_url"] == "https://github.com/example/hermes-agent/releases/tag/v0.21.5"
     assert git(source, "rev-parse", "rc.1-v0.21.5^{commit}") == commit
-    claim = json.loads(git(source, "tag", "-l", "rc.1-v0.21.5", "--format=%(contents)"))
+    claim = tag_record(git(source, "tag", "-l", "rc.1-v0.21.5", "--format=%(contents)"))
     assert isinstance(claim.pop("claimEpoch"), int)
     # The claim is the one record of the attempt's policy, flags included.
     assert claim == {
@@ -131,28 +133,63 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
     ]
 
 
-def test_release_output_names_the_wait_and_the_publish_step():
+def test_release_output_names_the_ci_run_and_the_publish_step():
     from scripts.releases.entrypoint import next_steps
 
     result = {"version": "0.21.5", "tag": "rc.1-v0.21.5", "autopublish": False,
-              "skip_bundles": False, "skip_tests": False,
+              "skip_bundles": False, "skip_tests": False, "repository": "example/hermes-agent",
               "run_url": "https://github.com/example/hermes-agent/actions/runs/7",
-              "url": "https://github.com/example/hermes-agent/releases/tag/untagged-0123abcd",
-              "final_url": "https://github.com/example/hermes-agent/releases/tag/v0.21.5"}
+              "url": "https://github.com/example/hermes-agent/releases/tag/untagged-0123abcd"}
     text = next_steps(result)
-    assert "Workflow: " + result["run_url"] in text
-    assert "The release workflow started on rc.1-v0.21.5." in text
-    # The draft is reachable before the workflow is green, not only after it.
-    assert text.index(result["url"]) < text.index("Wait for that workflow to finish.")
-    assert result["final_url"] in text
-    assert "python scripts/release.py publish --version 0.21.5 --remote origin" in text
+    assert "Attempting release rc.1-v0.21.5 for v0.21.5." in text
+    assert "Release CI: " + result["run_url"] in text
+    assert "Draft release: " + result["url"] in text
+    # The publish command sits on its own line so it can be copied whole.
+    assert "\n    python scripts/release.py publish --version 0.21.5 --remote origin" in text
+    assert "skipped" not in text
 
     automatic = next_steps({**result, "autopublish": True})
-    assert "Autopublish is on." in automatic
+    assert "Autopublish is on" in automatic
     assert "publish --version" not in automatic
-    assert "skipped" not in text
+
     skipped = next_steps({**result, "skip_bundles": True, "skip_tests": True})
-    assert "Bundles are skipped." in skipped and "Tests are skipped." in skipped
+    assert "Bundles are skipped." in skipped
+    assert "Tests are skipped, since you passed --skip-tests" in skipped
+    assert "\033[" not in skipped
+    assert "\033[1mTests are skipped" in next_steps({**result, "skip_tests": True}, bold=True)
+
+
+def test_an_unlisted_run_points_at_the_workflow_page():
+    from scripts.releases.entrypoint import next_steps
+
+    text = next_steps({"version": "0.21.5", "tag": "rc.1-v0.21.5", "autopublish": False,
+                       "skip_bundles": False, "skip_tests": False,
+                       "repository": "example/hermes-agent", "run_url": "",
+                       "url": "https://github.com/example/hermes-agent/releases/tag/untagged-0123abcd"})
+    assert "the run is not listed yet" in text
+    assert "https://github.com/example/hermes-agent/actions/workflows/stable-release.yml" in text
+
+
+@pytest.mark.parametrize(("lists_on", "wait", "run_url", "naps"), [
+    (3, 30, "https://github.com/example/hermes-agent/actions/runs/7", 2),
+    (None, 4, "", 2),
+])
+def test_release_looks_for_the_dispatched_run_only_within_its_wait(source, lists_on, wait, run_url, naps):
+    listed = json.dumps([{"databaseId": 7, "url": "https://github.com/example/hermes-agent/actions/runs/7",
+                          "headBranch": "rc.1-v0.21.5", "status": "queued"}])
+    lists, slept = [], []
+
+    def execute(command):
+        if command[:3] == ["gh", "run", "list"]:
+            lists.append(command)
+            return listed if len(lists) == lists_on else "[]"
+        return ""
+
+    result = _release(source, git(source, "rev-parse", "HEAD"), execute=execute,
+                      run_wait=wait, sleep=slept.append)
+
+    assert result["run_url"] == run_url
+    assert len(slept) == naps and len(lists) == naps + 1
 
 
 def test_a_final_tag_for_the_next_version_refuses_the_cut(source):
@@ -160,7 +197,9 @@ def test_a_final_tag_for_the_next_version_refuses_the_cut(source):
     from scripts.releases.entrypoint import ReleaseRefused
 
     commit = git(source, "rev-parse", "HEAD")
-    git(source, "tag", "v0.21.5", commit)
+    # A plain final tag on purpose. The fixture is about the cut, not about tag
+    # signing, and a host whose git signs tags by default cannot make this one.
+    git(source, "-c", "tag.gpgSign=false", "tag", "v0.21.5", commit)
     git(source, "push", "-q", "origin", "refs/tags/v0.21.5")
 
     with pytest.raises(ReleaseRefused, match="v0.21.5 already has a final tag"):
@@ -473,16 +512,19 @@ def test_publish_preflight_finds_the_draft_on_the_outstanding_attempt(source):
                 repo=source, remote="origin")
 
 
-def _abandon(repo, version, *, draft=None, calls=None):
+def _abandon(repo, version, *, draft=None, runs=(), calls=None):
     from scripts.releases.entrypoint import ReleaseRefused, abandon
 
     def inspect(command):
+        if command[1] == "run":
+            assert command[command.index("--branch") + 1] == f"rc.1-v{version}"
+            return json.dumps(list(runs))
         if draft is None or command[3] != draft["tagName"]:
             raise ReleaseRefused("release not found")
         return json.dumps(draft)
 
     return abandon(version, repo=repo, remote="origin", repository="example/hermes-agent",
-                   delete=(calls if calls is not None else []).append, inspect=inspect)
+                   execute=(calls if calls is not None else []).append, inspect=inspect)
 
 
 def test_abandon_of_a_draft_deletes_it_writes_the_marker_and_frees_the_version(source):
@@ -493,16 +535,52 @@ def test_abandon_of_a_draft_deletes_it_writes_the_marker_and_frees_the_version(s
                       draft={"tagName": "rc.1-v0.21.5", "isDraft": True, "isPrerelease": False})
 
     assert result == {"version": "0.21.5", "tag": "rc.1-v0.21.5",
-                      "marker": "abandoned-rc.1-v0.21.5", "repository": "example/hermes-agent"}
+                      "marker": "abandoned-rc.1-v0.21.5", "repository": "example/hermes-agent",
+                      "cancelled": []}
     assert calls == [["gh", "release", "delete", "rc.1-v0.21.5", "--repo", "example/hermes-agent", "--yes"]]
     remote = git(source, "ls-remote", "origin", "refs/tags/*")
     assert "refs/tags/abandoned-rc.1-v0.21.5" in remote
     assert "refs/tags/rc.1-v0.21.5" in remote
-    marker = json.loads(git(source, "tag", "-l", "abandoned-rc.1-v0.21.5", "--format=%(contents)"))
+    marker = tag_record(git(source, "tag", "-l", "abandoned-rc.1-v0.21.5", "--format=%(contents)"))
     assert marker == {"attempt": 1, "attemptRef": "rc.1-v0.21.5", "schema": 1, "version": "0.21.5"}
     assert git(source, "rev-parse", "abandoned-rc.1-v0.21.5^{commit}") == git(
         source, "rev-parse", "rc.1-v0.21.5^{commit}")
     assert _release(source, _advance(source, "fix"))["tag"] == "rc.2-v0.21.5"
+
+
+def test_abandon_force_cancels_in_progress_runs_before_the_draft_and_the_marker(source):
+    _claim(source, "0.21.5", git(source, "rev-parse", "HEAD"))
+    calls = []
+    runs = [{"databaseId": 11, "url": "https://example.test/runs/11", "status": "in_progress"},
+            {"databaseId": 12, "url": "https://example.test/runs/12", "status": "completed"},
+            {"databaseId": 13, "url": "https://example.test/runs/13", "status": "queued"}]
+
+    result = _abandon(source, "0.21.5", calls=calls, runs=runs,
+                      draft={"tagName": "rc.1-v0.21.5", "isDraft": True, "isPrerelease": False})
+
+    assert calls == [
+        ["gh", "run", "cancel", "11", "--repo", "example/hermes-agent", "--force"],
+        ["gh", "run", "cancel", "13", "--repo", "example/hermes-agent", "--force"],
+        ["gh", "release", "delete", "rc.1-v0.21.5", "--repo", "example/hermes-agent", "--yes"],
+    ]
+    assert result["cancelled"] == ["https://example.test/runs/11", "https://example.test/runs/13"]
+    assert "abandoned-rc.1-v0.21.5" in git(source, "ls-remote", "origin", "refs/tags/*")
+
+
+def test_abandon_that_cannot_cancel_a_run_writes_no_marker_so_it_can_be_retried(source):
+    from scripts.releases.entrypoint import ReleaseRefused, abandon
+
+    _claim(source, "0.21.5", git(source, "rev-parse", "HEAD"))
+    run = {"databaseId": 11, "url": "https://example.test/runs/11", "status": "in_progress"}
+
+    def refuse(_command):
+        raise ReleaseRefused("HTTP 403")
+
+    with pytest.raises(ReleaseRefused, match="HTTP 403"):
+        abandon("0.21.5", repo=source, remote="origin", repository="example/hermes-agent",
+                execute=refuse, inspect=lambda command: json.dumps([run]) if command[1] == "run"
+                else (_ for _ in ()).throw(ReleaseRefused("release not found")))
+    assert "abandoned-rc" not in git(source, "ls-remote", "origin", "refs/tags/*")
 
 
 def test_abandon_of_a_draftless_burned_attempt_writes_the_marker(source):
@@ -529,9 +607,12 @@ def test_abandon_refuses_a_release_that_was_published(source):
     from scripts.releases.entrypoint import ReleaseRefused
 
     _claim(source, "0.21.5", git(source, "rev-parse", "HEAD"))
+    calls = []
     with pytest.raises(ReleaseRefused, match="published and cannot be abandoned"):
-        _abandon(source, "0.21.5",
+        _abandon(source, "0.21.5", calls=calls,
+                 runs=[{"databaseId": 11, "url": "https://example.test/runs/11", "status": "in_progress"}],
                  draft={"tagName": "rc.1-v0.21.5", "isDraft": False, "isPrerelease": False})
+    assert calls == []
     assert "abandoned-rc" not in git(source, "ls-remote", "origin", "refs/tags/*")
 
 

@@ -5,7 +5,6 @@ import { Loader } from '@/components/ui/loader'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useI18n } from '@/i18n'
 
-/** Stays independent of greeting discovery and transcript hydration. */
 export function GuideLoading() {
   const { t } = useI18n()
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')

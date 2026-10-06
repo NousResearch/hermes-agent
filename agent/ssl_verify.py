@@ -101,20 +101,16 @@ def _shared_context(ca_path: str | None, union: bool = False) -> ssl.SSLContext:
     with _CA_CONTEXTS_LOCK:
         ctx = _CA_CONTEXTS.get((ca_path, union))
         if ctx is None:
-            if union:
-                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                if not _installed:
-                    ctx.load_default_certs()
-                ctx.load_verify_locations(cafile=ca_path)
-            elif ca_path is not None:
+            if ca_path is not None and not union:
                 # PROTOCOL_TLS_CLIENT sets hostname checking and CERT_REQUIRED;
                 # assigning the original class's properties after injection recurses.
                 ctx = _stdlib_ssl_context_class()(ssl.PROTOCOL_TLS_CLIENT)
-                ctx.load_verify_locations(cafile=ca_path)
             else:
                 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
                 if not _installed:
                     ctx.load_default_certs()
+            if ca_path is not None:
+                ctx.load_verify_locations(cafile=ca_path)
             _CA_CONTEXTS[(ca_path, union)] = ctx
         return ctx
 

@@ -6,7 +6,8 @@ another chat label (DM: none; thread: without its parent channel), another topic
 they re-rendered the pinned prompt, and the next typed message rendered it back: a prompt-cache miss
 each way. Built without ``auto_skill``, a session they opened never loaded the channel's bound skill.
 Voice rebuilds its source from a ``/voice join`` copy, so it must also see the parent's bindings from a
-thread and the channel's current name and topic.
+thread and the channel's current name and topic. A programmatic join binds no copy: the voice turn then
+builds the source a typed message in that channel carries, or it keys another session.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import pytest
 import gateway.run as gateway_run
 import plugins.platforms.discord.adapter as discord_platform
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.session import build_session_context
+from gateway.session import build_session_context, build_session_key
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 
@@ -120,10 +121,11 @@ async def test_slash_and_thread_starter_turns_match_a_message_turn(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["channel", "thread-under-bound-parent", "renamed-after-join", "speaker-uncached"])
+@pytest.mark.parametrize("case", ["channel", "thread-under-bound-parent", "renamed-after-join", "speaker-uncached",
+                                  "programmatic-join", "programmatic-join-thread"])
 async def test_voice_channel_turn_matches_a_typed_turn(monkeypatch: pytest.MonkeyPatch, case: str) -> None:
     parent = _parent()
-    channel = _Thread(800, parent) if case == "thread-under-bound-parent" else parent
+    channel = _Thread(800, parent) if case.endswith("thread") or case.startswith("thread") else parent
     adapter = _adapter(monkeypatch, parent.id)
     join = adapter._build_slash_event(
         SimpleNamespace(channel=channel, channel_id=channel.id, guild=parent.guild, guild_id=1, user=_USER),
@@ -132,6 +134,8 @@ async def test_voice_channel_turn_matches_a_typed_turn(monkeypatch: pytest.Monke
     # A typed `/voice join` binds that message's source, id included; a voice turn must not inherit it
     # as its own trigger.
     adapter._voice_sources = {1: {**join.source.to_dict(), "message_id": "1554000000000000000"}}
+    if case.startswith("programmatic-join"):
+        adapter._voice_sources = {}  # join_voice_channel(..., text_channel_id=...) without a source
     adapter._client.get_channel = {channel.id: channel}.get
     if case == "renamed-after-join":
         channel.name, channel.topic = "renamed", "New topic"
@@ -153,6 +157,7 @@ async def test_voice_channel_turn_matches_a_typed_turn(monkeypatch: pytest.Monke
     spoken = adapter.handle_message.await_args.args[0]
     assert spoken is not typed
     _assert_same_prompt_inputs(typed, spoken)
+    assert build_session_key(spoken.source) == build_session_key(typed.source)
     assert spoken.source.message_id is None
     # The join-time name belongs to the joiner only; another uncached speaker never borrows it, and
     # gets their cached user name (global name, no server nickname) rather than a bare id.

@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env, windows_hide_flags
 
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
 
@@ -34,12 +34,12 @@ def _git_ok(git_cmd, args, cwd, **kw) -> bool:
     return _git_stdout(git_cmd, args, cwd, **kw) is not None
 
 
-def _git_run(git_cmd, args, cwd=None, *, check=False):
+def _git_run(git_cmd, args, cwd=None, *, check=False, env=None):
     """Run ``git_cmd + args`` and return the CompletedProcess.
 
     The updater's git runner: capture all output and decode as UTF-8 regardless of the
     Windows ANSI code page (#52649). ``check=True`` raises on non-zero exit. The spawn
-    always hides its console window (#117781).
+    always hides its console window (#117781). ``env`` replaces the child's environment.
     """
     return subprocess.run(
         git_cmd + list(args),
@@ -48,6 +48,7 @@ def _git_run(git_cmd, args, cwd=None, *, check=False):
         text=True, encoding="utf-8", errors="replace",
         check=check,
         creationflags=windows_hide_flags(),
+        env=env,
     )
 
 
@@ -189,9 +190,34 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
         return False, "unverifiable"
     if status.stdout.strip():
         return False, "dirty"
-    cherry = _git_run(git_cmd, ["cherry", f"origin/{target_branch}"], cwd)
-    if cherry.returncode != 0:
+    # Count parked-only commits from the commit graph first: rev-list needs no trees,
+    # so a treeless (tree:0) partial clone answers from local objects. `git cherry`'s
+    # patch-id walk needs upstream-side trees and lazy-fetches them in many promisor
+    # batches; one failed batch failed the whole verification and skipped a clean
+    # checkout (#124767).
+    ahead = _git_run(git_cmd, ["rev-list", "--count", f"origin/{target_branch}..HEAD"], cwd)
+    if ahead.returncode != 0 or not ahead.stdout.strip().isdigit():
         return False, "unverifiable"
+    ahead_count = int(ahead.stdout.strip())
+    if ahead_count == 0:
+        return True, ""
+    # Git before 2.44 ignores GIT_NO_LAZY_FETCH, so on a partial clone cherry still lazy-fetches
+    # without bound (git 2.43 on WSL hung here, #124767). Its patch-ids need blobs a partial clone
+    # keeps on the remote, so it rarely refines anything there: settle for the commit count.
+    promisor = _git_run(git_cmd, ["config", "--get-regexp", r"^(remote\..*\.promisor|extensions\.partialclone)$"], cwd)
+    if any(line.split()[-1].lower() != "false" for line in promisor.stdout.splitlines()):
+        return True, f"unmerged:{ahead_count}"
+    # The patch-id refinement must never fetch: on a tree:0 clone `git cherry` lazy-fetches
+    # a tree batch per commit and, with nothing bounding it, one such walk wrote 332 packs /
+    # 180 GiB over 7 h on Windows (#131444). With lazy fetch off a missing object fails the
+    # command fast and the commit count below stands in.
+    cherry = _git_run(git_cmd, ["cherry", f"origin/{target_branch}"], cwd,
+                      env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV})
+    if cherry.returncode != 0:
+        # Patch-equivalence only refines the count for rebase/squash-merged branches;
+        # a partial clone whose lazy fetch failed must not block a clean checkout,
+        # so degrade to the conservative commit count instead of "unverifiable".
+        return True, f"unmerged:{ahead_count}"
     unmerged = [line for line in cherry.stdout.splitlines() if line.startswith("+")]
     return True, f"unmerged:{len(unmerged)}" if unmerged else ""
 

@@ -166,16 +166,10 @@ def _remove_pack(pack: Path) -> int:
 
 
 def _sweep_remnants(pack_dir: Path) -> None:
-    """Finish deletions an earlier run could not complete: pack files whose payload is already gone,
-    and ``tmp_*`` transfer files a killed fetch left (a disk-filling fetch storm leaves gigabytes;
-    git only prunes them after two weeks). A live transfer keeps writing, so the age guard spares it."""
+    """Finish deletions an earlier run could not complete: pack files whose payload is already gone.
+
+    Aborted-transfer ``tmp_*`` files are gitlock.clear_stale_tmp_packs's job, earlier in the update."""
     cutoff = time.time() - _MIN_PACK_AGE_SECONDS
-    for part in pack_dir.glob("tmp_*"):
-        try:
-            if part.stat().st_mtime < cutoff:
-                _unlink(part)
-        except OSError:
-            logger.debug("transfer temp %s still in use", part.name, exc_info=True)
     for part in pack_dir.glob("pack-*.*"):
         try:
             if part.suffix in _PACK_SUFFIXES[1:] and not part.with_suffix(".pack").exists() \

@@ -393,6 +393,20 @@ def _cmd_ledger(args) -> int:
         print(f"curator: ledger compacted — {entries} entries, {before / 2**20:.1f} MB → {after / 2**20:.1f} MB; "
               f"{blobs} unreferenced blob(s) removed ({freed / 2**20:.1f} MB)")
         return 0
+    show_id = getattr(args, "show", None)
+    if show_id:
+        entry = skill_ledger.get_entry(show_id)
+        if entry is None:
+            print(f"curator: no ledger entry with id '{show_id}'", file=sys.stderr)
+            return 1
+        print(f"curator: entry {entry.get('id')}  {_fmt_ts(entry.get('ts'))}  "
+              f"actor={entry.get('actor')}  action={entry.get('action')}  skill={entry.get('skill')}")
+        for key, value in sorted((entry.get("evidence") or {}).items()):
+            if isinstance(value, (str, int, float, bool)):
+                print(f"  {key}: {value}")
+        diff = skill_ledger.entry_diff(entry)
+        print("\n".join(diff) if diff else "(no recoverable content changes)")
+        return 0
     rows = skill_ledger.list_entries(
         skill=getattr(args, "skill", None), limit=getattr(args, "limit", None) or 20)
     if not rows:
@@ -693,6 +707,9 @@ _SUBCOMMANDS = (
         _cmd_ledger,
         _arg("--skill", default=None, help="Only show entries for this skill"),
         _arg("--limit", type=int, default=20, help="Max entries to show (default: 20)"),
+        _arg("--show", dest="show", default=None, metavar="ID",
+             help="Print one entry in full with a unified diff reconstructed from its "
+                  "before/after content blobs, instead of listing"),
         _arg("--compact", **_STORE_TRUE,
              help="Rewrite the ledger dropping unchanged paths from every entry (ids and rollback preserved)")),
     (

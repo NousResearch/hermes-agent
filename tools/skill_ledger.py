@@ -11,6 +11,7 @@ logs — except ``rollback_entry``, which FAILS CLOSED when its safety capture f
 from __future__ import annotations
 
 import contextvars
+import difflib
 import hashlib
 from contextlib import suppress
 import json
@@ -552,6 +553,48 @@ def list_entries(skill: Optional[str] = None, limit: Optional[int] = None) -> Li
 
 def get_entry(entry_id: str) -> Optional[Dict[str, Any]]:
     return next((r for r in list_entries() if r.get("id") == entry_id), None) if entry_id else None
+
+
+def entry_diff(
+    entry: Dict[str, Any], *, context: int = 3, max_lines: int = 400,
+) -> List[str]:
+    """Unified-diff lines for one ledger entry, reconstructed from the content-addressed
+    blobs its before/after manifests reference — the answer to "what did this mutation
+    actually change?". One diff block per changed path; identical hashes are skipped.
+    Degrades gracefully and never raises: a path whose blob is gone (GC'd, or an entry
+    from before blobs existed) yields a hash-only note, and diffs longer than *max_lines*
+    are cut with a marker. ``read_blob`` returning empty content is indistinguishable
+    from an empty file, so created/deleted paths simply diff against emptiness."""
+    out: List[str] = []
+    before = {str(i.get("path", "")): str(i.get("sha256", "")) for i in entry.get("before") or []}
+    after = {str(i.get("path", "")): str(i.get("sha256", "")) for i in entry.get("after") or []}
+    try:
+        home = str(get_hermes_home())
+    except Exception:  # pragma: no cover — display-only path shortening
+        home = ""
+    for path in sorted(set(before) | set(after)):
+        b_sha, a_sha = before.get(path, ""), after.get(path, "")
+        if b_sha and b_sha == a_sha:
+            continue
+        rel = path[len(home):] if home and path.startswith(home) else path
+        old = read_blob(b_sha) if b_sha else None
+        new = read_blob(a_sha) if a_sha else None
+        if (b_sha and old is None) or (a_sha and new is None):
+            side = "before" if (b_sha and old is None) else "after"
+            sha = b_sha if (b_sha and old is None) else a_sha
+            out.append(f"{rel}: {side} blob missing (gc'd or pre-blob entry; sha256 {sha}) "
+                       "— hashes only, no diff")
+            continue
+        old_lines = old.decode("utf-8", "replace").splitlines() if old else []
+        new_lines = new.decode("utf-8", "replace").splitlines() if new else []
+        diff_lines = list(difflib.unified_diff(
+            old_lines, new_lines, fromfile=f"a{rel}", tofile=f"b{rel}", lineterm="", n=context))
+        if not diff_lines:
+            continue
+        out.extend(diff_lines[:max_lines])
+        if len(diff_lines) > max_lines:
+            out.append(f"… ({len(diff_lines) - max_lines} more diff lines truncated)")
+    return out
 
 
 def _validate_entry_paths(entry: Dict[str, Any]) -> Optional[str]:

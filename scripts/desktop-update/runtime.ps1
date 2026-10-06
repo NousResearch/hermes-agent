@@ -9,7 +9,20 @@ function Get-HermesRuntimeCommand {
     foreach ($name in @('hermes.exe', 'hermes.cmd')) {
         $launcher = Join-Path $InstallRoot ".hermes\bin\$name"
         if (Test-Path -LiteralPath $launcher -PathType Leaf) {
-            $json = & $launcher --print-runtime-command --module $Module
+            # A machine boundary that names executables under the profile.
+            # The JSON is ASCII-escaped today (json.dumps default), but every
+            # other consumer of this boundary (hermes_cli.windows_ssh_runtime,
+            # the Electron updater, the Rust bootstrap) decodes it as UTF-8;
+            # scope the capture to the same contract so the boundary stays
+            # byte-exact if the emitter ever stops escaping, and so a
+            # non-ASCII path cannot arrive OEM-decoded (#124526).
+            $previousNativeOutputEncoding = [Console]::OutputEncoding
+            try {
+                [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+                $json = & $launcher --print-runtime-command --module $Module
+            } finally {
+                [Console]::OutputEncoding = $previousNativeOutputEncoding
+            }
             if ($LASTEXITCODE) { throw "Installation launcher failed (exit $LASTEXITCODE): $launcher" }
             $command = @((($json -join "`n") | ConvertFrom-Json))
             if ($command.Count -lt 2 -or @($command | Where-Object { $_ -isnot [string] -or -not $_ }).Count) {
@@ -31,7 +44,18 @@ function Get-HermesRuntimeCommand {
             foreach ($name in @('hermes.exe', 'hermes.cmd')) {
                 $legacy = Join-Path $directory $name
                 if (-not (Test-Path -LiteralPath $legacy -PathType Leaf)) { continue }
-                $version = (& $legacy --version 2>$null) -join "`n"
+                # The "Install directory:" line is UTF-8 (hermes_bootstrap
+                # reconfigures the CLI's stdio on import); PS 5.1 decodes
+                # captured native stdout with the console OEM code page, so a
+                # profile path like C:\Users\Balázs arrives mojibaked and the
+                # GetFullPath comparison below never matches (#124526).
+                $previousNativeOutputEncoding = [Console]::OutputEncoding
+                try {
+                    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+                    $version = (& $legacy --version 2>$null) -join "`n"
+                } finally {
+                    [Console]::OutputEncoding = $previousNativeOutputEncoding
+                }
                 if ($LASTEXITCODE -or $version -notmatch '(?m)^Install directory: (.+)\r?$') { continue }
                 $reported = [IO.Path]::GetFullPath($Matches[1].Trim()).TrimEnd('\', '/')
                 $expected = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\', '/')

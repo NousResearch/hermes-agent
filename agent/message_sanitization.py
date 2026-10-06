@@ -455,7 +455,7 @@ __all__ = [
     "strip_images_for_rejecting_model",
     # call_id policy owners
     "deterministic_call_id", "coalesce_tool_call_id", "tool_call_id_variants",
-    "tool_result_id_variants", "uniquify_tool_call_ids",
+    "tool_result_id_variants", "uniquify_tool_call_ids", "normalize_provider_tool_call_ids",
     # reasoning_content policy owners
     "reasoning_echo_family", "matches_reasoning_echo_family", "needs_reasoning_echo",
     "stale_thinking_reaches_wire", "apply_reasoning_content_policy", "reapply_reasoning_echo",
@@ -570,6 +570,48 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
     return tool_calls
 
 
+_PROVIDER_TOOL_ID_PREFIXES = ("chatcmpl-tool-",)
+
+def normalize_provider_tool_call_ids(tool_calls: list) -> list:
+    """Rewrite known provider ids when a parallel batch would be rejected on replay.
+
+    The digest is deterministic so persisted messages and prompt-cache prefixes remain
+    stable. Composite Responses ids retain their response-item half.
+    """
+    if len(tool_calls or []) < 2:
+        return tool_calls
+    # Gate on the effective id serialization and result pairing use (stripped, blank call_id
+    # falls back to id), not on raw fields.
+    if not all(coalesce_tool_call_id(tc).startswith(_PROVIDER_TOOL_ID_PREFIXES) for tc in tool_calls):
+        return tool_calls
+    logger.warning("Normalized provider-minted parallel tool-call ids for replay compatibility")
+    for tc in tool_calls:
+        # Rewrite each field's call half separately: ``id`` may carry the response-item
+        # half while ``call_id`` is bare, and that half must survive.
+        for key in ("id", "call_id"):
+            value = _tc_field(tc, key)
+            if not isinstance(value, str):
+                continue
+            primary, sep, item = value.strip().partition("|")
+            primary = primary.strip()
+            if not primary.startswith(_PROVIDER_TOOL_ID_PREFIXES):
+                continue
+            # surrogatepass: provider JSON can carry lone surrogates; strict utf-8 would raise,
+            # and errors=replace would collapse distinct ids onto one digest.
+            digest = hashlib.sha256(primary.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+            _set_provider_tool_id(tc, key, f"call_{digest}{sep}{item}")
+    return tool_calls
+
+
+def _set_provider_tool_id(tc: Any, key: str, value: str) -> None:
+    # transports.types.ToolCall exposes call_id as a read-only view of provider_data;
+    # write the backing value so id and call_id stay in agreement.
+    if isinstance(getattr(type(tc), key, None), property) and isinstance(getattr(tc, "provider_data", None), dict):
+        tc.provider_data[key] = value
+    else:
+        _tc_set(tc, key, value)
+
+
 # -- reasoning_content policy: single owner of strip-vs-re-pad; adapters keep only SYNTAX --
 # Require side (echo-back enforced; replays 400 without the field): the families below. Kimi
 # is host-driven on purpose (aggregators re-exporting kimi reject it); DeepSeek V4 rejects
@@ -631,7 +673,63 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     to preflight yet fully tail-protected to the walk — an infinite compaction loop.
     ``codex_responses`` never reads the text keys (continuity rides the encrypted sidecar).
     """
+    if (api_mode or "") == "anthropic_messages":
+        from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+        if native_anthropic_preserves_prior_thinking(base_url, model):
+            return True
     return (api_mode or "") != "codex_responses" and needs_reasoning_echo(provider, model, base_url)
+
+
+def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[str, ...]]:
+    """Return the native Anthropic wire shadow plus readable replay thinking out-of-band.
+
+    Canonical history may retain storage-only reasoning alongside signed replay carriers.
+    Native conversion prefers ordered anthropic_content_blocks over reasoning_details and
+    never sends reasoning itself. The generic message estimator therefore receives only
+    ordinary wire-shaped fields, while readable thinking is returned separately for the
+    explicit Anthropic accounting seam. Opaque signature/data bytes are never priced.
+    """
+    if not isinstance(messages, list):
+        return messages, ()
+
+    from agent.anthropic_message_convert import assistant_replay_carrier
+
+    projected = []
+    replayed_thinking: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            projected.append(message)
+            continue
+
+        # Mirror _convert_assistant_message's actual inputs instead of starting
+        # from canonical storage. Context selection is allowed to return canonical
+        # rows, which can contain timestamp/finish_reason/api_content and other
+        # local metadata that native Anthropic never sees.
+        shadow = {"role": "assistant"}
+        for key in ("content", "tool_calls", "reasoning_content", "cache_control"):
+            if key in message:
+                shadow[key] = message[key]
+        # Canonical input (preflight, tail walk) still holds the api_content sidecar that
+        # build_api_messages substitutes into content; post-build input already carries it in
+        # content. Charge it either way: an ordered turn, or a context-selection clone the
+        # converter reads raw, then overcounts, never undercounts.
+        sidecar = message.get("api_content")
+        if isinstance(sidecar, str) and sidecar:
+            shadow["content"] = sidecar
+
+        _, carrier = assistant_replay_carrier(message)
+        # The converter ignores reasoning_content for an ordered turn and only injects it when the
+        # details carrier holds no thinking, so it must not be charged in addition to the carrier.
+        if carrier:
+            shadow.pop("reasoning_content", None)
+
+        replayed_thinking.extend(
+            block["thinking"]
+            for block in carrier
+            if block.get("type") == "thinking" and isinstance(block.get("thinking"), str) and block["thinking"]
+        )
+        projected.append(shadow)
+    return projected, tuple(replayed_thinking)
 
 
 def apply_reasoning_content_policy(source_msg: dict, api_msg: dict, needs_thinking_pad: bool) -> None:

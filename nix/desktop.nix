@@ -117,7 +117,7 @@ let
 
       pushd apps/desktop
 
-        npm run postbuild
+        node scripts/assert-dist-built.mjs
 
         # validate staged node-pty native binary is present.
         STAGED_PTY_NODE="./dist/node_modules/node-pty/build/Release/pty.node"
@@ -181,6 +181,7 @@ stdenv.mkDerivation {
     makeWrapper ${lib.getExe electron} $out/bin/hermes-desktop \
       --add-flags "$out/share/hermes-desktop" \
       --set HERMES_DESKTOP_HERMES "${lib.getExe hermesAgent}" \
+      --set-default ELECTRON_OZONE_PLATFORM_HINT auto \
       --set ELECTRON_IS_DEV 0${extraEnvFlags}${extraRunFlags}
 
     # XDG launcher entry

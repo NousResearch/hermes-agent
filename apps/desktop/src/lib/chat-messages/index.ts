@@ -8,9 +8,12 @@ export {
   collectUnspokenTurnSpeech,
   completeOpenTimelineParts,
   dedupeRepeatedTextInParts,
+  finalizeInterruptedMessages,
   mergeFinalAssistantText,
   normalizeWs,
+  partsText,
   reasoningPart,
+  reasoningTextFromDetails,
   renderMediaTags,
   textPart
 } from './parts'

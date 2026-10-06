@@ -17,9 +17,9 @@ from agent.session_activity import (
 from hermes_startup_watchdog import report_startup_progress
 from hermes_state_errors import SessionActiveWriteGuardError
 from hermes_state_common import (
-    _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
+    _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
-    _shape_preview,
+    _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
 )
@@ -101,18 +101,6 @@ def _workspace_key_clause(key: str) -> Tuple[str, List[str]]:
         f"(s.git_repo_root = ? OR (COALESCE(s.git_repo_root, '') = '' AND {cwd_clause}))",
         [prefix, *cwd_params],
     )
-
-
-# First user message of a session, shaped by _shape_preview() in Python.
-# The indentation is part of the list_sessions_rich SQL text.
-_PREVIEW_COL_SQL = f"""COALESCE(
-                        (SELECT {_PREVIEW_RAW_SELECT}
-                         FROM messages m
-                         WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                           AND {_PREVIEW_ELIGIBLE_SQL}
-                         ORDER BY m.timestamp, m.id LIMIT 1),
-                        ''
-                    ) AS _preview_raw"""
 
 
 def _where_sql(clauses: List[str], lead: str = "") -> str:
@@ -508,12 +496,39 @@ class SessionSessionsMixin:
             self._bump_conversation_generation(conn, session_id, reason)
         return changed
 
+    @staticmethod
+    def _retire_undrained_queue_rows_conn(conn, session_id: str) -> int:
+        """The still-marked == never-drained accept-row UPDATE (#125577), on a caller's connection."""
+        return conn.execute(
+            "UPDATE messages SET active = 0 "
+            "WHERE session_id = ? AND role = 'user' AND active = 1 "
+            f"AND COALESCE({_sql_json_extract('display_metadata', '$.' + QUEUED_PROMPT_METADATA_KEY)}, 0) = 1",
+            (session_id,),
+        ).rowcount
+
+    def retire_undrained_queue_rows(self, session_id: str) -> int:
+        """Deactivate busy-queue accept rows that never drained (#125577): a restart discarded the
+        in-memory queue, so nothing re-placed/deactivated the row written at accept time and
+        alternation repair would glue the never-run prompt into the previous turn's user message.
+        The drain's replacement row carries no marker, so still-marked == never drained; a
+        dispatched-then-interrupted turn's row is never marked (its discard is handled in-process,
+        #123532). Deactivated, never deleted — the row stays as history.
+
+        Split out of :meth:`reopen_session` so the read-only mount paths (#85303: resume,
+        lazy watch, hydration) can retire stale accept rows WITHOUT clearing ``ended_at`` —
+        after a restart the marked row would otherwise stay active and visible on every
+        mount until the next send. Idempotent; returns the number of rows retired.
+        """
+        return self._execute_write(
+            lambda conn: self._retire_undrained_queue_rows_conn(conn, session_id))
+
     def reopen_session(self, session_id: str) -> None:
         """Clear ended_at/end_reason so a session can be resumed; first freeze markerless legacy reset
         children, skipping explicit fork/delegate provenance and children that predate the parent itself.
         The guard compares against the parent's started_at, not its current ended_at: a parent that was
         reopened and re-ended later still owns reset children from its earlier boundaries."""
         def _do(conn):
+            self._retire_undrained_queue_rows_conn(conn, session_id)
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
                 "COALESCE(child.model_config, '{}'), '$._reset_from', child.parent_session_id) "
@@ -1233,16 +1248,7 @@ class SessionSessionsMixin:
                 tip.message_count,
                 tip.tool_call_count,
                 rt.activity AS last_active,
-                COALESCE(
-                    (SELECT {_PREVIEW_RAW_SELECT}
-                     FROM messages m
-                     WHERE m.session_id = tip.id
-                       AND m.role = 'user'
-                       AND m.content IS NOT NULL
-                       AND {_PREVIEW_ELIGIBLE_SQL}
-                     ORDER BY m.timestamp, m.id LIMIT 1),
-                    ''
-                ) AS _preview_raw,
+                {_sql_preview_raw('tip.id')},
                 CASE WHEN s.id != tip.id THEN s.id ELSE NULL END
                     AS _lineage_root_id
             FROM ranked_tips rt
@@ -1333,7 +1339,7 @@ class SessionSessionsMixin:
         select_head = (
             f"SELECT {self._compact_session_cols() if compact_rows else 's.*'}"
             + ("" if compact_rows else ", COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved")
-            + f",\n                    {_PREVIEW_COL_SQL},\n                    "
+            + f",\n                    {_sql_preview_raw()},\n                    "
         )
         prompt_join = (
             "" if compact_rows else "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash"
@@ -1468,6 +1474,16 @@ class SessionSessionsMixin:
         if message_count > max_messages:
             raise SessionExportTooLargeError(session_id, message_count, max_messages)
         return message_count
+
+    def assert_exports_safe(self, session_ids, max_messages: Optional[int] = None) -> None:
+        """assert_export_safe for each id with the limit resolved once; 0 disables (no queries)."""
+        from hermes_state import resolved_max_export_messages
+        if max_messages is None:
+            max_messages = resolved_max_export_messages()
+        if max_messages == 0:
+            return
+        for session_id in session_ids:
+            self.assert_export_safe(session_id, max_messages=max_messages)
 
     def _is_explicit_branch_session(self, session_id: str) -> bool:
         """Copied user-facing branch (``_branched_from``)? Branches own a copied transcript;
@@ -1650,8 +1666,13 @@ class SessionSessionsMixin:
 
     def delete_session_if_empty(self, session_id: str, sessions_dir: Optional[Path] = None) -> bool:
         """Delete *session_id* only if it has no messages, no title and no children; check and delete
-        share one transaction so a concurrent flush can't be lost."""
+        share one transaction so a concurrent flush can't be lost. A row under an active turn lease
+        or compression lock is never a candidate: the emptiness predicate reads committed state, so a
+        row whose first turn is already leased but not yet flushed would be deleted mid-turn
+        (#123583). A guarded row is simply not deleted (returns ``False``), like any non-empty row."""
         def _do(conn):
+            if self._guarded_ids(conn, [session_id]):
+                return False
             cursor = conn.execute(
                 """
                 DELETE FROM sessions

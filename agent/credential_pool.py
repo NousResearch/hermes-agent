@@ -22,7 +22,7 @@ from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret, get_secret_str
 from agent.retry_utils import reset_delay_from_message
 from hermes_cli.auth_plugin_providers import plugin_refresh_hook
-from agent.credential_pool_plugin import apply_plugin_refresh_result, recover_failed_plugin_refresh
+from agent.credential_pool_plugin import apply_plugin_refresh_result, plugin_row_is_expiring, recover_failed_plugin_refresh
 from agent.credential_persistence import (
     fingerprint_secret_value,
     is_borrowed_credential_source,
@@ -974,6 +974,12 @@ REFRESHABLE_OAUTH_PROVIDERS = frozenset({"anthropic", "nous", *_TOKENS_SINGLETON
 # its refresh path serializes on its own auth-store lock (``_refresh_entry_impl`` nous branch).
 _SINGLE_USE_REFRESH_PROVIDERS = ("openai-codex", "xai-oauth", "anthropic")
 
+# Lock-free window between consecutive auth-store holds in a deferred refresh sweep
+# (_refresh_pending_entries): a waiter with a shorter timeout (Desktop assistant start,
+# AUTH_LOCK_TIMEOUT_SECONDS = 15s) can acquire between two entries' holds instead of
+# starving behind the whole chain of single-use refreshes (#124533).
+_REFRESH_SWEEP_SPACING_SECONDS = 0.5
+
 _REFRESH_TIMEOUT_ENV_VARS = {
     "openai-codex": "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS",
     "xai-oauth": "HERMES_XAI_REFRESH_TIMEOUT_SECONDS",
@@ -1040,6 +1046,16 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         """
         with self._lock:
             available, _pending = self._available_entries(model=model)
+            return bool(available)
+
+    def lift_reopened_cooldowns(self, *, model: Optional[str] = None) -> bool:
+        """Clear cooldowns that have elapsed or (Codex) reopened early, then report availability.
+
+        The lift ``select()`` performs, without leasing an entry. ``has_available`` and
+        ``next_available_at`` never run the early-reopen probe.
+        """
+        with self._lock:
+            available, _pending = self._available_entries(clear_expired=True, model=model)
             return bool(available)
 
     def next_available_at(self, *, model: Optional[str] = None) -> Optional[float]:
@@ -1216,8 +1232,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         normalized_error = _normalize_error_context(error_context)
         # Permanent OAuth failures become STATUS_DEAD, not STATUS_EXHAUSTED:
         # otherwise a revoked credential re-enters rotation every hour and
-        # fails immediately until the user removes it (#32849).
-        terminal = self._is_terminal_auth_failure(status_code, normalized_error)
+        # fails immediately until the user removes it (#32849); a row whose
+        # refresh grant just went DEAD stays DEAD on the 401 that follows.
+        terminal = entry.last_status == STATUS_DEAD or self._is_terminal_auth_failure(status_code, normalized_error)
         # Carry the classifier's verdict so the cooldown is sized by what
         # actually failed (a billing 403 must not get the sole-credential
         # transient cooldown); absent a classification, clear a stale one.
@@ -1967,10 +1984,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
     def _entry_needs_refresh(self, entry: PooledCredential) -> bool:
         if entry.auth_type != AUTH_TYPE_OAUTH:
             return False
-        if self.provider == "anthropic":
-            if entry.expires_at_ms is None:
-                return False
-            return int(entry.expires_at_ms) <= int(time.time() * 1000) + 120_000
+        if self.provider == "anthropic" or plugin_refresh_hook(self.provider) is not None:
+            return plugin_row_is_expiring(entry)  # expiry-stamped rows: rotate 2 min ahead of expires_at_ms
         if self.provider == "openai-codex":
             return _codex_access_token_is_expiring(entry.access_token, CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)
         if self.provider == "xai-oauth":
@@ -2004,8 +2019,20 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         Each refresh takes the cross-process ``_auth_store_lock`` (20+ s
         possible) and merges into the pool through the self-locking mutation
         primitives; failures are silently skipped.
+
+        Entries are refreshed one at a time with a lock-free spacing window
+        between consecutive holds: ``_refresh_entry`` legitimately keeps the
+        store lock across its POST (single-use-token safety — sync -> POST ->
+        write-back must be atomic across processes), so a back-to-back chain
+        of N holds can starve a waiter on the same profile's auth.json whose
+        timeout is shorter (a Desktop assistant start, AUTH_LOCK_TIMEOUT_SECONDS
+        = 15s, vs the holder's max(15s, refresh_timeout + 5s)) for the whole
+        sweep (#124533). A short window between holds lets the waiter's
+        50ms poll cadence interleave; the chain still finishes promptly.
         """
-        for entry in pending:
+        for index, entry in enumerate(pending):
+            if index:
+                time.sleep(_REFRESH_SWEEP_SPACING_SECONDS)
             self._refresh_entry(entry, force=False)
 
     def _reset_cleared_after(self, entry: PooledCredential) -> Optional[float]:
@@ -2101,6 +2128,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 ):
                     continue
                 if clear_expired:
+                    # The probe may have rotated this row's single-use token pair: clear the
+                    # cooldown on the live row, not on this pre-probe copy.
+                    entry = self._find(lambda e, i=entry.id: e.id == i) or entry
                     entry = self._adopt(entry, persist=False, **_MARK_OK)
                     cleared_any = True
             if refresh and self._entry_needs_refresh(entry):

@@ -105,6 +105,10 @@ _ONESHOT_CLEANUPS = (
     ("tools.browser_tool_lifecycle", "_emergency_cleanup_all_sessions", {}, Exception),
     ("tools.mcp_tool_lifecycle", "shutdown_mcp_servers", {}, BaseException),
     ("agent.auxiliary_client", "shutdown_cached_clients", {}, Exception),
+    # A no-op unless this run booted the managed llama-server (atexit's hook is skipped here).
+    ("hermes_cli.local_runtime.bootstrap", "shutdown_local_runtime", {}, Exception),
+    # The atexit hook that closes the metrics session never runs past os._exit.
+    ("hermes_cli.observability.relay_shared_metrics", "shutdown_runtimes", {}, Exception),
 )
 
 
@@ -342,7 +346,6 @@ from typing import Optional
 
 
 from hermes_cli.subcommands.cron import build_cron_parser
-from hermes_cli.subcommands.sync import build_sync_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
@@ -593,6 +596,7 @@ def _apply_profile_override() -> None:
     _explicit_cli_profile = None
     argv = sys.argv[1:]
     profile_name, consume, profile_index = _scan_profile_flag(argv)
+    from_sticky_profile = False
 
     # HERMES_HOME already set with no explicit flag: trust it only when it
     # points at a specific profile dir ("profiles" as immediate parent). If it
@@ -614,6 +618,7 @@ def _apply_profile_override() -> None:
                 name = active_path.read_text(encoding="utf-8-sig").strip()
                 if name and name != "default":
                     profile_name = name  # consume stays 0: nothing to strip
+                    from_sticky_profile = True
         except (UnicodeDecodeError, OSError):
             pass  # corrupted file, skip
 
@@ -625,8 +630,21 @@ def _apply_profile_override() -> None:
         hermes_home = resolve_profile_env(profile_name)
     except FileNotFoundError as exc:
         hermes_home = _resolve_sudo_user_profile_env(profile_name)
+        error = str(exc)
+        if not hermes_home and from_sticky_profile:
+            from hermes_cli.main_profile_recovery import is_stale_profile_recovery_command
+
+            if is_stale_profile_recovery_command(argv):
+                hermes_home = resolve_profile_env("default")
+                print(
+                    f"Warning: saved profile '{profile_name}' no longer exists; "
+                    "running this recovery command in the default profile.",
+                    file=sys.stderr,
+                )
+            else:
+                error = f"Saved profile '{profile_name}' no longer exists. Switch back with: hermes profile use default"
         if not hermes_home:
-            print(f"Error: {exc}", file=sys.stderr)
+            print(f"Error: {error}", file=sys.stderr)
             sys.exit(1)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -773,6 +791,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_plugin_provider,
     _is_profile_plugin_flow_provider,
 )
+from hermes_cli.model_setup_flows_local import _model_flow_local
 logger = logging.getLogger(__name__)
 from hermes_cli.main_agent_cmds import (
     cmd_acp,
@@ -784,7 +803,6 @@ from hermes_cli.main_agent_cmds import (
 )
 from hermes_cli.main_platform_setup import (
     cmd_slack,
-    cmd_sync,
     cmd_whatsapp,
     cmd_whatsapp_cloud,
 )
@@ -1334,102 +1352,6 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
     return None
 
 
-def _probe_container(cmd: list, backend: str, via_sudo: bool = False):
-    """Run a container inspect probe, returning the CompletedProcess.
-
-    Catches TimeoutExpired specifically for a human-readable message;
-    all other exceptions propagate naturally.
-    """
-    try:
-        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
-    except subprocess.TimeoutExpired:
-        label = f"sudo {backend}" if via_sudo else backend
-        print(
-            f"Error: timed out waiting for {label} to respond.\n"
-            f"The {backend} daemon may be unresponsive or starting up.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-
-def _exec_in_container(container_info: dict, cli_args: list):
-    """Replace the current process with a command inside the managed container.
-
-    Probes whether sudo is needed (rootful containers), then os.execvp
-    into the container. On success the Python process is replaced entirely
-    and the container's exit code becomes the process exit code (OS semantics).
-    On failure, OSError propagates naturally.
-
-    Args:
-        container_info: dict with backend, container_name, exec_user, hermes_bin
-        cli_args: the original CLI arguments (everything after 'hermes')
-    """
-
-    backend = container_info["backend"]
-    container_name = container_info["container_name"]
-    exec_user = container_info["exec_user"]
-    hermes_bin = container_info["hermes_bin"]
-
-    runtime = shutil.which(backend)
-    if not runtime:
-        print(
-            f"Error: {backend} not found on PATH. Cannot route to container.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # Rootful containers (NixOS systemd service) are invisible to unprivileged
-    # users — Podman uses per-user namespaces, Docker needs group access.
-    # Probe whether the runtime can see the container; if not, try via sudo.
-    inspect_cmd = [runtime, "inspect", "--format", "ok", container_name]
-    cmd_prefix = [runtime]
-    if _probe_container(inspect_cmd, backend).returncode != 0:
-        sudo_path = shutil.which("sudo")
-        if not sudo_path:
-            print(
-                f"Error: container '{container_name}' not found via {backend}.\n"
-                f"The container may be running under root. Try: sudo hermes {' '.join(cli_args)}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        cmd_prefix = [sudo_path, "-n", runtime]
-        if _probe_container(cmd_prefix[:2] + inspect_cmd, backend, via_sudo=True).returncode != 0:
-            print(
-                f"Error: container '{container_name}' not found via {backend}.\n"
-                f"\n"
-                f"The container is likely running as root. Your user cannot see it\n"
-                f"because {backend} uses per-user namespaces. Grant passwordless\n"
-                f"sudo for {backend} — the -n (non-interactive) flag is required\n"
-                f"because a password prompt would hang or break piped commands.\n"
-                f"\n"
-                f"On NixOS:\n"
-                f"\n"
-                f"  security.sudo.extraRules = [{{\n"
-                f'    users = [ "{os.getenv("USER", "your-user")}" ];\n'
-                f'    commands = [{{ command = "{runtime}"; options = [ "NOPASSWD" ]; }}];\n'
-                f"  }}];\n"
-                f"\n"
-                f"Or run: sudo hermes {' '.join(cli_args)}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    env_flags = []
-    for var in ("TERM", "COLORTERM", "LANG", "LC_ALL"):
-        val = os.environ.get(var)
-        if val:
-            env_flags.extend(["-e", f"{var}={val}"])
-
-    exec_cmd = (
-        cmd_prefix
-        + ["exec", "-it" if sys.stdin.isatty() else "-i", "-u", exec_user]
-        + env_flags
-        + [container_name, hermes_bin]
-        + cli_args
-    )
-    os.execvp(exec_cmd[0], exec_cmd)
-
-
 def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     """Resolve a session title or ID to a session ID (None if neither matches).
 
@@ -1851,6 +1773,9 @@ def cmd_chat(args):
         os.environ["HERMES_SESSION_SOURCE_EXPLICIT"] = "1"
 
     _pin_kanban_board_env()
+    from hermes_cli.observability.shared_metrics_consent import offer_consent_before_chat
+
+    offer_consent_before_chat(args)
     _confirm_startup_expensive_model_override(args)
 
     passthrough = {k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH}
@@ -2002,6 +1927,7 @@ _PROVIDER_MODEL_FLOWS = {
     "copilot-acp": lambda c, m, a: _model_flow_copilot_acp(c, m),
     "copilot": lambda c, m, a: _model_flow_copilot(c, m),
     "custom": lambda c, m, a: _model_flow_custom(c),
+    "llamacpp": lambda c, m, a: _model_flow_local(c, m),
     "anthropic": lambda c, m, a: _model_flow_anthropic(c, m),
     "kimi-coding": lambda c, m, a: _model_flow_kimi(c, m),
     "stepfun": lambda c, m, a: _model_flow_stepfun(c, m),
@@ -2344,14 +2270,14 @@ def cmd_uninstall(args):
         return
 
     if getattr(args, "gui", False):
-        if not getattr(args, "yes", False):
+        if not getattr(args, "yes", False) and not getattr(args, "dry_run", False):
             _require_tty("uninstall --gui")
         from hermes_cli.uninstall import run_gui_uninstall
 
         run_gui_uninstall(args)
         return
 
-    if not getattr(args, "yes", False):
+    if not getattr(args, "yes", False) and not getattr(args, "dry_run", False):
         _require_tty("uninstall")
     from hermes_cli.uninstall import run_uninstall
 
@@ -2472,6 +2398,10 @@ from hermes_cli.update_receipt import update_receipt_scope
 @update_receipt_scope()
 def cmd_update(args):
     """Update Hermes Agent: hangup protection + update lock around ``_cmd_update_impl``."""
+    # Marks this frame as the CURRENT updater for
+    # _old_updater.in_historical_update(); historical on-disk updaters do not
+    # declare this local, so only they hand off through retired shims.
+    _hermes_current_updater_frame = True
     from hermes_cli.update_owning_install import retarget_to_owning_install
 
     retarget_to_owning_install(PROJECT_ROOT)
@@ -2489,7 +2419,7 @@ def cmd_update(args):
         describe_holder,
     )
 
-    _update_lock = UpdateLock()
+    _update_lock = UpdateLock(install_root=PROJECT_ROOT)
     if not _update_lock.acquire():
         print(describe_holder(_update_lock.holder))
         _finalize_update_output(_update_io_state)
@@ -2499,10 +2429,17 @@ def cmd_update(args):
     from hermes_cli.update_cmd import _cmd_update_impl
     from pm import InstallError
 
+    def _custody_refusal() -> str | None:
+        # m2: readers swallow an OSError, so a refused update child can end the run as a misleading
+        # downstream error; the refusal is what stopped it. Never on POSIX (nothing refuses there).
+        custody = sys.modules.get("hermes_cli.update_custody")
+        return custody.refusal_notice() if custody is not None else None
+
     try:
         _cmd_update_impl(args, gateway_mode=gateway_mode)
     except (InstallError, OSError, subprocess.SubprocessError) as exc:
-        print(f"✗ Update failed: {exc}")
+        refusal = _custody_refusal()
+        print(refusal or f"✗ Update failed: {exc}")
         _finalize_update_receipt(1, f"{type(exc).__name__}: {exc}")
         if gateway_mode:
             from hermes_cli.update_cmd_fleet import _write_gateway_update_exit_code
@@ -2514,6 +2451,8 @@ def cmd_update(args):
         # reach an inner finalize. Persist any still-open receipt with the real
         # exit code (no-op if already finalized), then let the exit proceed.
         _code = _update_exit.code if isinstance(_update_exit.code, int) else 1
+        if _code and (refusal := _custody_refusal()):
+            print(refusal)
         _finalize_update_receipt(_code, f"sys.exit({_code})")
         if gateway_mode and _code:
             from hermes_cli.update_cmd_fleet import _write_gateway_update_exit_code
@@ -2792,6 +2731,7 @@ def cmd_dashboard(args):
     _ssh_session_token = _read_ssh_session_token_file(_token_file) if _token_file else None
     _mcp_discovery_after_bind = _dashboard_prepare_runtime(args, _headless_backend)
 
+    from hermes_cli.dashboard_procs import BACKEND_LOCK_NAME
     from hermes_cli.web_server import start_server
 
     # Interactive auth setup: if this bind will engage the auth gate but no
@@ -2817,6 +2757,8 @@ def cmd_dashboard(args):
         ssh_session_token=_ssh_session_token,
         ssh_owner_nonce=_ssh_owner_nonce,
         start_mcp_discovery_after_bind=_mcp_discovery_after_bind,
+        # The validated token file lives in desktop-ssh/<ownershipId>/, next to the Desktop's lock.
+        ssh_lock_path=Path(_token_file).parent / BACKEND_LOCK_NAME if _token_file else None,
     )
 
 
@@ -2876,7 +2818,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "prompt-size",
         "resume",
         "send", "sessions", "setup",
-        "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
+        "skin", "skills", "slack", "status", "tools", "uninstall", "update",
         "usage", "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",
@@ -3464,7 +3406,6 @@ def _build_cli_parser():
     build_status_parser(subparsers, cmd_status=cmd_status)
     build_pause_parser(subparsers)
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
-    build_sync_parser(subparsers, cmd_sync=cmd_sync)
     build_webhook_parser(subparsers, cmd_webhook=cmd_webhook)
 
     from hermes_cli.subcommands.peer import build_peer_parser
@@ -3658,7 +3599,9 @@ def main():
 
     container_info = get_container_exec_info()
     if container_info:
-        _exec_in_container(container_info, sys.argv[1:])
+        from hermes_cli.main_container import exec_in_container
+
+        exec_in_container(container_info, sys.argv[1:])
         sys.exit(1)  # unreachable: execvp replaces the process or raises
 
     args = _parse_cli_args(parser, subparsers, sys.argv[1:])

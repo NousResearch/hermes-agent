@@ -223,13 +223,17 @@ class LlamaServerSupervisor:
     def _write_state(self) -> None:
         import os
         import psutil
+        from gateway.status import get_process_start_time
         from utils import atomic_json_write
 
         proc = psutil.Process(self.proc.pid)
+        # create_time stays for runtimes that predate start_time.
         self._state = {"base_url": self.base_url, "api_key": self.api_key,
                        "pid": proc.pid, "create_time": proc.create_time(),
+                       "start_time": get_process_start_time(proc.pid),
                        "executable": proc.exe(), "owner_pid": os.getpid(),
-                       "owner_create_time": psutil.Process().create_time()}
+                       "owner_create_time": psutil.Process().create_time(),
+                       "owner_start_time": get_process_start_time(os.getpid())}
         path = state_path()
         from hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(path.parent)

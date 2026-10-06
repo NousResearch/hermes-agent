@@ -67,7 +67,7 @@ def _apply_request_chain(
     from hermes_cli.plugins import invoke_middleware
 
     current = kwargs[payload_key]
-    for result in invoke_middleware(kind, **middleware_payload(**kwargs)):
+    for result in invoke_middleware(kind, _payload_key=payload_key, **middleware_payload(**kwargs)):
         if not isinstance(result, dict):
             continue
         next_payload = result.get(payload_key)

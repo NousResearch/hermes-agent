@@ -291,13 +291,16 @@ class TestTierLadder:
     def _index(project_env):
         import agent.prompt_builder as pb
         import tools.skills_tool as st
+        extra_roots = [(su.TIER_PROJECT, d) for d in su.get_project_skills_dirs()]
         return pb._build_skills_system_prompt_inner(
-            st._skills_dir(), [], None, None, None, su.get_project_skills_dirs())
+            st._skills_dir(), extra_roots, None, None, None)
 
     def test_project_tier_scans_last(self, project_env):
         _trust(project_env["config"], project_env["repo"])
         import tools.skills_tool as st
-        project_dirs, all_dirs, active = st._skill_search_dirs()
+        roots, active = st._skill_search_dirs()
+        all_dirs = [d for _t, d in roots]
+        project_dirs = [d for t, d in roots if t == su.TIER_PROJECT]
         assert project_dirs, "trusted repo must contribute the project tier"
         assert all_dirs.index(active) < all_dirs.index(project_dirs[0])
 
@@ -306,8 +309,8 @@ class TestTierLadder:
         _trust(project_env["config"], project_env["repo"])
         import tools.skills_tool as st
         assert "repo-skill" in [s["name"] for s in st._find_all_skills()]
-        project_dirs, all_dirs, _active = st._skill_search_dirs()
-        error, _skill_dir, skill_md = st._locate_skill("repo-skill", None, project_dirs, all_dirs)
+        roots, _active = st._skill_search_dirs()
+        error, _skill_dir, skill_md = st._locate_skill("repo-skill", None, roots)
         assert error is None
         assert skill_md == project_env["repo"] / ".hermes" / "skills" / "repo-skill" / "SKILL.md"
         index = self._index(project_env)
@@ -322,8 +325,8 @@ class TestTierLadder:
         hits = [s for s in st._find_all_skills() if s["name"] == "repo-skill"]
         assert len(hits) == 1, "a name must resolve to exactly one skill in the index"
         assert hits[0]["description"].strip() == "curated copy"
-        project_dirs, all_dirs, _active = st._skill_search_dirs()
-        error, _skill_dir, skill_md = st._locate_skill("repo-skill", None, project_dirs, all_dirs)
+        roots, _active = st._skill_search_dirs()
+        error, _skill_dir, skill_md = st._locate_skill("repo-skill", None, roots)
         assert error is None
         assert skill_md == curated_md, "loader must not serve the lower project tier"
         # The index must carry the curated copy's description, never the shadowed project one.
@@ -342,7 +345,7 @@ class TestTierLadder:
         hits = [s for s in st._find_all_skills() if s["name"] == "repo-skill"]
         assert len(hits) == 1
         assert hits[0]["description"].strip() == "shared copy"
-        project_dirs, all_dirs, _active = st._skill_search_dirs()
-        error, _skill_dir, skill_md = st._locate_skill("repo-skill", None, project_dirs, all_dirs)
+        roots, _active = st._skill_search_dirs()
+        error, _skill_dir, skill_md = st._locate_skill("repo-skill", None, roots)
         assert error is None
         assert skill_md == shared_md

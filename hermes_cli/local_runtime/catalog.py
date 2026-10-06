@@ -20,6 +20,7 @@ from hermes_cli.local_runtime.context_policy import (
     FLOOR, RUNTIME_OVERHEAD_BYTES, TARGET_WINDOW, LaunchPlan, plan_launch)
 from hermes_cli.local_runtime.estimator import HardwareBudget, LayerKind, ModelProfile, PhysicsRefusal
 from hermes_cli.local_runtime.gguf import model_id_from_stem
+from hermes_platform.host.products import is_nvidia_n1x_pci_id
 
 logger = logging.getLogger(__name__)
 
@@ -189,10 +190,12 @@ _MEASURED_DECODE_TOK_S = {
 def predicted_decode_tok_s(entry: CatalogEntry, variant: QuantVariant, budget: HardwareBudget, *,
                            spilled: bool = False, backend: str = "auto") -> float:
     """Shipped measured baseline where matched, otherwise the memory-bound estimate."""
-    # A named NVIDIA device uses CUDA under the normal automatic backend policy.
-    effective_backend = "cuda" if backend == "auto" and budget.gpu_name else backend
     # Drivers may append a parenthesized description to the stable device name.
     gpu_name = budget.gpu_name.partition(" (")[0]
+    # Resolve PCI identity to the existing reference key; names only backfill missing IDs.
+    if budget.gpu_pci_id is not None:
+        gpu_name = "NVIDIA RTX Spark N1X" if is_nvidia_n1x_pci_id(budget.gpu_pci_id) else ""
+    effective_backend = "cuda" if backend == "auto" and gpu_name else backend
     key = (budget.platform, effective_backend, gpu_name, entry.id, variant.quant, entry.mtp_draft_depth)
     if budget.uma and entry.mtp and not spilled and (measured := _MEASURED_DECODE_TOK_S.get(key)) is not None:
         return measured

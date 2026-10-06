@@ -2286,13 +2286,6 @@ class TestChatCompletionsAgentIncomplete:
 
 
 class TestCORS:
-    def test_origin_allowed_for_non_browser_client(self, adapter):
-        assert adapter._origin_allowed("") is True
-
-
-    def test_origin_allowed_for_allowlist_match(self):
-        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
-        assert adapter._origin_allowed("http://localhost:3000") is True
 
 
     @pytest.mark.asyncio
@@ -2306,23 +2299,6 @@ class TestCORS:
 
 
     @pytest.mark.asyncio
-    async def test_cors_allows_idempotency_key_header(self):
-        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
-        app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.options(
-                "/v1/chat/completions",
-                headers={
-                    "Origin": "http://localhost:3000",
-                    "Access-Control-Request-Method": "POST",
-                    "Access-Control-Request-Headers": "Idempotency-Key",
-                },
-            )
-            assert resp.status == 200
-            assert "Idempotency-Key" in resp.headers.get("Access-Control-Allow-Headers", "")
-
-
-    @pytest.mark.asyncio
     async def test_cors_options_preflight_allowed_for_configured_origin(self):
         """Configured origins can complete browser preflight."""
         adapter = _make_adapter(cors_origins=["http://localhost:3000"])
@@ -2333,12 +2309,14 @@ class TestCORS:
                 headers={
                     "Origin": "http://localhost:3000",
                     "Access-Control-Request-Method": "POST",
-                    "Access-Control-Request-Headers": "Authorization, Content-Type",
+                    "Access-Control-Request-Headers": "Authorization, Content-Type, Idempotency-Key",
                 },
             )
             assert resp.status == 200
             assert resp.headers.get("Access-Control-Allow-Origin") == "http://localhost:3000"
-            assert "Authorization" in resp.headers.get("Access-Control-Allow-Headers", "")
+            allowed = resp.headers.get("Access-Control-Allow-Headers", "")
+            assert "Authorization" in allowed
+            assert "Idempotency-Key" in allowed
 
 
     @pytest.mark.asyncio

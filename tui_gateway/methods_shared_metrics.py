@@ -17,22 +17,11 @@ method = _registry.method
 _profile_scoped = _registry.profile_scoped
 
 
-def _shared_metrics_section(cfg) -> dict:
-    telemetry = cfg.get("telemetry") if isinstance(cfg, dict) else None
-    section = telemetry.get("shared_metrics") if isinstance(telemetry, dict) else None
-    return section if isinstance(section, dict) else {}
-
-
 def _shared_metrics_consent(cfg) -> dict:
-    """``decided`` = the user answered somewhere (either key written explicitly); the shipped
-    defaults are not an answer, so a profile that never saw the question reads undecided."""
-    section = _shared_metrics_section(cfg)
-    enabled = section.get("enabled") is True
-    return {
-        "enabled": enabled,
-        "send": enabled and section.get("send") is True,
-        "decided": "enabled" in section or "send" in section,
-    }
+    """The one ``{enabled, send, decided, reask}`` reading every surface shares (CLI offer included)."""
+    from hermes_cli.observability.shared_metrics_consent import consent_state
+
+    return consent_state(cfg)
 
 
 def _shared_metrics_record_setup_completed(cfg) -> None:
@@ -45,10 +34,17 @@ def _shared_metrics_record_setup_completed(cfg) -> None:
     record_setup_completed(surface="desktop", provider=provider if isinstance(provider, str) and provider else None)
 
 
+def _tui_model_friction(signal, session, turns=1):
+    from hermes_cli.observability.shared_metrics_model import record_model_friction
+    record_model_friction(
+        signal, session_id=session.get("session_key"), agent=session.get("agent"),
+        hermes_home=session.get("profile_home"), turns=turns)
+
+
 @method("shared_metrics.status")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    """``{enabled, send, decided}`` for the focused profile. A pure read of config.yaml (no defaults
+    """``{enabled, send, decided, reask}`` for the focused profile. A pure read of config.yaml (no defaults
     merged, so ``decided`` sees only what the user wrote)."""
     try:
         return _ok(rid, _shared_metrics_consent(_load_cfg()))
@@ -62,18 +58,13 @@ def _(rid, params: dict) -> dict:
     """Write both opt-ins at once and reconcile the consent windows. ``send`` is forced off when
     ``enabled`` is off (the wizard's rule: sending cannot outlive collection, and turning collection
     off withdraws send consent). ``first_run`` marks the Desktop first-run answer, which also records
-    the setup-completed metric. Answers the stored ``{enabled, send, decided}``."""
+    the setup-completed metric. Answers the stored ``{enabled, send, decided, reask}``."""
     enabled = params.get("enabled") is True
     send = enabled and params.get("send") is True
+    from hermes_cli.observability.shared_metrics_consent import set_answer
     try:
         cfg = _load_cfg_raw()
-        telemetry = cfg.get("telemetry")
-        if not isinstance(telemetry, dict):
-            telemetry = cfg["telemetry"] = {}
-        section = telemetry.get("shared_metrics")
-        if not isinstance(section, dict):
-            section = telemetry["shared_metrics"] = {}
-        section["enabled"], section["send"] = enabled, send
+        set_answer(cfg, enabled, send)
         _save_cfg(cfg)
     except Exception as e:
         return _err(rid, 5096, str(e))

@@ -219,6 +219,31 @@ class CompressionLockHeld(Exception):
         super().__init__(f"Compression lock held: {holder or 'unknown'}")
 
 
+class CompressionBusy(Exception):
+    """Raised by _manual_compress_turn when a turn already holds the session; callers map it to their busy reply."""
+
+
+@contextlib.contextmanager
+def _manual_compress_turn(sid: str, session: dict):
+    """Hold the session busy (``running``) for a whole manual compaction: snapshot, LLM summary, commit
+    and session-key re-anchor. A prompt.submit arriving meanwhile takes the busy path (demoted to queue
+    by ``_session_compression_in_flight``) instead of snapshotting a history version the compaction is
+    about to bump, which dropped the turn's reply (#133504). The queued prompt drains on release."""
+    with session["history_lock"]:
+        if session.get("running"):
+            raise CompressionBusy(busy_message("compress", bool(session.get("_manual_compress_active"))))
+        session["running"] = session["_manual_compress_active"] = True
+    try:
+        yield
+    finally:
+        with session["history_lock"]:
+            session.pop("_manual_compress_active", None)
+            session["running"] = False
+        # The compaction emitted session.info with running=true; close that edge or Desktop latches busy.
+        _emit_session_info_for_session(sid, session)
+        _drain_queued_prompt("__compress__", sid, session)
+
+
 def _compress_session_history(
     session: dict, focus_topic: str | None = None, approx_tokens: int | None = None,
     before_messages: list | None = None, history_version: int | None = None,
@@ -244,8 +269,13 @@ def _compress_session_history(
     # RPC thread: bind the session cwd, or the boundary prompt rebuild resolves the backend's cwd and
     # persists a prompt every other process then rejects as stale runtime (fresh build, no tools pin).
     tokens = _set_session_context(session.get("session_key") or "", cwd=_session_cwd(session))
+    def snapshot_is_current():
+        with session["history_lock"]:
+            return int(session.get("history_version", 0)) == history_version
+
     try:
-        result = compress_now(agent, before_messages, request, task_id=session.get("session_key") or "default")
+        result = compress_now(agent, before_messages, request, task_id=session.get("session_key") or "default",
+                              snapshot_is_current=snapshot_is_current)
     finally:
         _clear_session_context(tokens)
     if result.status == "preview":

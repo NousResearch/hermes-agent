@@ -1,0 +1,89 @@
+name: fxmacrodata
+repo: https://github.com/fxmacrodata/hermes-fxmacrodata
+sha: 5b52feced342f945bb41b3fdb60c668f1f21d374
+description: "FXMacroData macro and FX research: official-source economic releases, indicator history, release calendars, policy rates, yield curves, FX, commodities and COT positioning, with source citations. Native tools for 23 REST operations and 49 hosted MCP tools, plus a /fxmacrodata USD brief command. Disclosure — tool calls send their arguments over HTTPS to api.fxmacrodata.com and mcp.fxmacrodata.com only, with FXMACRODATA_API_KEY in a request header when it is set. The key is optional: without it the data catalogue, the USD release calendar and recent USD releases (15-minute delay) work, and other data answers with a subscribe message. No files written, no shell commands, no background processes, no telemetry. It also adds a short research-guidance section to the system prompt and 72 tools in the fxmacrodata toolset; MCP tool behaviour is served remotely and not covered by the pinned sha."
+maintainer: fxmacrodata
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+docs_url: https://github.com/fxmacrodata/hermes-fxmacrodata#readme
+version: "0.2.0"
+platforms: []
+capabilities:
+  provides_tools:
+  - fxmd_health
+  - fxmd_ping
+  - fxmd_forex
+  - fxmd_intraday_reference_rates
+  - fxmd_fx_sources
+  - fxmd_fx_source_universe
+  - fxmd_data_catalogue
+  - fxmd_release_calendar
+  - fxmd_market_sessions
+  - fxmd_rate_differentials
+  - fxmd_curves
+  - fxmd_financial_prices
+  - fxmd_press_releases
+  - fxmd_risk_sentiment
+  - fxmd_factors
+  - fxmd_event_predictions
+  - fxmd_latest_announcements
+  - fxmd_indicator_history
+  - fxmd_cot
+  - fxmd_latest_commodities
+  - fxmd_commodities
+  - fxmd_announcement_changes
+  - fxmd_stream_events
+  - fxmd_mcp_ping
+  - fxmd_mcp_mcp_capabilities
+  - fxmd_mcp_mcp_auth_guide
+  - fxmd_mcp_subscribe_for_mcp_access
+  - fxmd_mcp_data_catalogue
+  - fxmd_mcp_risk_sentiment
+  - fxmd_mcp_macro_news
+  - fxmd_mcp_release_calendar
+  - fxmd_mcp_release_calendar_visual_artifact
+  - fxmd_mcp_event_predictions
+  - fxmd_mcp_latest_announcements
+  - fxmd_mcp_announcement_changes
+  - fxmd_mcp_press_releases
+  - fxmd_mcp_macro_factor
+  - fxmd_mcp_fx_reference_sources
+  - fxmd_mcp_fx_reference_universe
+  - fxmd_mcp_fx_intraday_reference_rates
+  - fxmd_mcp_rate_curve
+  - fxmd_mcp_rate_differentials
+  - fxmd_mcp_latest_commodities
+  - fxmd_mcp_forex
+  - fxmd_mcp_seasonality
+  - fxmd_mcp_indicator_query
+  - fxmd_mcp_plot_visual_artifact
+  - fxmd_mcp_indicator_visual_artifact
+  - fxmd_mcp_forex_visual_artifact
+  - fxmd_mcp_commodities_visual_artifact
+  - fxmd_mcp_cot_visual_artifact
+  - fxmd_mcp_policy_rate_differential_visual_artifact
+  - fxmd_mcp_macro_briefing_task
+  - fxmd_mcp_indicator_intel_task
+  - fxmd_mcp_pair_intel_task
+  - fxmd_mcp_macro_heatmap_task
+  - fxmd_mcp_policy_scenario_modeler_task
+  - fxmd_mcp_macro_war_room_task
+  - fxmd_mcp_event_impact_replay_task
+  - fxmd_mcp_quant_scenario_lab_task
+  - fxmd_mcp_known_at_time_task
+  - fxmd_mcp_macro_regime_classifier_task
+  - fxmd_mcp_release_risk_score_task
+  - fxmd_mcp_portfolio_risk_engine_task
+  - fxmd_mcp_fx_trade_setup_task
+  - fxmd_mcp_fx_backtest_task
+  - fxmd_mcp_macro_research_pack_task
+  - fxmd_mcp_market_sessions
+  - fxmd_mcp_cot_data
+  - fxmd_mcp_commodities
+  - fxmd_mcp_financial_prices
+  - fxmd_mcp_official_dataset_family
+  - fxmd_usd_macro_brief
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

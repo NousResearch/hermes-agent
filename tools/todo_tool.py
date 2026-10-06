@@ -196,11 +196,6 @@ def todo_tool(todos: Optional[List[Dict[str, Any]]] = None, merge: bool = False,
     if todos is None:
         items = store.read()
     else:
-        if isinstance(todos, str):  # LLMs sometimes send a JSON string instead of a list
-            try:
-                todos = json.loads(todos)
-            except (json.JSONDecodeError, TypeError):
-                return tool_error("todos must be a list of objects, got unparseable string")
         if not isinstance(todos, list):
             return tool_error(f"todos must be a list, got {type(todos).__name__}")
         items = store.write(todos, merge)

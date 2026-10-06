@@ -96,3 +96,32 @@ def test_replaced_record_build_records_reason_and_leaves_agent_unset(monkeypatch
     assert session["agent"] is None
     assert session["agent_ready"].is_set()
     assert session["agent_error"] == AGENT_BUILD_ABANDONED
+
+
+def test_build_finishing_after_close_records_reason_and_closes_orphan(monkeypatch, tmp_path):
+    """A build that finishes after ``session.close`` popped its record closes the late agent and
+    records why nothing attached, exactly like the replaced-before-attach exit (#49852)."""
+    import tui_gateway.entry as entry
+
+    monkeypatch.setattr(server.threading, "Thread", _InlineThread)
+    monkeypatch.setattr(entry, "ensure_mcp_discovery_started", lambda: None)
+    closed: list[str] = []
+    sid = "closed-mid-build"
+
+    def _make_agent_then_close(_sid, _key, **_kwargs):
+        with server._sessions_lock:  # session.close lands while the agent is being constructed
+            server._sessions.pop(sid, None)
+        return types.SimpleNamespace(close=lambda: closed.append("closed"))
+
+    monkeypatch.setattr(server, "_make_agent", _make_agent_then_close)
+    session = _session(None, agent_ready=threading.Event(), cwd=str(tmp_path), profile_home=None)
+    server._sessions[sid] = session
+    try:
+        server._start_agent_build(sid, session)
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert closed == ["closed"]
+    assert session["agent"] is None
+    assert session["agent_ready"].is_set()
+    assert session["agent_error"] == AGENT_BUILD_ABANDONED

@@ -205,7 +205,7 @@ def collect_directory_manifests() -> List[PluginManifest]:
     repo_plugins = _origin.get_bundled_plugins_dir()
     logger.debug("Scanning bundled plugins: %s", repo_plugins)
     _scan("bundled (top-level)", repo_plugins, "bundled",
-          {"memory", "context_engine", "model-providers", "cron_providers"})
+          {"memory", "context_engine", "model-providers", "cron_providers", "computer_use"})
     user_dir = get_hermes_home() / "plugins"
     logger.debug("Scanning user plugins: %s", user_dir)
     _scan("user", user_dir, "user")
@@ -269,8 +269,8 @@ def gate_manifest(
     # Relay lifecycle is core-owned; an old plugin copy would compete for its registries.
     if names & LEGACY_RELAY_PLUGIN_KEYS:
         error = (
-            "removed — Relay lifecycle is owned by Hermes core; configure "
-            f"{RELAY_PLUGINS_CONFIG_ENV} instead"
+            "removed — Relay lifecycle is owned by Hermes core; configure a standard user or system Relay "
+            f"plugins.toml, or use {RELAY_PLUGINS_CONFIG_ENV} for an explicit user-file override"
         )
         return _placeholder(error, logging.WARNING, "Refusing to load removed Hermes Relay plugin '%s'; %s", error)
     if names & disabled:

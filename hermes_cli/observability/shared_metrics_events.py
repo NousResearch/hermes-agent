@@ -52,11 +52,12 @@ def record_slash_command(*, command: str, surface: str) -> None:
 
 
 def record_compression(
-    *, trigger: str, outcome: str, tokens_before: int | None, context_length: int | None
+    *, trigger: str, outcome: str, tokens_before: int | None, context_length: int | None,
+    failure_class: str | None = None,
 ) -> None:
     _emit(
         contract.COMPRESSION_MARK, fields_.compression_fields, trigger=trigger, outcome=outcome,
-        tokens_before=tokens_before, context_length=context_length,
+        tokens_before=tokens_before, context_length=context_length, failure_class=failure_class,
     )
 
 
@@ -64,6 +65,11 @@ def record_compression(
 # included) before they emit, and a stalled attempt's worker can unwind after its stall-fallback retry
 # began on another thread. An attempt begins and emits on one thread (the pool worker or the caller).
 _compression_attempt = threading.local()
+
+# Attempts that ended before anything could fail: another path held the lock, the transcript had
+# nothing summarizable (no LLM call was made), the user stopped it, or a newer attempt replaced it.
+# Counting these as ``failed`` made a session that is simply all protected tail read as broken.
+_SKIPPED_COMPRESSION_CLASSES = contract.COMPRESSION_SKIP_CLASSES
 
 
 def begin_compression_attempt(trigger: str, tokens_before: Any) -> None:
@@ -77,8 +83,16 @@ def finish_compression_attempt(
     pending, _compression_attempt.pending = getattr(_compression_attempt, "pending", None), None
     if not pending:
         return
-    outcome = "success" if commit_status == "committed" else "skipped" if failure_class == "lock_contended" else "failed"
-    record_compression(trigger=pending[0], outcome=outcome, tokens_before=pending[1], context_length=context_length)
+    # Classify the stored value, so the outcome and the recorded reason always agree.
+    reason = fields_.compression_failure_class("failed", failure_class)
+    outcome = (
+        "success" if commit_status == "committed"
+        else "skipped" if reason in _SKIPPED_COMPRESSION_CLASSES else "failed"
+    )
+    record_compression(
+        trigger=pending[0], outcome=outcome, tokens_before=pending[1], context_length=context_length,
+        failure_class=reason,
+    )
     if outcome == "success" and agent is not None:
         from .shared_metrics_efficiency import record_cache_break
 

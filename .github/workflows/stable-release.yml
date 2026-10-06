@@ -17,6 +17,13 @@ on:
 permissions:
   contents: read
 
+# Every reusable workflow called below inherits secrets (`secrets: inherit`)
+# because their release-signing jobs need protected-environment secrets. A
+# called workflow only sees them when the caller inherits AND the called job
+# declares the environment: the job-level `environment:` alone attaches the
+# deployment and exposes `vars`, but leaves `secrets.*` empty
+# (actions/runner#1490). ci.yaml is deliberately excluded — it runs
+# PR-controlled code and must stay secret-free.
 concurrency:
   group: stable-release
   cancel-in-progress: false
@@ -41,7 +48,7 @@ jobs:
       skip-bundles: ${{ steps.admit.outputs.skip-bundles }}
       skip-tests: ${{ steps.admit.outputs.skip-tests }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -76,6 +83,7 @@ jobs:
     if: >-
       !cancelled() && needs.admit.result == 'success'
     uses: ./.github/workflows/docker.yml
+    secrets: inherit
     with:
       release-phase: test
       skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
@@ -109,6 +117,7 @@ jobs:
       contents: read
       actions: read
     uses: ./.github/workflows/termux-verify.yml
+    secrets: inherit
     with:
       release: true
 
@@ -145,6 +154,7 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -165,6 +175,7 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -185,6 +196,7 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -205,6 +217,7 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -227,6 +240,7 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -247,6 +261,7 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -265,7 +280,7 @@ jobs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -299,7 +314,7 @@ jobs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -333,7 +348,7 @@ jobs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -383,7 +398,7 @@ jobs:
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -448,7 +463,7 @@ jobs:
     if: needs.admit.outputs.skip-tests != 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ needs.admit.outputs.commit }}
       - name: Stamp and verify the Cargo and Tauri release identity
@@ -487,7 +502,7 @@ jobs:
             bootstrap-version]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
       - uses: ./.github/actions/setup-pm
@@ -505,6 +520,7 @@ jobs:
     # stable/latest aliases move in the ordered publication pass.
     needs: [admit, docker]
     uses: ./.github/workflows/docker.yml
+    secrets: inherit
     with:
       release-phase: publish
       tag: ${{ needs.admit.outputs.tag }}
@@ -520,6 +536,7 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -533,7 +550,7 @@ jobs:
     needs: [admit, acceptance, publish-docker, publish-bundles]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
       - uses: ./.github/actions/setup-pm
@@ -556,7 +573,7 @@ jobs:
       contents: write
       actions: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0

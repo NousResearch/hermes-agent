@@ -184,6 +184,8 @@ gateway:
     choice_normal: "normal — المعالجة القياسية"
     choice_auto: "auto — سريع في الثواني الأولى من كل دور"
     choice_cold: "cold — سريع في الدور الأول من الجلسة فقط"
+    choice_ultrafast: "ultrafast — ‏OpenAI Ultrafast ‏(GPT-6 Astra، السعر ×6)"
+    ultrafast_not_supported: "⚡ ‏Ultrafast متاح فقط لـ GPT-6 Astra (النموذج الحالي: `{model}`)."
   footer:
     status: "📎 تذييل التشغيل: **{state}**\nالحقول: `{fields}`\nالمنصّة: `{platform}`"
     usage: "الاستخدام: `/footer [on|off|status]`"
@@ -653,6 +655,7 @@ gateway:
     cancelled: "↩️ أُلغي الاستيضاح — ستُعالج رسالتك كمتابعة."
     expired: "⏳ انتهت صلاحية هذه المطالبة — يُرجى إرسال طلب جديد."
     native_stream_placeholder: "💬 في انتظار اختيارك..."
+    skip_hint: 'رُدّ بـ "skip" لتخطي هذا السؤال.'
   errors:
     rate_limited: "⏱️ خدمة نموذج الذكاء الاصطناعي تحدّ من معدّل الطلبات. انتظر قليلًا، ثم استخدم /retry."
     auth_failed: "⚠️ فشل تسجيل الدخول إلى خدمة نموذج الذكاء الاصطناعي. استخدم /login لتسجيل الدخول مجددًا، أو اطلب ممّن يدير هذا البوت تشغيل `hermes doctor` على المضيف."
@@ -1445,8 +1448,6 @@ platform:
   irc:
     quit_message: "جارٍ إيقاف تشغيل Hermes Agent"
     standalone_quit: "تم التسليم"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "الموافقة مرة"
     confirm_always_approve: "الموافقة دائمًا"
@@ -1597,7 +1598,7 @@ slash:
   reasoning:
     description: "إدارة مستوى الاستدلال وطريقة عرضه"
   fast:
-    description: "الوضع السريع — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "الوضع السريع — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "عرض سمة العرض أو تغييرها"
   indicator:
@@ -2032,7 +2033,6 @@ cli:
     clarify_other_type_below: "أخرى (اكتب أدناه)"
     clarify_other_type_answer: "أخرى (اكتب إجابتك)"
     clarify_guidance: "اكتب إجابتك في المطالبة أدناه، ثم اضغط Enter."
-    clarify_question_truncated: "… (السؤال مقتطع)"
     picker_title_provider: "⚙ منتقي النماذج — اختر المزوّد"
     picker_provider_row_one: "{name} ({count} نموذج)"
     picker_provider_row_other: "{name} ({count} نماذج)"
@@ -2077,7 +2077,6 @@ cli:
     hint_vault_username: "يظهر أثناء الكتابة · Enter للمتابعة"
     hint_clarify_freetext: "اكتب إجابتك واضغط Enter"
     hint_clarify_batch: "↑/↓ للاختيار، Enter للتثبيت، Tab للسؤال التالي"
-    hint_clarify_choice: "↑/↓ للاختيار، Enter للتأكيد"
     hint_input_disabled: "الإدخال معطّل مؤقتًا"
     hint_input_queues: "الإدخال يبقى نشطًا؛ Enter يضيف إلى قائمة الانتظار"
     hint_command_running: "{frame} الأمر قيد التنفيذ · {detail}"
@@ -2260,7 +2259,6 @@ cli:
   clarify:
     bell_context: "استيضاح"
     label: "استيضاح"
-    timed_out_agent_decides: "(انتهت مهلة الاستيضاح بعد {timeout} ث — سيقرر الوكيل)"
     timed_out_locked_answers: "(انتهت مهلة الاستيضاح بعد {timeout} ث — أُعيدت الإجابات المثبّتة)"
   connect:
     bell_context: "إعداد الاتصال"
@@ -2355,6 +2353,7 @@ cli:
     removed: "أُزيل العنصر {index} من قائمة الانتظار: {preview}"
     item_not_found: "العنصر {index} غير موجود في قائمة الانتظار. الحجم الحالي: {size}"
     usage_edit: "الاستخدام: /queue edit <number> <new prompt>"
+    usage_remove: "الاستخدام: /queue rm <number>"
     updated: "حُدّث العنصر {index} في قائمة الانتظار: {preview}"
     usage_move: "الاستخدام: /queue move <from> <to>"
     move_out_of_range: "النقل خارج نطاق قائمة الانتظار. الحجم الحالي: {size}"
@@ -2653,7 +2652,9 @@ cli:
       feature_generic: "الوضع السريع"
       feature_anthropic: "الوضع السريع من Anthropic"
       feature_openai: "المعالجة ذات الأولوية"
-      usage: "الاستخدام: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) ‏Ultrafast متاح فقط لـ GPT-6 Astra (النموذج الحالي: {model})."
+      usage: "الاستخدام: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ تم ضبط {feature} على {value} {scope}"
     hatch:
@@ -2718,6 +2719,7 @@ cli:
       restored: "تمت استعادة الحالة من: {snapshot_id}"
       restart_recommended: "يُنصح بإعادة تشغيل عمليات البوّابة/لوحة التحكم لاعتماد تغييرات state.db."
       not_found: "اللقطة غير موجودة: {snapshot_id}"
+      restore_incomplete: "لم تتم استعادة اللقطة {snapshot_id} بالكامل؛ تم رفض بعض الملفات (راجع السجلات)"
       usage_prune: "الاستخدام: /snapshot prune [keep-count]"
       pruned: "تم حذف {deleted} لقطة قديمة (مع الاحتفاظ بـ {keep})."
     export:
@@ -3285,6 +3287,7 @@ cli:
     shallow_clone_keeping: "⚠ استنساخ سطحي — لا يمكن التحقق من حالة الدفع، سيُحتفظ به: {path}"
     next_session_deepens: "جلسة `hermes -w` التالية تعمّق الاستنساخ وتحذف worktrees المدمجة تلقائيًا."
     unpushed_keeping: "⚠ يحتوي worktree على إيداعات غير مدفوعة، سيُحتفظ به: {path}"
+    uncommitted_keeping: "⚠ يحتوي worktree على تغييرات غير مودعة، سيُحتفظ به: {path}"
     clean_up_manually: "للتنظيف يدويًا: git worktree remove --force {path}"
     cleaned_up: "✓ تم تنظيف worktree: {path}"
 display:
@@ -3671,7 +3674,7 @@ tips:
   t197: "يسجّل حفظ المسارات (--save-trajectories) آثار استخدام الأدوات كاملةً لتدريب النماذج."
   t198: "ثلاثة أنواع من الإضافات: عامة (أدوات/خطافات)، ومزوّدو الذاكرة، ومحرّكات السياق."
   t199: "يثبّت hermes plugins install owner/repo الإضافات مباشرة من GitHub."
-  t200: "مزوّدو الذاكرة الخارجيون: Honcho وOpenViking وMem0 مضمّنون؛ وHindsight وغيره عبر hermes plugins install."
+  t200: "مزوّدو الذاكرة الخارجيون: OpenViking وMem0 مضمّنون؛ وHoncho وHindsight وغيرهما عبر hermes plugins install."
   t201: "تشمل خطافات الإضافات pre/post_tool_call وpre/post_llm_call وtransform_terminal_output لتوحيد شكل المخرجات."
   t202: "يقلّل تخزين المطالبات مؤقتًا (Anthropic) التكاليف بإعادة استخدام بادئات موجّه النظام المخزّنة."
   t203: "يولّد الوكيل عناوين الجلسات تلقائيًا في خيط خلفي — دون أي تأثير على زمن الاستجابة."

@@ -8,7 +8,7 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 This page documents Hermes' built-in tools, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts (current registry):** ~100 tools — 10 browser tools (core) + 2 CDP-gated browser tools + 5 browser-vault tools + `browser_exec`, 4 file tools, 4 Home Assistant tools, 2 terminal tools (`terminal`, `process_manage`), 11 desktop-GUI tools (`read_terminal`, `close_terminal`, `desktop_preview`, `drive_preview`, `annotate_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `gui_tour`, `show_tip`, `apply_layout` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 14 kanban tools (registered when the kanban dispatcher spawns the agent), 1 project tool (`desktop_project`; desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob_manage`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo_list`, `computer_use`, `x_search`).
+**Quick counts (current registry):** ~100 tools — 10 browser tools (core) + 2 CDP-gated browser tools + 5 browser-vault tools + `browser_exec`, 4 file tools, 2 terminal tools (`terminal`, `process_manage`), 11 desktop-GUI tools (`read_terminal`, `close_terminal`, `desktop_preview`, `drive_preview`, `annotate_preview`, `read_window_below`, `focus_pane`, `react_to_message`, `gui_tour`, `show_tip`, `apply_layout` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 14 kanban tools (registered when the kanban dispatcher spawns the agent), 1 project tool (`desktop_project`; desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob_manage`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo_list`, `computer_use`, `x_search`).
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp__<server>__` (e.g., `mcp__github__create_issue` for the `github` MCP server). See [MCP Integration](../user-guide/features/mcp.md) for configuration.
@@ -42,19 +42,19 @@ These two tools live in the `browser` toolset but only register when a Chrome De
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `clarify` | Ask the user a question when you need clarification, feedback, or a decision before proceeding. Supports three modes: 1. **Single-select multiple choice** — up to 4 choices; the user picks one or types their own answer via a 5th 'Other' option. 2. **Multi-select multiple choice** — `multi_select=true` renders checkboxes and returns a list of selected choices. 3. **Open-ended** — no choices; the user types a free-form response. Choices are ordered best-first, so the first one is labelled `(Recommended)` on every surface and is the default highlight; the label is presentation only and is stripped from the answer the agent reads. On the classic CLI multi-select uses Space-to-toggle checkboxes; on messaging platforms without native checkbox UIs the user replies with comma/space-separated numbers (e.g. "1, 3") or the option text. | — |
+| `clarify` | Ask the user one or more questions when you need clarification, feedback, or a decision before proceeding. Every call passes `questions`, an array of 1–5 entries (a single question is a one-entry array). Each question supports three modes: 1. **Single-select multiple choice** — up to 4 choices; the user picks one or types their own answer via a 5th 'Other' option. 2. **Multi-select multiple choice** — `multi_select=true` renders checkboxes and returns a list of selected choices. 3. **Open-ended** — no choices; the user types a free-form response. Choices are ordered best-first, so the first one is labelled `(Recommended)` on every surface and is the default highlight; the label is presentation only and is stripped from the answer the agent reads. On the classic CLI multi-select uses Space-to-toggle checkboxes; on messaging platforms without native checkbox UIs the user replies with comma/space-separated numbers (e.g. "1, 3") or the option text. | — |
 
 ### Asking multiple questions at once
 
-The `clarify` tool also accepts a `questions` array (2–5 independent questions, each with its own `choices` and `multi_select`) so the agent can batch several clarification needs into a single prompt instead of asking sequentially. The result is a `responses` array in the same order, with each question's `id` (when supplied) echoed back.
+The `clarify` tool takes a `questions` array (1–5 independent questions, each with its own `choices` and `multi_select`) so the agent can batch several clarification needs into a single prompt instead of asking sequentially. The result is `{responses, outcome}`: a `responses` array in the same order, each entry with the question text, `choices_offered`, a `status` (`answered`, `skipped` or `unanswered`) and `user_response` (null unless answered). `outcome` is `submitted`, `cancelled`, `timed_out` or `undelivered`.
 
 Per-surface behavior:
 
-- **Desktop** shows every question on one card. Picks and typed answers stage locally, and one **Confirm and continue** button (enabled once every question has an answer) submits the whole batch. Staged answers stay editable until that confirm. Skip cancels the whole batch.
-- **TUI and CLI** show a compact status list (`✓` answered / `▸` active / `·` pending) with only the active question's choices expanded. Enter locks the active answer and jumps to the next unanswered question; Tab moves between questions to answer in any order; Esc cancels the batch.
-- **Messaging platforms** (Telegram, Discord, …) fall back to asking the questions one at a time through the existing single-question prompt. If the user stops responding, the remaining questions are not sent.
+- **Desktop** shows every question on one card. Picks and typed answers stage locally, and one **Confirm and continue** button (enabled once at least one question has an answer) submits the whole batch; blank questions are skipped. Staged answers stay editable until that confirm. Skip cancels the whole batch.
+- **TUI and CLI** show a compact status list (`✓` answered / `▸` active / `·` pending) with only the active question's choices expanded. Enter locks the active answer and jumps to the next unanswered question; Tab moves between questions to answer in any order; an empty submit skips that question; Esc cancels the batch.
+- **Messaging platforms** (Telegram, Discord, …) ask the questions one at a time, one card per question. Reply `skip` to skip one question. If the user stops responding, the remaining questions are not sent.
 
-If the prompt times out part-way, answers the user already locked are kept: the tool result carries them plus `"timed_out": true`, with the unanswered entries left blank, so the agent can distinguish a deliberate skip from an absent user. On messaging platforms the result also carries a `"notice"` saying why the wait ended (`[user did not respond within Nm]`, or `[clarify prompt could not be delivered]` when the platform rejected the card — Hermes first retries the question as a plain numbered-list message, and only reports this when that fails too; `[clarify prompt could not be delivered: no chat surface]` when the run has no chat to prompt in), so an undelivered prompt is never reported as user inactivity.
+If the prompt times out part-way, answers the user already locked are kept: the tool result carries them with `"outcome": "timed_out"` and marks the rest `"status": "unanswered"`, so the agent can distinguish a deliberate skip from an absent user. On messaging platforms the result also carries a `"notice"` saying why the wait ended (`[user did not respond within Nm]`, or `[clarify prompt could not be delivered]` when the platform rejected the card — Hermes first retries the question as a plain numbered-list message, and only reports this when that fails too; `[clarify prompt could not be delivered: no chat surface]` when the run has no chat to prompt in), so an undelivered prompt is never reported as user inactivity.
 
 ## `connections` toolset
 
@@ -119,15 +119,6 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 
 For local files, a full unredacted read (including all pages of the same file version) or a successful `write_file` supplies a whole-file baseline. Reading a smaller region afterward does not discard that baseline while the bytes remain unchanged. A changed file, an unread file, or a view with hidden/redacted or clamped content still needs a full current read before replacement; `patch` remains available for targeted edits. Writes made through terminal commands or `execute_code` do not establish a `write_file` baseline.
 
-## `homeassistant` toolset
-
-| Tool | Description | Requires environment |
-|------|-------------|----------------------|
-| `ha_call_service` | Call a Home Assistant service to control a device. Use ha_list_services to discover available services and their parameters for each domain. | — |
-| `ha_get_state` | Get the detailed state of a single Home Assistant entity, including all attributes (brightness, color, temperature setpoint, sensor readings, etc.). | — |
-| `ha_list_entities` | List Home Assistant entities. Optionally filter by domain (light, switch, climate, sensor, binary_sensor, cover, fan, etc.) or by area name (living room, kitchen, bedroom, etc.). | — |
-| `ha_list_services` | List available Home Assistant services (actions) for device control. Shows what actions can be performed on each device type and what parameters they accept. Use this to discover how to control devices found via ha_list_entities. | — |
-
 ## `computer_use` toolset
 
 | Tool | Description | Requires environment |
@@ -136,7 +127,9 @@ For local files, a full unredacted read (including all pages of the same file ve
 
 
 :::note
-**Honcho tools** (`honcho_profile`, `honcho_search`, `honcho_context`, `honcho_reasoning`, `honcho_conclude`) are no longer built-in. They are available via the Honcho memory provider plugin at `plugins/memory/honcho/`. See [Memory Providers](../user-guide/features/memory-providers.md) for installation and usage.
+**Honcho tools** (`honcho_profile`, `honcho_search`, `honcho_context`, `honcho_reasoning`, `honcho_conclude`) are no longer built-in. They are available via the Honcho memory provider plugin from the plugin catalog (`hermes plugins install honcho`). See [Memory Providers](../user-guide/features/memory-providers.md) for installation and usage.
+
+**Home Assistant tools** (`ha_list_entities`, `ha_get_state`, `ha_list_services`, `ha_call_service`, toolset `homeassistant`) are no longer built-in. They come from the `homeassistant` catalog plugin (`hermes plugins install homeassistant`). See [Home Assistant](../user-guide/messaging/homeassistant.md).
 :::
 
 ## `image_gen` toolset

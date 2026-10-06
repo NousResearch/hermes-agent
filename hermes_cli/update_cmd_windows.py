@@ -1335,6 +1335,12 @@ def _resume_windows_gateways_and_merge_outcome(outcome, _windows_gateway_resume,
     try:
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
     except Exception as _windows_resume_exc:
+        # This call has taken ownership of the recovery attempt.  Do not let
+        # completion's finally block or the parent's atexit fallback replay a
+        # failed relaunch: the incomplete outcome below is the durable signal
+        # that an operator still needs to recover the gateway.
+        if isinstance(_windows_gateway_resume, dict):
+            _windows_gateway_resume["resume_needed"] = False
         outcome.incomplete = True
         outcome.phase_errors.append(str(_windows_resume_exc))
         print(f"  ⚠ Windows gateway service restart incomplete: {_windows_resume_exc}")

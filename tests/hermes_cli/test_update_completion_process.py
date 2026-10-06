@@ -389,6 +389,50 @@ def test_failed_build_preserves_exit_status_without_maintenance(transition):
     assert "emergency_resume" in events
 
 
+def test_completion_records_a_failed_windows_resume_without_replaying_it(transition):
+    """A failed relaunch is an incomplete update, and the completion finally must not retry it."""
+    root, _git, _old, _new, request = transition
+    shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
+    (root / "hermes_cli/update_cmd.py").write_text(
+        "from hermes_cli.probe import event\n"
+        "class Outcome:\n"
+        "    def __init__(self):\n"
+        "        self.incomplete = False\n"
+        "        self.phase_errors = []\n"
+        "_sweep_bytecode_after_update = lambda branch: event('bytecode')\n"
+        "_write_gateway_update_exit_code = lambda ok: event('exit_marker', ok=ok)\n"
+        "_fleet_restart_skip_reason = lambda plan: None\n"
+        "def _restart_gateway_fleet_after_update(plan, gateway_mode):\n"
+        "    event('restart')\n"
+        "    return Outcome()\n"
+        "def _resume_windows_gateways_after_update(token):\n"
+        "    if token and token.get('resume_needed'):\n"
+        "        event('resume_attempt')\n"
+        "        raise RuntimeError('gateway did not become live')\n"
+        "def _resume_windows_gateways_and_merge_outcome(out, token, gateway_mode):\n"
+        "    try:\n"
+        "        _resume_windows_gateways_after_update(token)\n"
+        "    except Exception as exc:\n"
+        "        token['resume_needed'] = False\n"
+        "        out.incomplete = True\n"
+        "        out.phase_errors.append(str(exc))\n"
+        "        event('resume_warning')\n"
+        "def _verify_fleet_after_update(out, **kw):\n"
+        "    event('verify', incomplete=out.incomplete)\n"
+        "    if out.incomplete:\n"
+        "        raise SystemExit(1)\n"
+    )
+
+    result = update_completion.run_completion(request)
+
+    assert result["exit_code"] == 1
+    assert result["receipt"]["outcome"] == "failed"
+    assert result["windows_resume"]["resume_needed"] is False
+    events = [json.loads(line)["name"] for line in (root / "events.jsonl").read_text().splitlines()]
+    assert events.count("resume_attempt") == 1
+    assert "resume_warning" in events
+
+
 def test_prepare_failure_preserves_correlated_pm_receipt(transition, monkeypatch):
     from types import SimpleNamespace
     from hermes_cli import main, update_cmd, update_completion, update_receipt

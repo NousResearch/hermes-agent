@@ -346,7 +346,7 @@ def adopt_skill(skill_name: str) -> Tuple[bool, str]:
 
 # --- Sidecar I/O ---
 def _empty_record() -> Dict[str, Any]:
-    return {"created_by": None, "use_count": 0, "view_count": 0, "last_used_at": None, "last_viewed_at": None,
+    return {"created_by": None, "origin": None, "use_count": 0, "view_count": 0, "last_used_at": None, "last_viewed_at": None,
             "patch_count": 0, "patch_generation": 0, "last_reused_patch_generation": 0, "last_patched_at": None,
             "created_at": _now_iso(), "state": STATE_ACTIVE, "pinned": False, "archived_at": None,
             # When the curator first anchored this skill's inactivity clock (seed or re-anchor); None = never seen.
@@ -526,10 +526,13 @@ def record_created(skill_name: str, *, agent_created: bool, task_id: Optional[st
     Foreground creates (``agent_created=False`` — e.g. ``/learn`` at the user's request) are stamped
     ``created_by="learn"``: a learning-signal marker, NOT the curator-management opt-in (``"agent"``),
     so /journey can show user-taught skills without handing them to autonomous curation.
+    Background-review creates stamp ``origin="background_review"`` — the immutable human-facing
+    marker the Desktop ``learned`` badge keys off (#70712).
     """
     def _apply(rec: Dict[str, Any]) -> Dict[str, Any]:
         rec.clear()
-        rec.update(_empty_record(), created_by="agent" if agent_created else "learn")
+        rec.update(_empty_record(), created_by="agent" if agent_created else "learn",
+                   origin="background_review" if agent_created else None)
         return {"created_by": rec["created_by"]}
     _mutate_and_emit(skill_name, "created", _apply, task_id=task_id, session_id=session_id)
 
@@ -739,10 +742,48 @@ def provenance(skill_name: str) -> str:
             else "agent")
 
 
+def _record_origin(record: Any) -> Optional[str]:
+    """The explicit human-facing origin stamped on a usage record, if any."""
+    return record.get("origin") if isinstance(record, dict) else None
+
+
+def origin(
+    skill_name: str,
+    usage_record: Any = None,
+    *,
+    bundled_names: Optional[Set[str]] = None,
+    hub_names: Optional[Set[str]] = None,
+    external_names: Optional[Set[str]] = None,
+) -> str:
+    """Explicit human-facing origin: 'hub' | 'bundled' | 'external' | 'background_review' | 'local' (#70712).
+
+    Legacy ``provenance`` keeps meaning ownership/mutability ('agent' = any local user-owned skill,
+    so older clients keep them editable); this is the separate label the issue asks for. Ambiguous
+    and legacy local records classify conservatively as ``local`` — never 'learned': only the
+    immutable ``background_review`` marker written at the background self-improvement create path
+    (``record_created`` via ``is_background_review()``) says learned."""
+    if skill_name in hub_names if hub_names is not None else is_hub_installed(skill_name):
+        return "hub"
+    if skill_name in bundled_names if bundled_names is not None else is_bundled(skill_name):
+        return "bundled"
+    if skill_name in external_names if external_names is not None else is_external_only(skill_name):
+        return "external"
+    if usage_record is None:
+        usage_record = load_usage().get(skill_name)
+    if _record_origin(usage_record) == "background_review":
+        return "background_review"
+    return "local"
+
+
 def usage_report() -> List[Dict[str, Any]]:
-    """Usage rows for EVERY skill on disk (built-ins and hub included); ``curated_report()`` is the managed subset."""
+    """Usage rows for EVERY skill on disk (built-ins and hub included); ``curated_report()`` is the managed subset.
+
+    Rows carry the legacy ``provenance`` ownership class plus the explicit human-facing ``origin``."""
     if not (base := _skills_dir()).exists():
         return []
     data = load_usage()
-    return [_report_row(n, data.get(n), provenance=provenance(n), _persisted=n in data)
+    bundled_names, hub_names = _read_bundled_names(), _read_hub_installed_names()
+    return [_report_row(n, data.get(n), provenance=provenance(n),
+                        origin=origin(n, data.get(n), bundled_names=bundled_names, hub_names=hub_names),
+                        _persisted=n in data)
             for n in sorted({name for name, _md in _iter_skill_mds(base, local_only=False)})]

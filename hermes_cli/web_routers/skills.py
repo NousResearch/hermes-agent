@@ -345,7 +345,7 @@ async def get_skills(profile: Optional[str] = None):
     from tools.skills_tool import _find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
     from tools.skill_usage import (
-        _external_skill_names, _read_bundled_names, _read_hub_installed_names, activity_count, load_usage)
+        _external_skill_names, _read_bundled_names, _read_hub_installed_names, activity_count, load_usage, origin as skill_origin)
 
     def _run():
         with _profile_scope(profile):
@@ -359,7 +359,10 @@ async def get_skills(profile: Optional[str] = None):
             # externally authored, NOT learned. "agent" covers agent-authored AND
             # local hand-made skills — the ones the user may edit/delete from the
             # UI; external skills keep their in-place foreground edit rights
-            # regardless of label (commit 8c8fc6c1ec).
+            # regardless of label (commit 8c8fc6c1ec). Legacy `provenance` is
+            # ownership/mutability for older clients; the explicit `origin` field
+            # is the human-facing source — 'learned' only for background_review
+            # records, everything else local stays 'local' (#70712).
             bundled_names = _read_bundled_names()
             hub_names = _read_hub_installed_names()
             external_names = _external_skill_names() - bundled_names - hub_names
@@ -371,6 +374,9 @@ async def get_skills(profile: Optional[str] = None):
                 else "bundled" if s["name"] in bundled_names
                 else "external" if s["name"] in external_names
                 else "agent")
+            s["origin"] = skill_origin(
+                s["name"], usage.get(s["name"]),
+                bundled_names=bundled_names, hub_names=hub_names, external_names=external_names)
         return skills
 
     return await asyncio.to_thread(_run)

@@ -17,6 +17,7 @@ from aiohttp.test_utils import TestServer
 import hermes_cli.urllib_security as urllib_security
 from gateway import hosted_room_driver as driver
 from gateway.config import PlatformConfig
+from gateway.hosted_room_peer import GatewayRoomCatalog
 from gateway.hosted_rooms import local_authority_gateway_id
 from gateway.platforms.api_server import APIServerAdapter
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
@@ -115,9 +116,10 @@ async def _linked_home(tmp_path: Path):
     home = HostedRoomService(
         _server_module(),
         db_path=tmp_path / "home-state.db",
-        peer_routes={("room-1", "member-peer"): route},
-        peer_clients={catalog["installation_id"]: client},
     )
+    home.register_peer_route(
+        room_id="room-1", member_id="member-peer", route=route, client=client,
+        target_url=client.base_url, catalog=GatewayRoomCatalog.from_mapping(catalog))
     home.rpc = _LocalRPC()
     home.runtime.rpc = home.rpc
     home.local_profiles = lambda: ("local",)
@@ -346,3 +348,72 @@ async def test_retry_of_a_deferred_turn_follows_its_running_attempt_to_the_reply
     assert agent.run_conversation.call_count == 1
     assert set(keys) == {f"room:{task['identity'].task_id}:1"}
     assert [event["payload"]["text"] for event in replies] == ["Scoped peer response."]
+
+
+@pytest.mark.asyncio
+async def test_stop_of_deferred_peer_waits_for_exact_remote_acknowledgement(
+    tmp_path: Path, monkeypatch,
+):
+    """Losing the admission reply must not let Stop claim the unseen run has stopped."""
+    target, server, home = await _linked_home(tmp_path)
+    home.runtime.lease_ttl_seconds = 1.0
+    home.runtime.poll_interval_seconds = 0.05
+    home.runtime.indeterminate_defer_seconds = 0.5
+    real_open = urllib_security.open_credentialed_url
+    keys, peer_down = [], threading.Event()
+    peer_down.set()
+
+    def lose_reply_then_stay_down(request, timeout):
+        if request.get_method() == "POST" and request.full_url.endswith("/v1/runs"):
+            keys.append(request.get_header("Idempotency-key"))
+            if len(keys) == 1:
+                with real_open(request, timeout=timeout) as response:
+                    response.read()
+                raise urllib.error.URLError(ConnectionResetError(errno.ECONNRESET, "reply lost"))
+        if peer_down.is_set():
+            raise urllib.error.URLError(ConnectionRefusedError(errno.ECONNREFUSED, "refused"))
+        return real_open(request, timeout=timeout)
+
+    monkeypatch.setattr(urllib_security, "open_credentialed_url", lose_reply_then_stay_down)
+    agent, release = _agent(), threading.Event()
+
+    def run_until_stopped(*args, **kwargs):
+        assert release.wait(20)
+        return {"final_response": "", "interrupted": True}
+
+    agent.run_conversation.side_effect = run_until_stopped
+    agent.interrupt.side_effect = lambda *a, **kw: release.set()
+    try:
+        with patch.object(target, "_create_agent", return_value=agent):
+            home.start()
+            home.send(
+                room_id="room-1", event_id="user-1",
+                payload={"text": "@reviewer inspect", "thread_id": "thread-1"},
+            )
+            deferred = await _peer_task_in(home, ("deferred",))
+            with pytest.raises(RuntimeError, match="still stopping"):
+                await asyncio.to_thread(
+                    home.stop_room, "room-1", cancel_id="stop-deferred", require_acknowledged=True)
+            pending = driver.get_task(home.db_path, deferred["identity"])
+            assert (pending["status"], pending["execution_generation"]) == ("stopping", 1)
+            assert not release.is_set()
+            assert home.stop(timeout=5.0)
+            home = HostedRoomService(_server_module(), db_path=home.db_path)
+            home.rpc = home.runtime.rpc = _LocalRPC()
+            home.local_profiles = lambda: ("local",)
+            home.runtime.poll_interval_seconds = 0.05
+            peer_down.clear()
+            home.start()
+            task = await _settled_peer_turn(home)
+            assert (task["status"], task["execution_generation"]) == ("cancelled", 1)
+            assert release.is_set()
+            assert home.stop(timeout=5.0)
+    finally:
+        release.set()
+        home.stop(timeout=5.0)
+        await asyncio.gather(*target._active_run_tasks.values(), return_exceptions=True)
+        await server.close()
+        target._run_idempotency_store.close()
+
+    assert agent.run_conversation.call_count == 1
+    assert set(keys) == {f"room:{task['identity'].task_id}:1"}

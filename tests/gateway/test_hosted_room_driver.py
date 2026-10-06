@@ -776,13 +776,21 @@ def test_indeterminate_task_can_be_deferred_retried_and_cancelled(db):
         reason="member_unavailable",
         clock=clock,
     )
-    cancelled = driver.cancel_task(
+    with pytest.raises(driver.InvalidTaskTransitionError):
+        driver.cancel_task(
+            db, identity, cancel_id="cancel-deferred", expected_cancel_generation=0, clock=clock)
+    stopping = driver.begin_task_cancel(
         db,
         identity,
         cancel_id="cancel-deferred",
         expected_cancel_generation=0,
         clock=clock,
     )
+    assert stopping["status"] == "stopping"
+    assert stopping["execution_generation"] == retried.execution_generation
+    cancelled = driver.complete_task_cancel(
+        db, identity, cancel_id="cancel-deferred",
+        expected_cancel_generation=stopping["cancel_generation"], clock=clock)
     assert cancelled["status"] == "cancelled"
 
 

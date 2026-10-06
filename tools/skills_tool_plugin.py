@@ -161,6 +161,28 @@ def _serve_plugin_skill(
         "skill_dir": str(skill_md.parent), "_source_path": str(skill_md)})
 
 
+def _find_plugin_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+    """Listing rows (name, description, category) for registered plugin skills, gated like local
+    ones: platform, environment and apps. Disabled rows are dropped unless ``skip_disabled=True``
+    (``_find_all_skills`` semantics: config UIs annotate them instead)."""
+    from tools import skills_tool as _st
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        discover_plugins()
+        rows = []
+        for skill in get_plugin_manager().list_plugin_skill_metadata():
+            frontmatter = skill.pop("frontmatter", {})
+            if not (_st.skill_matches_platform(frontmatter) and _st.skill_matches_environment(frontmatter)
+                    and _st.skill_matches_apps(frontmatter)):
+                continue
+            if skip_disabled or not _st._is_skill_disabled(skill["name"]):
+                rows.append(skill)
+        return rows
+    except Exception:
+        logger.debug("Plugin skill listing failed", exc_info=True)
+        return []
+
+
 def _plugin_skill_linked_files(skill_root: Path) -> Dict[str, List[str]] | None:
     from tools.path_security import validate_within_dir
     linked: Dict[str, List[str]] = {}

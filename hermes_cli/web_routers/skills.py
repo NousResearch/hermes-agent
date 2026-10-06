@@ -342,7 +342,7 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
 
 @router.get("/api/skills")
 async def get_skills(profile: Optional[str] = None):
-    from tools.skills_tool import _find_all_skills
+    from tools.skills_tool import _find_all_skills, _find_plugin_skills
     from hermes_cli.skills_config import get_disabled_skills
     from tools.skill_usage import (
         _external_skill_names, _read_bundled_names, _read_hub_installed_names, activity_count, load_usage)
@@ -352,9 +352,12 @@ async def get_skills(profile: Optional[str] = None):
             config = load_config()
             disabled = get_disabled_skills(config)
             skills = _find_all_skills(skip_disabled=True)
+            plugin_skills = _find_plugin_skills(skip_disabled=True)
+            plugin_names = {s["name"] for s in plugin_skills}
+            skills += plugin_skills
             usage = load_usage()
             # Set-based provenance (same classification as skill_usage.provenance,
-            # without a per-skill manifest read): hub > bundled > external > agent.
+            # without a per-skill manifest read): plugin > hub > bundled > external > agent.
             # "external" is mounted from skills.external_dirs and absent locally —
             # externally authored, NOT learned. "agent" covers agent-authored AND
             # local hand-made skills — the ones the user may edit/delete from the
@@ -367,7 +370,8 @@ async def get_skills(profile: Optional[str] = None):
             s["enabled"] = s["name"] not in disabled
             s["usage"] = activity_count(usage.get(s["name"], {}))
             s["provenance"] = (
-                "hub" if s["name"] in hub_names
+                "plugin" if s["name"] in plugin_names
+                else "hub" if s["name"] in hub_names
                 else "bundled" if s["name"] in bundled_names
                 else "external" if s["name"] in external_names
                 else "agent")
@@ -400,10 +404,17 @@ async def get_skill_content(name: str, profile: Optional[str] = None):
     from tools.skill_manager_tool import _find_skill
 
     def _read():
-        found = _find_skill(name)
-        if not found:
-            raise HTTPException(status_code=404, detail=f"Skill '{name}' not found.")
-        skill_md = found["path"] / "SKILL.md"
+        skill_md = None
+        if ":" in name:  # plugin:skill lives in the plugin's tree, not the skills dirs
+            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+            discover_plugins()
+            skill_md = get_plugin_manager().find_plugin_skill(name)
+        if skill_md is None:
+            found = _find_skill(name)
+            if not found:
+                raise HTTPException(status_code=404, detail=f"Skill '{name}' not found.")
+            skill_md = found["path"] / "SKILL.md"
         if not skill_md.exists():
             raise HTTPException(status_code=404, detail=f"Skill '{name}' has no SKILL.md.")
         try:

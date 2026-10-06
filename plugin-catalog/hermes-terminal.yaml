@@ -1,0 +1,15 @@
+name: hermes-terminal
+repo: https://github.com/Adolanium/hermes-terminal
+sha: 4decbf0585af9d12071e0bfddcad9a1d1540c98a
+version: "0.0.4"
+description: Run the Hermes terminal interface in a Hermes Desktop workspace tab.
+maintainer: Adolanium
+tier: community
+category: desktop
+docs_url: https://github.com/Adolanium/hermes-terminal#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+subdir: catalog

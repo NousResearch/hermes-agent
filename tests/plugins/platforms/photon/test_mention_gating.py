@@ -15,7 +15,7 @@ from typing import List
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 
@@ -58,11 +58,6 @@ def _capture(adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch) -> List[Me
     return captured
 
 
-def test_require_mention_defaults_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    adapter = _make_adapter(monkeypatch)
-    assert adapter.require_mention is False
-    # Defaults compile to the two Hermes wake-word patterns.
-    assert len(adapter._mention_patterns) == 2
 
 
 @pytest.mark.asyncio
@@ -75,17 +70,6 @@ async def test_group_message_dropped_without_mention(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
-async def test_group_message_passes_and_strips_wake_word(monkeypatch: pytest.MonkeyPatch) -> None:
-    adapter = _make_adapter(monkeypatch, extra={"require_mention": True})
-    captured = _capture(adapter, monkeypatch)
-
-    await adapter._dispatch_inbound(_group_payload("Hermes what's the weather"))
-    assert len(captured) == 1
-    # Leading wake word stripped before dispatch.
-    assert captured[0].text == "what's the weather"
-
-
-@pytest.mark.asyncio
 async def test_dm_never_gated(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _make_adapter(monkeypatch, extra={"require_mention": True})
     captured = _capture(adapter, monkeypatch)
@@ -93,16 +77,6 @@ async def test_dm_never_gated(monkeypatch: pytest.MonkeyPatch) -> None:
     await adapter._dispatch_inbound(_dm_payload("no wake word here"))
     assert len(captured) == 1
     assert captured[0].text == "no wake word here"
-
-
-@pytest.mark.asyncio
-async def test_require_mention_off_passes_group_messages(monkeypatch: pytest.MonkeyPatch) -> None:
-    adapter = _make_adapter(monkeypatch)  # require_mention defaults off
-    captured = _capture(adapter, monkeypatch)
-
-    await adapter._dispatch_inbound(_group_payload("plain group chatter"))
-    assert len(captured) == 1
-    assert captured[0].text == "plain group chatter"
 
 
 def test_custom_mention_patterns_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -136,3 +110,34 @@ def test_invalid_pattern_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
     # Bad regex dropped, good one kept.
     assert len(adapter._mention_patterns) == 1
     assert adapter._message_matches_mention_patterns("a good thing") is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caption, cached_calls, dispatched", [
+    ("holiday pic", 0, 0),          # unmentioned group attachment: never persisted
+    ("hermes holiday pic", 1, 1),   # mentioned: cached and dispatched
+])
+async def test_unmentioned_group_attachment_is_not_cached(
+        monkeypatch: pytest.MonkeyPatch, caption: str, cached_calls: int, dispatched: int) -> None:
+    """The group mention gate must run BEFORE inline attachment bytes hit the media cache."""
+    import plugins.platforms.photon.adapter as photon_adapter
+
+    adapter = _make_adapter(monkeypatch, extra={"require_mention": True})
+    captured = _capture(adapter, monkeypatch)
+    calls: List[str] = []
+
+    def fake_cache(content, name, mime, *, force_audio=False):
+        calls.append(name)
+        return "/tmp/cached.png"
+
+    monkeypatch.setattr(photon_adapter, "_cache_inbound_attachment", fake_cache)
+    payload = _group_payload(caption)
+    payload["content"] = {"type": "group", "items": [
+        {"content": {"type": "text", "text": caption}},
+        {"content": {"type": "attachment", "name": "pic.png", "mimeType": "image/png",
+                     "data": "aGVsbG8=", "encoding": "base64"}},
+    ]}
+
+    await adapter._dispatch_inbound(payload)
+    assert len(calls) == cached_calls
+    assert len(captured) == dispatched

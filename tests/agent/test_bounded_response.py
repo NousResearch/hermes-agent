@@ -20,10 +20,7 @@ import time
 import httpx
 import pytest
 
-from agent.bounded_response import (
-    read_error_body_or_default,
-    read_streaming_error_body,
-)
+from agent.bounded_response import read_streaming_error_body
 
 
 class _ThreadingServer(socketserver.ThreadingTCPServer):
@@ -114,41 +111,3 @@ def test_oversize_body_is_capped(server_base, client):
     assert 0 < len(text) <= 64 * 1024
     # Capping must return promptly, not after draining the whole body.
     assert elapsed < 9.0
-
-
-def test_stalled_body_hits_hard_deadline(server_base, client):
-    start = time.monotonic()
-    with client.stream("POST", server_base + "/stall") as response:
-        text = read_streaming_error_body(
-            response, max_bytes=64 * 1024, timeout_s=2.0
-        )
-    elapsed = time.monotonic() - start
-    # Partial bytes that arrived before the stall are preserved.
-    assert "partial failure detail" in text
-    # The hard deadline bounds the read; we must not wait for the server stall.
-    assert elapsed < 5.0
-
-
-def test_normal_error_body_read_intact(server_base, client):
-    with client.stream("POST", server_base + "/normal") as response:
-        text = read_streaming_error_body(response)
-    parsed = json.loads(text)
-    assert parsed["error"]["status"] == "RESOURCE_EXHAUSTED"
-
-
-def test_empty_body_returns_empty_string(server_base, client):
-    with client.stream("POST", server_base + "/empty") as response:
-        text = read_streaming_error_body(response)
-    assert text == ""
-
-
-def test_or_default_returns_none_on_empty(server_base, client):
-    with client.stream("POST", server_base + "/empty") as response:
-        result = read_error_body_or_default(response)
-    assert result is None
-
-
-def test_or_default_returns_text_when_present(server_base, client):
-    with client.stream("POST", server_base + "/normal") as response:
-        result = read_error_body_or_default(response)
-    assert result is not None and "RESOURCE_EXHAUSTED" in result

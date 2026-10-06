@@ -18,7 +18,7 @@ metadata:
 
 Expert guidance for fine-tuning LLMs with Axolotl — YAML configs, 100+ models, LoRA/QLoRA, DPO/KTO/ORPO/GRPO, multimodal support.
 
-Comprehensive assistance with axolotl development, generated from official documentation.
+Assistance with axolotl development, generated from official documentation.
 
 ## When to Use This Skill
 

@@ -9,6 +9,7 @@ the dist has no index.html, and proceed when it does.
 Design credit: PR #17845 (@Caelier).
 """
 
+import os
 import sys
 import types
 
@@ -74,7 +75,7 @@ def test_env_dist_without_index_exits(main_mod, monkeypatch, tmp_path, capsys):
     )
     builds = []
     monkeypatch.setattr(
-        main_mod, "_build_web_ui", lambda *a, **k: builds.append(a) or True
+        "hermes_cli.main_web_build._build_web_ui", lambda *a, **k: builds.append(a) or True
     )
 
     with pytest.raises(SystemExit) as exc:
@@ -87,14 +88,26 @@ def test_env_dist_without_index_exits(main_mod, monkeypatch, tmp_path, capsys):
     assert "HERMES_WEB_DIST" in out and str(empty_dist) in out
 
 
-def test_env_dist_with_index_starts_server(main_mod, monkeypatch, tmp_path):
-    """A valid HERMES_WEB_DIST (has index.html) proceeds to start_server
-    without building."""
+
+
+# ---------------------------------------------------------------------------
+# --skip-build recovery (issue #59288): a missing dist under --skip-build
+# should warn and attempt ONE recovery build via _build_web_ui before the
+# fatal exit, instead of hard-failing immediately.
+# ---------------------------------------------------------------------------
+
+
+def test_skip_build_missing_dist_attempts_one_recovery_build(
+    main_mod, monkeypatch, tmp_path, capsys
+):
+    """--skip-build + missing index.html triggers exactly one recovery build;
+    when the build produces a dist, the server starts."""
     _wire_common(main_mod, monkeypatch)
-    dist = tmp_path / "dist"
-    dist.mkdir()
-    (dist / "index.html").write_text("<html></html>", encoding="utf-8")
-    monkeypatch.setenv("HERMES_WEB_DIST", str(dist))
+    monkeypatch.delenv("HERMES_WEB_DIST", raising=False)
+    project_root = tmp_path / "proj"
+    dist = project_root / "hermes_cli" / "web_dist"
+    dist.mkdir(parents=True)
+    monkeypatch.setattr(main_mod, "PROJECT_ROOT", project_root)
 
     started = []
     monkeypatch.setitem(
@@ -102,35 +115,67 @@ def test_env_dist_with_index_starts_server(main_mod, monkeypatch, tmp_path):
         "hermes_cli.web_server",
         types.SimpleNamespace(start_server=lambda **k: started.append(k)),
     )
+
     builds = []
-    monkeypatch.setattr(
-        main_mod, "_build_web_ui", lambda *a, **k: builds.append(a) or True
-    )
 
-    main_mod.cmd_dashboard(_args())
+    def fake_build(web_dir, *, fatal=False):
+        builds.append((web_dir, fatal))
+        (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+        return True
 
+    monkeypatch.setattr("hermes_cli.main_web_build._build_web_ui", fake_build)
+
+    main_mod.cmd_dashboard(_args(skip_build=True))
+
+    assert len(builds) == 1  # exactly ONE recovery build
+    assert builds[0][0] == project_root / "web"
     assert len(started) == 1
-    assert builds == []
+    out = capsys.readouterr().out
+    assert "recovery build" in out.lower()
 
 
-def test_env_dist_tilde_expanded_for_web_server(main_mod, monkeypatch, tmp_path):
-    """A '~/...' HERMES_WEB_DIST must be written back expanded so
-    web_server's raw os.environ read serves the validated path."""
-    _wire_common(main_mod, monkeypatch)
-    home = tmp_path / "home"
-    dist = home / "mydist"
-    dist.mkdir(parents=True)
-    (dist / "index.html").write_text("<html></html>", encoding="utf-8")
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("HERMES_WEB_DIST", "~/mydist")
 
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.web_server",
-        types.SimpleNamespace(start_server=lambda **k: None),
-    )
 
-    main_mod.cmd_dashboard(_args())
+# ---------------------------------------------------------------------------
+# Desktop-inherited env isolation (issue #52945 / supersedes #52948, #67402)
+# ---------------------------------------------------------------------------
 
-    import os
-    assert os.environ["HERMES_WEB_DIST"] == str(dist)
+
+def test_desktop_child_dashboard_drops_packaged_renderer(main_mod, monkeypatch):
+    """#116107: every desktop-spawned process inherits HERMES_DESKTOP=1 with the
+    packaged dist; a browser `hermes dashboard` from it must not keep serving the
+    IPC-only desktop renderer."""
+    packaged = "/Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist"
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_WEB_DIST", packaged)
+    monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
+
+    main_mod._dashboard_sanitize_desktop_env(headless_backend=False)
+
+    assert "HERMES_WEB_DIST" not in os.environ
+    assert "HERMES_SERVE_HEADLESS" not in os.environ
+
+
+def test_desktop_headless_serve_keeps_packaged_renderer(main_mod, monkeypatch):
+    """The real Desktop backend remains distinguished by the `serve` entry path."""
+    packaged = "/Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist"
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_WEB_DIST", packaged)
+
+    main_mod._dashboard_sanitize_desktop_env(headless_backend=True)
+
+    assert os.environ["HERMES_WEB_DIST"] == packaged
+
+
+def test_desktop_owned_fallback_dashboard_keeps_packaged_renderer(main_mod, monkeypatch):
+    """The Desktop's own legacy `dashboard --no-open` fallback spawn (serve probe
+    timed out) is not headless but carries the per-spawn session token; stripping
+    its dist would send a packaged install into `_build_web_ui(fatal=True)`."""
+    packaged = "/Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist"
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
+    monkeypatch.setenv("HERMES_WEB_DIST", packaged)
+
+    main_mod._dashboard_sanitize_desktop_env(headless_backend=False)
+
+    assert os.environ["HERMES_WEB_DIST"] == packaged

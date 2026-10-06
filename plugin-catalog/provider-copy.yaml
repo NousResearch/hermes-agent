@@ -1,0 +1,18 @@
+name: provider-copy
+repo: https://github.com/tobenwarrior/hermes-provider-copy
+sha: 1599d21d1bce11d94424f749531dadf8d619f42c
+version: "1.0.1"
+description: Copy provider API keys (and provider base-URL overrides) from one profile onto
+  other profiles — a one-time, explicit copy from a desktop page. Per-profile missing/present
+  badges, fill-missing by default with an explicit overwrite opt-in. OAuth sign-ins and
+  messaging bot tokens never travel; values never cross back in responses.
+maintainer: tobenwarrior
+tier: community
+category: desktop
+docs_url: https://github.com/tobenwarrior/hermes-provider-copy#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

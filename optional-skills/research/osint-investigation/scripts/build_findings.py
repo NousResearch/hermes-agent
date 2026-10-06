@@ -141,7 +141,7 @@ def build_findings(
 
     # 3. Timing-based findings.
     if timing_path and Path(timing_path).exists():
-        timing = json.loads(Path(timing_path).read_text())
+        timing = json.loads(Path(timing_path).read_text(encoding="utf-8"))
         for r in timing.get("results", []):
             if not r.get("significant"):
                 continue
@@ -190,7 +190,7 @@ def build_findings(
         },
         "findings": findings,
     }
-    Path(out_path).write_text(json.dumps(payload, indent=2))
+    Path(out_path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return payload
 
 

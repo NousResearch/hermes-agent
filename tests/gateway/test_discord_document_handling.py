@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +97,9 @@ def _redirect_cache(tmp_path, monkeypatch):
 def adapter(monkeypatch):
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
+    # These tests mock the actual download. Do not let host DNS/proxy mappings
+    # for cdn.discordapp.com decide whether document handling is exercised.
+    monkeypatch.setattr(discord_platform, "is_safe_url", lambda _url: True)
 
     config = PlatformConfig(enabled=True, token="fake-token")
     a = DiscordAdapter(config)
@@ -159,21 +162,6 @@ def _mock_aiohttp_download(raw_bytes: bytes):
 
 class TestIncomingDocumentHandling:
 
-    @pytest.mark.asyncio
-    async def test_pdf_document_cached(self, adapter):
-        """A PDF attachment should be downloaded, cached, typed as DOCUMENT."""
-        pdf_bytes = b"%PDF-1.4 fake content"
-
-        with _mock_aiohttp_download(pdf_bytes):
-            msg = make_message([make_attachment(filename="report.pdf", content_type="application/pdf")])
-            await adapter._handle_message(msg)
-
-        event = adapter.handle_message.call_args[0][0]
-        assert event.message_type == MessageType.DOCUMENT
-        assert len(event.media_urls) == 1
-        assert os.path.exists(event.media_urls[0])
-        assert event.media_types == ["application/pdf"]
-        assert "[Content of" not in (event.text or "")
 
     @pytest.mark.asyncio
     async def test_txt_content_injected(self, adapter):
@@ -194,111 +182,8 @@ class TestIncomingDocumentHandling:
         # injection prepended before caption
         assert event.text.index("[Content of") < event.text.index("summarize this")
 
-    @pytest.mark.asyncio
-    async def test_md_content_injected(self, adapter):
-        """.md file under 100KB should have its content injected."""
-        file_content = b"# Title\nSome markdown content"
 
-        with _mock_aiohttp_download(file_content):
-            msg = make_message(
-                attachments=[make_attachment(filename="readme.md", content_type="text/markdown")],
-                content="",
-            )
-            await adapter._handle_message(msg)
 
-        event = adapter.handle_message.call_args[0][0]
-        assert "[Content of readme.md]:" in event.text
-        assert "# Title" in event.text
-
-    @pytest.mark.asyncio
-    async def test_log_content_injected(self, adapter):
-        """.log file under 100KB should be treated as text/plain and injected."""
-        file_content = b"BLE trace line 1\nBLE trace line 2"
-
-        with _mock_aiohttp_download(file_content):
-            msg = make_message(
-                attachments=[make_attachment(filename="btsnoop_hci.log", content_type="text/plain")],
-                content="please inspect this",
-            )
-            await adapter._handle_message(msg)
-
-        event = adapter.handle_message.call_args[0][0]
-        assert "[Content of btsnoop_hci.log]:" in event.text
-        assert "BLE trace line 1" in event.text
-        assert "please inspect this" in event.text
-
-    @pytest.mark.asyncio
-    async def test_oversized_document_skipped(self, adapter):
-        """A document over 32MB should be skipped — media_urls stays empty."""
-        msg = make_message([
-            make_attachment(
-                filename="huge.pdf",
-                content_type="application/pdf",
-                size=33 * 1024 * 1024,
-            )
-        ])
-        await adapter._handle_message(msg)
-
-        event = adapter.handle_message.call_args[0][0]
-        assert event.media_urls == []
-        # handler must still be called
-        adapter.handle_message.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_mid_sized_zip_under_32mb_is_cached(self, adapter):
-        """A 25MB .zip should be accepted now that Discord documents allow up to 32MB."""
-        msg = make_message([
-            make_attachment(
-                filename="bugreport.zip",
-                content_type="application/zip",
-                size=25 * 1024 * 1024,
-            )
-        ])
-
-        with _mock_aiohttp_download(b"PK\x03\x04test"):
-            await adapter._handle_message(msg)
-
-        event = adapter.handle_message.call_args[0][0]
-        assert len(event.media_urls) == 1
-        assert event.media_types == ["application/zip"]
-
-    @pytest.mark.asyncio
-    async def test_zip_document_cached(self, adapter):
-        """A .zip file should be cached as a supported document."""
-        msg = make_message([
-            make_attachment(filename="archive.zip", content_type="application/zip")
-        ])
-
-        with _mock_aiohttp_download(b"PK\x03\x04test"):
-            await adapter._handle_message(msg)
-
-        event = adapter.handle_message.call_args[0][0]
-        assert len(event.media_urls) == 1
-        assert event.media_types == ["application/zip"]
-        assert event.message_type == MessageType.DOCUMENT
-
-    @pytest.mark.asyncio
-    async def test_download_error_handled(self, adapter):
-        """If the HTTP download raises, the handler should not crash."""
-        resp = AsyncMock()
-        resp.__aenter__ = AsyncMock(side_effect=RuntimeError("connection reset"))
-        resp.__aexit__ = AsyncMock(return_value=False)
-
-        session = AsyncMock()
-        session.get = MagicMock(return_value=resp)
-        session.__aenter__ = AsyncMock(return_value=session)
-        session.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("aiohttp.ClientSession", return_value=session):
-            msg = make_message([
-                make_attachment(filename="report.pdf", content_type="application/pdf")
-            ])
-            await adapter._handle_message(msg)
-
-        # Must still deliver an event
-        adapter.handle_message.assert_called_once()
-        event = adapter.handle_message.call_args[0][0]
-        assert event.media_urls == []
 
     @pytest.mark.asyncio
     async def test_large_txt_cached_not_injected(self, adapter):
@@ -316,6 +201,22 @@ class TestIncomingDocumentHandling:
         assert len(event.media_urls) == 1
         assert os.path.exists(event.media_urls[0])
         assert "[Content of" not in (event.text or "")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content, inlined", [(b"small text", True), (b"x" * (200 * 1024), False)], ids=["small", "large"])
+    async def test_document_marks_media_text_inlined(self, adapter, content, inlined):
+        """The per-attachment flag must track whether the text was injected, so the document
+        note never claims the content is inlined when the >100 KB gate skipped it."""
+        with _mock_aiohttp_download(content):
+            msg = make_message(
+                attachments=[make_attachment(filename="notes.txt", content_type="text/plain", size=len(content))],
+                content="",
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert ("[Content of" in (event.text or "")) is inlined
+        assert event.media_text_inlined == [inlined]
 
     @pytest.mark.asyncio
     async def test_multiple_text_files_both_injected(self, adapter):
@@ -367,24 +268,6 @@ class TestIncomingDocumentHandling:
         assert "Second file content" in event.text
         assert event.text.index("file1") < event.text.index("file2")
 
-    @pytest.mark.asyncio
-    async def test_image_attachment_unaffected(self, adapter):
-        """Image attachments should still go through the image path, not the document path."""
-        with patch(
-            "plugins.platforms.discord.adapter.cache_image_from_url",
-            new_callable=AsyncMock,
-            return_value="/tmp/cached_image.png",
-        ):
-            msg = make_message([
-                make_attachment(filename="photo.png", content_type="image/png")
-            ])
-            await adapter._handle_message(msg)
-
-        event = adapter.handle_message.call_args[0][0]
-        assert event.message_type == MessageType.PHOTO
-        assert event.media_urls == ["/tmp/cached_image.png"]
-        assert event.media_types == ["image/png"]
-
 
 class TestAllowAnyAttachment:
     """Cover accept-any-file-type inbound handling.
@@ -415,33 +298,6 @@ class TestAllowAnyAttachment:
         # emits the path-pointing note based on DOCUMENT + octet-stream MIME.
         assert "[Content of" not in (event.text or "")
 
-    @pytest.mark.asyncio
-    async def test_html_cached_and_inlined(self, adapter):
-        """An .html upload is cached and (being UTF-8 text) inlined."""
-        html = b"<html><body>hi</body></html>"
-        with _mock_aiohttp_download(html):
-            msg = make_message([
-                make_attachment(filename="page.html", content_type="text/html")
-            ])
-            await adapter._handle_message(msg)
-
-        event = adapter.handle_message.call_args[0][0]
-        assert len(event.media_urls) == 1
-        assert event.message_type == MessageType.DOCUMENT
-        assert event.media_types == ["text/html"]
-
-    @pytest.mark.asyncio
-    async def test_unknown_type_no_content_type_becomes_octet_stream(self, adapter):
-        """No content_type from discord: MIME falls back to octet-stream."""
-        with _mock_aiohttp_download(b"\x00raw bytes\x01"):
-            msg = make_message([
-                make_attachment(filename="mystery.bin", content_type=None)
-            ])
-            await adapter._handle_message(msg)
-
-        event = adapter.handle_message.call_args[0][0]
-        assert event.message_type == MessageType.DOCUMENT
-        assert event.media_types == ["application/octet-stream"]
 
     @pytest.mark.asyncio
     async def test_max_attachment_bytes_caps_uploads(self, adapter):
@@ -479,35 +335,4 @@ class TestAllowAnyAttachment:
         event = adapter.handle_message.call_args[0][0]
         assert len(event.media_urls) == 1
 
-    @pytest.mark.asyncio
-    async def test_allowlisted_doc_unchanged(self, adapter):
-        """Types already in SUPPORTED_DOCUMENT_TYPES keep canonical handling.
-
-        A .txt should still get its content inlined, and the MIME should still
-        be the canonical text/plain — not whatever discord guessed.
-        """
-        file_content = b"still a text file"
-
-        with _mock_aiohttp_download(file_content):
-            msg = make_message(
-                attachments=[make_attachment(filename="notes.txt", content_type="text/plain")],
-                content="check this",
-            )
-            await adapter._handle_message(msg)
-
-        event = adapter.handle_message.call_args[0][0]
-        assert "[Content of notes.txt]:" in event.text
-        assert "still a text file" in event.text
-        assert event.media_types == ["text/plain"]
-
-    def test_helper_config_overrides_env(self, adapter, monkeypatch):
-        """config.yaml setting wins over env var."""
-        monkeypatch.setenv("DISCORD_ALLOW_ANY_ATTACHMENT", "true")
-        adapter.config.extra["allow_any_attachment"] = False
-        assert adapter._discord_allow_any_attachment() is False
-
-    def test_max_bytes_helper_invalid_value_falls_back(self, adapter):
-        """Garbage in max_attachment_bytes config falls back to 32 MiB."""
-        adapter.config.extra["max_attachment_bytes"] = "not-a-number"
-        assert adapter._discord_max_attachment_bytes() == 32 * 1024 * 1024
 

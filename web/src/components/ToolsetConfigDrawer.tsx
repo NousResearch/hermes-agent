@@ -211,6 +211,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
   };
 
   const labelText = toolset.label?.trim() || toolset.name;
+  const platformText = toolset.platform_label?.trim() || toolset.platform;
 
   return createPortal(
     <div
@@ -253,10 +254,12 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
               checked={enabled}
               onCheckedChange={(v) => void handleToggle(v)}
               disabled={toggling}
-              aria-label="Enable toolset"
+              aria-label={`Enable toolset for ${platformText}`}
             />
             <span className="text-xs text-muted-foreground">
-              {enabled ? "Enabled for the agent" : "Disabled"}
+              {enabled
+                ? `Enabled for ${platformText}`
+                : `Disabled for ${platformText}`}
             </span>
           </div>
         </header>

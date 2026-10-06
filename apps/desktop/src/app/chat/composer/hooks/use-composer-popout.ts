@@ -1,15 +1,21 @@
 import { useStore } from '@nanostores/react'
-import { type RefObject, useCallback, useEffect } from 'react'
+import { type RefObject, useCallback, useLayoutEffect, useState } from 'react'
 
+import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { triggerHaptic } from '@/lib/haptics'
 import {
-  $composerPopoutPosition,
-  $composerPoppedOut,
-  readPopoutBounds,
-  setComposerPopoutPosition,
+  $composerPopout,
+  $composerPopoutGesturesEnabled,
+  clampPopoutPosition,
+  type PopoutPosition,
   setComposerPoppedOut
 } from '@/store/composer-popout'
 import { isSecondaryWindow } from '@/store/windows'
+
+import { claimFloatingComposer } from '../floating-target'
+import { requestComposerFocus } from '../focus'
+import { useComposerSurfaceId } from '../scope'
+import { useComposerVisible } from '../visibility'
 
 import { useComposerPopoutGestures } from './use-popout-drag'
 
@@ -17,22 +23,85 @@ interface UseComposerPopoutOptions {
   composerRef: RefObject<HTMLFormElement | null>
 }
 
-/**
- * Pop-out engine: the docked↔floating state (a shared, persisted atom), the
- * dock/float/toggle actions, the drag gestures, and the on-screen re-clamp.
- * Secondary windows (the tiny Ctrl+Shift+N window, subagent watch windows) can't
- * pop out — a floating composer makes no sense there and would yank the main
- * window's composer out via the shared atom.
- */
+/** Only the visible recipient measures its box. Placement is viewport-wide;
+ * hidden tabs must not overwrite the shared drag intent. */
+function usePopoutPlacement(
+  composerRef: RefObject<HTMLFormElement | null>,
+  intent: PopoutPosition,
+  dragging: boolean,
+  poppedOut: boolean
+): PopoutPosition {
+  const [placement, setPlacement] = useState(intent)
+  const visible = useComposerVisible()
+  // Re-place while this surface is the visible tab and isn't itself dragging.
+  const live = poppedOut && visible && !dragging
+
+  const reclamp = useCallback(() => {
+    const el = composerRef.current
+
+    if (!el) {
+      return
+    }
+
+    const size = { height: el.offsetHeight, width: el.offsetWidth }
+    const next = clampPopoutPosition($composerPopout.get().position, size)
+
+    // Preserve identity when a resize leaves the placement unchanged.
+    setPlacement(prev => (prev.bottom === next.bottom && prev.right === next.right ? prev : next))
+  }, [composerRef])
+
+  // A growing draft must stay within the viewport too.
+  useResizeObserver(
+    useCallback(() => {
+      if (live) {
+        reclamp()
+      }
+    }, [live, reclamp]),
+    composerRef
+  )
+
+  // useLayoutEffect, not useEffect: a tab revealed after the box was dragged in
+  // another one must not paint a frame at its stale placement before catching
+  // up. Runs before paint, and no-ops for hidden tabs (`live`).
+  useLayoutEffect(() => {
+    if (!live) {
+      return undefined
+    }
+
+    reclamp()
+    // A second pass after layout settles (sidebar widths, fonts): anyone
+    // restored out of bounds is pulled back even if the first measure was
+    // premature.
+    const raf = requestAnimationFrame(reclamp)
+    window.addEventListener('resize', reclamp)
+
+    return () => {
+      cancelAnimationFrame(raf)
+      window.removeEventListener('resize', reclamp)
+    }
+  }, [intent, live, reclamp])
+
+  return dragging ? intent : placement
+}
+
+/** Window-wide dock/float gestures. Secondary scratch/watch windows stay docked. */
 export function useComposerPopout({ composerRef }: UseComposerPopoutOptions) {
-  const popoutAllowed = !isSecondaryWindow()
-  const poppedOut = useStore($composerPoppedOut) && popoutAllowed
-  const popoutPosition = useStore($composerPopoutPosition)
+  const surfaceId = useComposerSurfaceId()
+  const gesturesEnabled = useStore($composerPopoutGesturesEnabled)
+  const popoutAllowed = gesturesEnabled && !isSecondaryWindow()
+  const state = useStore($composerPopout)
+  const poppedOut = state.poppedOut && popoutAllowed
 
   const handleComposerPopOut = useCallback(() => {
     triggerHaptic('open')
+
+    if (surfaceId) {
+      claimFloatingComposer(surfaceId)
+    }
+
     setComposerPoppedOut(true)
-  }, [])
+    requestComposerFocus()
+  }, [surfaceId])
 
   const handleComposerDock = useCallback(() => {
     triggerHaptic('success')
@@ -40,7 +109,7 @@ export function useComposerPopout({ composerRef }: UseComposerPopoutOptions) {
   }, [])
 
   // Double-click the grab area toggles dock/float. Undocking restores the last
-  // position (the persisted atom is never cleared on dock).
+  // position (docking never clears the shared placement).
   const handleComposerToggle = useCallback(() => {
     poppedOut ? handleComposerDock() : handleComposerPopOut()
   }, [handleComposerDock, handleComposerPopOut, poppedOut])
@@ -54,36 +123,10 @@ export function useComposerPopout({ composerRef }: UseComposerPopoutOptions) {
     onDock: handleComposerDock,
     onPopOut: handleComposerPopOut,
     poppedOut,
-    position: popoutPosition
+    position: state.position
   })
 
-  // Keep the floating box on-screen: re-clamp (with the real measured size +
-  // thread bounds) when it pops out and on every window resize — so a position
-  // persisted on a bigger/other monitor, a shrunk window, or now-wider sidebar
-  // can never strand it. The rAF pass re-clamps after layout settles (sidebar
-  // widths, fonts), so anyone loading in out of bounds is pulled back + saved
-  // even if the first measure was premature.
-  useEffect(() => {
-    if (!poppedOut) {
-      return undefined
-    }
-
-    const reclamp = (persist: boolean) => {
-      const el = composerRef.current
-      const size = el ? { height: el.offsetHeight, width: el.offsetWidth } : undefined
-      setComposerPopoutPosition($composerPopoutPosition.get(), { area: readPopoutBounds(el), persist, size })
-    }
-
-    reclamp(true)
-    const raf = requestAnimationFrame(() => reclamp(true))
-    const onResize = () => reclamp(false)
-    window.addEventListener('resize', onResize)
-
-    return () => {
-      cancelAnimationFrame(raf)
-      window.removeEventListener('resize', onResize)
-    }
-  }, [composerRef, poppedOut])
+  const popoutPosition = usePopoutPlacement(composerRef, state.position, dragging, poppedOut)
 
   return {
     dockProximity,

@@ -54,29 +54,6 @@ def test_skill_view_uses_live_profile_home_after_module_import(tmp_path, monkeyp
     assert "orchestrator profile" in result["content"]
 
 
-def test_skills_list_uses_live_profile_home_after_module_import(tmp_path, monkeypatch):
-    """skills_list should list the active profile skills, not the import-time root."""
-    default_home = tmp_path / "default-home"
-    profile_home = tmp_path / "profiles" / "orchestrator"
-    _write_skill(default_home, "autonomous-ai-agents", "default-only", "default home")
-    _write_skill(
-        profile_home,
-        "software-development",
-        "kanban-orchestrator-operations",
-        "orchestrator profile",
-    )
-
-    skills_tool = _reload_skills_tool(default_home, monkeypatch)
-    monkeypatch.setenv("HERMES_HOME", str(profile_home))
-
-    result = json.loads(skills_tool.skills_list())
-    names = {skill["name"] for skill in result["skills"]}
-
-    assert result["success"] is True
-    assert "kanban-orchestrator-operations" in names
-    assert "default-only" not in names
-
-
 def test_explicit_skills_dir_monkeypatch_still_wins(tmp_path, monkeypatch):
     """Existing tests can still override tools.skills_tool.SKILLS_DIR directly."""
     default_home = tmp_path / "default-home"

@@ -49,7 +49,7 @@ class TestAxWalkBound:
         stub = _StubCapture()
         assert stub._gws_args()["max_elements"] == 350
         # ... and capture() forwards the bound it actually sent onto the CaptureResult
-        monkeypatch.setattr(stub, "_capture_window_state", lambda: (None, None, [], ""))
+        monkeypatch.setattr(stub, "_capture_window_state", lambda mode="som": (None, None, [], ""))
         assert stub.capture("ax").ax_max_elements == 350
 
     def test_zero_disables_the_bound(self, tmp_path, monkeypatch):

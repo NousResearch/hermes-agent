@@ -93,9 +93,20 @@ def _sorted_windows(out: Dict[str, Any]) -> List[Dict[str, Any]]:
     return sorted(_ingest_windows(_windows_from_tool_result(out)), key=lambda w: w["z_index"], reverse=True)
 
 def _tree_and_title(out: Dict[str, Any]) -> Tuple[str, str]:
-    """``(tree_markdown, window_title)`` from a get_window_state result."""
+    """``(tree_markdown, window_title)`` from a get_window_state result.
+
+    The markdown tree carries the title as ``AXWindow "..."``; when there is no markdown tree at all —
+    the ``include_accessibility_tree:false`` capture-only lane, or structured-only driver shapes — fall
+    back to ``structuredContent.window_title`` so the lane never silently loses the title (it keys
+    screenshot dedup targets in tool.py). The markdown parse wins whenever it yields a title.
+    """
     tree = _split_tree_text(data if isinstance((data := out.get("data")), str) else "")[1]
-    return tree, (match.group(1) if (match := re.search(r'AXWindow\s+"([^"]+)"', tree)) else "")
+    title = match.group(1) if (match := re.search(r'AXWindow\s+"([^"]+)"', tree)) else ""
+    if not title:
+        sc = out.get("structuredContent")
+        if isinstance(sc, dict) and isinstance(sc.get("window_title"), str):
+            title = sc["window_title"]
+    return tree, title
 
 def _gws_is_empty(out: Dict[str, Any]) -> bool:
     """True when a get_window_state result carries neither a screenshot nor a parseable tree. Modern
@@ -241,7 +252,7 @@ class _CaptureMixin:
         # macOS list_windows returns the localized app name (e.g. "計算機"), so `app="Calculator"` legitimately misses.
         return self._match_windows_for_app(windows, app) or self._failed_capture(mode, _NO_APP_MATCH_MSG.format(app=app))
 
-    def _gws_args(self) -> Dict[str, Any]:
+    def _gws_args(self, mode: str = "som") -> Dict[str, Any]:
         """``get_window_state`` args.
 
         ``max_elements`` bounds the DRIVER's accessibility walk, not just its response: tool.py caps the
@@ -249,12 +260,28 @@ class _CaptureMixin:
         walking a 1,444-node Electron tree — or Finder's, whose AX surface is pathologically slow — buys
         latency and nothing else. The bounded tree is a prefix of the unbounded one, so the elements the
         model sees are unchanged. ``computer_use.ax_max_elements`` tunes it; 0 disables.
+
+        ``mode`` picks the delivery lane the caller actually consumes. Both other lanes were paying for
+        the full fetch and discarding half of it: vision mode throws the tree away (up to 20 s of AX walk
+        on pathological trees; the capture-only lane keeps ``window_title`` + screenshot metadata) and ax
+        mode throws the screenshot away (``has_image`` is false for ax in tool.py, so the grab — image
+        tokens + ScreenCaptureKit latency — was pure overhead; tree-only is the driver's documented
+        re-index path). Each flag is sent ONLY when the live driver's tools/list schema advertises it
+        (``supports_input_property`` fails closed on old builds and before discovery), so an unfitted
+        driver sees exactly the pre-existing payload.
         """
         args: Dict[str, Any] = {"pid": self._active_pid, "window_id": self._active_window_id,
                                 "session": self._session_id}
         from tools.computer_use import cua_backend as _cb  # lazy: cua_backend imports this module at import time
         if capped := _cb._cua_configured_ax_max_elements():
             args["max_elements"] = capped
+        sess = getattr(self, "_session", None)
+        if sess is not None and getattr(sess, "capabilities_discovered", False):
+            if mode == "vision" and sess.supports_input_property("get_window_state",
+                                                                 "include_accessibility_tree"):
+                args["include_accessibility_tree"] = False
+            elif mode == "ax" and sess.supports_input_property("get_window_state", "include_screenshot"):
+                args["include_screenshot"] = False
         return args
 
     def _capture_vision(self) -> Tuple[Optional[str], Optional[str], List[UIElement], str]:
@@ -269,23 +296,24 @@ class _CaptureMixin:
         if not png_b64:
             # "Unknown tool: screenshot" or an empty image part -> get_window_state. The title is cheap
             # and useful; `elements` stays empty by contract.
-            gws_out = self._call_capture_tool("get_window_state", self._gws_args())
+            gws_out = self._call_capture_tool("get_window_state", self._gws_args("vision"))
             (png_b64, image_mime_type), (_, window_title) = _image_from_tool_result(gws_out), _tree_and_title(gws_out)
         if not png_b64:
             cli_out = self._cli_refetch(
-                "get_window_state", self._gws_args(), 30.0, "vision screenshot",
+                "get_window_state", self._gws_args("vision"), 30.0, "vision screenshot",
                 "cua-driver vision capture returned no image over MCP (window_id=%s); re-fetching via CLI transport",
                 self._active_window_id) or {}
             if cli_out.get("images"):
                 png_b64, image_mime_type = cli_out["images"][0], "image/png"
         return png_b64, image_mime_type, [], window_title
 
-    def _capture_window_state(self) -> Tuple[Optional[str], Optional[str], List[UIElement], str]:
-        """AX tree + screenshot. Returns ``(png_b64, mime, elements, window_title)``."""
+    def _capture_window_state(self, mode: str = "som") -> Tuple[Optional[str], Optional[str], List[UIElement], str]:
+        """AX tree + screenshot. Returns ``(png_b64, mime, elements, window_title)``. ``mode="ax"`` takes the
+        tree-only lane when the driver supports it (see ``_gws_args``); ``som`` always wants both."""
         # A flaky bridge can return a degenerate result (no screenshot AND no parseable tree) WITHOUT raising
         # — a silent 0x0 to the model. Distinct from the EAGAIN path handled in call_tool: here MCP "succeeded".
         gws_out = self._fetch_or_refetch(
-            "get_window_state", self._gws_args(), 30.0, "get_window_state", _gws_is_empty,
+            "get_window_state", self._gws_args(mode), 30.0, "get_window_state", _gws_is_empty,
             "cua-driver get_window_state returned an empty result over MCP (pid=%s window_id=%s); re-fetching via CLI "
             "transport", self._active_pid, self._active_window_id)
         tree, window_title = _tree_and_title(gws_out)
@@ -324,7 +352,7 @@ class _CaptureMixin:
         if app or not self._last_app:
             self._last_app = app_name or app or ""
         png_b64, image_mime_type, elements, window_title = (
-            self._capture_vision() if mode == "vision" else self._capture_window_state())
+            self._capture_vision() if mode == "vision" else self._capture_window_state(mode))
         png_bytes_len, width, height = _png_metrics(png_b64, 0, 0) if png_b64 else (0, 0, 0)
         return CaptureResult(mode=mode, width=width, height=height, png_b64=png_b64, elements=elements, app=app_name,
                              window_title=window_title, png_bytes_len=png_bytes_len, image_mime_type=image_mime_type,

@@ -43,6 +43,19 @@ cc = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cc)
 
 
+# -- native Windows lane -------------------------------------------------------------------
+# tests.yml runs on Ubuntu; tests-os[windows] imports only list_os_marked_tests.py's files and
+# keeps ``-m platforms`` tests its host admits. Python 3 there is a venv holding python.exe alone,
+# bash is Git Bash: the replay, its dispatch chain and the ineffective-step controls carry this
+# marker so a green Windows job has run them on that layout (review F81-R). Not "any": macOS
+# bash 3.2 is not a host the replay has been run on.
+_NATIVE_WINDOWS_TOO = pytest.mark.platforms("linux", "windows")
+_lister_spec = importlib.util.spec_from_file_location("list_os_marked", _REPO / "scripts/ci/list_os_marked_tests.py")
+assert _lister_spec is not None and _lister_spec.loader is not None
+lister = importlib.util.module_from_spec(_lister_spec)
+_lister_spec.loader.exec_module(lister)
+
+
 # -- the real classifier, as CI runs it ---------------------------------------------
 
 
@@ -268,6 +281,7 @@ _R15_CASES = {
 }
 
 
+@_NATIVE_WINDOWS_TOO
 @pytest.mark.parametrize("path,lanes", list(_R15_CASES.items()))
 def test_update_owner_change_dispatches_its_suites_end_to_end(path, lanes):
     assert (_REPO / path).is_file(), f"{path} moved: update this table"
@@ -438,6 +452,18 @@ def test_sibling_allowance_expires_once_its_consumer_is_in_the_tree(monkeypatch)
         test_every_test_that_reads_a_shared_fixture_is_routed_by_it()
 
 
+def test_native_windows_lane_selects_the_replay_and_its_controls():
+    selected = {p.resolve() for p in lister.find_marked_files("windows", _REPO / "tests")}
+    assert Path(__file__).resolve() in selected, "tests-os[windows] never imports this file"
+    admitted = {name for name, fn in globals().items() if name.startswith("test_") and any(
+        m.name == "platforms" and any("windows" in lister.spec_hosts(str(a).lower()) for a in m.args)
+        for m in getattr(fn, "pytestmark", []))}
+    native = {"test_replay_starts_the_python_and_tools_hosted_steps_call",
+              "test_update_owner_change_dispatches_its_suites_end_to_end",
+              "test_replay_rejects_ineffective_required_step", "test_replay_uses_executed_gate_output"}
+    assert native <= admitted, f"skipped on native Windows: {sorted(native - admitted)}"
+
+
 # -- replay guard sensitivity: mutate data, not the replay implementation ------------------
 
 _REQUIRED_STEP_CASES = (
@@ -459,6 +485,7 @@ def _mutated_yaml(monkeypatch, rel):
     return changed
 
 
+@_NATIVE_WINDOWS_TOO
 @pytest.mark.parametrize("lane,rel,job,name", _REQUIRED_STEP_CASES)
 @pytest.mark.parametrize("mutation", ["disabled", "advisory", "no-command", "empty-selection"])
 def test_replay_rejects_ineffective_required_step(monkeypatch, lane, rel, job, name, mutation):
@@ -497,6 +524,7 @@ def test_selection_receipt_does_not_require_the_native_jobs_venv(tmp_path):
     assert workflow_steps.selected_files(step, ctx, tmp_path) == {rel}
 
 
+@_NATIVE_WINDOWS_TOO
 def test_replay_uses_executed_gate_output(monkeypatch):
     path = "apps/desktop/electron/handoff-result.ts"
     assert all(_consumers_reached(_ci_run(_real_classifier([path])), "desktop_updater").values())
@@ -515,6 +543,7 @@ echo "tools=$(printf 'b\na\n' | sort | tr -d '\r' | paste -sd , -)$(find . -maxd
 '''}
 
 
+@_NATIVE_WINDOWS_TOO
 def test_replay_starts_the_python_and_tools_hosted_steps_call():
     """Every host (native Windows included) runs python3/python and the coreutils selection steps use."""
     out = workflow_steps.outputs(_PROBE_STEP, {})

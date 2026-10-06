@@ -270,3 +270,24 @@ def test_concurrent_launches_take_turns_and_all_rerun_from_the_restored_tree(tmp
     assert _git(root, "status", "--porcelain", "--untracked-files=all") == f"M {names[-1]}"
     assert (root / names[-1]).read_text(encoding="utf-8") == "user edit\n"
     assert not marker.exists()
+
+
+def test_pytest_guard_runs_before_the_live_checkout_git_dir_is_touched(monkeypatch):
+    """Under pytest the live checkout is off limits, and so is its git dir.
+
+    On a default install that git dir sits inside the real Hermes home, so even
+    statting the pull marker there trips the home I/O guard. The pure pytest
+    ownership check has to decide first.
+    """
+    root = Path(er.__file__).resolve().parent.parent
+    touched: list[Path] = []
+
+    def _marker(path: Path) -> Path:
+        touched.append(path)
+        return path / ".git" / er.INTERRUPTED_PULL_MARKER
+
+    monkeypatch.setattr(er, "interrupted_pull_marker", _marker)
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "guard-order")
+
+    assert er.restore_interrupted_pull(root) is False
+    assert touched == []

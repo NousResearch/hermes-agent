@@ -399,6 +399,7 @@ def test_fs_read_text_translates_wsl_unc_when_gateway_runs_in_wsl(client, monkey
     target.write_text("hello wsl bridge")
     unc = "\\\\wsl.localhost\\Ubuntu\\home\\alex\\hello.txt"
     monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
     real_translate = hermes_constants.wsl_unc_path_to_posix
 
     def anchored_translate(raw: str):
@@ -415,3 +416,20 @@ def test_fs_read_text_translates_wsl_unc_when_gateway_runs_in_wsl(client, monkey
 
     assert response.status_code == 200, response.text
     assert response.json()["text"] == "hello wsl bridge"
+
+
+def test_fs_read_text_rejects_unc_for_a_different_distro(client, monkeypatch, tmp_path):
+    """Greptile P1 on #129326: a UNC naming another distro must not be translated —
+    dropping the distro segment would point it at this distro's filesystem."""
+    import hermes_constants
+
+    # A same-named file exists in this distro; the read must never reach it.
+    (tmp_path / "notes.txt").write_text("local distro file")
+    monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+
+    response = client.get(
+        "/api/fs/read-text", params={"path": "\\\\wsl.localhost\\Debian\\home\\alex\\notes.txt"}
+    )
+
+    assert response.status_code == 400, response.text

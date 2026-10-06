@@ -665,6 +665,7 @@ class TestFsPathTranslatesWslUnc:
         import hermes_constants
 
         monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+        monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
         expected = Path("/home/alex/notes.txt").resolve(strict=False)
         assert (
             web_server_files._fs_path(r"\\wsl.localhost\Ubuntu\home\alex\notes.txt")
@@ -675,6 +676,42 @@ class TestFsPathTranslatesWslUnc:
             web_server_files._fs_path("//wsl$/Ubuntu/home/alex/notes.txt")
             == expected
         )
+
+    def test_translates_unc_with_distro_name_case_mismatch(self, monkeypatch):
+        """WSL distro names are case-insensitive, so the check compares casefolded."""
+        import hermes_constants
+
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+        monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu-22.04")
+        expected = Path("/home/alex/notes.txt").resolve(strict=False)
+        assert (
+            web_server_files._fs_path(r"\\wsl.localhost\ubuntu-22.04\home\alex\notes.txt")
+            == expected
+        )
+
+    def test_rejects_unc_naming_a_different_distro(self, monkeypatch):
+        """Fail-closed (greptile P1 on #129326): translating a foreign-distro UNC drops
+        the distro segment, which would silently retarget it onto this distro's
+        filesystem — reads would return the wrong file, /api/fs/write-text would
+        clobber it."""
+        import hermes_constants
+
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+        monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+        with pytest.raises(HTTPException) as excinfo:
+            web_server_files._fs_path(r"\\wsl.localhost\Debian\home\alex\notes.txt")
+        assert excinfo.value.status_code == 400
+
+    def test_rejects_unc_when_local_distro_cannot_be_determined(self, monkeypatch):
+        """Without WSL_DISTRO_NAME the gateway cannot prove the UNC names its own
+        distro, so the translation is refused rather than trusted."""
+        import hermes_constants
+
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+        monkeypatch.delenv("WSL_DISTRO_NAME", raising=False)
+        with pytest.raises(HTTPException) as excinfo:
+            web_server_files._fs_path(r"\\wsl.localhost\Ubuntu\home\alex\notes.txt")
+        assert excinfo.value.status_code == 400
 
     def test_leaves_unc_alone_when_not_in_wsl(self, monkeypatch):
         import hermes_constants

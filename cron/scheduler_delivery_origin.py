@@ -6,18 +6,12 @@ from typing import Any
 
 
 def stamp_origin_discriminators(t: Any, route_metadata: dict, media_metadata: dict) -> None:
-    """Copy the origin's tenant discriminators onto a live send's text and media metadata.
+    """Stamp the origin's ``scope_id`` / ``user_id`` onto a live send's metadata.
 
-    Relay egress is fail-closed on a discriminator in metadata: ``scope_id`` for a scoped chat (Slack
-    workspace, Discord guild) and ``user_id`` (the recipient author) for a guild-less DM (Telegram,
-    WhatsApp, Matrix, Signal), which has no route row. The RelayAdapter learns both from inbound
-    events, so its caches are COLD after every process start, and a backend that stops the guest on
-    sleep restarts the gateway on every wake. The router stamps only the HOME channel, so the
-    persisted origin is the source for everything else.
-
-    Origin targets only: ``origin_user_id`` is None for a fan-out target, whose tenant and recipient
-    are not the origin's, and a wrong discriminator is worse than none. ``setdefault`` never overrides
-    router or home stamping. ``user_id`` goes to relay transports only; native adapters never read it.
+    Relay egress is fail-closed on a discriminator and the RelayAdapter's caches are cold after every
+    boot, so the persisted origin supplies them. Origin targets only (a fan-out target's recipient is not
+    the origin's author); ``setdefault`` never overrides router or home stamping; ``user_id`` is read by
+    relay transports only.
     """
     discriminators = (
         ("scope_id", t.origin.get("scope_id") if t.origin_target else None),

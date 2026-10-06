@@ -43,20 +43,14 @@ def _target(transport, *, origin, origin_target=True, loop=None):
     return sd._TargetDelivery(**fields)
 
 
-def test_origin_user_id_rides_relay_route_and_media_metadata():
-    t = _target(_Transport(is_relay=True), origin={"platform": "telegram", "chat_id": DM_USER, "user_id": DM_USER})
-    _thread, route_metadata, media_metadata = sd._live_route_metadata(t)
-    assert route_metadata["user_id"] == DM_USER
-    assert media_metadata["user_id"] == DM_USER
-
-
-def test_scoped_origin_carries_both_discriminators():
+def test_origin_discriminators_ride_relay_route_and_media_metadata():
     t = _target(
         _Transport(is_relay=True),
-        origin={"platform": "slack", "chat_id": "C123", "user_id": "U_HUMAN", "scope_id": "T0AAAA111"},
+        origin={"platform": "slack", "chat_id": "C123", "user_id": DM_USER, "scope_id": "T0AAAA111"},
     )
-    _thread, route_metadata, _media = sd._live_route_metadata(t)
-    assert (route_metadata["user_id"], route_metadata["scope_id"]) == ("U_HUMAN", "T0AAAA111")
+    _thread, route_metadata, media_metadata = sd._live_route_metadata(t)
+    for metadata in (route_metadata, media_metadata):
+        assert (metadata["user_id"], metadata["scope_id"]) == (DM_USER, "T0AAAA111")
 
 
 @pytest.mark.parametrize("transport_is_relay, origin_target", [(False, True), (True, False)])

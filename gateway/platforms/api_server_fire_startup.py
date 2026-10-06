@@ -21,26 +21,16 @@ FIRE_STARTUP_WAIT_SECONDS = 10.0
 _POLL_SECONDS = 0.1
 
 
-async def await_gateway_started(runner: Any, timeout: Optional[float] = None) -> bool:
-    """True once ``runner`` has finished starting (``_running``: every platform connect attempted and its
-    adapters published), or when there is no runner to ask (a self-hosted api_server, a test double).
-    False when it is still starting after ``timeout`` seconds; the caller answers a retryable 503."""
-    if runner is None or getattr(runner, "_running", True):
-        return True
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + (FIRE_STARTUP_WAIT_SECONDS if timeout is None else timeout)
-    while not runner._running:
-        if loop.time() >= deadline:
-            return False
-        await asyncio.sleep(_POLL_SECONDS)
-    return True
-
-
 async def refuse_until_started(runner: Any, job_id: str) -> Optional["web.Response"]:
-    """Wait out a cold boot so the fire's job gets the live adapters (E2EE and relay-fronted platforms have
-    no native credential, so without them delivery fails). None when the gateway is up; otherwise the
-    retryable 503, worded like the dashboard's own "gateway unreachable" so NAS classifies it the same."""
-    if await await_gateway_started(runner):
-        return None
-    return web.json_response(
-        {"error": "gateway unreachable; retry", "job_id": job_id}, status=503, headers={"Retry-After": "2"})
+    """None once ``runner`` has finished starting (``_running``: every platform connect attempted and its
+    adapters published), or when there is no runner to ask (a self-hosted api_server, a test double).
+    Otherwise the retryable 503, worded like the dashboard's own "gateway unreachable" so NAS classifies
+    it the same."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + FIRE_STARTUP_WAIT_SECONDS
+    while runner is not None and not getattr(runner, "_running", True):
+        if loop.time() >= deadline:
+            return web.json_response(
+                {"error": "gateway unreachable; retry", "job_id": job_id}, status=503, headers={"Retry-After": "2"})
+        await asyncio.sleep(_POLL_SECONDS)
+    return None

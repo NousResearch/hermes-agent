@@ -4036,7 +4036,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 with suppress(Exception):
                     from gateway.run import _gateway_runner_ref
                     runner = _gateway_runner_ref()
-            from gateway.platforms.api_server_fire_startup import refuse_until_started  # a mid-boot fire waits for adapters
+            from gateway.platforms.api_server_fire_startup import refuse_until_started
             if (refusal := await refuse_until_started(runner, job_id)) is not None: return refusal
             adapters = getattr(runner, "adapters", None) or None
 

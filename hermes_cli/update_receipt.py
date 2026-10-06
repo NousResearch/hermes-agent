@@ -710,6 +710,32 @@ def finalize_pending_update_receipt(exit_code: Optional[int] = None, stop_reason
     return finalize_update_receipt(outcome, stop_reason=stop_reason)
 
 
+def resume_run_record() -> Optional[Path]:
+    """Carry the open run forward from its own archive when another process took it further.
+
+    The completion child resumes this process's snapshot and persists stages (or closes the run)
+    the snapshot never saw; closing the run from that stale snapshot would erase them. Returns the
+    archive when the run is already closed there (the open receipt is dropped: nothing is left to
+    finalize), else None. Never raises.
+    """
+    current = _current.get()
+    found = read_run_record(str(current.data.get("update_id"))) if current is not None else None
+    if found is None:
+        return None
+    path, record = found
+    if record.get("finished_at"):
+        try:
+            _current.reset(current.current_token)
+        except ValueError:  # token from another context: pop THIS context only
+            _current.set(None)
+        return path
+    record.pop("writer_pid", None)
+    clone = copy.copy(current)
+    clone.data = record
+    _current.set(clone)
+    return None
+
+
 def finalize_interrupted_update_receipt(stop_reason: str, *, exit_code: int = 130) -> Optional[Path]:
     """Close a run the operator interrupted AFTER the commit point as ``interrupted``. Never raises.
 
@@ -719,20 +745,14 @@ def finalize_interrupted_update_receipt(stop_reason: str, *, exit_code: int = 13
     """
     print("⚠ Interrupted after the code was updated: the new code is in place; its remaining steps are owed "
           "and the next launch or `hermes update` finishes them.", flush=True)
-    current = _current.get()
-    if current is None:
+    if _current.get() is None:
         return None
+    closed = resume_run_record()
+    if closed is not None:  # the completion child already closed the run
+        return closed
     with suppress(Exception):
-        clone = copy.copy(current)
-        clone.data = copy.deepcopy(current.data)
-        found = read_run_record(str(current.data.get("update_id")))
-        if found is not None:
-            path, on_disk = found
-            if on_disk.get("finished_at"):  # the completion child already closed the run
-                _current.reset(current.current_token)
-                return path
-            on_disk.pop("writer_pid", None)
-            clone.data = on_disk
+        clone = copy.copy(_current.get())
+        clone.data = copy.deepcopy(clone.data)
         clone.data["exit_code"] = int(exit_code)
         _current.set(clone)
     return finalize_update_receipt("interrupted", stop_reason=stop_reason)

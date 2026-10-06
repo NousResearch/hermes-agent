@@ -231,6 +231,7 @@ def settle_lost_completion(request: dict, reason: str) -> dict:
         except Exception as exc:  # health: allow BLE001 -- post-commit boundary: stale dependencies still make the next launch sync
             print(f"  ⚠ Could not record the owed source-update tail: {exc}")
         _report_desktop_build_owed(request, _running_record(request), "the update completion did not finish")
+        update_receipt.resume_run_record()  # the child's persisted stages, never this stale snapshot
         update_receipt.record_followup("completion", reason, retry="the next launch or `hermes update` finishes it")
         parked = not _record_owed_user_action(request)
         if parked:

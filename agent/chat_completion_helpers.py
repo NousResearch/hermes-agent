@@ -2142,6 +2142,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             # window is resolved instead of the previous model's stale value.
             # See #22387.
             agent._config_context_length = None
+            from agent.fallback_route_gate import arm_route_gate
+            arm_route_gate(agent, fb_model, fb_provider)
             agent.model, agent.provider, agent.requested_provider = fb_model, fb_provider, fb_provider
             agent.base_url, agent.api_mode = fb_base_url, fb_api_mode
             # reasoning_content echo opt-in travels with the active provider; restore_primary_runtime reverts it.
@@ -2180,8 +2182,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             _buffer_fallback_notice(agent, notice)
             # ``_fallback_activated`` is also reused by `/model --once` restoration; separate
             # provenance so the restore path only emits a recovery notice after a real fallback.
-            agent._provider_fallback_active = True
-            agent._provider_fallback_route = (str(fb_model), str(fb_provider))
             _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb_provider)
             from hermes_cli.observability.shared_metrics_events import record_fallback
             record_fallback(from_provider=old_provider, to_provider=fb_provider, reason=reason)

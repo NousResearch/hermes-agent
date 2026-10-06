@@ -23,7 +23,7 @@
  *    English where it is WRITTEN (`group-chat-parts.tsx`, `group-rounds.ts`);
  *    the places that RENDER the reader's own lines use `group.you` instead.
  *
- * Locales follow kanban: `en` / `ja` / `zh` / `zh-hant`. Arabic falls through
+ * Locales follow kanban: `en` / `ja` / `pt` / `zh` / `zh-hant`. Arabic falls through
  * the resolution chain (active locale → this plugin's `en` → the key) the
  * same way a missing string in any locale does. Nouns match core: ボット /
  * 机器人 / 機器人, プロファイル / 配置档案 / 設定檔, ゲートウェイ / 网关 / 閘道.
@@ -32,9 +32,10 @@
 import { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@hermes/plugin-sdk'
 import { useMemo } from 'react'
 
+import { pt } from './i18n-pt'
 import { getPluginCtx } from './shared'
 
-type BotsMessages = {
+export type BotsMessages = {
   /** Left rail: the bot + group-chat roster. */
   editor: {
     fullConfigHint: string
@@ -2208,7 +2209,7 @@ const zhHant: BotsMessages = {
 }
 
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
-export const BOTS_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
+export const BOTS_LOCALES: PluginLocaleBundles = { en, ja, pt, zh, 'zh-hant': zhHant }
 
 // Bind the message SHAPE to a plugin translator: string leaves resolve now,
 // function leaves forward their args through t(path, …).

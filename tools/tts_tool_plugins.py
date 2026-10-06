@@ -31,6 +31,52 @@ def _lookup_plugin_provider(key: str, *, discover: bool = True, retry: bool = Fa
     return plugin_provider
 
 
+def _plugin_route_key(provider: str, tts_config: Dict[str, Any]) -> Optional[str]:
+    """Normalized *provider* when a plugin may service it, else None: built-in names never reach the
+    registry and a same-named ``type: command`` provider wins (config is more local than a plugin)."""
+    key = (provider or "").lower().strip()
+    if not key or key in BUILTIN_TTS_PROVIDERS:
+        return None
+    if _is_command_provider_config(_get_named_provider_config(tts_config, key)):
+        return None
+    return key
+
+
+def _plugin_voice_kwargs(tts_config: Dict[str, Any]) -> Dict[str, Any]:
+    """``voice`` / ``model`` / ``speed`` for a plugin call (None = provider default). Shared by
+    ``synthesize`` and the streaming path so a streamed reply keeps the configured voice."""
+    cfg = tts_config if isinstance(tts_config, dict) else {}
+    voice, model, speed = cfg.get("voice"), cfg.get("model"), cfg.get("speed")
+    return {"voice": voice if isinstance(voice, str) and voice else None,
+            "model": model if isinstance(model, str) and model else None,
+            "speed": float(speed) if isinstance(speed, (int, float)) else None}
+
+
+def _plugin_pcm_streaming_provider(provider: str, tts_config: Dict[str, Any]):
+    """The plugin that services *provider* when it opted into raw-PCM streaming, else None.
+
+    Opt-in = ``streams_pcm`` truthy AND a positive ``stream_sample_rate`` AND ``is_available()`` —
+    all read at resolve time, so per-profile state (key present, user opted out) belongs there.
+    A missing rate is refused loudly: PCM played at a guessed rate garbles speech.
+    """
+    key = _plugin_route_key(provider, tts_config)
+    if key is None:
+        return None
+    try:
+        plugin = _lookup_plugin_provider(key)
+        if plugin is None or not plugin.streams_pcm or not plugin.is_available():
+            return None
+        rate = plugin.stream_sample_rate
+    except Exception as exc:  # noqa: BLE001 — a broken plugin falls back to per-sentence synthesis
+        logger.debug("plugin TTS streaming lookup failed for '%s': %s", key, exc)
+        return None
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or rate <= 0:
+        logger.warning("TTS provider '%s' sets streams_pcm without a positive stream_sample_rate; "
+                       "using per-sentence synthesis instead", key)
+        return None
+    return plugin
+
+
 def _dispatch_to_plugin_provider(text: str, output_path: str, provider: str, tts_config: Dict[str, Any]) -> Optional[str]:
     """Route to a plugin-registered TTS provider; None means "fall through".
 
@@ -44,10 +90,8 @@ def _dispatch_to_plugin_provider(text: str, output_path: str, provider: str, tts
     registered :class:`TTSProvider` whose ``name`` equals the configured value. Unknown names return None
     (caller falls through to Edge default). See #17843.
     """
-    key = (provider or "").lower().strip()
-    if not key or key in BUILTIN_TTS_PROVIDERS:
-        return None
-    if _is_command_provider_config(_get_named_provider_config(tts_config, key)):
+    key = _plugin_route_key(provider, tts_config)
+    if key is None:
         return None
     try:
         plugin_provider = _lookup_plugin_provider(key, retry=True)
@@ -56,16 +100,11 @@ def _dispatch_to_plugin_provider(text: str, output_path: str, provider: str, tts
         return None
     if plugin_provider is None:
         return None
-    # voice/model/speed/format are optional per TTSProvider.synthesize; providers default on None.
-    cfg = tts_config if isinstance(tts_config, dict) else {}
-    voice, model, speed = cfg.get("voice"), cfg.get("model"), cfg.get("speed")
-    fmt = cfg.get("output_format", DEFAULT_COMMAND_TTS_OUTPUT_FORMAT)
+    fmt = (tts_config if isinstance(tts_config, dict) else {}).get(
+        "output_format", DEFAULT_COMMAND_TTS_OUTPUT_FORMAT)
     logger.info("Generating speech with plugin TTS provider '%s'...", key)
     written = plugin_provider.synthesize(
-        text, output_path, voice=voice if isinstance(voice, str) and voice else None,
-        model=model if isinstance(model, str) and model else None,
-        speed=float(speed) if isinstance(speed, (int, float)) else None,
-        format=str(fmt).lower() if fmt else "mp3")
+        text, output_path, format=str(fmt).lower() if fmt else "mp3", **_plugin_voice_kwargs(tts_config))
     return written if isinstance(written, str) and written else output_path
 
 

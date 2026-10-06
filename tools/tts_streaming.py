@@ -6,6 +6,7 @@ starts on sentence one. True streamers (``StreamingTTSProvider.stream``) wrap ch
 APIs; providers with no chunked API (edge, the default) get per-sentence playback via
 the sync ``text_to_speech_tool`` path. Adding a streamer is ``@register("name")`` on
 a subclass; the dispatcher, config gate (``tts.<name>.streaming``) and resolver come free.
+Plugin ``TTSProvider``s join by declaring ``streams_pcm`` + ``stream_sample_rate``.
 """
 
 from __future__ import annotations
@@ -14,11 +15,12 @@ import logging
 import re
 import time
 from abc import ABC, abstractmethod
-from typing import Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from agent.think_scrubber import THINK_TAG_NAMES
 from tools.tool_backend_helpers import resolve_openai_audio_api_key
 from tools.tts_tool import _get_provider, _load_tts_config
+from tools.tts_tool_plugins import _plugin_pcm_streaming_provider, _plugin_voice_kwargs
 from tools.tts_tool_providers import DEFAULT_XAI_SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
@@ -169,68 +171,28 @@ def _try_instantiate(name: str, tts_config: Dict) -> Optional[StreamingTTSProvid
 _PROVIDER_PRIORITY: List[str] = ["elevenlabs", "gemini", "openai", "xai"]
 
 
-class _PluginProviderStreamer(StreamingTTSProvider):
-    """Adapter: a plugin-registered ``TTSProvider``'s PCM ``stream()`` behind this ABC.
-
-    Plugin providers reach the *sync* dispatcher (``tools.tts_tool``) by default. A provider that
-    declares ``streams_pcm = True`` plus ``stream_sample_rate`` (Hz) is opting into the
-    speaker/gateway streaming path too, yielding raw int16 mono PCM from ``stream()`` — the
-    contract this ABC needs. Optional ``stream_channels`` / ``stream_sample_width`` refine the
-    format; a raw-PCM streamer without a usable sample rate is refused (playing PCM at a guessed
-    rate garbles speech — better to fall back to per-sentence synthesis).
-    """
+class _PluginPCMStreamer(StreamingTTSProvider):
+    """A plugin ``TTSProvider`` that opted into raw PCM (``streams_pcm``; see
+    ``tools.tts_tool_plugins._plugin_pcm_streaming_provider``) behind this ABC."""
 
     def __init__(self, provider: Any, tts_config: Dict):
-        super().__init__(tts_config, tts_config.get(str(getattr(provider, "name", ""))) or {})
+        super().__init__(tts_config, tts_config.get(provider.name) or {})
         self._provider = provider
-        self.sample_rate = int(getattr(provider, "stream_sample_rate"))
-        self.channels = int(getattr(provider, "stream_channels", 1) or 1)
-        self.sample_width = int(getattr(provider, "stream_sample_width", 2) or 2)
+        self.sample_rate = int(provider.stream_sample_rate)
 
     @staticmethod
     def available() -> bool:
-        return True  # a registry entry exists only when its plugin actually loaded
+        return True  # gated at resolve time, per instance
 
     def stream(self, text: str) -> Iterator[bytes]:
-        section = self.section if isinstance(self.section, dict) else {}
-        voice = section.get("voice")
-        model = section.get("model")
-        label = f"plugin streamer {getattr(self._provider, 'name', '?')}"
         yield from _capped(
-            self._provider.stream(
-                text,
-                voice=voice if isinstance(voice, str) and voice else None,
-                model=model if isinstance(model, str) and model else None,
-                format="pcm"),
-            label)
+            self._provider.stream(text, format="pcm", **_plugin_voice_kwargs(self.tts_config)),
+            f"plugin streamer {self._provider.name}")
 
 
 def _plugin_streamer(name: str, tts_config: Dict) -> Optional[StreamingTTSProvider]:
-    """The plugin ``TTSProvider`` named *name* adapted for streaming, or None (never raises)."""
-    key = (name or "").lower().strip()
-    if not key:
-        return None
-    try:
-        from hermes_cli.plugins import _ensure_plugins_discovered
-        _ensure_plugins_discovered()
-        from agent.tts_registry import get_provider
-        provider = get_provider(key)
-    except Exception as exc:  # noqa: BLE001 — plugin machinery is optional
-        logger.debug("plugin TTS streaming lookup failed for %r: %s", key, exc)
-        return None
-    if provider is None or not getattr(provider, "streams_pcm", False):
-        return None
-    rate = getattr(provider, "stream_sample_rate", None)
-    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or rate <= 0:
-        logger.warning(
-            "TTS provider %r sets streams_pcm without a positive stream_sample_rate; "
-            "using per-sentence synthesis instead", key)
-        return None
-    try:
-        return _PluginProviderStreamer(provider, tts_config)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("streaming adapter for plugin TTS provider %r failed: %s", key, exc)
-        return None
+    provider = _plugin_pcm_streaming_provider(name, tts_config)
+    return _PluginPCMStreamer(provider, tts_config) if provider is not None else None
 
 
 def resolve_streaming_provider(
@@ -242,16 +204,13 @@ def resolve_streaming_provider(
     per-sentence via the sync path, preserving the user's chosen voice. We never silently swap
     providers just to get streaming.
 
-    A registered *plugin* TTS provider that declares ``streams_pcm`` + ``stream_sample_rate`` is
-    adapted for this path too (see :func:`_plugin_streamer`), so a local engine plugin streams
-    chunked PCM exactly like a built-in."""
+    A plugin ``TTSProvider`` that opted into raw PCM (``streams_pcm``) streams here too, after the
+    built-ins and under the same rules (a pinned name never substitutes another voice)."""
     pinned = str((tts_config.get("streaming") or {}).get("provider") or "").lower().strip()
     if pinned == "auto":
         for name in _PROVIDER_PRIORITY:
             if (inst := _try_instantiate(name, tts_config)) is not None:
                 return inst
-        # No built-in chunked provider is usable: fall back to the configured provider's plugin
-        # streamer (e.g. a local Piper plugin), never a silent voice swap.
         return _plugin_streamer(_get_provider(tts_config), tts_config)
     name = pinned or (preferred or _get_provider(tts_config)).lower().strip()
     return _try_instantiate(name, tts_config) or _plugin_streamer(name, tts_config)

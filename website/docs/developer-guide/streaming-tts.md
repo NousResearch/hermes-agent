@@ -64,6 +64,7 @@ tts:
 | gemini      | SSE (`streamGenerateContent?alt=sse`) | yes         | `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
 | xai         | WebSocket (`wss://api.x.ai/v1/tts`)   | yes         | `XAI_API_KEY` preferred, else xAI OAuth (the subscription bearer 403s on metered TTS) |
 | edge, piper, kitten, neutts, mistral, minimax, deepinfra, … | — | no (per-sentence sync fallback) | as usual |
+| plugin `TTSProvider` with `streams_pcm` | the plugin's `stream(format="pcm")` | yes, at its `stream_sample_rate` | the plugin's own |
 
 All credential lookups go through `resolve_provider_secret()`
 (config > env/.env > credential pool) — never bare env reads. Streamed bodies
@@ -82,6 +83,21 @@ upstream-body invariant.
 The ABC enforces the contract; the registry makes the provider discoverable;
 the dispatcher (`stream_tts_to_speaker`) and the gateway consumer handle the
 sentence buffer, stop events, and audio sink for free.
+
+## Plugin providers
+
+A plugin `TTSProvider` (registered with `ctx.register_tts_provider()`) joins this
+path without core changes. It sets `streams_pcm = True` and a positive
+`stream_sample_rate`, and its `stream(text, format="pcm", voice=, model=, speed=)`
+yields int16 mono PCM. `resolve_streaming_provider` adapts it
+(`tools.tts_streaming._PluginPCMStreamer`) under the same routing rules as the
+sync dispatcher (`tools.tts_tool_plugins`): built-in names never reach the
+registry, a same-named `type: command` provider wins, and the plugin gets the
+same `tts.voice` / `tts.model` / `tts.speed` as `synthesize()`. A configured
+plugin streams first. Under `tts.streaming.provider: auto` it is tried only after
+the built-in priority list. `streams_pcm`, `stream_sample_rate` and
+`is_available()` are read every time a streamer is resolved. If the rate is
+missing or the provider reports unavailable, Hermes keeps per-sentence synthesis.
 
 ## Gateway streaming (platform adapters)
 

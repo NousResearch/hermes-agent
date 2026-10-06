@@ -1390,6 +1390,34 @@ class TestSenderAuthentication(unittest.TestCase):
             self.assertTrue(ok, (ar, reason))
 
 
+    def test_ar_rfc2047_encoded_authenticates(self):
+        """Some MTAs (e.g. Post.lu) deliver Authentication-Results as RFC 2047
+        encoded-words; the header must be decoded before parsing, else every
+        legitimate sender is silently dropped (#133811)."""
+        # Whole-header QP encoding, a plaintext authserv-id with encoded verdicts,
+        # encoded-words folded across lines, and each verdict method all authenticate.
+        for ar in (
+            "=?utf-8?Q?mx=2Eourserver=2Ecom=3B_dmarc=3Dpass_header=2Efrom=3Dexample=2Ecom?=",
+            "mx.ourserver.com; =?utf-8?Q?dmarc=3Dpass_header=2Efrom=3Dexample=2Ecom?=",
+            "=?utf-8?Q?mx=2Eourserver=2Ecom=3B?=\r\n =?utf-8?Q?_dmarc=3Dpass_header=2Efrom=3Dexample=2Ecom?=",
+            "=?utf-8?Q?mx=2Eourserver=2Ecom=3B_spf=3Dpass_smtp=2Emailfrom=3Dexample=2Ecom?=",
+            "=?utf-8?Q?mx=2Eourserver=2Ecom=3B_dkim=3Dpass_header=2Ed=3Dexample=2Ecom?=",
+        ):
+            with self.subTest(ar=ar):
+                ok, reason = self._verify("admin@example.com", [ar])
+                self.assertTrue(ok, (ar, reason))
+        # Decoding never relaxes the fail-closed checks: a forged authserv-id or a
+        # misaligned identity hidden inside an encoded-word stays rejected.
+        for ar in (
+            "=?utf-8?Q?edge=2Ereceiver=2Etest=3B_dmarc=3Dpass_header=2Efrom=3Dexample=2Ecom?=",
+            "=?utf-8?Q?mx=2Eourserver=2Ecom=3B_dmarc=3Dpass_header=2Efrom=3Devil=2Etest?=",
+            "=?utf-8?Q?mx=2Eourserver=2Ecom=3B_spf=3Dpass_smtp=2Emailfrom=3Devil=2Etest?=",
+            "=?utf-8?Q?mx=2Eourserver=2Ecom=3B_dkim=3Dpass_header=2Ed=3Devil=2Etest?=",
+        ):
+            with self.subTest(ar=ar):
+                ok, reason = self._verify("admin@example.com", [ar])
+                self.assertFalse(ok, (ar, reason))
+
     def test_dkim_pass_aligned_authenticates(self):
         ok, reason = self._verify(
             "admin@example.com",

@@ -375,7 +375,10 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         return False, "missing From domain"
     if not (headers := msg.get_all("Authentication-Results")):
         return False, _NO_AUTH_RESULTS_REASON
-    trusted = " ".join(str(headers[0]).split())
+    # Some receiving MTAs (e.g. Post.lu) deliver Authentication-Results as RFC 2047 encoded-words
+    # (=?utf-8?Q?...?=), hiding the authserv-id pin and every dmarc/spf/dkim verdict; decode before
+    # flattening, else legitimate senders are rejected by the same fail-closed check (#133811).
+    trusted = " ".join(_decode_header_value(str(headers[0])).split())
     # _ar_clauses removes RFC 8601 CFWS comments and ignores semicolons inside them, so supported
     # receiver variants remain valid without allowing a lower field or a related domain to satisfy the pin.
     if (clauses := _ar_clauses(trusted)) is None:

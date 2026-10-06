@@ -3018,6 +3018,7 @@
     "settings.fieldLabels.tts.gemini.voice",
     "settings.fieldLabels.tts.kittentts.model",
     "settings.fieldLabels.tts.kittentts.voice",
+    "settings.fieldLabels.tts.kokoro.voice",
     "settings.fieldLabels.tts.minimax.model",
     "settings.fieldLabels.tts.minimax.voiceId",
     "settings.fieldLabels.tts.mistral.model",

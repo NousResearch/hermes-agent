@@ -18,7 +18,7 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with eleven providers:
+Convert text to speech with twelve providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -32,6 +32,7 @@ Convert text to speech with eleven providers:
 | **DeepInfra TTS** | Good | Paid | `DEEPINFRA_API_KEY` |
 | **NeuTTS** | Good | Free (local) | None needed |
 | **KittenTTS** | Good | Free (local) | None needed |
+| **Kokoro** | Excellent | Free (local) | None needed |
 | **Piper** | Good | Free (local) | None needed |
 
 ### Platform Delivery
@@ -48,7 +49,7 @@ Convert text to speech with eleven providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "deepinfra" | "neutts" | "kittentts" | "piper" — or "nous" for the managed Tool Gateway (written when you pick Nous Subscription in `hermes tools`)
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "deepinfra" | "neutts" | "kittentts" | "kokoro" | "piper" — or "nous" for the managed Tool Gateway (written when you pick Nous Subscription in `hermes tools`)
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -176,6 +177,7 @@ Each provider has a documented per-request input-character cap. Hermes splits lo
 | ElevenLabs | Model-aware (see below) |
 | NeuTTS | 2000 |
 | KittenTTS | 2000 |
+| Kokoro | 3000 |
 | Piper | 5000 |
 
 **ElevenLabs** picks a cap from the configured `model_id`:
@@ -210,6 +212,7 @@ Telegram voice bubbles require Opus/OGG audio format:
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **Piper** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
+- **Kokoro** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 
 ```bash
 # Ubuntu/Debian
@@ -272,11 +275,28 @@ tts:
 
 **Advanced knobs** (`tts.piper.length_scale` / `noise_scale` / `noise_w_scale` / `volume` / `normalize_audio`, `use_cuda`) correspond 1:1 to Piper's `SynthesisConfig`. They're ignored on older `piper-tts` versions.
 
+### Kokoro (local, best-in-class quality)
+
+Kokoro-82M is an Apache-2.0 TTS model that leads the open-weight quality rankings for its size. Hermes runs it through `kokoro-onnx` on **CPU** (via onnxruntime), so it coexists with GPU workloads, and needs no API key.
+
+**Install via `hermes tools`** → Voice & TTS → Kokoro (installs the `kokoro` extra: `kokoro-onnx` + `soundfile`, ~90MB of wheels). The Kokoro-82M v1.0 ONNX weights (~350MB total) are downloaded on first use into `<hermes home>/share/kokoro/` — on an offline box, fetch the two files from the [kokoro-onnx releases](https://github.com/thewh1teagle/kokoro-onnx/releases) and place them there yourself.
+
+**Switch to Kokoro:**
+
+```yaml
+tts:
+  provider: kokoro
+  kokoro:
+    voice: af_heart
+```
+
+**Picking a voice.** The [voice catalog](https://huggingface.co/hexgrad/Kokoro-82M/blob/main/VOICES.md) lists 50+ ids built from quality/gender/accent prefixes — `af_heart` (default), `af_bella`, `am_michael`, `bf_emma`, `bm_george`, and more. Set an absolute path via `tts.kokoro.model_path` / `tts.kokoro.voices_path` to use a different or pre-downloaded model. The per-call `speed` parameter of the `text_to_speech` tool applies (clamped to 0.5–2.0); `tts.kokoro.speed` is the config default.
+
 ### Warm-up and unload via speech toggles (local engines)
 
-Local engines (Piper, KittenTTS) load their model lazily, so without help the *first* spoken reply after you turn speech on pays the whole model load — and on a fresh install the voice download — as silence before the first word. Hermes treats the speech-output toggles as the signal that TTS is about to be needed:
+Local engines (Piper, KittenTTS, Kokoro) load their model lazily, so without help the *first* spoken reply after you turn speech on pays the whole model load — and on a fresh install the voice download — as silence before the first word. Hermes treats the speech-output toggles as the signal that TTS is about to be needed:
 
-- **Desktop** — **Read replies aloud** is a desktop-local preference, independent of the gateway's `voice.auto_tts` setting in Settings → Voice. It migrates the shared value once, then later gateway configuration changes do not override the desktop toggle. If local storage is full or unavailable, the choice still lasts for this window; persistence across a reload remains best-effort. Turning on **Read replies aloud**, or starting a **voice conversation**, pre-loads the configured engine in the background right away. Turning both off again unloads the resident model (a Piper voice is tens of MB; KittenTTS up to ~80MB) so it isn't parked in RAM for nothing.
+- **Desktop** — **Read replies aloud** is a desktop-local preference, independent of the gateway's `voice.auto_tts` setting in Settings → Voice. It migrates the shared value once, then later gateway configuration changes do not override the desktop toggle. If local storage is full or unavailable, the choice still lasts for this window; persistence across a reload remains best-effort. Turning on **Read replies aloud**, or starting a **voice conversation**, pre-loads the configured engine in the background right away. Turning both off again unloads the resident model (a Piper voice is tens of MB; KittenTTS up to ~80MB; the Kokoro model ~330MB) so it isn't parked in RAM for nothing.
 - **CLI / TUI** — `/voice tts` (and `/voice on` when `voice.auto_tts` is set) do the same; `/voice off` releases.
 
 Each toggle holds a *lease* on the engine; the model is only unloaded when the last lease across surfaces is released, so switching off read-aloud in one Desktop window never pulls the voice out from under a conversation running in another. The unload waits `tts.keep_warm_seconds` (default `60`) after the last release, and any toggle turning speech back on within that window keeps the loaded model, so a wake-word loop or a quickly restarted voice conversation doesn't reload the voice each time. Set it to `0` to unload immediately. For cloud providers there is no model to hold — the toggle only makes sure a lazily-installed SDK (edge-tts, ElevenLabs, Mistral) is present. Warm-up is best-effort: if the engine can't load, the toggle still succeeds and the first reply falls back to loading on demand as before.

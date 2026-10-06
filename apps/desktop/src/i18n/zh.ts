@@ -1084,6 +1084,9 @@ export const zh = defineLocale({
           model: 'KittenTTS 模型',
           voice: 'KittenTTS 语音'
         },
+        kokoro: {
+          voice: 'Kokoro 语音'
+        },
         piper: {
           voice: 'Piper 语音'
         }

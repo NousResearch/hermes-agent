@@ -44,7 +44,8 @@ from tools.tts_tool_delivery import (
 from tools.tts_tool_providers import (
     _generate_edge_tts, _generate_elevenlabs, _generate_gemini_tts, _generate_minimax_tts,
     _generate_mistral_tts, _generate_xai_tts, _resolve_minimax_tts_runtime)
-from tools.tts_tool_local import _generate_kittentts, _generate_neutts, _generate_piper_tts
+from tools.tts_tool_local import (
+    _generate_kittentts, _generate_kokoro, _generate_neutts, _generate_piper_tts)
 from tools.tts_tool_plugins import (
     _dispatch_to_plugin_provider, _plugin_provider_is_available,
     _plugin_provider_is_voice_compatible)
@@ -78,6 +79,7 @@ _import_mistral_client = _sdk_importer("mistralai.client", "Mistral", feature="t
 _import_sounddevice = _sdk_importer("sounddevice")
 _import_kittentts = _sdk_importer("kittentts", "KittenTTS")
 _import_piper = _sdk_importer("piper", "PiperVoice")  # piper-tts wheels embed espeak-ng
+_import_kokoro_onnx = _sdk_importer("kokoro_onnx", "Kokoro")
 
 
 def _importable(importer: Callable[[], Any]) -> bool:
@@ -97,6 +99,7 @@ def _package_installed(name: str) -> bool:
 
 def _check_neutts_available() -> bool: return _package_installed("neutts")
 def _check_kittentts_available() -> bool: return _package_installed("kittentts")
+def _check_kokoro_available() -> bool: return _package_installed("kokoro_onnx")
 def _check_piper_available() -> bool: return _package_installed("piper")
 
 
@@ -161,7 +164,7 @@ _MEDIA_DIRECTIVE_RE = re.compile(r"media:\s*[`'\"*_]*(?:[`'\"]|[a-z]:[/\\]|~?/)"
 
 # Built-ins that emit Opus natively when asked for .ogg; the rest need ffmpeg for voice bubbles.
 _NATIVE_OPUS_PROVIDERS = frozenset({"openai", "elevenlabs", "mistral", "gemini"})
-_FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittentts", "piper"})
+_FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittentts", "kokoro", "piper"})
 
 
 # --- Built-in provider dispatch ---
@@ -187,6 +190,9 @@ _BUILTIN_DISPATCH: Dict[str, tuple] = {
     "kittentts": (lambda: _importable(_import_kittentts), "KittenTTS (local, ~25MB)", "_generate_kittentts",
                   "KittenTTS provider selected but 'kittentts' package not installed. "
                   "Run 'hermes setup tts' and choose KittenTTS."),
+    "kokoro": (lambda: _importable(_import_kokoro_onnx), "Kokoro (local, ~350MB)", "_generate_kokoro",
+               "Kokoro provider selected but 'kokoro-onnx' package not installed. "
+               "Run 'hermes setup tts' and choose Kokoro."),
     "piper": (lambda: _importable(_import_piper), "Piper (local)", "_generate_piper_tts",
               "Piper provider selected but 'piper-tts' package not installed. "
               "Run 'hermes tools' and select Piper under TTS.")}
@@ -295,7 +301,21 @@ def _apply_call_overrides(tts_config: Dict[str, Any], speed: Optional[float], pr
     advertises the override, and a leaked platform hint passing one anyway must not reroute
     speech to another vendor behind the operator's back."""
     if speed is not None:
-        tts_config = {**tts_config, "speed": max(0.25, min(4.0, float(speed)))}
+        # Non-finite / non-numeric per-call values reset to 1.0 here (NaN would survive
+        # min/max and every provider's downstream clamp would inherit the garbage).
+        try:
+            speed = float(speed)
+        except (TypeError, ValueError):
+            speed = 1.0
+        if speed != speed or speed in (float("inf"), float("-inf")):
+            speed = 1.0
+        clamped = max(0.25, min(4.0, speed))
+        # ``speed`` keeps the historical broadcast so every provider that reads the
+        # per-call value from tts_config["speed"] (openai, deepinfra, xai, command
+        # templates) is byte-identical to before; ``_call_speed`` is the unambiguous
+        # per-call channel kokoro reads so its provider default (tts.kokoro.speed)
+        # and the global tts.speed can't shadow it.
+        tts_config = {**tts_config, "speed": clamped, "_call_speed": clamped}
     configured_provider = _get_provider(tts_config)
     if provider:
         requested = provider.lower().strip()
@@ -554,6 +574,7 @@ _BUILTIN_REQUIREMENTS: Dict[str, Callable[[], bool]] = {
     "xai": _xai_requirements,
     "gemini": lambda: bool(_resolve_provider_key("GEMINI_API_KEY", "gemini") or _resolve_provider_key("GOOGLE_API_KEY", "gemini")),
     "mistral": lambda: _pm_extra_available("mistral") and bool(_resolve_provider_key("MISTRAL_API_KEY", "mistral")),
+    "kokoro": lambda: _check_kokoro_available(),
     "neutts": lambda: _check_neutts_available(),
     "kittentts": lambda: _check_kittentts_available(),
     "piper": lambda: _check_piper_available()}

@@ -559,7 +559,7 @@ class CLIVoiceMixin:
             self._voice_tts = False
             self._voice_continuous = False
 
-        # Release the TTS lease so a resident local model (piper/kittentts) can be freed.
+        # Release the TTS lease so a resident local model (piper/kittentts/kokoro) can be freed.
         self._tts_lease_async(False)
         # Shut down the persistent audio stream in background
         if recorder is not None:

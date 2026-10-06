@@ -93,15 +93,16 @@ def test_camofox_setup_leaves_external_server_and_config_owned_by_user(monkeypat
     assert ("reachable" if status == 200 else "not reachable") in output
 
 
-@pytest.mark.parametrize("key,extra", [
-    ("ddgs", "ddgs"), ("faster_whisper", "stt-whisper"),
-    ("kittentts", "kittentts"), ("piper", "piper"),
+@pytest.mark.parametrize("key,extra,module", [
+    ("ddgs", "ddgs", "ddgs"), ("faster_whisper", "stt-whisper", "faster_whisper"),
+    ("kittentts", "kittentts", "kittentts"), ("kokoro", "kokoro", "kokoro_onnx"),
+    ("piper", "piper", "piper"),
 ])
 @pytest.mark.parametrize("refused", [False, True])
-def test_importable_sdk_does_not_bypass_pm_constraints(monkeypatch, capsys, key, extra, refused):
-    sdk = ModuleType(key)
+def test_importable_sdk_does_not_bypass_pm_constraints(monkeypatch, capsys, key, extra, module, refused):
+    sdk = ModuleType(module)
     sdk.__version__ = "0.0.0"
-    monkeypatch.setitem(sys.modules, key, sdk)
+    monkeypatch.setitem(sys.modules, module, sdk)
     error = pm.InstallError("venv", "outside frozen feature set") if refused else None
     with patch("pm.sync_venv", side_effect=error) as sync:
         _run_post_setup(key)

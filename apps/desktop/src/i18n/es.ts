@@ -1438,6 +1438,9 @@ export const esOverrides = {
           model: 'Modelo de KittenTTS',
           voice: 'Voz de KittenTTS'
         },
+        kokoro: {
+          voice: 'Voz de Kokoro'
+        },
         piper: {
           voice: 'Voz de Piper'
         },

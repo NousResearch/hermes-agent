@@ -18,6 +18,7 @@ describe('voiceProviderKeys', () => {
       'mistral',
       'gemini',
       'kittentts',
+      'kokoro',
       'piper',
       'deepinfra',
       'minimax'

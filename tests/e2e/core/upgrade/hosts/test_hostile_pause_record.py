@@ -44,7 +44,7 @@ from hermes_cli import update_pause_record as r
 from hermes_cli.update_lock import UpdateLock
 lock = UpdateLock(install_root=sys.argv[1])
 adopted_claim = lock.acquire() and not lock.acquired
-saw_orphan = r.orphaned_record() is not None
+saw_orphan = bool(r.orphans())
 r.write(r.stamp_tree({"resume_needed": True, "profiles": {"mine": 1}}), owner=r.identity())
 print(json.dumps({"adopted_claim": adopted_claim, "saw_orphan": saw_orphan,
                   "recorded": sorted(r.read()["token"]["profiles"])}))

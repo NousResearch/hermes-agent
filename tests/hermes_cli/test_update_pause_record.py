@@ -46,12 +46,12 @@ def _child(code: str, *argv: str, env: dict) -> subprocess.Popen:
 
 
 def _orphaned_profiles(home: Path) -> dict | None:
-    """``orphaned_record()`` read by a fresh process (the liveness probe reads the checkout's git dir)."""
+    """The first orphan's profiles, read by a fresh process (the liveness probe reads the checkout's git dir)."""
     probe = _child("""
         import json
         from hermes_cli import update_pause_record as r
-        body = r.orphaned_record()
-        print(json.dumps(None if body is None else body["token"]["profiles"]))
+        found = r.orphans()
+        print(json.dumps(found[0][1]["token"]["profiles"] if found else None))
     """, env={"HERMES_HOME": str(home)})
     out, _ = probe.communicate(timeout=60)
     return json.loads(out.strip().splitlines()[-1])

@@ -629,11 +629,6 @@ def orphans(path: Path | None = None) -> list[tuple[Path, dict]]:
     return found
 
 
-def orphaned_record(path: Path | None = None) -> dict | None:
-    found = orphans(path)
-    return found[0][1] if found else None
-
-
 def retire_redundant(path: Path | None = None) -> None:
     """Delete copies of obligations another file already carries (crash leftovers of a transfer)."""
     path = path or record_path()

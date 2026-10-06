@@ -6,12 +6,13 @@ agent resource finalizer stops returning after the model turn has ended.
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 from concurrent.futures import Future
 from unittest.mock import MagicMock, patch
 
-from cron.scheduler import _teardown_cron_agent, run_job
+from cron.scheduler import _finalize_cron_session, _teardown_cron_agent, run_job
 from cron.scheduler_detached_worker import defer_teardown_to_running_worker
 
 
@@ -161,3 +162,90 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
         release.set()
         sched._running_job_ids.discard(sched._inflight_key("cleanup-guard-hang"))
         sched._shutdown_parallel_pool()
+
+
+class _StallableSessionDB:
+    """SessionDB double that can stall the first call of selected methods."""
+
+    def __init__(self, stall_methods: set[str], stall_duration: float):
+        self.stall_methods = stall_methods
+        self.stall_duration = stall_duration
+        self._stalled: set[str] = set()
+        self.calls: list[tuple[str, tuple]] = []
+        self.ended_reasons: dict[str, str] = {}
+
+    def _maybe_stall(self, name: str) -> None:
+        if name in self.stall_methods and name not in self._stalled:
+            self._stalled.add(name)
+            time.sleep(self.stall_duration)
+
+    def get_compression_tip(self, session_id):
+        self.calls.append(("get_compression_tip", (session_id,)))
+        self._maybe_stall("get_compression_tip")
+        return None
+
+    def get_next_title_in_lineage(self, base_title):
+        self.calls.append(("get_next_title_in_lineage", (base_title,)))
+        return f"{base_title} #2"
+
+    def session_lifecycle_statuses(self, session_ids):
+        self.calls.append(("session_lifecycle_statuses", (tuple(session_ids),)))
+        return {sid: "complete" for sid in session_ids}
+
+    def set_session_title(self, session_id, title):
+        self.calls.append(("set_session_title", (session_id, title)))
+        self._maybe_stall("set_session_title")
+        return title
+
+    def end_session(self, session_id, end_reason):
+        self.calls.append(("end_session", (session_id, end_reason)))
+        self._maybe_stall("end_session")
+        self.ended_reasons.setdefault(session_id, end_reason)
+
+    def close(self):
+        return None
+
+
+def _finalize_with_stall(stall_methods):
+    store = _StallableSessionDB(stall_methods, stall_duration=0.4)
+    agent = MagicMock()
+    agent._end_session_on_close = True
+    with patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02), \
+         patch("hermes_state_registry.release_or_close"):
+        _finalize_cron_session(store, agent, "job-76914", "job 76914", "sess-1")
+    return store, agent
+
+
+def test_finalize_retry_writes_ended_at_after_title_stall():
+    store, agent = _finalize_with_stall({"set_session_title"})
+    assert store.ended_reasons.get("sess-1") == "cron_complete"
+    assert agent._end_session_on_close is False
+
+
+def test_finalize_retry_writes_ended_at_after_end_session_stall():
+    store, agent = _finalize_with_stall({"end_session"})
+    assert store.ended_reasons.get("sess-1") == "cron_complete"
+    assert agent._end_session_on_close is False
+
+
+def test_finalize_retry_failure_keeps_agent_armed():
+    store = _StallableSessionDB(set(), stall_duration=0.0)
+
+    def _broken_end(_session_id, _end_reason):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    store.end_session = _broken_end
+    agent = MagicMock()
+    agent._end_session_on_close = True
+    with patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02), \
+         patch("hermes_state_registry.release_or_close"):
+        _finalize_cron_session(store, agent, "job-76914", "job 76914", "sess-1")
+    assert agent._end_session_on_close is True
+
+
+def test_finalize_normal_path_ends_session_once():
+    store, agent = _finalize_with_stall(set())
+    end_calls = [call for call in store.calls if call[0] == "end_session"]
+    assert len(end_calls) == 1
+    assert store.ended_reasons.get("sess-1") == "cron_complete"
+    assert agent._end_session_on_close is False

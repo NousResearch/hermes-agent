@@ -34,11 +34,9 @@ def test_execution_projection_is_opaque_bounded_and_content_free():
     assert "alice@example.com" not in str(event)
     assert "top-secret-token" not in str(event)
 
-def test_cron_store_writability_is_exported_and_registered(monkeypatch):
-    """A degraded store exports writable=0 with its skipped runs, a cleared one writable=1, and
-    both gauges are registered for OTLP (an unregistered gauge is silently dropped)."""
+def test_cron_store_writability_is_exported(monkeypatch):
+    """A degraded store exports writable=0 with its skipped runs, a cleared one writable=1."""
     import errno
-    from agent.monitoring import gateway_health_export
     from agent.monitoring.cron_health import build_cron_health_snapshot
     from cron import store_health
     from cron.jobs import _current_cron_store
@@ -52,8 +50,6 @@ def test_cron_store_writability_is_exported_and_registered(monkeypatch):
             _metric(degraded, "hermes.cron.store.skipped_runs").value) == (0, 1)
     store_health._degraded.clear()
     assert _metric(build_cron_health_snapshot(), "hermes.cron.store.writable").value == 1
-    assert {"hermes.cron.store.writable", "hermes.cron.store.skipped_runs"} <= set(
-        gateway_health_export._OBSERVABLE_METRIC_NAMES)
 
 @pytest.mark.parametrize("message", ["oauth refresh failed", "tokenizer crashed", "HTTP 4015"])
 def test_error_classification_avoids_auth_substring_false_positives(message):
@@ -112,6 +108,7 @@ def test_registered_observable_metric_names_cover_snapshot_metrics(monkeypatch):
         _M("hermes.cron.scheduler.catch_up_occurrences"),
         _M("hermes.cron.jobs.enabled"), _M("hermes.cron.jobs.running"),
         _M("hermes.cron.jobs.overdue"),
+        _M("hermes.cron.store.writable"), _M("hermes.cron.store.skipped_runs"),
     ]})()
     monkeypatch.setattr(gateway_health_export, "_read_gateway_snapshot", lambda config: gateway_snapshot)
     monkeypatch.setattr(gateway_health_export, "_read_cron_snapshot", lambda: cron_snapshot)

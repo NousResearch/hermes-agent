@@ -303,8 +303,6 @@ def tree_digest(root: Path) -> str:
 
 
 def _icacls_argv(path: Path) -> list[str]:
-    """Resolve icacls through %SystemRoot%\\System32: the reset runs in a
-    post-install context where PATH may not carry it."""
     windir = os.environ.get("SystemRoot", r"C:\Windows")
     icacls = Path(windir) / "System32" / "icacls.exe"
     return [
@@ -317,33 +315,24 @@ def _icacls_argv(path: Path) -> list[str]:
 
 
 def _reset_scratch_dacl(path: Path) -> None:
-    """Reset a fresh scratch dir to the store root's inheritable Windows ACL.
-
-    Python >= 3.12.4 hardens ``tempfile.mkdtemp()`` directories with a
-    protected DACL — SYSTEM, Administrators and OWNER RIGHTS only, with
-    inheritance disabled (the CVE-2024-4030 ``0700`` approximation).
-    ``publish()`` moves the staged tree into the store by same-volume
-    rename, which keeps that descriptor, so a machine-scoped store filled
-    from an elevated update ends up with entries the interactive user
-    cannot execute at all (#122935). Re-enabling inheritance from the
-    store root before any bytes are staged covers the whole subtree —
-    fetch caches and the published entry alike.
-    """
     if os.name != "nt":
         return
     try:
         subprocess.run(_icacls_argv(path), check=True, capture_output=True, timeout=60)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         # CalledProcessError.__str__ drops the icacls text ("Access is
-        # denied"); the decoded stderr names the actual refusal cause.
+        # denied"); keep that cause so the install failure is actionable.
         stderr = getattr(exc, "stderr", None)
         if isinstance(stderr, bytes):
             stderr = stderr.decode("utf-8", "replace").strip() or None
-        print(
-            f"warning: could not restore inheritable ACL on {path}: {stderr or exc}",
-            file=sys.stderr,
-            flush=True,
-        )
+        if isinstance(exc, subprocess.CalledProcessError):
+            detail = stderr or f"icacls exited with status {exc.returncode}"
+        elif isinstance(exc, subprocess.TimeoutExpired):
+            detail = f"icacls timed out after {exc.timeout} seconds"
+        else:
+            detail = str(exc)
+        detail = detail.replace(str(path), "<staging directory>")
+        raise OSError(f"could not reset staging ACL: {detail}") from exc
 
 
 class Store:
@@ -409,8 +398,8 @@ class Store:
     def scratch(self):
         self.root.mkdir(parents=True, exist_ok=True)
         path = Path(tempfile.mkdtemp(prefix=".staging-", dir=self.root))
-        _reset_scratch_dacl(path)
         try:
+            _reset_scratch_dacl(path)
             yield path
         finally:
             shutil.rmtree(path, ignore_errors=True)

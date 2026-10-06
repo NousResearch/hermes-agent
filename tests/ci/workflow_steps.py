@@ -64,8 +64,12 @@ def _run(step: dict, ctx: dict, cwd: Path | None = None, *, receipt: bool = Fals
         output.touch()
         calls.touch()
         bash = locate_command("bash").command[0]
+        # Steps call git too. Linux reaches it through os.defpath; on Windows the bash found
+        # first may be Git's usr\bin (no git.exe), so git's own dir rides along like bash's.
+        git = locate_command("git").command[0]
         env = {
-            "PATH": os.pathsep.join((*_interpreter_dirs(root), os.defpath, str(Path(bash).parent))),
+            "PATH": os.pathsep.join((*_interpreter_dirs(root), os.defpath, str(Path(bash).parent),
+                                     str(Path(git).parent))),
             "HOME": directory, "RUNNER_TEMP": directory, "GITHUB_OUTPUT": str(output),
             "REPLAY_PYTHON": sys.executable, "REPLAY_CALLS": str(calls),
             **{k: gha.to_string(gha.render(v, ctx)) for k, v in step.get("env", {}).items()},

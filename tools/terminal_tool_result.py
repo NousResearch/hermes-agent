@@ -228,17 +228,15 @@ def finalize_foreground_result(
     output, sudo_auth_failed, sudo_cache_cleared = _sudo_annotations(command, output, env_type)
     output = _apply_output_transform_hook(command, output, returncode, effective_task_id, env_type)
     output = _truncate_head_tail(output)
-    # Strip ANSI so the model never copies escapes into file writes, then
-    # redact secrets; redact_terminal_output is command-aware (env-dump
-    # commands get the KEY=value pass, source/config dumps skip it).
+    # Strip ANSI so the model never copies escapes into file writes, then redact secrets.
     from agent.redact import redact_terminal_output
     from tools.ansi_strip import strip_ansi
     output = strip_ansi(output)
-    # For source/config dumps (MAX_TOKENS=100, "apiKey": "x" fixtures, postgresql:// f-string templates) the
-    # ENV/JSON/template passes are skipped to avoid false positives (code_file=True). But for env-dump
-    # commands (env/printenv/set/export/declare) the output IS a KEY=value credential dump, so
-    # redact_terminal_output runs the ENV pass (code_file=False) to mask opaque tokens with no vendor
-    # prefix. Real prefixes, auth headers, JWTs, private keys are masked in both modes. See issue #43025.
+    # The command is NOT classified: redact_terminal_output runs the ENV/JSON/YAML/config passes on
+    # every dump with the value-opacity bar, so a prefix-less credential in a KEY=value line or a
+    # JSON field masks whatever the command was (including the indirect readers a classifier missed),
+    # while a short scalar setting (MAX_TOKENS=100, "apiKey": "test") stays readable. Real prefixes,
+    # auth headers, JWTs and private keys are masked as before. See issue #43025.
     output = redact_terminal_output(output.strip(), command) if output else ""
 
     exit_note = _interpret_exit_code(command, returncode)

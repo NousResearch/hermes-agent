@@ -209,6 +209,69 @@ def _nvidia_vram() -> tuple[int, int, str, int | None] | None:
     return query["total_bytes"], query["free_bytes"], query["gpu_name"], query.get("gpu_pci_id")
 
 
+def _nvidia_cards() -> "list[dict]":
+    """One entry per NVIDIA card from the shared nvidia-smi query; [] when no card was read.
+
+    Sorted by total VRAM descending: llama.cpp's --tensor-split takes one ratio per device in
+    device order, so the split helper and any future per-card UI share this ordering.
+    """
+    query = _cached_nvidia_gpu_query()
+    if query is None:
+        return []
+    cards = list(query.get("cards") or [query])
+    cards.sort(key=lambda c: c["total_bytes"], reverse=True)
+    return cards
+
+
+def aggregate_nvidia_budget(planning: bool) -> "HardwareBudget | None":
+    """Price a multi-GPU machine against its AGGREGATE VRAM, or None for single-card hosts.
+
+    The managed runtime budgets against the first GPU only (#107960), so a 24 GB + 32 GB pair
+    reads as a 24 GB machine and models that fit the aggregate are marked "Won't fit". This
+    returns the capacity a tensor-split launch could actually use: per-card margin (the
+    desktop's co-residents live on every card) subtracted from each card, summed.
+
+    ``planning=True`` prices totals; ``planning=False`` prices live free memory. The unified-
+    memory quirk is deliberately NOT applied per card here — a carve-out device would need the
+    pool probe per card, and mixing one pooled card with discrete ones is rarer than the plain
+    multi-discrete case this fixes.
+    """
+    cards = _nvidia_cards()
+    if len(cards) < 2:
+        return None
+    usable = 0
+    total = 0
+    for card in cards:
+        base = card["total_bytes"] if planning else card["free_bytes"]
+        margin = max(_MARGIN_FLOOR, int(card["total_bytes"] * _MARGIN_FRACTION))
+        usable += max(0, base - margin)
+        total += card["total_bytes"]
+    ram_total, ram_avail = _ram_bytes()
+    return HardwareBudget(usable_vram_bytes=usable, total_device_bytes=total,
+                          ram_available_bytes=ram_total if planning else ram_avail,
+                          uma=False, gpu_name=" + ".join(c["gpu_name"] for c in cards),
+                          platform=sys.platform)
+
+
+def tensor_split_ratio() -> "list[int] | None":
+    """VRAM-proportional --tensor-split ratios for the detected cards, or None (one card / no card).
+
+    llama.cpp's default is an EVEN split, which starves the larger card on uneven pairs: on a
+    24 GB + 32 GB host the even split leaves the 32 GB card under-filled relative to its
+    capacity while the smaller card OOMs first. Proportional ratios (integers summing to the
+    device count, each >= 1) keep both cards at the same fill fraction.
+    """
+    cards = _nvidia_cards()
+    if len(cards) < 2:
+        return None
+    totals = [c["total_bytes"] for c in cards]
+    # llama.cpp scales each ratio by a fixed divisor (>= 1000), so the ratios may sum to any
+    # multiple of the device count — use a fine-grained scale and round, never zero.
+    scale = 100 * len(totals)
+    ratios = [max(1, round(t / sum(totals) * scale)) for t in totals]
+    return ratios
+
+
 _gpu_query_cache: "tuple[float, dict | None] | None" = None
 # The statusbar polls /api/local-models/hardware every 5s and the endpoint needs
 # name/util/vram; the budget probe needs total/free. One shared query (with a TTL
@@ -258,6 +321,27 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> "dict | None":
             "gpu_util_percent": int(util),
             "gpu_pci_id": pci_id,
         }
+        # Multi-GPU: one row per card. The primary view is the largest card (the historical
+        # single-card answer, so single-GPU machines are byte-identical); the full list feeds
+        # aggregate pricing and ratio-aware --tensor-split (#107960).
+        rows = [data]
+        for line in out.stdout.strip().splitlines()[1:]:
+            try:
+                t2, f2, n2, id2, u2, util2 = next(csv.reader([line], skipinitialspace=True))
+            except (StopIteration, ValueError):
+                continue
+            pci2 = None
+            with suppress(ValueError):
+                pci2 = int(id2, 16)
+            rows.append({
+                "gpu_name": n2.strip(),
+                "total_bytes": int(t2) << 20,
+                "free_bytes": int(f2) << 20,
+                "used_bytes": int(u2) << 20,
+                "gpu_util_percent": int(util2),
+                "gpu_pci_id": pci2,
+            })
+        data["cards"] = rows
         _gpu_query_cache = (now, data)
         return data
     _gpu_query_cache = (now, None)
@@ -412,12 +496,24 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
     ram_total, ram_avail = _ram_bytes()
     vram = _nvidia_vram()
 
+    # Multi-GPU: the primary probe above prices the largest card only (#107960). When a second
+    # discrete card is present, a tensor-split launch can use the aggregate — price it. The
+    # unified-pool quirk still wins when it classifies the primary card as pooled (the rarer
+    # mixed case keeps today's conservative behavior).
+
     # Unified-memory NVIDIA: the CUDA allocator pool is the real capacity. Classification comes
     # from the driver API/engine and must not require nvidia-smi (stripped-PATH sessions lose smi
     # but nvcuda loads via the system loader). Crossing the carve-out costs nothing — it is an OS
     # accounting knob, not a GPU limit. Deliberately NOT clamped to OS RAM: carved-out memory is
     # invisible to GlobalMemoryStatusEx, so a RAM clamp would throw away exactly that capacity.
     unified = _unified_pool_bytes(vram[0] if vram else 0, ram_total)
+    if unified is None and vram is not None:
+        aggregate = aggregate_nvidia_budget(planning)
+        if aggregate is not None:
+            logger.info(
+                "multi-GPU NVIDIA host: pricing aggregate %.1f GiB across %s",
+                aggregate.usable_vram_bytes / _GIB, aggregate.gpu_name)
+            return aggregate
     if unified is not None:
         logger.info(
             "unified-memory NVIDIA device: allocator pool %.1f GiB "

@@ -69,15 +69,22 @@ export function GatewayProfileGroups({
   const gatewayProfiles = new Map<string, SidebarSessionGroup[]>()
   const sections: SidebarSessionGroup[] = []
 
+  // A group forged without an owner (legacy rows, or rows from an older
+  // backend) must still land under a gateway header, or folding that header can
+  // never hide it. Fold it into the registry's primary connection, falling back
+  // to 'local'. Explicit ownership is never rewritten, so a remote gateway's
+  // same-named profile keeps its own header.
+  const fallbackConnectionId = registry?.primary || 'local'
+
   for (const group of groups) {
-    // Unknown legacy ownership stays unassigned; never guess a local gateway.
-    if (nested || embedded || !group.connectionId) {
+    if (nested || embedded) {
       sections.push(group)
 
       continue
     }
 
-    const id = JSON.stringify(['gateway', group.connectionId])
+    const connectionId = group.connectionId ?? fallbackConnectionId
+    const id = JSON.stringify(['gateway', connectionId])
     const profiles = gatewayProfiles.get(id)
 
     if (profiles) {
@@ -86,9 +93,8 @@ export function GatewayProfileGroups({
       gatewayProfiles.set(id, [group])
       sections.push({
         id,
-        connectionId: group.connectionId,
-        label:
-          registry?.connections.find(connection => connection.id === group.connectionId)?.label || group.connectionId,
+        connectionId,
+        label: registry?.connections.find(connection => connection.id === connectionId)?.label || connectionId,
         mode: 'profile',
         path: null,
         sessions: []

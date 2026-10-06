@@ -79,13 +79,15 @@ it('keeps equal profile names on separate gateways and routes section creation a
       makeSessionInfo({ id: 'legacy', profile: 'default', title: 'Legacy session', last_active: Date.now() / 1000 })
     ])
   )
-  expect(screen.getAllByText(/\$3\.00/)).toHaveLength(1)
+  // The legacy row (no connection_id) folds into the primary 'local' group:
+  // no owner-less group floats at the top level any more, so folding the
+  // local gateway header hides it too.
   expect(
     screen
-      .getByText(/\$3\.00/)
+      .getByText('Legacy session')
       .closest('[data-gateway-group]')
       ?.getAttribute('data-gateway-group')
-  ).toBe(JSON.stringify([null, 'default']))
+  ).toBe(JSON.stringify(['local', 'default']))
   act(() =>
     $sessions.set([
       ...$sessions.get(),

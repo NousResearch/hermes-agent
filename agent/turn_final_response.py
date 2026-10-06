@@ -12,7 +12,12 @@ import logging
 from typing import Any, Dict, Optional
 
 from agent.message_metadata import append_message
-from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
+from agent.repetition_guard import (
+    CASCADE_MIN_CHARS,
+    STOP_PATH_MIN_CHARS,
+    is_runaway_repetition,
+    is_semantic_cascade,
+)
 from agent.turn_failure_copy import stamp_failure
 from agent.turn_empty_response import recover_empty_response
 from agent.turn_stop_gates import apply_stop_gates
@@ -267,10 +272,20 @@ def finish_text_response(
     # any verify/kanban interim emission or durable transcript write.
     # Runaway scale and shape only: a completed answer the user asked to be repetitive is
     # delivered, unlike a length-truncated fragment that burned the whole budget.
-    if (
-        final_response
-        and len(final_response) >= STOP_PATH_MIN_CHARS
-        and is_runaway_repetition(final_response)
+    # Sibling: a semantic free-association cascade (#131098 defect 2) has ~1.0 n-gram
+    # uniqueness, so the repetition gate above cannot see it. Same verdict path, but its
+    # own lower length floor: vocabulary abandonment is the stronger signal, and the
+    # reported incident cascade was 12,657 chars (below the 16k repetition floor).
+    # Only a reply that abandons its opening vocabulary outright trips it.
+    if final_response and (
+        (
+            len(final_response) >= STOP_PATH_MIN_CHARS
+            and is_runaway_repetition(final_response)
+        )
+        or (
+            len(final_response) >= CASCADE_MIN_CHARS
+            and is_semantic_cascade(final_response)
+        )
     ):
         line, user_response, error = _REPETITION_STOPPED
         agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)

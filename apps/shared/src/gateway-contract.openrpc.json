@@ -32683,7 +32683,7 @@
       },
       "SharedMetricsConsentResult": {
         "additionalProperties": false,
-        "description": "The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while\n``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults\nare not an answer).",
+        "description": "The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while\n``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults\nare not an answer) and it is not a ``reask``: an \"off\" from before the type-ahead fix, offered\nonce more with the reason.",
         "properties": {
           "enabled": {
             "title": "Enabled",
@@ -32695,6 +32695,11 @@
           },
           "decided": {
             "title": "Decided",
+            "type": "boolean"
+          },
+          "reask": {
+            "default": false,
+            "title": "Reask",
             "type": "boolean"
           }
         },

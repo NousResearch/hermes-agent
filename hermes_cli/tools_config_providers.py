@@ -212,7 +212,20 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
             is_active = _is_provider_active(provider, config)
         return "ready" if is_active else "needs_setup"
 
-    return "ready"
+    return _web_registry_readiness(provider)
+
+
+def _web_registry_readiness(provider: dict) -> str:
+    """Keyless, untiered web rows are ready only when their registry provider is available: the only such
+    row's ``is_available()`` is an account login (OpenAI Native = openai-codex), hence ``needs_auth``.
+    Free-tier rows are exempt: they run on the public keyless ring, which ``is_available()`` ignores."""
+    backend = provider.get("web_backend")
+    if not backend or provider.get("web_tier"):
+        return "ready"
+    from agent.web_search_registry import get_provider
+
+    registered = get_provider(backend)
+    return "ready" if registered is None or registered.is_available() else "needs_auth"
 
 
 def _toolset_needs_configuration_prompt(ts_key: str, config: dict, *, force_fresh: bool = False) -> bool:
@@ -348,10 +361,48 @@ def _web_tier_matches(provider: dict, config: dict) -> bool:
     return row_tier == ("paid" if has_key else "free")
 
 
+def _web_serving_backends(config: dict) -> set:
+    """Backend names serving web search / extract as configured: each capability's own
+    ``web.<cap>_backend`` override first, else the shared ``web.backend`` (``tools/web_tools.py``
+    dispatch order; legacy ``use_gateway: true`` reads as the managed ``nous`` selection).
+    Lower-cased and stripped like the dispatchers."""
+    raw_web_cfg = config.get("web")
+    web_cfg = raw_web_cfg if isinstance(raw_web_cfg, dict) else {}
+
+    def _name(key: str) -> str:
+        value = web_cfg.get(key)
+        return value.lower().strip() if isinstance(value, str) else ""
+
+    shared = NOUS_MANAGED_PROVIDER if is_truthy_value(web_cfg.get("use_gateway"), default=False) else _name("backend")
+    serving = {_name(key) or shared for key in ("search_backend", "extract_backend")}
+    serving.discard("")
+    return serving
+
+
+def _web_backend_active(provider: dict, config: dict) -> bool:
+    """True when a web row's ``web_backend`` serves either capability as configured: a vendor serving
+    one capability through its override is in use even when the shared key names a different one,
+    and a shared vendor shadowed by both overrides serves nothing. Managed Nous rows never reach
+    here — they answer in ``_managed_provider_active``."""
+    backend = provider.get("web_backend")
+    if not (backend and backend in _web_serving_backends(config) and _web_tier_matches(provider, config)):
+        return False
+    # Rows sharing one backend name (cloud "Firecrawl" vs the "Firecrawl Self-Hosted" setup row) differ only in
+    # the env var they configure, and the one whose var is set is what serves the call. A setup row needs its
+    # var; the registry row also stays active keyless (explicit ``firecrawl`` with no key = anonymous cloud)
+    # unless a sibling setup row's var is set instead.
+    from hermes_cli.tools_config import TOOL_CATEGORIES, _provider_env_ready
+    if not provider.get("env_vars") or _provider_env_ready(provider):
+        return True
+    return bool(provider.get("web_search_plugin_name")) and not any(
+        row.get("web_backend") == backend and row.get("env_vars") and _provider_env_ready(row)
+        for row in TOOL_CATEGORIES["web"]["providers"])
+
+
 # Managed-row marker -> (config section, key) the pick writes, in check order.
 _MANAGED_SELECTION_KEYS: tuple[tuple[str, str, str], ...] = (
     ("tts_provider", "tts", "provider"), ("stt_provider", "stt", "provider"),
-    ("browser_provider", "browser", "cloud_provider"), ("web_backend", "web", "backend"))
+    ("browser_provider", "browser", "cloud_provider"))
 
 
 def _has_marker(provider: dict, marker: str) -> bool:
@@ -382,13 +433,14 @@ def _managed_provider_active(provider: dict, config: dict, managed_feature: str,
         return feature.managed_by_nous
     # Browser Use mode is a driver on top of the provider (attaches to its CDP endpoint), so the browser
     # provider row stays active alongside the Browser Use row.
+    if _has_marker(provider, "web_backend"):
+        # Search and extract pick their route separately: the managed row serves whichever one
+        # resolves to the gateway (a ``nous`` override, or the shared ``nous`` selection).
+        return feature.managed_by_nous and NOUS_MANAGED_PROVIDER in _web_serving_backends(config)
     for marker, section, key in _MANAGED_SELECTION_KEYS:
         if _has_marker(provider, marker):
             current = cfg_get(config, section, key)
-            selected = current in {provider[marker], NOUS_MANAGED_PROVIDER}
-            if marker == "web_backend":
-                selected = selected and _web_tier_matches(provider, config)
-            return feature.managed_by_nous and selected
+            return feature.managed_by_nous and current in {provider[marker], NOUS_MANAGED_PROVIDER}
     return feature.managed_by_nous
 
 
@@ -458,7 +510,7 @@ _ACTIVE_CHECKS: tuple[tuple[str, Callable[[dict, dict], bool]], ...] = (
     ("stt_provider", lambda p, c: (cfg_get(c, "stt", "provider") or "local") == p["stt_provider"]),
     ("browser_provider", _browser_provider_active),
     ("browser_backend", _browser_backend_active),
-    ("web_backend", lambda p, c: cfg_get(c, "web", "backend") == p["web_backend"] and _web_tier_matches(p, c)),
+    ("web_backend", _web_backend_active),
     ("computer_use_backend", lambda p, c: cfg_get(c, "computer_use", "backend") == p["computer_use_backend"]),
     ("imagegen_backend", _imagegen_backend_active))
 
@@ -718,6 +770,11 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
 
     if provider.get("web_backend"):
         web_cfg = _select_into(config, "web", "backend", provider["web_backend"], managed_feature)
+        if managed_feature:
+            # A whole-toolset managed pick governs both capabilities: per-capability pins resolve FIRST,
+            # so a leftover one would keep outranking the "nous" selection just written.
+            web_cfg.pop("search_backend", None)
+            web_cfg.pop("extract_backend", None)
         tier = provider.get("web_tier")
         tiers = web_cfg.setdefault("provider_tier", {}) if tier else web_cfg.get("provider_tier")
         if isinstance(tiers, dict):

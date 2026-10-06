@@ -229,7 +229,7 @@ def test_unwritable_store_degrades_once_throttles_and_catches_up_once(cron_store
 def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store, monkeypatch, capsys, caplog):
     """`hermes cron status` probes the store itself (a real 0500 dir) and leads with the red
     headline + fix; the gateway posts ONE home-channel notice on entry, naming the store, the
-    error and since-when. "recovered" waits out the repeat
+    error and since-when, to the served profile owning the store. "recovered" waits out the repeat
     window and is dropped if the store degrades again meanwhile, so the last notice always matches
     the store's real state."""
     from types import SimpleNamespace
@@ -257,9 +257,9 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
         return True
 
     home = SimpleNamespace(chat_id="c1", thread_id=None)
-    runner = SimpleNamespace(_send_home_channel_message=send, _served_home_channel_transports=lambda: iter(
-        [(None, "telegram", None, home, object())]))
-    monkeypatch.setattr("hermes_constants.get_routing_process_hermes_home", lambda: cron_store)
+    runner = SimpleNamespace(_send_home_channel_message=send, _served_profile_homes={"p": cron_store},
+                             _served_home_channel_transports=lambda: iter([("p", "telegram", None, home, object())]))
+    monkeypatch.setattr("hermes_constants.get_routing_process_hermes_home", lambda: cron_store / "launch")
     monkeypatch.setattr(cron_store_notices, "NOTICE_REPEAT_SECONDS", 0.05)
     loop = asyncio.new_event_loop()
 
@@ -285,7 +285,7 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
         settle()
     finally:
         loop.close()
-    assert len(sent) == 2
+    assert len(sent) == 2 and {chat for chat, _ in sent} == {"c1"}
     assert str(cron_dir) in sent[0][1] and "ENOSPC: No space left on device" in sent[0][1] and "since " in sent[0][1]
     assert f"fix permissions on {cron_dir}" in sent[0][1]
     assert "writable again; 1 skipped run(s), catching up once per job" in sent[1][1]

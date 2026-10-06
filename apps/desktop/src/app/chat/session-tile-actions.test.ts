@@ -353,6 +353,7 @@ describe('useSessionTileActions reloadFromMessage failed-submit rollback (#95745
     expect(resumeTile).toHaveBeenCalledWith(STORED_SESSION_ID, { refreshTranscript: true })
     expect(submitAttempts).toBe(2)
     expect(submitCalls[1]?.params).toMatchObject({
+      confirm_deep_truncate: true,
       truncate_before_row_id: 501
     })
   })

@@ -41,6 +41,11 @@ import {
 // Loopback login must complete inside this window (user opens browser,
 // authenticates, gets redirected back). Matches the server-side pending TTL.
 const DEFAULT_LOGIN_TIMEOUT_MS = 5 * 60 * 1000
+// Authentik can finish the password stage but leave its flow executor page
+// waiting instead of following `next` on the first visit. Reopening the SAME
+// authorization URL once reuses the new IdP session while preserving our
+// state, PKCE challenge, and loopback listener.
+const DEFAULT_BROWSER_REOPEN_MS = 45 * 1000
 
 // The minimal page the browser lands on after the gateway redirect. No tokens,
 // no secrets — just a close affordance. Served for any loopback request so a
@@ -62,6 +67,8 @@ export interface NativeLoginDeps {
   /** Clock + timeout, injectable for tests. */
   now?: () => number
   timeoutMs?: number
+  /** Reopen the same authorization URL once if no callback arrives. */
+  reopenAfterMs?: number
   /** Optional logger for boot diagnostics. */
   rememberLog?: (line: string) => void
 }
@@ -90,6 +97,7 @@ export async function runNativeLogin(
   return new Promise<NativeTokenSet>((resolve, reject) => {
     let settled = false
     let timer: NodeJS.Timeout | null = null
+    let reopenTimer: NodeJS.Timeout | undefined
 
     const server = createServer((req, res) => {
       // Only the callback path carries the code; any other path (favicon,
@@ -130,6 +138,7 @@ export async function runNativeLogin(
       if (timer) {
         clearTimeout(timer)
       }
+      clearTimeout(reopenTimer)
 
       try {
         server.close()
@@ -199,15 +208,33 @@ export async function runNativeLogin(
 
       log(`[native-oauth] loopback listening on 127.0.0.1:${addr.port}; opening system browser`)
 
-      deps.openExternal(authorizeUrl).catch(error => {
-        fail(
-          new Error(
-            `Could not open the system browser for native sign-in: ${
-              error instanceof Error ? error.message : String(error)
-            }`
+      deps
+        .openExternal(authorizeUrl)
+        .then(() => {
+          reopenTimer = setTimeout(() => {
+            if (settled) {
+              return
+            }
+
+            log('[native-oauth] no callback after first browser visit; reopening authorization URL once')
+            deps.openExternal(authorizeUrl).catch(error => {
+              log(
+                `[native-oauth] could not reopen the system browser: ${
+                  error instanceof Error ? error.message : String(error)
+                }`
+              )
+            })
+          }, deps.reopenAfterMs ?? DEFAULT_BROWSER_REOPEN_MS)
+        })
+        .catch(error => {
+          fail(
+            new Error(
+              `Could not open the system browser for native sign-in: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            )
           )
-        )
-      })
+        })
     })
   })
 }

@@ -126,3 +126,25 @@ def test_tick_on_unwritable_store_returns_cleanly_without_dispatch(cron_store, m
         assert row["status"] == "failed" and "Cron store unwritable" in row["error"]
     else:
         assert row is None
+
+
+@pytest.mark.parametrize("site", ["claim_job_for_fire", "note_cron_execution"])
+def test_dispatch_failure_after_receipt_never_leaves_it_claimed(cron_store, monkeypatch, site):
+    """A non-OSError fire-claim failure, or a failure after create_execution in _submit_with_guard,
+    must settle the receipt: a ``claimed`` row never resolves and reads forever as in flight."""
+    from cron import executions, scheduler
+
+    def boom(*_a, **_k):
+        raise RuntimeError("boom")
+
+    save_jobs([_due_job()])
+    monkeypatch.setattr(executions, "EXECUTIONS_FILE", cron_store / "cron" / "executions.db")
+    monkeypatch.setattr(scheduler, "run_one_job", lambda job, **k: True)
+    monkeypatch.setattr(scheduler, "_should_yield_tick_to_fresh_gateway", lambda: None)
+    monkeypatch.setattr(scheduler, site, boom)
+    try:
+        scheduler.tick(verbose=False, sync=True)
+    except RuntimeError:
+        pass  # a claim failure may still surface; the receipt is what must be terminal
+    row = executions.latest_execution("due-job")
+    assert row is not None and row["status"] == "failed"

@@ -9,10 +9,14 @@ process and ``status``/``start`` report false positives.
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from gateway.status import (
+    _gateway_command_subcommand as subcommand,
     gateway_spawn_intent_subcommand as spawn_intent,
+    inline_bootstrap_argv as bootstrap_argv,
     looks_like_gateway_command_line as matches,
     looks_like_gateway_runtime_command_line as matches_runtime,
 )
@@ -163,5 +167,60 @@ ATOMIC_DESKTOP = (
 def test_accepts_atomic_desktop_gateway():
     assert matches(ATOMIC_DESKTOP) is True
     assert matches_runtime(ATOMIC_DESKTOP) is True
+
+
+# Bundled POSIX / Docker launcher shim (scripts/build/launchers.py::posix_launcher,
+# regression for #127865): its inline source starts
+# ``import os, site, sys;`` (not ``import os, re, sys``), so it was missing from
+# ``_BOOTSTRAPS`` and a healthy Docker gateway read as stopped on /api/status.
+_BUNDLED_POSIX_SOURCE = (
+    "import os, site, sys; sys.argv[0]='hermes'; "
+    "site.addsitedir(os.environ['HERMES_SITE']); "
+    "from hermes_cli.main import main; sys.exit(main())"
+)
+_BUNDLED_PY = "/opt/venv/bin/python"
+_BUNDLED_JOINS = {"space-joined": " ".join, "windows": subprocess.list2cmdline}
+
+
+def _bundled_command(*gateway_argv: str, join: str = "space-joined") -> str:
+    return _BUNDLED_JOINS[join]([_BUNDLED_PY, "-P", "-c", _BUNDLED_POSIX_SOURCE, *gateway_argv])
+
+
+_BUNDLED_RUN_VARIANTS = [
+    ["gateway", "run"],
+    ["gateway", "run", "--replace"],
+    ["gateway", "run", "--profile", "work"],
+    ["--profile", "work", "gateway", "run"],
+    ["gateway", "run", "-p", "work"],
+]
+
+_BUNDLED_NON_GATEWAY_VARIANTS = [
+    ["gateway", "status"],
+    ["gateway", "stop"],
+    ["status"],
+    ["chat"],
+]
+
+
+@pytest.mark.parametrize("join", list(_BUNDLED_JOINS))
+@pytest.mark.parametrize("argv", _BUNDLED_RUN_VARIANTS)
+def test_accepts_docker_bundled_launcher_gateway_run(join: str, argv: list[str]):
+    command = _bundled_command(*argv, join=join)
+    assert subcommand(command) == "run"
+    assert matches(command) is True
+    assert matches_runtime(command) is True
+
+
+@pytest.mark.parametrize("join", list(_BUNDLED_JOINS))
+@pytest.mark.parametrize("argv", _BUNDLED_NON_GATEWAY_VARIANTS)
+def test_rejects_docker_bundled_launcher_non_gateway(join: str, argv: list[str]):
+    command = _bundled_command(*argv, join=join)
+    assert matches(command) is False
+    assert matches_runtime(command) is False
+
+
+def test_docker_bundled_launcher_bootstrap_extracts_entrypoint():
+    tokens = [_BUNDLED_PY, "-P", "-c", *_BUNDLED_POSIX_SOURCE.split(" "), "gateway", "run"]
+    assert bootstrap_argv(tokens) == [_BUNDLED_PY, "-m", "hermes_cli.main", "gateway", "run"]
 
 

@@ -16,6 +16,9 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
     from hermes_cli.update_stage import ensure_panel, publish_stage
 
     ensure_panel(root)
+    # An older updater hands off here instead of update_completion._prepare.
+    from hermes_cli.gitlock import convert_treeless_checkout_first
+    convert_treeless_checkout_first(root)
     publish_stage("Updating Python dependencies (PM)")
     from pm import receipt
     from pm.client import ensure_tools_for_sync, sync_venv, venv_is_current
@@ -83,7 +86,9 @@ def main() -> int:
     from hermes_cli import update_receipt
     from hermes_cli.update_lock import UpdateLock, describe_holder
 
-    lock = UpdateLock()
+    # The takeover syncs dependencies and its update_finish child builds the checkout: hold
+    # (or join, inherited from the old updater) the checkout lock, not just the marker (R2).
+    lock = UpdateLock(install_root=Path(request["root"]))
     if not lock.acquire():
         print(describe_holder(lock.holder), file=sys.stderr)
         return 2
@@ -98,7 +103,15 @@ def main() -> int:
         # update liveness checks while the waiting parent still holds its lock.
         command = [str(python), "-I", "-B", "-X", "utf8", str(Path(request["root"]) / "hermes_cli/update_finish.py"),
                    str(context), str(result)]
-        code = subprocess.run(command, cwd=request["root"], env=env).returncode
+        from hermes_cli.update_custody import popen_post_commit
+
+        # update_finish builds the checkout: POSIX lock fd; Windows bound to the job (or leased).
+        with popen_post_commit(command, label="update finish child", cwd=request["root"], env=env) as child:
+            try:
+                code = child.wait()
+            except BaseException:
+                child.kill()
+                raise
         if code != 0 and not result.is_file():
             _record_failure(request, result, code, f"completion child exited {code} without acknowledgement")
         return code

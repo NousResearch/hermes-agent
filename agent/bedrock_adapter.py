@@ -72,11 +72,19 @@ def scoped_aws_session_kwargs() -> Dict[str, str]:
         )
     return kwargs
 
-# Bedrock-hosted GPT-5.x models are served from the Bedrock Mantle OpenAI-compatible endpoint, not
-# Converse. Narrow allowlist so GPT-OSS models stay on the native path.
+# Geo/global cross-Region inference-profile prefixes Bedrock prepends to a model ID.
+_BEDROCK_PROFILE_PREFIXES: Tuple[str, ...] = ("global", "us", "eu", "apac", "ap", "au", "jp", "ca", "sa", "me", "af")
+# The GPT-5.6 Terra/Luna cards also document India geo profiles (``in.openai.gpt-5.6-terra``).
+_BEDROCK_OPENAI_PROFILE_PREFIXES: Tuple[str, ...] = _BEDROCK_PROFILE_PREFIXES + ("in",)
+
+# Bedrock-hosted OpenAI GPT models (bare in-Region IDs). The bare ID is served by the Bedrock Mantle
+# OpenAI-compatible endpoint; its geo/global profile form is served by bedrock-runtime, where these
+# cards list Converse as supported. Narrow allowlist so GPT-OSS models stay on the native path.
 BEDROCK_OPENAI_RESPONSES_MODEL_IDS: Tuple[str, ...] = (
+    "openai.gpt-6-astra", "openai.gpt-6.1-sol", "openai.gpt-6-sol", "openai.gpt-6-luna",
     "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna",
 )
+_BEDROCK_OPENAI_MODEL_IDS_LOWER = frozenset(m.lower() for m in BEDROCK_OPENAI_RESPONSES_MODEL_IDS)
 _BEDROCK_OPENAI_HOST_RE = re.compile(r"^bedrock-mantle\.([a-z0-9-]+)\.api\.aws$", re.IGNORECASE)
 # Bedrock-hosted xAI Grok (any regional inference-profile prefix) rejects temperature/topP in Converse
 # with a hard 400 ("This model doesn't support the temperature field"); reasoning-first, same
@@ -149,6 +157,7 @@ def reset_client_cache():
     _bedrock_control_client_cache.clear()
     _bedrock_clients_by_home.clear()
     _inference_profile_model_cache.clear()
+    _DEFAULT_WINDOW_WARNED.clear()
 
 
 def invalidate_runtime_client(region: str) -> bool:
@@ -162,9 +171,28 @@ def invalidate_runtime_client(region: str) -> bool:
 
 # --- Bedrock Mantle / OpenAI Responses support ---
 
+def parse_bedrock_openai_model_id(model_id: str) -> Optional[Tuple[str, str]]:
+    """``(bare_id, profile_prefix)`` for a Bedrock-hosted OpenAI model, else None. ``profile_prefix``
+    is ``""`` for the bare in-Region ID and e.g. ``"us"`` / ``"global"`` for a cross-Region profile."""
+    normalized = str(model_id or "").strip().lower()
+    prefix, sep, rest = normalized.partition(".")
+    if sep and prefix in _BEDROCK_OPENAI_PROFILE_PREFIXES and rest.startswith("openai."):
+        normalized = rest
+    else:
+        prefix = ""
+    return (normalized, prefix) if normalized in _BEDROCK_OPENAI_MODEL_IDS_LOWER else None
+
+
 def is_openai_bedrock_model(model_id: str) -> bool:
-    """True for Bedrock-hosted OpenAI models that require Mantle (GPT-OSS excluded)."""
-    return str(model_id or "").strip().lower() in {m.lower() for m in BEDROCK_OPENAI_RESPONSES_MODEL_IDS}
+    """True for Bedrock-hosted OpenAI GPT models in any endpoint form (GPT-OSS excluded)."""
+    return parse_bedrock_openai_model_id(model_id) is not None
+
+
+def bedrock_openai_uses_mantle(model_id: str) -> bool:
+    """True when the model is served by Mantle's OpenAI Responses endpoint: the bare in-Region ID.
+    A geo/global profile ID is a bedrock-runtime ID (Mantle rejects it) and rides Converse."""
+    parsed = parse_bedrock_openai_model_id(model_id)
+    return parsed is not None and not parsed[1]
 
 
 def merge_bedrock_openai_model_ids(model_ids: List[str]) -> List[str]:
@@ -625,7 +653,7 @@ def recover_from_redacted_reasoning_rejection(exc, kwargs):
 
 # One optional regional/global inference-profile prefix, then the Claude model family.
 _ANTHROPIC_BEDROCK_MODEL_RE = re.compile(
-    r"^(?:(?:global|us|eu|apac|ap|au|jp|ca|sa|me|af)\.)?anthropic\.claude", re.IGNORECASE,
+    rf"^(?:(?:{'|'.join(_BEDROCK_PROFILE_PREFIXES)})\.)?anthropic\.claude", re.IGNORECASE,
 )
 
 
@@ -1188,11 +1216,18 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     **dict.fromkeys((
         "meta.llama4-maverick", "meta.llama4-scout", "meta.llama3-3-70b-instruct", "mistral.mistral-large", "deepseek.v3",
     ), 128_000),
-    # OpenAI on Bedrock (Mantle/Responses route): docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html
-    **dict.fromkeys(BEDROCK_OPENAI_RESPONSES_MODEL_IDS, 272_000),
+    # OpenAI on Bedrock: docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html. GPT-6.1 Sol's
+    # card states "1M tokens"; the other cards state 1,050,000. 272K is the long-context PRICING tier
+    # boundary on these cards, not the window. Each entry stays <= model_metadata.DEFAULT_CONTEXT_LENGTHS.
+    "openai.gpt-6.1-sol": 1_000_000,
+    **dict.fromkeys((
+        "openai.gpt-6-astra", "openai.gpt-6-sol", "openai.gpt-6-luna",
+        "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna",
+    ), 1_050_000),
 }
 
 BEDROCK_DEFAULT_CONTEXT_LENGTH = 128_000  # unknown Bedrock models
+_DEFAULT_WINDOW_WARNED: set = set()  # one fallback WARNING per model id per process
 
 # Probe padding tiers (tokens): a wildly oversized payload yields an opaque InternalServerException
 # instead of a clean ValidationException.
@@ -1249,6 +1284,13 @@ def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = Tr
             "wrapped model has a larger window.",
             profile_arn,
             f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}",
+        )
+    elif model_id not in _DEFAULT_WINDOW_WARNED:
+        _DEFAULT_WINDOW_WARNED.add(model_id)
+        logger.warning(
+            "Bedrock model %s has no known context window; using the static %s-token fallback "
+            "(not a detected limit). Set model.context_length in config.yaml if the model's window is larger.",
+            model_id, f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}",
         )
     return BEDROCK_DEFAULT_CONTEXT_LENGTH
 

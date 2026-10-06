@@ -1266,3 +1266,16 @@ class LlamaCppCpu(LlamaCpp):
         "darwin-x64": "macos-x64",
         "darwin-arm64": "macos-arm64",
     }
+
+
+@register
+class WhisperCppCpu(BinaryPackage):
+    """Native local STT for Windows ARM64, where faster-whisper has no wheel."""
+
+    name = "whispercpp-cpu"
+    optional = True
+    gaps = {target: "uses the existing faster-whisper provider" for target in ALL_TARGETS
+            if target != "win32-arm64"}
+    binary_rel = {"win32-arm64": "whisper-cli.exe"}
+    probe_args = ["--help"]
+    url = "https://github.com/ggml-org/whisper.cpp/releases/download/{version}/whisper-bin-win-cpu-arm64.zip"

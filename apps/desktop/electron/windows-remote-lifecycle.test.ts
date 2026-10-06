@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict'
+import { exec as execCallback, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { promisify } from 'node:util'
 
 import { test } from 'vitest'
 
@@ -10,6 +15,7 @@ import {
   connectWindowsRemote,
   detectRemotePlatform,
   encodedPowerShell,
+  helper,
   helperCommand,
   powerShellCommand,
   probeWindowsRemote,
@@ -30,8 +36,10 @@ test('Windows spawn holds the update mutex across marker check and helper spawn'
   const encoded = command.match(/-EncodedCommand\s+([^\s]+)$/)?.[1]
   const script = encoded ? Buffer.from(encoded, 'base64').toString('utf16le') : ''
   assert.match(script, /\.hermes-update-in-progress/)
-  assert.match(script, /\$mutexPath=\$marker\+"\.mutex"/)
-  assert.match(script, /\.Lock\(0,1\)/)
+  assert.match(
+    script,
+    /\$marker\+"\.lock",\[IO\.FileMode\]::OpenOrCreate,\[IO\.FileAccess\]::ReadWrite,\[IO\.FileShare\]::None/
+  )
   assert.match(script, /windows_ssh_runtime.*spawn/)
 })
 
@@ -59,8 +67,64 @@ test('Windows spawn publishes the initial ownership record before releasing the 
   assert.match(script, /write-lock/)
   assert.match(script, /\$lock\s*\|\s*&.*write-lock/)
   assert.doesNotMatch(script, /write-lock[^;]*\$lock\|Out-Null/)
-  assert.ok(script.indexOf('write-lock') < script.indexOf('Unlock'))
+  assert.ok(script.indexOf('write-lock') < script.lastIndexOf('$mutex.Dispose()'))
 })
+
+test.runIf(process.platform === 'win32')(
+  'Windows spawn waits on <marker>.lock and judges v2 claims: live refuses, dead is deleted under the lock',
+  async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-win-marker-'))
+    const marker = path.join(root, '.hermes-update-in-progress')
+    const run = (command: string) => promisify(execCallback)(command, { timeout: 30_000 })
+    const command = atomicWindowsSpawnCommand({ hermesHome: root, python: path.join(root, 'missing-python.exe') })
+
+    // An updater: hold <marker>.lock sharing nothing (marker.ps1 Open-MarkerLock),
+    // write its v2 claim, release, and stay alive as the live owner.
+    const updater = spawn(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-EncodedCommand',
+        encodedPowerShell(
+          [
+            `$m=${psLiteral(marker)}`,
+            "$f=[IO.File]::Open($m+'.lock','OpenOrCreate','ReadWrite','None')",
+            "'held'",
+            'Start-Sleep -Milliseconds 500',
+            '$ct=([DateTimeOffset](Get-Process -Id $PID).StartTime).ToUnixTimeMilliseconds()/1000.0',
+            '[IO.File]::WriteAllText($m,"$PID`n$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())`nct:$ct`n")',
+            'Start-Sleep -Milliseconds 500',
+            '$f.Dispose()',
+            'Start-Sleep -Seconds 30'
+          ].join(';')
+        )
+      ],
+      { stdio: ['ignore', 'pipe', 'inherit'] }
+    )
+
+    try {
+      await new Promise(resolve => updater.stdout.once('data', resolve))
+      await assert.rejects(run(command), (error: any) =>
+        String(error.stderr).includes(`remote update marker is LIVE:${updater.pid}`)
+      )
+
+      updater.kill()
+      await new Promise(resolve => updater.once('exit', resolve))
+      await assertWindowsRemoteInstallUpdateClear(
+        sshWith(async (probe: string) => (await run(probe)).stdout),
+        root
+      )
+      // The dead claim is deleted inside the hold; the missing python then fails the spawn itself.
+      await assert.rejects(run(command))
+      await assert.rejects(readFile(marker), { code: 'ENOENT' })
+    } finally {
+      updater.kill()
+      await rm(root, { recursive: true, force: true })
+    }
+  },
+  60_000
+)
 
 function sshWith(exec) {
   return { exec }
@@ -85,7 +149,7 @@ test('every emitted PowerShell script keeps try blocks attached to their catch/f
     sshWith(async command => {
       scripts.push(decode(command))
 
-      return JSON.stringify({ os: 'Windows' })
+      return JSON.stringify({ os: 'Windows', arch: 'AMD64' })
     })
   )
   await assertWindowsRemoteInstallUpdateClear(
@@ -161,6 +225,41 @@ test('Windows relaunch gate refuses live and uncertain markers before executing 
   }
 })
 
+test('Windows gates keep a dead marker while the checkout lock or a lease byte is held', async () => {
+  // Review G1: a dead claim is deleted (spawn) or reported CLEAR (probe) only
+  // after the update_lock byte range -- owner byte + 16 R5b lease bytes at
+  // 1048576 -- of the installer checkout and the runtime python's checkout is free.
+  const decode = (command: string) => Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  const runtime = { hermesHome: 'C:\\Users\\alice\\.hermes', python: 'C:\\src\\hermes\\venv\\Scripts\\python.exe' }
+  const spawnScript = decode(atomicWindowsSpawnCommand(runtime))
+  let probeScript = ''
+
+  const observed = await assertWindowsRemoteInstallUpdateClear(
+    sshWith(async command => {
+      probeScript = decode(command)
+
+      return 'HELD'
+    }),
+    runtime.hermesHome,
+    runtime.python
+  ).catch(error => error)
+
+  assert.equal(observed.kind, 'update-in-progress')
+  assert.match(observed.message, /still holds the install/)
+
+  for (const script of [spawnScript, probeScript]) {
+    assert.match(script, /\$lockFile\.Lock\(1048576,17\)/)
+    assert.match(script, /Combine\(\$gitdir,"hermes-update\.lock"\)/)
+    assert.match(script, /\$checkoutRoots=@\(\[IO\.Path\]::Combine\(\$installRoot,"hermes-agent"\),/)
+    assert.ok(script.includes("GetDirectoryName('C:\\src\\hermes\\venv\\Scripts\\python.exe')"))
+  }
+
+  const deleteAt = spawnScript.indexOf('[IO.File]::Delete($marker)')
+  const guardAt = spawnScript.indexOf('if($verdict -eq "CLEAR" -and (Test-CheckoutLockHeld $checkoutRoots)){$verdict="HELD"}')
+  assert.ok(guardAt > 0 && guardAt < deleteAt, 'the checkout probe must precede the dead-marker delete')
+  assert.match(probeScript, /if\(\$result -eq "CLEAR" -and \(Test-CheckoutLockHeld \$checkoutRoots\)\)\{\$result="HELD"\}/)
+})
+
 test('Windows relaunch gate uses strict install-wide marker parsing and fail-closed PID probing', async () => {
   let script = ''
 
@@ -174,7 +273,7 @@ test('Windows relaunch gate uses strict install-wide marker parsing and fail-clo
   assert.match(script, /\.hermes-update-in-progress/)
   assert.match(script, /Split-Path -Leaf \$parent.*profiles/)
   assert.match(script, /UTF8Encoding.*true/)
-  assert.match(script, /\\A\(\[1-9\]/)
+  assert.match(script, /\$result=Get-MarkerVerdict \$text/)
   assert.match(script, /GetProcessById/)
   assert.doesNotMatch(script, /ErrorAction SilentlyContinue/)
 })
@@ -219,6 +318,128 @@ test('Windows probe validates Hermes and Python topology before selection', asyn
   assert.ok(pythonJoin >= 0)
   assert.ok(pythonJoin < pythonCheck)
   assert.ok(pythonCheck < output)
+})
+
+const CLEAN_PROBE_RESULT = JSON.stringify({
+  os: 'Windows',
+  arch: 'AMD64',
+  hermesHome: 'C:\\h',
+  hermesPath: 'C:\\h\\hermes.exe',
+  python: 'C:\\h\\python.exe'
+})
+
+const CLIXML_PROGRESS =
+  '#< CLIXML <Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/maml/2004/10"><Obj S="progress" RefId="0">正在标准配置首次使用模块</Obj></Objs>'
+
+test('Windows probe script silences the PowerShell progress stream', async () => {
+  let script = ''
+  await probeWindowsRemote(
+    sshWith(async command => {
+      script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+
+      return CLEAN_PROBE_RESULT
+    })
+  )
+
+  assert.ok(script.indexOf('$ProgressPreference="SilentlyContinue"') >= 0)
+  assert.ok(script.indexOf('$ProgressPreference') < script.indexOf('$ErrorActionPreference'))
+})
+
+test('Windows probe tolerates CLIXML progress-stream pollution around the probe JSON', async () => {
+  const pollutedOutputs = [
+    `${CLIXML_PROGRESS}\r\n${CLEAN_PROBE_RESULT}`,
+    `${CLIXML_PROGRESS}${CLEAN_PROBE_RESULT}`,
+    `\uFEFF${CLEAN_PROBE_RESULT}\r\n${CLIXML_PROGRESS}`
+  ]
+
+  for (const output of pollutedOutputs) {
+    const parsed = await probeWindowsRemote(sshWith(async () => output))
+
+    assert.equal(parsed.os, 'Windows')
+    assert.equal(parsed.arch, 'AMD64')
+    assert.equal(parsed.hermesPath, 'C:\\h\\hermes.exe')
+    assert.equal(parsed.python, 'C:\\h\\python.exe')
+  }
+})
+
+test('Windows probe still rejects output that is not platform JSON', async () => {
+  await assert.rejects(probeWindowsRemote(sshWith(async () => 'hermes is not installed on this host')))
+  await assert.rejects(
+    probeWindowsRemote(
+      sshWith(async () => JSON.stringify({ os: 'Windows' }) + '\n' + JSON.stringify({ unrelated: true }))
+    )
+  )
+})
+
+test('the update marker gate stays CLEAR when CLIXML lands after the final Write-Output', async () => {
+  // The gate is fail-closed: it only accepts a strict `CLEAR` from the last
+  // line. A progress record serialized after `Write-Output $result` used to win
+  // the .pop() and refuse SSH startup as 'update-in-progress' — a misleading
+  // safety verdict from a cosmetic stdout race, not an actual update.
+  for (const observation of [
+    `CLEAR\r\n${CLIXML_PROGRESS}`,
+    `${CLIXML_PROGRESS}\r\nCLEAR`,
+    `\uFEFFCLEAR\r\n${CLIXML_PROGRESS}\r\n${CLIXML_PROGRESS}`
+  ]) {
+    await assertWindowsRemoteInstallUpdateClear(
+      sshWith(async () => observation),
+      'C:\\h'
+    )
+  }
+
+  // The verdict itself is untouched: a LIVE marker still pauses startup.
+  await assert.rejects(
+    assertWindowsRemoteInstallUpdateClear(
+      sshWith(async () => `LIVE:4242\r\n${CLIXML_PROGRESS}`),
+      'C:\\h'
+    ),
+    (err: any) => err.kind === 'update-in-progress' && /4242/.test(err.message)
+  )
+})
+
+test('every parsed Windows PowerShell script silences the progress stream', async () => {
+  // The marker gate runs Add-Type (C# compilation) and the spawn/helper scripts
+  // import the remote hermes_cli module — both emit progress records the
+  // probe's Get-Item/Get-Command suppression knows nothing about, on the same
+  // stdout the parsers read.
+  const decode = (command: string) => Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+
+  const scripts: string[] = []
+  await assertWindowsRemoteInstallUpdateClear(
+    sshWith(async command => {
+      scripts.push(decode(command))
+
+      return 'CLEAR'
+    }),
+    'C:\\h'
+  )
+  scripts.push(
+    decode(atomicWindowsSpawnCommand({ hermesHome: 'C:\\h', python: 'C:\\py\\python.exe' })),
+    decode(helperCommand({ python: 'C:\\py\\python.exe' }, 'inspect', []))
+  )
+
+  assert.equal(scripts.length, 3)
+
+  for (const script of scripts) {
+    assert.ok(script.indexOf('$ProgressPreference="SilentlyContinue"') >= 0, script.slice(0, 80))
+    assert.ok(script.indexOf('$ProgressPreference') < script.indexOf('$ErrorActionPreference'), script.slice(0, 80))
+  }
+})
+
+test('helper parsing ignores CLIXML progress blocks around its JSON line', async () => {
+  const payload = JSON.stringify({ supported: true, version: '1.2.3' })
+
+  for (const output of [`${CLIXML_PROGRESS}\r\n${payload}`, `\uFEFF${payload}\r\n${CLIXML_PROGRESS}`, `${payload}`]) {
+    const parsed = await helper(
+      sshWith(async () => output),
+      { python: 'C:\\py\\python.exe' },
+      'inspect',
+      ['C:\\h\\hermes.exe']
+    )
+
+    assert.equal(parsed.supported, true)
+    assert.equal(parsed.version, '1.2.3')
+  }
 })
 
 test('platform detection preserves POSIX and falls back to Windows PowerShell', async () => {
@@ -274,6 +495,39 @@ test('platform detection surfaces transport failures as themselves, not unsuppor
     ),
     (err: any) => err.kind === 'unsupported-platform' && /Hermes is not installed/.test(err.message)
   )
+})
+
+test('platform detection preserves typed Windows probe failures', async () => {
+  // `_fail()` (ssh-connection.ts) classifies exec deaths. The kinds that can
+  // reach this catch with a probe error are `unknown` (signal death / stderr
+  // classification) and `interactive-auth` (the Tailscale browser check
+  // classifying a non-zero exec); the four TRANSPORT_KINDS are rethrown above.
+  // `superseded` cannot reach it today — `exec()` passes no AbortSignal — but
+  // it is pinned too: if a caller ever threads a signal through, the sentinel
+  // must still surface as itself, never as the "unsupported operating system"
+  // verdict.
+  for (const kind of ['unknown', 'interactive-auth', 'superseded'] as const) {
+    const probeErr: any = new Error('PowerShell remote command failed with exit code 1')
+    probeErr.kind = kind
+
+    await assert.rejects(
+      detectRemotePlatform(
+        sshWith(async command => {
+          if (command.startsWith('uname ')) {
+            throw new Error('PowerShell does not recognize uname')
+          }
+
+          throw probeErr
+        })
+      ),
+      (err: any) =>
+        err.kind === kind &&
+        err.cause === probeErr &&
+        /Windows remote probe failed/.test(err.message) &&
+        /PowerShell remote command failed/.test(err.message) &&
+        !/operating system is not supported/.test(err.message)
+    )
+  }
 })
 
 test('helper command uses the fixed remote Python entry point and quotes path data', () => {

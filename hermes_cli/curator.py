@@ -387,25 +387,42 @@ def _cmd_backup(args) -> int:
 def _cmd_ledger(args) -> int:
     """List per-mutation audit ledger entries (newest first), or compact the file in place."""
     from tools import skill_ledger
-    if getattr(args, "compact", False):
-        entries, before, after = skill_ledger.compact_ledger()
-        blobs, freed = skill_ledger.gc_blobs()
-        print(f"curator: ledger compacted — {entries} entries, {before / 2**20:.1f} MB → {after / 2**20:.1f} MB; "
-              f"{blobs} unreferenced blob(s) removed ({freed / 2**20:.1f} MB)")
-        return 0
-    show_id = getattr(args, "show", None)
-    if show_id:
+    show_raw = getattr(args, "show", None)
+    if show_raw is not None:
+        show_id = str(show_raw).strip()
+        if not show_id:
+            print("curator: --show requires an entry id (see `hermes curator ledger`)",
+                  file=sys.stderr)
+            return 2
+        if getattr(args, "compact", False):
+            print("curator: --show and --compact given together; showing the read-only "
+                  "diff and ignoring --compact")
         entry = skill_ledger.get_entry(show_id)
         if entry is None:
             print(f"curator: no ledger entry with id '{show_id}'", file=sys.stderr)
             return 1
         print(f"curator: entry {entry.get('id')}  {_fmt_ts(entry.get('ts'))}  "
               f"actor={entry.get('actor')}  action={entry.get('action')}  skill={entry.get('skill')}")
-        for key, value in sorted((entry.get("evidence") or {}).items()):
+        evidence = entry.get("evidence")
+        for key, value in sorted(evidence.items()) if isinstance(evidence, dict) else []:
             if isinstance(value, (str, int, float, bool)):
                 print(f"  {key}: {value}")
+            else:
+                print(f"  {key}: <omitted {type(value).__name__}>")
+        if entry.get("action") == "pre-rollback":
+            # Deliberately records before == after (current state): a safety capture,
+            # not a content change — saying "no recoverable content changes" would mislead.
+            print(f"(safety capture for rollback: before == after; "
+                  f"{len(entry.get('before') or [])} path(s) snapshotted)")
+            return 0
         diff = skill_ledger.entry_diff(entry)
         print("\n".join(diff) if diff else "(no recoverable content changes)")
+        return 0
+    if getattr(args, "compact", False):
+        entries, before, after = skill_ledger.compact_ledger()
+        blobs, freed = skill_ledger.gc_blobs()
+        print(f"curator: ledger compacted — {entries} entries, {before / 2**20:.1f} MB → {after / 2**20:.1f} MB; "
+              f"{blobs} unreferenced blob(s) removed ({freed / 2**20:.1f} MB)")
         return 0
     rows = skill_ledger.list_entries(
         skill=getattr(args, "skill", None), limit=getattr(args, "limit", None) or 20)

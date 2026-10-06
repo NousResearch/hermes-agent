@@ -557,43 +557,78 @@ def get_entry(entry_id: str) -> Optional[Dict[str, Any]]:
 
 def entry_diff(
     entry: Dict[str, Any], *, context: int = 3, max_lines: int = 400,
+    max_total_lines: int = 2000,
 ) -> List[str]:
     """Unified-diff lines for one ledger entry, reconstructed from the content-addressed
     blobs its before/after manifests reference — the answer to "what did this mutation
     actually change?". One diff block per changed path; identical hashes are skipped.
-    Degrades gracefully and never raises: a path whose blob is gone (GC'd, or an entry
-    from before blobs existed) yields a hash-only note, and diffs longer than *max_lines*
-    are cut with a marker. ``read_blob`` returning empty content is indistinguishable
-    from an empty file, so created/deleted paths simply diff against emptiness."""
+
+    Degrades gracefully and never raises (a malformed manifest yields a note, not a
+    traceback — the ledger is a hand-editable file, same threat model as
+    ``_validate_entry_paths``): a path whose blob is gone (GC'd, or an entry from before
+    blobs existed) yields a hash-only note listing each missing side, binary-looking
+    content yields a hash note instead of a mojibake diff, created/deleted EMPTY files
+    get an explicit one-liner (their unified diff is legitimately empty), per-path diffs
+    longer than *max_lines* are cut with a marker, and the whole render stops at
+    *max_total_lines* with a count of changed paths not shown — delete/archive/purge
+    entries carry complete-package manifests of potentially thousands of paths."""
     out: List[str] = []
-    before = {str(i.get("path", "")): str(i.get("sha256", "")) for i in entry.get("before") or []}
-    after = {str(i.get("path", "")): str(i.get("sha256", "")) for i in entry.get("after") or []}
     try:
-        home = str(get_hermes_home())
-    except Exception:  # pragma: no cover — display-only path shortening
-        home = ""
-    for path in sorted(set(before) | set(after)):
-        b_sha, a_sha = before.get(path, ""), after.get(path, "")
-        if b_sha and b_sha == a_sha:
-            continue
-        rel = path[len(home):] if home and path.startswith(home) else path
-        old = read_blob(b_sha) if b_sha else None
-        new = read_blob(a_sha) if a_sha else None
-        if (b_sha and old is None) or (a_sha and new is None):
-            side = "before" if (b_sha and old is None) else "after"
-            sha = b_sha if (b_sha and old is None) else a_sha
-            out.append(f"{rel}: {side} blob missing (gc'd or pre-blob entry; sha256 {sha}) "
-                       "— hashes only, no diff")
-            continue
-        old_lines = old.decode("utf-8", "replace").splitlines() if old else []
-        new_lines = new.decode("utf-8", "replace").splitlines() if new else []
-        diff_lines = list(difflib.unified_diff(
-            old_lines, new_lines, fromfile=f"a{rel}", tofile=f"b{rel}", lineterm="", n=context))
-        if not diff_lines:
-            continue
-        out.extend(diff_lines[:max_lines])
-        if len(diff_lines) > max_lines:
-            out.append(f"… ({len(diff_lines) - max_lines} more diff lines truncated)")
+        def _lines(blob: Optional[bytes]) -> Optional[List[str]]:
+            """``[]`` for None (path absent on that side); ``None`` for binary-looking."""
+            if blob is None:
+                return []
+            if b"\x00" in blob:
+                return None
+            text = blob.decode("utf-8", "replace")
+            return None if text.count("\ufffd") > max(1, len(text) // 8) else text.splitlines()
+
+        before_items = [i for i in (entry.get("before") or []) if isinstance(i, dict)]
+        after_items = [i for i in (entry.get("after") or []) if isinstance(i, dict)]
+        before = {str(i.get("path", "")): str(i.get("sha256", "")) for i in before_items}
+        after = {str(i.get("path", "")): str(i.get("sha256", "")) for i in after_items}
+        try:
+            home = str(get_hermes_home())
+        except Exception:  # pragma: no cover — display-only path shortening
+            home = ""
+        paths = sorted(set(before) | set(after))
+        for idx, path in enumerate(paths):
+            if len(out) >= max_total_lines:
+                out.append(f"… ({len(paths) - idx} more changed path(s) not shown)")
+                break
+            b_sha, a_sha = before.get(path, ""), after.get(path, "")
+            if b_sha and b_sha == a_sha:
+                continue
+            rel = path[len(home):] if home and path.startswith(home) else path
+            old = read_blob(b_sha) if b_sha else None
+            new = read_blob(a_sha) if a_sha else None
+            if (b_sha and old is None) or (a_sha and new is None):
+                parts = [f"{side} {sha}" for side, sha in
+                         (("before", b_sha), ("after", a_sha))
+                         if sha and (old if side == "before" else new) is None]
+                out.append(f"{rel}: blob missing ({'; '.join(parts)}; gc'd or pre-blob "
+                           "entry) — hashes only, no diff")
+                continue
+            old_lines, new_lines = _lines(old), _lines(new)
+            if old_lines is None or new_lines is None:
+                shas = "; ".join(s for s in (f"before {b_sha}" if b_sha else "",
+                                             f"after {a_sha}" if a_sha else "") if s)
+                out.append(f"{rel}: binary content ({shas}) — no text diff")
+                continue
+            diff_lines = list(difflib.unified_diff(
+                old_lines, new_lines, fromfile=f"a{rel}", tofile=f"b{rel}", lineterm="", n=context))
+            if not diff_lines:
+                if not b_sha:
+                    out.append(f"{rel}: created empty file")
+                elif not a_sha:
+                    out.append(f"{rel}: deleted empty file")
+                # else: content-identical under replace-decoding — nothing to say
+                continue
+            out.extend(diff_lines[:max_lines])
+            if len(diff_lines) > max_lines:
+                out.append(f"… ({len(diff_lines) - max_lines} more diff lines truncated)")
+    except Exception as e:
+        out.append(f"(diff unavailable: {e.__class__.__name__}: {e})")
     return out
 
 

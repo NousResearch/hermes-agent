@@ -98,17 +98,98 @@ def test_long_diff_is_truncated_with_marker(ledger_env):
     assert "truncated" in diff[-1]
 
 
-def test_non_utf8_blob_decodes_with_replacement(ledger_env):
+def test_sparse_invalid_utf8_still_renders_as_text(ledger_env):
     from tools import skill_ledger
     from tools.skill_ledger import entry_diff
 
-    sha = skill_ledger._store_blob(b"\xff\xfe\x00binary-ish")
+    # Sparse bad bytes (low replacement ratio) decode as text; dense corruption or NULs
+    # are what the binary-content note is for.
+    sha = skill_ledger._store_blob("almost utf-8 \xff with one bad byte\n".encode("latin-1"))
     entry = {"before": [], "after": [{"path": _path(ledger_env), "sha256": sha}], "evidence": {}}
     diff = entry_diff(entry)  # must not raise
-    assert any(l.startswith("+") for l in diff)
+    assert any(l.startswith("+almost utf-8") for l in diff)
 
 
 def test_empty_entry_is_empty(ledger_env):
     from tools.skill_ledger import entry_diff
 
     assert entry_diff({"before": [], "after": [], "evidence": {}}) == []
+
+
+# ─── malformed manifests (hand-edited ledger rows) must never raise ─────────
+
+
+@pytest.mark.parametrize("bad", [
+    {"before": 7, "after": None},
+    {"before": object()},
+])
+def test_noniterable_manifests_yield_note_not_traceback(ledger_env, bad):
+    from tools.skill_ledger import entry_diff
+
+    out = entry_diff(dict(bad, evidence={}))
+    assert any("diff unavailable" in l for l in out)
+
+
+@pytest.mark.parametrize("weird", [
+    {"before": "oops", "after": []},
+    {"before": ["/not/a/dict"], "after": []},
+    {"after": {"path": "x"}},
+])
+def test_iterable_but_wrong_shape_manifests_degrade_quietly(ledger_env, weird):
+    """Str/list-of-non-dict/dict manifests filter to empty — no traceback, no note."""
+    from tools.skill_ledger import entry_diff
+
+    assert entry_diff(dict(weird, evidence={})) == []
+
+
+def test_created_and_deleted_empty_files_get_explicit_note(ledger_env):
+    from tools.skill_ledger import entry_diff
+
+    empty = _blob(ledger_env, "")
+    rel = "/skills/my-skill/SKILL.md"  # home-stripped display path
+    created = {"before": [], "evidence": {},
+               "after": [{"path": _path(ledger_env), "sha256": empty}]}
+    assert entry_diff(created) == [f"{rel}: created empty file"]
+    deleted = {"after": [], "evidence": {},
+               "before": [{"path": _path(ledger_env), "sha256": empty}]}
+    assert entry_diff(deleted) == [f"{rel}: deleted empty file"]
+
+
+def test_binary_content_gets_hash_note(ledger_env):
+    from tools import skill_ledger
+    from tools.skill_ledger import entry_diff
+
+    sha = skill_ledger._store_blob(b"\x00\x01\x02\x00binary-with-nuls")
+    entry = {"before": [], "evidence": {},
+             "after": [{"path": _path(ledger_env), "sha256": sha}]}
+    diff = entry_diff(entry)
+    assert len(diff) == 1
+    assert "binary content" in diff[0] and sha in diff[0]
+
+
+def test_both_blobs_missing_list_both_shas(ledger_env):
+    from tools.skill_ledger import entry_diff
+
+    entry = {"evidence": {},
+             "before": [{"path": _path(ledger_env), "sha256": "a" * 64}],
+             "after": [{"path": _path(ledger_env), "sha256": "b" * 64}]}
+    diff = entry_diff(entry)
+    assert len(diff) == 1
+    assert f"before {'a' * 64}" in diff[0] and f"after {'b' * 64}" in diff[0]
+
+
+def test_global_budget_stops_with_remaining_count(ledger_env):
+    from tools.skill_ledger import entry_diff
+
+    p1, p2 = _path(ledger_env, "a.md"), _path(ledger_env, "b.md")
+    entry = {
+        "evidence": {},
+        "before": [{"path": p1, "sha256": _blob(ledger_env, "old1\n")},
+                   {"path": p2, "sha256": _blob(ledger_env, "old2\n")}],
+        "after": [{"path": p1, "sha256": _blob(ledger_env, "new1\n")},
+                  {"path": p2, "sha256": _blob(ledger_env, "new2\n")}],
+    }
+    diff = entry_diff(entry, max_total_lines=2)
+    assert "+new1" in "\n".join(diff)
+    assert any("more changed path(s) not shown" in l for l in diff)
+    assert "+new2" not in "\n".join(diff)

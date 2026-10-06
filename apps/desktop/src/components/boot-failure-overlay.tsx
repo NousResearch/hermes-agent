@@ -17,6 +17,7 @@ import { ChevronLeft, ExternalLink, FileText, Loader2, LogIn, RefreshCw, Sliders
 import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
+import { openUpdateOverlayFor } from '@/store/updates'
 
 import { classifyLocalBootFailure, type LocalBootFailureCopy, localBootFailureCopy } from './boot-failure-cause'
 import type { RemoteReauth } from './boot-failure-reauth'
@@ -391,6 +392,21 @@ export function BootFailureOverlay() {
     busy: 'local'
   }
 
+  // This recovery surface can be the only usable UI when a remote gateway is
+  // unreachable. Keep the desktop self-update independent of that connection:
+  // explicitly target the local client instead of the mode-derived active
+  // target, then dismiss this modal so the existing updates overlay is visible.
+  const desktopUpdateAction: RecoveryAction = {
+    key: 'desktop-update',
+    label: t.notifications.updateDesktopApp,
+    onClick: () => {
+      dismiss()
+      openUpdateOverlayFor('client')
+    },
+    icon: <RefreshCw />,
+    variant: 'secondary'
+  }
+
   let actions: RecoveryAction[]
   let hint: string
   // The electron boot path flags a Nous Cloud backend-down (502/503/504) with
@@ -409,7 +425,8 @@ export function BootFailureOverlay() {
         busy: 'signin'
       },
       { ...settingsAction, variant: 'secondary' },
-      localAction
+      localAction,
+      desktopUpdateAction
     ]
     hint = copy.remoteSignInHint(label)
   } else if (cloudDown) {
@@ -428,6 +445,7 @@ export function BootFailureOverlay() {
       },
       localAction,
       { ...retryAction, variant: 'secondary' },
+      desktopUpdateAction,
       {
         key: 'discord',
         label: copy.cloudDownDiscord,
@@ -438,7 +456,7 @@ export function BootFailureOverlay() {
     ]
     hint = copy.cloudDownHint
   } else if (remoteFailure) {
-    actions = [settingsAction, { ...retryAction, variant: 'secondary' }, localAction]
+    actions = [settingsAction, { ...retryAction, variant: 'secondary' }, localAction, desktopUpdateAction]
     hint = copy.remoteFailureHint
   } else {
     // Local failure: Use-local is redundant with Retry (both re-target local), so
@@ -468,7 +486,7 @@ export function BootFailureOverlay() {
             busy: 'repair'
           }
 
-    actions = [retryAction, ...(fixAction ? [fixAction] : []), { ...settingsAction, variant: 'ghost' }]
+    actions = [retryAction, ...(fixAction ? [fixAction] : []), desktopUpdateAction, { ...settingsAction, variant: 'ghost' }]
     hint = damagedPayload ? copy.bundledReinstallHint : bundled ? '' : copy.repairHint
   }
 

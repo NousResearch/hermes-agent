@@ -5,6 +5,7 @@ import {
   cronJobHasExecutionContent,
   cronJobFormFromJob,
   cronLastResult,
+  cronModelDisplay,
   cronAgoLabel,
   cronNextRunOverdueMs,
   cronSchedulerStaleAgeS,
@@ -201,6 +202,29 @@ describe("cronLastResult", () => {
     expect(
       cronLastResult({ last_status: "blocked_config", last_error: "missing API key" }),
     ).toEqual({ status: "blocked_config", tone: "warning", detail: "missing API key" });
+  });
+});
+
+describe("cronModelDisplay", () => {
+  it("marks script-only jobs as not needing a model", () => {
+    expect(cronModelDisplay({ no_agent: true })).toEqual({ kind: "not-needed" });
+  });
+
+  it("marks an unpinned agent job as inheriting the configured default", () => {
+    expect(cronModelDisplay({ no_agent: false })).toEqual({ kind: "default" });
+  });
+
+  it("keeps a provider-only override on the inherited model", () => {
+    expect(cronModelDisplay({ provider: "openrouter", model: "" })).toEqual({
+      kind: "default",
+    });
+  });
+
+  it("keeps an explicitly selected model visible", () => {
+    expect(cronModelDisplay({ provider: "openrouter", model: "model-x" })).toEqual({
+      kind: "pinned",
+      model: "openrouter/model-x",
+    });
   });
 });
 

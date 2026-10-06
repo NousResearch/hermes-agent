@@ -26,6 +26,7 @@ import {
   cronSchedulerStaleAgeS,
   cronJobFormFromJob,
   cronLastResult,
+  cronModelDisplay,
   focusCronField,
   type CronJobFormState,
 } from "@/lib/cron-job";
@@ -250,12 +251,19 @@ function CronAdvancedFields({
               value={form.model}
               onValueChange={(v) => update("model", v)}
             >
-              <SelectOption value="">Default</SelectOption>
+              <SelectOption value="">
+                {t.cron.modelDefaultOption ?? en.cron.modelDefaultOption!}
+              </SelectOption>
               {selectOptions(
                 form.model,
                 models.map((model) => ({ value: model, label: model })),
               )}
             </Select>
+            <p className="text-xs text-muted-foreground">
+              {form.no_agent
+                ? t.cron.modelNotNeededHint ?? en.cron.modelNotNeededHint!
+                : t.cron.modelDefaultHint ?? en.cron.modelDefaultHint!}
+            </p>
           </div>
         </div>
 
@@ -496,13 +504,6 @@ function getJobMode(job: CronJob): string {
   if (job.no_agent) return "no_agent";
   if (job.script) return "script+agent";
   return "agent";
-}
-
-function getModelDisplay(job: CronJob): string {
-  const provider = asText(job.provider);
-  const model = asText(job.model);
-  if (provider && model) return `${provider}/${model}`;
-  return model || provider;
 }
 
 function getJobProfile(job: CronJob): string {
@@ -1138,7 +1139,7 @@ export default function CronPage() {
           const profile = getJobProfile(job);
           const jobKey = getJobKey(job);
           const mode = getJobMode(job);
-          const modelDisplay = getModelDisplay(job);
+          const modelDisplay = cronModelDisplay(job);
           const toolsets = Array.isArray(job.enabled_toolsets)
             ? job.enabled_toolsets.filter(Boolean)
             : [];
@@ -1178,11 +1179,22 @@ export default function CronPage() {
                     {mode !== "agent" && (
                       <Badge tone="outline">{mode}</Badge>
                     )}
-                    {modelDisplay && (
-                      <Badge tone="outline" title={modelDisplay}>
-                        model
-                      </Badge>
-                    )}
+                    <Badge
+                      tone="outline"
+                      title={
+                        modelDisplay.kind === "pinned"
+                          ? modelDisplay.model
+                          : modelDisplay.kind === "default"
+                            ? t.cron.modelDefaultHint ?? en.cron.modelDefaultHint!
+                            : t.cron.modelNotNeededHint ?? en.cron.modelNotNeededHint!
+                      }
+                    >
+                      {modelDisplay.kind === "pinned"
+                        ? t.analytics.model
+                        : modelDisplay.kind === "default"
+                          ? t.cron.modelUsesDefault ?? en.cron.modelUsesDefault!
+                          : t.cron.modelNotNeeded ?? en.cron.modelNotNeeded!}
+                    </Badge>
                     {toolsets.length > 0 && (
                       <Badge tone="outline" title={toolsets.join(", ")}>
                         {toolsets.length} toolsets

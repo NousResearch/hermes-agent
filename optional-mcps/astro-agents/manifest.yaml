@@ -1,0 +1,46 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: astro-agents
+description: Deterministic Western and Vedic astrology charts from NASA/JPL DE440 (no LLM).
+source: https://github.com/aidatatools-dev/astro-agents-mcp
+
+# Vendor-hosted remote MCP (URL-only — Hermes never spawns a local process
+# for this entry). No authentication (verified live with `hermes mcp add`
+# and `hermes mcp test`: initialize, 16 tools, calls). Pure computation:
+# every tool is read-only and idempotent, and every result carries a
+# SHA-256 that verify_result_hash recomputes.
+# Pricing: each client gets 3 free tool calls (any tool) within a shared
+# daily budget; after that a tool returns an isError result naming the
+# paid REST endpoint and its price (x402 or MPP, $0.01-$0.50 per call).
+# Nothing is ever charged over MCP.
+
+transport:
+  type: http
+  url: https://astro-agent.dev/mcp
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - astrology
+    - horoscope
+    - birth chart
+    - natal chart
+    - kundli
+    - panchang
+  hosts:
+    - astro-agent.dev
+  examples:
+    - Compute a Western natal chart from a birth date, time and place
+    - Calculate a Vedic kundli with Vimshottari dashas and doshas
+    - Score marriage compatibility with Ashtakoota Gun Milan
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts. Each client gets 3 free calls; after that the tools
+  point to the paid REST endpoint (x402 or MPP). astro_catalog lists every
+  tool with its price and an example request.

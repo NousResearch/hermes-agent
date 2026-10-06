@@ -382,7 +382,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     expected_start = {
         "name": "hermes.task_run.started",
         "dimensions": {
-            "entrypoint": "interactive",
+            "entrypoint": "one_shot",
             "execution_surface": "cli",
             "platform": "none",
         },
@@ -396,7 +396,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     [terminal] = by_name["hermes.task_run.finished"]
     expected_terminal_dimensions = {
         "end_reason": "completed",
-        "entrypoint": "interactive",
+        "entrypoint": "one_shot",
         "execution_surface": "cli",
         "failure_class": "none",
         "outcome": "success",
@@ -603,7 +603,7 @@ def _validate_packages(
     [terminal] = metrics["hermes.task_run.finished"]
     if terminal["dimensions"] != {
         "end_reason": "completed",
-        "entrypoint": "interactive",
+        "entrypoint": "one_shot",
         "execution_surface": "cli",
         "failure_class": "none",
         "outcome": "success",
@@ -819,7 +819,7 @@ def main() -> int:
         / "hermes_cli"
         / "observability"
         / "schemas"
-        / "hermes.shared_metrics.v3.schema.json",
+        / "hermes.shared_metrics.v4.schema.json",
     )
 
     print("Hermes -> NeMo Relay shared-metrics smoke test passed")

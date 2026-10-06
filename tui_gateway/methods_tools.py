@@ -492,7 +492,7 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
     ``agent.skill_commands`` guard), ``""`` when none."""
     usage, origin_of = _skill_usage_lookup()
     sc = _tools_mod("agent.skill_commands")
-    for k, info in sorted(sc.get_skill_commands().items()):
+    for k, info in sorted(sc.get_interactive_skill_commands().items()):
         cat.pairs.append([k, str(info.get("description", "Skill"))])
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
@@ -645,7 +645,7 @@ def _profile_skill_command(session: dict, base: str) -> bool | None:
     """
     try:
         with _session_home_scope(session):
-            return f"/{base}" in _tools_mod("agent.skill_commands").get_skill_commands()
+            return f"/{base}" in _tools_mod("agent.skill_commands").get_interactive_skill_commands()
     except Exception:
         return None
 
@@ -718,12 +718,12 @@ def _dispatch_bundle(rid, params, session, name, arg):
 def _dispatch_skill(rid, params, session, name, arg):
     with contextlib.suppress(Exception):
         sc = _tools_mod("agent.skill_commands")
-        cmds, key = sc.get_skill_commands(), f"/{name}"
+        cmds, key = sc.get_interactive_skill_commands(), f"/{name}".lower()
         if key in cmds:
             # Stacked leading /skill tokens (up to 5, cli.py + gateway parity, #74705): the
             # first token matched above; consume any further leading skill tokens from `arg`,
             # then build one invocation that loads every skill over the remaining instruction.
-            extra_keys, user_instruction = sc.split_stacked_skill_commands(arg)
+            extra_keys, user_instruction = sc.split_stacked_skill_commands(arg, interactive=True)
             if extra_keys:
                 stacked = sc.build_stacked_skill_invocation_message(
                     [key, *extra_keys], user_instruction,
@@ -1469,9 +1469,9 @@ def _skills_install(rid, params, query):
             self.lines.append(" ".join(str(a) for a in args))
 
     captured = _Capture()
-    verdict = _tools_mod("hermes_cli.skills_hub").do_install(
-        query, skip_confirm=True, console=captured)
-    installed = verdict is True
+    verdict = _tools_mod("hermes_cli.skills_hub").do_install(query, skip_confirm=True, console=captured)
+    bundled = _tools_mod("tools.skills_sync_bundled_ops").bundled_skill_for_install
+    installed = verdict is True or (verdict is None and bool(bundled(query)))  # an active built-in is no failure
     if not installed:
         # The tail carries the reason the CLI user would have seen: the scan-block message,
         # the "Multiple skills named" candidate table, or the fetch failure.

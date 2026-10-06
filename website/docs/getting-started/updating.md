@@ -168,16 +168,47 @@ git -C $repo rev-list --objects --missing=error --all | Out-Null; $LASTEXITCODE 
 
 ### `.git` keeps growing in a partial clone
 
-The installer's checkout is a partial clone: git downloads trees and blobs on demand, and each
-on-demand download is written as its own small pack. `hermes update` and `hermes update --check`
-fold them back together with `git gc --auto` (git's own `gc.autoPackLimit`, 50 by default), so a
-healthy checkout pays a no-op. They also set `maintenance.commit-graph.enabled`,
-`gc.writeCommitGraph` and `fetch.writeCommitGraph` to `false` in that checkout, because a
-commit-graph write over commits the graph has not seen yet downloads every one of their trees. Leave those settings alone, and leave
-`gc.auto` at its default: `gc.auto=0` stops the fold. The first fold on a checkout that has
-piled up thousands of packs is a full repack and can take several minutes; the update says so
-before it starts, and if the fold runs past 20 minutes it stops and prints the command below.
-To fold by hand (with Hermes closed):
+The installer's checkout is a blobless partial clone: every commit and directory listing is local,
+and git downloads file contents on demand, each on-demand download written as its own small pack.
+Installers from late September 2026 made treeless (`--filter=tree:0`) clones instead. git asks for
+a missing tree without saying which ones it already has, so a treeless checkout downloaded complete
+directory snapshots again on every checkout and path-filtered history walk. `hermes update`
+converts such a checkout once, as its first step after pulling the new code and before the
+dependency work: one `git fetch --refetch --filter=blob:none` brings every commit and tree (about
+120 MB), and later updates stop re-downloading them. Re-running the installer over such a checkout
+converts it the same way. If that fetch fails, the update prints a warning, carries on, and retries
+the conversion next time.
+
+A Hermes Desktop built before the conversion existed runs path-filtered history walks every few
+minutes, so on a treeless checkout it could fill a disk with pack files (one report reached 434 GB)
+and keep going after a failed update. To recover when that already happened:
+
+1. Quit Hermes Desktop, then end any leftover `git rev-list`, `git maintenance` or
+   `git commit-graph` processes; quitting the app does not stop them.
+2. If the disk is completely full, delete the abandoned transfer files to get room back:
+   `rm -f "$repo"/.git/objects/pack/tmp_pack_*` (Windows: delete `tmp_pack_*` in
+   `.git\objects\pack`). Each update also removes them on its own once no git process is running.
+3. Run `hermes update`. It converts the checkout first, then cleans the pack pile down over this
+   and later updates as described below.
+
+If `hermes update` itself cannot start, the conversion by hand is:
+
+```bash
+git -C "$repo" fetch --refetch --filter=blob:none origin
+git -C "$repo" config remote.origin.partialclonefilter blob:none
+``` `hermes update` and `hermes update --check`
+set `maintenance.commit-graph.enabled`, `gc.writeCommitGraph` and `fetch.writeCommitGraph` to
+`false` in that checkout, because a commit-graph write over commits the graph has not seen yet
+downloads every one of their trees. Leave those settings alone, and leave `gc.auto` at its
+default so git's own automatic gc can still fold packs.
+
+Each `hermes update` also spends at most 60 seconds cleaning those packs up, picking up where the
+previous update stopped. It deletes packs whose every object is also stored in another pack, then
+merges the smallest remaining packs while there are more than 50. Nothing stored locally is ever
+lost, and nothing depends on GitHub still serving it. Packs that a killed `git fetch` left pinned
+with a `.keep` file are included; git's own repack never touches those. To fold
+everything at once by hand instead (with Hermes closed; on a large checkout this is a full repack
+that can run for many minutes):
 
 ```bash
 git -C "$repo" -c gc.writeCommitGraph=false gc --auto

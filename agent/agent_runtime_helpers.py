@@ -467,6 +467,8 @@ def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any], *,
     text survives). An empty incoming turn still merges; stamping an empty list would change a message that
     absorbed nothing. A dropped id that equals the survivor's own live id (the display-marker merge adopts
     the plain row's id, #94486) is not an absorbed row: the survivor IS that row."""
+    from agent.conversation_compression_archive import OWN_ROW, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
+
     own_id = survivor.get("_row_id")
     ids = []
     row_id = dropped.get("_row_id")
@@ -480,10 +482,67 @@ def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any], *,
         for row_id in ids:
             if row_id not in absorbed:
                 absorbed.append(row_id)
+    # The rows the retired dict counted are behind the survivor now.
+    if dropped.get(UNNAMED_DURABLE_ROWS):
+        survivor[UNNAMED_DURABLE_ROWS] = int(survivor.get(UNNAMED_DURABLE_ROWS) or 0) + int(dropped[UNNAMED_DURABLE_ROWS])
+    # Its own row is behind the survivor now too.
+    if dropped.get(RETIRED_DURABLE_ROWS):
+        survivor.setdefault(RETIRED_DURABLE_ROWS, []).extend(
+            {k: v for k, v in row.items() if k != OWN_ROW} for row in dropped[RETIRED_DURABLE_ROWS])
     # The uid witness claims the dropped dict's TEXT lives on in the survivor: only a fold earns it. A
     # superseded row (``folded=False``) is retired like any absorbed row but its content is discarded.
     if folded:
         record_absorbed_message(survivor, dropped)
+
+
+def _count_unnamed_row(survivor: Dict[str, Any], retired: Dict[str, Any]) -> None:
+    """On a reload without row ids nothing names *retired*'s durable row once the repair takes the dict
+    out of the list, so *survivor* counts it. A dict that counts rows was loaded too: a merge may have
+    popped its marker since. Call before the merge rewrites the survivor: *retired*'s own fields are
+    recorded so the commit can name its row."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.conversation_compression_archive import (
+        OWN_ROW, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, retired_row_payload)
+
+    def loaded(message: Dict[str, Any]) -> bool:
+        return bool(message.get(_DB_PERSISTED_MARKER) or message.get(UNNAMED_DURABLE_ROWS))
+
+    if loaded(survivor) and loaded(retired) and not isinstance(retired.get("_row_id"), int):
+        survivor[UNNAMED_DURABLE_ROWS] = int(survivor.get(UNNAMED_DURABLE_ROWS) or 0) + 1
+        # A previously folded dict already records its original row. The transfer in
+        # _remember_absorbed_row retires that record; its synthetic text/calls never existed in storage.
+        if not any(row.get(OWN_ROW) for row in retired.get(RETIRED_DURABLE_ROWS) or ()):
+            survivor.setdefault(RETIRED_DURABLE_ROWS, []).append(retired_row_payload(retired))
+
+
+def _remember_own_row(survivor: Dict[str, Any]) -> None:
+    """An assistant fold rewrites *survivor*'s text, so on a reload without row ids its own row no longer
+    matches it by content. Record its loaded fields first, once."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.conversation_compression_archive import OWN_ROW, RETIRED_DURABLE_ROWS, retired_row_payload
+
+    recorded = survivor.get(RETIRED_DURABLE_ROWS) or ()
+    if (survivor.get(_DB_PERSISTED_MARKER) and not isinstance(survivor.get("_row_id"), int)
+            and not any(isinstance(row, dict) and row.get(OWN_ROW) for row in recorded)):
+        survivor.setdefault(RETIRED_DURABLE_ROWS, []).append({**retired_row_payload(survivor), OWN_ROW: True})
+
+
+def _retire_dropped_row(kept: List[Dict], dropped: Dict[str, Any], leading: List[Dict]) -> None:
+    """A durable row the repair drops was still handed to the caller, so the survivor before it stands
+    for it. Left unnamed, an in-place compaction takes it for a row another surface appended and
+    re-sequences it behind the running turn. A drop with no survivor before it waits in *leading*."""
+    if not kept:
+        leading.append(dropped)
+    elif isinstance(kept[-1], dict):
+        _count_unnamed_row(kept[-1], dropped)
+        _remember_absorbed_row(kept[-1], dropped, folded=False)
+
+
+def _retire_leading_drops(kept: List[Dict], leading: List[Dict]) -> None:
+    """Rows dropped ahead of the first survivor sit right before its own row, so it stands for them."""
+    for dropped in leading if kept and isinstance(kept[0], dict) else ():
+        _count_unnamed_row(kept[0], dropped)
+        _remember_absorbed_row(kept[0], dropped, folded=False)
 
 
 def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int]:
@@ -499,9 +558,12 @@ def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int
         ):
             # A provisional verification candidate is superseded, not unioned.
             if prev.get("finish_reason") in {"verification_required", "verify_hook_continue"}:
+                _count_unnamed_row(msg, prev)
                 _remember_absorbed_row(msg, prev, folded=False)
                 collapsed[-1] = msg
             else:
+                _count_unnamed_row(prev, msg)
+                _remember_own_row(prev)
                 _remember_absorbed_row(prev, msg, folded=_merge_assistant_into(prev, msg))
             repairs += 1
             continue
@@ -523,6 +585,7 @@ def _drop_stray_tool_results(messages: List[Dict]) -> Tuple[List[Dict], int]:
     matched_tool_groups: set = set()
     next_tool_group = 0
     filtered: List[Dict] = []
+    leading: List[Dict] = []
     for msg in messages:
         role = msg.get("role") if isinstance(msg, dict) else None
         if role in ("assistant", "user"):
@@ -543,11 +606,13 @@ def _drop_stray_tool_results(messages: List[Dict]) -> Tuple[List[Dict], int]:
                 if tc_id in known_tool_ids and known_tool_ids[tc_id] not in matched_tool_groups
             }
             if result_variants and not candidate_groups:
+                _retire_dropped_row(filtered, msg, leading)
                 repairs += 1
                 continue
             if candidate_groups:
                 matched_tool_groups.add(min(candidate_groups))
         filtered.append(msg)
+    _retire_leading_drops(filtered, leading)
     return filtered, repairs
 
 
@@ -559,6 +624,7 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
 
     repairs = 0
     pruned: List[Dict] = []
+    leading: List[Dict] = []
     for i, msg in enumerate(messages):
         if not (
             isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("tool_calls")
@@ -578,6 +644,7 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
             repairs += 1
             if not kept_calls and not _msg_has_payload({k: v for k, v in msg.items() if k != "tool_calls"}):
                 # Pruned calls were the only payload; drop the turn (empty assistant messages 400).
+                _retire_dropped_row(pruned, msg, leading)
                 continue
             if kept_calls:
                 msg["tool_calls"] = kept_calls
@@ -587,12 +654,19 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
             # marker, so pop it or the flush scan skips the dict and the DB keeps the old calls.
             msg.pop(_DB_PERSISTED_MARKER, None)
         pruned.append(msg)
+    _retire_leading_drops(pruned, leading)
     return pruned, repairs
 
 
 def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
+    from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
+    from hermes_state import SessionDB
+
+    def _plain_text(content: Any) -> bool:
+        # never rewrite the persisted row around undecodable content
+        return isinstance(content, str) and not content.startswith(SessionDB._CONTENT_JSON_PREFIX)
 
     repairs = 0
     merged: List[Dict] = []
@@ -607,14 +681,20 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             # A /steer row that ended the previous run is already persisted; merging the next
             # prompt into it would rewrite it in place and re-break replay parity.
             and prev.get("display_kind") != STEER_DISPLAY_KIND
-            # Only merge plain-text content; leave multimodal (list) content alone.
-            and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
+            # Only merge plain-text content; leave multimodal (list or undecodable sentinel) content alone.
+            and _plain_text(prev.get("content", "")) and _plain_text(msg.get("content", ""))
         ):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
             merged_content = (
                 (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
             )
             had_api_sidecar = "api_content" in prev
+            # Read before the marker is popped below. An unpersisted turn folded in ends the claim:
+            # the dict no longer stands for durable rows only.
+            if (prev.get(_DB_PERSISTED_MARKER) or prev.get(MERGED_DURABLE_ROWS)) and msg.get(_DB_PERSISTED_MARKER):
+                prev[MERGED_DURABLE_ROWS] = int(prev.get(MERGED_DURABLE_ROWS) or 1) + 1
+            else:
+                prev.pop(MERGED_DURABLE_ROWS, None)
             prev["content"] = merged_content
             # The clean-text persist override must replace only the absorbed turn, never the
             # unanswered text before it; kept across replay passes (an empty turn absorbs too).
@@ -663,17 +743,36 @@ _SEQUENCE_REPAIR_PASSES = (
     _merge_consecutive_users,
 )
 
+def _normalize_sentinel_encoded_content(messages: List[Dict]) -> None:
+    """Decode any sentinel-encoded row content in place before the alternation passes run, so an
+    image-bearing turn is never merged as text (#125299). A multimodal turn can re-enter the working set
+    as its ``\\x00json:[…]`` string (e.g. after a proactive prune re-inserts history, #124102). A body
+    that no longer parses stays a sentinel string; ``_merge_consecutive_users`` refuses to weld it."""
+    from hermes_state import SessionDB  # lazy: the persistence layer owns the sentinel codec
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        decoded = SessionDB._decode_content(content)
+        if decoded is not content:
+            msg["content"] = decoded
+            # Keep any `_db_persisted` marker: re-encoding reproduces the stored scalar, and dropping
+            # it makes the append-only flush re-append this user turn as a duplicate (#125331).
+
 
 def repair_message_sequence(agent, messages: List[Dict]) -> int:
     """Collapse malformed role-alternation left in the live history; returns repair count.
     Providers require strict alternation after the system message (violations: silent empty
     responses or 400s); this is the pre-call belt for host-fed, resumed or replayed histories.
-    Passes in order: merge consecutive assistant turns (BEFORE orphan detection so the merged
-    tool_call-id union is known); drop stray tool results; prune unanswered tool_calls; merge
-    consecutive user turns. A user turn directly after an assistant turn is valid and left alone.
+    Passes in order: decode any sentinel-encoded multimodal rows (so an image is not merged as text);
+    merge consecutive assistant turns (BEFORE orphan detection so the merged tool_call-id union is
+    known); drop stray tool results; prune unanswered tool_calls; merge consecutive user turns. A user
+    turn directly after an assistant turn is valid and left alone.
     """
     if not messages:
         return 0
+    _normalize_sentinel_encoded_content(messages)
     repairs = 0
     current = messages
     for repair_pass in _SEQUENCE_REPAIR_PASSES:
@@ -1914,7 +2013,11 @@ def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: s
 
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
-    from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
+    from agent.auxiliary_client import (
+        _to_openai_base_url,
+        _validate_base_url,
+        _validate_proxy_env_urls,
+    )
     from agent.ssl_verify import resolve_httpx_verify
     # Treat client_kwargs as read-only: callers pass agent._client_kwargs, and in-place mutation
     # leaks into later requests (a torn-down httpx transport got reused).
@@ -1925,6 +2028,8 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # that specific path; this copy locks the contract so future transport/keepalive work can't reintroduce
     # the same class of bug.
     client_kwargs = dict(client_kwargs)
+    if client_kwargs.get("base_url"):
+        client_kwargs["base_url"] = _to_openai_base_url(client_kwargs["base_url"])
     try:
         from providers import get_provider_profile
 
@@ -3146,15 +3251,142 @@ def looks_like_codex_intermediate_ack(
 ) -> bool:
     """Detect a planning/ack message that should continue instead of ending the turn.
     ``require_workspace=False`` (opt-in for all api_modes) drops the filesystem/repo reference
-    requirement; future-ack + short-content + no-prior-tools + action-verb checks always apply."""
+    requirement; short-content + no-prior-tools guardrails always apply. A response must then
+    contain either a first-person future acknowledgement with an action marker or a narrowly
+    bounded pronounless action clause with an explicit transition cue; this keeps ordinary
+    conversational replies such as "I'll help you brainstorm" from tripping it."""
     if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages):
         return False
     assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
     if not assistant_text or len(assistant_text) > 1200:
         return False
-    if not _ACK_FUTURE_RE.search(assistant_text):
+    # Some tool-using providers narrate the next action in terse log style
+    # rather than with a first-person lead-in: "Brief written. Creating the
+    # session now." Bare gerunds are too ambiguous ("Reading the traceback
+    # explains the failure" is a final answer), so this path also requires an
+    # explicit transition cue such as "now", "via acpx", "actual log", or
+    # "then launching". Completed reports and questions stay final.
+    action_clause_pattern = re.compile(
+        r"(?:^|[.!…—–]\s+|\n+\s*|,\s+then\s+)"
+        r"(?:(?P<transition>then)\s+)?"
+        r"(?P<action>(?:re)?launching|(?:re)?starting|creating|"
+        r"checking|running|writing|opening|reading|inspecting|reviewing|"
+        r"testing|debugging|searching|fixing)\b"
+    )
+    list_item_prefix_pattern = re.compile(r"(?:^|\n)\s*(?:[-*+]|\d+[.)])\s*$")
+    numbered_item_pattern = re.compile(r"(?:^|\s)(\d+)[.)](?=\s)")
+    status_number_pattern = re.compile(
+        r"\b(?P<label>exit\s+code|attempt|step|retry)\s+"
+        r"(?P<number>\d+)[.)](?=\s)"
+    )
+    question_pattern = re.compile(r"\?(?=\s|$|[\"'’”)\\]])")
+    sentence_boundary_pattern = re.compile(
+        r"(?:[.!…](?=\s|$)|\?(?=\s|$|[\"'’”)\\]])|\n+)"
+    )
+    allowed_trailing_action_pattern = re.compile(
+        r"\s*(?:will\s+report\s+back|"
+        r"then\s+(?:launching|relaunching|starting|restarting|creating)\s+"
+        r"(?:it|(?:the\s+)?(?:session|worker|agent|job|process))|"
+        r"(?:checking|reading|opening|inspecting)\s+(?:the\s+)?(?:log|output))"
+        r"\s*[.!…]?\s*$"
+    )
+    launch_now_tail_pattern = re.compile(
+        r"\s+(?:(?:it|(?:the\s+)?(?:session|worker|agent|job|process)|"
+        r"(?:the\s+)?migration\s+file\s+in\s+the\s+repo)\s+)?"
+        r"now(?:\s*\([^)]*\))?\s*$"
+    )
+    run_now_tail_pattern = re.compile(
+        r"\s+(?:(?:it|(?:the\s+)?(?:(?:repo\s+)?suite|tests?|job|process|"
+        r"server|service))\s+)?now(?:\s*\([^)]*\))?\s*$"
+    )
+    check_now_tail_pattern = re.compile(
+        r"\s+(?:the\s+)?(?:log|output|status|service|session|job)\s+"
+        r"now(?:\s*\([^)]*\))?\s*$"
+    )
+    launch_url_tail_pattern = re.compile(
+        r"\s+now\s*[—–-]\s*see\s+https?://\S+"
+        r"(?:\s+for\s+progress)?\s*$"
+    )
+    provider_tail_pattern = re.compile(
+        r"\s+(?:it|(?:the\s+)?(?:session|worker|agent|job|process))\s+"
+        r"on\s+copilot(?:\s+via\s+acpx)?\s*$"
+    )
+    actual_log_tail_pattern = re.compile(
+        r"\s+(?:the\s+)?actual\s+(?:log|output)\s*$"
+    )
+    health_check_tail_pattern = re.compile(
+        r"\s+whether\b.*\b(?:healthy|ready|running|available|reachable|working)\s*$"
+    )
+    launch_with_pattern = re.compile(
+        r"\s+with\s+(?:(?:corrected|updated|new)\s+"
+        r"(?:arguments?|args?|options?|flags?|parameters?)|"
+        r"globals?\s+before\s+(?:the\s+)?agent\s+name)\s*$"
+    )
+    has_pronounless_action = False
+    step_numbers = {
+        status_match.group("number")
+        for status_match in status_number_pattern.finditer(assistant_text)
+        if status_match.group("label") == "step"
+    }
+    has_step_sequence = len(step_numbers) >= 2
+    numbering_text = status_number_pattern.sub("", assistant_text)
+    numbered_markers = {
+        match.group(1) for match in numbered_item_pattern.finditer(numbering_text)
+    }
+    has_numbered_list = has_step_sequence or bool(numbered_markers)
+    if not question_pattern.search(assistant_text):
+        for action_match in action_clause_pattern.finditer(assistant_text):
+            action_prefix = assistant_text[: action_match.start("action")]
+            if has_numbered_list or list_item_prefix_pattern.search(action_prefix):
+                continue
+            raw_clause_tail = assistant_text[action_match.end() :]
+            boundary_match = sentence_boundary_pattern.search(raw_clause_tail)
+            if boundary_match:
+                clause_tail = raw_clause_tail[: boundary_match.start()]
+                remaining_text = raw_clause_tail[boundary_match.end() :]
+            else:
+                clause_tail = raw_clause_tail
+                remaining_text = ""
+            if remaining_text.strip() and not allowed_trailing_action_pattern.fullmatch(
+                remaining_text
+            ):
+                continue
+            action_word = action_match.group("action")
+            is_launch_action = action_word in {
+                "launching",
+                "relaunching",
+                "starting",
+                "restarting",
+                "creating",
+            }
+            has_transition_cue = bool(
+                (is_launch_action and launch_now_tail_pattern.fullmatch(clause_tail))
+                or (action_word == "running" and run_now_tail_pattern.fullmatch(clause_tail))
+                or (
+                    action_word == "checking"
+                    and check_now_tail_pattern.fullmatch(clause_tail)
+                )
+                or (is_launch_action and launch_url_tail_pattern.fullmatch(clause_tail))
+                or (is_launch_action and provider_tail_pattern.fullmatch(clause_tail))
+                or (
+                    action_word in {"checking", "reading", "opening", "inspecting"}
+                    and actual_log_tail_pattern.fullmatch(clause_tail)
+                )
+                or (
+                    action_word == "checking"
+                    and health_check_tail_pattern.fullmatch(clause_tail)
+                )
+                or (is_launch_action and launch_with_pattern.fullmatch(clause_tail))
+            )
+            if not has_transition_cue:
+                continue
+            has_pronounless_action = True
+            break
+    if not (_ACK_FUTURE_RE.search(assistant_text) or has_pronounless_action):
         return False
-    if not any(marker in assistant_text for marker in _ACK_ACTION_MARKERS):
+    if not has_pronounless_action and not any(
+        marker in assistant_text for marker in _ACK_ACTION_MARKERS
+    ):
         return False
     # Opted-in (all-api_mode) path: future-ack + action verb + no prior tool call suffices.
     if not require_workspace:
@@ -3385,6 +3617,21 @@ def _socket_from_candidate(candidate: Any):
     stream = getattr(candidate, "_network_stream", None) or getattr(candidate, "_stream", None)
     sock = _socket_from_stream(stream) if stream is not None else None
     return sock if sock is not None else _socket_from_stream(candidate)
+
+
+def _socket_from_response(response: Any):
+    """Raw socket behind an httpx response's network stream (``extensions["network_stream"]``
+    first, then ``response.stream``), or None. Callers own their error handling."""
+    exts = getattr(response, "extensions", None) or {}
+    direct = exts.get("network_stream") if isinstance(exts, dict) else None
+    for start in (direct, getattr(response, "stream", None)):
+        if start is None:
+            continue
+        for candidate in _connection_candidates(start):
+            sock = _socket_from_candidate(candidate)
+            if sock is not None:
+                return sock
+    return None
 
 
 def _socket_from_stream(stream: Any):

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -24,8 +25,6 @@ logger = logging.getLogger(__name__)
 # Folding ~100 small packs takes seconds, but the checkouts this exists for (thousands of packs,
 # tens of GiB) need a full repack. A killed fold restarts from scratch on every update and never
 # converges, so the bound is generous and a timeout is reported, not swallowed.
-LAZY_FETCH_GC_TIMEOUT_SECONDS = 20 * 60
-_GC_AUTO_PACK_LIMIT_DEFAULT = 50
 
 # Files younger than this are presumed live (a fetch may be in flight) and are never removed. Lock
 # files live for seconds and a healthy fetch completes in minutes; 10 minutes is abandoned.
@@ -144,7 +143,7 @@ def mark_unmarked_packs_promisor(repo_root: Path) -> int:
 # 2.50.1, 2.53.0 and 2.55.0 alike). So a promisor checkout never writes the graph. Automatic
 # maintenance itself stays on: on git <= 2.53 its post-fetch ``gc --auto`` is what keeps the
 # lazy-fetch packs folded between updates. ``gc.auto`` stays at its default for the same reason
-# (``gc.auto=0`` turns consolidate_lazy_fetch_packs into a no-op).
+# (``gc.auto=0`` turns that fold into a no-op).
 _TREE0_MAINTENANCE_OFF = (
     ("maintenance.commit-graph.enabled", "false"),
     ("gc.writeCommitGraph", "false"),
@@ -535,15 +534,16 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
     replacing existing tags. The fetch never changes the clone's mode: ``--filter`` makes git
     write ``remote.origin.promisor``/``partialclonefilter``, so a full clone fetches unfiltered
     (#122353) and a partial clone repeats its own filter. The one conversion is deliberate: a
-    depth-limited full clone whose history is really missing unshallows as ``tree:0``, because an
-    unfiltered ``--unshallow`` downloads the whole project history; a full clone grafted by a
+    depth-limited full clone whose history is really missing unshallows as a partial clone, because
+    an unfiltered ``--unshallow`` downloads every file version ever committed; a full clone grafted by a
     ``--depth`` fetch already has its history and stays full. The converted clone's existing packs
     are marked as partial-clone packs, or every later fetch crashes on git 2.53+ (#124272).
+    It converts to ``blob:none``, the layout installers make (see ``convert_treeless_checkout``).
     Returns whether the checkout was unshallowed; fetch failures raise subprocess errors.
     """
     shallow_path = _shallow_file_path(repo_root)
     shallow = shallow_path is not None
-    # Callers already inject creationflags via _no_prompt_git_kwargs(); OR the
+    # Callers already inject creationflags via no_prompt_git_kwargs(); OR the
     # hide flag into the shared kwargs instead of passing the keyword twice
     # (TypeError: got multiple values) — the config probes below inherit it.
     run_kwargs["creationflags"] = run_kwargs.get("creationflags", 0) | windows_hide_flags()
@@ -551,7 +551,7 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
     converts = fetch_filter is None and shallow and bool(_batch_missing_parents(
         repo_root, shallow_path.read_text(encoding="utf-8-sig").split()))
     if converts:
-        fetch_filter = "tree:0"
+        fetch_filter = "blob:none"
     try:
         subprocess.run(
             ["git", "fetch", "--quiet", *(["--unshallow"] if shallow else []),
@@ -610,49 +610,94 @@ def fetch_with_partial_clone_recovery(runner: Callable[..., subprocess.Completed
     return runner(git_cmd, fetch_args)
 
 
-def _gc_auto_pack_limit(repo_root: Path) -> int:
-    lines = _git_stdout_lines(repo_root, ["config", "--int", "--get", "gc.autoPackLimit"])
-    return int(lines[0]) if lines else _GC_AUTO_PACK_LIMIT_DEFAULT
+def convert_treeless_checkout(repo_root: Path, **run_kwargs) -> bool:
+    """Turn a treeless (``tree:0``) checkout into the blobless layout installers now make (#129712).
+
+    A treeless checkout holds no trees, and git asks for a missing tree without telling the server
+    which ones it already has, so every checkout and path-filtered history walk downloads complete
+    directory snapshots again: hundreds of GB on some installs. One ``--refetch`` of the clone's
+    refspec and its tags brings every commit and tree (about 120 MB for this repo); file contents
+    stay on demand. The checked-out commit can sit outside both (a branch fetched by hand, a
+    release ref the refspec does not name), so its history is checked offline and refetched by
+    commit when trees are still missing. The new filter is recorded only once that history is
+    whole: a failed or partial conversion leaves the checkout treeless, so the next update
+    retries. That check, not the fetch's exit status, is the verdict: a refused tag update (a
+    local tag that would be clobbered) fails the fetch after its objects have landed. Git before
+    2.36 has no ``--refetch`` and is left as it is. Returns whether it converted; fetch failures
+    raise subprocess errors.
+    """
+    run_kwargs["creationflags"] = run_kwargs.get("creationflags", 0) | windows_hide_flags()
+    if _partial_clone_filter(repo_root, **run_kwargs) != "tree:0" or _git_version(**run_kwargs) < (2, 36):
+        return False
+    # A fetch spawns a detached gc/maintenance that would repack the whole refetch outside the
+    # update's time limit; the per-command keys leave the user's own settings alone.
+    refetch = ["git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "fetch", "--quiet", "--refetch",
+               "--filter=blob:none", "origin"]
+    fetch_kwargs = dict(cwd=str(repo_root), capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=900, **run_kwargs)
+    subprocess.run([*refetch, "--tags"], check=False, **fetch_kwargs)
+    if not _history_trees_complete(repo_root, **run_kwargs):
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo_root), check=True,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+                              **run_kwargs).stdout.strip()
+        subprocess.run([*refetch, head], check=True, **fetch_kwargs)
+        if not _history_trees_complete(repo_root, **run_kwargs):
+            raise subprocess.CalledProcessError(1, refetch, stderr="the checked-out history is still missing trees")
+    # A refetch into an existing partial clone leaves its configured filter alone; record the
+    # new one only now, so a failed or interrupted refetch is retried by the next update.
+    subprocess.run(
+        ["git", "config", "remote.origin.partialclonefilter", "blob:none"],
+        cwd=str(repo_root), check=True, capture_output=True, timeout=30, **run_kwargs,
+    )
+    return True
 
 
-def consolidate_lazy_fetch_packs(repo_root: Path, *,
-                                 on_fold_start: Optional[Callable[[int], None]] = None) -> Optional[int]:
-    """Fold a partial clone's lazy-fetch packfiles back into one; returns how many packs went away.
+def convert_treeless_checkout_first(repo_root: Path) -> None:
+    """Run the one-time conversion as the update's first new-code step. Never raises.
 
-    Every on-demand fetch a promisor remote serves writes its own small packfile, and nothing in
-    the update workflow ever consolidates them — a ``tree:0`` installer checkout lazy-fetches
-    blob by blob, so ``.git`` grows without bound (2,475 packs / 39 GiB observed for a ~1 GiB
-    repo, #129712). ``git gc --auto`` already knows when this is worth doing: it exits in
-    milliseconds while the small-pack count sits under ``gc.autoPackLimit`` (default 50) and
-    repacks them into one pack once past it, keeping the ``.promisor`` marker. The gc must not
-    write a commit-graph (see ``_TREE0_MAINTENANCE_OFF``): over a Bloom-carrying graph that is a
-    lazy fetch per unseen commit, so the same call that folds 100 packs would leave 30 new ones.
-    Runs under ``bounded_probe_run`` because ``subprocess.run(timeout=)`` kills only ``git gc``
-    and leaves its ``pack-objects`` child running. ``on_fold_start(pack_count)`` fires just before
-    a fold gc will actually do (pack count past the limit), so the caller can say why the update
-    went quiet. Best-effort like every helper here: never raises, returns 0 for a non-partial
-    checkout or when nothing folded, and ``None`` when the fold hit its time limit.
+    Both update hand-offs (``update_completion._prepare`` and an older updater's
+    ``_update_takeover.prepare``) call this before minutes of dependency work: a Desktop built before
+    the fix keeps walking history during that window, and on a treeless checkout every walk
+    downloads trees again (#129514: 434 GB, disk full mid-update). Runs in the dependency-free
+    bootstrap interpreter.
+    """
+    from hermes_cli._subprocess_compat import no_prompt_git_kwargs
+
+    try:
+        if convert_treeless_checkout(repo_root, **no_prompt_git_kwargs()):
+            print("  ✓ Fetched this checkout's directory history once; updates stop re-downloading it",
+                  flush=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
+        print(f"  ⚠ Could not fetch this checkout's directory history ({detail[0]}); retrying next update",
+              flush=True)
+
+
+def _git_version(**run_kwargs) -> tuple:
+    out = subprocess.run(["git", "--version"], capture_output=True, text=True, encoding="utf-8",
+                         errors="replace", timeout=30, **run_kwargs).stdout
+    match = re.search(r"(\d+)\.(\d+)", out)
+    return (int(match[1]), int(match[2])) if match else (0, 0)
+
+
+def _history_trees_complete(repo_root: Path, **run_kwargs) -> bool:
+    """Whether every tree in HEAD's history is local, checked without fetching (~3 s for this repo)."""
+    env = dict(run_kwargs.pop("env", None) or noninteractive_git_env(), GIT_NO_LAZY_FETCH="1")
+    walk = subprocess.run(
+        ["git", "rev-list", "--objects", "--filter=blob:none", "--missing=print", "HEAD"],
+        cwd=str(repo_root), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=300, env=env, **run_kwargs,
+    )
+    return walk.returncode == 0 and not any(line.startswith("?") for line in walk.stdout.splitlines())
+
+
+def settle_partial_clone_maintenance(repo_root: Path) -> None:
+    """Persist the commit-graph-off keys on a partial clone; a full clone keeps stock maintenance.
+
+    Runs on every update so checkouts that predate the installer change converge. Never raises.
     """
     try:
-        if _partial_clone_filter(repo_root, creationflags=windows_hide_flags()) is None:
-            return 0  # only a promisor remote's on-demand fetches write these packs
-        disable_tree0_auto_maintenance(repo_root)
-        before = len(list(_pack_dir(repo_root).glob("pack-*.pack")))
-        limit = _gc_auto_pack_limit(repo_root)
-        if on_fold_start is not None and 0 < limit < before:
-            on_fold_start(before)
-        if bounded_probe_run(
-            ["git", "-c", "gc.autoDetach=false", "-c", "gc.writeCommitGraph=false", "gc", "--auto"],
-            timeout=LAZY_FETCH_GC_TIMEOUT_SECONDS, cwd=str(repo_root),
-            env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV},
-        ) is None:
-            logger.warning("Folding %d lazy-fetch pack(s) in %s timed out after %ds",
-                           before, repo_root, LAZY_FETCH_GC_TIMEOUT_SECONDS)
-            return None
-        folded = before - len(list(_pack_dir(repo_root).glob("pack-*.pack")))
-        if folded > 0:
-            logger.info("Folded %d lazy-fetch pack(s) in %s", folded, repo_root)
-        return max(folded, 0)
+        if _partial_clone_filter(repo_root, creationflags=windows_hide_flags()) is not None:
+            disable_tree0_auto_maintenance(repo_root)
     except Exception:
-        logger.debug("lazy-fetch pack consolidation failed for %s", repo_root, exc_info=True)
-        return 0
+        logger.debug("partial-clone maintenance settings failed for %s", repo_root, exc_info=True)

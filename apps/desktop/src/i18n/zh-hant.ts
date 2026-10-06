@@ -36,7 +36,7 @@ export const zhHant = defineLocale({
       '共享指標只包含有上限的計數，絕不包含提示詞、檔案、路徑或錯誤文字。收集僅在本機進行；傳送給 Nous 需要另行同意。',
     whatIsCollected: '收集哪些內容',
     collectedIntro: '僅限有上限的計數：',
-    collectedActivity: '活動、工作階段長度、結果和錯誤類別',
+    collectedActivity: '活動、工作階段長度、結果和錯誤類別，包括記憶寫入或上下文壓縮被拒絕、失敗或略過時的原因（來自固定清單）',
     collectedModels: '模型路由和 token 總量',
     collectedNames: '內建工具、指令和目錄項名稱',
     collectedMilestones: '分組的設定計數',

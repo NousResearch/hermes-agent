@@ -224,7 +224,8 @@ def fetch_models_with_pricing(
     ...}}``, cached per *base_url* and per credential so one caller's catalog never answers
     another's read. *include_sale_original* (Nous Portal only) copies the gateway's pre-discount
     ``pricing.original`` rates through as a nested ``original`` dict for sale chrome."""
-    from hermes_cli.models import _HERMES_USER_AGENT
+    from hermes_cli.chat_catalog import catalog_item_is_generation
+    from hermes_cli.models import _HERMES_USER_AGENT, _openrouter_model_supports_tools
     url_root = (base_url or "").rstrip("/")
     cache_key = url_root + _pricing_auth_fingerprint(api_key)
     if not force_refresh:
@@ -259,6 +260,12 @@ def fetch_models_with_pricing(
             # Nous Portal-only: the gateway bills this row to a subscription the account holds, not to credits.
             if include_sale_original and item.get("billing_mode") == "subscription":
                 entry["billing_mode"] = "subscription"
+            # Nous Portal-only: on-sale rows join the picker, which must not offer a tool-less model.
+            if include_sale_original and not _openrouter_model_supports_tools(item):
+                entry["tools"] = False
+            # ...nor an image/video generation model (the chat-catalog rule, applied to the row itself).
+            if include_sale_original and catalog_item_is_generation(item):
+                entry["generation"] = True
             result[mid] = entry
 
     return _cache_catalog(cache_key, result, cache_ttl_seconds)
@@ -416,7 +423,14 @@ def _fetch_nous_pricing_for_provider(*, force_refresh: bool = False) -> dict[str
     api_key, base_url = _resolve_nous_pricing_credentials()
     if not base_url:
         return {}
-    _remember_provider_cache_key("nous", base_url.rstrip("/"))
+    # Register the SAME key fetch_models_with_pricing writes (base + credential fingerprint):
+    # _cached_only_pricing resolves cache entries through this map, and a logged-in account's
+    # catalog lands under the fingerprinted key — a bare base here meant the picker's
+    # cached_only read never saw the rows the prewarm filled (review on #132015).
+    # pricing_cache_scope's last-resort fallback reads this value too; there it serves only as
+    # an identity token for the prewarm single-flight, where including the credential is
+    # equally correct (a key rotation means a new catalog and deserves a fresh worker).
+    _remember_provider_cache_key("nous", base_url.rstrip("/") + _pricing_auth_fingerprint(api_key))
     return _fetch_nous_pricing(api_key, base_url, force_refresh=force_refresh)
 
 
@@ -456,12 +470,46 @@ _STATIC_PRICING_SCOPES = {
 }
 
 
-def pricing_cache_scope(provider: str, *, current_provider: str = "", current_base_url: str = "") -> str:
+def resolve_pricing_provider(provider: str, *, base_url: str = "") -> str:
+    """Return the canonical pricing source for a provider, or ``""`` when unproven.
+
+    A ``custom:<name>`` inventory slug identifies a user configuration entry, not its upstream.
+    It can deliberately shadow a canonical name while pointing at a proxy, so custom entries may
+    use pricing only when their concrete endpoint is recognized as that canonical upstream.
+    """
+    from hermes_cli.models import normalize_provider
+
+    normalized = normalize_provider(provider)
+    if not normalized.startswith("custom:"):
+        return normalized
+    if not base_url:
+        return ""
+    try:
+        from agent.model_metadata import _URL_TO_PROVIDER, _infer_provider_from_url
+        from utils import base_url_host_matches
+
+        inferred = _infer_provider_from_url(base_url)
+    except Exception:
+        return ""
+    # ``_infer_provider_from_url`` is deliberately broad for user-facing hints. Pricing is a
+    # trust boundary: require an exact official hostname (or one of its explicit subdomains),
+    # never a mere substring such as ``openrouter.ai.attacker.invalid``.
+    if not inferred or not any(
+        provider == inferred and not host.startswith(".") and base_url_host_matches(base_url, host)
+        for host, provider in _URL_TO_PROVIDER.items()
+    ):
+        return ""
+    return normalize_provider(inferred)
+
+
+def pricing_cache_scope(
+    provider: str, *, base_url: str = "", current_provider: str = "", current_base_url: str = ""
+) -> str:
     """The current endpoint identity a provider's pricing cache is keyed on. Resolves local configuration
     only, never fetches: picker prewarm single-flight uses it so an endpoint rotation can start a new
     worker while the previous endpoint is still slow or unreachable."""
     from hermes_cli.models import _deepinfra_catalog_url, _pricing_profile_key, normalize_provider
-    normalized = normalize_provider(provider)
+    normalized = resolve_pricing_provider(provider, base_url=base_url)
     static = _STATIC_PRICING_SCOPES.get(normalized)
     if static:
         return static()
@@ -498,14 +546,13 @@ def _cached_only_pricing(normalized: str) -> dict[str, dict[str, str]]:
 
 
 def get_pricing_for_provider(
-    provider: str, *, force_refresh: bool = False, cached_only: bool = False
+    provider: str, *, base_url: str = "", force_refresh: bool = False, cached_only: bool = False
 ) -> dict[str, dict[str, str]]:
     """Return live pricing for providers that support it (openrouter, nous, ai-gateway, novita,
     deepinfra, fireworks); ``{}`` for everything else. ``cached_only`` never starts provider I/O:
     normal picker opens use it so cold endpoints cannot hold the response path, while a background
     prewarm fills the same caches for later opens."""
-    from hermes_cli.models import normalize_provider
-    normalized = normalize_provider(provider)
+    normalized = resolve_pricing_provider(provider, base_url=base_url)
     if cached_only:
         return _cached_only_pricing(normalized)
     fetcher = _PRICING_FETCHERS.get(normalized)

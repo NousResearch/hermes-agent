@@ -19,7 +19,7 @@ SCHEMA_KEY = "hermes.metrics.schema_version"
 # A random per-emit token (no payload) on rows whose producer waits to learn they were SAVED: facts
 # recovered from a file that is deleted only then. Events persist on the Relay thread.
 COMMIT_TICKET_KEY = "hermes.shared_metrics.commit_ticket"
-SCHEMA_VERSION = "hermes.metrics.event.v3"
+SCHEMA_VERSION = "hermes.metrics.event.v4"
 MODEL_CALL_SCOPE = "hermes.model_call"
 MODEL_CALL_PROFILE_MODEL = "unknown"
 TASK_SCOPE = "hermes.task_run"
@@ -105,9 +105,11 @@ TASK_END_REASONS = frozenset({
     "system_aborted", "timed_out", "unknown", "user_cancelled",
 })
 TASK_TERMINATIONS = frozenset({"none", "system_aborted", "timed_out", "unknown", "user_cancelled"})
+# ``one_shot``: a finite CLI run (``hermes -z``, ``hermes chat -q`` off a TTY, ``-Q``, ``--oneshot``) that
+# answers one prompt and exits — a person's shell line or their script, never the REPL.
 TASK_ENTRYPOINTS = frozenset({
-    "api", "background", "batch", "delegated", "gateway_message", "interactive", "other", "python",
-    "scheduled_task", "unknown",
+    "api", "background", "batch", "delegated", "gateway_message", "interactive", "one_shot", "other",
+    "python", "scheduled_task", "unknown",
 })
 DURATION_BUCKETS = frozenset({
     "1s_to_5s", "2m_to_10m", "30s_to_2m", "5s_to_30s", "gte_10m", "lt_1s",
@@ -207,6 +209,22 @@ TTFT_BUCKETS = frozenset({
 })
 COMPRESSION_TRIGGERS = frozenset({"auto", "manual", "other", "overflow"})
 COMPRESSION_OUTCOMES = frozenset({"failed", "skipped", "success"})
+# Why an attempt was skipped or failed: the attempt log's own ``failure_class`` names
+# (agent/conversation_compression*.py, agent/context_compressor.py). Skips are attempts that ended
+# before anything could fail (another path held the lock, nothing summarizable so no model call, the
+# user stopped it, a newer attempt replaced it). ``exception:<Type>`` / ``rollback:<Type>`` keep only
+# their prefix; any other value reads ``other``, a failure with no class ``unknown``.
+COMPRESSION_SKIP_CLASSES = frozenset({
+    "attempt_superseded", "empty_post_handoff_window", "explicit_interrupt", "insufficient_messages",
+    "lock_contended", "no_compressible_window", "snapshot_stale",
+})
+COMPRESSION_FAILURE_CLASSES = COMPRESSION_SKIP_CLASSES | frozenset({
+    "aux_model_fallback", "commit_fence_cancelled", "exception", "feasibility_skip", "no_progress", "none",
+    "other", "pool_saturated", "rollback", "session_split_failed", "stall_deterministic_fallback",
+    "stall_interrupted", "summary_auth_failure", "summary_empty_content_failure", "summary_generation_aborted",
+    "summary_generation_failed", "summary_network_failure", "summary_overload_degraded",
+    "summary_overload_failure", "summary_truncated_failure", "unknown", "would_grow",
+})
 CONTEXT_FILL_BUCKETS = frozenset({"lt_50", "50_to_75", "75_to_90", "90_to_100", "gte_100", "unknown"})
 EXTENSION_KINDS = frozenset({"mcp_server", "plugin", "skill"})
 EXTENSION_SOURCES = frozenset({"bundled", "catalog", "hub", "local", "other", "url"})
@@ -238,6 +256,14 @@ MEMORY_OPS = frozenset({"add", "other", "read", "remove", "replace", "search"})
 MEMORY_OP_OUTCOMES = frozenset({"failed", "rejected", "success"})
 # Who asked: the user's turn, or the unattended self-improvement review fork.
 MEMORY_OP_ORIGINS = frozenset({"background_review", "foreground"})
+# Why a memory op was refused or failed. Built-in classes name each refusal/failure return of
+# tools/memory_tool.py and tools/memory_tool_store.py; plugin providers report ``provider_error`` (the
+# tool returned an error) or ``exception`` (it raised). Successes are ``none``.
+MEMORY_OP_FAILURE_CLASSES = frozenset({
+    "ambiguous", "disabled", "drift", "exception", "gate_refused", "invalid_args", "missing_content",
+    "missing_old_text", "no_match", "none", "other", "over_budget", "provider_error", "read_failed",
+    "retry_cap", "scan_blocked", "staged", "stale_entry", "unknown", "would_empty",
+})
 CURATOR_OUTCOMES = frozenset({"failed", "skipped", "success"})
 CURATOR_TRIGGERS = frozenset({"manual", "scheduled"})
 DELEGATION_OUTCOMES = frozenset({"cancelled", "failed", "partial", "success"})
@@ -723,8 +749,8 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     SETUP_COMPLETED_METRIC: {"surface": SETUP_SURFACES},
     MODEL_TOKENS_METRIC: {"aux_task": AUX_TASKS, "call_role": MODEL_CALL_ROLES, "token_type": TOKEN_TYPES},
     COMPRESSION_METRIC: {
-        "context_fill_bucket": CONTEXT_FILL_BUCKETS, "outcome": COMPRESSION_OUTCOMES,
-        "trigger": COMPRESSION_TRIGGERS,
+        "context_fill_bucket": CONTEXT_FILL_BUCKETS, "failure_class": COMPRESSION_FAILURE_CLASSES,
+        "outcome": COMPRESSION_OUTCOMES, "trigger": COMPRESSION_TRIGGERS,
     },
     MODEL_SWITCH_METRIC: {"execution_surface": EXECUTION_SURFACES},
     FALLBACK_METRIC: {"error_class": MODEL_ERROR_CLASSES},
@@ -735,8 +761,8 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     },
     # ---- v4 loop ----
     MEMORY_OP_METRIC: {
-        "op": MEMORY_OPS, "origin": MEMORY_OP_ORIGINS, "outcome": MEMORY_OP_OUTCOMES,
-        "provider": MEMORY_PROVIDERS,
+        "failure_class": MEMORY_OP_FAILURE_CLASSES, "op": MEMORY_OPS, "origin": MEMORY_OP_ORIGINS,
+        "outcome": MEMORY_OP_OUTCOMES, "provider": MEMORY_PROVIDERS,
     },
     CURATOR_RUN_METRIC: {
         "archived_bucket": COUNT_BUCKETS, "created_bucket": COUNT_BUCKETS, "merged_bucket": COUNT_BUCKETS,
@@ -919,6 +945,9 @@ _LEGACY_METRIC_FIELDS: dict[str, tuple[frozenset[str], ...]] = {
     TASK_STARTED_METRIC: (_METRIC_FIELDS[TASK_STARTED_METRIC] - {"platform"},),
     TASK_FINISHED_METRIC: (frozenset(_COUNTER_DIMENSION_VALUES[TASK_FINISHED_METRIC]) - {"failure_class", "platform"},),
     TOOL_CALL_METRIC: (frozenset(_COUNTER_DIMENSION_VALUES[TOOL_CALL_METRIC]),),
+    # v3 rows, recorded before the failure_class split, drain as they were counted.
+    COMPRESSION_METRIC: (_METRIC_FIELDS[COMPRESSION_METRIC] - {"failure_class"},),
+    MEMORY_OP_METRIC: (_METRIC_FIELDS[MEMORY_OP_METRIC] - {"failure_class"},),
     SKILL_LOAD_METRIC: (_METRIC_FIELDS[SKILL_LOAD_METRIC] - {"skill_name"},),
     INSTALL_SNAPSHOT_METRIC: (_METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - {
         "display_language", "install_age_bucket", "main_provider", "messaging_platform_count_bucket",
@@ -1127,15 +1156,17 @@ def _auxiliary_model_call_dimensions(event: Any) -> dict[str, str] | None:
             scope_category="end", category_profile=None,
         )
         or not isinstance(data, dict)
-        or set(data) - {"response_model"} != {"model", "outcome", "provider"}
+        or set(data) - {"response_model", "error_class"} != {"model", "outcome", "provider"}
         or data.get("outcome") not in _LEGACY_MODEL_OUTCOMES
     ):
         return None
     outcome = data["outcome"]
-    dimensions = model_route_fields(
-        data, call_role="auxiliary", outcome=outcome,
-        error_class="none" if outcome == "success" else "unknown",
-    )
+    # Same reading as a primary call: a cancelled call reports ``none``, a failure without a
+    # classified reason ``unknown``, a success the last error it recovered from.
+    error_class = "none" if outcome == "cancelled" else data.get("error_class") or "none"
+    if outcome == "failed" and error_class == "none":
+        error_class = "unknown"
+    dimensions = model_route_fields(data, call_role="auxiliary", outcome=outcome, error_class=error_class)
     return dimensions if counter_dimensions_are_valid(MODEL_ROUTE_METRIC, dimensions) else None
 
 
@@ -1482,7 +1513,7 @@ _TOOL_CATEGORY_PREFIXES = (
     ("mcp", "mcp"),
     ("browser", "browser"),
     (("image", "tts", "video", "vision"), "media"),
-    ("homeassistant", "home_automation"),
+    ("homeassistant", "home_automation"),  # the homeassistant catalog plugin's toolset
     (("discord", "email", "feishu", "hermes-yuanbao", "slack", "sms"), "communication"),
 )
 

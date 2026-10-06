@@ -431,6 +431,7 @@ When the bot is in a voice channel:
 - Transcripts appear in the text channel: `[Voice] @user: what you said`
 - Agent responses are sent as text in the channel AND spoken in the VC
 - The text channel is the one where `/voice join` was issued
+- Running `/voice join` from another text channel moves the binding there; speech captured before the move, whether still being transcribed or not yet finished, is dropped, not posted to the new channel
 
 ### Echo Prevention
 
@@ -438,7 +439,7 @@ The bot automatically pauses its audio listener while playing TTS replies, preve
 
 ### Access Control
 
-Only users listed in `DISCORD_ALLOWED_USERS` can interact via voice. Other users' audio is silently ignored.
+Only users allowed by `DISCORD_ALLOWED_USERS` or `DISCORD_ALLOWED_ROLES` can interact via voice; a role is checked for the speaker each time they talk. Other users' audio is silently ignored.
 
 ```bash
 # ~/.hermes/.env

@@ -2,6 +2,8 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
 import { introZh } from './intro-zh'
+import { zhAuxTasks } from './zh_aux_tasks'
+import { zhModelMenu } from './zh_model_menu'
 
 export const zh = defineLocale({
   externalOpenFailed: {
@@ -16,7 +18,7 @@ export const zh = defineLocale({
       '共享指标只包含有上限的计数，绝不包含提示词、文件、路径或错误文本。收集仅在本地进行；发送给 Nous 需要另行同意。',
     whatIsCollected: '收集哪些内容',
     collectedIntro: '仅限有上限的计数：',
-    collectedActivity: '活动、会话时长、结果和错误类别',
+    collectedActivity: '活动、会话时长、结果和错误类别，包括记忆写入或上下文压缩被拒绝、失败或跳过时的原因（来自固定列表）',
     collectedModels: '模型路由和 token 总量',
     collectedNames: '内置工具、命令和目录项名称',
     collectedMilestones: '分桶的设置计数',
@@ -312,7 +314,7 @@ export const zh = defineLocale({
       inputTitleNamed: session => `需要输入 — ${session}`,
       inputBody: 'Hermes 正在等待你的回应。',
       turnDoneTitle: 'Hermes 已完成',
-      turnDoneBody: '',
+      turnDoneBody: '消息已完成。',
       turnErrorTitle: '本轮失败',
       backgroundDoneTitle: '后台任务已完成',
       backgroundFailedTitle: '后台任务失败',
@@ -561,6 +563,14 @@ export const zh = defineLocale({
     resetConfirm: '将所有设置恢复为 Hermes 默认值？',
     exportFailed: '导出失败',
     resetFailed: '重置失败',
+    pluginPages: {
+      blurb: '已安装插件添加的选项。每个插件都有自己的页面，有些还带子页面。',
+      empty: '还没有插件提供设置。',
+      manage: '管理插件',
+      agentSettings: '智能体设置',
+      pageCount: (n: number) => `${n} 个页面`,
+      missing: '该插件没有设置页面，可能已被禁用或卸载。'
+    },
     nav: {
       providers: '提供方',
       providerAccounts: '账号',
@@ -578,7 +588,8 @@ export const zh = defineLocale({
       about: '关于',
       billing: '账单',
       notifications: '通知',
-      vault: '密码与登录'
+      vault: '密码与登录',
+      plugins: '插件'
     },
     vault: {
       title: '密码与登录',
@@ -654,20 +665,11 @@ export const zh = defineLocale({
     },
     plugins: {
       title: '桌面插件',
-      blurb:
-        '加载到此应用中的界面扩展——随构建捆绑，或放入 desktop-plugins 文件夹（包括 Hermes 编写的插件）。禁用会即时卸载插件并在重启后保持。',
-      count: n => `已安装 ${n} 个`,
       openFolder: '打开桌面插件文件夹',
       rescan: '重新扫描',
       reveal: '在文件管理器中显示',
-      enable: '启用',
-      disable: '禁用',
       failed: '失败',
-      empty: '尚未安装桌面插件。',
       kinds: { bundled: '内置', disk: '磁盘', runtime: '运行时' },
-      agentHalfMissing: '此处缺少 agent 部分',
-      agentHalfMissingTip:
-        '这是捆绑插件的桌面部分，但其 agent 部分未安装在当前连接的后端/配置上。请在 能力 → 插件 中安装。',
       installModal: {
         installFromGit: '从 Git 安装',
         reviewRepository: '检查仓库',
@@ -1326,7 +1328,11 @@ export const zh = defineLocale({
       toolsetsWipeConfirm:
         '确定移除所有已启用的工具集吗？这将禁用记忆、终端、网络搜索、委派以及大多数其他工具，直到你重新启用它们。',
       keepAwakeTitle: '保持电脑唤醒',
-      keepAwakeDesc: '阻止本机休眠，让长时间或通宵运行继续进行。屏幕仍可变暗。',
+      keepAwakeDesc:
+        '阻止本机休眠。“运行期间”仅在有回合进行时生效，通宵运行得以继续，又不会让笔记本整周保持唤醒。屏幕仍可变暗。',
+      keepAwakeOff: '关闭',
+      keepAwakeWhileWorking: '运行期间',
+      keepAwakeAlways: '始终',
       disableF12Title: '禁用 F12 开发者工具',
       disableF12Desc: '阻止 F12 打开开发者工具。Ctrl+Shift+I（Mac 上为 Cmd+Opt+I）仍然可用。',
       alwaysExternalLinksTitle: '始终在外部浏览器中打开链接',
@@ -1622,6 +1628,8 @@ export const zh = defineLocale({
       sshErrPlatform: '不支持的远程平台。Hermes Desktop 的 SSH 模式支持 Linux、macOS 和 Windows 远程主机。',
       sshErrTimeout: 'SSH 连接超时。主机可能无法访问或处于休眠状态。',
       sshErrUpdateRequired: '使用 Desktop SSH 连接前，请更新远程主机上的 Hermes。',
+      sshErrInteractiveAuth:
+        'Tailscale SSH 需要交互式浏览器验证。请在终端运行 `ssh <host> true` 完成验证后重试——Hermes 以非交互方式运行 SSH。',
       sshErrUnknown: 'SSH 连接失败。'
     },
     keys: {
@@ -1705,6 +1713,8 @@ export const zh = defineLocale({
       defaultsLabel: '默认值',
       reasoning: '推理',
       reasoningOff: '关闭',
+      speed: '速度',
+      speedStandard: '标准',
       defaultsFailed: '保存模型默认值失败',
       loadFailed: '无法加载模型',
       restartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。',
@@ -1719,6 +1729,8 @@ export const zh = defineLocale({
       change: '更改',
       autoUseMain: '自动 · 使用主模型',
       inheritMainEffort: '继承 · 主模型推理强度',
+      inheritsFrom: task => `继承 ${task}`,
+      followTask: task => `跟随 ${task}`,
       providerDefault: '(提供方默认)',
       fallbackAdd: '添加备用模型',
       fallbackEmpty: '未配置备用模型 — 默认模型失败时才会使用备用模型。',
@@ -1730,19 +1742,7 @@ export const zh = defineLocale({
       moaAggregator: '聚合模型',
       moaAggregatorBilled: '执行模型 · 整个运行在此计费',
       moaReferenceHint: '默认每轮仅建议一次',
-      tasks: {
-        vision: { label: '视觉', hint: '图片分析' },
-        compression: { label: '压缩', hint: '上下文压缩' },
-        skills_hub: { label: '技能中心', hint: '技能搜索' },
-        approval: { label: '审批', hint: '智能自动批准' },
-        mcp: { label: 'MCP', hint: 'MCP 工具路由' },
-        title_generation: { label: '标题生成', hint: '会话标题' },
-        review: { label: '评审', hint: '/review 评审子智能体' },
-        triage_specifier: { label: '分类指定', hint: '看板任务规格补全' },
-        kanban_decomposer: { label: '看板分解', hint: '任务拆解' },
-        profile_describer: { label: '配置描述', hint: '自动生成配置描述' },
-        curator: { label: '维护器', hint: '技能使用审查' }
-      }
+      tasks: zhAuxTasks
     },
     localModels: {
       connectionChanged: '本地模型连接已更改',
@@ -2728,6 +2728,9 @@ export const zh = defineLocale({
     replaceValue: '替换当前值',
     openDocs: '打开文档',
     clearField: key => `清除 ${key}`,
+    addListEntry: '再添加一个',
+    removeListEntry: '移除',
+    listEntryPlaceholder: '输入 ID',
     enableAria: name => `启用 ${name}`,
     disableAria: name => `禁用 ${name}`,
     platformEnabled: name => `${name} 已启用`,
@@ -2799,11 +2802,11 @@ export const zh = defineLocale({
       },
       TELEGRAM_ALLOWED_USERS: {
         label: '允许的 Telegram 用户 ID',
-        help: '推荐。来自 @userinfobot 的逗号分隔数字 ID。不设置则任何人都能私信你的机器人。'
+        help: '推荐。来自 @userinfobot 的数字 ID（每格一个）。不设置则任何人都能私信你的机器人。'
       },
       TELEGRAM_PROXY: { label: '代理 URL', help: '仅在 Telegram 被屏蔽的网络中需要。' },
       DISCORD_BOT_TOKEN: { label: 'Bot 令牌', help: '在 Discord 开发者门户创建应用，添加机器人，然后粘贴其令牌。' },
-      DISCORD_ALLOWED_USERS: { label: '允许的 Discord 用户 ID', help: '推荐。逗号分隔的 Discord 用户 ID。' },
+      DISCORD_ALLOWED_USERS: { label: '允许的 Discord 用户 ID', help: '推荐。Discord 用户 ID（每格一个）。' },
       DISCORD_REPLY_TO_MODE: { label: '回复方式', help: 'first、all 或 off。' },
       DISCORD_ALLOW_ALL_USERS: {
         label: '允许所有 Discord 用户',
@@ -2827,24 +2830,24 @@ export const zh = defineLocale({
         help: 'Socket Mode 需要 app 级令牌。',
         placeholder: '粘贴 Slack app 令牌'
       },
-      SLACK_ALLOWED_USERS: { label: '允许的 Slack 用户 ID', help: '推荐。逗号分隔的 Slack 用户 ID。' },
+      SLACK_ALLOWED_USERS: { label: '允许的 Slack 用户 ID', help: '推荐。Slack 用户 ID（每格一个）。' },
       MATTERMOST_URL: { label: '服务器 URL', placeholder: 'https://mattermost.example.com' },
       MATTERMOST_TOKEN: { label: 'Bot 令牌' },
-      MATTERMOST_ALLOWED_USERS: { label: '允许的用户 ID', help: '推荐。逗号分隔的 Mattermost 用户 ID。' },
+      MATTERMOST_ALLOWED_USERS: { label: '允许的用户 ID', help: '推荐。Mattermost 用户 ID（每格一个）。' },
       MATRIX_HOMESERVER: { label: 'Homeserver URL', placeholder: 'https://matrix.org' },
       MATRIX_ACCESS_TOKEN: { label: '访问令牌' },
       MATRIX_USER_ID: { label: 'Bot 用户 ID', placeholder: '@hermes:example.org' },
-      MATRIX_ALLOWED_USERS: { label: '允许的 Matrix 用户 ID', help: '推荐。@user:server 格式的逗号分隔用户 ID。' },
+      MATRIX_ALLOWED_USERS: { label: '允许的 Matrix 用户 ID', help: '推荐。@user:server 格式的用户 ID（每格一个）。' },
       SIGNAL_HTTP_URL: {
         label: 'Signal 桥接 URL',
         placeholder: 'http://127.0.0.1:8080',
         help: '运行中的 signal-cli REST 桥接的 URL。'
       },
       SIGNAL_ACCOUNT: { label: '电话号码', help: '在 signal-cli 桥接中注册的号码。' },
-      SIGNAL_ALLOWED_USERS: { label: '允许的 Signal 用户', help: '推荐。逗号分隔的 Signal 标识符。' },
+      SIGNAL_ALLOWED_USERS: { label: '允许的 Signal 用户', help: '推荐。Signal 标识符（每格一个）。' },
       WHATSAPP_ENABLED: { label: '启用 WhatsApp 桥接', help: '由下方开关自动设置。除非确知需要，否则请勿改动。' },
       WHATSAPP_MODE: { label: '桥接模式' },
-      WHATSAPP_ALLOWED_USERS: { label: '允许的 WhatsApp 用户', help: '推荐。逗号分隔的电话号码或 WhatsApp ID。' }
+      WHATSAPP_ALLOWED_USERS: { label: '允许的 WhatsApp 用户', help: '推荐。电话号码或 WhatsApp ID（每格一个）。' }
     },
     platformIntro: {
       telegram:
@@ -4299,27 +4302,14 @@ export const zh = defineLocale({
     windowControls: '窗口控件',
     paneControls: '面板控件',
     appControls: '应用控件',
-    modelMenu: {
-      search: '搜索模型',
-      noModels: '未找到模型',
-      editModels: '编辑模型…',
-      followDefault: '使用设置中的默认模型',
-      refreshModels: '刷新模型',
-      favorites: '收藏',
-      addFavorite: '添加到收藏',
-      removeFavorite: '从收藏中移除',
-      favoriteShortcut: '⇧ 单击',
-      fast: '快速',
-      free: '免费',
-      cacheRead: '缓存读取',
-      priceTitle: (input: string, output: string, cache: string) =>
-        `输入 ${input}/Mtok · 输出 ${output}/Mtok` + (cache ? ` · 缓存读取 ${cache}/Mtok` : '')
-    },
+    modelMenu: zhModelMenu,
     modelOptions: {
       noOptions: '此模型没有可用选项',
       options: '选项',
       thinking: '思考',
       fast: '快速',
+      ultrafast: 'Ultrafast',
+      useStandardSpeed: '使用标准速度',
       effort: '推理强度',
       minimal: '最小',
       low: '低',
@@ -4382,6 +4372,9 @@ export const zh = defineLocale({
       showTerminal: '显示终端',
       hideTerminal: '隐藏终端',
       gateway: '网关',
+      backend: '后端',
+      messagingStopped: '消息网关已停止',
+      messagingDegraded: name => `${name} 异常`,
       gatewayReady: '就绪',
       gatewayNeedsSetup: '需要设置',
       gatewayUnavailable: '推理不可用',
@@ -5041,8 +5034,6 @@ export const zh = defineLocale({
     sessionUnavailable: '会话不可用',
     createSessionFailed: '无法创建新会话',
     promptFailed: '提示词发送失败',
-    staleSessionTitle: '对话已过期',
-    staleSessionBody: '此窗口落后于同一对话的其他窗口。已加载最新消息。若仍要发送请再试一次。',
     providerCredentialRequired: '发送第一条消息前请先添加提供方凭据。',
     emptySlashCommand: '空 slash 命令',
     slashCommandIgnoredTitle: '命令未发送',

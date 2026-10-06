@@ -15,6 +15,7 @@ from typing import Optional
 
 from pm import paths
 from pm.downloader import DownloadPaused, ProgressFn
+from pm.filesystem import remove_tree, retry_held
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.plugin_inputs import Candidates, Members, PluginInput, Selection, StagedUpdate
@@ -231,7 +232,7 @@ def _remove_entry(store: Store, entry_name: str, *, attempts: int = 5) -> None:
             if entry.is_symlink() or not entry.is_dir():
                 entry.unlink(missing_ok=True)
             else:
-                shutil.rmtree(entry)
+                remove_tree(entry)
             return
         except FileNotFoundError:
             return
@@ -304,12 +305,12 @@ def _restore_previous_entry(store: Store, entry, previous) -> None:
     displaced = store.entry(f".displaced-{uuid.uuid4().hex}")
     had_entry = entry.exists() or entry.is_symlink()
     if had_entry:
-        entry.rename(displaced)
+        retry_held(lambda: entry.rename(displaced))
     try:
-        previous.rename(entry)
+        retry_held(lambda: previous.rename(entry))
     except BaseException:
         if had_entry:
-            displaced.rename(entry)
+            retry_held(lambda: displaced.rename(entry))
         raise
     if had_entry:
         _discard_entry(store, displaced.name)
@@ -319,7 +320,7 @@ def _restore_previous_entry(store: Store, entry, previous) -> None:
 def _publish_entry(package, store, staged, entry, previous_entry, target):
     """Keep rollback live through the caller's native facts commit, if any."""
     if entry.exists() or entry.is_symlink():
-        entry.rename(previous_entry)
+        retry_held(lambda: entry.rename(previous_entry))
     try:
         store.publish(staged, entry.name)
         reason = package.verify(entry, target)
@@ -446,9 +447,11 @@ def _install(
                     raise DownloadPaused("install paused")
                 if progress is not None:
                     progress("verify", 0, 0, "")
-                reason = package.verify(staged, target)
+                reason, remedy = package.verify(staged, target), ""
                 if reason:
-                    raise InstallError(package.name, f"staged entry failed verification: {reason}")
+                    reason, remedy = package.repair_staged_verification(staged, target, reason)
+                if reason:
+                    raise InstallError(package.name, f"staged entry failed verification: {reason}", remedy)
                 if facts is None:
                     (staged / ".pm-stage-pin.json").write_text(pin, encoding="utf-8")
                 with _publish_entry(package, store, staged, entry, previous_entry, target):

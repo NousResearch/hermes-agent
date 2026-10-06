@@ -38,6 +38,15 @@ def _failed_result(request: dict, result_path: Path, code: int) -> int:
 def run_completion(request: dict) -> dict:
     """Wait for new code; zero exit without a correlated terminal result fails closed."""
     root = Path(request["source"])
+    # The child below runs in a new session without a controlling terminal, so
+    # this is the last point where sudo can ask for a password. Run the new
+    # tree's pre-install as its own process (this parent stays stdlib-only); a
+    # tree without it, or any failure, just leaves the in-lock repair to report.
+    if sys.platform.startswith("linux"):
+        subprocess.run([sys.executable, "-I", "-S", "-B", "-c",
+                        "import sys; sys.path.insert(0, sys.argv[1]); "
+                        "from pm.libatomic import install_before_lock; install_before_lock()", str(root)],
+                       cwd=root, stdout=None, stderr=subprocess.DEVNULL, check=False)
     env = dict(os.environ, HERMES_HOME=request["home"], PYTHONUNBUFFERED="1")
     for key in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"):
         env.pop(key, None)
@@ -146,6 +155,8 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
 
     refuse_foreign_owned_venv(root)
     arm_completion(root)
+    from hermes_cli.gitlock import convert_treeless_checkout_first
+    convert_treeless_checkout_first(root)
     with receipt.worker_context(update_id):
         try:
             # This file runs from the new tree, so its lockfile carries the new

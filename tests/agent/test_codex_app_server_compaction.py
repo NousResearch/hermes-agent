@@ -3,7 +3,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.codex_runtime import _record_codex_app_server_compaction
+from agent.codex_runtime import (
+    _record_codex_app_server_compaction,
+    _record_codex_app_server_usage,
+)
 from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS, compress_context
 from agent.transports.codex_app_server_session import TurnResult
 
@@ -62,6 +65,22 @@ class DummyAgent:
             last_completion_tokens=45,
             awaiting_real_usage_after_compression=False,
         )
+        self._usage_anchor = None
+        self._session_db = None
+        self.session_api_calls = 0
+        self.session_prompt_tokens = 0
+        self.session_completion_tokens = 0
+        self.session_total_tokens = 0
+        self.session_input_tokens = 0
+        self.session_output_tokens = 0
+        self.session_cache_read_tokens = 0
+        self.session_cache_write_tokens = 0
+        self.session_reasoning_tokens = 0
+        self.session_estimated_cost_usd = 0.0
+        self.model = "test/model"
+        self.provider = "openai-codex"
+        self.base_url = None
+        self.api_key = ""
         self.statuses = []
         self.status_events = []
         self.status_callback = lambda kind, text: self.status_events.append((kind, text))
@@ -205,6 +224,49 @@ def test_codex_native_boundary_clears_stale_hermes_fallback_streak():
     assert _record_codex_app_server_compaction(agent, turn) is True
     assert compressor._fallback_compression_streak == 0
     assert compressor._verify_compaction_cleared_threshold is True
+
+
+def test_codex_plugin_engine_boundary_consumes_host_latches_on_usage():
+    class PluginEngine(SimpleNamespace):
+        def update_from_response(self, usage):
+            self.last_prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+
+    agent = DummyAgent(
+        TurnResult(thread_id="thread-1", turn_id="normal-turn-1")
+    )
+    engine = PluginEngine(
+        compression_count=0,
+        last_compression_rough_tokens=0,
+        last_prompt_tokens=123,
+        last_completion_tokens=45,
+        awaiting_real_usage_after_compression=False,
+    )
+    agent.context_compressor = engine
+    compacted = TurnResult(
+        thread_id="thread-1",
+        turn_id="compact-turn-1",
+        compacted=True,
+    )
+
+    assert _record_codex_app_server_compaction(agent, compacted) is True
+    assert engine._verify_compaction_cleared_threshold is True
+    assert engine.awaiting_real_usage_after_compression is True
+
+    usage_turn = TurnResult(
+        thread_id="thread-1",
+        turn_id="normal-turn-2",
+        token_usage_last={
+            "inputTokens": 50,
+            "cachedInputTokens": 0,
+            "outputTokens": 1,
+            "reasoningOutputTokens": 0,
+            "totalTokens": 51,
+        },
+    )
+    _record_codex_app_server_usage(agent, usage_turn)
+
+    assert engine._verify_compaction_cleared_threshold is False
+    assert engine.awaiting_real_usage_after_compression is False
 
 
 class RecordingCooldownCompressor(SimpleNamespace):

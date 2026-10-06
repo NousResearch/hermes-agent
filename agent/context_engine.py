@@ -45,6 +45,27 @@ def automatic_compaction_status_message(engine: Any, *, phase: str, default_mess
     return str(message).strip() or None
 
 
+def update_context_engine_usage(engine: Any, usage: Dict[str, Any]) -> bool:
+    """Update an engine, then consume host-owned post-compaction latches.
+
+    Returns whether a completed compaction was awaiting provider verification.
+    Built-in engines may consume these fields themselves; the host clear is
+    intentionally idempotent so plugin engines need no private-field coupling.
+    """
+    completed_compaction_pending = bool(
+        getattr(engine, "_verify_compaction_cleared_threshold", False)
+    )
+    awaiting_real_usage = bool(
+        getattr(engine, "awaiting_real_usage_after_compression", False)
+    )
+    engine.update_from_response(usage)
+    if completed_compaction_pending:
+        engine._verify_compaction_cleared_threshold = False
+    if awaiting_real_usage:
+        engine.awaiting_real_usage_after_compression = False
+    return completed_compaction_pending
+
+
 class ContextEngine(ABC):
     """Base class all context engines must implement."""
 

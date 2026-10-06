@@ -13,6 +13,7 @@ const apiMocks = vi.hoisted(() => ({
   importSessions: vi.fn(),
   exportSessionUrl: vi.fn(),
   renameSession: vi.fn(),
+  setSessionArchived: vi.fn(),
   pruneSessions: vi.fn(),
   deleteSession: vi.fn(),
   deleteEmptySessions: vi.fn(),
@@ -55,12 +56,19 @@ const button = (label: string) => document.querySelector(`button[aria-label="${l
 async function renderSessionsPage(rows: Record<string, unknown>[]) {
   // Page list uses limit 20; the overview tab's recent-cards fetch uses 50 —
   // keep the overview empty so the list view (with row actions) renders.
-  apiMocks.getSessions.mockImplementation(async (limit: number) => ({
-    sessions: limit >= 50 ? [] : rows,
-    total: limit >= 50 ? 0 : rows.length,
-    limit,
-    offset: 0,
-  }));
+  apiMocks.getSessions.mockImplementation(
+    async (limit: number, _offset: number, options: { archived?: string }) => {
+      const visible = rows.filter((row) =>
+        options.archived === "only" ? row.archived === true : row.archived !== true,
+      );
+      return {
+        sessions: limit >= 50 ? [] : visible,
+        total: limit >= 50 ? 0 : visible.length,
+        limit,
+        offset: 0,
+      };
+    },
+  );
   const [{ default: SessionsPage }, { I18nProvider }, { SystemActionsProvider }, { ProfileProvider }, { PageHeaderProvider }] =
     await Promise.all([
       import("./SessionsPage"),
@@ -102,6 +110,7 @@ beforeEach(() => {
   apiMocks.getSessionMessages.mockResolvedValue({ messages: [] });
   apiMocks.deleteSession.mockResolvedValue({ ok: true });
   apiMocks.renameSession.mockResolvedValue({ ok: true, title: "Renamed" });
+  apiMocks.setSessionArchived.mockResolvedValue({ ok: true });
   apiMocks.exportSessionUrl.mockReturnValue("/api/sessions/x/export");
   vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500 })));
   vi.stubGlobal("ResizeObserver", class { disconnect() {} observe() {} unobserve() {} });
@@ -110,6 +119,79 @@ beforeEach(() => {
   vi.stubGlobal("cancelAnimationFrame", (id: number) => clearTimeout(id));
   vi.stubGlobal("matchMedia", () => ({ addEventListener() {}, matches: false, media: "", removeEventListener() {} }));
   sessionStorage.clear();
+});
+
+describe("SessionsPage archive", () => {
+  const row = {
+    id: "sid-archive", profile: "worker", source: "cli", model: null,
+    title: "Retained conversation", started_at: 1, ended_at: null,
+    last_active: 1, is_active: false, message_count: 2, tool_call_count: 0,
+    input_tokens: 1, output_tokens: 1, preview: "hello", archived: false,
+  };
+
+  it("moves a session between Current and Archived and restores it through its owning profile", async () => {
+    const rows = [{ ...row }];
+    apiMocks.setSessionArchived.mockImplementation(async (_id: string, archived: boolean) => {
+      rows[0].archived = archived;
+      return { ok: true, archived };
+    });
+    await renderSessionsPage(rows);
+
+    await act(async () => click(button("Archive session")));
+    expect(apiMocks.setSessionArchived).toHaveBeenCalledWith("sid-archive", true, "worker");
+    await waitFor(() => !document.body.textContent?.includes("Retained conversation"));
+    expect(apiMocks.getSessionStats).toHaveBeenCalledTimes(2);
+
+    const archivedTab = Array.from(document.querySelectorAll("button")).find(
+      (el) => el.textContent?.trim() === "Archived",
+    );
+    await act(async () => click(archivedTab ?? null));
+    await waitFor(() => Boolean(button("Unarchive session")));
+    expect(apiMocks.getSessions).toHaveBeenCalledWith(
+      20, 0, expect.objectContaining({ archived: "only" }),
+    );
+    await act(async () => click(button("Unarchive session")));
+    expect(apiMocks.setSessionArchived).toHaveBeenCalledWith("sid-archive", false, "worker");
+    await waitFor(() => !document.body.textContent?.includes("Retained conversation"));
+
+    const currentTab = Array.from(document.querySelectorAll("button")).find(
+      (el) => el.textContent?.trim() === "Current",
+    );
+    await act(async () => click(currentTab ?? null));
+    await waitFor(() => Boolean(button("Archive session")));
+    expect(document.body.textContent).toContain("Retained conversation");
+  });
+
+  it("keeps the row visible and reports an archive failure", async () => {
+    apiMocks.setSessionArchived.mockRejectedValue(new Error("write failed"));
+    await renderSessionsPage([{ ...row }]);
+
+    await act(async () => click(button("Archive session")));
+
+    expect(document.body.textContent).toContain("Retained conversation");
+    await waitFor(() => document.body.textContent?.includes("Failed to archive session") === true);
+  });
+
+  it("keeps an archived row visible and reports an unarchive failure", async () => {
+    const rows = [{ ...row }];
+    apiMocks.setSessionArchived.mockImplementation(async (_id: string, archived: boolean) => {
+      if (!archived) throw new Error("write failed");
+      rows[0].archived = true;
+      return { ok: true, archived: true };
+    });
+    await renderSessionsPage(rows);
+    await act(async () => click(button("Archive session")));
+
+    const archivedTab = Array.from(document.querySelectorAll("button")).find(
+      (el) => el.textContent?.trim() === "Archived",
+    );
+    await act(async () => click(archivedTab ?? null));
+    await waitFor(() => Boolean(button("Unarchive session")));
+    await act(async () => click(button("Unarchive session")));
+
+    expect(document.body.textContent).toContain("Retained conversation");
+    await waitFor(() => document.body.textContent?.includes("Failed to unarchive session") === true);
+  });
 });
 
 afterEach(async () => {

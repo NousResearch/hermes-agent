@@ -136,8 +136,9 @@ def _warn_zero_sub_board_once(slug: str, live: int, notifier_profiles: list) -> 
     logger.warning(
         "kanban notifier: board %s has no subscriptions owned by %s and %d "
         "non-terminal task(s) — blocked cards will reach nobody; subscribe "
-        "with `hermes kanban notify-subscribe` (or set "
-        "kanban.notify_default_platform / notify_default_chat_id)",
+        "per task with `hermes kanban notify-subscribe <task-id> --platform "
+        "<platform> --chat-id <id>` (or export HERMES_SESSION_PLATFORM + "
+        "HERMES_SESSION_CHAT_ID so auto_subscribe_on_create covers agent-created cards)",
         slug, notifier_profiles, live,
     )
     return True

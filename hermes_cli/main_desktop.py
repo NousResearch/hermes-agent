@@ -1602,9 +1602,7 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
     try:
         run_contained(build_cmd, f"Building desktop {build_label}", cwd=desktop_dir, env=build_env)
         if staging_dir is not None:
-            run_contained([npm, "run", "builder", "--", "--dir", "--publish", "never",
-                           f"-c.directories.output={staging_dir}"], "Packaging the desktop app",
-                          cwd=desktop_dir, env=build_env)
+            _run_packaging_leg(npm, staging_dir, desktop_dir, build_env)
         packaged_executable = (
             _promote_staged_desktop_app(desktop_dir, staging_dir) if staging_dir is not None else None
         )
@@ -1615,6 +1613,54 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
     finally:
         if staging_dir is not None:
             _discard_desktop_staging(staging_dir)
+
+
+_PACKAGING_RETRY_BACKOFF_SECONDS = (5.0, 20.0)
+
+# The transient failure class this retry exists for (#123387): undici's generic
+# `TypeError: fetch failed` (no `.code`) plus the network codes app-builder-lib's
+# own download retry list recognizes. Anything else — missing render artifacts,
+# a full disk, an invalid signing identity — is deterministic and fails the
+# same way on every attempt, so it raises on the first one instead of paying
+# two extra full packs plus the backoff sleep.
+_PACKAGING_TRANSIENT_ERROR_RE = re.compile(
+    r"fetch failed|\bECONNRESET\b|\bETIMEDOUT\b|\bENOTFOUND\b|\bEPIPE\b|\b5\d\d\b",
+    re.IGNORECASE,
+)
+
+
+def _packaging_failure_is_transient(exc: subprocess.CalledProcessError) -> bool:
+    """Whether ``exc``'s captured output carries the transient network class."""
+    output = " ".join(part or "" for part in (exc.output, exc.stderr))
+    return bool(_PACKAGING_TRANSIENT_ERROR_RE.search(output))
+
+
+def _run_packaging_leg(npm: str, staging_dir: Path, desktop_dir: Path, env: dict) -> None:
+    """Run the electron-builder packaging leg, retrying only transient failures.
+
+    app-builder-lib's download retry list only matches errors carrying a
+    recognized `.code` (ENOTFOUND/ETIMEDOUT/ECONNRESET/EPIPE/ENOENT, plus 5xx).
+    undici surfaces a generic `TypeError: fetch failed` with no such code, so a
+    single transient network blip during the packaging fetch aborts the whole
+    update instead of being retried (#123387). Retrying the whole leg is safe:
+    before-pack.mjs wipes the appOutDir inside the same staging dir before
+    electron-builder restages it, so a retried attempt never builds on a
+    half-written tree. Failures that cannot be transient are not retried.
+    """
+    from pm.progress import run_contained
+
+    attempts = len(_PACKAGING_RETRY_BACKOFF_SECONDS) + 1
+    for attempt in range(attempts):
+        try:
+            run_contained([npm, "run", "builder", "--", "--dir", "--publish", "never",
+                           f"-c.directories.output={staging_dir}"], "Packaging the desktop app",
+                          cwd=desktop_dir, env=env)
+            return
+        except subprocess.CalledProcessError as exc:
+            if attempt == attempts - 1 or not _packaging_failure_is_transient(exc):
+                raise
+            _time_mod.sleep(_PACKAGING_RETRY_BACKOFF_SECONDS[attempt])
+            print(f"  ⚠ Packaging attempt {attempt + 1} failed (possibly a transient fetch error); retrying…")
 
 
 _WSL_DXG_DEVICE = Path("/dev/dxg")

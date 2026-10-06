@@ -1,5 +1,8 @@
-import { queryAllVisible, queryVisible } from '@/components/pane-shell/pane-visibility'
+import { queryAllVisible } from '@/components/pane-shell/pane-visibility'
 import { $workspaceOwnerKey } from '@/components/pane-shell/workspace-scope'
+import { browserSessionConversation, focusedBrowserConversation } from '@/store/browser-conversation'
+
+import { type BrowserConversation, sameBrowserConversation } from '../../../electron/browser-workspace-types'
 
 import { annotateFlushPrompt, packageAnnotateStack } from './pack'
 import type { AnnotatePin } from './stack'
@@ -23,6 +26,7 @@ const DESTINATION_PREFIX = 'hermes.desktop.previewAnnotate.destination.v1:'
 const DESTINATION_MAX_AGE_MS = 24 * 60 * 60 * 1000
 
 export interface PreviewAnnotateComposerDestination {
+  conversation?: BrowserConversation
   kind: 'composer'
   surfaceId: string
   target: string
@@ -30,6 +34,7 @@ export interface PreviewAnnotateComposerDestination {
 }
 
 export interface PreviewAnnotateGroupDestination {
+  conversation?: BrowserConversation
   composerKey: string
   group: string
   kind: 'group'
@@ -163,7 +168,13 @@ export function capturePreviewAnnotateDestination(anchor: Element | null = null)
   const composerKey = group?.dataset.previewAnnotateComposerKey?.trim()
 
   if (groupName && composerKey) {
+    const connectionId = group?.dataset.previewAnnotateConnectionId
+    const profile = group?.dataset.previewAnnotateProfile
+
     return {
+      // A legacy name-only room can be deleted and recreated under the same
+      // label. Only the existing immutable room key can own a new workspace.
+      ...(connectionId && profile && composerKey.startsWith('id:') ? { conversation: { kind: 'group' as const, id: composerKey, connectionId, profile } } : {}),
       composerKey,
       group: groupName,
       kind: 'group',
@@ -171,12 +182,22 @@ export function capturePreviewAnnotateDestination(anchor: Element | null = null)
     }
   }
 
-  const composer = queryVisible<HTMLElement>('[data-composer-target]')
+  const composers = queryAllVisible<HTMLElement>('[data-composer-target]')
+  const focused = focusedBrowserConversation()
+  const anchored = anchor?.closest<HTMLElement>('[data-composer-target]')
+
+  const composer = (anchored && composers.includes(anchored) ? anchored : undefined) ??
+    composers.find(item => sameBrowserConversation(browserSessionConversation(item.dataset.browserSessionId || '') ?? undefined, focused ?? undefined)) ??
+    (composers.length === 1 ? composers[0] : undefined)
+
   const target = composer?.dataset.composerTarget?.trim()
   const surfaceId = composer?.dataset.composerSurfaceId?.trim()
 
   if (target && surfaceId) {
+    const conversation = browserSessionConversation(composer?.dataset.browserSessionId || '')
+
     return {
+      ...(conversation ? { conversation } : {}),
       kind: 'composer',
       surfaceId,
       target,
@@ -188,6 +209,23 @@ export function capturePreviewAnnotateDestination(anchor: Element | null = null)
 }
 
 const destinationKey = (tabId: string) => `${DESTINATION_PREFIX}${tabId}`
+
+/** Validate the durable recipient at delivery, not the mounted React surface.
+ * Legacy single-tab handoffs retain their old surface-only contract. */
+export function previewAnnotateConversationMatches(destination: PreviewAnnotateDestination, surface: HTMLElement): boolean {
+  if (!destination.conversation) {return true}
+
+  const current = destination.kind === 'composer'
+    ? browserSessionConversation(surface.dataset.browserSessionId || '')
+    : {
+        kind: 'group' as const,
+        id: surface.dataset.previewAnnotateComposerKey || '',
+        connectionId: surface.dataset.previewAnnotateConnectionId || '',
+        profile: surface.dataset.previewAnnotateProfile || ''
+      }
+
+  return sameBrowserConversation(destination.conversation, current ?? undefined)
+}
 
 export function rememberPreviewAnnotateDestination(tabId: string, destination: PreviewAnnotateDestination | null) {
   if (typeof window === 'undefined' || !tabId) {

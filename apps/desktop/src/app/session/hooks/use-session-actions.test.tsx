@@ -380,6 +380,64 @@ describe('desktop branch creation idempotency', () => {
 })
 
 describe('connection-qualified session deletion', () => {
+  it('retires a pending detached runtime when its durable session is deleted before ownership binding', async () => {
+    const { BrowserWorkspaces } = await import('../../../../electron/browser-workspaces')
+    const runtime = new BrowserWorkspaces(() => {})
+    const route = { connectionId: 'source-a', profile: 'worker' }
+    const runtimeId = 'detached-pending-runtime'
+    const storedId = 'detached-pending-stored'
+
+    const state = runtime.open(1, {
+      scope: 'conn:source-a::worker',
+      tab: { id: 'url:pending-seed', pinned: false, pendingRuntimeId: runtimeId,
+        target: { kind: 'url', label: 'Pending', source: 'https://example.test', url: 'https://example.test' } },
+      destination: { kind: 'composer', windowId: 'chat', surfaceId: 'primary', target: runtimeId,
+        conversation: { kind: 'session', id: runtimeId, ...route } }
+    }, route)
+
+    runtime.attach(state.id, 2)
+    const second = runtime.command(2, state.id, { kind: 'new' })!.activeTabId!
+    runtime.updateOwnership(1, { tabs: [{ id: 'url:pending-seed', pinned: true, pendingRuntimeId: runtimeId }] })
+    const before = runtime.snapshots(1)[0]!
+    expect(before.tabs.every(tab => tab.sessionId === undefined && tab.pendingRuntimeId === runtimeId)).toBe(true)
+    const captured = { windowId: state.id, tabId: second, selectionVersion: before.selectionVersion, owner: before.owner }
+    const retired: string[] = []
+    const previousDesktop = window.hermesDesktop
+    Object.assign(window, { hermesDesktop: { browserWorkspace: { retireSession: (id: string) => {
+      retired.push(id)
+      runtime.retireSession(1, id)
+    } } } })
+    let actions: HarnessHandle | null = null
+    setSessions([storedSession({ id: storedId, connection_id: route.connectionId, profile: route.profile })])
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+    vi.mocked(requestGatewayForAgent).mockResolvedValue({} as never)
+
+    try {
+      render(<Harness
+        activeSessionId="unrelated-runtime"
+        onReady={value => {actions = value}}
+        requestGateway={vi.fn().mockResolvedValue({})}
+        runtimeIdByStoredSessionIdRef={{ current: new Map([[storedId, runtimeId]]) }}
+        selectedStoredSessionId="unrelated-stored"
+      />)
+      await act(async () => {await actions!.removeSession(storedId)})
+      expect(deleteSession).toHaveBeenCalledWith(storedId, route)
+      const closed = runtime.snapshots(1)[0]!
+      expect(closed.closed).toBe(true)
+      expect(retired).toEqual([storedId, runtimeId])
+      expect(closed.removed).toContain(second)
+      expect(closed.docked).toHaveLength(1)
+      expect(closed.docked[0]).toMatchObject({ id: 'url:pending-seed', pinned: true })
+      expect(closed.docked[0]!.sessionId).toBeUndefined()
+      expect(closed.docked[0]!.pendingRuntimeId).toBeUndefined()
+      expect(closed.owner.destination).toBeNull()
+      expect(closed.owner.conversation).toBeUndefined()
+      const deadline = Date.now() + 20_000
+      expect(runtime.relay(1, { id: `after-delete-${deadline}`, kind: 'act', target: captured,
+        requester: before.owner.conversation, payload: { kind: 'click' }, deadline })).toBeNull()
+    } finally {window.hermesDesktop = previousDesktop}
+  })
+
   afterEach(() => {
     cleanup()
     setSessions([])

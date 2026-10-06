@@ -1,6 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
+import { translateNow } from '@/i18n'
 import {
   capturePreviewAnnotateDestination,
   clearPreviewAnnotateDestination,
@@ -9,8 +10,12 @@ import {
 import { readJson, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
+import type { BrowserWorkspace } from '../../electron/browser-workspace-types'
+
+import { isBrowserSessionRetired } from './browser-conversation'
 import { recordFeatureUse } from './desktop-metrics'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
+import { notifyError } from './notifications'
 import { clearExplicitPreviewOpen, noteExplicitPreviewOpen, PREVIEW_TILE_PREFIX } from './preview-explicit'
 import {
   $pendingRuntimeByTab,
@@ -26,7 +31,7 @@ import {
 import { normalizeProfileKey } from './profile'
 import { $activeSessionId } from './session'
 import { $focusedSessionIsTile, $focusedStoredSessionId } from './session-focus'
-import { canOpenBrowserWindow, isBrowserWindow, openBrowserInNewWindow, windowBrowserTabId } from './windows'
+import { canOpenBrowserWindow, isBrowserWindow, openBrowserInNewWindow, windowBrowserTabId, windowBrowserWorkspaceId } from './windows'
 
 /**
  * PREVIEW RAIL — one list of tabs, one way in.
@@ -238,7 +243,7 @@ function persistTabs() {
     TABS_STORAGE_KEY,
     Object.keys(buckets).length === 0
       ? null
-      : JSON.stringify(buckets, (key, value) => (key === 'dataUrl' ? undefined : value))
+      : JSON.stringify(buckets, (key, value) => (key === 'dataUrl' || key === 'pendingRuntimeId' ? undefined : value))
   )
 }
 
@@ -268,7 +273,7 @@ export const $previewTabs = atom<PreviewTab[]>([])
 let adoptingStoredTabs = true
 
 $previewTabs.subscribe(tabs => {
-  if (adoptingStoredTabs) {
+  if (adoptingStoredTabs || windowBrowserWorkspaceId()) {
     return
   }
 
@@ -276,7 +281,21 @@ $previewTabs.subscribe(tabs => {
   tabsByProfile[viewKey] = [...tabs]
   persistTabs()
   forgetGonePendingTabs()
+  publishBrowserOwnership()
 })
+
+function publishBrowserOwnership(rotation?: { previousId: string; nextId: string }) {
+  if (windowBrowserWorkspaceId()) {return}
+  window.hermesDesktop?.browserWorkspace?.updateOwnership?.({
+    tabs: Object.values(tabsByProfile).flat().map(tab => ({
+      id: tab.id,
+      sessionId: tab.sessionId,
+      pinned: Boolean(tab.pinned),
+      pendingRuntimeId: $pendingRuntimeByTab.get().get(tab.id)
+    })),
+    rotation
+  })
+}
 
 // Seed the view with this renderer's own bucket. Without it the primary
 // profile's rail never restores: `viewKey` already IS 'default', so
@@ -290,6 +309,10 @@ adoptingStoredTabs = false
  *  `session-states.ts` whenever the focused session (or its resolved owner)
  *  changes; the previous agent's tabs must not leak into the next one. */
 export function setPreviewScope(scope: string) {
+  if (windowBrowserWorkspaceId()) {
+    return
+  }
+
   const next = normalizeProfileKey(scope) || 'default'
 
   if (next === viewKey) {
@@ -377,14 +400,18 @@ if (typeof window !== 'undefined') {
  *  profile's pin. A popped-out Browser renderer answers only for the one tab
  *  it shows (the chat window decided the requester may see it —
  *  `previewTabIdsVisibleTo`). */
-export function previewTabsFor(owner: PreviewOwner = $focusedStoredSessionId.get()): PreviewTab[] {
-  if (isBrowserWindow()) {
+export function previewTabsFor(owner?: PreviewOwner): PreviewTab[] {
+  // The standalone shell has no focused chat. Unscoped *UI* navigation uses
+  // only its main-admitted membership; agent callers always pass an owner.
+  if (windowBrowserWorkspaceId() && owner === undefined) {return $previewTabs.get()}
+
+  if (isBrowserWindow() && !windowBrowserWorkspaceId()) {
     const own = windowBrowserTabId()
 
     return $previewTabs.get().filter(tab => tab.id === own)
   }
 
-  return bucketTabsFor($previewTabs.get(), ownerIdentity(owner), viewKey, viewKey)
+  return bucketTabsFor($previewTabs.get(), ownerIdentity(owner === undefined ? $focusedStoredSessionId.get() : owner), viewKey, viewKey)
 }
 
 /** Ids of the tabs `owner` may see in ANY profile's rail, for scoping a
@@ -478,6 +505,8 @@ export function rekeyPreviewTabsSession(previousId: string, nextId: string): voi
     $previewTabs.set(view)
   }
 
+  publishBrowserOwnership({ previousId: from, nextId: to })
+
   const remembered = activeTabBySession.get(from)
 
   if (remembered) {
@@ -525,6 +554,9 @@ export function adoptDraftPreviewTabs(storedSessionId: string): void {
 
   if (tabs.some(draftOwned)) {
     $previewTabs.set(tabs.map(tab => (draftOwned(tab) ? { ...tab, sessionId: storedSessionId } : tab)))
+    const runtimeId = $activeSessionId.get()
+
+    if (runtimeId) {publishBrowserOwnership({ previousId: runtimeId, nextId: storedSessionId })}
   }
 }
 
@@ -585,6 +617,7 @@ export function adoptPendingRuntimeTabs(runtimeId: string, storedSessionId: stri
   }
 
   $pendingRuntimeByTab.set(new Map([...$pendingRuntimeByTab.get()].filter(([id]) => !ids.has(id))))
+  publishBrowserOwnership({ previousId: runtimeId, nextId: storedSessionId })
 }
 
 /** The tab the rail actually shows. A stale or missing selection falls back to
@@ -632,6 +665,16 @@ export function noteBrowserPage(tabId: string, page: BrowserPage) {
   }
 
   $browserPages.set({ ...$browserPages.get(), [tabId]: page })
+  const windowId = windowBrowserWorkspaceId()
+
+  if (windowId) {
+    void window.hermesDesktop?.browserWorkspace?.command(windowId, {
+      kind: 'page',
+      tabId,
+      url: page.url,
+      title: page.title
+    })
+  }
 }
 
 export function forgetBrowserPage(tabId: string) {
@@ -758,10 +801,40 @@ export function popOutBrowserTab(tabId: string) {
   const anchor =
     typeof document !== 'undefined' && document.activeElement instanceof Element ? document.activeElement : null
 
-  rememberPreviewAnnotateDestination(tabId, capturePreviewAnnotateDestination(anchor))
+  const destination = capturePreviewAnnotateDestination(anchor)
+
+  if (window.hermesDesktop?.browserWorkspace && !destination?.conversation) {
+    notifyError(new Error(translateNow('preview.popOutOwnerUnavailable')), translateNow('preview.popOutFailed'))
+
+    return
+  }
+
+  rememberPreviewAnnotateDestination(tabId, destination)
+  noteExplicitPreviewOpen(tab.id)
   markBrowserTabPopped(tabId, true)
+  selectRightRailTab(tab.id)
   commitBrowserTabLocation(tabId, page?.url || tab.target.url, page?.title)
-  void openBrowserInNewWindow(tabId).then(ok => {
+
+  const workspace = window.hermesDesktop?.browserWorkspace
+    ? {
+        tab: {
+          id: tab.id as `url:${string}`,
+          sessionId: tab.sessionId,
+          pinned: Boolean(tab.pinned),
+          pendingRuntimeId: $pendingRuntimeByTab.get().get(tab.id),
+          target: {
+            kind: 'url' as const,
+            label: page?.title || tab.target.label,
+            source: tab.target.source,
+            url: page?.url || tab.target.url
+          }
+        },
+        scope: viewKey,
+        destination
+      }
+    : undefined
+
+  void openBrowserInNewWindow(tabId, workspace).then(ok => {
     if (!ok) {
       markBrowserTabPopped(tabId, false)
     }
@@ -965,6 +1038,7 @@ export function openPreview(
   $previewTabs.set(existing ? current.map(item => (item === existing ? tab : item)) : [...current, tab])
 
   setPendingRuntime(id, tab.sessionId == null && !tab.pinned ? runtimeId : null)
+  publishBrowserOwnership()
 
   if (!$visiblePreviewTabs.get().some(item => item.id === id)) {
     rememberActiveTab(owner, id)
@@ -1030,6 +1104,162 @@ export function toggleBrowserTab() {
 }
 
 /** Another Browser, always — the strip's "+". */
+/** Apply only this workspace's membership, never another renderer's whole
+ * profile bucket. Detached guests keep their initial target URL: page reports
+ * update persistence in the owner, not the guest's mount identity. */
+export function applyBrowserWorkspace(state: BrowserWorkspace, previous?: BrowserWorkspace) {
+  if (windowBrowserWorkspaceId()) {
+    if (state.id !== windowBrowserWorkspaceId()) {
+      return
+    }
+
+    const existing = $previewTabs.get()
+    viewKey = state.owner.scope
+    $previewTabs.set(state.tabs.map(tab => {
+      const mounted = previous && existing.find(item => item.id === tab.id)
+      setPendingRuntime(tab.id, tab.pendingRuntimeId ?? null)
+
+      return mounted && mounted.sessionId === tab.sessionId && Boolean(mounted.pinned) === Boolean(tab.pinned)
+        ? mounted
+        : { ...tab, pinned: Boolean(tab.pinned), target: mounted ? mounted.target : tab.target }
+    }))
+    selectRightRailTab(state.activeTabId as RightRailTabId | null)
+
+    for (const tab of state.tabs) {
+      rememberPreviewAnnotateDestination(tab.id, state.owner.conversation?.kind === 'session' && isBrowserSessionRetired(state.owner.conversation.id) ? null : state.owner.destination)
+    }
+
+    return
+  }
+
+  if (state.profileRetirement) {
+    // Reconcile against disk, not a stale opener cache. This terminal snapshot
+    // is also safe on cold reload before the opener acknowledged the transfer.
+    const stored = loadTabsByProfile()
+
+    for (const bucket of Object.keys(tabsByProfile)) {
+      const transient = tabsByProfile[bucket]!.filter(tab => !persistableTabs([tab]).length)
+      tabsByProfile[bucket] = [...(stored[bucket] ?? []), ...transient]
+
+      if (!tabsByProfile[bucket]!.length) {delete tabsByProfile[bucket]}
+    }
+
+    for (const bucket of Object.keys(stored)) {
+      if (!(bucket in tabsByProfile)) {tabsByProfile[bucket] = stored[bucket]!}
+    }
+
+    const from = state.owner.scope
+    const to = state.profileRetirement.replacementScope
+    const moved = (tabsByProfile[from] ?? []).filter(tab => !state.removed.includes(tab.id))
+    delete tabsByProfile[from]
+
+    if (to) {
+      const kept = (tabsByProfile[to] ?? []).filter(tab => !state.removed.includes(tab.id))
+      const merged = new Map([...kept, ...moved, ...state.docked].map(tab => [tab.id, tab]))
+      tabsByProfile[to] = [...merged.values()]
+
+      if (viewKey === from) {viewKey = to}
+    }
+
+    for (const id of state.removed) {
+      markBrowserTabPopped(id, false)
+      forgetBrowserPage(id)
+      clearPreviewAnnotateDestination(id)
+    }
+
+    $previewTabs.set(tabsByProfile[viewKey] ?? [])
+
+    return
+  }
+
+  const retired = new Set([...state.removed, ...state.docked.map(tab => tab.id)])
+  const priorDocked = new Set(previous?.docked.map(tab => tab.id) ?? [])
+
+  const incoming = [...state.tabs, ...state.docked.filter(tab => !priorDocked.has(tab.id))]
+    .filter(tab => tab.pinned || !tab.sessionId || !isBrowserSessionRetired(tab.sessionId))
+    .map(tab => ({ ...tab, pinned: Boolean(tab.pinned), sessionId: tab.sessionId && !isBrowserSessionRetired(tab.sessionId) ? currentSessionId(tab.sessionId) ?? undefined : undefined }))
+
+  const key = state.owner.scope
+  // The detached renderer never writes storage. Its opener applies only this
+  // workspace's IDs over the freshest persisted buckets, so another opener's
+  // page updates cannot be overwritten by this renderer's startup snapshot.
+  const stored = loadTabsByProfile()
+  const local = key === viewKey ? $previewTabs.get() : (tabsByProfile[key] ?? [])
+
+  // Absence is a deletion, not permission to revive a cached persistent tab.
+  // Keep runtime-only tabs; replace every persistent bucket from storage.
+  for (const bucket of Object.keys(tabsByProfile)) {
+    const transient = tabsByProfile[bucket]!.filter(tab => !persistableTabs([tab]).length)
+    tabsByProfile[bucket] = [...(stored[bucket] ?? []), ...transient]
+
+    if (!tabsByProfile[bucket]!.length) {delete tabsByProfile[bucket]}
+  }
+
+  for (const bucket of Object.keys(stored)) {
+    if (!(bucket in tabsByProfile)) {tabsByProfile[bucket] = stored[bucket]!}
+  }
+
+  const current = [...(stored[key] ?? [])]
+
+  for (const tab of local) {
+    if (!persistableTabs([tab]).length && !current.some(item => item.id === tab.id)) {
+      current.push(tab)
+    }
+  }
+
+  // Page snapshots cannot roll back an opener's newer pin or session binding.
+  const replacements = new Map(incoming.map(tab => {
+    const owned = current.find(item => item.id === tab.id)
+    const next = owned ? { ...tab, pinned: Boolean(owned.pinned), sessionId: owned.sessionId } : tab
+
+    return [tab.id, next] as const
+  }))
+
+  const next = current
+    .filter(tab => !state.removed.includes(tab.id) && (tab.pinned || !tab.sessionId || !isBrowserSessionRetired(tab.sessionId)))
+    .map(tab => replacements.get(tab.id as `url:${string}`) ?? tab)
+
+  for (const tab of incoming) {
+    if (!next.some(item => item.id === tab.id)) {
+      // New detached tabs inherit pending ownership from main. Record it before
+      // publishing the bucket; existing tabs keep the opener's newer metadata.
+      setPendingRuntime(tab.id, tab.pendingRuntimeId ?? null)
+      next.push(tab)
+    }
+  }
+
+  for (const id of retired) {
+    markBrowserTabPopped(id, false)
+  }
+
+  for (const tab of state.tabs) {
+    markBrowserTabPopped(tab.id, incoming.some(item => item.id === tab.id))
+  }
+
+  for (const tab of incoming) {
+    rememberPreviewAnnotateDestination(tab.id, state.owner.conversation?.kind === 'session' && isBrowserSessionRetired(state.owner.conversation.id) ? null : state.owner.destination)
+  }
+
+  for (const id of state.removed) {
+    forgetBrowserPage(id)
+    clearPreviewAnnotateDestination(id)
+  }
+
+  tabsByProfile[key] = next
+
+  if (key === viewKey) {
+    $previewTabs.set(next)
+  } else {
+    // Reconcile the visible cache too: a subsequent local edit must not write
+    // a bucket another window just deleted back out of this stale atom.
+    $previewTabs.set(tabsByProfile[viewKey] ?? [])
+  }
+}
+
+export function previewScope(): string {
+  return viewKey
+}
+
 export function newBrowserTab() {
   const id = mintBrowserTabId()
 
@@ -1064,11 +1294,19 @@ export function setPreviewTabPinned(tabId: string, pinned: boolean): void {
 export function prunePreviewTabsForSession(sessionId: string): void {
   const doomed = currentSessionId(sessionId)
   const keep = (tab: PreviewTab) => tab.pinned || currentSessionId(tab.sessionId) !== doomed
+
+  const detachOwner = (tab: PreviewTab): PreviewTab => {
+    if (currentSessionId(tab.sessionId) !== doomed) {return tab}
+    clearPreviewAnnotateDestination(tab.id)
+
+    return { ...tab, sessionId: undefined }
+  }
+
   let backgroundChanged = false
 
   for (const [key, tabs] of Object.entries(tabsByProfile)) {
-    if (key !== viewKey && !tabs.every(keep)) {
-      tabsByProfile[key] = tabs.filter(keep)
+    if (key !== viewKey && tabs.some(tab => currentSessionId(tab.sessionId) === doomed)) {
+      tabsByProfile[key] = tabs.filter(keep).map(detachOwner)
       backgroundChanged = true
     }
   }
@@ -1078,7 +1316,7 @@ export function prunePreviewTabsForSession(sessionId: string): void {
     forgetGonePendingTabs()
   }
 
-  $previewTabs.set($previewTabs.get().filter(keep))
+  $previewTabs.set($previewTabs.get().filter(keep).map(detachOwner))
 }
 
 export function closeRightRailTab(tabId: string) {

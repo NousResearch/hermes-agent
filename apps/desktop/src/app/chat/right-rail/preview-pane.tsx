@@ -31,6 +31,7 @@ import { admitPreviewExternalUrl, PREVIEW_EXTERNAL_CHANNEL } from '@/lib/preview
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
+import { commandBrowserWorkspace } from '@/store/browser-workspaces'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $browserPages,
@@ -44,6 +45,7 @@ import {
   setPreviewRenderMode
 } from '@/store/preview'
 import { $selectedStoredSessionId } from '@/store/session'
+import { windowBrowserWorkspaceId } from '@/store/windows'
 import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
 
 import { placeAnnotateCard, PreviewAnnotateCard } from './preview-annotate-card'
@@ -71,7 +73,8 @@ import { type ConsoleEntry } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
 import { LocalFilePreview, PreviewEmptyState, PreviewModeSwitcher } from './preview-file'
 import { usePreviewGuestOffscreen } from './preview-guest-offscreen'
-import { type PreviewInputEvent, registerPreviewInput, toWebviewInputSpace } from './preview-input'
+import { type PreviewInputEvent, registerPreviewInput } from './preview-input'
+import { capturePreviewGuest, type PreviewGuest } from './preview-input-guest'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
 import { registerPreviewScriptRunner } from './preview-script-runner'
@@ -140,6 +143,8 @@ interface PreviewPaneProps {
   /** Closes this preview's tab. Offered by body states that are a dead end
    *  (a file that no longer exists) so the way out is not only the strip. */
   onClose?: () => void
+  /** Trusted input inside the live guest; its owning surface decides selection. */
+  onGuestInteraction?: () => void
   onRestartServer?: (url: string, context?: string) => Promise<string>
   reloadRequest?: number
   /** The preview tab this pane renders. Keys the per-tab console store the
@@ -156,6 +161,8 @@ interface PreviewLoadErrorState {
 
 const FILE_RELOAD_DEBOUNCE_MS = 200
 const SERVER_RESTART_TIMEOUT_MS = 45_000
+// Mirrored by GUEST_INTERACTION_CHANNEL in electron/preview-guest-preload.ts.
+const PREVIEW_GUEST_INTERACTION_CHANNEL = 'preview-guest-interaction'
 
 function loadErrorTitle(error: PreviewLoadErrorState, copy: Translations['preview']['web']): string {
   const description = error.description.toLowerCase()
@@ -259,6 +266,7 @@ function PreviewLoadError({
 export function PreviewPane({
   embedded = false,
   onClose,
+  onGuestInteraction,
   onRestartServer,
   reloadRequest = 0,
   tabId,
@@ -276,6 +284,9 @@ export function PreviewPane({
   const lastRestartEventRef = useRef('')
   const previewContentRef = useRef<HTMLDivElement | null>(null)
   const webviewRef = useRef<PreviewWebview | null>(null)
+  // A changed selection callback must not recreate the stateful guest.
+  const guestInteractionRef = useRef(onGuestInteraction)
+  guestInteractionRef.current = onGuestInteraction
   const noteGuestReady = usePreviewGuestOffscreen(webviewRef, tabId)
   const previewServerRestart = useStore($previewServerRestart)
   const consoleHeight = useStore(consoleState.$height)
@@ -886,31 +897,19 @@ export function PreviewPane({
       return
     }
 
-    return registerPreviewInput(tabId, {
-      focus: () => {
+    return registerPreviewInput(tabId, () => capturePreviewGuest(
+      () => {
         const webview = webviewRef.current
 
-        // Trusted input still reaches the guest while hidden. Focusing the
-        // webview element would steal the host's composer focus even when inert.
-        if (webview && !isElementInHiddenPane(webview)) {
-          webview.focus?.()
+        if (!webview?.sendInputEvent || !webview.executeJavaScript || !webview.getWebContentsId) {
+          return null
         }
+
+        return webview as PreviewWebview & PreviewGuest
       },
-      send: event => {
-        const webview = webviewRef.current
-
-        // Never optional-chain this call away: a missing method would make every
-        // agent click a silent no-op that still reports success, because the
-        // overlay and the read-back both run on the separate script channel.
-        if (typeof webview?.sendInputEvent !== 'function') {
-          throw new Error('preview webview cannot take input events')
-        }
-
-        // The guest keeps its own (per-host) zoom, which the act engine's CSS
-        // measurements do not include — ask the webview, not the window.
-        webview.sendInputEvent(toWebviewInputSpace(event, webview.getZoomFactor?.()))
-      }
-    })
+      // Hidden guests must not steal the host composer's focus.
+      guest => !isElementInHiddenPane(guest)
+    ))
   }, [isRemoteHtml, isWebPreview, tabId])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
@@ -1139,6 +1138,19 @@ export function PreviewPane({
     webview.setAttribute('src', initialUrl)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
 
+    const onGuestInteractionMessage = (event: Event) => {
+      const detail = event as Event & { args?: unknown[]; channel?: string }
+
+      if (
+        detail.channel === PREVIEW_GUEST_INTERACTION_CHANNEL &&
+        Array.isArray(detail.args) && detail.args.length === 0 &&
+        webviewRef.current === webview && webview.isConnected &&
+        !isElementInHiddenPane(webview)
+      ) {
+        guestInteractionRef.current?.()
+      }
+    }
+
     // The guest preload (main.ts installs it on this partition) forwards a
     // clicked `_blank` anchor here. Admission is our side of the contract —
     // http/https only, so a guest page can never reach the local-file
@@ -1348,6 +1360,7 @@ export function PreviewPane({
 
     webview.addEventListener('console-message', onConsole)
     webview.addEventListener('ipc-message', onGuestExternal)
+    webview.addEventListener('ipc-message', onGuestInteractionMessage)
     webview.addEventListener('context-menu', onGuestContextMenu)
     webview.addEventListener('devtools-closed', onDevToolsClosed)
     webview.addEventListener('devtools-opened', onDevToolsOpened)
@@ -1369,6 +1382,7 @@ export function PreviewPane({
       annotateLoopRef.current += 1
       webview.removeEventListener('console-message', onConsole)
       webview.removeEventListener('ipc-message', onGuestExternal)
+      webview.removeEventListener('ipc-message', onGuestInteractionMessage)
       webview.removeEventListener('context-menu', onGuestContextMenu)
       webview.removeEventListener('devtools-closed', onDevToolsClosed)
       webview.removeEventListener('devtools-opened', onDevToolsOpened)
@@ -1506,7 +1520,17 @@ export function PreviewPane({
                 ? () => void window.hermesDesktop?.openExternal(currentUrl)
                 : undefined
             }
-            onPopIn={isBrowserWindow() ? () => window.close() : undefined}
+            onPopIn={
+              isBrowserWindow()
+                ? () => {
+                    if (windowBrowserWorkspaceId() && tabId) {
+                      void commandBrowserWorkspace({ kind: 'dock', tabId })
+                    } else {
+                      window.close()
+                    }
+                  }
+                : undefined
+            }
             onPopOut={
               target.kind !== 'url' || isBrowserWindow() || !tabId || !canOpenBrowserWindow()
                 ? undefined

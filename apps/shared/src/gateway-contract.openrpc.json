@@ -22765,6 +22765,36 @@
             ],
             "default": null,
             "title": "Allow Shortcut"
+          },
+          "dx": {
+            "anyOf": [
+              {
+                "maximum": 2000,
+                "minimum": -2000,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Native drag horizontal CSS-pixel delta.",
+            "title": "Dx"
+          },
+          "dy": {
+            "anyOf": [
+              {
+                "maximum": 2000,
+                "minimum": -2000,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Native drag vertical CSS-pixel delta.",
+            "title": "Dy"
           }
         },
         "required": [

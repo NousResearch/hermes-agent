@@ -111,6 +111,7 @@ import {
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
 import { bootstrapSnapshot } from './bootstrap-state'
+import { BROWSER_TAB_ACTIONS, browserTabShortcut } from './browser-tab-shortcuts'
 import {
   BROWSER_WINDOW_HEIGHT,
   BROWSER_WINDOW_MIN_HEIGHT,
@@ -118,6 +119,7 @@ import {
   BROWSER_WINDOW_WIDTH,
   buildBrowserWindowUrl
 } from './browser-windows'
+import { browserWorkspaceRoute, BrowserWorkspaces } from './browser-workspaces'
 import { createBundleSkewChecker } from './bundle-skew'
 import { detectBundleSwap, readBundleSwapStamp } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
@@ -6557,6 +6559,14 @@ function sendBackendExit(payload) {
 }
 
 function sendClosePreviewRequested() {
+  const focused = BrowserWindow.getFocusedWindow()
+
+  if (focused && browserWorkspaces.isRenderer(focused.webContents.id)) {
+    focused.webContents.send('hermes:browser-workspace:shortcut', 'view.closeTab')
+
+    return
+  }
+
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
@@ -6586,7 +6596,9 @@ function sendPreviewNavCommand(command: 'back' | 'forward' | 'reload') {
     return
   }
 
-  const { webContents } = mainWindow
+  const focused = BrowserWindow.getFocusedWindow()
+  const host = focused && browserWorkspaces.isRenderer(focused.webContents.id) ? focused : mainWindow
+  const { webContents } = host
 
   if (!webContents || webContents.isDestroyed()) {
     return
@@ -6982,6 +6994,17 @@ function installPreviewShortcut(window) {
   })
 
   window.webContents.on('before-input-event', (event, input) => {
+    if (browserWorkspaces.isRenderer(window.webContents.id)) {
+      // Detached close/new/cycle belongs to this renderer, never mainWindow.
+      // An unbound close chord must not fall through to the legacy main hook.
+      if (
+        forwardBrowserTabShortcut(window.webContents, event, input) ||
+        windowAcceleratorAction(input, IS_MAC) === 'close-tab'
+      ) {
+        return
+      }
+    }
+
     const action = windowAcceleratorAction(input, IS_MAC, Date.now() - focusedAt)
 
     // A ⌘W/⌘R that auto-repeats or lands right as focus arrives belongs to
@@ -13701,6 +13724,10 @@ function installPreviewGuestEscapeHatch() {
     }
 
     contents.on('before-input-event', (event, input) => {
+      if (forwardBrowserTabShortcut(contents, event, input)) {
+        return
+      }
+
       const owner = BrowserWindow.fromWebContents(contents.hostWebContents ?? contents)
 
       switch (previewGuestInputAction(input, Boolean(owner?.isFullScreen()))) {
@@ -13715,6 +13742,10 @@ function installPreviewGuestEscapeHatch() {
         }
 
         case 'close-preview': {
+          if (owner && browserWorkspaces.isRenderer(owner.webContents.id)) {
+            break
+          }
+
           event.preventDefault()
           sendClosePreviewRequested()
 
@@ -13907,6 +13938,42 @@ function createSessionWindow(sessionId, { connectionId = null, profile = null, w
 // tab, in its own OS window. One window per tab id (re-open focuses); closing
 // it tells the other renderers so they can dock the tab again.
 const browserWindows = createSessionWindowRegistry()
+const browserShortcuts = new Map<number, Record<string, string[]>>()
+
+const browserWorkspaces = new BrowserWorkspaces((recipients, state) => {
+  for (const id of recipients) {
+    const contents = electronWebContents.fromId(id)
+
+    if (contents && !contents.isDestroyed()) {
+      contents.send('hermes:browser-workspace:changed', state)
+    }
+  }
+})
+
+function trustedBrowserHost(event) {
+  return (
+    event.sender.getType() === 'window' &&
+    event.senderFrame === event.sender.mainFrame &&
+    Boolean(BrowserWindow.fromWebContents(event.sender))
+  )
+}
+
+function forwardBrowserTabShortcut(contents, event, input) {
+  const host = contents.hostWebContents ?? contents
+
+  if (!browserWorkspaces.isRenderer(host.id)) {
+    return false
+  }
+
+  const action = browserTabShortcut(input, browserShortcuts.get(host.id) ?? {}, IS_MAC)
+
+  if (action) {
+    event.preventDefault()
+    host.send('hermes:browser-workspace:shortcut', action)
+  }
+
+  return Boolean(action)
+}
 
 function notifyBrowserPopoutClosed(tabId) {
   if (typeof tabId !== 'string' || !tabId) {
@@ -13920,7 +13987,7 @@ function notifyBrowserPopoutClosed(tabId) {
   }
 }
 
-function spawnBrowserWindow(tabId) {
+function spawnBrowserWindow(tabId, workspaceId?: string) {
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
@@ -13967,8 +14034,21 @@ function spawnBrowserWindow(tabId) {
   })
 
   minimizeToTray.registerWindow(win)
+
+  if (workspaceId) {
+    browserWorkspaces.attach(workspaceId, win.webContents.id)
+    recordWindowConnectionRoute(win.webContents, browserWorkspaces.ownerForRenderer(win.webContents.id))
+    win.on('closed', () => browserWorkspaces.close(workspaceId))
+    win.webContents.on('did-fail-load', (_event, code, _description, _url, isMainFrame) => {
+      if (isMainFrame && code !== -3 && !win.isDestroyed()) {
+        win.close()
+      }
+    })
+  } else {
+    win.on('closed', () => notifyBrowserPopoutClosed(tabId))
+  }
+
   win.on('closed', () => {
-    notifyBrowserPopoutClosed(tabId)
     // Deferred: browserWindows' own self-delete 'closed' listener is attached
     // after this factory returns, so the size is only accurate next tick.
     setImmediate(quitIfNoSurfaceLeft)
@@ -13977,6 +14057,7 @@ function spawnBrowserWindow(tabId) {
   loadWindowUrl(
     win,
     buildBrowserWindowUrl(tabId, {
+      windowId: workspaceId,
       devServer: DEV_SERVER,
       rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
     }),
@@ -15660,7 +15741,7 @@ const windowConnectionRouteOwners = new Set<number>()
 function recordWindowConnectionRoute(sender: Electron.WebContents, route: unknown) {
   const id = sender.id
   const previous = windowConnectionRoutes.get(id)
-  const next = windowConnectionRoutes.set(id, route)
+  const next = windowConnectionRoutes.set(id, browserWorkspaces.ownerForRenderer(id) ?? route)
 
   if (
     previous?.connectionId !== next?.connectionId ||
@@ -15668,13 +15749,21 @@ function recordWindowConnectionRoute(sender: Electron.WebContents, route: unknow
     previous?.registryScoped !== next?.registryScoped
   ) {
     void resetPreviewReach(id)
+
+    // Detached workspaces carry their own conversation route. A foreground
+    // socket swap must not retire a still-live A workspace during A → B → A.
   }
 
   if (!windowConnectionRouteOwners.has(id)) {
     windowConnectionRouteOwners.add(id)
     sender.once('destroyed', () => {
+      for (const windowId of browserWorkspaces.closeOwned(id)) {
+        browserWindows.get(windowId)?.close()
+      }
+
       windowConnectionRoutes.delete(id)
       windowConnectionRouteOwners.delete(id)
+      browserWorkspaces.forgetHost(id)
       void resetPreviewReach(id)
     })
   }
@@ -15827,14 +15916,103 @@ ipcMain.handle('hermes:window:openInstance', async (event, options) => {
   return { ok: true }
 })
 registerWindowControlIpc(ipcMain, sender => BrowserWindow.fromWebContents(sender))
-ipcMain.handle('hermes:window:openBrowser', async (_event, tabId) => {
-  if (typeof tabId !== 'string' || !tabId.trim()) {
-    return { ok: false, error: 'invalid-tab-id' }
+ipcMain.handle('hermes:window:openBrowser', async (event, tabId, request) => {
+  if (
+    !trustedBrowserHost(event) ||
+    browserWorkspaces.isRenderer(event.sender.id) ||
+    typeof tabId !== 'string' ||
+    !tabId.trim()
+  ) {
+    return { ok: false, error: 'invalid-browser-owner' }
   }
 
-  createBrowserWindow(tabId.trim())
+  // Old callers still open their one-tab shell. New callers transfer the tab
+  // explicitly: a cold renderer never has to guess a localStorage owner.
+  if (request === undefined) {
+    createBrowserWindow(tabId.trim())
 
-  return { ok: true }
+    return { ok: true }
+  }
+
+  let workspaceId: string | undefined
+
+  try {
+    const route = browserWorkspaceRoute(request, readDesktopConnectionsRegistry())
+
+    if (!route || request.tab?.id !== tabId) {
+      throw new Error('Browser owner route is unavailable')
+    }
+
+    const state = browserWorkspaces.open(event.sender.id, request, route)
+    workspaceId = state.id
+    browserWindows.openOrFocus(state.id, () => spawnBrowserWindow(tabId, state.id))
+
+    return { ok: true }
+  } catch (error) {
+    if (workspaceId) {
+      browserWorkspaces.close(workspaceId)
+    }
+
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('hermes:browser-workspace:snapshots', event =>
+  trustedBrowserHost(event) ? browserWorkspaces.snapshots(event.sender.id) : []
+)
+ipcMain.on('hermes:browser-workspace:acknowledge', (event, id, revision) => {
+  if (trustedBrowserHost(event)) {browserWorkspaces.acknowledge(event.sender.id, id, revision)}
+})
+ipcMain.on('hermes:browser-workspace:ownership', (event, update) => {
+  if (trustedBrowserHost(event)) {browserWorkspaces.updateOwnership(event.sender.id, update)}
+})
+ipcMain.on('hermes:browser-workspace:retire-session', (event, sessionId) => {
+  if (!trustedBrowserHost(event) || typeof sessionId !== 'string') {return}
+
+  for (const id of browserWorkspaces.retireSession(event.sender.id, sessionId)) {browserWindows.get(id)?.close()}
+})
+ipcMain.handle('hermes:browser-workspace:retire-profile', (event, change) => {
+  if (!trustedBrowserHost(event) || browserWorkspaces.isRenderer(event.sender.id)) {
+    throw new Error('Invalid browser profile owner')
+  }
+
+  const states = browserWorkspaces.retireProfile(change)
+
+  for (const state of states) {browserWindows.get(state.id)?.close()}
+
+  return states
+})
+ipcMain.handle('hermes:browser-workspace:command', (event, id, command) => {
+  if (!trustedBrowserHost(event)) {
+    return null
+  }
+
+  const state = browserWorkspaces.command(event.sender.id, id, command)
+
+  if (state && state.tabs.length === 0) {
+    browserWindows.get(state.id)?.close()
+  }
+
+  return state
+})
+ipcMain.on('hermes:browser-workspace:shortcuts', (event, bindings) => {
+  if (!trustedBrowserHost(event) || !browserWorkspaces.isRenderer(event.sender.id)) {
+    return
+  }
+
+  const safe: Record<string, string[]> = {}
+
+  for (const action of BROWSER_TAB_ACTIONS) {
+    safe[action] = Array.isArray(bindings?.[action])
+      ? bindings[action].filter(combo => typeof combo === 'string' && combo.length < 80).slice(0, 10)
+      : []
+  }
+
+  if (!browserShortcuts.has(event.sender.id)) {
+    event.sender.once('destroyed', () => browserShortcuts.delete(event.sender.id))
+  }
+
+  browserShortcuts.set(event.sender.id, safe)
 })
 
 // Cross-window renderer relay. The Browser pop-out, the primary window, and
@@ -15844,6 +16022,28 @@ ipcMain.handle('hermes:window:openBrowser', async (_event, tabId) => {
 // renderer-side, so every feature riding this relay still fails closed instead
 // of falling through to whatever window happens to be active later.
 ipcMain.on('hermes:window:relay', (event, payload) => {
+  if (!trustedBrowserHost(event)) {
+    return
+  }
+
+  if (payload?.target || payload?.kind === 'act' || payload?.kind === 'read' || payload?.kind === 'cancel') {
+    const recipient = browserWorkspaces.relay(event.sender.id, payload)
+
+    if (recipient !== null) {
+      electronWebContents.fromId(recipient)?.send('hermes:window:relay', payload)
+    }
+
+    return
+  }
+
+  const commentRecipient = browserWorkspaces.relayComment(event.sender.id, payload)
+
+  if (commentRecipient !== undefined) {
+    if (commentRecipient !== null) {electronWebContents.fromId(commentRecipient)?.send('hermes:window:relay', payload)}
+
+    return
+  }
+
   for (const other of BrowserWindow.getAllWindows()) {
     if (!other.isDestroyed() && other.webContents.id !== event.sender.id) {
       other.webContents.send('hermes:window:relay', payload)

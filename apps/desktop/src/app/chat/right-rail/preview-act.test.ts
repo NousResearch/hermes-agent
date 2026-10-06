@@ -251,6 +251,39 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     expect(result.error).toMatch(/timed out/i)
   })
 
+  it('pins a detached typing action and stops queued input when its tab lifetime changes', async () => {
+    let valid = true
+
+    const send = withTypedPane({ focused: true, tag: 'TEXTAREA' }, event => {
+      if (event.type === 'char') {
+        valid = false
+      }
+    })
+
+    const tabId = $rightRailActiveTabId.get()!
+    // The registry is pinned by ID; invalidation never resolves a replacement
+    // active tab, even partway through the paced native input sequence.
+    await expect(
+      actOnActivePreview({ kind: 'type', ref: '@e1', text: 'abcdefghij' }, undefined, undefined, {
+        tabId,
+        valid: () => valid
+      })
+    ).resolves.toMatchObject({ success: false, error: expect.stringMatching(/no longer selected/) })
+    expect(send.mock.calls.map(([event]) => event).filter(event => event.type === 'char')).toHaveLength(1)
+  })
+
+  it('does not substitute the active tab when an explicit detached target is missing', async () => {
+    const runner = vi.fn(async () => JSON.stringify({ success: true }))
+    withRunner(runner)
+    expect(
+      await actOnActivePreview({ kind: 'click', ref: '@e1' }, undefined, undefined, {
+        tabId: 'url:missing',
+        valid: () => true
+      })
+    ).toMatchObject({ success: false })
+    expect(runner).not.toHaveBeenCalled()
+  })
+
   it('stops keystrokes still queued when the type is interrupted', async () => {
     const controller = new AbortController()
 

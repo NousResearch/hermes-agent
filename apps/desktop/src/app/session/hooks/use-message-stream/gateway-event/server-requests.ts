@@ -16,10 +16,14 @@ import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actio
 import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
+import { previewDragError } from '@/lib/preview-act/drag-validation'
 import type { TourAction, TourStep } from '@/lib/tour'
+import { browserRequestConversation, browserRequestSourceMismatch, isBrowserSessionRetired } from '@/store/browser-conversation'
+import { selectedDetachedBrowser, selectedPopoutTarget } from '@/store/browser-workspaces'
 import { normalizeQuestions, setClarifyRequest } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import { previewTabIdsVisibleTo } from '@/store/preview'
 import type { PreviewOwner } from '@/store/preview-ownership'
 import {
   receiveApprovalRequest,
@@ -505,19 +509,26 @@ const terminalRead: Handler = ({ request }) => {
   answerValue(request, readActiveTerminal({ count: num(request.params.count), start: num(request.params.start) }))
 }
 
-const previewRead: Handler = ({ request, sessionId }) => {
+const previewRead: Handler = ({ request, sessionId, isActiveSession, deps }) => {
   // read_preview tool: the active preview tab's page text is async. Empty = nothing open.
   // The window that passes the session gate may be the chat window while the
   // live webview lives in the popped-out Browser renderer — forward there
   // first; a null (no pop-out answered) falls back to the legacy local read.
   // A local read sees only the tabs the requesting session can see.
   const opts = { count: num(request.params.count), start: num(request.params.start) }
+  const requester = browserRequestConversation(request, sessionId)
   const owner = previewOwnerFor(sessionId)
 
   void (async () => {
-    const result = hasLivePreviewSurface(owner)
-      ? await readActivePreview(opts, owner)
-      : ((await requestPopoutPreviewRead(opts, owner)) ?? (await readActivePreview(opts, owner)))
+    const result = deps.sessionInterrupted(sessionId) || isBrowserSessionRetired(sessionId) || browserRequestSourceMismatch(request, sessionId)
+      ? null
+      : selectedPopoutTarget(requester, previewTabIdsVisibleTo(owner ?? null))
+        ? await requestPopoutPreviewRead(opts, requester, owner)
+        : selectedDetachedBrowser() && isActiveSession
+          ? null
+          : hasLivePreviewSurface(owner)
+            ? await readActivePreview(opts, owner)
+            : ((await requestPopoutPreviewRead(opts, requester, owner)) ?? (await readActivePreview(opts, owner)))
 
     answerValue(request, result)
   })()
@@ -531,11 +542,20 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
   // before this runs, so a refusal here reaches the tool instead of stalling it.
   const p = request.params
 
-  if (!isActiveSession) {
+  if (!isActiveSession || deps.sessionInterrupted(sessionId) || isBrowserSessionRetired(sessionId) || browserRequestSourceMismatch(request, sessionId)) {
     answerValue(request, {
       error: 'The in-app browser only takes actions in the session the user is looking at.',
       success: false
     })
+
+    return
+  }
+
+  const validationError = previewDragError(
+    Object.fromEntries(Object.entries(p).filter(([key]) => key !== 'session_id')), 'action')
+
+  if (validationError) {
+    answerValue(request, { error: validationError, success: false })
 
     return
   }
@@ -557,34 +577,31 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
       }, 50)
     : undefined
 
-  const action = {
-    allowShortcut: p.allow_shortcut === true,
-    amount: p.amount as never,
-    key: p.key as never,
-    kind: (str(p.action) || '') as never,
-    max: p.max as never,
-    ref: p.ref as never,
-    selector: p.selector as never,
-    submit: p.submit as never,
-    text: p.text as never,
-    to: p.to as PreviewActAction['to']
-  }
+  // Keep presence and raw types until validation: null is not omission, and
+  // a drag with incompatible/unknown fields must not become valid by mapping.
+  const action = Object.fromEntries(Object.entries(p)
+    .filter(([key]) => key !== 'session_id')
+    .map(([key, value]) => [key === 'action' ? 'kind' : key === 'allow_shortcut' ? 'allowShortcut' : key, value])) as
+      Omit<PreviewActAction, 'kind'> & { kind: string }
 
   void (async () => {
     try {
-      // After pop-out the live webview lives in the Browser window; this
-      // window still owns the session gate, so forward the action there and
-      // answer with the pop-out's result. No pop-out answering (null) falls
-      // through to the local engine, which keeps the legacy NOTHING_OPEN
-      // error for a genuinely closed pane.
-      if (!hasLivePreviewSurface(owner)) {
-        const remote = await requestPopoutPreviewAct(action, owner)
+      // Prefer the captured selected detached tab. An uncertain remote write
+      // must never fall through to a newly available local surface.
+      const requester = browserRequestConversation(request, sessionId)
 
-        if (remote) {
-          answerValue(request, remote)
+      if (selectedPopoutTarget(requester, previewTabIdsVisibleTo(owner ?? null)) || !hasLivePreviewSurface(owner)) {
+        const remote = await requestPopoutPreviewAct(action, requester, signal, owner)
 
-          return
-        }
+        answerValue(request, remote ?? { error: 'No live preview answered. The action was not replayed locally.', success: false })
+
+        return
+      }
+
+      if (selectedDetachedBrowser()) {
+        answerValue(request, { success: false, error: 'The selected browser belongs to another conversation.' })
+
+        return
       }
 
       const run = await loadPreviewEngine()

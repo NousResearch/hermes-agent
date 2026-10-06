@@ -2,7 +2,9 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { resumeAccountConnect } from '@/app/capabilities/connectors/data/deep-link'
+import { runBrowserTabAction } from '@/app/chat/browser-tab-actions'
 import { closeActiveTab } from '@/app/chat/close-tab'
+import { activePreviewNav } from '@/app/chat/right-rail/preview-nav'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
 import { commandFocusedTerminal, wordEraseFocusedTerminal } from '@/app/right-sidebar/terminal/terminal-context-menu'
@@ -42,6 +44,7 @@ import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/st
 import { onSessionsChanged } from '@/store/session-sync'
 import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
+import { windowBrowserWorkspaceId } from '@/store/windows'
 import { isBrowserWindow, isHudWindow, isPeerInstanceWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -511,6 +514,10 @@ export function useDesktopIntegrations({
   // path is the `view.closeTab` keybind (use-keybinds), sharing closeActiveTab.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onClosePreviewRequested?.(() => {
+      if (runBrowserTabAction('view.closeTab')) {
+        return
+      }
+
       // A focused user terminal owns the chord as the shell's word erase: main
       // claimed the keystroke (before-input-event), so re-deliver the ^W byte
       // to the PTY instead of closing the pane and killing the shell (#65457).
@@ -531,6 +538,12 @@ export function useDesktopIntegrations({
   // app-level meaning to fall back to; an unfocused swipe is a no-op.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onPreviewNav?.(command => {
+      if (windowBrowserWorkspaceId()) {
+        activePreviewNav()?.[command]()
+
+        return
+      }
+
       if (commandFocusedTerminal(command)) {
         return
       }

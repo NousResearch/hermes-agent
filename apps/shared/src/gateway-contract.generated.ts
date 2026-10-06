@@ -4447,6 +4447,8 @@ export interface PreviewActRequestParams {
   amount?: number | null
   max?: number | null
   allow_shortcut?: boolean | null
+  dx?: number | null
+  dy?: number | null
 }
 /** ``tools/tour_tool.py`` field set. */
 export interface TourRequestParams {

@@ -3528,8 +3528,12 @@ export const ja = defineLocale({
     openPreview: 'プレビューを開く',
     openInBrowser: 'ブラウザで開く',
     openInExternal: '外部で開く',
+    newBrowserTab: '新しいブラウザータブ',
     popIn: 'ポップイン',
     popOut: 'ポップアウト',
+    popOutFailed: 'ブラウザーをポップアウトできませんでした',
+    popOutOwnerUnavailable:
+      'ブラウザーの所属先を確認できません。対応するチャットまたはグループを開いて再試行するか、このタブをドッキングしたまま使用してください。',
     linkHint: '⌘/Ctrl+クリックでプレビューペイン',
     sourceLineTitle: 'クリックして選択 · Shift クリックで拡張 · コンポーザーにドラッグ',
     source: 'ソース',

@@ -2,7 +2,7 @@ import type { ProfileScope } from '@/api/client'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { deleteProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { retireLocalProfileGateways } from '@/store/gateway'
+import { activeGatewayConnectionId, retireLocalProfileGateways } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey, selectProfile, setActiveProfile } from '@/store/profile'
 import { dropTilesForProfile } from '@/store/session-states'
 
@@ -60,6 +60,7 @@ export function DeleteProfileDialog({
         // onDeleted refresh so our reset is the last write — a refreshActiveProfile
         // racing the (still-dying) backend can't clobber the pill back to it.
         const remote = scope !== undefined && scope !== null
+        const connectionId = (typeof scope === 'object' ? scope?.connectionId : null) || activeGatewayConnectionId() || 'local'
 
         const wasActive =
           !remote && normalizeProfileKey(profile.name) === normalizeProfileKey($activeGatewayProfile.get())
@@ -74,7 +75,7 @@ export function DeleteProfileDialog({
         // session/Bot tile restores on relaunch and dials the deleted
         // profile's backend, whose ensure_hermes_home() re-creates the
         // directory the delete just removed (hermes-agent#94235).
-        dropTilesForProfile(profile.name)
+        await dropTilesForProfile(profile.name, { connectionId, profile: profile.name })
         await onDeleted?.()
 
         if (wasActive) {

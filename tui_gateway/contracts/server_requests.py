@@ -7,7 +7,7 @@ the transport and declared on the shared base) and the ``result`` the client ans
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from .base import JsonValue, Params, Payload, Result, WireEnum
 from .registry import event, server_request
@@ -163,6 +163,16 @@ server_request("window.read", params=EmptyRequestParams, result=ValueResult,
 class PreviewActRequestParams(ServerRequestParams):
     """``tools/drive_preview_tool.py`` and ``tools/annotate_preview_tool.py`` field sets."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def validate_drag(cls, values):
+        from tools.preview_validation import preview_drag_error
+        if isinstance(values, dict):
+            error = preview_drag_error({key: value for key, value in values.items() if key != "session_id"})
+            if error:
+                raise ValueError(error)
+        return values
+
     action: str
     ref: str | None = None
     selector: str | None = None
@@ -174,6 +184,8 @@ class PreviewActRequestParams(ServerRequestParams):
     amount: int | None = None
     max: int | None = None
     allow_shortcut: bool | None = None
+    dx: float | None = Field(default=None, ge=-2000, le=2000, description="Native drag horizontal CSS-pixel delta.")
+    dy: float | None = Field(default=None, ge=-2000, le=2000, description="Native drag vertical CSS-pixel delta.")
 
 
 server_request("preview.act", params=PreviewActRequestParams, result=ValueResult,

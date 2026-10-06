@@ -68,8 +68,12 @@ export const arArtifacts = {
     openPreview: 'فتح المعاينة',
     openInBrowser: 'فتح في المتصفح',
     openInExternal: 'فتح في الخارج',
+    newBrowserTab: 'علامة تبويب متصفح جديدة',
     popIn: 'إدخال',
     popOut: 'إخراج',
+    popOutFailed: 'تعذّر إخراج المتصفح في نافذة مستقلة',
+    popOutOwnerUnavailable:
+      'تعذّر تحديد المحادثة المالكة للمتصفح. افتح محادثته أو مجموعته وحاول مجددًا، أو واصل استخدام علامة التبويب داخل النافذة الحالية.',
     linkHint: '⌘/Ctrl-نقر لجزء المعاينة',
     sourceLineTitle: 'انقر للتحديد · shift-نقر للتوسيع · اسحب إلى المُنشئ',
     source: 'المصدر',

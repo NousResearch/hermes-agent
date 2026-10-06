@@ -112,6 +112,10 @@ def transition(tmp_path):
                  package / "update_lock.py")
     shutil.copy2(Path(update_completion.__file__).with_name("_subprocess_compat.py"),
                  package / "_subprocess_compat.py")
+    (package / "gitlock.py").write_text(
+        "from hermes_cli.probe import event\n"
+        "convert_treeless_checkout_first = lambda root: event('convert')\n"
+    )
     (package / "main.py").write_text("")
     (package / "update_cmd_config.py").write_text("_LAST_SIBLING_SNAPSHOTS = {}\n")
     (package / "update_inventory.py").write_text(
@@ -218,6 +222,10 @@ def test_old_process_new_git_tree_completes_in_fresh_python(transition, tmp_path
     by_name = {event["name"]: event for event in events}
     assert by_name["activate"]["pid"] == by_name["build"]["pid"]
     assert by_name["prepare"]["pid"] != by_name["build"]["pid"]
+    # A treeless checkout converts before the dependency work, where a pre-fix Desktop's history
+    # walks filled disks (#129514).
+    names = [e["name"] for e in events]
+    assert by_name["convert"]["pid"] == by_name["prepare"]["pid"] and names.index("convert") < names.index("tools")
     assert Path(by_name["build"]["python"]).is_relative_to(root.parent / "selected-python")
     assert by_name["build"]["pid"] == by_name["maintenance"]["pid"] == by_name["restart"]["pid"]
     assert by_name["maintenance"]["snapshots"] == {"work": "work-before"}

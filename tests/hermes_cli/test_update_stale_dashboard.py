@@ -432,6 +432,31 @@ class TestManualBackendRespawn:
         assert result["unrecovered"] == [5555]
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    def test_unreconstructable_argv_reports_manual_start(self, capsys):
+        """A refused argv (flattened ``-c`` payload, unreadable kernel record) must not be
+        respawned: the operator hears "manual start; cannot reconstruct argv" instead of
+        watching the respawn die on exec (SyntaxError: -c import)."""
+        live = self._live()
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[5555]), \
+             patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=None), \
+             patch.object(live, "_respawn_dashboard_processes") as respawn, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        respawn.assert_not_called()
+        assert result["unrecovered"] == [5555]
+        assert "manual start; cannot reconstruct argv" in capsys.readouterr().out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
     def test_non_orphan_fixed_port_still_respawns(self, capsys):
         """A supervised-by-shell dashboard with a fixed port is still restarted."""
         live = self._live()

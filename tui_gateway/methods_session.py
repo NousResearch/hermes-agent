@@ -2019,7 +2019,7 @@ def _(rid, params: dict, session: dict) -> dict:
 @_session_method("session.undo", live=True)
 def _(rid, params: dict, session: dict) -> dict:
     # Under a running turn the post-run write would clobber the undo — stop the reply first.
-    busy = _err(rid, 4009, busy_message("undo"))
+    busy = _err(rid, 4009, busy_message("undo", bool(session.get("_manual_compress_active"))))
     if session.get("running"):
         return busy
     removed = 0
@@ -2037,13 +2037,6 @@ def _(rid, params: dict, session: dict) -> dict:
     if removed:  # Ink /retry is undo + resend and says so via ``intent`` (helper: methods_tools).
         _tui_model_friction("retry" if params.get("intent") == "retry" else "undo", session)
     return _ok(rid, {"removed": removed})
-
-
-def _compute_host_ack_error(rid, ack: dict, code: int, default: str):
-    """``_err`` for a ``control.error``/``error`` ack, else None."""
-    if ack.get("type") in {"control.error", "error"}:
-        return _err(rid, code, str(ack.get("message") or default))
-    return None
 
 
 def _save_via_compute_host(rid, params: dict) -> dict:
@@ -2152,11 +2145,12 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
-    if session.get("running"):
-        return _err(rid, 4009, busy_message("compress"))
     sid = params.get("session_id", "")
     try:
-        return _compress_live(rid, sid, session, _str_param(params, "focus_topic"))
+        with _manual_compress_turn(sid, session):
+            return _compress_live(rid, sid, session, _str_param(params, "focus_topic"))
+    except CompressionBusy as e:
+        return _err(rid, 4009, str(e))
     except CompressionLockHeld as e:
         _status_update(sid, "ready")
         from agent.manual_compression_feedback import describe_compression_lock_skip

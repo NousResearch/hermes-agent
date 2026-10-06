@@ -407,6 +407,34 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["max_tokens"] == 4096
 
+    def test_gemini_3_1_pro_forwards_medium_thinking_level(self, transport):
+        """3.1 Pro accepts ``medium``; clamping it to ``low`` silently downgrades the default effort."""
+        kw = transport.build_kwargs(
+            model="google/gemini-3.1-pro-preview",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert kw["extra_body"]["extra_body"]["google"]["thinking_config"] == {
+            "include_thoughts": True,
+            "thinking_level": "medium",
+        }
+
+    def test_gemini_3_0_pro_keeps_low_high_clamp(self, transport):
+        """3.0 Pro launched with low/high only, so ``medium`` must still clamp to ``low`` there."""
+        kw = transport.build_kwargs(
+            model="google/gemini-3-pro-preview",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert kw["extra_body"]["extra_body"]["google"]["thinking_config"] == {
+            "include_thoughts": True,
+            "thinking_level": "low",
+        }
+
 
 
 

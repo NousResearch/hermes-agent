@@ -13,7 +13,7 @@ Coverage levels:
 import time
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 from unittest.mock import patch, MagicMock
 
 from agent.model_metadata import (
@@ -32,6 +32,19 @@ from agent.model_metadata import (
     fetch_model_metadata,
     _MODEL_CACHE_TTL,
 )
+
+
+def _codex_jwt(subject: str) -> str:
+    """JWT-shaped test stand-in: the live-probe path gates on the token parsing as a JWT
+    (a gateway key is not a ChatGPT credential and must stay off chatgpt.com, #121486);
+    the signature itself is never verified client-side."""
+    import base64 as _b64
+    import json as _json
+    def _enc(raw: bytes) -> str:
+        return _b64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+    header = _enc(b'{"alg":"RS256"}')
+    payload = _enc(_json.dumps({"sub": subject}).encode())
+    return f"{header}.{payload}.test-signature"
 
 
 # =========================================================================
@@ -415,6 +428,7 @@ class TestCodexOAuthContextLength:
     def setup_method(self):
         import agent.model_metadata as mm
         mm._codex_oauth_context_cache = {}
+        mm._codex_oauth_max_context_cache = {}  # the fallback branch reads it too
 
 
     def test_live_catalogue_cache_is_scoped_to_access_token(self):
@@ -434,32 +448,32 @@ class TestCodexOAuthContextLength:
         }
 
         with patch(
-            "agent.model_metadata.requests.get",
+            "agent.model_metadata.model_metadata_http.get",
             side_effect=[first_response, second_response],
         ) as mock_get, patch("agent.model_metadata.save_context_length") as mock_save:
             first = get_model_context_length(
                 "gpt-5.5",
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="token-account-a",
+                api_key=_codex_jwt("token-account-a"),
                 provider="openai-codex",
             )
             first_again = get_model_context_length(
                 "gpt-5.5",
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="token-account-a",
+                api_key=_codex_jwt("token-account-a"),
                 provider="openai-codex",
             )
             second = get_model_context_length(
                 "gpt-5.5",
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="token-account-b",
+                api_key=_codex_jwt("token-account-b"),
                 provider="openai-codex",
             )
 
         assert (first, first_again, second) == (272_000, 272_000, 372_000)
         assert mock_get.call_count == 2
-        assert mock_get.call_args_list[0].kwargs["headers"]["Authorization"] == "Bearer token-account-a"
-        assert mock_get.call_args_list[1].kwargs["headers"]["Authorization"] == "Bearer token-account-b"
+        assert mock_get.call_args_list[0].kwargs["headers"]["Authorization"] == f"Bearer {_codex_jwt('token-account-a')}"
+        assert mock_get.call_args_list[1].kwargs["headers"]["Authorization"] == f"Bearer {_codex_jwt('token-account-b')}"
         assert mock_save.call_count == 2
         assert all(
             "token-account" not in key
@@ -475,17 +489,54 @@ class TestCodexOAuthContextLength:
         fake_response.status_code = 401
         fake_response.json.return_value = {}
 
-        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+        with patch("agent.model_metadata.model_metadata_http.get", return_value=fake_response), \
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
                 model="gpt-5.5",
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="expired-token",
+                api_key=_codex_jwt("expired-token"),
                 provider="openai-codex",
             )
         assert ctx == 272_000
 
+    def test_gateway_key_never_probes_the_direct_catalog(self):
+        """A custom base's credential is the gateway's key, not a ChatGPT token: sending it to
+        chatgpt.com leaks it to a service it does not belong to and can never answer (#121486).
+        The probe must decline (falling back to the static table) instead of firing."""
+        import agent.model_metadata as mm
+        mm._codex_oauth_context_cache = {}
+
+        with patch("agent.model_metadata.model_metadata_http.get") as mock_get:
+            live, fresh = mm._fetch_codex_oauth_context_lengths_with_source("gateway-pool-key")
+
+        assert (live, fresh) == ({}, False)
+        mock_get.assert_not_called()
+
+    def test_custom_base_probes_its_own_catalog(self):
+        """A JWT reached through a custom Codex base probes that base's ``/models``, never the
+        hard-coded chatgpt.com host (#121486)."""
+        import agent.model_metadata as mm
+        mm._codex_oauth_context_cache = {}
+
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "models": [{"slug": "gpt-5.5", "context_window": 272_000}]
+        }
+        with patch("agent.model_metadata.model_metadata_http.get", return_value=fake_response) as mock_get, \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model="gpt-5.5",
+                base_url="https://codex-gw.example/backend-api/codex",
+                api_key=_codex_jwt("acct"),
+                provider="openai-codex",
+            )
+
+        assert ctx == 272_000
+        assert mock_get.call_args.args[0].startswith(
+            "https://codex-gw.example/backend-api/codex/models?client_version=")
 
     @pytest.mark.parametrize(
         "stale_context,live_context",
@@ -504,8 +555,8 @@ class TestCodexOAuthContextLength:
         base_url = "https://chatgpt.com/backend-api/codex"
         stale_key = f"gpt-5.5@{base_url}"
         other_key = "other-model@https://api.openai.com/v1/"
-        import yaml as _yaml
-        cache_file.write_text(_yaml.dump({"context_lengths": {
+        import hermes_yaml as _yaml
+        cache_file.write_text(_yaml.safe_dump({"context_lengths": {
             stale_key: stale_context,
             other_key: 128_000,
         }}))
@@ -518,11 +569,11 @@ class TestCodexOAuthContextLength:
         # Exercise real persistence here: this test verifies that a live value
         # replaces the stale on-disk entry. Failure-path tests below mock the
         # writer because they assert that fallback values are not persisted.
-        with patch("agent.model_metadata.requests.get", return_value=fake_response) as mock_get:
+        with patch("agent.model_metadata.model_metadata_http.get", return_value=fake_response) as mock_get:
             ctx = mm.get_model_context_length(
                 model="gpt-5.5",
                 base_url=base_url,
-                api_key="fake-token",
+                api_key=_codex_jwt("fake-token"),
                 provider="openai-codex",
             )
 
@@ -548,13 +599,13 @@ class TestCodexOAuthContextLength:
         }
         import agent.model_metadata as mm
         mm._codex_oauth_context_cache = {}
-        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+        with patch("agent.model_metadata.model_metadata_http.get", return_value=fake_response), \
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
                 model=slug,
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="fake-token",
+                api_key=_codex_jwt("fake-token"),
                 provider="openai-codex",
             )
         assert ctx == 272_000
@@ -573,37 +624,38 @@ class TestCodexOAuthContextLength:
             }
             import agent.model_metadata as mm
             mm._codex_oauth_context_cache = {}
-            with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+            with patch("agent.model_metadata.model_metadata_http.get", return_value=fake_response), \
                  patch("agent.model_metadata.get_cached_context_length", return_value=None), \
                  patch("agent.model_metadata.save_context_length"):
                 ctx = get_model_context_length(
                     model="gpt-5.6-sol-900k",
                     base_url="https://chatgpt.com/backend-api/codex",
-                    api_key="fake-token",
+                    api_key=_codex_jwt("fake-token"),
                     provider="openai-codex",
                 )
             assert ctx == advertised, f"advertised {advertised} must be trusted"
 
+    @pytest.mark.parametrize("base", ["gpt-5.6-luna", "gpt-6.1-sol"])
     @pytest.mark.parametrize("catalog_max,expected", [(872_000, 872_000), (None, 900_000), (1_050_000, 900_000)])
-    def test_opted_in_variant_capped_at_live_catalog_max(self, catalog_max, expected):
+    def test_opted_in_variant_capped_at_live_catalog_max(self, base, catalog_max, expected):
         """An explicit ``-900k`` opt-in resolves to min(900K, catalog ``max_context_window``):
         gpt-5.6 advertises 272K with an 872K max (#105443); a catalog without the field or one
-        above the live-verified cap keeps 900K."""
+        above the live-verified cap keeps 900K. The 900K table entry is only the fallback."""
         from agent.model_metadata import get_model_context_length
 
-        item = {"slug": "gpt-5.6-luna", "context_window": 272_000}
+        item = {"slug": base, "context_window": 272_000}
         if catalog_max is not None:
             item["max_context_window"] = catalog_max
         fake_response = MagicMock()
         fake_response.status_code = 200
         fake_response.json.return_value = {"models": [item]}
-        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+        with patch("agent.model_metadata.model_metadata_http.get", return_value=fake_response), \
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
-                model="gpt-5.6-luna-900k",
+                model=f"{base}-900k",
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="fake-token",
+                api_key=_codex_jwt("fake-token"),
                 provider="openai-codex",
             )
         assert ctx == expected
@@ -618,16 +670,77 @@ class TestCodexOAuthContextLength:
         fake_response.json.return_value = {
             "models": [{"slug": "gpt-5.6-sol", "context_window": 272_000, "max_context_window": 872_000}]
         }
-        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+        with patch("agent.model_metadata.model_metadata_http.get", return_value=fake_response), \
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
                 model="gpt-5.6-sol",
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="fake-token",
+                api_key=_codex_jwt("fake-token"),
                 provider="openai-codex",
             )
         assert ctx == 272_000
+
+    def test_failed_refresh_past_ttl_keeps_the_observed_catalog_cap(self):
+        """A refresh that fails after the context TTL must not lift a cap the same token and
+        endpoint already published: no newer evidence, so the -900k alias stays at the old max."""
+        import agent.model_metadata as mm
+
+        ok = MagicMock(status_code=200)
+        ok.json.return_value = {"models": [{"slug": "GPT-5.6-Luna", "context_window": 272_000, "max_context_window": 600_000}]}
+        route = dict(base_url="https://chatgpt.com/backend-api/codex", api_key=_codex_jwt("fake-token"), provider="openai-codex")
+        with patch.object(mm, "_codex_oauth_context_cache", {}), patch.object(mm, "_codex_oauth_max_context_cache", {}), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            with patch("agent.model_metadata.model_metadata_http.get", return_value=ok):
+                assert mm.get_model_context_length(model="gpt-5.6-luna-900k", **route) == 600_000
+            with patch("agent.model_metadata.model_metadata_http.get", side_effect=OSError("catalog down")), \
+                 patch("agent.model_metadata.time.time", return_value=time.time() + mm._CODEX_OAUTH_CONTEXT_CACHE_TTL + 1):
+                assert mm.get_model_context_length(model="gpt-5.6-luna-900k", **route) == 600_000
+
+    def test_a_probe_that_finds_no_catalog_is_not_repeated_within_the_negative_ttl(self):
+        """Every context resolution (init, /status, aux, @-reference turns) used to re-probe a dead or
+        non-Codex-shaped catalog; one miss is now remembered for the short negative TTL, then retried."""
+        import agent.model_metadata as mm
+
+        calls = []
+
+        def down(url, **_kw):
+            calls.append(url)
+            raise OSError("catalog down")
+
+        route = dict(base_url="https://chatgpt.com/backend-api/codex", api_key=_codex_jwt("fake-token"), provider="openai-codex")
+        with patch.object(mm, "_codex_oauth_context_cache", {}), patch.object(mm, "_codex_oauth_max_context_cache", {}), \
+             patch("agent.model_metadata.model_metadata_http.get", side_effect=down), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            assert mm.get_model_context_length(model="gpt-5.6-sol", **route) == 272_000
+            per_probe = len(calls)
+            mm.get_model_context_length(model="gpt-5.6-sol", **route)
+            mm.get_model_context_length(model="gpt-5.6-sol-900k", **route)
+            assert per_probe and len(calls) == per_probe
+            with patch("agent.model_metadata.time.time", return_value=time.time() + mm._CODEX_OAUTH_CONTEXT_NEGATIVE_TTL + 1):
+                mm.get_model_context_length(model="gpt-5.6-sol", **route)
+        assert len(calls) == 2 * per_probe
+
+    def test_catalog_max_is_published_before_the_context_entry(self):
+        """A reader that sees a fresh context entry must already be able to see its cap, or a
+        concurrent -900k resolution between the two writes skips the catalog max."""
+        import agent.model_metadata as mm
+
+        max_cache: dict = {}
+
+        class _ContextCache(dict):
+            def __setitem__(self, key, value):
+                assert key in max_cache, "context entry published before its max_context_window cap"
+                super().__setitem__(key, value)
+
+        ok = MagicMock(status_code=200)
+        ok.json.return_value = {"models": [{"slug": "gpt-5.6-luna", "context_window": 272_000, "max_context_window": 872_000}]}
+        with patch.object(mm, "_codex_oauth_context_cache", _ContextCache()), patch.object(mm, "_codex_oauth_max_context_cache", max_cache), \
+             patch("agent.model_metadata.model_metadata_http.get", return_value=ok):
+            live, _fresh = mm._fetch_codex_oauth_context_lengths_with_source(_codex_jwt("fake-token"))
+        assert live == {"gpt-5.6-luna": 272_000}
 
 
     @pytest.mark.parametrize("slug", ["gpt-5.6-sol-900k"])
@@ -640,13 +753,13 @@ class TestCodexOAuthContextLength:
         fake_response = MagicMock()
         fake_response.status_code = 401
         fake_response.json.return_value = {}
-        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+        with patch("agent.model_metadata.model_metadata_http.get", return_value=fake_response), \
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
                 model=slug,
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="expired-token",
+                api_key=_codex_jwt("expired-token"),
                 provider="openai-codex",
             )
         assert ctx == 900_000
@@ -660,13 +773,13 @@ class TestCodexOAuthContextLength:
         fake_response = MagicMock()
         fake_response.status_code = 401
         fake_response.json.return_value = {}
-        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+        with patch("agent.model_metadata.model_metadata_http.get", return_value=fake_response), \
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
                 model=slug,
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="expired-token",
+                api_key=_codex_jwt("expired-token"),
                 provider="openai-codex",
             )
         assert ctx == 272_000
@@ -713,13 +826,13 @@ class TestCodexOAuthContextLength:
         }
         import agent.model_metadata as mm
         mm._codex_oauth_context_cache = {}
-        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+        with patch("agent.model_metadata.model_metadata_http.get", return_value=fake_response), \
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
                 model=model_id,
                 base_url="https://chatgpt.com/backend-api/codex",
-                api_key="fake-token",
+                api_key=_codex_jwt("fake-token"),
                 provider="openai-codex",
             )
         assert ctx == expected_ctx
@@ -728,6 +841,13 @@ class TestCodexOAuthContextLength:
 # =========================================================================
 # Custom endpoint model metadata
 # =========================================================================
+
+def _streamed(response):
+    """A ``model_metadata_http.stream`` result: a context manager yielding *response*."""
+    ctx = MagicMock()
+    ctx.__enter__.return_value = response
+    return ctx
+
 
 class TestFetchEndpointModelMetadata:
     def setup_method(self):
@@ -742,16 +862,16 @@ class TestFetchEndpointModelMetadata:
         response = MagicMock()
         response.status_code = status_code
         response.raise_for_status.side_effect = RuntimeError(str(status_code))
+        ctx = _streamed(response)
 
-        with patch("agent.model_metadata.requests.get", return_value=response) as mock_get:
+        with patch("agent.model_metadata.model_metadata_http.stream", return_value=ctx) as mock_stream:
             result = mm.fetch_endpoint_model_metadata("https://custom.example/v1")
 
         assert result == {}
-        mock_get.assert_called_once()
-        assert mock_get.call_args.kwargs["stream"] is True
+        mock_stream.assert_called_once()
         response.raise_for_status.assert_not_called()
         response.json.assert_not_called()
-        response.close.assert_called_once()
+        ctx.__exit__.assert_called_once()
 
     def test_auth_failure_empty_result_is_cached(self):
         import agent.model_metadata as mm
@@ -759,14 +879,15 @@ class TestFetchEndpointModelMetadata:
         response = MagicMock()
         response.status_code = 401
         response.raise_for_status.side_effect = RuntimeError("401")
+        ctx = _streamed(response)
 
-        with patch("agent.model_metadata.requests.get", return_value=response) as mock_get:
+        with patch("agent.model_metadata.model_metadata_http.stream", return_value=ctx) as mock_stream:
             first = mm.fetch_endpoint_model_metadata("https://custom.example/v1")
             second = mm.fetch_endpoint_model_metadata("https://custom.example/v1")
 
         assert first == second == {}
-        mock_get.assert_called_once()
-        response.close.assert_called_once()
+        mock_stream.assert_called_once()
+        ctx.__exit__.assert_called_once()
 
     def test_not_found_still_tries_alternate_candidate(self):
         import agent.model_metadata as mm
@@ -779,23 +900,22 @@ class TestFetchEndpointModelMetadata:
         success.json.return_value = {
             "data": [{"id": "test/model", "context_length": 32768}]
         }
+        not_found_ctx, success_ctx = _streamed(not_found), _streamed(success)
 
         with patch(
-            "agent.model_metadata.requests.get",
-            side_effect=[not_found, success],
-        ) as mock_get:
+            "agent.model_metadata.model_metadata_http.stream",
+            side_effect=[not_found_ctx, success_ctx],
+        ) as mock_stream:
             result = mm.fetch_endpoint_model_metadata("https://custom.example/v1")
 
         assert result["test/model"]["context_length"] == 32768
-        assert mock_get.call_count == 2
-        assert [call.args[0] for call in mock_get.call_args_list] == [
+        assert [call.args[0] for call in mock_stream.call_args_list] == [
             "https://custom.example/v1/models",
             "https://custom.example/models",
         ]
-        assert all(call.kwargs["stream"] is True for call in mock_get.call_args_list)
         not_found.json.assert_not_called()
-        not_found.close.assert_called_once()
-        success.close.assert_called_once()
+        not_found_ctx.__exit__.assert_called_once()
+        success_ctx.__exit__.assert_called_once()
 
     def test_remote_probe_is_memoized_on_disk_across_processes(self, tmp_path, monkeypatch):
         """A fresh process (cleared in-memory cache) must answer from the disk
@@ -810,22 +930,22 @@ class TestFetchEndpointModelMetadata:
         success.status_code = 200
         success.json.return_value = {"data": [{"id": "test/model", "context_length": 32768}]}
 
-        with patch("agent.model_metadata.requests.get", return_value=success) as mock_get:
+        with patch("agent.model_metadata.model_metadata_http.stream", return_value=_streamed(success)) as mock_stream:
             assert mm.fetch_endpoint_model_metadata("https://custom.example/v1")["test/model"]["context_length"] == 32768
             # "New process": drop the in-memory cache only.
             mm._endpoint_model_metadata_cache.clear()
             mm._endpoint_model_metadata_cache_time.clear()
             assert mm.fetch_endpoint_model_metadata("https://custom.example/v1")["test/model"]["context_length"] == 32768
-        mock_get.assert_called_once()
+        mock_stream.assert_called_once()
 
         # Past the TTL the memo is stale and the endpoint is probed again.
         mm._endpoint_model_metadata_cache.clear()
         mm._endpoint_model_metadata_cache_time.clear()
         with patch("agent.model_metadata.time.time", return_value=time.time() + mm._ENDPOINT_MODEL_CACHE_TTL + 1), patch(
-            "agent.model_metadata.requests.get", return_value=success
-        ) as mock_get:
+            "agent.model_metadata.model_metadata_http.stream", return_value=_streamed(success)
+        ) as mock_stream:
             mm.fetch_endpoint_model_metadata("https://custom.example/v1")
-        mock_get.assert_called_once()
+        mock_stream.assert_called_once()
 
 
 # =========================================================================
@@ -928,7 +1048,7 @@ class TestNousPortalContextResolution:
         base_url = "https://inference-api.nousresearch.com/v1"
         stale_key = f"qwen3.6-plus@{base_url}"
         other_key = "other-model@https://api.openai.com/v1"
-        cache_file.write_text(yaml.dump({"context_lengths": {
+        cache_file.write_text(yaml.safe_dump({"context_lengths": {
             stale_key: 1_000_000,     # pre-fix OR-derived value
             other_key: 128_000,       # unrelated, must survive
         }}))
@@ -1134,6 +1254,33 @@ class TestGetModelContextLength:
             )
         assert ctx == mm._CODEX_OAUTH_CONTEXT_FALLBACK["gpt-6-astra"]
 
+    def test_codex_proxy_route_caps_an_opted_in_variant_by_its_own_catalog_max(self):
+        """On a custom codex_responses route the -900k bump is capped by the gateway's own Codex-shaped
+        max_context_window, asked once with the route's key at the route's URL; its context_window is not
+        trusted, the base slug keeps the Codex table value, and a gateway without a Codex catalog is not
+        re-probed on every resolution."""
+        from agent import model_metadata as mm
+
+        custom = [{"name": "codex-proxy", "base_url": "http://127.0.0.1:8317/v1", "api_mode": "codex_responses"}]
+        route = dict(base_url="http://127.0.0.1:8317/v1", api_key="proxy-key", provider="custom:codex-proxy", custom_providers=custom)
+        codex_shaped = MagicMock(status_code=200)
+        codex_shaped.json.return_value = {"models": [{"slug": "GPT-6-Sol", "context_window": 1_050_000, "max_context_window": 600_000}]}
+        openai_shaped = MagicMock(status_code=200)
+        openai_shaped.json.return_value = {"data": [{"id": "gpt-6-sol"}]}
+        with patch.object(mm, "_codex_oauth_context_cache", {}), patch.object(mm, "_codex_oauth_max_context_cache", {}), \
+             patch.object(mm, "get_cached_context_length", return_value=None), patch.object(mm, "save_context_length"):
+            with patch("agent.model_metadata.model_metadata_http.get", return_value=codex_shaped) as get:
+                assert get_model_context_length("gpt-6-sol-900k", **route) == 600_000
+                assert get_model_context_length("gpt-6-sol", **route) == mm._CODEX_OAUTH_CONTEXT_FALLBACK["gpt-6-sol"]
+                assert get.call_args_list and all(c.args[0].startswith("http://127.0.0.1:8317/v1/") for c in get.call_args_list)
+            mm._codex_oauth_context_cache.clear()
+            mm._codex_oauth_max_context_cache.clear()
+            with patch("agent.model_metadata.model_metadata_http.get", return_value=openai_shaped) as get:
+                for _ in range(3):
+                    assert get_model_context_length("gpt-6-sol-900k", **route) == 900_000
+                probes = get.call_count
+            assert 0 < probes <= 2  # one probe (both client_version URLs at most), not one per resolution
+
     def test_codex_proxy_route_explicit_context_length_override_still_wins(self):
         """providers.<name>.models[].context_length beats the Codex table on a codex_responses route (#102644)."""
         custom = [{
@@ -1335,7 +1482,7 @@ class TestFetchModelMetadata:
         }
         mock_response.raise_for_status = MagicMock()
 
-        with patch("agent.model_metadata.requests.get", return_value=mock_response):
+        with patch("agent.model_metadata.model_metadata_http.get", return_value=mock_response):
             fetch_model_metadata(force_refresh=True)
 
         assert cache_path.exists()
@@ -1352,12 +1499,12 @@ class TestFetchModelMetadata:
         import os
         os.utime(cache_path, (old, old))
 
-        with patch("agent.model_metadata.requests.get", side_effect=Exception("Network error")):
+        with patch("agent.model_metadata.model_metadata_http.get", side_effect=Exception("Network error")):
             result = fetch_model_metadata(force_refresh=True)
 
         assert result["stale/model"]["context_length"] == 50000
 
-    @patch("agent.model_metadata.requests.get")
+    @patch("agent.model_metadata.model_metadata_http.get")
     def test_caches_result(self, mock_get):
         self._reset_cache()
         mock_response = MagicMock()
@@ -1376,7 +1523,7 @@ class TestFetchModelMetadata:
         assert mock_get.call_count == 1  # cached
 
 
-    @patch("agent.model_metadata.requests.get")
+    @patch("agent.model_metadata.model_metadata_http.get")
     def test_canonical_slug_aliasing(self, mock_get):
         """Models with canonical_slug get indexed under both IDs."""
         self._reset_cache()

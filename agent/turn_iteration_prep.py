@@ -17,8 +17,9 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from agent.display import KawaiiSpinner
-from agent.interrupt_control import interrupt_issuer
+from agent.interrupt_control import interrupt_issuer, interrupted_during_api_call_reason
 from agent.turn_context_compaction import _reanchor
+from agent.turn_truncation import boosted_output_cap
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -427,7 +428,7 @@ def apply_retry_restarts(
     ``_preflight_compression_blocked`` so the fallback gets a fresh preflight (#84733).
 
     The two refunding restart paths (redirect and rebuilt-for-fallback) are bounded by
-    ``max_retries`` via ``restart_count`` (a per-turn accumulator) so a runaway
+    ``max_retries`` via ``restart_count`` (restarts since the last response) so a runaway
     interrupt/redirect that keeps re-arming a restart flag cannot refund the budget
     forever and hold the turn lease indefinitely."""
 
@@ -470,10 +471,7 @@ def apply_retry_restarts(
         return _verdict("continue")
 
     if interrupted:
-        _issuer = interrupt_issuer(agent)
-        _turn_exit_reason = (
-            f"interrupted_during_api_call({_issuer})" if _issuer else "interrupted_during_api_call"
-        )
+        _turn_exit_reason = interrupted_during_api_call_reason(agent)
         return _verdict("break")
 
     if _retry.restart_with_compressed_messages:
@@ -529,15 +527,10 @@ def apply_retry_restarts(
         return _verdict("continue")
 
     if _retry.restart_with_length_continuation:
-        # Boost output budget per retry: 2×, 4×, 8×, 16× base, capped at 32 768, via
-        # _ephemeral_max_output_tokens. Keep a larger original provider/model
-        # default as the floor so retries never downshift.
-        _boost = (agent.max_tokens or 4096) * (2 ** length_continue_retries)
-        _requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
-        if _requested_cap is not None:
-            _boost = max(_boost, _requested_cap)
-        _boost_cap = max(32768, _requested_cap or 0)
-        agent._ephemeral_max_output_tokens = min(_boost, _boost_cap)
+        # Boost the output budget per retry (shared ladder, see boosted_output_cap).
+        agent._ephemeral_max_output_tokens = boosted_output_cap(
+            agent, agent._requested_output_cap_from_api_kwargs(api_kwargs), length_continue_retries
+        )
         return _verdict("continue")
 
     # All retries may exhaust with `response` still None; break out cleanly.
@@ -546,4 +539,9 @@ def apply_retry_restarts(
         agent._emit_diagnostic_status("❌ The model provider didn't answer after all retries. Send /retry, or switch models with /model.")
         agent._persist_session(messages, conversation_history)
         return _verdict("break")
+    # A response arrived, so the turn is not stuck re-issuing a cancelled request: start
+    # the refunding-restart bound over (restart_count = restarts since the last response).
+    # Counting every mid-turn correction for the whole turn ended healthy interactive
+    # turns on the (max_retries + 1)th message (#128000).
+    restart_count = 0
     return _verdict("fallthrough")

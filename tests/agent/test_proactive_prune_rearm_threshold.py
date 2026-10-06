@@ -21,7 +21,6 @@ from agent.context_compressor import ContextCompressor, _estimate_msg_budget_tok
 
 LARGE_WINDOW = 1_000_000
 
-
 def _compressor(**kw: Any) -> ContextCompressor:
     defaults = dict(
         model="test",
@@ -38,7 +37,6 @@ def _compressor(**kw: Any) -> ContextCompressor:
         return_value=LARGE_WINDOW,
     ):
         return ContextCompressor(**defaults)
-
 
 def _history(n_pairs: int = 8, big: int = 9_000) -> List[Dict[str, Any]]:
     msgs: List[Dict[str, Any]] = [{"role": "system", "content": "sys"}]
@@ -60,7 +58,6 @@ def _history(n_pairs: int = 8, big: int = 9_000) -> List[Dict[str, Any]]:
         })
     return msgs
 
-
 def _park_rearm_just_above_messages(
     compressor: ContextCompressor, messages: List[Dict[str, Any]]
 ) -> int:
@@ -71,14 +68,12 @@ def _park_rearm_just_above_messages(
     assert before < compressor._proactive_prune_rearm_tokens
     return before
 
-
 def _over_threshold_warnings(caplog) -> list:
     return [
         r for r in caplog.records
         if r.levelno >= logging.WARNING
         and "over the compression threshold" in r.getMessage()
     ]
-
 
 def test_billed_basis_over_threshold_defeats_message_only_rearm_lockout() -> None:
     """Over ``threshold_tokens`` on the provider-billed basis, the rearm gate
@@ -107,7 +102,6 @@ def test_billed_basis_over_threshold_defeats_message_only_rearm_lockout() -> Non
     assert pruned == 3
     assert result is not msgs
 
-
 def test_message_only_rearm_still_holds_below_threshold() -> None:
     """Prompt-cache hysteresis is intact while the real request is under the
     compression threshold — the rearm bypass is an overflow escape hatch only."""
@@ -127,7 +121,6 @@ def test_message_only_rearm_still_holds_below_threshold() -> None:
     assert result is msgs
     assert pruned == 0
 
-
 def test_no_op_below_the_prune_trigger() -> None:
     """Under ``proactive_prune_tokens`` nothing is reclaimed, rearm or not —
     the bypass must not turn into over-pruning of small sessions."""
@@ -146,7 +139,6 @@ def test_no_op_below_the_prune_trigger() -> None:
 
     assert result is msgs
     assert pruned == 0
-
 
 def test_over_threshold_reclamation_no_op_warns_once(caplog) -> None:
     """A session riding above the threshold with every reclamation path
@@ -170,7 +162,6 @@ def test_over_threshold_reclamation_no_op_warns_once(caplog) -> None:
         c.prune_tool_results_only(msgs, current_tokens=billed)
     assert len(_over_threshold_warnings(caplog)) == len(warnings)
 
-
 def test_under_threshold_no_op_is_not_warned(caplog) -> None:
     """Ordinary hysteresis below the threshold stays quiet."""
     c = _compressor(proactive_prune_min_reclaim_tokens=10_000_000)
@@ -183,7 +174,3 @@ def test_under_threshold_no_op_is_not_warned(caplog) -> None:
 
     assert (result, pruned) == (msgs, 0)
     assert not _over_threshold_warnings(caplog)
-
-
-
-

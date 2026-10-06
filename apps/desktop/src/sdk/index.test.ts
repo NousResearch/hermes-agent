@@ -358,3 +358,94 @@ describe('host.composer draft facade', () => {
     await expect(host.composer.getDraft('rt-stash')).resolves.toBe('runtime-addressed')
   })
 })
+
+describe('host.sessions session-list mutations', () => {
+  beforeEach(async () => {
+    const layout = await import('@/store/layout')
+    const color = await import('@/store/session-color')
+    const session = await import('@/store/session')
+
+    layout.$pinnedSessionIds.set([])
+    layout.$sidebarSessionOrderIds.set([])
+    layout.$sidebarSessionOrderManual.set(false)
+    color.$sessionColorOverrides.set({})
+    session.$sessions.set([])
+  })
+
+  it('pin/unpin write the pinned store the sidebar reads', async () => {
+    const { $pinnedSessionIds } = await import('@/store/layout')
+
+    host.sessions.pin('row-1')
+    expect($pinnedSessionIds.get()).toEqual(['row-1'])
+
+    host.sessions.pin('row-2')
+    expect($pinnedSessionIds.get()).toEqual(['row-1', 'row-2'])
+
+    host.sessions.pin('row-1', false)
+    expect($pinnedSessionIds.get()).toEqual(['row-2'])
+
+    // Drop-target pinning (drag-to-pin) slots the pin at an index instead of
+    // appending — the same `pinSession(id, index)` the sidebar's drop uses.
+    host.sessions.pin('row-0', true, 0)
+    expect($pinnedSessionIds.get()).toEqual(['row-0', 'row-2'])
+  })
+
+  it('resolves a live id to its durable lineage root before pinning', async () => {
+    const { $pinnedSessionIds } = await import('@/store/layout')
+    const { $sessions } = await import('@/store/session')
+    const { makeSessionInfo } = await import('@/test/session-info')
+
+    $sessions.set([makeSessionInfo({ _lineage_root_id: 'root-9', id: 'tip-9' })])
+
+    host.sessions.pin('tip-9')
+
+    expect($pinnedSessionIds.get()).toEqual(['root-9'])
+  })
+
+  it('reorder persists the manual order the drag path writes, in the LIVE id space', async () => {
+    const { $sidebarSessionOrderIds, $sidebarSessionOrderManual } = await import('@/store/layout')
+    const { $sessions } = await import('@/store/session')
+    const { makeSessionInfo } = await import('@/test/session-info')
+
+    // `c` was compressed: the row slot hands a plugin its durable root `c`,
+    // but the order store (and the sidebar's reconcile effect) key rows by
+    // the live id `c-tip`. Feeding the durable id back verbatim would drop
+    // the row from the order and flip the manual flag off on the next render.
+    $sessions.set([makeSessionInfo({ _lineage_root_id: 'c', id: 'c-tip' }), makeSessionInfo({ id: 'a' })])
+
+    host.sessions.reorder(['c', 'a', 'b'])
+
+    expect($sidebarSessionOrderManual.get()).toBe(true)
+    expect($sidebarSessionOrderIds.get()).toEqual(['c-tip', 'a', 'b'])
+
+    // Empty list = clear the manual order, back to the default sort.
+    host.sessions.reorder([])
+
+    expect($sidebarSessionOrderManual.get()).toBe(false)
+    expect($sidebarSessionOrderIds.get()).toEqual([])
+  })
+
+  it('reorderPinned permutes the Pinned section through the same setter the drag uses', async () => {
+    const { $pinnedSessionIds } = await import('@/store/layout')
+    const { $sessions } = await import('@/store/session')
+    const { makeSessionInfo } = await import('@/test/session-info')
+
+    $sessions.set([makeSessionInfo({ _lineage_root_id: 'p1', id: 'p1-tip' })])
+    $pinnedSessionIds.set(['p1', 'p2', 'unloaded'])
+
+    // Durable ids (the slot's) and live ids both resolve; an unmentioned pin keeps its slot.
+    host.sessions.reorderPinned(['p2', 'p1-tip'])
+
+    expect($pinnedSessionIds.get()).toEqual(['p2', 'p1', 'unloaded'])
+  })
+
+  it('setColor writes the durable-keyed colour override and clears with null', async () => {
+    const { $sessionColorOverrides } = await import('@/store/session-color')
+
+    host.sessions.setColor('row-1', '#ff8800')
+    expect($sessionColorOverrides.get()).toEqual({ 'row-1': '#ff8800' })
+
+    host.sessions.setColor('row-1', null)
+    expect($sessionColorOverrides.get()).toEqual({})
+  })
+})

@@ -30,7 +30,8 @@ vi.mock('@/i18n', () => ({
           toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
           showAllCount: (count: number) => `Show all ${count} sessions`,
           autoDiscovered: 'Auto-discovered'
-        }
+        },
+        showMoreIn: (count: number, label: string) => `Show ${count} more in ${label}`
       }
     }
   })
@@ -103,6 +104,38 @@ describe('ProjectOverviewRow', () => {
     expect(screen.queryByRole('button', { name: 'Show all 5 sessions' })).toBeNull()
   })
 
+  // A project with hundreds of chats hydrates them all, but the overview must
+  // not mount every row at once: it reveals them a page at a time, with a
+  // labeled row to the next page, until every session is on screen (#70421).
+  it('pages a large hydrated project instead of mounting every session at once', async () => {
+    workspaceOpen.value = true
+    const all = Array.from({ length: 120 }, (_, index) => session(`s${index + 1}`, 1000 - index))
+    const busy = { ...project, sessionCount: 120 } as SidebarProjectTree
+    projectsStore.fetchProjectSessions.mockResolvedValue({
+      ...busy,
+      repos: [{ groups: [{ sessions: all }] }]
+    } as unknown as SidebarProjectTree)
+
+    render(
+      <ProjectOverviewRow
+        previewSessions={all.slice(0, 3)}
+        project={busy}
+        renderRows={items => <div data-testid="rows">{items.map(item => item.id).join(',')}</div>}
+      />
+    )
+
+    const shown = () => screen.getByTestId('rows').textContent?.split(',').length
+
+    fireEvent.click(screen.getByText('Show all 120 sessions'))
+
+    await waitFor(() => expect(shown()).toBe(50))
+    fireEvent.click(screen.getByText('Show 50 more in Test D'))
+    expect(shown()).toBe(100)
+    fireEvent.click(screen.getByText('Show 20 more in Test D'))
+    expect(shown()).toBe(120)
+    expect(screen.queryByText(/Show .* more in Test D/)).toBeNull()
+  })
+
   // The hydrated lanes are the raw backend payload: pinned, filtered-out and
   // just-deleted sessions must go through the same exclusion the previews did,
   // and N must not promise rows the view hides.
@@ -146,5 +179,27 @@ describe('ProjectOverviewRow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'New session in Home' }))
 
     expect(onNewSession).toHaveBeenCalledWith(null)
+  })
+
+  // #124808: a real project whose primary_path was never set (multi-folder /
+  // path-less explicit project) still carries repo roots. Its trunk "+" must
+  // anchor the new session at the first repo root, not pass the null wire
+  // path through — null is the reserved Home/detached signal downstream, so
+  // the click silently created a global detached session.
+  it('anchors the trunk "+" at the first repo root when the project has no primary path', () => {
+    const multi = {
+      id: 'p_multi',
+      label: 'Multi',
+      path: null,
+      repos: [{ id: 'r1', label: 'app', path: '/work/app', groups: [], sessionCount: 0 }],
+      sessionCount: 0
+    } as unknown as SidebarProjectTree
+
+    const onNewSession = vi.fn()
+
+    render(<ProjectOverviewRow onNewSession={onNewSession} project={multi} />)
+    fireEvent.click(screen.getByRole('button', { name: 'New session in Multi' }))
+
+    expect(onNewSession).toHaveBeenCalledWith('/work/app')
   })
 })

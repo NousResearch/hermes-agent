@@ -12,7 +12,6 @@ from hermes_cli.session_filters import (
     parse_point_in_time,
 )
 
-
 def _ns(**kwargs):
     defaults = dict(
         older_than=None, newer_than=None, before=None, after=None,
@@ -24,7 +23,6 @@ def _ns(**kwargs):
     )
     defaults.update(kwargs)
     return Namespace(**defaults)
-
 
 class TestParseDurationSeconds:
     @pytest.mark.parametrize(
@@ -43,17 +41,14 @@ class TestParseDurationSeconds:
     def test_valid(self, value, expected):
         assert parse_duration_seconds(value) == pytest.approx(expected)
 
-
 class TestParsePointInTime:
     def test_duration_is_relative_to_now(self):
         ts = parse_point_in_time("5h", "--before")
         assert ts == pytest.approx(time.time() - 18000, abs=5)
 
-
     def test_invalid_raises_with_flag_name(self):
         with pytest.raises(ValueError, match="--older-than"):
             parse_point_in_time("nonsense", "--older-than")
-
 
 class TestBuildPruneFilters:
 
@@ -64,11 +59,3 @@ class TestBuildPruneFilters:
         )
         assert f["started_before"] is None
         assert f["started_after"] is None
-
-
-
-
-
-
-
-

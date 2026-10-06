@@ -4,7 +4,6 @@ from unittest.mock import MagicMock, patch
 
 from cli import HermesCLI
 
-
 def _make_cli(enabled_toolsets=None):
     """Build a minimal HermesCLI stub without running __init__."""
     cli_obj = HermesCLI.__new__(HermesCLI)
@@ -13,15 +12,9 @@ def _make_cli(enabled_toolsets=None):
     cli_obj.console = MagicMock()
     return cli_obj
 
-
 # ── /tools (no subcommand) ──────────────────────────────────────────────────
 
-
-
-
-
 # ── /tools list ─────────────────────────────────────────────────────────────
-
 
 class TestToolsSlashList:
 
@@ -34,10 +27,7 @@ class TestToolsSlashList:
         out = capsys.readouterr().out
         assert "web" in out
 
-
-
 # ── /tools disable (session reset) ──────────────────────────────────────────
-
 
 class TestToolsSlashDisableWithReset:
 
@@ -54,12 +44,7 @@ class TestToolsSlashDisableWithReset:
         mock_reset.assert_called_once()
         assert "web" not in cli_obj.enabled_toolsets
 
-
-
-
-
 # ── /tools enable (session reset) ───────────────────────────────────────────
-
 
 class TestToolsSlashEnableWithReset:
 
@@ -75,4 +60,3 @@ class TestToolsSlashEnableWithReset:
             cli_obj._handle_tools_command("/tools enable web")
         mock_reset.assert_called_once()
         assert "web" in cli_obj.enabled_toolsets
-

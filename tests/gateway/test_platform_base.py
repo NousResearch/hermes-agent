@@ -85,6 +85,35 @@ class TestMessageEventIsCommand:
         event = MessageEvent(text="/new")
         assert event.is_command() is True
 
+    def test_slash_command_with_image_ref_prefix(self):
+        """Desktop buildContextText prepends @image: refs before the visible text.
+        is_command() must still detect the slash command after the ref."""
+        event = MessageEvent(text="@image:/tmp/screenshot.png\n\n/moa what is this?")
+        assert event.is_command() is True
+
+    def test_slash_command_with_image_ref_spaces_in_path(self):
+        """Image refs with Windows spaces (e.g. C:\\Users\\John Doe\\img.png) must be correctly stripped."""
+        event = MessageEvent(text="@image:C:\\Users\\John Doe\\My Pictures\\photo.png\n\n/moa what is this?")
+        assert event.is_command() is True
+
+    def test_slash_command_with_file_ref_prefix(self):
+        event = MessageEvent(text="@file:/tmp/report.pdf\n\n/compress")
+        assert event.is_command() is True
+
+    def test_slash_command_with_url_ref_prefix(self):
+        event = MessageEvent(text="@url:https://example.com\n\n/status")
+        assert event.is_command() is True
+
+    def test_slash_command_with_at_in_ref_path(self):
+        """Ref path containing @ (legal on Windows, e.g. john@doe) must be fully stripped."""
+        event = MessageEvent(text="@image:C:\\Users\\john@doe\\photo.png\n\n/moa hi")
+        assert event.is_command() is True
+
+    def test_non_command_with_image_ref(self):
+        """A regular message (no slash command) with an image ref must NOT be detected as a command."""
+        event = MessageEvent(text="@image:/tmp/foo.png\n\nwhat is this?")
+        assert event.is_command() is False
+
 
 class TestMessageEventGetCommand:
     def test_simple_command(self):
@@ -99,11 +128,21 @@ class TestMessageEventGetCommand:
         event = MessageEvent(text="hello")
         assert event.get_command() is None
 
+    def test_get_command_with_image_ref_prefix(self):
+        """get_command() must parse the command name even when prefixed with a Desktop media ref."""
+        event = MessageEvent(text="@image:/tmp/foo.png\n\n/moa something interesting")
+        assert event.get_command() == "moa"
+
 
 class TestMessageEventGetCommandArgs:
     def test_command_with_args(self):
         event = MessageEvent(text="/new session id 123")
         assert event.get_command_args() == "session id 123"
+
+    def test_command_args_preserve_url_ref_in_args(self):
+        """@url: tokens in the middle of command args must NOT be stripped."""
+        event = MessageEvent(text="/status check @url:https://example.com")
+        assert event.get_command_args() == "check @url:https://example.com"
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +625,8 @@ class TestMediaDeliveryPathValidation:
         secret = ssh_dir / "id_rsa.txt"
         secret.write_bytes(b"-----BEGIN ...")  # mtime = now
         monkeypatch.setenv("HOME", str(fake_home))
+        # On Windows os.path.expanduser("~") reads USERPROFILE, not HOME.
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
 
@@ -880,6 +921,8 @@ class TestMediaDeliveryDefaultMode:
         doc = workdir / "proposal.docx"
         doc.write_bytes(b"PK\x03\x04")
         monkeypatch.setenv("HOME", str(fake_home))
+        # On Windows os.path.expanduser("~") reads USERPROFILE, not HOME.
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
         # $HOME is itself on the denied-prefix list, mirroring /root.
         monkeypatch.setattr(
             "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
@@ -929,6 +972,7 @@ class TestMediaDeliveryDefaultMode:
         )
 
 
+    @pytest.mark.require_symlinks
     def test_root_home_workdir_symlink_to_credential_blocked(self, tmp_path, monkeypatch):
         """A symlink in the workdir pointing at a credential is rejected on its
         resolved target, even under the $HOME exception.
@@ -953,6 +997,7 @@ class TestMediaDeliveryDefaultMode:
         assert BasePlatformAdapter.validate_media_delivery_path(str(link)) is None
 
 
+@pytest.mark.platforms("linux")
 class TestDockerContainerMediaPathTranslation:
     """MEDIA:/workspace (and configured mounts) must resolve to host paths."""
 
@@ -1512,6 +1557,7 @@ class TestMediaFallbackDoesNotLeakHostPath:
         assert self.SENSITIVE_PATH not in sent_text
 
 
+@pytest.mark.platforms("linux")
 class TestDockerProfileSandboxMediaTranslation:
     """MEDIA from persistent Docker sandboxes must resolve to the host
     directory the profile's container actually bind-mounts (#93950).

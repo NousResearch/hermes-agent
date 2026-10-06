@@ -1,7 +1,9 @@
 """Tests for tools/file_operations.py — deny list, result dataclasses, helpers."""
 
+import base64
 import os
 import pytest
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -248,7 +250,7 @@ class TestShellFileOpsHelpers:
 
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_escape_shell_arg_rewrites_forward_slash_native_paths(self, file_ops):
         """Windows-only: ``_bash_safe_path`` only rewrites drive paths to the
         Git Bash form on Windows, where the MSYS path mangling it works around
@@ -295,29 +297,6 @@ class TestShellFileOpsHelpers:
         assert "\x1b]" not in result.content
         assert "\x07" not in result.content
         assert "1|print('ok')" in result.content
-
-    def test_read_file_raw_strips_leaked_terminal_fence_markers(self, mock_env):
-        leaked = (
-            "__HERMES_FENCE_a9f7b3__\x07'\n"
-            "alpha\n"
-            "\x1b]0;cat '/tmp/test/a.txt'\x07__HERMES_FENCE_a9f7b3__\n"
-        )
-
-        def side_effect(command, **kwargs):
-            if command.startswith("if [ -f ") or command.startswith("wc -c"):
-                return {"output": "6\n", "returncode": 0}
-            if command.startswith("head -c"):
-                return {"output": "alpha\n", "returncode": 0}
-            if command.startswith("cat "):
-                return {"output": leaked, "returncode": 0}
-            return {"output": "", "returncode": 0}
-
-        mock_env.execute.side_effect = side_effect
-        ops = ShellFileOperations(mock_env)
-        result = ops.read_file_raw("/tmp/test/a.txt")
-
-        assert result.error is None
-        assert result.content == "alpha\n"
 
     def test_newline_terminated_content_has_no_phantom_line(self, file_ops):
         # A file ending in a newline (the normal, well-formed case) has its
@@ -384,6 +363,132 @@ class TestSearchPathValidation:
         assert "search failed" in result.error.lower() or "Search error" in result.error
 
 
+class TestSearchFilesIncludesDirectories:
+    """``search_files(target='files')`` is documented as an ls replacement and must
+    list matching directories, not just files — empty directories included (#54347)."""
+
+    @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+    def test_rg_target_files_includes_matching_empty_directory(self, tmp_path):
+        root = tmp_path / "repo"
+        empty_dir = root / "vault"
+        empty_dir.mkdir(parents=True)
+
+        ops = ShellFileOperations(LocalEnvironment("/"))
+        result = ops.search("vault", path=str(root), target="files")
+
+        assert result.error is None
+        assert str(empty_dir) in result.files
+
+    @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+    @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+    def test_rg_target_files_excludes_gitignored_empty_directory(self, tmp_path):
+        root = tmp_path / "repo"
+        ignored_dir = root / "ignored_dir"
+        visible_dir = root / "visible_dir"
+        ignored_dir.mkdir(parents=True)
+        visible_dir.mkdir()
+        (root / ".gitignore").write_text("ignored_dir/\n")
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+
+        ops = ShellFileOperations(LocalEnvironment("/"))
+        result = ops.search("*dir", path=str(root), target="files")
+
+        assert result.error is None
+        assert str(visible_dir) in result.files
+        assert str(ignored_dir) not in result.files
+
+    @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+    def test_rg_sorts_files_and_directories_before_pagination(self, tmp_path):
+        """A newer directory must page ahead of older files and dirs (globally
+        merged mtime order before offset/limit, not dirs appended after)."""
+        root = tmp_path / "repo"
+        older_file = root / "older.log"
+        newer_dir = root / "alpha-newer"
+        older_dirs = [root / "zulu-older", root / "yankee-older"]
+        root.mkdir()
+        older_file.write_text("x")
+        newer_dir.mkdir()
+        for older_dir in older_dirs:
+            older_dir.mkdir()
+        os.utime(older_file, (1_000, 1_000))
+        for older_dir in older_dirs:
+            os.utime(older_dir, (1_000, 1_000))
+        os.utime(newer_dir, (2_000, 2_000))
+
+        ops = ShellFileOperations(LocalEnvironment("/"))
+        result = ops.search("*", path=str(root), target="files", limit=1)
+
+        assert result.error is None
+        assert result.files == [str(newer_dir)]
+        assert result.truncated is True
+
+    def test_find_target_files_includes_matching_empty_directory(self, tmp_path, monkeypatch):
+        root = tmp_path / "repo"
+        empty_dir = root / "vault"
+        regular_file = root / "vault.txt"
+        empty_dir.mkdir(parents=True)
+        regular_file.write_text("x")
+
+        ops = ShellFileOperations(LocalEnvironment("/"))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops.search("vault*", path=str(root), target="files")
+
+        assert result.error is None
+        assert {str(empty_dir), str(regular_file)}.issubset(set(result.files))
+
+    def test_target_files_still_excludes_hidden_matching_directories(self, tmp_path, monkeypatch):
+        root = tmp_path / "repo"
+        visible_dir = root / "visible" / "cache"
+        hidden_dir = root / ".hidden" / "cache"
+        visible_dir.mkdir(parents=True)
+        hidden_dir.mkdir(parents=True)
+
+        ops = ShellFileOperations(LocalEnvironment("/"))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops.search("cache", path=str(root), target="files")
+
+        assert result.error is None
+        assert str(visible_dir) in result.files
+        assert str(hidden_dir) not in result.files
+
+    def test_find_lane_never_returns_the_search_root_itself(self, tmp_path, monkeypatch):
+        """The root is excluded by path identity — not by ``-mindepth 1``, which
+        would also exclude the depth-0 operand match a symlinked root depends on
+        (#116270) — and a same-named descendant still matches (#54347)."""
+        root = tmp_path / "vault"
+        child = root / "vault"
+        child.mkdir(parents=True)
+
+        ops = ShellFileOperations(LocalEnvironment("/"))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops.search("vault", path=str(root), target="files")
+
+        assert result.error is None
+        assert str(child) in result.files
+        assert str(root) not in result.files
+
+    def test_target_files_paginates_combined_files_and_directories(self, tmp_path, monkeypatch):
+        """Files and directories share one ordering: page slices must compose."""
+        root = tmp_path / "repo"
+        empty_dir = root / "alpha"
+        regular_file = root / "bravo"
+        empty_dir.mkdir(parents=True)
+        regular_file.write_text("x")
+
+        ops = ShellFileOperations(LocalEnvironment("/"))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+
+        first = ops.search("*", path=str(root), target="files", limit=1, offset=0)
+        second = ops.search("*", path=str(root), target="files", limit=1, offset=1)
+        combined = ops.search("*", path=str(root), target="files", limit=2, offset=0)
+
+        assert first.error is None
+        assert second.error is None
+        assert combined.error is None
+        assert first.files + second.files == combined.files
+        assert set(combined.files) == {str(empty_dir), str(regular_file)}
+
+
 class TestSearchFilesFallbackHiddenPaths:
     def _make_env(self):
         return LocalEnvironment("/")
@@ -443,6 +548,19 @@ class TestShellFileOpsWriteDenied:
         assert "Failed to move" in result.error
 
 
+
+def _fenced_base64_reply(command: str, payload: bytes, rc: int = 0) -> str:
+    """The reply shape ``_read_exact_bytes`` asks for: its per-call sentinel around the base64
+    payload (and the file's ``wc -c`` when the command asks for it), then the read's exit status.
+    Mirrors what the real shell emits, so a double stays honest about the fence the transport
+    relies on."""
+    import base64 as _b64
+    import re as _re
+    sentinel = _re.search(r"__HERMES_RB_[0-9a-f]+__", command).group(0)
+    body = _b64.b64encode(payload).decode() if rc == 0 else ""
+    size = f"{len(payload)}\n{sentinel}\n" if "wc -c <" in command else ""
+    return f"{sentinel}\n{body}\n{sentinel}\n{size}{rc}\n"
+
 class TestPatchReplacePostWriteVerification:
     """Tests for the post-write verification added in patch_replace.
 
@@ -457,12 +575,12 @@ class TestPatchReplacePostWriteVerification:
         file_contents = {"/tmp/test/a.py": "hello world\n"}
 
         def side_effect(command, **kwargs):
-            # cat reads the file — both the initial read and the verify read
-            if command.startswith("cat "):
-                # Extract path from cat command (strip quotes)
+            # the byte-exact read (base64 over the transport) — both the initial read and the verify read
+            if "base64 < " in command:
                 for path in file_contents:
                     if path in command:
-                        return {"output": file_contents[path], "returncode": 0}
+                        return {"output": _fenced_base64_reply(command, file_contents[path].encode()),
+                                "returncode": 0}
                 return {"output": "", "returncode": 1}
             # mkdir for parent dir
             if command.startswith("mkdir "):
@@ -490,18 +608,18 @@ class TestPatchReplacePostWriteVerification:
 
     def test_patch_replace_fails_when_verify_read_errors(self, mock_env):
         """If the verify-read step itself fails (exit code != 0), return an error."""
-        call_count = {"cat": 0}
+        call_count = {"read": 0}
         state = {"content": "hello world\n"}
 
         def side_effect(command, stdin_data=None, **kwargs):
             if stdin_data is not None:  # write (atomic temp-file + mv script)
                 state["content"] = stdin_data
                 return {"output": "", "returncode": 0}
-            if command.startswith("cat "):  # read
-                call_count["cat"] += 1
+            if "base64 < " in command:  # byte-exact read
+                call_count["read"] += 1
                 # First read (initial fetch) succeeds; second read (verify) fails
-                if call_count["cat"] == 1:
-                    return {"output": state["content"], "returncode": 0}
+                if call_count["read"] == 1:
+                    return {"output": _fenced_base64_reply(command, state["content"].encode()), "returncode": 0}
                 return {"output": "", "returncode": 1}
             if command.startswith("mkdir "):
                 return {"output": "", "returncode": 0}
@@ -678,12 +796,9 @@ class TestByteLayerBinaryDetection:
     # --- transport: _sample_file_bytes ------------------------------------
 
     def test_sample_decodes_base64_transport(self, mock_env):
-        import base64 as b64
         payload = ("汉字" * 400).encode("utf-8")[:1000]
-        mock_env.execute.return_value = {
-            "output": b64.b64encode(payload).decode() + "\n",
-            "returncode": 0,
-        }
+        mock_env.execute.side_effect = lambda command, **kwargs: {
+            "output": _fenced_base64_reply(command, payload), "returncode": 0}
         ops = ShellFileOperations(mock_env)
         assert ops._sample_file_bytes("/tmp/x.txt") == payload
 
@@ -751,25 +866,25 @@ class TestEscapeNativeToolArg:
     def _ops(self, mock_env):
         return ShellFileOperations(mock_env)
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_native_path_kept_native(self, mock_env):
         ops = self._ops(mock_env)
         out = ops._escape_native_tool_arg(r"C:\Users\alice\project")
         assert out == "'C:/Users/alice/project'"
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_msys_path_translated_back_to_native(self, mock_env):
         ops = self._ops(mock_env)
         out = ops._escape_native_tool_arg("/c/Users/alice/project")
         assert out == "'C:/Users/alice/project'"
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_posix_path_untouched_on_windows(self, mock_env):
         """Multi-segment POSIX paths (/home/x, /tmp/y) are not drive paths."""
         ops = self._ops(mock_env)
         assert ops._escape_native_tool_arg("/tmp/workdir") == "'/tmp/workdir'"
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_rg_content_search_uses_native_form(self, mock_env):
         """The call site, not just the helper: search must hand the native rg
         binary C:/..., never the MSYS /c/... form (the live os-error-3 failure)."""
@@ -791,7 +906,7 @@ class TestEscapeNativeToolArg:
         assert any("'C:/Users/alice/project'" in c for c in rg_cmds), rg_cmds
         assert all("/c/Users" not in c for c in rg_cmds), rg_cmds
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_shell_linter_uses_native_form(self, mock_env):
         """_check_lint must hand node/python/etc. the native C:/ path.
 

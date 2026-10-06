@@ -12,6 +12,7 @@ import os
 import select
 import shutil
 import signal
+import subprocess
 import sys
 import time
 
@@ -21,11 +22,9 @@ pytest.importorskip("ptyprocess", reason="ptyprocess not installed")
 
 from hermes_cli.pty_bridge import PtyBridge
 
-
 skip_on_windows = pytest.mark.skipif(
     sys.platform.startswith("win"), reason="PTY bridge is POSIX-only"
 )
-
 
 def _read_until(bridge: PtyBridge, needle: bytes, timeout: float = 5.0) -> bytes:
     """Accumulate PTY output until we see `needle` or time out."""
@@ -40,10 +39,8 @@ def _read_until(bridge: PtyBridge, needle: bytes, timeout: float = 5.0) -> bytes
             return bytes(buf)
     return bytes(buf)
 
-
 @skip_on_windows
 class TestPtyBridgeSpawn:
-
 
     def test_spawn_raises_on_missing_argv0(self, tmp_path):
         with pytest.raises((FileNotFoundError, OSError)):
@@ -60,7 +57,6 @@ class TestPtyBridgeSpawn:
             assert PTY_HOST_DASHBOARD.encode() in output
         finally:
             bridge.close()
-
 
 @skip_on_windows
 class TestPtyBridgeIO:
@@ -168,7 +164,6 @@ class TestPtyBridgeIO:
         finally:
             bridge.close()
 
-
 @skip_on_windows
 class TestPtyBridgeResize:
     def test_resize_updates_child_winsize(self):
@@ -195,7 +190,6 @@ class TestPtyBridgeResize:
         finally:
             bridge.close()
 
-
 @skip_on_windows
 class TestClampDimension:
     def test_clamps_above_max(self):
@@ -203,7 +197,6 @@ class TestClampDimension:
 
         assert _clamp_dimension(131072, _MAX_COLS) == _MAX_COLS
         assert _clamp_dimension(131072, _MAX_ROWS) == _MAX_ROWS
-
 
     def test_non_numeric_falls_back_to_min(self):
         from hermes_cli.pty_bridge import _MAX_COLS, _clamp_dimension
@@ -222,7 +215,6 @@ class TestClampDimension:
         rows = _clamp_dimension(1, _MAX_ROWS)
         # Should not raise.
         _struct.pack("HHHH", rows, cols, 0, 0)
-
 
 @skip_on_windows
 class TestPtyBridgeClose:
@@ -270,22 +262,173 @@ class TestPtyBridgeClose:
         fake = _FakeProc()
 
         def fake_killpg(pgid, sig):
+            if not fake.alive:
+                raise ProcessLookupError  # the whole group exited with its leader
             sent.append((pgid, sig))
             fake.alive = False
 
-        monkeypatch.setattr(os, "getpgid", lambda pid: 67890)
         monkeypatch.setattr(os, "killpg", fake_killpg)
 
         bridge = PtyBridge.__new__(PtyBridge)
         bridge._proc = fake
         bridge._fd = -1
+        # recorded at spawn; the child leads its own group (pgid == pid)
+        bridge._pgid = 12345
         bridge._closed = False
 
         bridge.close()
 
-        assert sent == [(67890, signal.SIGHUP)]
+        assert sent == [(12345, signal.SIGHUP)]
         assert bridge._closed is True
 
+    def test_close_never_killpgs_a_shared_group(self, monkeypatch):
+        """A child that does not lead its own group shares OURS — killpg would
+        signal the TUI's own process tree. The fallback is per-signal proc.kill."""
+        sent: list[tuple[int, signal.Signals]] = []
+        direct: list[signal.Signals] = []
+
+        class _FakeProc:
+            pid = 12345
+            fd = -1
+
+            def __init__(self):
+                self.alive = True
+
+            def isalive(self):
+                return self.alive
+
+            def kill(self, sig):
+                direct.append(sig)
+                self.alive = False
+
+            def close(self, force=False):
+                self.closed = force
+
+        fake = _FakeProc()
+        monkeypatch.setattr(os, "killpg", lambda pgid, sig: sent.append((pgid, sig)))
+
+        bridge = PtyBridge.__new__(PtyBridge)
+        bridge._proc = fake
+        bridge._fd = -1
+        # recorded at spawn: the child was found in OUR group (pgid != pid)
+        bridge._pgid = 67890
+        bridge._closed = False
+
+        bridge.close()
+
+        assert sent == []  # the guard nulls the non-leader pgid: no group signal
+        assert direct == [signal.SIGHUP]
+        assert bridge._closed is True
+
+    def test_close_ends_helpers_that_outlive_a_dead_leader(self):
+        # #76759: the helper ignores SIGHUP and keeps the PTY slave open, so the leader's death
+        # never produces EOF. close() must still end it.
+        bridge = PtyBridge.spawn(["/bin/sh", "-c", "trap '' HUP; sleep 60 & echo helper=$!; exec sleep 60"])
+        out = _read_until(bridge, b"\n", timeout=5.0)
+        helper = int(out.split(b"helper=")[1].split()[0])
+        os.kill(bridge.pid, signal.SIGKILL)
+        deadline = time.monotonic() + 3.0
+        while bridge.is_alive() and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+        bridge.close()
+
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(helper, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        os.kill(helper, signal.SIGKILL)
+        pytest.fail(f"helper pid {helper} survived close() after its leader died")
+
+    @pytest.mark.live_system_guard_bypass
+    def test_close_sweeps_helpers_of_a_non_leader_child(self):
+        # The group-leadership guard (above) signals a shared-group child one PID at a
+        # time, so the group sweep cannot run: no killpg is ever safe. A helper that
+        # ignores SIGHUP must still be snapshotted before its parent dies and killed
+        # individually, or it keeps the PTY slave open forever (#76759).
+        helper = None
+
+        class _PopenBackedProc:
+            """Duck-typed ptyprocess handle around a plain Popen child that stays in
+            OUR process group (no start_new_session), exercising the non-leader branch."""
+
+            def __init__(self, popen):
+                self._popen = popen
+                self.pid = popen.pid
+                self.fd = -1
+
+            def isalive(self):
+                return self._popen.poll() is None
+
+            def kill(self, sig):
+                self._popen.send_signal(sig)
+
+            def close(self, force=False):
+                pass
+
+        # The helper subshell ignores SIGHUP itself (trap is inherited by its sleep
+        # loop), so only the sweep's SIGKILL can end it. Both it and the leader loop
+        # forever; the leader dies on the first SIGHUP close() sends it.
+        script = (
+            '/bin/sh -c \'trap "" HUP; while :; do sleep 0.05; done\' & '
+            "echo helper=$!; while :; do sleep 0.05; done"
+        )
+        popen = subprocess.Popen(["/bin/sh", "-c", script], stdout=subprocess.PIPE, text=True)
+        out = popen.stdout
+        assert out is not None
+        try:
+            line = ""
+            while "helper=" not in line:
+                line = out.readline()
+                if not line:
+                    pytest.fail("leader exited before printing its helper pid")
+            helper = int(line.split("helper=")[1].strip())
+
+            bridge = PtyBridge.__new__(PtyBridge)
+            bridge._proc = _PopenBackedProc(popen)
+            bridge._fd = -1
+            # recorded at spawn: the child was found in OUR group (pgid != pid)
+            bridge._pgid = os.getpgid(popen.pid)
+            bridge._closed = False
+
+            bridge.close()
+        finally:
+            out.close()
+            if popen.poll() is None:
+                popen.kill()
+            popen.wait()
+
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(helper, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        os.kill(helper, signal.SIGKILL)
+        pytest.fail(f"helper pid {helper} survived close() of its non-leader parent")
+
+    def test_close_lets_a_helper_finish_its_sighup_shutdown(self, tmp_path):
+        # The TUI gateway saves its sessions on SIGHUP within a 1 s grace. Once the group got
+        # SIGHUP, close() must wait for it, not re-signal or SIGKILL it early.
+        marker = tmp_path / "saved"
+        # The trap ignores further SIGHUPs (the kernel may re-send one when the session leader
+        # exits), so only an early SIGKILL from close() can stop the save.
+        script = tmp_path / "helper.sh"
+        script.write_text(
+            f"trap 'trap \"\" HUP; sleep 0.6; echo ok > {marker}; exit 0' HUP\n"
+            "echo armed\n"
+            "while :; do sleep 0.05; done\n"
+        )
+        bridge = PtyBridge.spawn(["/bin/sh", "-c", f"/bin/sh {script} & exec sleep 60"])
+        _read_until(bridge, b"armed", timeout=10.0)  # the helper's trap is installed
+
+        bridge.close()
+
+        assert marker.read_text().strip() == "ok"
 
 @skip_on_windows
 class TestPtyBridgeEnv:
@@ -299,5 +442,3 @@ class TestPtyBridgeEnv:
             assert str(tmp_path).encode() in output
         finally:
             bridge.close()
-
-

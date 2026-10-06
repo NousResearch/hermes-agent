@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.config import (
     DEFAULT_CONFIG,
@@ -35,21 +35,11 @@ from hermes_cli.config import (
 
 class TestGetHermesHome:
     def test_default_path(self):
+        from hermes_constants import _get_platform_default_hermes_home
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HOME", None)
             home = get_hermes_home()
-            if sys.platform == "win32":
-                # Windows default is %LOCALAPPDATA%\hermes — see
-                # hermes_constants._get_platform_default_hermes_home.
-                local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
-                base = (
-                    Path(local_appdata)
-                    if local_appdata
-                    else Path.home() / "AppData" / "Local"
-                )
-                assert home == base / "hermes"
-            else:
-                assert home == Path.home() / ".hermes"
+            assert home == _get_platform_default_hermes_home()
 
 
 class TestEnsureHermesHome:
@@ -403,6 +393,54 @@ class TestSaveAndLoadRoundtrip:
 
         assert config_path.read_text(encoding="utf-8") == original
         assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*"))
+
+    def test_atomic_config_write_refuses_partial_state_instead_of_wiping_config(self, tmp_path):
+        """A partial dict is not a full-state replacement: preserve the existing document."""
+        from hermes_cli.config import atomic_config_write
+
+        config_path = tmp_path / "config.yaml"
+        original = {f"k{i}": i for i in range(99)}
+        config_path.write_text(yaml.safe_dump(original), encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="would lose settings omitted"):
+            atomic_config_write(config_path, {"skills": {"disabled": ["a"]}})
+
+        assert yaml.safe_load(config_path.read_text(encoding="utf-8")) == original
+
+    def test_atomic_config_write_refuses_nested_omissions_with_same_top_level_keys(self, tmp_path):
+        """Completeness is recursive: keeping the root names must not hide sibling deletion."""
+        from hermes_cli.config import atomic_config_write
+
+        config_path = tmp_path / "config.yaml"
+        original = {
+            "plugins": {"enabled": ["guard"], "disabled": [], "config": {"guard": {"mode": "strict"}}},
+            "model": {"default": "gpt-5"},
+        }
+        config_path.write_text(yaml.safe_dump(original), encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match=r"plugins\.(enabled|config)"):
+            atomic_config_write(
+                config_path,
+                {"plugins": {"disabled": ["legacy"]}, "model": {"default": "gpt-5"}},
+            )
+
+        assert yaml.safe_load(config_path.read_text(encoding="utf-8")) == original
+
+    def test_atomic_config_replace_makes_delete_by_omission_explicit(self, tmp_path):
+        """Full-state owners can still deliberately prune keys without a count-based heuristic."""
+        from hermes_cli.config import atomic_config_replace
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({"model": {"default": "gpt-5"}, "plugins": {"enabled": ["guard"]}}),
+            encoding="utf-8",
+        )
+
+        replacement = {"model": {"default": "gpt-5"}}
+        atomic_config_replace(config_path, replacement)
+
+        assert yaml.safe_load(config_path.read_text(encoding="utf-8")) == replacement
+
 
 class TestLoadEnvInlineComments:
     def test_unquoted_hash_is_a_comment_quoted_hash_is_data(self, tmp_path):
@@ -858,6 +896,7 @@ class TestConfigSupportFloor:
 
     def test_registry_has_no_targets_below_floor(self):
         from hermes_cli.config_migrations import (
+            LEGACY_KEY_STEPS,
             MIGRATIONS,
             SUPPORT_FLOOR_VERSION,
         )
@@ -867,6 +906,9 @@ class TestConfigSupportFloor:
         # v12's own step is retained: a config AT v11 is refused, but a
         # config AT v12 must still receive every remaining migration.
         assert MIGRATIONS[0][0] == 12
+        # The unversioned allowlist is a parallel registry of ints: every entry must name a
+        # step that exists on the ladder, or an unversioned config silently drifts.
+        assert LEGACY_KEY_STEPS <= {target for target, _ in MIGRATIONS}
 
     # ── Parity fixtures ──────────────────────────────────────────────
     # Expected outputs captured by running migrate_config from origin/main
@@ -950,18 +992,13 @@ class TestConfigSupportFloor:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             migrate_config(interactive=False, quiet=True)
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        # Pin the golden version the fixtures were captured at, then compare
-        # the rest against the same-latest expectation. If _config_version has
-        # advanced past 33, only the version key may differ.
+        # The fixtures were captured at _config_version 33; later migrations
+        # may add keys, so the captured keys are a subset that must still hold.
         assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
-        raw.pop("_config_version")
         exp = dict(expected)
         exp.pop("_config_version")
-        if DEFAULT_CONFIG["_config_version"] == 33:
-            assert raw == exp
-        else:  # future migrations appended — golden subset must still hold
-            for key, val in exp.items():
-                assert raw.get(key) == val, f"parity drift on {key!r}"
+        for key, val in exp.items():
+            assert raw.get(key) == val, f"parity drift on {key!r}"
         assert (tmp_path / ".env").read_text(encoding="utf-8") == expected_env
 
 
@@ -1434,7 +1471,7 @@ class TestEnvWriteDenylist:
         assert _env_line_defines_key(line, "PATH", is_windows=True)
         assert not _env_line_defines_key(line, "PATH", is_windows=False)
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     @pytest.mark.parametrize(
         "protected_key",
         [

@@ -12,9 +12,17 @@ import logging
 from typing import Any, Dict, Optional
 
 from agent.message_metadata import append_message
+from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
+from agent.turn_failure_copy import stamp_failure
 from agent.turn_empty_response import recover_empty_response
 from agent.turn_stop_gates import apply_stop_gates
+from agent.turn_truncation import partial_result, repetition_copy
 
+_REPETITION_STOPPED = repetition_copy(
+    "before delivery",
+    "so the repeated output was discarded.",
+    "; refusing to return a",
+)
 logger = logging.getLogger("agent.conversation_loop")
 
 # Ephemeral retry scaffolding rows popped before the final answer becomes durable.
@@ -40,6 +48,7 @@ class FinalResponseVerdict:
     length_continue_retries: Any
     _pending_verification_response: Any
     _pending_verification_response_previewed: Any
+    api_call_count: int
     result: Optional[Dict[str, Any]] = None
 
 
@@ -50,6 +59,7 @@ def finish_text_response(
     _preflight_compression_blocked: Any, codex_ack_continuations: Any,
     truncated_response_parts: Any, length_continue_retries: Any,
     _pending_verification_response: Any, _pending_verification_response_previewed: Any,
+    effective_task_id: Any,
 ) -> FinalResponseVerdict:
     """Finish (or defer) a text-only assistant response in the original guard order. Every
     continuation path sets ``final_response = None`` so an acknowledgment never suppresses
@@ -70,6 +80,7 @@ def finish_text_response(
             length_continue_retries=length_continue_retries,
             _pending_verification_response=_pending_verification_response,
             _pending_verification_response_previewed=_pending_verification_response_previewed,
+            api_call_count=api_call_count,
             result=result,
         )
 
@@ -84,12 +95,22 @@ def finish_text_response(
     # from a real reply on every history surface (#111761). The row keeps ``content``
     # empty with the text in its reasoning fields and carries the promoted text as the
     # ``api_content`` sidecar, so the next turn still replays it byte-identically.
+    # Anthropic thinking (signed ``thinking`` block, or a plugin's ``*.native_assistant`` carrier
+    # of native Claude turns) is a summary written by a separate model, never the answer: it
+    # takes the empty-response continuation below instead.
     _content = assistant_message.content
     _promoted = None
     if (
         finish_reason == "stop"
         and not assistant_message.tool_calls
         and (_content is None or (isinstance(_content, str) and not _content.strip()))
+        and not any(
+            isinstance(d, dict) and (
+                (d.get("type") in ("thinking", "redacted_thinking") and (d.get("signature") or d.get("data")))
+                or str(d.get("type") or "").endswith(".native_assistant")
+            )
+            for d in getattr(assistant_message, "reasoning_details", None) or ()
+        )
     ):
         _promoted = agent._extract_reasoning(assistant_message) or None
         if _promoted:
@@ -119,6 +140,7 @@ def finish_text_response(
         _turn_exit_reason = _ev.turn_exit_reason
         active_system_prompt = _ev.active_system_prompt
         _preflight_compression_blocked = _ev.preflight_compression_blocked
+        api_call_count = _ev.api_call_count
         if _ev.action == "return":
             return _verdict("return", _ev.result)
         if _ev.action == "break":
@@ -229,7 +251,7 @@ def finish_text_response(
     codex_ack_continuations = 0
 
     if truncated_response_parts:
-        final_response = _join_truncated_parts([*truncated_response_parts, final_response])
+        final_response = _join_truncated_parts([*truncated_response_parts, (final_response, False)])
         truncated_response_parts = []
         length_continue_retries = 0
         # The continuation recovered, so the fragments stay in the transcript.
@@ -239,6 +261,24 @@ def finish_text_response(
                 _frag.pop("_length_continuation_nudge", None)
 
     final_response = agent._strip_think_blocks(final_response).strip()
+
+    # A provider may end a degenerate loop normally with finish_reason="stop" instead of
+    # exhausting its output cap (#100716). Check every completed visible text response before
+    # any verify/kanban interim emission or durable transcript write.
+    # Runaway scale and shape only: a completed answer the user asked to be repetitive is
+    # delivered, unlike a length-truncated fragment that burned the whole budget.
+    if (
+        final_response
+        and len(final_response) >= STOP_PATH_MIN_CHARS
+        and is_runaway_repetition(final_response)
+    ):
+        line, user_response, error = _REPETITION_STOPPED
+        agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
+        agent._cleanup_task_resources(effective_task_id)
+        agent._persist_session(messages, conversation_history)
+        return _verdict("return", stamp_failure(
+            partial_result(messages, api_call_count, user_response, error), "truncated", True,
+        ))
 
     final_msg = agent._build_assistant_message(assistant_message, finish_reason)
     if _promoted:

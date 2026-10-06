@@ -14,6 +14,9 @@ A small, deterministic Electron suite that guards three issue classes end to end
   - no marker is ever rendered twice, even transiently (in-page
     MutationObserver sampler — the #120005 garble healed on its own in the
     final DOM, so a final-state check alone misses it);
+  - no message is ever rendered out of order, even transiently: the same
+    sampler fails a reply above its own prompt and two messages that swap
+    places between frames;
   - backend stream integrity: each turn's concatenated `message.delta` /
     `reasoning.delta` equals what the provider streamed, and
     `message.complete` equals the final completion.
@@ -21,6 +24,16 @@ A small, deterministic Electron suite that guards three issue classes end to end
     `switch-back-race.spec.ts` forces both orders of "reply completes" vs "the
     switch-back REST hydrate resolves" with gates (no sleeps) under the same
     oracle.
+    `reply-settle-paths.spec.ts` forces the shapes duplicate-reply reports
+    describe: an answer the backend repeats as the final reply (with a
+    review.summary row delivered before its message.complete, #131626), a
+    steer at each point of a tool turn, then reload and switch-back over the
+    folded tool turns. `switch-back-race.spec.ts` runs both orders with a tool
+    turn too (history folds it under its first row, #128809).
+    `behind-window-send.spec.ts`: two windows on one chat, window 2 deaf to
+    window 1's turn pings; window 2's send from behind goes through with no
+    "Chat out of date" refusal, the model's request carries window 1's turn,
+    and both windows converge under the oracle.
     `onboarding-first-chat.spec.ts` starts from a fresh home with no provider:
     the real onboarding (custom endpoint → the fake provider's URL), then the
     first chat, a second turn and a reload under the same oracle, plus
@@ -36,9 +49,47 @@ A small, deterministic Electron suite that guards three issue classes end to end
   so orphans reparented to init are counted); relaunch the same home 3× → one
   backend per boot, zero after each quit, transcript cold-hydrates once.
 
+- **Session lineage** — `lineage-sidebar.spec.ts`: a branch child is born
+  titled (#121062) and is its own sidebar row; switching branch ↔ parent (3
+  round trips + reload) never renders the other session's turn or a duplicate
+  part (in-page sampler). `lineage-rotation.spec.ts`: REAL rotated
+  compression rows (`hermes chat -q` with `compression.in_place: false` on the
+  same `HERMES_HOME`, compacting against the fake provider), then the Desktop
+  shows one row per lineage live, after rotations, after reload and after a
+  cold relaunch (#121148). `lineage-compaction-prompt.spec.ts`: a redirect
+  prompt acknowledged mid-turn whose turn then compacts; the refresh passes
+  through `preserveLocalPendingTurnMessages` (#121088).
+- **Remote topology** — `remote-topology.spec.ts`: the whole app on a remote
+  `hermes serve` (`HERMES_DESKTOP_REMOTE_URL` + token): a client-only image is
+  shipped as bytes, never as a client path (#120730, env-remote shape); remote
+  backend restart keeps the session. `remote-secondary.spec.ts`: the Bot-Mode
+  shape of #120730 — local primary backend + a remote secondary connection in
+  `connections.json`, the chat owned by the remote connection. Both hide the
+  client's picture folder from the backend with a private mount namespace
+  (unprivileged user namespaces; without them the test is annotated
+  `fidelity` because a same-host path would resolve on the backend).
+  `fleet-condensed-default.spec.ts`: local primary + a remote connection with
+  enough profiles to condense the sidebar rail; the profile menu lists the
+  ACTIVE gateway's default (checked, home glyph) on both sides of a switch
+  (#106017, #131632).
+- **Packaged build** — `packaged-smoke.spec.ts`: asarUnpack contract of the
+  `electron-builder --dir` output (#121097) and the packaged binary booting to
+  a first chat (≤60 s to interactive, main-process log tail on failure). It
+  runs this checkout's Python backend, so it proves the packaged shell and
+  renderer, not a bundled runtime. Skipped without a build unless
+  `HERMES_E2E_REQUIRE_PACKAGED=1`.
+
+Known open bugs (`known.ts`): a scenario that reproduces an OPEN issue keeps
+its correct assertion as the test's LAST assertion via `expectNoSymptom`. When
+it fails with that bug's own message the test is marked expected-failing at
+run time (annotation `known-bug`); any other failure is a real failure; a
+clean pass is a pass, so a fix merging first never turns main red. Remove the
+`KNOWN` entry once the fix lands.
+
 Rules the suite keeps (why the old lane was disabled): no fixed sleeps as
 synchronisation (every wait is on a frame, pid, DOM state or persisted row
-with a deadline), no shared mock state between scenarios (replies are keyed
+with a deadline; the only timed waits are bounded observation windows for a
+symptom sampler), no shared mock state between scenarios (replies are keyed
 by the turn's own marker), no visual baselines, `retries: 0`, one worker,
 sandboxed `HOME`/`HERMES_HOME`/user-data per test, all `HERMES_*` and
 credential env stripped from the spawned app.

@@ -18,7 +18,6 @@ import pytest
 
 from plugins.memory.holographic.store import MemoryStore
 
-
 @pytest.fixture(autouse=True)
 def _clean_shared_registry():
     """Each test starts and ends with an empty shared-connection registry."""
@@ -39,11 +38,9 @@ def _clean_shared_registry():
     MemoryStore._shared.clear()
     assert not leaked, f"test leaked shared connections: {leaked}"
 
-
 @pytest.fixture
 def db_path(tmp_path):
     return tmp_path / "memory_store.db"
-
 
 class TestSharedConnection:
     def test_same_path_shares_one_connection(self, db_path):
@@ -68,6 +65,7 @@ class TestSharedConnection:
             a.close()
             b.close()
 
+    @pytest.mark.require_symlinks
     def test_symlinked_path_shares_connection(self, tmp_path):
         """A symlink to the same DB file must hit the same registry entry —
         otherwise two connections to one file silently reintroduce the
@@ -96,8 +94,6 @@ class TestSharedConnection:
         finally:
             a.close()
             b.close()
-
-
 
 class TestCloseSemantics:
     def test_closing_one_instance_keeps_sibling_alive(self, db_path):
@@ -143,7 +139,6 @@ class TestCloseSemantics:
         with MemoryStore(db_path) as store:
             facts = store.list_facts()
         assert [f["content"] for f in facts] == ["first lifetime"]
-
 
 class TestConcurrency:
     def test_concurrent_multi_instance_writers(self, db_path):
@@ -196,6 +191,3 @@ class TestConcurrency:
         finally:
             broken.close()
             sibling.close()
-
-
-

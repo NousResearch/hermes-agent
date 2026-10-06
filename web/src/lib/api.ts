@@ -4,6 +4,7 @@ import {
   type ModelOptionsResult,
 } from "@hermes/shared";
 
+import type { AuxiliaryModelsResponse } from "./api-aux";
 import { dashboardServingProfile } from "./profile-bootstrap";
 
 // The dashboard can be served either at the root of its host (e.g.
@@ -133,6 +134,8 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/dashboard/theme",
   "/api/dashboard/font",
   "/api/dashboard/plugins",
+  // The shared-metrics answer is one per profile (telemetry.shared_metrics in its config.yaml).
+  "/api/shared-metrics",
 ];
 
 // The dashboard's own profile when nothing else named one. The backend injects it only
@@ -502,7 +505,7 @@ export const api = {
       },
     ),
   bulkDeleteSessions: (ids: string[], profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean; deleted: number }>("/api/sessions/bulk-delete", {
+    fetchJSON<{ ok: boolean; deleted: number; skipped_active?: string[] }>("/api/sessions/bulk-delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids, profile: profile || undefined }),
@@ -646,6 +649,17 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+  getSharedMetricsConsent: (profile = getManagementProfile()) =>
+    fetchJSON<SharedMetricsConsent>(appendProfileParam("/api/shared-metrics/consent", profile)),
+  saveSharedMetricsConsent: (
+    answer: { enabled: boolean; send: boolean },
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<SharedMetricsConsent>(appendProfileParam("/api/shared-metrics/consent", profile), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(answer),
+    }),
   saveConfig: (config: Record<string, unknown>, profile = getManagementProfile()) =>
     fetchJSON<{ ok: boolean }>(appendProfileParam("/api/config", profile), {
       method: "PUT",
@@ -685,8 +699,10 @@ export const api = {
   // Cron jobs
   getCronJobs: (profile = "all") =>
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
-  getCronDeliveryTargets: () =>
-    fetchJSON<{ targets: CronDeliveryTarget[] }>("/api/cron/delivery-targets"),
+  getCronDeliveryTargets: (profile = "default") =>
+    fetchJSON<{ targets: CronDeliveryTarget[] }>(
+      `/api/cron/delivery-targets?profile=${encodeURIComponent(profile)}`,
+    ),
   createCronJob: (job: CronJobMutation, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
@@ -716,8 +732,10 @@ export const api = {
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
   // Automation Blueprints — parameterized automation blueprints
-  getAutomationBlueprints: () =>
-    fetchJSON<{ blueprints: AutomationBlueprint[] }>("/api/cron/blueprints"),
+  getAutomationBlueprints: (profile = "default") =>
+    fetchJSON<{ blueprints: AutomationBlueprint[] }>(
+      `/api/cron/blueprints?profile=${encodeURIComponent(profile)}`,
+    ),
   instantiateAutomationBlueprint: (
     body: { blueprint: string; values: Record<string, string> },
     profile = "default",
@@ -1662,6 +1680,10 @@ export interface MessagingPlatformEnvVar {
   help: string;
   url: string | null;
   is_password: boolean;
+  /** Comma-separated allowlist rendered one entry per ID (absent on older backends). */
+  is_list?: boolean;
+  /** Plain saved value, sent only for allowlists (they are IDs, not secrets). */
+  value?: string | null;
   advanced: boolean;
 }
 
@@ -1806,6 +1828,7 @@ export interface MemoryProviderExternalDependency {
 
 export interface MemoryProviderSetupInfo {
   pip_dependencies: string[];
+  python_dependencies_declared?: boolean;
   external_dependencies: MemoryProviderExternalDependency[];
   required_env: string[];
   dependencies_installed: boolean;
@@ -1970,6 +1993,14 @@ export interface PlatformStatus {
   error_message?: string;
   state: string;
   updated_at: string;
+}
+
+/** One profile's shared-metrics answer; `decided` is false until either key is written. */
+export interface SharedMetricsConsent {
+  enabled: boolean;
+  send: boolean;
+  decided: boolean;
+  managed: boolean;
 }
 
 export interface StatusResponse {
@@ -2567,17 +2598,7 @@ export interface ModelInfoResponse {
 
 export type { ModelOptionProvider, ModelOptionsResult };
 
-export interface AuxiliaryTaskAssignment {
-  task: string;
-  provider: string;
-  model: string;
-  base_url: string;
-}
-
-export interface AuxiliaryModelsResponse {
-  tasks: AuxiliaryTaskAssignment[];
-  main: { provider: string; model: string };
-}
+export type { AuxiliaryModelsResponse, AuxiliaryTaskAssignment } from "./api-aux";
 
 export interface MoaModelSlot {
   provider: string;

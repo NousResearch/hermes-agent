@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import socket
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -126,12 +127,15 @@ def _install_browsers(tmp_path, monkeypatch, *, playwright: bool, system: bool):
     roots = tmp_path / "pw"
     roots.mkdir(parents=True)
     monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(roots))
-    monkeypatch.setattr("tools.browser_tool_install._chromium_search_roots", lambda: [str(roots)])
     pw_exe = roots / "chromium-1200" / "chrome-linux" / "chrome"
     if playwright:
         pw_exe.parent.mkdir(parents=True)
         pw_exe.write_text("#!/bin/sh\n", encoding="utf-8")
         pw_exe.chmod(0o755)
+    monkeypatch.setattr(
+        "hermes_cli.browser_runtime.chromium_executable",
+        lambda *, allow_override=True: str(pw_exe) if playwright else None,
+    )
     sys_exe = tmp_path / "bin" / "chromium"
     if system:
         sys_exe.parent.mkdir(parents=True)
@@ -241,6 +245,26 @@ def test_headless_shell_override_is_not_a_headed_browser(tmp_path, monkeypatch):
     assert browser.executable() == sys_exe  # a real headed browser elsewhere still wins over the override
 
 
+def test_headless_override_does_not_hide_pm_headed_browser(tmp_path, monkeypatch):
+    import pm
+    from hermes_cli.browser_runtime import chromium_executable
+
+    headless = tmp_path / "chrome-headless-shell"
+    headed = tmp_path / "chrome"
+    for exe in (headless, headed):
+        exe.write_text("#!/bin/sh\n", encoding="utf-8")
+        exe.chmod(0o755)
+    monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", str(headless))
+    monkeypatch.setattr(pm, "installed_package", lambda name: SimpleNamespace(binary=headed))
+    monkeypatch.setattr(browser, "_system_executable", lambda: None)
+    monkeypatch.setattr(browser, "_userns_restricted", lambda: False)
+
+    assert chromium_executable() == str(headless)  # ordinary headless browsing keeps its override
+    dock = browser.dock_launch()
+    assert dock is not None and dock[0] == str(headed)
+    assert browser.env_for_agent({})["AGENT_BROWSER_EXECUTABLE_PATH"] == str(headed)
+
+
 @pytest.mark.parametrize("engine, headed, starts", [("chrome", True, 1), ("chrome", False, 0), ("lightpanda", True, 0)])
 def test_headed_chromium_spawn_asks_the_screen_to_start_but_the_env_builder_never_does(tmp_path, monkeypatch, engine, headed, starts):
     """Regression for #110050 at the right boundary: a real browser command that forks a headed Chromium daemon
@@ -263,7 +287,7 @@ def test_headed_chromium_spawn_asks_the_screen_to_start_but_the_env_builder_neve
         def wait(self, timeout=None): return 0
     def _fake_popen(argv, env, socket_dir, tag, stdin_payload=None):
         for slot in ("stdout", "stderr"):
-            Path(socket_dir, f"_{slot}_{tag}").write_text("{}" if slot == "stdout" else "")
+            Path(socket_dir, f"_{slot}_{tag}").write_text("{}" if slot == "stdout" else "", encoding="utf-8")
         return _Done()
     monkeypatch.setattr(session, "_popen_agent_browser", _fake_popen)
     monkeypatch.setattr(session, "_prepare_session_socket_dir", lambda name: str(tmp_path))
@@ -327,7 +351,7 @@ def test_a_headless_shell_pin_is_replaced_while_a_screen_is_up(tmp_path, monkeyp
     headed.write_text("#!/bin/sh\n", encoding="utf-8")
     headed.chmod(0o755)
     monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path / "bot-desktop")
-    monkeypatch.setattr(browser, "_playwright_executable", lambda: str(headed))
+    monkeypatch.setattr(browser, "_managed_executable", lambda: str(headed))
     monkeypatch.delenv("AGENT_BROWSER_PROFILE", raising=False)
     # Unpinned, the ubuntu runner (non-root, userns-restricted) flips executable() to
     # its own /usr/bin/google-chrome; host policy is not the subject here.
@@ -348,7 +372,7 @@ def test_a_real_user_pin_is_still_honoured(tmp_path, monkeypatch):
     other.write_text("#!/bin/sh\n", encoding="utf-8")
     other.chmod(0o755)
     monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path / "bot-desktop")
-    monkeypatch.setattr(browser, "_playwright_executable", lambda: str(other))
+    monkeypatch.setattr(browser, "_managed_executable", lambda: str(other))
 
     env = browser.env_for_agent({"AGENT_BROWSER_EXECUTABLE_PATH": str(mine)})
     assert env["AGENT_BROWSER_EXECUTABLE_PATH"] == str(mine)

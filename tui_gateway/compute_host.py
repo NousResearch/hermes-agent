@@ -253,6 +253,13 @@ class ComputeHost:
             self._reply("turn.started", sid, request_id, started_ns=now_ns())
             with contextlib.suppress(Exception):
                 server._ensure_session_db_row(session)
+                # #85303: the parent's prompt.submit reopened this row before dispatching here (or
+                # the turn would not have been admitted), but an old parent predating that fix --
+                # or a synthesized re-entry -- must not strand the child's transcript writes in a
+                # row still marked ended_at. Same best-effort shape as the row binding above.
+                with server._session_db(session) as db:
+                    if db is not None:
+                        server._reopen_if_finalized(db, str(session.get("session_key") or ""))
             with contextlib.suppress(Exception):
                 import hermes_undo
                 hermes_undo.on_user_message_appended(session["session_key"])
@@ -318,6 +325,11 @@ class ComputeHost:
             session = self._build_server_session(server, frame, sid)
         if isinstance(frame.get("attached_images"), list):
             session["attached_images"] = list(frame.get("attached_images") or [])
+        # A model switch queued on the host side while this session was busy rides
+        # the turn frame; adopt it here so the child's turn thread applies it via
+        # _apply_pending_model_switch — in the child the live agent exists.
+        if frame.get("pending_model_switch"):
+            session["pending_model_switch"] = dict(frame["pending_model_switch"])
         return session
 
     def _build_server_session(self, server: Any, frame: dict[str, Any], sid: str) -> dict:
@@ -400,6 +412,10 @@ class ComputeHost:
         session["profile_home"] = profile_home or session.get("profile_home")
         if frame.get("model_override") is not None:
             session["model_override"] = frame.get("model_override")
+        # See _ensure_server_session's existing-session branch — a queued model
+        # switch crosses the process boundary and applies at this child's turn start.
+        if frame.get("pending_model_switch"):
+            session["pending_model_switch"] = dict(frame["pending_model_switch"])
         return session
 
     def _handle_reload_mcp(self, frame: dict[str, Any]) -> None:
@@ -427,7 +443,8 @@ class ComputeHost:
             else:
                 ack = self._control_ack(server, frame, session)
                 if "error" in ack:
-                    self._reply("control.error", sid, request_id, message=ack["error"])
+                    self._reply("control.error", sid, request_id, message=ack["error"],
+                                **({"code": c} if (c := ack.get("code")) else {}))
                 else:
                     self._reply("control.ack", sid, request_id, route_name=route_name, **ack)
 
@@ -459,14 +476,19 @@ class ComputeHost:
             response = server._methods[route_name](frame.get("request_id"), params)
             if "error" in response:
                 failure = _CONTROL_FAILURES[route_name]
-                return {"error": str(response["error"].get("message") or failure)}
+                return {"error": str(response["error"].get("message") or failure), "code": response["error"].get("code")}
             ack = {"result": response.get("result") or {}}
             if route_name == "session.save":
                 return ack
             with session["history_lock"]:
                 ack.update(_history_meta(session))
         else:
-            output = server._mirror_slash_side_effects(sid, session, command) if command else ""
+            if route_name == "slash.refine":
+                parts = command.lstrip("/").split(maxsplit=1)
+                focus = parts[1] if len(parts) > 1 else ""
+                output = server._live_slash_command_output(sid, session, "refine", focus) or ""
+            else:
+                output = server._mirror_slash_side_effects(sid, session, command) if command else ""
             with session["history_lock"]:
                 messages = server._history_to_messages(list(session.get("history") or []), profile_home=session.get("profile_home"))
                 ack = {"output": output, **_history_meta(session), "messages": messages}
@@ -522,9 +544,15 @@ def _default_workers() -> int:
 
 def run_host(stdin: Any = None, stdout: Any = None) -> None:
     os.environ["HERMES_COMPUTE_HOST_CHILD"] = "1"
-    stdin = stdin or sys.stdin
+    # JSONL framing is byte-oriented; avoid text-stream read-ahead on Windows pipes.
+    stdin = stdin if stdin is not None else getattr(sys.stdin, "buffer", sys.stdin)
     host = ComputeHost(stdout=stdout or sys.stdout)
     shutting_down = threading.Event()
+    # No client is connected to this process: session-less broadcasts (``broadcast_plugin_event``
+    # from a plugin tool/hook running in the isolated turn) ride the host pipe to the parent
+    # gateway, which fans them out to its clients (compute_host_bridge._relay_compute_host_rpc).
+    from tui_gateway import server
+    server.register_live_transport(host._transport)
 
     def _signal_handler(_signum, _frame) -> None:
         if shutting_down.is_set():
@@ -564,6 +592,7 @@ def run_host(stdin: Any = None, stdout: Any = None) -> None:
             if not reader.is_alive():
                 break
     finally:
+        server.unregister_live_transport(host._transport)
         host.shutdown(reason="stdin_closed", wait=2.0)
 
 
@@ -575,86 +604,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from dataclasses import field  # noqa: F401,E402
-from dataclasses import dataclass  # noqa: F401,E402
-from dataclasses import dataclass  # noqa: F401,E402
-from dataclasses import field  # noqa: F401,E402
-
-@dataclass
-class SpikeAgent:
-    """A deterministic AIAgent-shaped object for pipe/interrupt measurements."""
-
-    session_id: str
-    history: list[dict[str, str]] = field(default_factory=list)
-    _interrupt: threading.Event = field(default_factory=threading.Event)
-
-    def clear_interrupt(self) -> None:
-        self._interrupt.clear()
-
-    def interrupt(self, *, hard_cancel: bool = False) -> None:
-        self._interrupt.set()
-
-    def run_conversation(
-        self,
-        prompt: str,
-        *,
-        conversation_history: list[dict[str, str]] | None = None,
-        stream_callback: Callable[[str], None] | None = None,
-        delta_count: int = 24,
-        delay_s: float = 0.001,
-    ) -> dict[str, Any]:
-        base_history = list(conversation_history if conversation_history is not None else self.history)
-        chunks: list[str] = []
-        interrupted = False
-        for index in range(max(0, int(delta_count))):
-            if self._interrupt.is_set():
-                interrupted = True
-                break
-            chunk = f"{self.session_id}:{prompt}:{index:04d} "
-            chunks.append(chunk)
-            if stream_callback is not None:
-                stream_callback(chunk)
-            if delay_s > 0:
-                time.sleep(delay_s)
-        if self._interrupt.is_set():
-            interrupted = True
-        final = "".join(chunks)
-        if interrupted:
-            final += "[interrupted]"
-        messages = [
-            *base_history,
-            {"role": "user", "content": prompt},
-            {"role": "assistant", "content": final},
-        ]
-        self.history = messages
-        return {"final_response": final, "messages": messages, "interrupted": interrupted}
-
-@dataclass
-class HostSession:
-    sid: str
-    agent: SpikeAgent
-    history_version: int = 0
-    running: bool = False
-    lock: threading.Lock = field(default_factory=threading.Lock)
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'request_hard_interrupt': ('agent.interrupt_compat', 'request_hard_interrupt'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

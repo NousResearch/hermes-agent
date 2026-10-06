@@ -205,21 +205,30 @@ def _purge_allowlist_entries(entries, platform: str, user_id: str):
 
 
 def _sync_live_adapter_allowlist_remove(platform: str, user_id: str) -> None:
-    """Clear revoked principals from in-process adapter ``_allow_from`` snapshots,
-    so intake does not keep authorizing from a stale snapshot until restart."""
+    """Clear revoked principals from in-process adapter allowlist snapshots,
+    so intake and adapter-owned controls do not keep authorizing until restart."""
     platform_name = (platform or "").strip().lower()
     if not platform_name or not str(user_id or "").strip():
         return
     for adapter in _iter_live_gateway_adapters():
         if _adapter_platform_name(adapter) != platform_name:
             continue
-        if hasattr(adapter, "_allow_from"):
-            with contextlib.suppress(Exception):
-                adapter._allow_from = _purge_allowlist_entries(set(adapter._allow_from or ()), platform_name, user_id)
+        for attr in ("_allow_from", "_allowed_user_ids"):
+            if hasattr(adapter, attr):
+                with contextlib.suppress(Exception):
+                    current = getattr(adapter, attr)
+                    purged = _purge_allowlist_entries(current, platform_name, user_id)
+                    if isinstance(current, set):
+                        # In place: Discord approval views / VoiceReceiver hold this same set.
+                        current.intersection_update(purged)
+                    else:
+                        setattr(adapter, attr, purged)
         extra = getattr(getattr(adapter, "config", None), "extra", None)
-        if isinstance(extra, dict) and "allow_from" in extra:
-            with contextlib.suppress(Exception):
-                extra["allow_from"] = _purge_allowlist_entries(extra.get("allow_from"), platform_name, user_id)
+        if isinstance(extra, dict):
+            for key in ("allow_from", "allowed_users"):
+                if key in extra:
+                    with contextlib.suppress(Exception):
+                        extra[key] = _purge_allowlist_entries(extra.get(key), platform_name, user_id)
 
 
 def _sync_allowlist_remove(platform: str, user_id: str) -> None:
@@ -250,7 +259,7 @@ def _load_json_file(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         return data if isinstance(data, dict) else {}
     except PermissionError as e:
         try:

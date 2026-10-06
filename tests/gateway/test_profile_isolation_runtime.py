@@ -14,6 +14,7 @@ profile's path is used.  They are the productionized form of the manual smoke
 probes used to confirm the bug class.
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -107,7 +108,7 @@ class TestRichSentStorePathResolution:
 
         b_seen = _under_override(prof_b, lambda: rss._store_path())
         assert b_seen.startswith(str(prof_b))
-        assert b_seen.endswith("state/rich_sent_index.json")
+        assert b_seen.endswith(os.path.join("state", "rich_sent_index.json"))
 
 
 class TestGatewayHooksDirResolution:

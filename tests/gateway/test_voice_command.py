@@ -592,7 +592,7 @@ class TestVoiceChannelCommands:
         mock_adapter._resolve_channel_prompt = MagicMock(return_value="Be terse in #dev.")
         runner.adapters[Platform.DISCORD] = mock_adapter
         await runner._handle_voice_channel_input(111, 42, "Hello from VC")
-        mock_adapter._resolve_channel_prompt.assert_called_once_with("123")
+        mock_adapter._resolve_channel_prompt.assert_called_once_with("123", None)
         event = mock_adapter.handle_message.call_args[0][0]
         assert event.channel_prompt == "Be terse in #dev."
 
@@ -697,7 +697,7 @@ class TestDiscordVoiceChannelMethods:
         adapter._voice_listen_tasks[111] = MagicMock()
         adapter._is_allowed_user = MagicMock(return_value=True)
 
-        async def process(guild_id, user_id, pcm_data):
+        async def process(guild_id, user_id, pcm_data, captured_for):
             events.append("process")
 
         adapter._process_voice_input = process
@@ -816,8 +816,8 @@ class TestDiscordVoiceChannelMethods:
         with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
              patch("tools.transcription_tools.transcribe_audio",
                    return_value={"success": True, "transcript": "Hello"}), \
-             patch("tools.voice_mode.is_whisper_hallucination", return_value=False):
-            await adapter._process_voice_input(111, 42, pcm_data)
+             patch("tools.voice_mode_transcript.is_whisper_hallucination", return_value=False):
+            await adapter._process_voice_input(111, 42, pcm_data, None)
 
         callback.assert_called_once_with(guild_id=111, user_id=42, transcript="Hello")
 

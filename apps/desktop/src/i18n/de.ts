@@ -1809,6 +1809,7 @@ export const deOverrides = {
       cloudConnectedTo: name => `Mit ${name} verbunden.`,
       cloudAgentProvisioning: 'Provisionierung…',
       cloudStatusLabel: status => `Status: ${status}`,
+      cloudGatewayStates: { active: 'Aktiv', degraded: 'Eingeschränkt', down: 'Ausgefallen' },
       remoteUrlTitle: 'Remote-URL',
       remoteUrlDesc: 'Basis-URL für das Remote-Dashboard-Backend. Pfad-Präfixe werden unterstützt, z. B. /hermes.',
       probing: 'Authentifizierungsmethode dieses Gateways wird geprüft…',

@@ -1491,6 +1491,7 @@ export const en: Translations = {
       cloudConnectedTo: name => `Connected to ${name}.`,
       cloudAgentProvisioning: 'Provisioning…',
       cloudStatusLabel: status => `Status: ${status}`,
+      cloudGatewayStates: { active: 'Active', degraded: 'Degraded', down: 'Down' },
       remoteUrlTitle: 'Remote URL',
       remoteUrlDesc: 'Base URL for the remote dashboard backend. Path prefixes are supported, for example /hermes.',
       probing: 'Checking how this gateway authenticates…',

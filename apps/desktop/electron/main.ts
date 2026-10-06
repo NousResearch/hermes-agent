@@ -129,7 +129,7 @@ import { registerChatOnboardingWindow } from './chat-onboarding-window'
 import { provisionCliLinks } from './cli-provision'
 import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
 import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
-import { discoverWithTeamFallback } from './cloud-discovery'
+import { cloudGatewayState, discoverWithTeamFallback } from './cloud-discovery'
 import { createCloudSessionRecovery } from './cloud-session-recovery'
 import { installCommandScreenshot } from './command-screenshot'
 import { composerImageTimestamp } from './composer-image-name'
@@ -8307,7 +8307,7 @@ function trimCloudAgents(body) {
       name: typeof a.name === 'string' ? a.name : a.id,
       status: typeof a.status === 'string' ? a.status : 'unknown',
       dashboardUrl: typeof a.dashboardUrl === 'string' ? a.dashboardUrl : null,
-      dashboardGatewayState: typeof a.dashboardGatewayState === 'string' ? a.dashboardGatewayState : 'unknown'
+      dashboardGatewayState: cloudGatewayState(a.dashboardGatewayState)
     }))
 }
 

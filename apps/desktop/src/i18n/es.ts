@@ -1808,6 +1808,7 @@ export const esOverrides = {
       cloudConnectedTo: name => `Conectado a ${name}.`,
       cloudAgentProvisioning: 'Preparando…',
       cloudStatusLabel: status => `Estado: ${status}`,
+      cloudGatewayStates: { active: 'Activo', degraded: 'Degradado', down: 'Caído' },
       remoteUrlTitle: 'URL remota',
       remoteUrlDesc: 'URL base del backend del dashboard remoto. Se admiten prefijos de ruta, por ejemplo /hermes.',
       probing: 'Comprobando cómo se autentica este gateway…',

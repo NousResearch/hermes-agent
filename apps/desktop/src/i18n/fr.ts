@@ -1813,6 +1813,7 @@ export const frOverrides = {
       cloudConnectedTo: name => `Connecté à ${name}.`,
       cloudAgentProvisioning: 'Provisionnement…',
       cloudStatusLabel: status => `État : ${status}`,
+      cloudGatewayStates: { active: 'Actif', degraded: 'Dégradé', down: 'Hors service' },
       remoteUrlTitle: 'URL distante',
       remoteUrlDesc:
         'URL de base du backend de tableau de bord distant. Les préfixes de chemin sont pris en charge, par exemple /hermes.',

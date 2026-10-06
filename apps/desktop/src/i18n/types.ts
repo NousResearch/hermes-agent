@@ -1238,6 +1238,7 @@ export interface Translations {
       cloudConnectedTo: (name: string) => string
       cloudAgentProvisioning: string
       cloudStatusLabel: (status: string) => string
+      cloudGatewayStates: Record<'active' | 'degraded' | 'down', string>
       remoteUrlTitle: string
       remoteUrlDesc: string
       probing: string

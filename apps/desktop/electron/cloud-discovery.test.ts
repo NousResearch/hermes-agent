@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net'
 import { expect, test } from 'vitest'
 
 import { httpStatusError } from './api-transport'
-import { discoverWithTeamFallback } from './cloud-discovery'
+import { cloudGatewayState, discoverWithTeamFallback } from './cloud-discovery'
 
 test('a stale team falls back once to current memberships; unrelated failures retain their meaning', async () => {
   const requests: string[] = []
@@ -70,4 +70,11 @@ test('a stale team falls back once to current memberships; unrelated failures re
     server.closeAllConnections()
     await new Promise<void>(resolve => server.close(() => resolve()))
   }
+})
+
+test('only meaningful gateway states survive discovery; sentinels and junk become null', () => {
+  expect(['active', ' Degraded ', 'DOWN'].map(cloudGatewayState)).toEqual(['active', 'degraded', 'down'])
+  expect(['unknown', 'UNKNOWN', '', '  ', 'none', 'pending', undefined, null, 3].map(cloudGatewayState)).toEqual(
+    Array(9).fill(null)
+  )
 })

@@ -1224,6 +1224,7 @@ export const ru = defineLocale({
       cloudConnectedTo: name => `Подключено к ${name}.`,
       cloudAgentProvisioning: 'Развёртывание…',
       cloudStatusLabel: status => `Статус: ${status}`,
+      cloudGatewayStates: { active: 'Активен', degraded: 'Работает с перебоями', down: 'Недоступен' },
       remoteUrlTitle: 'Удалённый URL',
       remoteUrlDesc: 'Базовый URL удалённого бэкенда дашборда. Поддерживаются префиксы пути, например /hermes.',
       probing: 'Проверяем, как аутентифицируется этот шлюз…',

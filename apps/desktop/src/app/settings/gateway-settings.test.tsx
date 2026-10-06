@@ -34,8 +34,6 @@ beforeAll(() => {
   Element.prototype.releasePointerCapture = vi.fn()
 })
 
-const cloudDiscover = vi.fn()
-const cloudStatus = vi.fn()
 const getConnectionConfig = vi.fn()
 const saveConnectionConfig = vi.fn()
 
@@ -59,18 +57,9 @@ const localConnection = {
 beforeEach(() => {
   getConnectionConfig.mockResolvedValue(localConnection)
   saveConnectionConfig.mockResolvedValue(localConnection)
-  cloudStatus.mockResolvedValue({ portalBaseUrl: 'https://portal.nousresearch.com', signedIn: true })
-  cloudDiscover.mockResolvedValue({ agents: [], org: null })
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
-    value: {
-      cloud: {
-        discover: cloudDiscover,
-        status: cloudStatus
-      },
-      getConnectionConfig,
-      saveConnectionConfig
-    }
+    value: { getConnectionConfig, saveConnectionConfig }
   })
 })
 
@@ -619,18 +608,34 @@ describe('GatewaySettings', () => {
     expect(within(hostRow).queryByRole('textbox')).toBeNull()
   })
 
-  it('hides an unknown cloud agent gateway status', async () => {
-    cloudDiscover.mockResolvedValue({
-      agents: [
-        {
-          dashboardGatewayState: 'unknown',
-          dashboardUrl: 'https://agent.example.com',
-          id: 'agent-1',
-          name: 'Cloud Agent',
-          status: 'active'
-        }
-      ],
-      org: null
+  // Discovery has already normalized dashboardGatewayState (cloud-discovery.ts):
+  // the renderer only ever sees a known state or null.
+  it.each([
+    [null, null],
+    ['active', 'Status: Active'],
+    ['down', 'Status: Down']
+  ] as const)('renders cloud gateway state %s as %s', async (dashboardGatewayState, expected) => {
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        cloud: {
+          discover: vi.fn().mockResolvedValue({
+            agents: [
+              {
+                dashboardGatewayState,
+                dashboardUrl: 'https://agent.example.com',
+                id: 'agent-1',
+                name: 'Cloud Agent',
+                status: 'active'
+              }
+            ],
+            org: null
+          }),
+          status: vi.fn().mockResolvedValue({ portalBaseUrl: 'https://portal.nousresearch.com', signedIn: true })
+        },
+        getConnectionConfig,
+        saveConnectionConfig
+      }
     })
     getConnectionConfig.mockResolvedValue({
       ...localConnection,
@@ -640,56 +645,8 @@ describe('GatewaySettings', () => {
 
     render(<GatewaySettings />)
 
-    expect(await screen.findByText('Cloud Agent')).toBeTruthy()
-    expect(screen.queryByText('Status: unknown')).toBeNull()
-  })
-
-  it('hides an empty cloud agent gateway status', async () => {
-    cloudDiscover.mockResolvedValue({
-      agents: [
-        {
-          dashboardGatewayState: '',
-          dashboardUrl: 'https://agent.example.com',
-          id: 'agent-1',
-          name: 'Cloud Agent',
-          status: 'active'
-        }
-      ],
-      org: null
-    })
-    getConnectionConfig.mockResolvedValue({
-      ...localConnection,
-      mode: 'cloud',
-      remoteUrl: 'https://portal.nousresearch.com'
-    })
-
-    render(<GatewaySettings />)
-
-    expect(await screen.findByText('Cloud Agent')).toBeTruthy()
-    expect(screen.queryByText(/^Status:/)).toBeNull()
-  })
-
-  it('shows a known cloud agent gateway status', async () => {
-    cloudDiscover.mockResolvedValue({
-      agents: [
-        {
-          dashboardGatewayState: 'active',
-          dashboardUrl: 'https://agent.example.com',
-          id: 'agent-1',
-          name: 'Cloud Agent',
-          status: 'active'
-        }
-      ],
-      org: null
-    })
-    getConnectionConfig.mockResolvedValue({
-      ...localConnection,
-      mode: 'cloud',
-      remoteUrl: 'https://portal.nousresearch.com'
-    })
-
-    render(<GatewaySettings />)
-
-    expect(await screen.findByText('Status: active')).toBeTruthy()
+    // ListRow renders its description as the sibling after the title block.
+    const titleBlock = (await screen.findByText('Cloud Agent')).parentElement!
+    expect(titleBlock.nextElementSibling?.textContent ?? null).toBe(expected)
   })
 })

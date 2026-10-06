@@ -177,7 +177,7 @@ _STATE_BADGES = {"paused": ("[paused]", Colors.YELLOW), "completed": ("[complete
 def cron_list(show_all: bool = False):
     """List all scheduled jobs."""
     from cron.jobs import effective_job_state, list_jobs
-    store_report = _store_unwritable_report()
+    store_report = _store_unwritable_report(count_skipped=False)  # the one-line banner omits it
     jobs = list_jobs(include_disabled=True)
     if not show_all:
         jobs = [
@@ -413,13 +413,13 @@ def _ticker_age_is_fresh(age: Optional[float]) -> bool:
     return age is not None and age <= TICKER_INTERVAL_SECONDS * 3 + 20
 
 
-def _store_unwritable_report() -> Optional[dict]:
+def _store_unwritable_report(count_skipped: bool = True) -> Optional[dict]:
     """Probe the active cron store (never a marker inside it): ``None`` when it accepts writes.
     Runs before any job read: loading jobs re-secures the dir, which can mask a mode problem."""
     from cron.jobs import _current_cron_store, list_jobs
     from cron.store_health import probe_report
     report = probe_report(_current_cron_store().cron_dir)
-    if report is not None:
+    if report is not None and count_skipped:
         report["skipped"] = sum(1 for j in list_jobs(include_disabled=False)
                                 if (_next_run_overdue_seconds(j.get("next_run_at")) or 0) > 0)
     return report

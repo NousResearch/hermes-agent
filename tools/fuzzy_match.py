@@ -12,7 +12,7 @@ still land on the intended region::
 import bisect
 import re
 from difflib import SequenceMatcher
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 Span = tuple[int, int]
 
@@ -300,6 +300,27 @@ STRATEGIES: list[tuple[str, Callable[[str, str], list[Span]]]] = [
 # Matches from these only *approximately* resemble old_string — fine for one
 # unique replacement, never safe under replace_all.
 SIMILARITY_STRATEGIES = frozenset({"block_anchor", "context_aware"})
+
+
+def boundary_note(strategies: Iterable[Optional[str]], target: str = "old_string's",
+                  where: str = "") -> Optional[str]:
+    """The note for an edit whose span was found by a similarity strategy, else None.
+
+    Those strategies accept a window whose lines only resemble the search text, so the spliced span
+    can land a line off (observed: a duplicated closing delimiter just outside the intended region).
+    The normalizing strategies still match every line, so their boundaries are exact; they fire on
+    routine edits (e.g. missing base indentation), where a note would teach the model to ignore it.
+    Post-write verification cannot catch a shifted span: it only confirms the new content landed.
+    """
+    used = list(dict.fromkeys(s for s in strategies if s in SIMILARITY_STRATEGIES))
+    if not used:
+        return None
+    return (
+        f"Non-exact match (strategy: {', '.join(used)}){where}. The edit span was located "
+        f"approximately, not matched to {target} literal boundaries — review the diff below to "
+        "confirm the change landed exactly where intended (a shifted boundary can duplicate or "
+        "drop a line just outside the edited region)."
+    )
 
 
 # ── Orchestrator ─────────────────────────────────────────────────────────

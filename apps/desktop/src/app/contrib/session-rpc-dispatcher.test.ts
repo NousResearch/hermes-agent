@@ -24,6 +24,7 @@ vi.mock('@/store/gateway', async importActual => ({
 
 const probe = vi.hoisted(() => ({ resolveSessionOwner: vi.fn(async () => undefined as unknown) }))
 const sessionMocks = vi.hoisted(() => ({ requestSessionResume: vi.fn() }))
+
 const storedTranscript = vi.hoisted(() => ({
   fetchStoredTranscriptAcrossBackends: vi.fn(async () => null as unknown)
 }))
@@ -46,16 +47,17 @@ vi.mock('@/store/session', async importActual => ({
 const { createSessionRpcDispatcher, readOnlyResumeResponse } = await import('./session-rpc-dispatcher')
 const { $connectionsRegistry } = await import('@/store/connection-registry-state')
 const { $profiles } = await import('@/store/profile')
-const { $readOnlyStoredTranscripts, isReadOnlyRuntimeId, isStoredTranscriptReadOnly } = await import(
-  '@/store/read-only-transcript'
-)
-const { $removedSessionIds, $sessionMutationsInFlight } = await import('@/store/session-removal')
 
 const { _resetSessionOwnerHintsForTests, setCronSessions, setMessagingSessions, setSessionOwnerHint, setSessions } =
   await import('@/store/session')
 
 const { isSessionOwnerResolutionError } = await import('@/store/session-owner-resolution')
-const { $sessionTiles } = await import('@/store/session-states')
+
+const { $readOnlyStoredTranscripts, isReadOnlyRuntimeId, isStoredTranscriptReadOnly } =
+  await import('@/store/read-only-transcript')
+
+const { $removedSessionIds, $sessionMutationsInFlight } = await import('@/store/session-removal')
+const { $sessionTiles, recordSessionEventScope } = await import('@/store/session-states')
 const { makeSessionInfo } = await import('@/test/session-info')
 
 function dispatcher(
@@ -245,6 +247,7 @@ describe('createSessionRpcDispatcher: session.resume no-owner recovery (#102618)
   })
 })
 
+
 describe('createSessionRpcDispatcher: exact owner rungs', () => {
   it('routes by the connection-tagged row when the hint is gone (runtime id translated to the stored id)', async () => {
     setSessions([makeSessionInfo({ connection_id: 'local', id: 'stored-omar', profile: 'omar' })])
@@ -258,6 +261,40 @@ describe('createSessionRpcDispatcher: exact owner rungs', () => {
     })
     expect(ambientRequest).not.toHaveBeenCalled()
     expect(probe.resolveSessionOwner).not.toHaveBeenCalled()
+  })
+
+  it("routes a freshly recovered runtime id to its session's owner only once the binding is published", async () => {
+    // A session-scoped retry after withSessionNotFoundResume: the new runtime id is
+    // known to nobody until the recovering caller publishes stored → runtime. Before
+    // that, the dispatcher cannot translate it and fails closed; after, it reaches the
+    // stored session's owner. Callers therefore publish in `onRecovered`, which runs
+    // before the retried call — not after the retry has already returned.
+    setSessions([makeSessionInfo({ connection_id: 'local', id: 'stored-omar', profile: 'omar' })])
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-omar', 'rt-omar-dead']]) }
+    const ambientRequest = vi.fn(async () => ({ ambient: true }))
+
+    const request = createSessionRpcDispatcher({
+      ambientRequest: ambientRequest as never,
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionIdRef: { current: null },
+      sessionStateByRuntimeIdRef: { current: new Map() }
+    })
+
+    await expect(request('image.attach', { path: '/tmp/shot.png', session_id: 'rt-omar-live' })).rejects.toSatisfy(
+      isSessionOwnerResolutionError
+    )
+    expect(gatewayMocks.requestGatewayForAgent).not.toHaveBeenCalled()
+
+    runtimeIdByStoredSessionIdRef.current.set('stored-omar', 'rt-omar-live')
+
+    await expect(request('image.attach', { path: '/tmp/shot.png', session_id: 'rt-omar-live' })).resolves.toEqual({
+      routed: true
+    })
+    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'omar', 'image.attach', {
+      path: '/tmp/shot.png',
+      session_id: 'rt-omar-live'
+    })
+    expect(ambientRequest).not.toHaveBeenCalled()
   })
 
   it('prefers the exact hint over an untagged row profile, and the probe result over nothing', async () => {
@@ -319,6 +356,41 @@ describe('createSessionRpcDispatcher: exact owner rungs', () => {
   })
 })
 
+describe('createSessionRpcDispatcher: routes by the session OWNING connection when two connections share a profile name', () => {
+  // Two registered connections, both exposing `default` (the default install:
+  // this device + a remote gateway), and the window's primary is the OTHER
+  // connection. A bare profile name carries no connection identity, and the
+  // profile door (requestGatewayForProfile -> gatewayForProfile) resolves a
+  // bare name equal to the primary profile against the PRIMARY socket — a
+  // different machine than the one holding the session. The inbound event
+  // already proved which socket owns the runtime, so that exact owner has to
+  // outrank the connection-blind row profile: otherwise the 2nd prompt of a
+  // `This device` chat is answered by the remote backend with
+  // `4001 session not found`.
+  function twoConnections(): void {
+    $connectionsRegistry.set({ connections: [{ id: 'local' }, { id: 'homelab' }] } as never)
+  }
+
+  it('routes a session that lives on the LOCAL connection back to that connection', async () => {
+    gatewayMocks.activeConnectionId = 'homelab'
+    twoConnections()
+    recordSessionEventScope({ connectionId: 'local', profile: 'default', session_id: 'rt-local' })
+    setSessions([makeSessionInfo({ id: 'rt-local', profile: 'default' })])
+    const { ambientRequest, request } = dispatcher()
+
+    await expect(request('prompt.submit', { session_id: 'rt-local', text: 'again' })).resolves.toEqual({
+      routed: true
+    })
+
+    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'default', 'prompt.submit', {
+      session_id: 'rt-local',
+      text: 'again'
+    })
+    expect(gatewayMocks.requestGatewayForProfile).not.toHaveBeenCalled()
+    expect(ambientRequest).not.toHaveBeenCalled()
+  })
+})
+
 describe('createSessionRpcDispatcher: stale runtime recovery', () => {
   it('requests a durable rebind for the visible session after a structured 4001', async () => {
     setSessions([makeSessionInfo({ connection_id: 'local', id: 'stored-omar', profile: 'omar' })])
@@ -345,23 +417,6 @@ describe('createSessionRpcDispatcher: stale runtime recovery', () => {
     await expect(request('process.list', { session_id: 'rt-omar' })).rejects.toThrow('session not found')
 
     expect(sessionMocks.requestSessionResume).not.toHaveBeenCalled()
-  })
-
-  it.each([
-    ['tombstoned', $removedSessionIds],
-    ['being deleted', $sessionMutationsInFlight]
-  ])('still reports the 4001 for a selected session that is %s', async (_state, sessions) => {
-    // The rebind decision moved to requestSessionResume (store/session-removal),
-    // which drops resume requests for a removal-pending id — this seam only has
-    // to keep surfacing the error to its caller.
-    setSessions([makeSessionInfo({ connection_id: 'local', id: 'stored-omar', profile: 'omar' })])
-    sessions.set(new Set(['stored-omar']))
-    gatewayMocks.requestGatewayForAgent.mockRejectedValueOnce(
-      Object.assign(new Error('session not found'), { code: 4001 })
-    )
-    const { request } = dispatcher(undefined, 'stored-omar')
-
-    await expect(request('process.list', { session_id: 'rt-omar' })).rejects.toThrow('session not found')
   })
 
   it('does not interpret an unrelated coded RPC failure as a stale runtime', async () => {

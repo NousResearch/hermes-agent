@@ -49,10 +49,11 @@ import type { ClientSessionState } from '@/app/types'
 import { readOnlyRuntimeIdFor, resumeWithStoredTranscriptFallback } from '@/store/read-only-transcript'
 import { isSessionGoneForBackgroundPolling } from '@/store/runtime-gone'
 import { getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows, requestSessionResume } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
-import { $focusedStoredSessionId, sessionTileOwnerRoute, storedSessionIdForRuntimeId } from '@/store/session-states'
-import type { SessionResumeResponse } from '@/types/hermes'
+import { runtimeSessionOwner, sessionTileOwnerRoute, storedSessionIdForRuntimeId } from '@/store/session-states'
+import type { SessionResumeResult } from '@/types/hermes'
 
 import { findStoredIdForRuntimeId, resolveRoutingSessionId, resolveSessionRpcOwner } from './wiring-routing'
 
@@ -77,8 +78,8 @@ export interface SessionRpcDispatcherDeps {
  *  session that has no routable runtime. */
 export function readOnlyResumeResponse(
   storedSessionId: string,
-  messages: SessionResumeResponse['messages']
-): SessionResumeResponse {
+  messages: SessionResumeResult['messages']
+): SessionResumeResult {
   return {
     message_count: messages.length,
     messages,
@@ -106,6 +107,14 @@ export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): Ambi
     })
 
     let owner: SessionOwnerScope = resolveSessionRpcOwner({
+      // An owner an inbound runtime event already proved for THIS session (#97511):
+      // the exact (connectionId, profile) of the socket that delivered its
+      // events. It outranks the connection-blind row/rung profile — the rung
+      // that makes two connections sharing a profile name collapse onto the
+      // primary socket (another machine) instead of the session's own.
+      eventOwner: storedSessionId =>
+        runtimeSessionOwner(storedSessionId) ??
+        (paramSessionId && paramSessionId !== storedSessionId ? runtimeSessionOwner(paramSessionId) : undefined),
       routingSessionId,
       sessionOwnerHint: storedSessionId => getSessionOwnerHint(storedSessionId),
       sessionRowOwner: storedSessionId => knownSessionOwner(ownerLookupSessionRows(), storedSessionId),

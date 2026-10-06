@@ -6,7 +6,10 @@ properties the live drain already guarantees for that spool.
 """
 
 import json
+import threading
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -160,3 +163,33 @@ def test_a_failed_replay_holds_back_that_sessions_later_messages_only(flush_dir,
     assert first.exists() and second.exists()
     assert not other.exists()
     assert "Held back 2 spooled transcript file(s)" in caplog.text and "sess-1 (2)" in caplog.text
+
+
+def test_held_back_files_drain_before_that_sessions_next_live_write(flush_dir, monkeypatch):
+    """The live writer drains a session's spool only when the store knows it has one. If boot
+    recovery does not say which sessions it held back, the next live row lands ahead of them."""
+    import hermes_state_registry
+    from gateway.run import _recover_pending_flushes
+    from gateway.session import SessionStore
+
+    _write_spool(flush_dir, "pending-bbb.json", "sess-1",
+                 {"role": "user", "content": "old0"}, ts=100, seq=0)
+    _write_spool(flush_dir, "pending-aaa.json", "sess-1",
+                 {"role": "user", "content": "old1"}, ts=100, seq=1)
+    mock_db = MagicMock()
+    mock_db.append_message.side_effect = [RuntimeError("still locked at boot"), 1, 1, 1]
+    monkeypatch.setattr(hermes_state_registry, "acquire", lambda: mock_db)
+    monkeypatch.setattr(hermes_state_registry, "release_or_close", lambda _db: None)
+    store = object.__new__(SessionStore)
+    store._db = mock_db
+    store._transcript_retry_lock = threading.Lock()
+    store._dirty_transcripts = {}
+    store._transcript_append_failures = {}
+    store._fts_rebuild_last_attempt_at = time.monotonic()
+
+    runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=False), session_store=store)
+    assert _recover_pending_flushes(runner) == 0
+    store.append_to_transcript("sess-1", {"role": "user", "content": "new-live"})
+
+    assert _contents(mock_db) == ["old0", "old0", "old1", "new-live"]
+    assert not list(flush_dir.glob("*.json"))

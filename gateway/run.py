@@ -1662,8 +1662,8 @@ def _recover_pending_flushes(runner) -> int:
     from gateway.shutdown_flush import recover_pending_to_db
     from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
-    resolver = runner.session_store.resolve_session_id_for_key
-    recovered = recover_pending_to_db(session_resolver=resolver)
+    resolver, held_back = runner.session_store.resolve_session_id_for_key, runner.session_store.spooled_drop_sessions()
+    recovered = recover_pending_to_db(session_resolver=resolver, held_back=held_back)
     if not getattr(runner.config, "multiplex_profiles", False):
         return recovered
     launch_home = Path(get_hermes_home()).resolve()
@@ -1672,7 +1672,7 @@ def _recover_pending_flushes(runner) -> int:
             continue
         token = set_hermes_home_override(str(home))
         try:
-            recovered += recover_pending_to_db(session_resolver=resolver)
+            recovered += recover_pending_to_db(session_resolver=resolver, held_back=held_back)
         except Exception:  # one profile's unreadable spool must not strand the others'
             logger.warning("Pending-message recovery failed for profile %s", name, exc_info=True)
         finally:

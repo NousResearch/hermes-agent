@@ -272,7 +272,8 @@ def _order_flush_files(paths) -> list[tuple[Path, Optional[Dict[str, Any]]]]:
     return [(path, payload) for _key, path, payload in entries]
 
 
-def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
+def recover_pending_to_db(session_db=None, *, session_resolver=None,
+                          held_back: Optional[set] = None) -> int:
     """Replay flush-dir ``*.json`` files via ``SessionDB.append_message``, deleting each on success.
 
     ``session_db=None`` opens (and afterwards releases) the shared default ``state.db``.
@@ -281,6 +282,9 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
     ``MessageEvent`` objects carry no ``session_id``, so without it every recovery lands in the skip
     branch. A returned ``db`` routes the append to the profile store owning the key (multiplexed
     gateways); ``None`` falls back to ``session_db``. Returns the number of messages recovered.
+    ``held_back`` (optional set) receives the session ids whose spool files this pass held back
+    after a failed replay, so the caller can have the live writer drain them before that session's
+    next row.
     """
     flush_files = _order_flush_files(_get_flush_dir().glob("*.json"))
     if not flush_files:
@@ -327,6 +331,8 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
         logger.info("Held back %d spooled transcript file(s) for the next start after a failed replay: %s",
                     sum(blocked_sessions.values()),
                     ", ".join(f"{sid} ({count})" for sid, count in blocked_sessions.items()))
+    if held_back is not None:
+        held_back.update(blocked_sessions)
     return recovered
 
 

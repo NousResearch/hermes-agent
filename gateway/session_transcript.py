@@ -392,6 +392,11 @@ class SessionTranscriptMixin:
         except Exception as exc:
             logger.warning("Failed to drain transcript spool for %s: %s", session_id, exc)
 
+    def spooled_drop_sessions(self) -> set:
+        """The live set of sessions whose next transcript write drains the spool first. Boot recovery
+        adds the sessions it held back, so their next live row cannot land ahead of those files."""
+        return self._lazy("_spooled_drop_sessions", set)
+
     def _append_transcript_message(self, session_id: str, message: Dict[str, Any]) -> None:
         """Write one transcript row. Caller handles retry queuing."""
         _db = self._db_for_session_id(session_id)

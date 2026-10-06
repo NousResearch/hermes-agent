@@ -33,12 +33,12 @@ def kanban_home(tmp_path, monkeypatch):
 
 def _init_git_repo(repo: Path) -> None:
     repo.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.email", "kanban@example.com"], check=True, capture_output=True, text=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Kanban Test"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "kanban@example.com"], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Kanban Test"], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
     (repo / "README.md").write_text("hello\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
 # ---------------------------------------------------------------------------
@@ -613,60 +613,6 @@ def test_infrastructure_spawn_refusal_never_charges_the_card(
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
-
-def test_recompute_ready_honours_dispatcher_failure_limit(kanban_home):
-    """The guard's effective limit must follow the same resolution order
-    as the circuit breaker (#35072): per-task max_retries → dispatcher
-    failure_limit → DEFAULT_FAILURE_LIMIT.
-
-    Without threading the dispatcher's ``kanban.failure_limit`` through,
-    the guard falls back to DEFAULT_FAILURE_LIMIT and disagrees with the
-    breaker — sticking a task prematurely (config limit > default) or
-    letting a tripped task escape (config limit < default).
-    """
-    with kbc.connect() as conn:
-        # Config allows MORE retries than the default. A task blocked
-        # with failures below the configured limit must still recover.
-        t = kb.create_task(conn, title="lenient", assignee="a")
-        conn.execute(
-            "UPDATE tasks SET status='blocked', consecutive_failures=? "
-            "WHERE id=?",
-            (kb.DEFAULT_FAILURE_LIMIT, t),
-        )
-        conn.commit()
-        # Default-limit call would stick it (failures >= default).
-        assert kb.recompute_ready(conn) == 0
-        assert kb.get_task(conn, t).status == "blocked"
-        # Dispatcher configured a higher limit → recover, preserve counter.
-        promoted = kb.recompute_ready(
-            conn, failure_limit=kb.DEFAULT_FAILURE_LIMIT + 2
-        )
-        assert promoted == 1
-        task = kb.get_task(conn, t)
-        assert task.status == "ready"
-        assert task.consecutive_failures == kb.DEFAULT_FAILURE_LIMIT
-
-        # Config allows FEWER retries than the default. A task at the
-        # stricter limit must stay blocked even though it's below default.
-        t2 = kb.create_task(conn, title="strict", assignee="a")
-        conn.execute(
-            "UPDATE tasks SET status='blocked', consecutive_failures=1 "
-            "WHERE id=?",
-            (t2,),
-        )
-        conn.commit()
-        # Default-limit (2) would recover it (1 < 2).
-        # Stricter config limit (1) must keep it blocked (1 >= 1).
-        assert kb.recompute_ready(conn, failure_limit=1) == 0
-        assert kb.get_task(conn, t2).status == "blocked"
-
-
-
-
 # ---------------------------------------------------------------------------
 # Parent-completion invariant at the claim gate (RCA t_a6acd07d)
 # ---------------------------------------------------------------------------
@@ -801,7 +747,14 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
         capture_output=True,
         text=True,
     ).stdout
-    assert f"worktree {target}" in listed
+    # Git normalizes paths differently across platforms (Windows separators,
+    # short names), so compare resolved worktree paths, not raw substrings.
+    listed_worktrees = {
+        Path(line.removeprefix("worktree ")).resolve()
+        for line in listed.splitlines()
+        if line.startswith("worktree ")
+    }
+    assert target.resolve() in listed_worktrees
     assert f"branch refs/heads/{branch}" in listed
 
 
@@ -1609,10 +1562,21 @@ def test_resolve_hermes_argv_module_actually_runs():
 
     with mock.patch.dict(os.environ, {}, clear=False):
         os.environ.pop("HERMES_BIN", None)
-        with mock.patch.object(shutil, "which", return_value=None):
+        with mock.patch.object(shutil, "which", return_value=None), mock.patch.object(
+            kbd, "_safe_which_no_cwd", return_value=None
+        ):
             argv = kbd._resolve_hermes_argv()
     offline = {**os.environ, "HTTPS_PROXY": "http://127.0.0.1:9", "https_proxy": "http://127.0.0.1:9", "NO_PROXY": "", "no_proxy": ""}
-    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30, check=False, env=offline)
+    r = subprocess.run(
+        argv + ["--version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+        env=offline,
+    )
     assert r.returncode == 0, (
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"

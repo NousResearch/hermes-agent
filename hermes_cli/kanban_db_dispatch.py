@@ -26,6 +26,8 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from hermes_cli.kanban_db_dispatch_worker_output import (
+    _exit_code_kind, _exit_summary_marker, _log_noise_prefixes, _wait_status_from_returncode)
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
 if TYPE_CHECKING:
@@ -202,11 +204,6 @@ _recent_worker_exits: dict[int, tuple[int, float]] = {}
 _live_worker_procs: dict[int, subprocess.Popen] = {}
 
 
-def _wait_status_from_returncode(returncode: int) -> int:
-    """Encode a ``Popen.returncode`` in the wait-status layout the registry stores."""
-    return (int(returncode) & 0xFF) << 8
-
-
 def _record_worker_exit(pid: int, raw_status: int) -> None:
     """Record a reaped child's exit status; duplicate pids overwrite (latest wins)."""
     if not pid or pid <= 0:
@@ -245,17 +242,6 @@ def _classify_worker_exit(pid: int) -> tuple[str, Optional[int]]:
     if signal_number != 0x7F:
         return ("signaled", signal_number)
     return ("unknown", None)
-
-
-def _exit_code_kind(code: int) -> tuple[str, int]:
-    """``(kind, code)`` for a worker's exit code, however it was observed."""
-    if code == 0:
-        return ("clean_exit", 0)
-    if code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE:
-        return ("rate_limited", code)
-    if code == _kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE:
-        return ("terminal_provider", code)
-    return ("nonzero_exit", code)
 
 
 _EXIT_TRAILER_RE = re.compile(
@@ -988,17 +974,6 @@ _PROTOCOL_VIOLATION_ERROR = (
 _LOG_CHROME = re.compile(r"[─━═╭╮╰╯│┃┌┐└┘]+|☤\s*Hermes")
 
 
-def _exit_summary_marker() -> str:
-    """The CLI exit-summary header (``cli_session_mixin.show_exit_summary``), in the active language."""
-    from agent.i18n import t
-    return t("cli.session.exit_resume_hint")
-
-
-def _log_noise_prefixes() -> tuple[str, ...]:
-    from agent.i18n import t
-    return ("session_id:", "Query:", t("cli.chat.initializing_agent"))
-
-
 def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     """Best-effort read of a dead worker's last printed text, for the board diagnostic.
 
@@ -1405,6 +1380,12 @@ def _record_task_failure(
         ).fetchone()
         if row is None:
             return False
+        # Late finalizers: a worker that already ended its task via
+        # kanban_block / kanban_complete must not emit a bogus failure
+        # on top of the handoff. Only a still-running (or still-claimable
+        # ready/review) task may be failed (#79399).
+        if row["status"] not in ("running", "ready", "review"):
+            return False
         retry_status = (
             _kb._retry_status_for_run(conn, task_id, row["current_run_id"])
             if release_claim
@@ -1440,6 +1421,13 @@ def _record_task_failure(
                 detail = {"failures": failures, "retry_status": retry_status}
                 if infrastructure:
                     detail["infrastructure"] = True
+                # Callers pass outcome-specific context (budget_used /
+                # budget_max on iteration exhaustion, pid on crash, elapsed on
+                # timeout); it must survive into the below-threshold run
+                # metadata AND the event payload so the notifiers can render
+                # the real cause instead of inventing max_runtime=0s (#79399).
+                if event_payload_extra:
+                    detail.update(event_payload_extra)
                 run_id = _kb._end_run(
                     conn, task_id, outcome=outcome, status=outcome, error=error, metadata=detail,
                 )

@@ -192,7 +192,7 @@ describe('the catalog install card', () => {
 
     fireEvent.click(row('obsidian-notes').getByRole('button', { name: 'Install' }))
     await waitFor(() => expect(rpc).toHaveBeenCalledTimes(1))
-    expect(rpc).toHaveBeenLastCalledWith(...respondedWith([{ env: null, name: 'obsidian-notes', status: 'approved' }]))
+    expect(rpc).toHaveBeenLastCalledWith(...respondedWith([{ env: null, kind: 'skill', name: 'obsidian-notes', status: 'approved' }]))
 
     fireEvent.click(row('nvidia-app').getByRole('button', { name: 'Advanced' }))
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
@@ -211,6 +211,7 @@ describe('the catalog install card', () => {
       ...respondedWith([
         {
           env: { agent_half: '1', enable: '1', force: '1', ref: SHA, target_profile: 'work' },
+          kind: 'plugin',
           name: 'nvidia-app',
           status: 'approved'
         }
@@ -251,7 +252,7 @@ describe('the catalog install card', () => {
     fireEvent.click(row('nvidia-broadcast').getByRole('button', { name: 'Try again' }))
     await waitFor(() => expect(rpc).toHaveBeenCalledTimes(1))
     expect(rpc).toHaveBeenLastCalledWith(
-      ...respondedWith([{ env: null, name: 'nvidia-broadcast', status: 'approved' }])
+      ...respondedWith([{ env: null, kind: 'plugin', name: 'nvidia-broadcast', status: 'approved' }])
     )
   })
 })

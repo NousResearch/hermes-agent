@@ -92,19 +92,23 @@ class ConnectionOperation:
         if not self.deadline_at:
             self.deadline_at = self.created_at + OPERATION_DEADLINE_SECONDS
 
-    def target(self, name: str) -> Optional[Target]:
-        return next((t for t in self.targets if t.name == name), None)
+    def target(self, name: str, kind: Optional[str] = None) -> Optional[Target]:
+        matches = [t for t in self.targets if t.name == name and (kind is None or t.kind == kind)]
+        # Legacy callers may omit kind while names are unique. Once two rows share a name, choosing
+        # the first would mutate the wrong row; require the discriminator instead.
+        return matches[0] if len(matches) == 1 else None
 
     def transition(
-        self, name: str, to: TargetState, actor: Actor, *, detail: Optional[str] = None,
+        self, name: str, to: TargetState, actor: Actor, *, kind: Optional[str] = None, detail: Optional[str] = None,
         connect_url: Optional[str] = None, connection_id: Optional[str] = None, attempt: Optional[str] = None,
         **extra: Any,
     ) -> Optional[Dict[str, Any]]:
         """Move one target; the contract decides whether ``actor`` may. Returns the change, or None
         when the target is already in ``to``. Allowed after settlement: the frozen result stays."""
-        target = self.target(name)
+        target = self.target(name, kind)
         if target is None:
-            raise IllegalTransition(f"unknown target {name!r}")
+            suffix = f" ({kind})" if kind else ""
+            raise IllegalTransition(f"unknown target {name!r}{suffix}")
         with self._lock:
             if target.state == to:
                 return None
@@ -128,14 +132,16 @@ class ConnectionOperation:
         self._changed(change, snapshot)
         return change
 
-    def refresh(self, name: str, *, connect_url: Optional[str], detail: str, actor: Actor = Actor.user) -> None:
+    def refresh(self, name: str, *, connect_url: Optional[str], detail: str, actor: Actor = Actor.user,
+                kind: Optional[str] = None) -> None:
         """Replace a target's link and detail without a state change (a repeated failure).
 
         ``actor`` says who produced the new text: a second failure of a backend attempt is the
         backend's report, not the user's move, and the frame must not claim otherwise."""
-        target = self.target(name)
+        target = self.target(name, kind)
         if target is None:
-            raise IllegalTransition(f"unknown target {name!r}")
+            suffix = f" ({kind})" if kind else ""
+            raise IllegalTransition(f"unknown target {name!r}{suffix}")
         with self._lock:
             target.connect_url = connect_url
             target.detail = detail

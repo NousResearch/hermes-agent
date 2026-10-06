@@ -204,9 +204,14 @@ const FOCUSABLE_IN_ROW = 'button:not([disabled]), [href], input:not([disabled])'
 // The user is typing a credential; a row moving elsewhere on the card must not take the keyboard.
 const EDITABLE = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])'
 
-function focusChangedRow(card: HTMLElement, name: string): void {
+const connectionTargetIdentity = (target: Pick<ConnectionTarget, 'kind' | 'name'>): string =>
+  `${target.kind}:\0${target.name}`
+
+function focusChangedRow(card: HTMLElement, target: Pick<ConnectionTarget, 'kind' | 'name'>): void {
   const row = [...card.querySelectorAll<HTMLElement>('[data-connector-row]')].find(
-    node => node.dataset.connectorRow === name
+    node =>
+      node.dataset.connectorRow === target.name &&
+      (!node.dataset.connectorKind || node.dataset.connectorKind === target.kind)
   )
 
   ;(row?.querySelector<HTMLElement>(FOCUSABLE_IN_ROW) ?? row)?.focus()
@@ -220,19 +225,19 @@ export function useConnectorFocusHandoff(
   cardRef: RefObject<HTMLDivElement | null>
 ): void {
   const seen = useRef<Map<string, ConnectionTargetState> | null>(null)
-  const states = targets.map(target => `${target.name}=${target.state}`).join('|')
+  const states = targets.map(target => `${connectionTargetIdentity(target)}=${target.state}`).join('|')
 
   // The ref holds what the last frame said, for comparison only: nothing renders from it, so it
   // cannot lag a render the way a mirrored atom would.
   // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
     const previous = seen.current
-    seen.current = new Map(targets.map(target => [target.name, target.state]))
+    seen.current = new Map(targets.map(target => [connectionTargetIdentity(target), target.state]))
 
     const card = cardRef.current
 
     const moved = targets.find(target => {
-      const before = previous?.get(target.name)
+      const before = previous?.get(connectionTargetIdentity(target))
 
       return before !== undefined && before !== target.state
     })
@@ -243,7 +248,7 @@ export function useConnectorFocusHandoff(
       return
     }
 
-    focusChangedRow(card, moved.name)
+    focusChangedRow(card, moved)
     // The target states are the whole input; `states` changes exactly when one of them moves.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [states])

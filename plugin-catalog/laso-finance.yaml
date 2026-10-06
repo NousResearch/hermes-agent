@@ -1,0 +1,89 @@
+name: laso-finance
+repo: https://github.com/LasoFinance/hermes-plugin
+sha: 0c752c52d99f0cf684fa02536d2a0db86ac2da40
+image: https://raw.githubusercontent.com/LasoFinance/hermes-plugin/0c752c52d99f0cf684fa02536d2a0db86ac2da40/assets/banner.png
+description: 'Spend USDC in the real world from Hermes: prepaid cards, gift cards, push-to-card,
+  Venmo/PayPal and bank payouts, through the Laso Finance API. Native plugin, standard library
+  only. Sign-in is the OAuth device flow (link and code handed to the human, approved on any
+  device), so there is no key to paste and it works over SSH and the messaging gateway. Every tool
+  that moves money or mints a credential goes through the Hermes approval gate first. Disclosure —
+  the tools move real funds from the user''s Laso account; all traffic goes to laso.finance only;
+  the approved key is saved as LASO_API_KEY in ~/.hermes/.env.'
+maintainer: LasoFinance
+tier: community
+category: tools
+docs_url: https://github.com/LasoFinance/hermes-plugin#readme
+version: "1.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - laso_get_version
+    - laso_refresh_token
+    - laso_order_card
+    - laso_get_card_data
+    - laso_list_card_transactions
+    - laso_get_card_deposit_address
+    - laso_get_saved_cards
+    - laso_create_saved_card_link
+    - laso_buy_with_saved_card
+    - laso_get_purchase_turn
+    - laso_get_purchase_conversation
+    - laso_create_reloadable_card
+    - laso_get_account_balance
+    - laso_get_kyc_status
+    - laso_get_kyc_link
+    - laso_register_webhook
+    - laso_get_webhook
+    - laso_delete_webhook
+    - laso_withdraw
+    - laso_get_withdrawal_status
+    - laso_refresh_card_data
+    - laso_order_intl_card
+    - laso_cancel_intl_order
+    - laso_search_merchants
+    - laso_start_signup
+    - laso_get_signup_status
+    - laso_get_auth_link
+    - laso_send_feedback
+    - laso_list_address_book
+    - laso_save_address_book_entry
+    - laso_delete_address_book_entry
+    - laso_push_to_card
+    - laso_send_payment
+    - laso_fund_card_balance
+    - laso_withdraw_card_balance
+    - laso_list_payment_recipients
+    - laso_update_payment_recipient
+    - laso_delete_payment_recipient
+    - laso_get_payment_status
+    - laso_send_bank_payment
+    - laso_search_gift_cards
+    - laso_order_gift_card
+    - laso_create_banking_profile
+    - laso_get_banking_profile_status
+    - laso_get_banking_application
+    - laso_update_banking_application_details
+    - laso_upload_banking_document
+    - laso_submit_banking_application
+    - laso_create_banking_account
+    - laso_list_banking_accounts
+    - laso_create_banking_recipient
+    - laso_add_banking_destination
+    - laso_list_banking_recipients
+    - laso_update_banking_destination
+    - laso_delete_banking_recipient
+    - laso_get_banking_transaction
+    - laso_list_banking_transactions
+    - laso_exchange_api_key
+    - laso_get_agent_spend_limit
+    - laso_create_agent_api_key
+    - laso_announce_connection
+    - laso_get_agent_wallet
+    - laso_create_agent_wallet
+    - laso_agent_wallet_transfer
+    - laso_pay_x402_endpoint
+    - laso_search_docs
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

@@ -359,6 +359,68 @@ def _is_managed_scratch_path(p: Path) -> bool:
     return _managed_scratch_path_info(p)[0]
 
 
+def _has_process_reference(workspace_path: Path) -> bool:
+    """Check if any running process has HERMES_HOME or cwd pointing to this workspace.
+    
+    A workspace must not be removed while a dispatcher or worker process still
+    references it — the process would inherit a dead HERMES_HOME and crash on
+    spawn with exit 126. This guard checks every live process's environment and
+    current working directory for references to the workspace path.
+    
+    Returns True if any process references the workspace, False otherwise.
+    Best-effort: permission errors or missing /proc are treated as no-reference.
+    """
+    try:
+        import psutil
+        wp_str = str(workspace_path)
+        wp_resolved = str(workspace_path.resolve(strict=False))
+        for proc in psutil.process_iter(['pid', 'environ', 'cwd']):
+            try:
+                # Check cwd
+                cwd = proc.info.get('cwd')
+                if cwd:
+                    cwd_str = str(cwd)
+                    if cwd_str == wp_str or cwd_str == wp_resolved or cwd_str.startswith(wp_str + os.sep) or cwd_str.startswith(wp_resolved + os.sep):
+                        return True
+                # Check HERMES_HOME in environment
+                environ = proc.info.get('environ') or {}
+                hermes_home = environ.get('HERMES_HOME', '')
+                if hermes_home:
+                    hh_str = str(hermes_home)
+                    if hh_str == wp_str or hh_str == wp_resolved or hh_str.startswith(wp_str + os.sep) or hh_str.startswith(wp_resolved + os.sep):
+                        return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
+                continue
+        return False
+    except ImportError:
+        # psutil not available — fall back to lsof-based check (slower, macOS/Linux)
+        return _has_process_reference_lsof(workspace_path)
+    except Exception:
+        # Any other error — fail open (allow cleanup) rather than block it
+        return False
+
+
+def _has_process_reference_lsof(workspace_path: Path) -> bool:
+    """Fallback process-reference check using lsof (macOS/Linux).
+    
+    Slower than psutil but works without the dependency. Checks if any process
+    has the workspace directory open (cwd or HERMES_HOME env var pointing to it).
+    """
+    try:
+        wp_str = str(workspace_path)
+        # lsof +D lists all processes with files open under the directory
+        result = subprocess.run(
+            ['lsof', '+D', wp_str],
+            capture_output=True, text=True, encoding='utf-8', errors='replace',
+            timeout=10, check=False,
+        )
+        # lsof returns 0 if files are open, 1 if none
+        # Any output beyond the header means a process has it open
+        return result.returncode == 0 and len(result.stdout.strip().split('\n')) > 1
+    except Exception:
+        return False
+
+
 def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
     """Remove a task's scratch workspace dir and kill its stale tmux session.
     Called from :func:`complete_task` after the transaction commits; best-effort
@@ -383,6 +445,19 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             _kb._log.debug(
                 "Deferring %s workspace cleanup for task %s: "
                 "active children still need workspace at %s",
+                kind, task_id, path,
+            )
+            return
+        # Process-reference guard: do not remove a workspace while any running
+        # process (dispatcher, worker) has HERMES_HOME or cwd pointing to it.
+        # Removing it would leave the process with a dead HERMES_HOME, causing
+        # exit 126 on spawn (interpreter path missing). See t_d66a495a.
+        wp = Path(path)
+        if wp.is_dir() and _has_process_reference(wp):
+            _kb._log.warning(
+                "Deferring %s workspace cleanup for task %s: "
+                "a running process references workspace at %s "
+                "(HERMES_HOME or cwd). Cleanup deferred until the process exits.",
                 kind, task_id, path,
             )
             return
@@ -528,6 +603,18 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
             if not wp.is_dir():
                 continue
             if _is_managed_scratch_path(wp):
+                # Process-reference guard: do not remove a workspace while any
+                # running process (dispatcher, worker) has HERMES_HOME or cwd
+                # pointing to it. Removing it would leave the process with a
+                # dead HERMES_HOME, causing exit 126 on spawn. See t_d66a495a.
+                if _has_process_reference(wp):
+                    _kb._log.warning(
+                        "Deferring parent %s workspace cleanup: "
+                        "a running process references workspace at %s "
+                        "(HERMES_HOME or cwd). Cleanup deferred until the process exits.",
+                        parent_id, wp,
+                    )
+                    continue
                 if _defer_shared_workspace_cleanup(conn, parent_id, ws_path):
                     continue
                 release_lsp_clients(str(wp))

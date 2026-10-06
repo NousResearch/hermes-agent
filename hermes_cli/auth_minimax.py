@@ -158,10 +158,19 @@ def _minimax_poll_token(
     raise _minimax_err("MiniMax OAuth timed out before authorization completed.", "timeout")
 
 
-def _minimax_save_auth_state(auth_state: Dict[str, Any]) -> None:
-    """Persist MiniMax OAuth state to Hermes auth store (~/.hermes/auth.json)."""
-    from hermes_cli.auth import _save_active_provider_state
-    _save_active_provider_state("minimax-oauth", auth_state)
+def _minimax_save_auth_state(auth_state: Dict[str, Any], *, set_active: bool = True) -> None:
+    """Persist MiniMax OAuth state to Hermes auth store (~/.hermes/auth.json).
+
+    ``set_active=False`` rewrites credentials without making minimax-oauth the
+    active provider (``_save_provider_state_to_source``'s rule: a token refresh
+    rewrites credentials, not the user's choice of provider); only
+    ``_minimax_oauth_login`` — the user just chose the provider — sets active.
+    """
+    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store, _store_provider_state
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        _store_provider_state(auth_store, "minimax-oauth", auth_state, set_active=set_active)
+        _save_auth_store(auth_store)
 
 
 def _minimax_oauth_login(*, region: str = "global", open_browser: bool = True, timeout_seconds: float = 15.0) -> Dict[str, Any]:
@@ -261,7 +270,9 @@ def _refresh_minimax_oauth_state(state: Dict[str, Any], *, timeout_seconds: floa
         "refresh_token": payload.get("refresh_token", state["refresh_token"]),
         **_minimax_expiry_fields(payload["expired_in"]),
     }
-    _minimax_save_auth_state(new_state)
+    # set_active=False: an aux-triggered refresh rewrites credentials, not the user's
+    # choice of provider (same rule as _save_provider_state_to_source).
+    _minimax_save_auth_state(new_state, set_active=False)
     return new_state
 
 
@@ -272,24 +283,40 @@ def _minimax_oauth_quarantine_on_terminal_refresh(state: Dict[str, Any], exc: Au
         return
     _quarantine_flat_oauth_state(state, "minimax-oauth", exc)
     try:
-        _minimax_save_auth_state(state)
+        # set_active=False: wiping dead tokens is hygiene, not a provider choice.
+        _minimax_save_auth_state(state, set_active=False)
     except Exception as _save_exc:
         logger.debug("MiniMax OAuth: failed to persist quarantined state: %s", _save_exc)
 
 
 def _minimax_fresh_state() -> Dict[str, Any]:
-    """Load the MiniMax OAuth state and refresh it if near expiry; quarantine on terminal failure."""
-    from hermes_cli.auth import _refresh_minimax_oauth_state, get_provider_auth_state
-    state = get_provider_auth_state("minimax-oauth")
-    if not state or not state.get("access_token"):
-        raise _minimax_err(
-            "Not logged into MiniMax OAuth. Run `hermes model` and select MiniMax (OAuth).", "not_logged_in", relogin=True,
-        )
-    try:
-        return _refresh_minimax_oauth_state(state)
-    except AuthError as exc:
-        _minimax_oauth_quarantine_on_terminal_refresh(state, exc)
-        raise
+    """Load the MiniMax OAuth state and refresh it if near expiry; quarantine on terminal failure.
+
+    The whole read → refresh → save runs inside ``_auth_store_lock`` (reentrant, so the
+    inner ``_minimax_save_auth_state`` re-locks harmlessly): MiniMax refresh tokens are
+    single-use and rotate, so two concurrent consumers (main agent + an aux task) that
+    both see a near-expiry token would otherwise race — the loser replays the consumed
+    token, gets ``refresh_token_reused``, and the quarantine wipes the winner's fresh
+    tokens. Re-reading inside the lock makes the second caller see the first caller's
+    new expiry and skip its own refresh. The lock timeout outlives the refresh POST so
+    a waiter adopts the rotated pair instead of timing out (codex pattern).
+    """
+    from hermes_cli.auth import (
+        AUTH_LOCK_TIMEOUT_SECONDS, _auth_store_lock, _refresh_minimax_oauth_state,
+        get_provider_auth_state,
+    )
+    with _auth_store_lock(timeout_seconds=max(AUTH_LOCK_TIMEOUT_SECONDS, 15.0 + 5.0)):
+        state = get_provider_auth_state("minimax-oauth")
+        if not state or not state.get("access_token"):
+            raise _minimax_err(
+                "Not logged into MiniMax OAuth. Run `hermes model` and select MiniMax (OAuth).",
+                "not_logged_in", relogin=True,
+            )
+        try:
+            return _refresh_minimax_oauth_state(state)
+        except AuthError as exc:
+            _minimax_oauth_quarantine_on_terminal_refresh(state, exc)
+            raise
 
 
 def build_minimax_oauth_token_provider() -> Callable[[], str]:

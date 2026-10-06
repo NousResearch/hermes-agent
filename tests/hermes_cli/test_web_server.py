@@ -2565,6 +2565,30 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert payload["limit"] == 3
         assert len(payload["sessions"]) == 3
 
+    def test_profiles_sessions_pages_past_500_rows(self):
+        """The aggregate route must not strand rows after its old 500-row
+        per-profile source cap (issue #88438)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for i in range(501):
+                sid = f"archived-page-{i:03d}"
+                db.create_session(session_id=sid, source="cli")
+                db.append_message(session_id=sid, role="user", content="hi")
+                db.set_session_archived(sid, True)
+        finally:
+            db.close()
+
+        resp = self.client.get(
+            "/api/profiles/sessions?limit=1&offset=500&archived=only&profile=default"
+        )
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["total"] == 501
+        assert len(payload["sessions"]) == 1
+        assert payload["offset"] == 500
+
     def test_get_session_messages_rejects_negative_limit(self):
         """limit=-1 previously bypassed the documented 500-row clamp because
         min(-1, 500) == -1, which SQLite treats as 'no limit'."""
@@ -2857,6 +2881,42 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert payload["messages"][-1]["content"] == "msg 500"
         # Transfer projection: archived rows ride along with their flags (import re-archives them).
         assert calls == [(500, 0, True), (500, 500, True)]
+    def test_pick_silent_default_model_empty_list_returns_empty_string(self):
+        """Empty model list must return \"\" so the caller degrades gracefully."""
+        from hermes_cli.models import pick_silent_default_model
+
+        assert pick_silent_default_model([], "nous") == ""
+        assert pick_silent_default_model([], "") == ""
+        assert pick_silent_default_model([], "openrouter") == ""
+
+    def test_is_anthropic_frontier_tier(self):
+        """Unit coverage for the frontier-tier predicate used by the cost-safe
+        silent policy. Anchored on the claude- prefix so community/distill
+        slugs whose lowercase form merely contains opus are rejected."""
+        from hermes_cli.models import _is_anthropic_frontier_tier
+
+        # Opus + Fable, dash + dot, vendor-prefixed, colon-suffixed.
+        assert _is_anthropic_frontier_tier("claude-opus-4-8") is True
+        assert _is_anthropic_frontier_tier("claude-opus-4.8") is True
+        assert _is_anthropic_frontier_tier("anthropic/claude-opus-4.8") is True
+        assert _is_anthropic_frontier_tier("claude-fable-5") is True
+        assert _is_anthropic_frontier_tier("anthropic/claude-fable-5") is True
+        assert _is_anthropic_frontier_tier("anthropic/claude-fable-5:thinking") is True
+        assert _is_anthropic_frontier_tier("claude-opus-5-0") is True  # forward-compat
+
+        # Sonnet / Haiku remain non-frontier.
+        assert _is_anthropic_frontier_tier("claude-sonnet-5") is False
+        assert _is_anthropic_frontier_tier("claude-haiku-4.5") is False
+        assert _is_anthropic_frontier_tier("anthropic/claude-sonnet-4.6") is False
+
+        # Community / distill / non-Anthropic must not match.
+        assert _is_anthropic_frontier_tier("qwopus3.6-27b-coder") is False
+        assert _is_anthropic_frontier_tier("jackrong/qwopus3.6-27b-coder") is False
+        assert _is_anthropic_frontier_tier("openai/gpt-5.5") is False
+        assert _is_anthropic_frontier_tier("z-ai/glm-5.2") is False
+        assert _is_anthropic_frontier_tier("") is False
+        assert _is_anthropic_frontier_tier(None) is False
+
 
 
 # ---------------------------------------------------------------------------
@@ -3589,6 +3649,114 @@ class TestDesktopHostRendezvousIsolation:
         assert published[0][0] == (hr.ROLE_SERVE,)
         assert published[0][1]["host"] == "0.0.0.0"
         assert published[0][1]["port"] == 9119
+
+
+class TestOrphanedOwnerReclaim:
+    """HELD_BY_OTHER against a dead session's orphan must re-claim, not loop observe-only (#121964).
+
+    The conflicting owner is alive (re-parented to init), so ``record_is_stale()`` never fires
+    and the old code returned observe-only forever: every attach retried against the same orphan.
+    """
+
+    def _owner_record(self, pid=555, create_time=55.0):
+        from gateway import host_rendezvous as hr
+
+        return hr.HostRecord(
+            role=hr.ROLE_SERVE, pid=pid, create_time=create_time, host="0.0.0.0", port=9119,
+            protocol_version=hr.HOST_PROTOCOL_VERSION, token_fingerprint="", profiles=("default",),
+            updated_at="2026-09-24T00:00:00+00:00")
+
+    def _owner_entry(self, pid=555, create_time=55.0, spawner_pid=700, spawner_create=7.0):
+        from hermes_cli import process_identity as pi
+        from pathlib import Path as _Path
+
+        return {
+            "pid": pid, "create_time": create_time, "purpose": "serve",
+            "install": pi.install_id(_Path("/x/install")),
+            "spawner_pid": spawner_pid, "spawner_create": spawner_create,
+            "registered_at": 0.0, "argv": "",
+        }
+
+    def _run_publish(self, monkeypatch, tmp_path, *, entry, procs):
+        """Drive ``_publish_host_rendezvous`` through HELD_BY_OTHER with a faked owner world.
+
+        First claim fails (the orphan holds the flock), the retry succeeds (it died); returns
+        ``(claimed, published, fake_procs)``.
+        """
+        import types
+        from unittest.mock import MagicMock
+        from gateway import host_rendezvous as hr
+        import hermes_cli.web_server as web_server
+        from hermes_cli import process_identity as pi
+
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        monkeypatch.setattr(web_server, "is_desktop_owned_backend", lambda: False)
+        claims = iter([hr.HostLockOutcome.HELD_BY_OTHER, hr.HostLockOutcome.ACQUIRED])
+        claimed, published = [], []
+        monkeypatch.setattr(
+            hr, "claim_host_lock",
+            lambda role: (claimed.append(role) or (next(claims), None)),
+        )
+        monkeypatch.setattr(hr, "read_record", lambda role, **kw: self._owner_record())
+        monkeypatch.setattr(hr, "publish_record", lambda *a, **k: published.append((a, k)))
+        monkeypatch.setattr(hr, "cleanup_on_exit", lambda role: None)
+        monkeypatch.setattr(pi, "ledger_entries", lambda **kw: [entry])
+
+        made = {}
+
+        def _process(pid):
+            if pid not in procs:
+                raise fake_psutil.NoSuchProcess(pid)
+            if pid not in made:
+                proc = MagicMock()
+                proc.pid = pid
+                proc.create_time.return_value = procs[pid]
+                made[pid] = proc
+            return made[pid]
+
+        fake_psutil = types.SimpleNamespace(
+            Process=_process,
+            NoSuchProcess=type("NoSuchProcess", (Exception,), {}),
+            TimeoutExpired=type("TimeoutExpired", (Exception,), {}),
+            STATUS_ZOMBIE="zombie",
+        )
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+        web_server._publish_host_rendezvous("0.0.0.0", 9119)
+        return claimed, published, made
+
+    def test_dead_spawner_owner_is_reaped_and_lock_reclaimed(self, monkeypatch, tmp_path):
+        """Spawner provably gone: the orphan is terminated and this backend publishes."""
+        entry = self._owner_entry(spawner_pid=700, spawner_create=7.0)  # 700 not alive
+        claimed, published, made = self._run_publish(
+            monkeypatch, tmp_path, entry=entry, procs={555: 55.0})
+
+        assert made[555].terminate.called
+        assert claimed == ["serve", "serve"]  # conflict, then re-claim after the reap
+        assert published and published[0][0][0] == "serve"
+
+    def test_live_spawner_owner_stays_observe_only(self, monkeypatch, tmp_path):
+        """Spawner alive: never touch, never re-claim — the old observe-only stands."""
+        entry = self._owner_entry(spawner_pid=500, spawner_create=5.0)
+        claimed, published, made = self._run_publish(
+            monkeypatch, tmp_path, entry=entry, procs={555: 55.0, 500: 5.0})
+
+        assert 555 not in made  # no signal attempted
+        assert claimed == ["serve"]  # no retry: nothing was reaped
+        assert published == []
+
+    def test_unprovable_owner_is_untouched(self, monkeypatch, tmp_path):
+        """Null spawner whose parent is alive: unprovable means never touch."""
+        from hermes_cli import dashboard_procs
+
+        entry = self._owner_entry(spawner_pid=None, spawner_create=None)
+        monkeypatch.setattr(dashboard_procs, "_process_ppid", lambda pid: 1234)
+        claimed, published, made = self._run_publish(
+            monkeypatch, tmp_path, entry=entry, procs={555: 55.0})
+
+        assert 555 not in made
+        assert claimed == ["serve"]
+        assert published == []
 
 
 # ---------------------------------------------------------------------------
@@ -5846,3 +6014,133 @@ class TestSubmittedCustomEndpointSurvivesAssignment:
         assert applied["base_url"] == "https://api.anthropic.com"
         assert applied["api_mode"] == "anthropic_messages"
         assert applied["api_key"] == "submitted-key"
+
+
+
+class TestNousRecommendedDefaultCostSafePolicy:
+    """Paid-tier Nous recommended default must never land on an Anthropic frontier
+    tier (Opus / Fable) — the user gets no opt-out before it pins their main model
+    (#51491). Regression tests from PR #51493."""
+
+    def test_recommended_default_nous_paid_uses_curated_default(self, monkeypatch):
+        """A paid Nous user gets the cost-safe silent default from the list.
+
+        With no preferred catalog label present in the curated list and no
+        Anthropic frontier entries, the first curated entry is selected.
+        """
+        import hermes_cli.models as models_mod
+        from hermes_cli.web_routers.models import get_recommended_default_model
+
+        monkeypatch.setattr(models_mod, "get_curated_nous_model_ids", lambda: ["top/model", "other/model"])
+        import hermes_cli.models_pricing as mp
+        monkeypatch.setattr(mp, "get_pricing_for_provider", lambda provider: {})
+        monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *, force_fresh=False: False)
+        monkeypatch.setattr(
+            models_mod, "union_with_portal_paid_recommendations",
+            lambda ids, pricing, url: (ids, pricing),
+        )
+        # Keep the catalog preferred out of this list so we exercise the
+        # non-frontier fallback rather than the preferred-hit branch.
+        monkeypatch.setattr(
+            models_mod, "get_preferred_silent_default_model",
+            lambda provider="openrouter": "z-ai/glm-5.2",
+        )
+
+        result = get_recommended_default_model(provider="nous")
+        assert result["provider"] == "nous"
+        assert result["model"] == "top/model"
+        assert result["free_tier"] is False
+
+    @pytest.mark.parametrize(
+        "model_ordering, expected_model",
+        [
+            # Opus-first ordering (historical PR-branch catalog shape).
+            (
+                [
+                    "anthropic/claude-opus-4.8",
+                    "anthropic/claude-sonnet-5",
+                    "anthropic/claude-haiku-4.5",
+                ],
+                "anthropic/claude-sonnet-5",
+            ),
+            # Fable-first ordering (current origin/main catalog shape).
+            (
+                [
+                    "anthropic/claude-fable-5",
+                    "anthropic/claude-opus-4.8",
+                    "anthropic/claude-sonnet-5",
+                    "anthropic/claude-haiku-4.5",
+                ],
+                "anthropic/claude-sonnet-5",
+            ),
+            # Preferred silent default present in the list always wins,
+            # independent of relative ordering / frontiers.
+            (
+                [
+                    "anthropic/claude-fable-5",
+                    "anthropic/claude-opus-4.8",
+                    "z-ai/glm-5.2",
+                    "anthropic/claude-sonnet-5",
+                ],
+                "z-ai/glm-5.2",
+            ),
+        ],
+        ids=["opus_first", "fable_first_main", "override_beats_ordering"],
+    )
+    def test_recommended_default_nous_paid_cost_safe_policy(
+        self, monkeypatch, model_ordering, expected_model,
+    ):
+        """Regression for PR #51493 maintainer feedback (Teknium + DavidMetcalfe).
+
+        The interactive Nous recommended default must use the shared
+        cost-safe silent policy: preferred catalog label when present,
+        else first non-frontier (Opus / Fable) entry. Covers both the
+        current Fable-first catalog and a future Opus-first catalog.
+        """
+        import hermes_cli.models as models_mod
+        from hermes_cli.web_routers.models import get_recommended_default_model
+
+        monkeypatch.setattr(
+            models_mod, "get_curated_nous_model_ids", lambda: list(model_ordering),
+        )
+        import hermes_cli.models_pricing as mp
+        monkeypatch.setattr(mp, "get_pricing_for_provider", lambda provider: {})
+        monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *, force_fresh=False: False)
+        monkeypatch.setattr(
+            models_mod, "union_with_portal_paid_recommendations",
+            lambda ids, pricing, url: (ids, pricing),
+        )
+        monkeypatch.setattr(
+            models_mod, "get_preferred_silent_default_model",
+            lambda provider="openrouter": "z-ai/glm-5.2",
+        )
+
+        result = get_recommended_default_model(provider="nous")
+        assert result["provider"] == "nous"
+        assert result["model"] == expected_model
+        assert result["free_tier"] is False
+
+    def test_recommended_default_nous_paid_falls_back_when_all_frontier(self, monkeypatch):
+        """If every curated entry is a frontier tier (Opus / Fable), fall
+        back to the head of the list so the picker is never empty."""
+        import hermes_cli.models as models_mod
+        from hermes_cli.web_routers.models import get_recommended_default_model
+
+        monkeypatch.setattr(
+            models_mod, "get_curated_nous_model_ids",
+            lambda: ["anthropic/claude-fable-5", "anthropic/claude-opus-4.8"],
+        )
+        import hermes_cli.models_pricing as mp
+        monkeypatch.setattr(mp, "get_pricing_for_provider", lambda provider: {})
+        monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *, force_fresh=False: False)
+        monkeypatch.setattr(
+            models_mod, "union_with_portal_paid_recommendations",
+            lambda ids, pricing, url: (ids, pricing),
+        )
+        monkeypatch.setattr(
+            models_mod, "get_preferred_silent_default_model",
+            lambda provider="openrouter": "z-ai/glm-5.2",
+        )
+
+        result = get_recommended_default_model(provider="nous")
+        assert result["model"] == "anthropic/claude-fable-5"

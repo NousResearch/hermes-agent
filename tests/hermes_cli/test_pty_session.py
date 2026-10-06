@@ -556,16 +556,39 @@ async def test_close_orphaned_sessions_without_resume_target_touches_nothing():
 @pytest.mark.parametrize(
     "key,expected",
     [
-        ("token\0profile\0session-a", "session-a"),
-        ("token\0\0session-b", "session-b"),
-        ("token\0profile\0", ""),
-        ("token", ""),
+        ("token\0profile\0session-a", ("profile", "session-a")),
+        ("token\0\0session-b", ("", "session-b")),
+        ("token\0profile\0", ("profile", "")),
+        ("token", ("", "")),
     ],
 )
-def test_resume_target_reads_the_last_key_segment(key, expected):
-    from hermes_cli.pty_session import _resume_target
+def test_key_segments_read_profile_and_resume(key, expected):
+    from hermes_cli.pty_session import _key_segments
 
-    assert _resume_target(key) == expected
+    assert _key_segments(key) == expected
+
+
+@pytest.mark.asyncio
+async def test_close_orphaned_sessions_leaves_the_same_session_id_in_another_profile():
+    """Session ids are per profile store: alpha's ``session-a`` is not beta's."""
+    from hermes_cli.pty_session import PtySession
+
+    reg = make_registry()
+    other_bridge = FakeBridge([b""])
+    current_bridge = FakeBridge([b""])
+    other = PtySession("old-token\0beta\0session-a", other_bridge, buffer_cap=1024, read_timeout=0.01)
+    current = PtySession("new-token\0alpha\0session-a", current_bridge, buffer_cap=1024, read_timeout=0.01)
+    await other.start()
+    await current.start()
+    other.detach(None)                    # beta's tab is mid-reconnect, not stranded
+    reg._sessions[other.key] = other
+    reg._sessions[current.key] = current
+
+    await reg.close_orphaned_sessions("session-a", keep_key=current.key)
+
+    assert not other_bridge.closed
+    assert reg._sessions[other.key] is other
+    await reg.close_all()
 
 
 class PidBridge(FakeBridge):

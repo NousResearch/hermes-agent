@@ -52,14 +52,16 @@ def _process_ancestors(pid: int) -> set[int]:
         return set()
 
 
-def _resume_target(key: str) -> str:
-    """The resume target a keep-alive key was registered under.
+def _key_segments(key: str) -> tuple[str, str]:
+    """``(profile, resume)`` a keep-alive key was registered under.
 
-    Registry keys read ``token\\0profile\\0resume``; a key without a resume
-    target — a chat that was never resumed from — yields ``""``.
+    Registry keys read ``token\\0profile\\0resume``; a key without those
+    segments — a chat that was never resumed from — yields ``("", "")``.
+    Session ids are only unique within a profile's store, so a resume target
+    is identified by both.
     """
     parts = key.split("\0")
-    return parts[2] if len(parts) >= 3 else ""
+    return (parts[1], parts[2]) if len(parts) >= 3 else ("", "")
 
 
 class PtySession:
@@ -283,11 +285,14 @@ class PtySessionRegistry:
         """
         if not resume:
             return
+        # The requested chat is (profile, session): the same session id in
+        # another profile's store is a different chat whose terminal stays.
+        target = (_key_segments(keep_key)[0], resume)
         async with self._attach_lock:
             doomed = [
                 key for key, session in self._sessions.items()
                 if key != keep_key and not session.attached
-                and (_resume_target(key) == resume or session.hosts_pid(holder_pid))
+                and (_key_segments(key) == target or session.hosts_pid(holder_pid))
             ]
             sessions = [self._sessions.pop(key) for key in doomed]
         # Close outside the registry lock — a close can wait out its helpers' SIGHUP grace and

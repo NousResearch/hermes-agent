@@ -2897,6 +2897,9 @@ class _DueScan:
     now: datetime
     needs_save: bool = False
     removed: Set[str] = field(default_factory=set)
+    # Miss/catch-up metrics, emitted once the save that persists the scan's repairs lands: an
+    # unwritable store re-finds the same miss every tick, so counting before the save over-counts.
+    on_saved: List[Callable[[], None]] = field(default_factory=list)
 
     def find(self, job_id: Any) -> Optional[Dict[str, Any]]:
         return next((rj for rj in self.raw_jobs if rj["id"] == job_id), None)
@@ -3127,23 +3130,20 @@ def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
     if not new_next:
         return False
     d.scan.persist(d.job["id"], next_run_at=new_next)
-    counted = store_health.first_report(_current_cron_store().cron_dir, d.job)
     if (_instant_after(_ensure_aware(datetime.fromisoformat(new_next)), d.scan.now)
             and not _cron_config_number("catch_up_missed", True, lambda value: value is not False)):
         logger.info(
             "Job '%s' missed its scheduled time (%s, grace=%ds). "
             "Skipping missed occurrence because cron.catch_up_missed is false; next run: %s",
             d.label, d.next_run, grace, new_next)
-        if counted:
-            record_cron_missed(d.job)
+        d.scan.on_saved.append(lambda job=d.job: record_cron_missed(job))
         return True
     logger.info(
         "Job '%s' missed its scheduled time (%s, grace=%ds). "
         "Running now; next run provisionally set to: %s (re-anchored on completion)",
         d.label, d.next_run, grace, new_next)
-    if counted:
-        from cron.occurrences import record_catch_up_occurrence
-        record_catch_up_occurrence()
+    from cron.occurrences import record_catch_up_occurrence
+    d.scan.on_saved.append(record_catch_up_occurrence)
     return False
 
 
@@ -3162,7 +3162,7 @@ def _retire_expired_oneshot(d: _DueJob) -> bool:
     if not (d.job.get("run_claim") or d.job.get("fire_claim")):
         _write_missed_oneshot_diagnostic(d.job, d.next_run)
         d.scan.retire(d.job["id"])
-        record_cron_missed(d.job)
+        d.scan.on_saved.append(lambda job=d.job: record_cron_missed(job))
     return True
 
 
@@ -3346,11 +3346,15 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 "Skipping malformed cron job %r during due scan",
                 job.get("name") or job.get("id") or "?")
 
+    store_health.end_recovery_window(_current_cron_store().cron_dir)
     if scan.needs_save:
         try:
             save_jobs(raw_jobs, removed_ids=scan.removed or None)
         except OSError as exc:  # repairs live in memory; the next tick retries the persist
             store_health.note_unwritable(exc, "due-scan repairs not persisted", "scan")
+            return due
+    for emit in scan.on_saved:
+        emit()
     return due
 
 

@@ -217,12 +217,13 @@ def test_unwritable_store_degrades_once_throttles_and_catches_up_once(cron_store
     # Distinct (job, due instant): the unpersisted fast-forward keeps both on one instant each.
     assert store_health.degraded_record(cron_store / "cron").skipped_runs == 2
     from cron.occurrences import get_catch_up_occurrence_count
-    assert get_catch_up_occurrence_count() == 1  # the unpersisted fast-forward is counted once, not per tick
+    assert get_catch_up_occurrence_count() == 0  # the fast-forward did not persist: not counted yet
     outage = False
     clock["now"], clock["mono"] = FIXED_NOW + timedelta(minutes=5), 180.0
     assert scheduler.tick(verbose=False, sync=True) == 2
     assert sorted(ran) == ["due-job", "once"] and events[-1][0] == "recovered" and len(events) == 2
     assert store_health.degraded_record(cron_store / "cron") is None
+    assert get_catch_up_occurrence_count() == 1  # counted once, when the fast-forward persisted
     once_rows = executions.list_executions(job_id="once")
     assert [r["status"] for r in once_rows].count("failed") == 1
 
@@ -244,6 +245,9 @@ def test_skipped_oneshot_survives_recovery_by_any_save(cron_store, monkeypatch):
     save_jobs(load_jobs() + [dict(_due_job("other"), next_run_at=(clock["now"] + timedelta(hours=1)).isoformat())])
     assert store_health.degraded_record(cron_store / "cron") is None
     assert [d["id"] for d in get_due_jobs()] == ["once"]
+    stale = dict(once, id="stale")  # due during the outage, first scanned after the recovery scan
+    save_jobs(load_jobs() + [stale])
+    assert "stale" not in [d["id"] for d in get_due_jobs()]
 
     late = dict(once, id="late", next_run_at=(clock["now"] + timedelta(minutes=1)).isoformat())
     save_jobs(load_jobs() + [late])
@@ -254,7 +258,8 @@ def test_skipped_oneshot_survives_recovery_by_any_save(cron_store, monkeypatch):
 
 def test_idle_tick_reprobes_a_degraded_store_and_clears_it(cron_store, monkeypatch):
     """With nothing due no save lands, so only a re-probe can end the outage; without it the
-    store stays degraded (writable=0, no "recovered" notice) after the disk is fixed."""
+    store stays degraded (writable=0, no "recovered" notice) after the disk is fixed. The probe
+    only creates an empty file, so recovery is confirmed by a real jobs.json save."""
     from cron import scheduler
 
     clock = {"mono": 0.0}
@@ -272,6 +277,12 @@ def test_idle_tick_reprobes_a_degraded_store_and_clears_it(cron_store, monkeypat
     clock["mono"] += 30.0
     scheduler.tick(verbose=False, sync=True)  # re-probe throttled to once a minute
     assert store_health.degraded_record(cron_store / "cron") is not None
+    real_stage = cronjobs._stage_jobs_payload
+    monkeypatch.setattr(cronjobs, "_stage_jobs_payload", _enospc)  # probe passes, real save fails (EDQUOT-like)
+    clock["mono"] += 60.0
+    scheduler.tick(verbose=False, sync=True)
+    assert store_health.degraded_record(cron_store / "cron") is not None
+    monkeypatch.setattr(cronjobs, "_stage_jobs_payload", real_stage)
     clock["mono"] += 60.0
     scheduler.tick(verbose=False, sync=True)
     assert store_health.degraded_record(cron_store / "cron") is None

@@ -118,7 +118,7 @@ def _tick_admitted(
             # No durable advance -> a crash mid-run would re-fire recurring jobs; skipping is the
             # at-most-once side. One-shots still go through their own fire claim.
             skipped = [j for j in due_jobs if (j.get("schedule") or {}).get("kind") in {"cron", "interval"}]
-            due_jobs = [j for j in due_jobs if j not in skipped]
+            due_jobs = [j for j in due_jobs if (j.get("schedule") or {}).get("kind") not in {"cron", "interval"}]
             store_health.note_unwritable(exc, f"skipped {len(skipped)} recurring job(s)", "advance", skipped)
             if not due_jobs:
                 _sched._sweep_mcp_orphans()

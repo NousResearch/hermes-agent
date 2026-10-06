@@ -46,7 +46,6 @@ class StoreDegraded:
     recovered_at: Optional[float] = None  # epoch seconds of the first write that landed again
     sites: set = field(default_factory=set)
     skipped: set = field(default_factory=set)  # distinct (job id, scheduled instant) not run
-    reported: set = field(default_factory=set)  # misses already counted this outage (first_report)
     # Monotonic time of the last failed dispatch write or re-probe. None until a dispatch write
     # fails, so a due one-shot reaches its claim and settles its ``failed`` row once per probe.
     last_probe: Optional[float] = None
@@ -63,8 +62,9 @@ class StoreDegraded:
 
 _DISPATCH_SITES = frozenset({"advance", "claim"})
 _degraded: dict[str, StoreDegraded] = {}
-# Each store's last ended outage (``outage_covers``): the save that ends an outage is often another
-# job's heartbeat, landing before the scan that fires the one-shots the outage skipped.
+# Each store's just-ended outage, kept until the next due scan (``outage_covers``): the save that
+# ends an outage is often another job's heartbeat, landing before the scan that fires the
+# one-shots the outage skipped.
 _recovered: dict[str, StoreDegraded] = {}
 _lock = threading.Lock()
 # The gateway consumes transitions; ``fn(event, record)`` with event "unwritable" or "recovered".
@@ -145,7 +145,7 @@ def degraded_record(cron_dir: Optional[Path] = None) -> Optional[StoreDegraded]:
 
 
 def outage_covers(cron_dir: Path, due_at: float, grace: float) -> bool:
-    """Whether a run due at ``due_at`` fell inside this store's current or last ended outage."""
+    """Whether a run due at ``due_at`` fell inside this store's current or just-ended outage."""
     return any(r is not None and r.since <= due_at + grace and (r.recovered_at is None or due_at <= r.recovered_at)
                for r in (_degraded.get(str(cron_dir)), _recovered.get(str(cron_dir))))
 
@@ -178,34 +178,37 @@ def dispatch_blocked(due_jobs: list) -> bool:
     return blocked
 
 
-def first_report(cron_dir: Path, job: dict) -> bool:
-    """Whether a missed run should be counted now. An unwritable store cannot persist the scan's
-    fast-forward, so the scan re-finds the same miss every tick: count it once per outage."""
-    record = _degraded.get(str(cron_dir))
-    if record is None:
-        return True
-    key = (job.get("id"), job.get("next_run_at"))
-    with _lock:
-        fresh = key not in record.reported
-        record.reported.add(key)
-    return fresh
+def end_recovery_window(cron_dir: Path) -> None:
+    """A due scan ran after the outage ended: later scans apply the normal grace window again."""
+    if _recovered:
+        with _lock:
+            _recovered.pop(str(cron_dir), None)
 
 
 def recheck_idle() -> None:
     """Idle tick (nothing due, so no save will land): re-probe a degraded store at most once a
-    minute and clear it when it accepts writes, so metrics, notices and the one-shot grace gate
-    do not stay on a store that has already recovered."""
+    minute. The probe only creates an empty file, so a passing probe is confirmed by a real
+    jobs.json save, whose ``note_writable`` ends the outage; metrics, notices and the one-shot
+    grace gate then stop treating a recovered store as degraded."""
+    if not _degraded:
+        return
     cron_dir = _active_cron_dir()
     record = _degraded.get(str(cron_dir))
     now = time.monotonic()
     if record is None or (record.last_probe is not None and now - record.last_probe < PROBE_INTERVAL_SECONDS):
         return
+    record.last_probe = now
     error = probe_store(cron_dir)
     if error is None:
-        note_writable(cron_dir)
-        return
+        from cron.jobs import _jobs_lock, load_jobs, save_jobs
+        try:
+            with _jobs_lock():
+                save_jobs(load_jobs())
+            return
+        except OSError as exc:  # e.g. EDQUOT or a read-only jobs.json in a writable dir
+            error = exc
     with _lock:
-        record.last_probe, record.error = now, describe_error(error)
+        record.error = describe_error(error)
 
 
 def probe_report(cron_dir: Path) -> Optional[dict]:

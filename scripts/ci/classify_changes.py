@@ -169,6 +169,7 @@ _SHARED_FIXTURE_CONSUMERS: dict[str, tuple[str, ...]] = {
         "tests/scripts/desktop_update/test_desktop_update_posix_marker_corpus.py",  # marker.sh
         "tests/scripts/desktop_update/test_desktop_update_windows_marker_corpus.py",  # marker.ps1
         "apps/desktop/electron/remote-update-marker-programs.test.ts",  # SSH remote judge
+        "apps/desktop/electron/remote-lifecycle-v2-marker.test.ts",  # SSH relaunch/spawn gate
     ),
 }
 # What a fixture inherits from its consumers: the lanes that run them as tests.
@@ -226,7 +227,8 @@ _UPDATE_PIPELINE = (
     # Prefix: main_desktop.py (staged Desktop swap / rebuild in the tail) and the
     # main_desktop_* siblings it imports (macOS signing identity).
     "hermes_cli/main_desktop",
-    "hermes_cli/_early_recovery.py",  # interrupted pull / shim restore at launch
+    # Prefix: _early_recovery.py and its _early_recovery_* siblings (ZIP swap journal).
+    "hermes_cli/_early_recovery",  # interrupted pull / shim restore at launch
     "hermes_cli/venv_sync.py",  # completion obligation + launch-time tail
     "hermes_cli/source_",  # source_completion/_build/_releases/_check/_stamp
     "hermes_cli/_launchers.py",
@@ -270,7 +272,7 @@ _UPDATE_ENTRY_POINTS = (
     "hermes_cli/_old_updater",
     "hermes_cli/post_update",
     "hermes_cli/venv_sync.py",
-    "hermes_cli/_early_recovery.py",
+    "hermes_cli/_early_recovery",
     "hermes_cli/main_desktop.py",
     "hermes_cli/desktop_update_verify.py",
     "hermes_cli/desktop_build_lock.py",

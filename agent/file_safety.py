@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from contextlib import suppress
-from typing import Optional
+from typing import Callable, Optional
 
 
 def _constants_path(getter_name: str) -> Path:
@@ -34,12 +34,19 @@ def _hermes_root_path() -> Path:
 
 
 def _hermes_dirs() -> list[Path]:
-    """Resolved active HERMES_HOME and global root, deduplicated.
+    """Resolved active HERMES_HOME, global root and every ``<root>/profiles/*``, deduplicated.
 
-    Both are checked so credential stores at <root>/... stay guarded when
-    running under a profile (HERMES_HOME = <root>/profiles/<name>).
+    The root is checked so its credential stores stay guarded under a profile; sibling
+    profiles are enumerated at check time (like gateway delivery's ``_credential_home_roots``)
+    so another profile's pairing store or secret cache is not readable or writable from this
+    one, including a profile created after startup.
     """
-    return list(dict.fromkeys(_resolve_each((_hermes_home_path(), _hermes_root_path()))))
+    root = _hermes_root_path()
+    try:
+        siblings = [p for p in (root / "profiles").iterdir() if p.is_dir()]
+    except OSError:
+        siblings = []
+    return list(dict.fromkeys(_resolve_each((_hermes_home_path(), root, *siblings))))
 
 
 def _resolve_each(paths) -> list[Path]:
@@ -51,15 +58,60 @@ def _resolve_each(paths) -> list[Path]:
     return out
 
 
+def _file_id(path: str | Path) -> Optional[tuple[int, int]]:
+    """``(st_dev, st_ino)`` of what ``path`` names, or None when it cannot be stat'ed."""
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    # Some network / FAT volumes report inode 0 for every file: that is no identity at all.
+    return (st.st_dev, st.st_ino) if st.st_ino else None
+
+
+def _ignores_case(existing: Path) -> bool:
+    """Whether the volume holding ``existing`` looks names up case-insensitively (macOS's
+    default APFS, Windows): the same path with its case swapped names the same file."""
+    fid, flipped = _file_id(existing), str(existing).swapcase()
+    return fid is not None and flipped != str(existing) and _file_id(flipped) == fid
+
+
 def _is_under(resolved: str | Path, base: str | Path) -> bool:
-    """True when ``resolved`` equals ``base`` or lies below it (both already resolved);
-    ``Path`` inputs use ``relative_to`` (platform semantics), ``str`` a realpath prefix test."""
-    if isinstance(resolved, Path):
-        try:
-            return resolved.relative_to(base) is not None
-        except ValueError:
+    """True when ``resolved`` is ``base`` or lies below it (both already resolved).
+
+    Judged by the filesystem, not only the spelling: realpath keeps the case it was given, so on
+    a case-insensitive volume ``AUTH.JSON`` is ``auth.json``, and a hardlink or a second mount
+    reaches a file under another path. A ``base`` that exists is matched by file identity of
+    ``resolved`` or one of its parents; one not created yet by a case-folded spelling, when the
+    volume ignores case (a write to ``.ENV`` creates the ``.env`` the loader reads)."""
+    return _is_under_any(resolved, (base,))
+
+
+def _is_under_any(resolved: str | Path, bases) -> bool:
+    """``_is_under`` against every base in ``bases``."""
+    return _under_any_matcher(bases)(resolved)
+
+
+def _under_any_matcher(bases) -> Callable[[str | Path], bool]:
+    """``_is_under_any`` with the bases stat'ed once, and each candidate's ancestry once, so a
+    directory listing does not re-stat every store for every entry."""
+    ids = {str(base): _file_id(base) for base in bases}
+    spelled = [(base, base.rstrip(os.sep) + os.sep) for base in ids]
+    existing = {fid for fid in ids.values() if fid is not None}
+    missing = [base.casefold() for base, fid in ids.items() if fid is None]
+
+    def matches(resolved: str | Path) -> bool:
+        text = str(resolved)
+        if any(text == base or text.startswith(prefix) for base, prefix in spelled):
+            return True
+        path = Path(resolved)
+        if existing and existing.intersection(_file_id(p) for p in (path, *path.parents)):
+            return True
+        folded = text.casefold()
+        if not any(folded == b or folded.startswith(b + os.sep) for b in missing):
             return False
-    return resolved == base or resolved.startswith(str(base) + os.sep)
+        return next((_ignores_case(p) for p in (path, *path.parents) if _file_id(p) is not None), False)
+
+    return matches
 
 
 def _resolve_target(path: str) -> Optional[Path]:
@@ -182,25 +234,15 @@ def build_write_denied_paths(home: str) -> set[str]:
         (".ssh", "authorized_keys"), (".ssh", "id_rsa"), (".ssh", "id_ed25519"),
         (".netrc",), (".pgpass",), (".npmrc",), (".pypirc",), (".git-credentials",),
     )
-    # Secret material under HERMES_HOME, on both the active profile and the global
-    # root: overwriting the root .env leaks credentials across every profile that
-    # inherits it, and the root Anthropic PKCE store is still read by default /
-    # non-profile sessions when a profile is active. google_oauth.json is an OAuth
-    # token store; both Bitwarden caches hold Secrets Manager material.
-    #
-    # auth.json, auth.lock, config.yaml and webhook_subscriptions.json are
-    # deliberately NOT here: #45947 freed those control files on purpose
-    # ("true containment belongs in Docker/remote backends and OS permissions,
-    # not an expanding hardcoded denylist"). They stay read-denied, not write-denied.
-    hermes_files = (
-        ".env", ".anthropic_oauth.json",
-        os.path.join("auth", "google_oauth.json"),
-        os.path.join("cache", "bws_cache.json"),
-        os.path.join("cache", "bws_cache.enc.json"),
-    )
+    # Secret material under every Hermes home (active profile, global root, sibling
+    # profiles): overwriting the root .env leaks credentials across every profile that
+    # inherits it, and the caches hold secret values that load into the environment at
+    # startup. Derived from SECRET_STORE_FILES so a newly listed store cannot be left
+    # writable; only the control files in _WRITABLE_CONTROL_FILES are left out.
+    hermes_files = [f for f in SECRET_STORE_FILES if f not in _WRITABLE_CONTROL_FILES]
     paths = [
         *(os.path.join(home, *f) for f in home_files),
-        *(str(base / f) for f in hermes_files for base in (_hermes_home_path(), _hermes_root_path())),
+        *(str(base / f) for base in _hermes_dirs() for f in hermes_files),
         "/etc/sudoers", "/etc/passwd", "/etc/shadow",
     ]
     return {os.path.realpath(p) for p in paths}
@@ -246,7 +288,8 @@ def build_write_approval_paths(home: str) -> set[str]:
 # browser-profile/ (copied cookies / Login Data) hold credential material.
 # Control files (auth.json, config.yaml, webhook_subscriptions.json) are
 # deliberately NOT here (#45947): read-denied, but the user may ask to edit them.
-_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile")
+# SECRET_STORE_DIRS (below) are protected as well.
+_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions")
 
 
 def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
@@ -281,21 +324,19 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
     """Credential / protected-subpath / safe-root verdict for an already-resolved path."""
     # Approval-gated paths are allowed at this layer so interactive tools can
     # prompt; checked first so the ``.ssh/`` prefix deny doesn't swallow them.
-    if any(resolved in build_write_approval_paths(home) for home in homes):
+    if _is_approval_path(homes, resolved):
         return None
 
-    if any(
-        resolved in build_write_denied_paths(home)
-        or any(resolved.startswith(prefix) for prefix in build_write_denied_prefixes(home))
-        for home in homes
-    ):
+    # A denied prefix covers what lies strictly below it: the parent is at or under it.
+    if (_is_under_any(resolved, {p for home in homes for p in build_write_denied_paths(home)})
+            or _is_under_any(os.path.dirname(resolved),
+                             {p.rstrip(os.sep) for home in homes for p in build_write_denied_prefixes(home)})):
         return "credential"
 
-    for base in _hermes_dirs():
-        for sub in _HERMES_PROTECTED_SUBPATHS:
-            with suppress(Exception):
-                if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
-                    return "credential"
+    protected = (os.path.realpath(os.path.join(str(base), sub))
+                 for base in _hermes_dirs() for sub in (*_HERMES_PROTECTED_SUBPATHS, *SECRET_STORE_DIRS))
+    if _is_under_any(resolved, [*protected, *map(str, configured_secret_store_paths())]):
+        return "credential"
 
     safe_roots = get_safe_write_roots()
     if safe_roots and not any(_is_under(resolved, root) for root in safe_roots):
@@ -327,8 +368,11 @@ def get_write_denied_error(path: str, *, verb: str = "Write", entry: bool = Fals
 def is_write_approval_required(path: str) -> bool:
     """True if ``path`` is approval-gated (``~/.ssh/config``): interactive callers
     prompt, callers without a channel treat it as a block (fail closed)."""
-    homes, resolved = _homes_and_resolved(path)
-    return any(resolved in build_write_approval_paths(home) for home in homes)
+    return _is_approval_path(*_homes_and_resolved(path))
+
+
+def _is_approval_path(homes: set[str], resolved: str) -> bool:
+    return any(_is_under(resolved, gated) for home in homes for gated in build_write_approval_paths(home))
 
 
 # Secret-bearing project-local env file basenames, blocked anywhere on disk.
@@ -340,18 +384,60 @@ _DID_SUFFIX = (
     " (Defense-in-depth — not a security boundary; the terminal tool can still bypass.)"
 )
 
-# Exact-file credential stores under HERMES_HOME / <root>. The agent never
-# needs these directly — provider tools consume them through internal channels.
-# bws_cache.json is the Bitwarden Secrets Manager disk cache: plaintext secret values.
-_CREDENTIAL_FILE_NAMES = (
+# Exact-file secret stores Hermes writes under HERMES_HOME / <root>. The agent never needs
+# these directly — provider tools consume them through internal channels. This and
+# SECRET_STORE_DIRS are the ONE list the read guard, gateway chat file delivery
+# (gateway.platforms.base) and the dashboard Files API (hermes_cli.web_routers.files) derive
+# from: hand-kept copies drifted, and the 1Password cache was blocked on none of them.
+# bws_cache.json / op_cache.json are the Bitwarden / 1Password disk caches: plaintext secret values.
+SECRET_STORE_FILES = (
     "auth.json", "auth.lock", ".anthropic_oauth.json", ".env", "webhook_subscriptions.json",
-    os.path.join("auth", "google_oauth.json"), os.path.join("cache", "bws_cache.json"),
+    os.path.join("auth", "google_oauth.json"),
+    os.path.join("cache", "bws_cache.json"), os.path.join("cache", "bws_cache.enc.json"),
+    os.path.join("cache", "op_cache.json"),
+    # Also denied as the vault/ tree; named so basename-only consumers catch them too.
+    os.path.join("vault", "vault.key"), os.path.join("vault", "vault.json.enc"),
+    # Messaging-platform OAuth / bot tokens written by the adapters themselves.
+    "slack_tokens.json", "google_chat_user_client_secret.json",
+    # The legacy single-user Google Chat token (no email); per-user ones live in google_chat_user_tokens/.
+    "google_chat_user_token.json",
+)
+# Control files #45947 freed on purpose ("true containment belongs in Docker/remote backends
+# and OS permissions, not an expanding hardcoded denylist"): read-denied, but writable.
+_WRITABLE_CONTROL_FILES = frozenset({"auth.json", "auth.lock", "webhook_subscriptions.json"})
+
+
+def configured_secret_store_paths() -> list[Path]:
+    """Secret stores whose location the operator configures instead of a fixed name under a
+    Hermes home: the WhatsApp session directory (``platforms.whatsapp.session_path``) and the
+    Matrix recovery-key output file (``MATRIX_RECOVERY_KEY_OUTPUT_FILE``). Read at check time
+    from the active profile, the same sources the adapters read."""
+    raw: list[str] = []
+    with suppress(Exception):
+        from hermes_cli.config import load_config_readonly
+
+        whatsapp = (load_config_readonly().get("platforms") or {}).get("whatsapp") or {}
+        extra = whatsapp.get("extra") if isinstance(whatsapp.get("extra"), dict) else {}
+        raw.append(str(extra.get("session_path") or whatsapp.get("session_path") or ""))
+    with suppress(Exception):
+        from agent.secret_scope import get_secret
+
+        raw.append(str(get_secret("MATRIX_RECOVERY_KEY_OUTPUT_FILE", "") or ""))
+    return _resolve_each(Path(os.path.expanduser(p.strip())) for p in raw if p.strip())
+# Whole trees of secret material under HERMES_HOME / <root>. browser-profile/ is a copy of the
+# user's Cookies / Login Data; the platform session stores are logged-in messaging accounts.
+# Stores resolved by get_hermes_dir() list both the current and the legacy location.
+SECRET_STORE_DIRS = (
+    "mcp-tokens", "browser-profile", "vault",
+    os.path.join("platforms", "pairing"), "pairing",
+    os.path.join("platforms", "whatsapp", "session"), os.path.join("whatsapp", "session"),
+    os.path.join("platforms", "matrix", "store"), os.path.join("matrix", "store"),
+    "google_chat_user_tokens", os.path.join("weixin", "accounts"),
 )
 
-# Directory-prefix read denies under HERMES_HOME / <root>: (subdir, message for
-# the directory itself, message for a file inside). browser-profile/ is a copy
-# of the user's Cookies / Login Data — the same credential class as auth.json.
-_READ_DENIED_DIRS = (
+# Directory-prefix read denies: (subdir, message for the directory itself, message for a file
+# inside). Stores without a tailored message below get the generic one.
+_READ_DENIED_DIR_MESSAGES = (
     ("mcp-tokens",
      "is the Hermes MCP token directory and cannot be read directly.",
      "is a Hermes MCP token file and cannot be read directly."),
@@ -362,6 +448,12 @@ _READ_DENIED_DIRS = (
     ("vault",
      "is the Hermes credential vault directory and cannot be read directly (secrets are filled server-side by browser_vault_fill).",
      "is inside the Hermes credential vault (encrypted secrets + local key) and cannot be read directly (browser_vault_fill resolves them server-side)."),
+)
+_READ_DENIED_DIRS = (
+    *_READ_DENIED_DIR_MESSAGES,
+    *((d, "is a Hermes credential store directory and cannot be read directly.",
+       "is inside a Hermes credential store and cannot be read directly.")
+      for d in SECRET_STORE_DIRS if d not in {m[0] for m in _READ_DENIED_DIR_MESSAGES}),
 )
 
 
@@ -388,23 +480,26 @@ def get_read_block_error(path: str) -> Optional[str]:
     resolved = Path(path).expanduser().resolve()
     hermes_dirs = _hermes_dirs()
     reason = None
-    if any(_is_under(resolved, hd / "skills" / ".hub") for hd in hermes_dirs):
+    # An existing store is matched by file identity, so its path needs no resolving; one not
+    # created yet cannot be read.
+    if _is_under_any(resolved, [hd / "skills" / ".hub" for hd in hermes_dirs]):
         reason = (
             "is an internal Hermes cache file and cannot be read directly to prevent "
             "prompt injection. Use the skills_list or skill_view tools instead."
         )
-    elif any(resolved in _resolve_each(hd / name for hd in hermes_dirs) for name in _CREDENTIAL_FILE_NAMES):
+    elif _is_under_any(resolved, [*(hd / name for hd in hermes_dirs for name in SECRET_STORE_FILES),
+                                  *configured_secret_store_paths()]):
         reason = (
             "is a Hermes credential store and cannot be read directly. Provider tools "
             "consume these credentials through internal channels." + _DID_SUFFIX
         )
     else:
         for subdir, dir_msg, file_msg in _READ_DENIED_DIRS:
-            for blocked_dir in _resolve_each(hd / subdir for hd in hermes_dirs):
-                if _is_under(resolved, blocked_dir):
-                    reason = (dir_msg if resolved == blocked_dir else file_msg) + _DID_SUFFIX
-                    break
-            if reason:
+            blocked_dirs = [hd / subdir for hd in hermes_dirs]
+            if _is_under_any(resolved, blocked_dirs):
+                fid = _file_id(resolved)
+                is_dir = resolved in blocked_dirs or (fid is not None and fid in {_file_id(d) for d in blocked_dirs})
+                reason = (dir_msg if is_dir else file_msg) + _DID_SUFFIX
                 break
         if reason is None and resolved.name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES:
             reason = (
@@ -412,6 +507,25 @@ def get_read_block_error(path: str) -> Optional[str]:
                 "leakage. If you need to check the file structure, read .env.example instead." + _DID_SUFFIX
             )
     return f"Access denied: {path} {reason}" if reason else None
+
+
+def is_secret_store_path(path: str | Path) -> bool:
+    """True when ``path`` is, or lies inside, one of the Hermes credential stores the read guard
+    refuses, located where the store actually is: a store reached through a symlinked or renamed
+    directory, a case variant or a hardlink counts, whatever its path components are called."""
+    return secret_store_matcher()(path)
+
+
+def secret_store_matcher() -> Callable[[str | Path], bool]:
+    """``is_secret_store_path`` with the stores located once, for checking many paths."""
+    stores = [hd / name for hd in _hermes_dirs() for name in (*SECRET_STORE_FILES, *SECRET_STORE_DIRS)]
+    under = _under_any_matcher([*stores, *configured_secret_store_paths()])
+
+    def matches(path: str | Path) -> bool:
+        resolved = _resolve_target(str(path))
+        return resolved is not None and under(resolved)
+
+    return matches
 
 
 def raise_if_read_blocked(path: str) -> None:

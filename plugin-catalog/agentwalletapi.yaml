@@ -1,10 +1,10 @@
-name: openclawcash-agentwallet
+name: agentwalletapi
 repo: https://github.com/openclawcash/agentwalletapi-hermes
 sha: 426987c4df3e638270a0c41e5da4cb09fa82f439
 version: "1.28.1"
 image: https://raw.githubusercontent.com/openclawcash/agentwalletapi-hermes/426987c4df3e638270a0c41e5da4cb09fa82f439/assets/catalog-banner.png
 subdir: agentwalletapi
-description: OpenClawCash managed EVM and Solana wallets for AI agents — thin bridge to the OpenClawCash agent API.
+description: "OpenClawCash managed EVM and Solana wallets for AI agents — thin bridge to the OpenClawCash agent API. Disclosure — payments plugin for the OpenClawCash custodial wallet service (openclawcash.com); the model can create wallets and send EVM/Solana transfers from wallets reachable by OPENCLAWCASH_AGENT_KEY with no Hermes confirmation prompt; tool arguments go to openclawcash.com, and wallet_create also sends OPENCLAWCASH_EXPORT_PASSPHRASE to that API."
 maintainer: openclawcash
 tier: community
 category: tools

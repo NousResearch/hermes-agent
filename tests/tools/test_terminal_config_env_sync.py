@@ -66,6 +66,9 @@ def _gateway_env_map() -> dict[str, str]:
         for key in sorted(candidates):
             for var in [v for v in os.environ if v.startswith("TERMINAL_")]:
                 del os.environ[var]
+            # The Kubernetes blob belongs only to its selected backend.
+            if key == "kubernetes":
+                os.environ["TERMINAL_ENV"] = "kubernetes"
             _bridge_terminal_config_to_env({key: probe})
             written = [v for v, val in os.environ.items() if v.startswith("TERMINAL_") and val == probe]
             if written:
@@ -84,10 +87,9 @@ def _save_config_env_sync_keys() -> set[str]:
     literal that the consolidation removed.
     """
     from hermes_cli import config as hc_config
-    # set_config_value bridges every TERMINAL_CONFIG_ENV_MAP key except
-    # terminal.cwd (see the ``key != "terminal.cwd"`` guard in
-    # set_config_value); mirror that exclusion here.
-    return {k for k in hc_config.TERMINAL_CONFIG_ENV_MAP if k != "cwd"}
+    # Path and Kubernetes configuration stay in YAML rather than .env.
+    return {k for k in hc_config.TERMINAL_CONFIG_ENV_MAP
+            if f"terminal.{k}" not in hc_config._TERMINAL_ENV_MIRROR_EXCLUDED}
 
 
 # Keys present in cli.py env_mappings but intentionally absent from
@@ -139,8 +141,8 @@ def test_save_config_set_bridges_every_cli_terminal_key():
     startup path bridges, so a config-set value takes effect without restart.
     """
     save_keys = _save_config_env_sync_keys()
-    # cwd is bridged separately by set_config_value; home_mode is CLI-only.
-    exempt = _CLI_ONLY_OK | {"cwd", "home_mode"}
+    # cwd and the Kubernetes blob stay in YAML; home_mode is CLI-only.
+    exempt = _CLI_ONLY_OK | {"cwd", "kubernetes", "home_mode"}
     missing = (set(_cli_env_map()) - exempt) - save_keys
     assert not missing, (
         f"`hermes config set terminal.X` doesn't sync these keys to .env: "

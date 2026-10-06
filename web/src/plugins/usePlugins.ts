@@ -1,20 +1,15 @@
-/**
- * usePlugins hook — discovers and loads dashboard plugins.
- *
- * 1. Fetches plugin manifests from GET /api/dashboard/plugins
- * 2. Injects CSS <link> tags for plugins that declare css
- * 3. Loads plugin JS bundles via <script> tags
- * 4. Waits for plugins to call register() and resolves them
- */
-
-import { useState, useEffect, useRef } from "react";
+/** Discover dashboard plugins; cached routes are never execution authority. */
+import { useState, useEffect } from "react";
 import { api, HERMES_BASE_PATH } from "@/lib/api";
 import type { PluginManifest, RegisteredPlugin } from "./types";
+import { pluginAdmissionError } from "./admission";
 import {
   getPluginComponent,
   onPluginRegistered,
-  notifyPluginRegistry,
+  beginPluginRegistration,
+  completePluginRegistration,
   setPluginLoadError,
+  clearPluginRegistration,
 } from "./registry";
 
 export const MANIFEST_CACHE_KEY = "hermes:plugin-manifests";
@@ -38,155 +33,138 @@ export function cacheManifests(manifests: PluginManifest[]): void {
   }
 }
 
-/**
- * Whether it is safe to skip the initial plugin-loading gate for a set of
- * cached manifests.
- *
- * App.tsx waits on `pluginsLoading` before mounting the persistent ChatPage
- * host: if a plugin overrides /chat (`tab.override === "/chat"`), mounting
- * the built-in chat first would spawn a PTY and then yank it out from under
- * the user when the plugin resolves. That gate is load-bearing — so we may
- * only seed `loading = false` from the cache when no cached manifest
- * declares a /chat override. Manifests are still seeded either way; only
- * the loading flag stays conservative.
- */
-export function canSeedLoadedFromCache(
-  cached: PluginManifest[] | null,
-): boolean {
+/** Legacy cache helper. Execution always requires a fresh host response. */
+export function canSeedLoadedFromCache(cached: PluginManifest[] | null): boolean {
   if (cached === null) return false;
   return !cached.some((m) => m.tab?.override === "/chat");
 }
 
 export function usePlugins() {
-  // Lazy initialisers run once at mount — safe to read sessionStorage here.
-  // This avoids the "cannot access ref during render" lint error that would
-  // occur if we stored the cached value in a useRef and read .current in the
-  // useState initial value expression.
   const [manifests, setManifests] = useState<PluginManifest[]>(
     () => getCachedManifests() ?? [],
   );
   const [plugins, setPlugins] = useState<RegisteredPlugin[]>([]);
-  // Start loading=false when the cache has manifests so plugin routes are
-  // registered synchronously on the first render after a refresh.
-  // The catch-all in App.tsx is only a safety net for the very first visit
-  // (no cache yet). On subsequent visits this flag starts false immediately.
-  //
-  // Exception: if any cached manifest overrides /chat we must keep
-  // loading=true — App.tsx's pluginsLoading gate around the persistent
-  // ChatPage host is load-bearing (see canSeedLoadedFromCache).
-  const [loading, setLoading] = useState<boolean>(
-    () => !canSeedLoadedFromCache(getCachedManifests()),
-  );
-  const loadedScripts = useRef<Set<string>>(new Set());
+  // Even a cache without /chat may be stale. Keep the persistent PTY host
+  // gated until the current response and all admitted assets settle.
+  const [loading, setLoading] = useState(true);
+  const [currentManifests, setCurrentManifests] = useState<PluginManifest[]>([]);
 
-  // Always re-fetch in the background to keep the cache fresh.
-  // This handles: new plugins added, plugins removed, manifest changes.
-  // setManifests(list) will update routes if the server list differs from cache.
   useEffect(() => {
-    api
-      .getPlugins()
-      .then((list) => {
-        cacheManifests(list);
-        setManifests(list);
-        if (list.length === 0) setLoading(false);
-      })
-      .catch(() => setLoading(false));
+    let active = true;
+    api.getPlugins().then((list) => {
+      if (!active) return;
+      cacheManifests(list);
+      setManifests(list);
+      const admitted = list.filter((manifest) => {
+        const error = pluginAdmissionError(manifest);
+        if (error) setPluginLoadError(manifest.name, error);
+        return !error;
+      });
+      setCurrentManifests(admitted);
+      if (admitted.length === 0) setLoading(false);
+    }).catch(() => {
+      if (!active) return;
+      setManifests([]);
+      setLoading(false);
+    });
+    return () => { active = false; };
   }, []);
 
-  // Load plugin assets when manifests arrive.
   useEffect(() => {
-    if (manifests.length === 0) return;
+    if (currentManifests.length === 0) return;
+    let active = true;
+    const disposers: (() => void)[] = [];
+    const timeouts: (() => void)[] = [];
+    let remaining = currentManifests.length;
+    const settle = () => {
+      remaining--;
+      if (remaining === 0 && active) setLoading(false);
+    };
 
-    const injectedScripts: HTMLScriptElement[] = [];
-
-    for (const manifest of manifests) {
-      // Inject CSS if specified.
-      if (manifest.css) {
-        const cssUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.css}`;
-        if (!document.querySelector(`link[href="${cssUrl}"]`)) {
-          const link = document.createElement("link");
-          link.rel = "stylesheet";
-          link.href = cssUrl;
-          document.head.appendChild(link);
-        }
-      }
-
-      // Load JS bundle. In dev, cache-bust so Vite HMR can clear the
-      // in-memory registry while the browser would otherwise never
-      // re-execute a previously cached <script> URL.
-      const baseUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.entry}`;
-      const scriptSrc = import.meta.env.DEV
-        ? `${baseUrl}?hermes_dv=${Date.now()}`
-        : baseUrl;
-      if (!import.meta.env.DEV) {
-        if (loadedScripts.current.has(baseUrl)) continue;
-        loadedScripts.current.add(baseUrl);
-      }
-
+    for (const manifest of currentManifests) {
+      // Include declarations in identity even when URLs are unchanged. Never
+      // reuse a DOM node (or registration) as proof of a fresh host response.
+      const identity = JSON.stringify([manifest.name, manifest.version, manifest.entry,
+        manifest.css, manifest.sdk, manifest.integrity, manifest.css_integrity]);
       const script = document.createElement("script");
+      const link = manifest.css ? document.createElement("link") : null;
+      beginPluginRegistration(manifest.name, identity, script);
+      let jsLoaded = false;
+      let cssLoaded = !link;
+      let terminal = false;
+      const removeAssets = () => {
+        for (const el of [script, link]) {
+          if (!el) continue;
+          el.onload = el.onerror = null;
+          el.remove();
+        }
+      };
+      const fail = (error: string) => {
+        if (!active || terminal) return;
+        terminal = true;
+        removeAssets();
+        setPluginLoadError(manifest.name, error);
+        settle();
+      };
+      const finish = () => {
+        if (!active || terminal || !jsLoaded || !cssLoaded) return;
+        terminal = true;
+        completePluginRegistration(manifest.name, identity);
+        settle();
+      };
+      timeouts.push(() => fail("Plugin asset load timed out"));
+      disposers.push(() => {
+        removeAssets();
+        clearPluginRegistration(manifest.name);
+      });
+
+      if (link) {
+        link.rel = "stylesheet";
+        link.href = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.css}`;
+        if (manifest.css_integrity) {
+          link.integrity = manifest.css_integrity;
+          link.crossOrigin = "anonymous";
+        }
+        link.onload = () => { cssLoaded = true; finish(); };
+        link.onerror = () => fail("CSS load failed");
+        document.head.appendChild(link);
+      }
+
+      const baseUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.entry}`;
       script.setAttribute("data-hermes-plugin", manifest.name);
-      script.src = scriptSrc;
+      script.src = import.meta.env.DEV ? `${baseUrl}?hermes_dv=${Date.now()}` : baseUrl;
       script.async = true;
-      // SRI integrity verification — defense against compromised plugin
-      // delivery. Plugin manifests can declare an integrity hash
-      // (e.g. "sha384-...") which the browser verifies before executing.
-      // Without this, a man-in-the-middle or compromised plugin server
-      // can substitute the JS bundle silently. Opt-in: when no integrity
-      // is declared in the manifest, behavior is unchanged.
-      if (manifest.integrity && typeof manifest.integrity === "string") {
+      // Keep the whole validated assertion literally, including strongest hashes.
+      if (manifest.integrity) {
         script.integrity = manifest.integrity;
         script.crossOrigin = "anonymous";
       }
-      script.onerror = () => {
-        setPluginLoadError(manifest.name, "LOAD_FAILED");
-        console.warn(
-          `[plugins] Failed to load ${manifest.name} from ${scriptSrc} (open Network tab)`,
-        );
-      };
-      script.onload = () => {
-        notifyPluginRegistry();
-        queueMicrotask(() => {
-          if (getPluginComponent(manifest.name)) return;
-          setPluginLoadError(manifest.name, "NO_REGISTER");
-        });
-      };
+      script.onerror = () => fail("LOAD_FAILED");
+      script.onload = () => { jsLoaded = true; finish(); };
       document.body.appendChild(script);
-      injectedScripts.push(script);
     }
 
-    // Give plugins a moment to load and register, then stop loading state.
-    const timeout = setTimeout(() => setLoading(false), 2000);
+    // A late registration must not switch /chat after fallback has mounted.
+    const timeout = setTimeout(() => timeouts.forEach(fail => fail()), 2000);
     return () => {
+      active = false;
       clearTimeout(timeout);
-      if (import.meta.env.DEV) {
-        for (const el of injectedScripts) {
-          el.remove();
-        }
-      }
+      disposers.forEach(dispose => dispose());
     };
-  }, [manifests]);
+  }, [currentManifests]);
 
-  // Listen for plugin registrations and resolve them against manifests.
   useEffect(() => {
     function resolvePlugins() {
       const resolved: RegisteredPlugin[] = [];
-      for (const manifest of manifests) {
+      for (const manifest of currentManifests) {
         const component = getPluginComponent(manifest.name);
-        if (component) {
-          resolved.push({ manifest, component });
-        }
+        if (component) resolved.push({ manifest, component });
       }
       setPlugins(resolved);
-      // If all plugins registered, stop loading early.
-      if (resolved.length === manifests.length && manifests.length > 0) {
-        setLoading(false);
-      }
     }
-
     resolvePlugins();
-    const unsub = onPluginRegistered(resolvePlugins);
-    return unsub;
-  }, [manifests]);
+    return onPluginRegistered(resolvePlugins);
+  }, [currentManifests]);
 
   return { plugins, manifests, loading };
 }

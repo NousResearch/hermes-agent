@@ -37,7 +37,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { Separator } from "@nous-research/ui/ui/components/separator";
 import { Tabs, TabsList, TabsTrigger } from "@nous-research/ui/ui/components/tabs";
 import { useI18n } from "@/i18n";
-import { registerSlot, PluginSlot } from "./slots";
+import { registerSlot, PluginSlot, unregisterPluginSlots } from "./slots";
 
 // ---------------------------------------------------------------------------
 // Plugin registry — plugins call register() to add their component.
@@ -45,6 +45,16 @@ import { registerSlot, PluginSlot } from "./slots";
 
 type RegistryListener = () => void;
 
+interface PendingPlugin {
+  identity: string;
+  script: HTMLScriptElement;
+  component?: React.ComponentType;
+  slots: Map<string, React.ComponentType>;
+}
+const _pending: Map<string, PendingPlugin> = new Map();
+// Names owned by the loader may register only during their current script's
+// execution, never after cancellation or via a stale async callback.
+const _managed: Set<string> = new Set();
 const _registered: Map<string, React.ComponentType> = new Map();
 const _loadErrors: Map<string, string> = new Map();
 const _listeners: Set<RegistryListener> = new Set();
@@ -62,6 +72,13 @@ export function notifyPluginRegistry() {
 
 /** Register a plugin component. Called by plugin JS bundles. */
 function registerPlugin(name: string, component: React.ComponentType) {
+  const pending = _pending.get(name);
+  if (pending) {
+    if (document.currentScript !== pending.script) return;
+    pending.component = component;
+    return;
+  }
+  if (_managed.has(name)) return;
   _loadErrors.delete(name);
   _registered.set(name, component);
   _notify();
@@ -76,7 +93,45 @@ export function getPluginLoadError(name: string): string | undefined {
   return _loadErrors.get(name);
 }
 
+function registerPluginSlot(name: string, slot: string, component: React.ComponentType) {
+  const pending = _pending.get(name);
+  if (pending) {
+    if (document.currentScript === pending.script) pending.slots.set(slot, component);
+    return;
+  }
+  if (!_managed.has(name)) registerSlot(name, slot, component);
+}
+
+export function beginPluginRegistration(name: string, identity: string, script: HTMLScriptElement) {
+  clearPluginRegistration(name);
+  _pending.set(name, { identity, script, slots: new Map() });
+}
+
+export function completePluginRegistration(name: string, identity: string) {
+  const pending = _pending.get(name);
+  if (pending?.identity !== identity) return;
+  _pending.delete(name);
+  for (const [slot, component] of pending.slots) registerSlot(name, slot, component);
+  if (pending.component) {
+    _registered.set(name, pending.component);
+    _notify();
+  } else if (pending.slots.size === 0) setPluginLoadError(name, "NO_REGISTER");
+}
+
+export function clearPluginRegistration(name: string) {
+  _managed.add(name);
+  _pending.delete(name);
+  _registered.delete(name);
+  _loadErrors.delete(name);
+  unregisterPluginSlots(name);
+  _notify();
+}
+
 export function setPluginLoadError(name: string, message: string) {
+  _managed.add(name);
+  _pending.delete(name);
+  _registered.delete(name);
+  unregisterPluginSlots(name);
   _loadErrors.set(name, message);
   _notify();
 }
@@ -112,7 +167,7 @@ export const SDK_CONTRACT_VERSION = "1.1.0";
 export function exposePluginSDK() {
   window.__HERMES_PLUGINS__ = {
     register: registerPlugin,
-    registerSlot,
+    registerSlot: registerPluginSlot,
   };
 
   window.__HERMES_PLUGIN_SDK__ = {

@@ -257,3 +257,85 @@ class TestRequestedSchemaFieldName:
         # An empty schema renders the generic "Approval requested by ..."
         # fallback, so the field name is what proves the schema was read.
         assert "card_number" in (captured.get("description") or ""), captured
+
+
+class TestElicitationApprovalPanelBridge:
+    """The elicitation consent runs on an asyncio.to_thread worker whose thread-local
+    approval slot is empty (#133814): the agent thread's panel is handed over via the
+    MCPServerTask's ``_pending_approval_callback`` and installed on the worker just
+    for the consent call, then cleared (to_thread workers are pooled)."""
+
+    def test_handed_over_panel_is_visible_on_the_worker_thread(self):
+        """The consent's CLI branch reads the callback from the CURRENT thread's slot;
+        with a handed-over panel the worker thread running the consent must see it —
+        without the hand-over the elicitation fails closed as an unseen ``cancel``."""
+        from tools.terminal_tool import _get_approval_callback
+
+        def panel(_cmd, _desc, **_kw):
+            return "once"
+
+        seen: list = []
+
+        def fake_consent(*_args, **_kwargs):
+            seen.append(_get_approval_callback())
+            return "accept"
+
+        handler = ElicitationHandler(
+            "pay", {"timeout": 5}, approval_callback=lambda: panel
+        )
+        params = _form_params()
+
+        with patch(
+            "tools.approval_prompt.request_elicitation_consent",
+            side_effect=fake_consent,
+        ):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "accept"
+        assert seen == [panel], (
+            f"Expected the handed-over panel on the consent thread; got {seen!r}"
+        )
+
+    def test_no_panel_leaves_the_fail_closed_default_untouched(self):
+        """Without a handed-over panel (cron, gateway, -q, unattended platforms) nothing
+        is installed: the consent still runs and sees an empty slot, preserving the
+        fail-closed default for surfaces where no user can answer."""
+        from tools.terminal_tool import _get_approval_callback
+
+        seen: list = []
+
+        def fake_consent(*_args, **_kwargs):
+            seen.append(_get_approval_callback())
+            return "decline"
+
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _form_params()
+
+        with patch(
+            "tools.approval_prompt.request_elicitation_consent",
+            side_effect=fake_consent,
+        ):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "decline"
+        assert seen == [None]
+
+    def test_panel_is_cleared_after_the_consent_call(self):
+        """The wrapper clears the thread-local slot after the consent returns, so a
+        pooled to_thread worker never carries a stale panel into unrelated work."""
+        from tools.terminal_tool import _get_approval_callback, set_approval_callback
+
+        set_approval_callback(None)
+        handler = ElicitationHandler(
+            "pay", {"timeout": 5}, approval_callback=lambda: "unused"
+        )
+        try:
+            thunk = handler._consent_thunk("msg", "desc")
+            with patch(
+                "tools.approval_prompt.request_elicitation_consent",
+                return_value="accept",
+            ):
+                thunk()
+        finally:
+            set_approval_callback(None)
+        assert _get_approval_callback() is None

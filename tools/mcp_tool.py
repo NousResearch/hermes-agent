@@ -313,6 +313,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "name", "session", "tool_timeout", "_task", "_ready", "_shutdown_event", "_reconnect_event",
         "_tools", "_error", "_config", "_sampling", "_elicitation", "_registered_tool_names",
         "_auth_type", "_refresh_lock", "_rpc_lock", "_pending_refresh_tasks", "_pending_call_context",
+        "_pending_approval_callback",
         "_lifecycle_started_at", "_last_tool_call_at", "_idle_timeout_seconds", "_max_lifetime_seconds",
         "_recycled_reason", "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
@@ -391,6 +392,10 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         # contextvars snapshot inside session.call_tool(): the SDK runs elicitation/create on a
         # task that does not inherit HERMES_SESSION_PLATFORM, so the callback replays this.
         self._pending_call_context: Optional[contextvars.Context] = None
+        # The agent thread's approval-panel callback for the in-flight call, handed over the same
+        # way: the elicitation consent runs on a to_thread worker whose thread-local slot is empty
+        # (#133814).
+        self._pending_approval_callback: Optional[Callable[..., Any]] = None
         self._lifecycle_started_at = self._last_tool_call_at = time.monotonic()
         self._idle_timeout_seconds = self._max_lifetime_seconds = self._recycled_reason = None
         # Handshake InitializeResult: the server's REAL advertised capabilities.

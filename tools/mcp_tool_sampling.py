@@ -264,8 +264,13 @@ class ElicitationHandler:
     # consent answer -> (ElicitResult action, metric); anything else declines.
     _ANSWER_RESULTS = {"accept": ("accept", "accepted"), "cancel": ("cancel", "errors")}
 
-    def __init__(self, server_name: str, config: dict,
-                 call_context: Callable[[], Optional[Context]] = lambda: None):
+    def __init__(
+        self,
+        server_name: str,
+        config: dict,
+        call_context: Callable[[], Optional[Context]] = lambda: None,
+        approval_callback: Callable[[], Optional[Any]] = lambda: None,
+    ):
         self.server_name = server_name
         # 5 min mirrors the gateway approval default so async surfaces (Telegram, Slack) can respond.
         self.timeout = _safe_numeric(config.get("timeout", 300), 300, float)
@@ -273,6 +278,10 @@ class ElicitationHandler:
         # between calls). A thunk, not the task: mcp_tool_server_run imports this module, so
         # MCPServerTask cannot be named here.
         self._call_context = call_context
+        # Same hand-over for the approval panel: the consent runs on an asyncio.to_thread worker
+        # whose thread-local slot is empty, so the agent thread's panel is handed over explicitly
+        # (#133814). None between calls and on surfaces without a panel (cron, gateway, -q).
+        self._approval_callback = approval_callback
         self.metrics = {"requests": 0, "accepted": 0, "declined": 0, "errors": 0}
 
     def session_kwargs(self) -> dict:
@@ -293,7 +302,23 @@ class ElicitationHandler:
         consent = functools.partial(request_elicitation_consent, message, description,
                                     timeout_seconds=int(self.timeout), surface=f"mcp-elicitation/{self.server_name}")
         captured = self._call_context()
-        return consent if captured is None else (lambda: captured.copy().run(consent))
+        run = consent if captured is None else (lambda: captured.copy().run(consent))
+        # The consent's CLI branch reads the approval callback from THIS thread's slot; a worker
+        # thread has none, so a handed-over panel is installed for the call and cleared after.
+        panel = self._approval_callback()
+        if panel is None:
+            return run
+
+        def run_with_panel():
+            from tools.terminal_tool import set_approval_callback
+
+            set_approval_callback(panel)
+            try:
+                return run()
+            finally:
+                set_approval_callback(None)
+
+        return run_with_panel
 
     async def __call__(self, context, params):
         """SDK elicitation callback (``ElicitationFnT``). Returns ElicitResult or ErrorData."""

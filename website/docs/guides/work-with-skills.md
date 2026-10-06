@@ -81,6 +81,10 @@ Skills use a token-efficient loading pattern. The agent doesn't load everything 
 3. **`skill_view(name, file_path)`** — a specific reference file within the skill. Only loaded if needed.
 
 This means skills don't cost tokens until they're actually used.
+In the same conversation, the agent should reuse a skill it already loaded
+instead of calling `skill_view` for that skill on every follow-up. See
+[Reusing a skill within a conversation](../user-guide/features/skills.md#reusing-a-skill-within-a-conversation)
+for when a reload is appropriate.
 
 ---
 

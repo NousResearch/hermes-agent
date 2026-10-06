@@ -181,6 +181,21 @@ Level 2: skill_view(name, path)  → Specific reference file       (varies)
 
 The agent only loads the full skill content when it actually needs it.
 
+### Reusing a skill within a conversation
+
+The skill index is shown on every turn, but this does **not** mean the agent should
+call `skill_view` on every turn. Once a skill has been loaded, its content remains
+in the conversation; reuse it for follow-up requests instead of loading the same
+file again. Load a new skill or reference when the task needs it. Reload a skill
+only if its content was removed by context compression (marked `[SKILL_PRUNED]`)
+or you deliberately refreshed it. A new conversation normally starts with the
+compact index, not the full content of skills loaded in an earlier conversation
+(unless they are explicitly preloaded).
+
+Repeated `skill_view` calls add tool latency and can add redundant tool-result
+text, even when the tool returns a deduplication stub. They do not make an
+already-loaded skill more current by default.
+
 ## SKILL.md Format
 
 ```markdown

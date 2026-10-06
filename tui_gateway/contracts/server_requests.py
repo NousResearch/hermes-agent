@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from tools.tour_tool import TourPreset
+from tools.tour_presets import TourPreset
 
 from .base import JsonValue, Params, Payload, Result, WireEnum
 from .registry import event, server_request

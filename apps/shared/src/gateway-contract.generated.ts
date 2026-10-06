@@ -4469,7 +4469,7 @@ export interface TourStep {
   side?: string | null
   [key: string]: unknown
 }
-/** Which built-in tour ``start`` without steps runs. The wire contract imports this enum. */
+/** Which built-in tour ``start`` without steps runs. */
 export type TourPreset = 'quick' | 'full'
 export interface DisplayInstallSudoParams {
   session_id: string

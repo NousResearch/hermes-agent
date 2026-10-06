@@ -8,22 +8,15 @@ tour covers the whole screen, so "off" must mean the model is never told the too
 than offered a call that fails."""
 
 import json
-from enum import StrEnum
 from typing import Callable, Optional
 
 from tools import desktop_ui
 from tools.registry import registry, tool_error
+from tools.tour_presets import TourPreset
 
 ACTIONS = ("targets", "show", "start", "next", "prev", "stop")
 SURFACES = ("app", "preview")
 SIDES = ("top", "right", "bottom", "left")
-
-
-class TourPreset(StrEnum):
-    """Which built-in tour ``start`` without steps runs. The wire contract imports this enum."""
-
-    quick = "quick"
-    full = "full"
 
 
 PRESETS = tuple(TourPreset)

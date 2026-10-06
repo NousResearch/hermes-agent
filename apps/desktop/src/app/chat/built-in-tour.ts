@@ -86,8 +86,14 @@ async function canRunLocalModel(): Promise<boolean> {
 }
 
 /** Run the built-in tour. Never throws; failures come back like any tour
- *  action's, so the agent can say so in words. */
-export async function runBuiltInTour(preset: TourPreset): Promise<TourResult> {
+ *  action's, so the agent can say so in words. `stillActive` is asked again
+ *  after the local-model wait: a chat switch during it answers `notActiveError`
+ *  instead of opening the tour over the other chat. */
+export async function runBuiltInTour(
+  preset: TourPreset,
+  stillActive: () => boolean,
+  notActiveError: string
+): Promise<TourResult> {
   const stops = PRESET_STOPS[preset]().filter(id => onScreen(SELECTORS[id]))
 
   if (stops.length === 0) {
@@ -95,6 +101,11 @@ export async function runBuiltInTour(preset: TourPreset): Promise<TourResult> {
   }
 
   const localLine = stops.includes('model') && (await canRunLocalModel())
+
+  if (!stillActive()) {
+    return { error: notActiveError, success: false }
+  }
+
   const copy = runtimeTranslations().appTour
 
   return startTour(

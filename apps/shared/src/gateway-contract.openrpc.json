@@ -36628,7 +36628,7 @@
         "type": "object"
       },
       "TourPreset": {
-        "description": "Which built-in tour ``start`` without steps runs. The wire contract imports this enum.",
+        "description": "Which built-in tour ``start`` without steps runs.",
         "enum": [
           "quick",
           "full"

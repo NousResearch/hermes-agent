@@ -139,9 +139,17 @@ def isolated_env(
     return env
 
 
-def sandbox_argv(argv: Sequence[str], *, writable: Iterable[Path]) -> list[str]:
-    """Wrap ``argv`` in the bwrap sandbox (no-op when bubblewrap is unusable)."""
+def sandbox_argv(argv: Sequence[str], *, writable: Iterable[Path], unshare_net: bool = False,
+                 ro_binds: Iterable[tuple[Path, Path]] = ()) -> list[str]:
+    """Wrap ``argv`` in the bwrap sandbox (no-op when bubblewrap is unusable).
+
+    Opt-in: ``unshare_net`` gives the sandbox its own network namespace (loopback only; the
+    hostile-network suites bridge their fakes in); ``ro_binds`` are ``(host_path, sandbox_path)``
+    read-only overlays (e.g. a CA bundle over the distro trust store).
+    """
     if not BWRAP_OK:
+        if unshare_net:
+            raise RuntimeError("unshare_net requires the bwrap sandbox")
         return list(argv)
     # The child's allowlisted PATH may omit the Nix-provided bwrap (notably a login shell
     # with a clean distro PATH); resolve it in the parent before wrapping the command.
@@ -156,6 +164,10 @@ def sandbox_argv(argv: Sequence[str], *, writable: Iterable[Path]) -> list[str]:
     run_user = Path(f"/run/user/{UID}")
     if run_user.is_dir():
         cmd += ["--tmpfs", str(run_user)]
+    for src, dest in ro_binds:
+        cmd += ["--ro-bind", str(src), str(dest)]
+    if unshare_net:
+        cmd += ["--unshare-net"]
     cmd += ["--unshare-pid", "--proc", "/proc", "--die-with-parent", "--"]
     return cmd + list(argv)
 
@@ -168,10 +180,12 @@ def run(
     writable: Iterable[Path],
     timeout: float = 300,
     input: str | None = None,
+    unshare_net: bool = False,
+    ro_binds: Iterable[tuple[Path, Path]] = (),
 ) -> subprocess.CompletedProcess:
     """Run one sandboxed process to completion; kills the whole sandbox on timeout."""
     proc = subprocess.Popen(
-        sandbox_argv(argv, writable=writable),
+        sandbox_argv(argv, writable=writable, unshare_net=unshare_net, ro_binds=ro_binds),
         env=env, cwd=str(cwd), text=True,
         stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,

@@ -12,7 +12,7 @@ import re
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
 from utils import fast_safe_load
 from hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities
@@ -35,7 +35,7 @@ _KNOWN_MANIFEST_FIELDS: Set[str] = {
     "pip_dependencies", "provides_browser_providers", "provides_web_providers",
     "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
     "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
-    "requires_hermes", "python_runtime",
+    "requires_hermes", "python_runtime", "provides_locales",
 }
 
 # Highest manifest schema version this Hermes understands.
@@ -267,11 +267,12 @@ def resolve_plugin_load_order(manifests: Mapping[str, "PluginManifest"]) -> List
 
 def _detect_kind_from_source(source_text: str) -> Optional[str]:
     """Kind implied by source markers (mirrors plugins/memory ``_is_memory_provider_dir`` and
-    plugins/cron_providers ``_is_cron_provider_dir``): memory- or cron-provider markers -> ``exclusive``;
+    plugins/cron_providers ``_is_cron_provider_dir``): memory-, cron- or computer-use-provider markers -> ``exclusive``;
     ``register_provider`` + ``ProviderProfile`` -> ``model-provider``; else ``None``. Keeps these kinds out
     of the general manager's eager import (its PluginContext has no ``register_cron_scheduler``, #62951)."""
     if any(marker in source_text for marker in (
-            "register_memory_provider", "MemoryProvider", "register_cron_scheduler", "CronScheduler")):
+            "register_memory_provider", "MemoryProvider", "register_cron_scheduler", "CronScheduler",
+            "register_computer_use_provider", "ComputerUseProvider")):
         return "exclusive"
     if "register_provider" in source_text and "ProviderProfile" in source_text:
         return "model-provider"
@@ -387,6 +388,46 @@ class PluginManifest:
     # ``<key>:``; ``listens`` fully-qualified ``<plugin>:<event>`` names.
     emits: List[str] = field(default_factory=list)
     listens: List[str] = field(default_factory=list)
+    # Language pack declaration: ids whose ``locales/<id>[.tui|.desktop].yaml`` the loader registers
+    # automatically (no Python needed). ``locale_metadata`` carries the optional per-id
+    # ``{endonym, rtl}`` from the mapping form of a ``provides_locales`` entry.
+    provides_locales: List[str] = field(default_factory=list)
+    locale_metadata: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+
+def parse_provides_locales(raw: Any, key: str = "") -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
+    """``provides_locales`` -> (ids, metadata). Entries are ``"pl"`` or ``{id: pl, endonym: Polski, rtl: false}``;
+    ids are canonicalised (lowercase, ``_`` -> ``-``), invalid or duplicate ones are dropped with a warning."""
+    from agent.i18n_layers import is_language_id, normalize_language_id
+    ids: List[str] = []
+    metadata: Dict[str, Dict[str, Any]] = {}
+    if raw is None:
+        return ids, metadata
+    if isinstance(raw, (str, Mapping)):
+        raw = [raw]
+    if not isinstance(raw, list):
+        logger.warning("Plugin %s: provides_locales must be a list of language ids, got %s", key, type(raw).__name__)
+        return ids, metadata
+    for item in raw:
+        entry_meta: Dict[str, Any] = {}
+        if isinstance(item, Mapping):
+            lang_id = normalize_language_id(item.get("id", ""))
+            if isinstance(item.get("endonym"), str) and item["endonym"].strip():
+                entry_meta["endonym"] = item["endonym"].strip()
+            if "rtl" in item:
+                entry_meta["rtl"] = bool(item["rtl"])
+        else:
+            lang_id = normalize_language_id(item)
+        if not is_language_id(lang_id):
+            logger.warning("Plugin %s: ignoring invalid provides_locales entry %r", key, item)
+            continue
+        if lang_id in ids:
+            logger.warning("Plugin %s: duplicate provides_locales entry %r", key, lang_id)
+            continue
+        ids.append(lang_id)
+        if entry_meta:
+            metadata[lang_id] = entry_meta
+    return ids, metadata
 
 
 # ── requires_hermes version gate ─────────────────────────────────────────────
@@ -499,6 +540,7 @@ def parse_manifest_file(
         kind = _manifest_kind(data, key, plugin_dir)
         logger.debug(
             "Parsed manifest: key=%s name=%s kind=%s source=%s path=%s", key, name, kind, source, plugin_dir)
+        provides_locales, locale_metadata = parse_provides_locales(data.get("provides_locales"), key)
         return PluginManifest(
             name=name, version=str(data.get("version", "")),
             description=data.get("description", ""), author=_display_author(data.get("author", "")),
@@ -511,6 +553,7 @@ def parse_manifest_file(
             capabilities=_parse_declared_capabilities(data.get("capabilities"), name),
             **_parse_manifest_v2_fields(data, key), emits=data.get("emits") or [],
             listens=data.get("listens") or [],
+            provides_locales=provides_locales, locale_metadata=locale_metadata,
         )
     except Exception as exc:
         logger.warning("Failed to parse %s: %s", manifest_file, exc, exc_info=_plugins_debug())

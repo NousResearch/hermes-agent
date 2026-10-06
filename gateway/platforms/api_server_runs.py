@@ -916,6 +916,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
     """Drive one admitted run, publish its terminal event/status, release live state."""
     _redact_api_error_text = _api_server._redact_api_error_text
     run_id, loop = run.run_id, asyncio.get_running_loop()
+    _run_started_at = time.perf_counter()
 
     def _text_cb(delta: Optional[str]) -> None:
         if delta is None or run_id not in self._run_streams:
@@ -964,6 +965,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
         result, usage, served_runtime = await _submit_api_worker(
             loop, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
+        # Publish request metrics (daily counters + latency) with each completed run (#52323).
+        self._record_api_metrics(usage, time.perf_counter() - _run_started_at)
         if not isinstance(result, dict):
             result = {}
         status, fields = terminal_run_status(result)

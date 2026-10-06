@@ -87,9 +87,3 @@ def resolve_send_config(config: dict | None) -> SendConfig:
         return SendConfig(enabled=enabled, send=False, endpoint=endpoint)
 
     return SendConfig(enabled=enabled, send=send_requested, endpoint=endpoint)
-
-
-def reset_warning_latch_for_tests() -> None:
-    """Clear the once-per-process error latch (test support only)."""
-    global _warned_send_without_collection
-    _warned_send_without_collection = False

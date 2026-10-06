@@ -35,6 +35,7 @@ import {
   sessionApprovalRequests,
   sessionApprovalStackSize
 } from '@/store/prompts'
+import { $showToolActivity } from '@/store/tool-activity'
 import { setToolDisclosureOpen } from '@/store/tool-view'
 
 import { isApprovalActivity } from './approval-activity'
@@ -78,6 +79,7 @@ export const PendingApprovalStack: FC = () => {
 function ApprovalActivity({ floating, visible }: { floating: boolean; visible: boolean }) {
   const { t } = useI18n()
   const reduced = useReducedMotion()
+  const showToolActivity = useStore($showToolActivity)
 
   const summary = useAuiState(state => {
     if (!visible) {
@@ -117,6 +119,12 @@ function ApprovalActivity({ floating, visible }: { floating: boolean; visible: b
       )
       .join('\n')
   })
+
+  // The pending approval stays. The run summary beside it is tool feed and
+  // follows display.tool_progress alongside the other process rows.
+  if (!showToolActivity) {
+    return null
+  }
 
   return (
     <AnimatePresence initial={false}>
@@ -275,6 +283,16 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
   const allowAlways = choices ? choices.includes('always') : allowPermanent
   const hasMoreOptions = allowSession || allowAlways
   const hasCommand = request.command.trim().length > 0
+  // A plugin `approve` rule escalates through the same gate with a synthetic
+  // display target (`<tool> (plugin approval rule)`) while the real command /
+  // change lives in `description` — the user approves a label they cannot act
+  // on otherwise. Show the description whenever the command is missing or one
+  // of these synthetic labels; a real command keeps rendering as the command.
+  const SYNTHETIC_COMMAND_RE = /^<[^>]+> \(/
+
+  const showsDescription = !hasCommand || SYNTHETIC_COMMAND_RE.test(request.command.trim())
+
+  const details = showsDescription ? request.description.trim() : request.command.trim()
 
   const respond = useCallback(
     async (choice: ApprovalChoice) => {
@@ -318,16 +336,16 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
     >
       <div className="flex items-center gap-2 px-2.5 pt-2 text-xs text-(--ui-text-secondary)">
         <Codicon name="terminal" size="0.875rem" />
-        <span>{copy.command}</span>
+        <span>{showsDescription ? copy.commandDetails : copy.command}</span>
         {total > 1 && (
           <span className="ml-auto text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)">
             {position} / {total}
           </span>
         )}
       </div>
-      {hasCommand && (
+      {details.length > 0 && (
         <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words px-2.5 py-2 font-mono text-xs leading-relaxed text-(--ui-text-primary)">
-          {request.command}
+          {details}
         </pre>
       )}
       <div className="flex items-center justify-end gap-1.5 px-2 pb-2 pt-1" data-slot="tool-approval-actions">

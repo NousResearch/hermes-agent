@@ -9,19 +9,23 @@ import {
   useState
 } from 'react'
 
-import { setEnvVar } from '@/api/config'
+import { getToolsets, setToolsetEnabled } from '@/api/toolsets'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
+import { useContributions } from '@/contrib/react/use-contributions'
 import { discoverRuntimePlugins, uninstallDiskPlugin } from '@/contrib/runtime-loader'
+import { pluginSettingsRouteHref, SETTINGS_PLUGINS_AREA } from '@/contrib/settings-pages'
 import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { DESKTOP_PLUGIN_TOOLSETS } from '@/lib/desktop-toolsets'
 import { triggerHaptic } from '@/lib/haptics'
 import { FolderOpen, Loader2, Monitor, Package, RefreshCw, Trash2 } from '@/lib/icons'
 import { CATALOG_ORIGIN, CATALOG_PICKER_URL } from '@/lib/plugin-catalog'
+import { queryClient } from '@/lib/query-client'
 import { cn } from '@/lib/utils'
 import {
   $agentPluginBusy,
@@ -35,7 +39,6 @@ import {
   isDesktopRelevantPlugin,
   loadAgentPlugins,
   removeAgentPlugin,
-  saveAgentPluginSettings,
   toggleAgentPlugin,
   updateAgentPlugin
 } from '@/store/agent-plugins'
@@ -49,9 +52,9 @@ import { $connection } from '@/store/session'
 import { PanelEmpty } from '../../overlays/panel'
 import { Pill } from '../../settings/primitives'
 import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
+import { TOOLSETS_QUERY_KEY } from '../toolsets/toolsets-data'
 
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
-import { PluginSettingsForm } from './plugin-settings-form'
 
 // The REAL Plugin Catalog page (docs site) embedded as a one-click picker —
 // the same pattern as the Skills tab's EmbeddedHubPicker. `?embed=picker`
@@ -153,11 +156,13 @@ function installAgentHalfHere(record: PluginRecord, profile: null | string) {
 const SERVER_TONE = {
   connected: 'success',
   app_not_running: 'warn',
+  hermes_not_connected: 'warn',
   endpoint_unavailable: 'warn',
   no_interactive_session: 'warn',
   unknown: 'warn',
   version_too_old: 'destructive',
-  missing_app: 'destructive'
+  missing_app: 'destructive',
+  unsupported_gpu: 'destructive'
 } as const satisfies Record<AgentPluginServerState, 'destructive' | 'success' | 'warn'>
 
 function KindBadge({ kind }: { kind: PackageKind }) {
@@ -239,7 +244,6 @@ function PackageRow({
   profile,
   scopeLabel,
   busy,
-  request,
   onAgentToggle,
   onAgentUpdate,
   onAgentRemove,
@@ -250,7 +254,6 @@ function PackageRow({
   profile: ProfileScope
   scopeLabel: string
   busy: boolean
-  request: GatewayRequest
   onAgentToggle: (row: AgentPluginRow, enable: boolean) => void
   onAgentUpdate: (row: AgentPluginRow) => void
   onAgentRemove: (row: AgentPluginRow) => void
@@ -261,10 +264,25 @@ function PackageRow({
   const d = t.settings.plugins
   const desktop = pkg.desktop
   const agent = pkg.agent
-  // Manifest `config_schema` → an inline settings form under the row (#46600, #87934).
-  const settingsFields = agent?.settings_schema ?? []
-  const hasSettings = Boolean(agent?.key) && settingsFields.length > 0
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  // Settings live in Settings ▸ Plugins: a manifest `config_schema` gets an
+  // automatic page there, a desktop half may register its own. The gear is
+  // the shortcut to that page (#46600, #87934).
+  const settingsPages = useContributions(SETTINGS_PLUGINS_AREA)
+  const desktopSettings = Boolean(desktop && settingsPages.some(page => page.source === `plugin:${desktop.id}`))
+  const agentSettings = Boolean(agent?.key) && Boolean(agent?.settings_schema?.length)
+  const hasSettings = desktopSettings || agentSettings
+
+  const openSettings = () => {
+    // A desktop page absorbs the package's schema form as a sub-page, so its
+    // plugin id is the one entry that covers both halves. The link carries
+    // the profile THIS page has selected: Settings keeps its own scope, and
+    // without the hand-off the page would open (and save) that one instead.
+    const route = desktopSettings ? { plugin: desktop!.id } : { agent: agent!.key! }
+
+    window.location.hash = `#${pluginSettingsRouteHref(route, scope)}`
+  }
+
+  const [desktopBusy, setDesktopBusy] = useState(false)
   const desktopOn = desktop ? desktop.status !== 'disabled' : false
   const agentOn = agent?.status === 'enabled'
   const agentToggleable = Boolean(agent?.key)
@@ -281,13 +299,59 @@ function PackageRow({
   // package installed on a remote backend can never materialize here (#114079).
   const remoteBackend = useStore($connection)?.mode === 'remote'
 
+  // #96969: when the feature's agent-side tools live in a toolset (the
+  // built-in Kanban board has no agent-plugin half), the Desktop switch flips
+  // that per-profile opt-in with the panel, through the same
+  // PUT /api/tools/toolsets/{name} the Toolsets tab uses. The backend write
+  // goes first and the panel follows what the backend actually holds, so a
+  // failed write can't leave the two halves disagreeing. A rejected PUT may
+  // still have committed (a timeout leaves it unknown), so re-read instead of
+  // assuming a rollback; if even that fails the panel stays put and the
+  // switch is live again for a retry.
+  const toggleDesktop = async (id: string, on: boolean) => {
+    const toolset = DESKTOP_PLUGIN_TOOLSETS[id]
+
+    if (!toolset) {
+      return setPluginEnabled(id, on)
+    }
+
+    setDesktopBusy(true)
+
+    try {
+      let toolsetOn: boolean | undefined
+
+      try {
+        await setToolsetEnabled(toolset, on, profile)
+        toolsetOn = on
+      } catch (err) {
+        toolsetOn = await getToolsets(profile).then(
+          list => list.find(row => row.name === toolset)?.enabled,
+          () => undefined
+        )
+
+        if (toolsetOn !== on) {
+          notifyError(err, p.toolsetToggleFailed(pkg.name))
+        }
+      }
+
+      void queryClient.invalidateQueries({ queryKey: TOOLSETS_QUERY_KEY })
+
+      if (toolsetOn === on) {
+        await setPluginEnabled(id, on)
+        notify({
+          kind: 'success',
+          message: on ? p.toolsetOn(pkg.name, scopeLabel) : p.toolsetOff(pkg.name, scopeLabel)
+        })
+      }
+    } finally {
+      setDesktopBusy(false)
+    }
+  }
+
   return (
     <>
       <div
-        className={cn(
-          'flex items-center gap-3 border-b border-(--ui-stroke-tertiary) px-3 py-2.5',
-          !settingsOpen && 'last:border-b-0'
-        )}
+        className="flex items-center gap-3 border-b border-(--ui-stroke-tertiary) px-3 py-2.5 last:border-b-0"
         data-testid={`plugin-row-${pkg.key}`}
         id={pluginElementId(agent?.key ?? agent?.name ?? desktop?.id ?? pkg.key)}
         role="row"
@@ -339,19 +403,12 @@ function PackageRow({
               </Tip>
             )}
           </span>
-          {/* Fixed slot for the settings gear: only plugins whose manifest declares
-            a config_schema get one. */}
+          {/* Fixed slot for the settings gear: only plugins with a page in
+            Settings ▸ Plugins (config_schema or a registered page) get one. */}
           <span className="flex size-7 shrink-0 items-center justify-center">
             {hasSettings && (
               <Tip label={p.settingsToggle(pkg.name)}>
-                <Button
-                  aria-expanded={settingsOpen}
-                  aria-label={p.settingsToggle(pkg.name)}
-                  className={cn(settingsOpen && 'text-foreground')}
-                  onClick={() => setSettingsOpen(open => !open)}
-                  size="icon"
-                  variant="ghost"
-                >
+                <Button aria-label={p.settingsToggle(pkg.name)} onClick={openSettings} size="icon" variant="ghost">
                   <Codicon name="settings-gear" size="0.85rem" />
                 </Button>
               </Tip>
@@ -399,9 +456,10 @@ function PackageRow({
             <Switch
               aria-label={`${p.halfDesktop}: ${pkg.name}`}
               checked={desktopOn}
+              disabled={desktopBusy}
               onCheckedChange={on => {
                 triggerHaptic('selection')
-                void setPluginEnabled(desktop.id, on)
+                void toggleDesktop(desktop.id, on)
               }}
             />
           ) : pkg.desktopMissing ? (
@@ -464,31 +522,6 @@ function PackageRow({
           )}
         </HalfCell>
       </div>
-      {hasSettings && settingsOpen && agent?.key && (
-        <div className="border-b border-(--ui-stroke-tertiary) bg-(--ui-bg-secondary,transparent) px-3 py-3 last:border-b-0">
-          <PluginSettingsForm
-            disabled={busy}
-            fields={settingsFields}
-            idPrefix={`plugin-settings-${agent.key}`}
-            onSave={async changes => {
-              const ok = await saveAgentPluginSettings(request, {
-                key: agent.key!,
-                values: changes.values,
-                secrets: changes.secrets,
-                writeSecret: (env, value) => setEnvVar(env, value, profile),
-                failMessage: p.settingsForm.saveFailed(pkg.name),
-                profile: scope
-              })
-
-              if (ok) {
-                notify({ kind: 'success', message: p.settingsForm.saved(pkg.name) })
-              }
-
-              return ok
-            }}
-          />
-        </div>
-      )}
     </>
   )
 }
@@ -774,7 +807,6 @@ export const PluginsTab = memo(function PluginsTab({
                 }}
                 pkg={pkg}
                 profile={profile}
-                request={requestGateway}
                 scope={scope}
                 scopeLabel={label}
               />

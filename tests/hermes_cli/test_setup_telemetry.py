@@ -80,3 +80,49 @@ def test_setup_parser_accepts_telemetry_section():
 
     assert args.section == "telemetry"
     assert args.func is handler
+
+
+def test_no_answer_survives_the_callers_later_config_save(monkeypatch):
+    """A "no" equals the shipped defaults; saved only through ``save_config`` it was stripped, so
+    the profile read undecided and every surface (Desktop strip, CLI offer) asked again."""
+    from hermes_cli.config import load_config, read_raw_config, save_config
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda _question, default: False)
+    config = load_config()
+    setup_telemetry(config)
+    save_config(config)  # what the wizard and `hermes tools` do afterwards
+
+    assert read_raw_config()["telemetry"]["shared_metrics"] == {"enabled": False, "send": False}
+
+
+def test_chat_offer_asks_an_undecided_profile_once(monkeypatch):
+    from hermes_cli.config import read_raw_config
+    from hermes_cli.observability import shared_metrics_consent as consent
+
+    asked = []
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", lambda *a, **k: asked.append(a) or 1)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_NONINTERACTIVE", raising=False)
+
+    consent.offer_consent_before_chat(argparse.Namespace(query="hi"))  # no person to ask
+    assert asked == []
+    consent.offer_consent_before_chat(argparse.Namespace())
+    consent.offer_consent_before_chat(argparse.Namespace())
+
+    assert len(asked) == 1
+    assert consent.consent_state(read_raw_config()) == {"enabled": True, "send": False, "decided": True}
+
+
+def test_offer_drops_keys_typed_before_it_appeared(monkeypatch):
+    """An Enter typed while Hermes booted answered "No thanks" before the offer was on screen."""
+    from hermes_cli.observability import shared_metrics_consent as consent
+
+    events = []
+    monkeypatch.setattr("hermes_cli.curses_ui.flush_stdin", lambda: events.append("flush"))
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", lambda *a, **k: events.append("ask") or -1)
+
+    consent.offer_consent()
+
+    assert events == ["flush", "ask"]

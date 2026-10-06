@@ -1,9 +1,47 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { deAuxTasks } from './de_aux_tasks'
+import { deModelMenu } from './de_model_menu'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
 export const deOverrides = {
+  sharedMetrics: {
+    consentTitle: 'Hermes verbessern helfen?',
+    consentBody:
+      'Geteilte Metriken enthalten nur begrenzte Zähler. Niemals Prompts, Dateien, Pfade oder Fehlertexte. Die Erfassung bleibt lokal. Das Senden an Nous ist eine separate Zustimmung.',
+    whatIsCollected: 'Was erfasst wird',
+    collectedIntro: 'Nur begrenzte Zähler:',
+    collectedActivity: 'Aktivität, Session-Länge, Ergebnisse und Fehlerklassen',
+    collectedModels: 'Modellrouten und Token-Summen',
+    collectedNames: 'Namen integrierter Tools, Befehle und Katalogeinträge',
+    collectedMilestones: 'Gruppierte Einrichtungszahlen',
+    collectedReliability:
+      'Update-Ergebnisse und -Dauer, Abstürze, Start- und Antwortzeiten, Zustand der Messaging-Plattformen',
+    collectedUsage:
+      'Wie Hermes genutzt wird: Genauigkeit und Effizienz des Agenten (Treffer bei Bearbeitungen, Schleifen, Erholung nach Fehlern, Tokens und Tool-Aufrufe pro Aufgabe, Cache-Brüche), aktive Zeit pro Oberfläche und Desktop-Modus, welche App-Bereiche, Aktionen und Einstellungen genutzt, schnell geschlossen oder abgeschaltet werden, sowie Ergebnisse der Anbietereinrichtung',
+    collectedMachine:
+      'Grobe Gerätedaten: RAM-Bereich, GPU-Typ, Alter und Kanal der Hermes-Version, Anzahl ausstehender Updates, ob ein lokaler Modellserver genutzt wird',
+    installId:
+      'Beim Senden wird jedes Tagespaket an den Nous-Telemetriedienst hochgeladen. Pakete tragen die Installations-ID dieses Profils: eine feste zufällige UUID ohne persönliche Daten, zurückgesetzt durch Löschen des Shared-Metrics-Ordners.',
+    consentWindow:
+      'Gesendet werden nur Pakete, deren gesamter Erfassungszeitraum in ein erfasstes Zustimmungsfenster fällt – Daten von vor Ihrer Zustimmung oder aus Lücken, in denen das Senden aus war, bleiben auf diesem Rechner. Das Senden lässt sich jederzeit wieder abschalten.',
+    readDocs: 'Alle Details lesen',
+    share: 'Erfassen und an Nous senden',
+    local: 'Nur lokal erfassen',
+    off: 'Nein, danke',
+    changeLater: 'Sie können das jederzeit unter Einstellungen → Sicherheit ändern.',
+    saveFailed: 'Ihre Auswahl konnte nicht gespeichert werden',
+    collectLabel: 'Nutzungsstatistiken erfassen',
+    collectDesc: 'Begrenzte Zähler auf diesem Gerät. Niemals Prompts, Dateien, Pfade oder Fehlertexte.',
+    sendLabel: 'Nutzungsstatistiken an Nous senden',
+    sendDesc:
+      'Jedes Tagespaket an den Nous-Telemetriedienst hochladen. Nur Daten aus einem Zustimmungsfenster werden gesendet. Erfordert aktive Erfassung.',
+    unavailable: 'Aktualisieren Sie das Hermes-Backend, um diese Einstellung zu ändern.',
+    stripBody: 'Nur begrenzte Zähler, niemals Prompts oder Dateien.',
+    stripChoices: { share: 'An Nous senden', local: 'Nur lokal', off: 'Nein danke' },
+    stripDetails: 'Details'
+  },
   intro: introDe,
   connectors: {
     title: 'Verbinden Sie Ihre Apps',
@@ -492,6 +530,10 @@ export const deOverrides = {
     backendOutOfDateTitle: 'Backend veraltet',
     backendOutOfDateMessage:
       'Ihr Hermes-Backend ist älter als dieser Desktop-Build und funktioniert möglicherweise nicht richtig. Aktualisieren Sie, um beide abzugleichen.',
+    desktopOutOfDateTitle: 'Hermes-App veraltet',
+    desktopOutOfDateMessage:
+      'Diese Hermes-App ist älter als das verbundene Backend und funktioniert möglicherweise nicht richtig. Aktualisieren Sie die App, um beide abzugleichen.',
+    updateDesktopApp: 'App aktualisieren',
     installMethodUnsupportedTitle: 'Nicht unterstützte Installationsmethode',
     updateHermes: 'Hermes aktualisieren',
     updateReadyTitle: 'Update bereit',
@@ -681,6 +723,8 @@ export const deOverrides = {
       'composer.focus': 'Composer fokussieren',
       'composer.modelPicker': 'Modellauswahl öffnen',
       'composer.voice': 'Sprachkonversation starten / stoppen',
+      'composer.reasoningUp': 'Reasoning-Stufe erhöhen',
+      'composer.reasoningDown': 'Reasoning-Stufe senken',
       'view.toggleSidebar': 'Session-Sidebar umschalten',
       'view.cycleSidebarGrouping': 'Session-Gruppierung wechseln',
       'view.toggleRightSidebar': 'Dateibrowser umschalten',
@@ -690,7 +734,7 @@ export const deOverrides = {
       'view.toggleProfileRail': 'Profil-Leiste ein-/ausblenden',
       'view.toggleSimpleMode': 'Einfachen Modus umschalten',
       'view.showFiles': 'Dateibrowser anzeigen',
-      'view.showBrowser': 'Browser öffnen',
+      'view.showBrowser': 'Browser umschalten',
       'view.toggleHud': 'HUD-Modus umschalten',
       'hud.snapToPointer': 'HUD zum Zeiger bewegen (global, während HUD offen ist)',
       'view.showTerminal': 'Terminal umschalten',
@@ -707,6 +751,15 @@ export const deOverrides = {
       'view.findInPage': 'Auf Seite suchen',
       'view.findNext': 'Nächsten Treffer suchen',
       'view.findPrevious': 'Vorherigen Treffer suchen',
+      'view.tabSlot.1': 'Zu Tab 1 wechseln',
+      'view.tabSlot.2': 'Zu Tab 2 wechseln',
+      'view.tabSlot.3': 'Zu Tab 3 wechseln',
+      'view.tabSlot.4': 'Zu Tab 4 wechseln',
+      'view.tabSlot.5': 'Zu Tab 5 wechseln',
+      'view.tabSlot.6': 'Zu Tab 6 wechseln',
+      'view.tabSlot.7': 'Zu Tab 7 wechseln',
+      'view.tabSlot.8': 'Zu Tab 8 wechseln',
+      'view.tabSlot.9': 'Zu Tab 9 wechseln',
       'appearance.toggleMode': 'Hell / dunkel umschalten',
       'profile.default': 'Zu Standardprofil wechseln',
       'profile.switch.1': 'Zu Profil 1 wechseln',
@@ -817,6 +870,14 @@ export const deOverrides = {
     resetConfirm: 'Alle Einstellungen auf Hermes-Standard zurücksetzen?',
     exportFailed: 'Export fehlgeschlagen',
     resetFailed: 'Zurücksetzen fehlgeschlagen',
+    pluginPages: {
+      blurb: 'Optionen installierter Plugins. Jedes Plugin hat eine eigene Seite, manche mit Unterseiten.',
+      empty: 'Noch kein Plugin hat Einstellungen.',
+      manage: 'Plugins verwalten',
+      agentSettings: 'Agent-Einstellungen',
+      pageCount: (n: number) => (n === 1 ? '1 Seite' : `${n} Seiten`),
+      missing: 'Dieses Plugin hat keine Einstellungsseite. Es ist eventuell deaktiviert oder deinstalliert.'
+    },
     nav: {
       providers: 'Anbieter',
       providerAccounts: 'Konten',
@@ -838,23 +899,15 @@ export const deOverrides = {
     },
     plugins: {
       title: 'Desktop-Plugins',
-      blurb: 'Gebündelt oder im Ordner „Desktop-Plugins“ abgelegt. Deaktivieren, um live zu entladen.',
-      count: n => `${n} installiert`,
       openFolder: 'Ordner für Desktop-Plugins öffnen',
       rescan: 'Erneut scannen',
       reveal: 'Im Dateimanager anzeigen',
-      enable: 'Aktivieren',
-      disable: 'Deaktivieren',
       failed: 'fehlgeschlagen',
-      empty: 'Noch keine Desktop-Plugins installiert.',
       kinds: {
         bundled: 'gebündelt',
         disk: 'auf Datenträger',
         runtime: 'Laufzeit'
       },
-      agentHalfMissing: 'Agent-Hälfte fehlt hier',
-      agentHalfMissingTip:
-        'Das ist die Desktop-Hälfte eines gebündelten Plugins, aber seine Agent-Hälfte ist auf dem aktuell verbundenen Backend/Profil nicht installiert. Installieren Sie sie unter Fähigkeiten → Plugins.',
       installModal: {
         installFromGit: 'Von Git installieren',
         reviewRepository: 'Repository prüfen',
@@ -1082,6 +1135,9 @@ export const deOverrides = {
       }
     },
     appearance: {
+      chatTextScaleTitle: 'Chat-Textgröße',
+      chatTextScaleDesc:
+        'Skaliert Unterhaltungstext und Nachrichteneingabe relativ zur UI-Skalierung. Seitenleisten und Bedienelemente behalten ihre Größe.',
       title: 'Darstellung',
       intro: 'Nur für Desktop. Modus ist die Helligkeit; Theme ist Farbpalette und Chat-Design.',
       colorMode: 'Farbmodus',
@@ -1159,6 +1215,8 @@ export const deOverrides = {
       textDirection: { auto: 'Auto', rtl: 'Rechts nach links', ltr: 'Links nach rechts' },
       introSplashTitle: 'Intro-Splash',
       introSplashDesc: 'Das Wortzeichen und der Prompt, die bei einem leeren Chat angezeigt werden.',
+      modelPricingTitle: 'Modellpreise',
+      modelPricingDesc: 'Eingabe-, Ausgabe- und Cache-Lesepreise pro Million Tokens in der Modellauswahl anzeigen.',
       reactionsTitle: 'Nachrichten-Reaktionen',
       reactionsDesc:
         'Emoji-Tapbacks im iMessage-Stil – reagieren Sie auf Nachrichten, und Hermes kann auf Ihre reagieren.',
@@ -1171,7 +1229,10 @@ export const deOverrides = {
         'Lassen Sie sich von Hermes durch die App führen – der Bildschirm wird abgedunkelt und jeder Schritt hervorgehoben.',
       composerPopoutTitle: 'Schwebender Composer',
       composerPopoutDesc:
-        'Erlaubt, den Composer aus seiner Ablage herauszuziehen. Schalten Sie das aus, um ihn unten fixiert zu halten.',
+        'Erlaubt, den Composer aus seiner Ablage herauszuziehen. Wenn aus, bleibt er unten angedockt.',
+      fileBrowserTitle: 'Dateibrowser',
+      fileBrowserDesc:
+        'Zeigt den Dateibrowser neben dem Chat, wenn ein Arbeitsbereich geöffnet ist. Der Schalter in der Titelleiste ändert diese Einstellung ebenfalls.',
       vibeHeartsTitle: 'Vibe-Herzen',
       vibeHeartsDesc:
         'Schwebende Herzen, wenn Sie danke, ilu, guter Bot sagen oder ein Herz senden. Unabhängig von den Nachrichten-Reaktionen oben.',
@@ -1634,7 +1695,10 @@ export const deOverrides = {
         'Alle aktivierten Toolsets entfernen? Das deaktiviert Speicher, Terminal, Websuche, Delegation und die meisten anderen Tools, bis Sie sie wieder aktivieren.',
       keepAwakeTitle: 'Computer wach halten',
       keepAwakeDesc:
-        'Verhindert, dass dieser Rechner in den Ruhezustand wechselt, damit Läufe über Nacht oder länger weiterlaufen. Der Bildschirm kann trotzdem abdunkeln.',
+        'Verhindert, dass dieser Rechner in den Ruhezustand wechselt. „Während der Arbeit“ gilt nur, solange ein Durchlauf läuft: Läufe über Nacht laufen weiter, ohne den Laptop die ganze Woche wach zu halten. Der Bildschirm kann trotzdem abdunkeln.',
+      keepAwakeOff: 'Aus',
+      keepAwakeWhileWorking: 'Während der Arbeit',
+      keepAwakeAlways: 'Immer',
       disableF12Title: 'F12-DevTools deaktivieren',
       disableF12Desc:
         'Verhindert, dass F12 die Entwicklertools öffnet. Strg+Umschalt+I (bzw. Cmd+Opt+I auf dem Mac) funktioniert weiterhin.',
@@ -1953,6 +2017,8 @@ export const deOverrides = {
         'Nicht unterstützte Remote-Plattform. Der Desktop-SSH-Modus von Hermes unterstützt Linux-, macOS- und Windows-Remote-Hosts.',
       sshErrTimeout: 'SSH-Verbindung ist ausgelaufen. Der Host ist möglicherweise nicht erreichbar oder schläft.',
       sshErrUpdateRequired: 'Aktualisieren Sie Hermes auf dem Remote-Host, bevor Sie sich mit Desktop-SSH verbinden.',
+      sshErrInteractiveAuth:
+        'Tailscale SSH erfordert eine interaktive Browser-Prüfung. Führen Sie im Terminal `ssh <host> true` aus, schließen Sie die Prüfung ab und versuchen Sie es erneut – Hermes führt SSH nicht interaktiv aus.',
       sshErrUnknown: 'SSH-Verbindung fehlgeschlagen.'
     },
     keys: {
@@ -2037,9 +2103,13 @@ export const deOverrides = {
       provider: 'Anbieter',
       model: 'Modell',
       applying: 'Wird angewendet…',
+      mainAppliedTitle: 'Hauptmodell aktualisiert',
+      mainAppliedMessage: model => `Neue Sitzungen verwenden ${model}.`,
       defaultsLabel: 'Voreinstellungen',
       reasoning: 'Denken',
       reasoningOff: 'Aus',
+      speed: 'Geschwindigkeit',
+      speedStandard: 'Standard',
       defaultsFailed: 'Voreinstellungen des Modells konnten nicht gespeichert werden',
       loadFailed: 'Modelle konnten nicht geladen werden',
       restartRequired:
@@ -2049,12 +2119,15 @@ export const deOverrides = {
       restartFailed: 'Das Backend konnte nicht neu gestartet werden',
       auxiliaryTitle: 'Hilfsmodelle',
       resetAllToMain: 'Alle auf Hauptmodell zurücksetzen',
+      staleAuxDismiss: 'Nicht erneut anzeigen',
       auxiliaryDesc:
         'Hilfsaufgaben laufen standardmäßig auf dem Hauptmodell. Weise einer Aufgabe ein eigenes Modell zu, um das zu überschreiben.',
       setToMain: 'Auf Hauptmodell setzen',
       change: 'Ändern',
       autoUseMain: 'automatisch · Hauptmodell verwenden',
       inheritMainEffort: 'übernehmen · Aufwand des Hauptmodells',
+      inheritsFrom: task => `erbt von ${task}`,
+      followTask: task => `${task} folgen`,
       providerDefault: '(Anbietervorgabe)',
       fallbackAdd: 'Fallback hinzufügen',
       fallbackEmpty: 'Keine Fallback-Modelle — es wird das Standardmodell verwendet, außer es schlägt fehl.',
@@ -2067,52 +2140,7 @@ export const deOverrides = {
       moaAggregator: 'Aggregator',
       moaAggregatorBilled: 'handelndes Modell · wird für den Lauf berechnet',
       moaReferenceHint: 'berät standardmäßig einmal pro Turn',
-      tasks: {
-        vision: {
-          label: 'Sehen',
-          hint: 'Bildanalyse'
-        },
-        compression: {
-          label: 'Kompression',
-          hint: 'Kontext-Verdichtung'
-        },
-        skills_hub: {
-          label: 'Skills-Hub',
-          hint: 'Skill-Suche'
-        },
-        approval: {
-          label: 'Freigabe',
-          hint: 'Intelligente Auto-Freigabe'
-        },
-        mcp: {
-          label: 'MCP',
-          hint: 'MCP-Tool-Routing'
-        },
-        title_generation: {
-          label: 'Titel-Generierung',
-          hint: 'Session-Titel'
-        },
-        review: {
-          label: 'Review',
-          hint: '/review Bewertungs-Subagent'
-        },
-        triage_specifier: {
-          label: 'Triage-Spezifizierer',
-          hint: 'Kanban-Spezifikation ausarbeiten'
-        },
-        kanban_decomposer: {
-          label: 'Kanban-Zerleger',
-          hint: 'Aufgaben zerlegen'
-        },
-        profile_describer: {
-          label: 'Profil-Beschreiber',
-          hint: 'Automatische Profilbeschreibungen'
-        },
-        curator: {
-          label: 'Kurator',
-          hint: 'Skill-Nutzungs-Review'
-        }
-      }
+      tasks: deAuxTasks
     },
     localModels: {
       connectionChanged: 'Verbindung für lokale Modelle geändert',
@@ -2784,16 +2812,22 @@ export const deOverrides = {
       emptyHint: 'Durchsuchen Sie unten den Katalog und installieren Sie ein geprüftes Plugin mit einem Klick.',
       loadFailed: 'Agent-Plugins konnten nicht geladen werden',
       toggleFailed: name => `${name} konnte nicht umgeschaltet werden`,
+      toolsetOn: (name: string, profile: string) => `${name}-Agent-Tools für ${profile} aktiviert`,
+      toolsetOff: (name: string, profile: string) => `${name}-Agent-Tools für ${profile} deaktiviert`,
+      toolsetToggleFailed: (name: string) =>
+        `Die ${name}-Agent-Tools konnten nicht umgeschaltet werden; das Desktop-Panel bleibt unverändert`,
       legacyBackend:
         'Dieses Backend ist älter als schlüsseladressierte Plugin-Schalter — aktualisieren Sie Hermes, um es hier zu verwalten.',
       portableBadge: 'tragbar',
       serverStates: {
         connected: 'verbunden',
         app_not_running: 'App läuft nicht',
+        hermes_not_connected: 'MCP-Verbindung fehlt',
         endpoint_unavailable: 'Endpunkt nicht verfügbar',
         no_interactive_session: 'keine interaktive Session',
         version_too_old: 'Version zu alt',
         missing_app: 'App fehlt',
+        unsupported_gpu: 'GPU nicht unterstützt',
         unknown: 'Status unbekannt'
       },
       catalogTitle: 'Plugin-Katalog',
@@ -2838,7 +2872,7 @@ export const deOverrides = {
         save: 'Einstellungen speichern',
         saved: (name: string) => `Einstellungen von ${name} gespeichert.`,
         saveFailed: (name: string) => `Einstellungen von ${name} konnten nicht gespeichert werden`,
-        optional: '(optional)',
+        required: 'Erforderlich',
         secretSet: '•••••••• (gesetzt)',
         secretStoredAs: (env: string) =>
           `Wird in der .env des Profils als ${env} gespeichert, nie in config.yaml; leer lassen, um den aktuellen Wert zu behalten.`
@@ -3060,12 +3094,6 @@ export const deOverrides = {
       system: 'System',
       usage: 'Nutzung'
     },
-    sectionDescriptions: {
-      maintenance: 'Diagnose, Backups, Curator und Memory-Daten',
-      sessions: 'Sessions durchsuchen und verwalten',
-      system: 'Status, Logs und Systemaktionen',
-      usage: 'Token-, Kosten- und Skill-Aktivität im Zeitverlauf'
-    },
     nav: {
       newChat: {
         title: 'Neue Session',
@@ -3116,7 +3144,8 @@ export const deOverrides = {
     gatewayStopped: 'Messaging-Gateway gestoppt',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Aktive Sessions ${count}`,
     restartGateway: 'Gateway neu starten',
-    openBrowser: 'Browser öffnen',
+    openBrowser: 'Browser umschalten',
+    toggleBrowser: 'Browser umschalten',
     gatewayRestartFailed: 'Gateway-Neustart fehlgeschlagen.',
     sharedGatewayRestartTitle: 'Gemeinsames Gateway neu starten?',
     sharedGatewayRestartDescription: bots => `Alle Bots auf diesem Gerät verbinden sich neu: ${bots}`,
@@ -3151,7 +3180,7 @@ export const deOverrides = {
     actions: count => `${count} Aktionen`,
     logFile: 'Logdatei',
     logLevel: 'Stufe',
-    logSearchPlaceholder: 'Logzeilen filtern...',
+    logSearchPlaceholder: 'Logs durchsuchen…',
     maintenance: {
       runOps: 'Diagnose',
       doctor: 'Doctor ausführen',
@@ -3200,6 +3229,13 @@ export const deOverrides = {
   },
   messaging: {
     search: 'Messaging durchsuchen...',
+    statusFilter: {
+      all: 'Alle',
+      bad: 'Fehler',
+      good: 'Verbunden',
+      muted: 'Inaktiv',
+      warn: 'Handlungsbedarf'
+    },
     loading: 'Messaging-Plattformen werden geladen...',
     loadFailed: 'Messaging-Plattformen konnten nicht geladen werden',
     states: {
@@ -3236,6 +3272,9 @@ export const deOverrides = {
     replaceValue: 'Aktuellen Wert ersetzen',
     openDocs: 'Dokumentation öffnen',
     clearField: key => `${key} löschen`,
+    addListEntry: 'Weitere hinzufügen',
+    removeListEntry: 'Entfernen',
+    listEntryPlaceholder: 'ID eingeben',
     enableAria: name => `${name} aktivieren`,
     disableAria: name => `${name} deaktivieren`,
     platformEnabled: name => `${name} aktiviert`,
@@ -3317,7 +3356,7 @@ export const deOverrides = {
       },
       TELEGRAM_ALLOWED_USERS: {
         label: 'Erlaubte Telegram-Benutzer-IDs',
-        help: 'Empfohlen. Numerische IDs von @userinfobot, durch Kommas getrennt. Ohne diese können Ihnen beliebige Benutzer Direktnachrichten senden.'
+        help: 'Empfohlen. Numerische IDs von @userinfobot, eine pro Feld. Ohne diese können Ihnen beliebige Benutzer Direktnachrichten senden.'
       },
       TELEGRAM_PROXY: {
         label: 'Proxy-URL',
@@ -3329,7 +3368,7 @@ export const deOverrides = {
       },
       DISCORD_ALLOWED_USERS: {
         label: 'Erlaubte Discord-Benutzer-IDs',
-        help: 'Empfohlen. Discord-Benutzer-IDs, durch Kommas getrennt.'
+        help: 'Empfohlen. Discord-Benutzer-IDs, eine pro Feld.'
       },
       DISCORD_REPLY_TO_MODE: {
         label: 'Antwortstil',
@@ -3379,7 +3418,7 @@ export const deOverrides = {
       },
       SLACK_ALLOWED_USERS: {
         label: 'Erlaubte Slack-Benutzer-IDs',
-        help: 'Empfohlen. Slack-Benutzer-IDs, durch Kommas getrennt.'
+        help: 'Empfohlen. Slack-Benutzer-IDs, eine pro Feld.'
       },
       MATTERMOST_URL: {
         label: 'Server-URL',
@@ -3390,7 +3429,7 @@ export const deOverrides = {
       },
       MATTERMOST_ALLOWED_USERS: {
         label: 'Erlaubte Benutzer-IDs',
-        help: 'Empfohlen. Mattermost-Benutzer-IDs, durch Kommas getrennt.'
+        help: 'Empfohlen. Mattermost-Benutzer-IDs, eine pro Feld.'
       },
       MATRIX_HOMESERVER: {
         label: 'Homeserver-URL',
@@ -3405,7 +3444,7 @@ export const deOverrides = {
       },
       MATRIX_ALLOWED_USERS: {
         label: 'Erlaubte Matrix-Benutzer-IDs',
-        help: 'Empfohlen. Benutzer-IDs im Format @benutzer:server, durch Kommas getrennt.'
+        help: 'Empfohlen. Benutzer-IDs im Format @benutzer:server, eine pro Feld.'
       },
       SIGNAL_HTTP_URL: {
         label: 'Signal-Bridge-URL',
@@ -3418,7 +3457,7 @@ export const deOverrides = {
       },
       SIGNAL_ALLOWED_USERS: {
         label: 'Erlaubte Signal-Benutzer',
-        help: 'Empfohlen. Signal-Kennungen, durch Kommas getrennt.'
+        help: 'Empfohlen. Signal-Kennungen, eine pro Feld.'
       },
       WHATSAPP_ENABLED: {
         label: 'WhatsApp-Bridge aktivieren',
@@ -3429,7 +3468,7 @@ export const deOverrides = {
       },
       WHATSAPP_ALLOWED_USERS: {
         label: 'Erlaubte WhatsApp-Benutzer',
-        help: 'Empfohlen. Telefonnummern oder WhatsApp-IDs, durch Kommas getrennt.'
+        help: 'Empfohlen. Telefonnummern oder WhatsApp-IDs, eine pro Feld.'
       }
     },
     platformIntro: {}
@@ -3770,6 +3809,8 @@ export const deOverrides = {
     nameLabel: 'Name',
     namePlaceholder: 'Morgenübersicht',
     promptLabel: 'Prompt',
+    scriptLabel: 'Skript',
+    scriptBadge: 'Skript',
     promptPlaceholder: 'Fass meine ungelesenen Slack-Kanäle zusammen und schick mir die Top 5 per E-Mail...',
     frequencyLabel: 'Häufigkeit',
     deliverLabel: 'Zustellen an',
@@ -3982,6 +4023,8 @@ export const deOverrides = {
       reveal: 'Im Ordner anzeigen',
       copyPath: 'Pfad kopieren',
       removeFromSidebar: 'Aus der Sidebar ausblenden',
+      createdInPreviousContext:
+        'Das Projekt wurde auf der vorherigen Verbindung oder im vorherigen Profil erstellt. Wechsle zurück; IDEA.md wurde nicht geschrieben.',
       createFailed: 'Projekt konnte nicht erstellt werden',
       staleBackend:
         'Aktualisieren Sie das Hermes-Backend, um Projekte zu erstellen – Ihr Backend ist älter als diese Desktop-App (Einstellungen → Updates → Backend).',
@@ -4057,6 +4100,7 @@ export const deOverrides = {
       backgroundRunning: 'Hintergrundaufgabe läuft',
       draftSession: 'Entwurf – noch nichts gesendet',
       handoffOrigin: platform => `Übergeben von ${platform}`,
+      continuationOrigin: 'Automatische Fortsetzung — dieser Chat wurde komprimiert und fortgesetzt',
       ownedByProfile: profile => `Profil: ${profile}`,
       renamed: 'Umbenannt',
       renameFailed: 'Umbenennen fehlgeschlagen',
@@ -4220,7 +4264,7 @@ export const deOverrides = {
       '/init': 'AGENTS.md-Projektanweisungen aus einem Repo-Scan erzeugen oder aktualisieren',
       '/suggestions': 'Vorgeschlagene Automatisierungen prüfen (annehmen/verwerfen)',
       '/blueprint': 'Eine Automatisierung aus einer Blueprint-Vorlage einrichten',
-      '/browser': 'Browser-CDP-Verbindung verwalten [connect|disconnect|status] (nur lokales Gateway)',
+      '/browser': 'Browser des Agenten verwalten [connect|disconnect|status|use]',
       '/palette': 'Die unscharfe Befehlspalette öffnen (auch Strg+P)',
       '/usage': 'Token-Nutzung und Ratenlimits anzeigen; `reset` löst ein angespartes Codex-Limit-Reset ein',
       '/subscription': 'Ihren Nous-Tarif ansehen und im Browser ändern',
@@ -4256,6 +4300,8 @@ export const deOverrides = {
     restoredDraftNotice: 'Ihre nicht gesendete Nachricht wurde wiederhergestellt',
     restoredDraftUndo: 'Rückgängig',
     queueEdit: 'Bearbeiten',
+    queueExpand: 'Ausklappen',
+    queueCollapse: 'Einklappen',
     queueSendNext: 'Weiter',
     queueSteer: 'Steuern — laufenden Turn jetzt umleiten',
     queueSend: 'Senden',
@@ -4265,6 +4311,9 @@ export const deOverrides = {
     queueStuckTitle: 'Eingereihte Nachricht nicht gesendet',
     queueStuckBody:
       'Ein eingereihter Turn konnte nicht gesendet werden. Er ist noch in der Warteschlange — versuchen Sie, ihn erneut zu senden.',
+    queueDroppedTitle: 'Eingereihte Eingabe verworfen',
+    queueDroppedBody:
+      'Dieser Hintergrund-Eintrag wurde verworfen, da seine Sitzung nach wiederholten Versuchen nicht fortgesetzt werden konnte. Die übrige Warteschlange ist unverändert.',
     previewUnavailable: 'Vorschau nicht verfügbar',
     previewLabel: label => `Vorschau ${label}`,
     couldNotPreview: label => `Vorschau von ${label} fehlgeschlagen`,
@@ -4357,6 +4406,7 @@ export const deOverrides = {
     goalWaiting: 'Ziel wartet',
     subagents: count => `${count} Subagent${count === 1 ? '' : 'en'}`,
     todos: (done, total) => `Aufgaben ${done}/${total}`,
+    previousTodos: (done, total) => `Frühere Aufgaben ${done}/${total}`,
     running: 'Läuft',
     stop: 'Stopp',
     dismiss: 'Verwerfen',
@@ -4445,7 +4495,8 @@ export const deOverrides = {
       copyFailure: 'Kriterium konnte nicht in die Zwischenablage kopiert werden',
       continuationFailed: 'Ziel-Fortsetzung konnte nicht übermittelt werden',
       continuationQueued: 'Ziel fortgesetzt — Fortsetzung in der Warteschlange, bis die aktuelle Runde endet',
-      continuationBusy: 'Ziel fortgesetzt — Session ist beschäftigt, /interrupt zum Fortsetzen der aktuellen Runde',
+      continuationBusy:
+        'Ziel fortgesetzt — Session ist beschäftigt; stoppe zuerst die aktuelle Antwort (Stopp-Button oder Esc), um fortzufahren',
       controlUnavailable: msg => `Session-Steuerung nicht verfügbar: ${msg}`,
       dismissError: 'Fehler verwerfen',
       add: 'Hinzufügen'
@@ -4501,19 +4552,25 @@ export const deOverrides = {
   },
   updates: {
     discontinuedTitle: 'Dieser Hermes-Build wird nicht mehr unterstützt',
-    discontinuedBody: 'Dieser Hermes-Build wird nicht mehr unterstützt und funktioniert möglicherweise nicht mehr — deinstallieren Sie ihn. Ihre Daten bleiben auf dem Datenträger.',
+    discontinuedBody:
+      'Dieser Hermes-Build wird nicht mehr unterstützt und funktioniert möglicherweise nicht mehr — deinstallieren Sie ihn. Ihre Daten bleiben auf dem Datenträger.',
     channels: { stable: 'Stabil', canary: 'Canary' },
     appName: 'Hermes',
     availableBodyRelease: tag => `Version ${tag} ist bereit zur Installation.`,
     releaseAvailable: tag => `Version ${tag} ist verfügbar.`,
     checkingShort: 'Wird geprüft…',
-    availableBodyAppInstaller: 'Eine neue Hermes-Version ist bereit. Hermes wird geschlossen, Windows schließt das Update ab und Hermes startet automatisch neu.',
-    applyingBodyAppInstaller: 'Hermes wird geschlossen und Windows schließt das Update ab. Danach startet Hermes automatisch neu.',
-    applyingCloseAppInstaller: 'Dieses Fenster schließt sich, Windows schließt das Update ab und Hermes startet automatisch neu.',
+    availableBodyAppInstaller:
+      'Eine neue Hermes-Version ist bereit. Hermes wird geschlossen, Windows schließt das Update ab und Hermes startet automatisch neu.',
+    applyingBodyAppInstaller:
+      'Hermes wird geschlossen und Windows schließt das Update ab. Danach startet Hermes automatisch neu.',
+    applyingCloseAppInstaller:
+      'Dieses Fenster schließt sich, Windows schließt das Update ab und Hermes startet automatisch neu.',
     checkUnknownTitleAppInstaller: 'Update-Check fehlgeschlagen',
-    checkUnknownBodyAppInstaller: 'Windows konnte gerade nicht nach Updates suchen. Updates werden auch beim Neustart von Hermes automatisch installiert.',
+    checkUnknownBodyAppInstaller:
+      'Windows konnte gerade nicht nach Updates suchen. Updates werden auch beim Neustart von Hermes automatisch installiert.',
     versionDetailsTitle: 'Versionsdetails',
-    versionDetailsBody: 'Diese Installation wird außerhalb der App verwaltet. Aktualisieren Sie sie auf dieselbe Weise, wie Sie sie installiert haben.',
+    versionDetailsBody:
+      'Diese Installation wird außerhalb der App verwaltet. Aktualisieren Sie sie auf dieselbe Weise, wie Sie sie installiert haben.',
     versionDetailsVersion: 'Version',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Build-Ursprung',
@@ -4535,11 +4592,11 @@ export const deOverrides = {
     versionUnavailable: 'Version nicht verfügbar',
     bundleOutOfSync: 'App-Build ist veraltet',
     bundleOutOfSyncDesc:
-        'Die Hermes-Laufzeit wurde aktualisiert, die Desktop-App selbst ist aber noch ein älterer Build – neue Oberflächenfunktionen (wie der Bot-Modus) fehlen, bis sie aktualisiert wird. Führen Sie das Update unten aus, um die App neu zu bauen. Falls das die Warnung nicht behebt, installieren Sie den neuesten Desktop-Installer neu.',
+      'Die Hermes-Laufzeit wurde aktualisiert, die Desktop-App selbst ist aber noch ein älterer Build – neue Oberflächenfunktionen (wie der Bot-Modus) fehlen, bis sie aktualisiert wird. Führen Sie das Update unten aus, um die App neu zu bauen. Falls das die Warnung nicht behebt, installieren Sie den neuesten Desktop-Installer neu.',
     bundleOutOfSyncAction: 'Installer herunterladen',
     bundleSwapPending: 'Neustart zum Abschließen des Updates',
     bundleSwapPendingDesc:
-        'Die aktualisierte App ist bereits installiert — Hermes muss nur noch neu gestartet werden, um sie zu laden. Chats und Einstellungen bleiben unberührt.',
+      'Die aktualisierte App ist bereits installiert — Hermes muss nur noch neu gestartet werden, um sie zu laden. Chats und Einstellungen bleiben unberührt.',
     bundleSwapPendingAction: 'Hermes neu starten',
     checkNow: 'Jetzt prüfen',
     seeWhatsNew: 'Neuigkeiten ansehen',
@@ -4592,10 +4649,15 @@ export const deOverrides = {
     updateNow: 'Jetzt aktualisieren',
     maybeLater: 'Später',
     moreChanges: count => `+ ${count} weitere Änderung${count === 1 ? '' : 'en'} enthalten.`,
+    copyFullLog: 'Vollständiges Änderungsprotokoll kopieren',
     manualTitle: 'Über Ihr Terminal aktualisieren',
+    manualUnavailableTitle: 'Aktualisierung hier nicht möglich',
     manualBody:
       'Sie haben Hermes über die Befehlszeile installiert, daher laufen Updates auch dort. Fügen Sie dies in Ihr Terminal ein:',
     manualPickedUp: 'Hermes übernimmt die neue Version beim nächsten Start.',
+    manualBodyBackend:
+      'Das Hermes-Backend wird außerhalb dieser App verwaltet. Führen Sie dies auf dem Server aus, der es hostet:',
+    manualPickedUpBackend: 'Das Backend lädt die neue Version, sobald das Update abgeschlossen ist.',
     guiSkewTitle: 'Desktop-App aktualisieren',
     guiSkewBody:
       'Das Backend wurde aktualisiert, aber dieses Desktop-App-Paket nicht. Aktualisieren oder installieren Sie die Hermes-Desktop-App neu (Ihr AppImage / .deb / .rpm), um beide abzugleichen.',
@@ -4793,6 +4855,7 @@ export const deOverrides = {
     replaceCurrent: 'Aktuellen Wert ersetzen',
     pasteApiKey: 'API-Key einfügen',
     localApiKeyPlaceholder: 'API-Key (optional – nur falls Ihr Endpunkt einen benötigt)',
+    localModelNamePlaceholder: 'Modellname (z. B. command-a-plus-05-2026)',
     couldNotSave: 'Anmeldedaten konnten nicht gespeichert werden.',
     connecting: 'Verbinden',
     update: 'Aktualisieren',
@@ -4936,24 +4999,25 @@ export const deOverrides = {
     noAuthenticatedProviders: 'Keine authentifizierten Anbieter.',
     addProvider: 'Anbieter hinzufügen…',
     addCustomModel: 'Eigenes Modell hinzufügen',
-    removeCustomModel: 'Eigenes Modell entfernen'
+    removeCustomModel: 'Eigenes Modell entfernen',
+    resetToDefaults: 'Auf Standard zurücksetzen',
+    resetConfirm: 'Modellsichtbarkeit auf Standard zurücksetzen?',
+    resetDescription:
+      'Ihre Auswahl sichtbarer und ausgeblendeter Modelle wird gelöscht, und jeder Anbieter zeigt wieder seine Standardliste. Eigene Modelle bleiben erhalten und werden angezeigt.',
+    resetAction: 'Zurücksetzen'
   },
   shell: {
     windowControls: 'Fenster-Bedienelemente',
     paneControls: 'Panele-Bedienelemente',
     appControls: 'App-Bedienelemente',
-    modelMenu: {
-      search: 'Modelle durchsuchen',
-      noModels: 'Keine Modelle gefunden',
-      editModels: 'Modelle bearbeiten…',
-      refreshModels: 'Modelle aktualisieren',
-      fast: 'Schnell'
-    },
+    modelMenu: deModelMenu,
     modelOptions: {
       noOptions: 'Keine Optionen für dieses Modell',
       options: 'Optionen',
       thinking: 'Denken',
       fast: 'Schnell',
+      ultrafast: 'Ultrafast',
+      useStandardSpeed: 'Standardgeschwindigkeit verwenden',
       effort: 'Aufwand',
       minimal: 'Minimal',
       low: 'Niedrig',
@@ -5140,6 +5204,8 @@ export const deOverrides = {
   },
   preview: {
     tab: 'Vorschau',
+    pin: 'An Arbeitsbereich anheften',
+    unpin: 'Vom Arbeitsbereich lösen',
     closePane: 'Vorschau-Fenster schließen',
     loading: 'Vorschau wird geladen',
     unavailable: 'Vorschau nicht verfügbar',
@@ -5168,6 +5234,8 @@ export const deOverrides = {
     editing: 'Wird bearbeitet',
     unsavedChanges: 'Nicht gespeicherte Änderungen',
     saveFailed: message => `Speichern fehlgeschlagen: ${message}`,
+    saveScopeChanged:
+      'Wechsle zur ursprünglichen Verbindung und zum ursprünglichen Profil zurück, um diesen Entwurf zu speichern.',
     diskChangedTitle: 'Datei auf der Festplatte geändert',
     diskChangedBody:
       'Diese Datei wurde geändert, seit Sie sie geöffnet haben. Mit Ihrer Version überschreiben oder Ihre Änderungen verwerfen und neu laden?',
@@ -5267,6 +5335,7 @@ export const deOverrides = {
     hideTabStrip: 'Tabs ausblenden',
     showStripTab: title => `${title} anzeigen`,
     hideStripTab: title => `${title} ausblenden`,
+    zoneMenuLabel: title => `Zonenoptionen für ${title}`,
     lastTabKeptTitle: 'Letzter Tab bleibt',
     lastTabKeptBody:
       'Diese Zone braucht mindestens einen sichtbaren Tab. Zeigen Sie zuerst einen anderen Tab an oder klappen Sie die ganze Seitenleiste ein.',
@@ -5358,6 +5427,7 @@ export const deOverrides = {
       branchNewChat: 'In neuem Chat abzweigen',
       react: 'Reagieren',
       dismissError: 'Fehler schließen',
+      responseStopped: 'Antwort gestoppt',
       errorLayers: {
         auth: 'Authentifizierungsfehler',
         billing: 'Keine Credits mehr',
@@ -5424,9 +5494,13 @@ export const deOverrides = {
             `${provider} hat einen Serverfehler zurückgegeben. Versuchen Sie es gleich erneut oder wechseln Sie den Anbieter.`
         },
         timeout: {
-          title: 'Die Antwort hat zu lange gebraucht',
+          title: 'Der KI-Dienst ist nicht erreichbar',
           body: provider =>
-            `${provider} hat nicht rechtzeitig geantwortet. Versuchen Sie es erneut, um die Nachricht noch einmal zu senden.`
+            `${provider} war nicht erreichbar oder hat nicht rechtzeitig geantwortet. Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut.`
+        },
+        no_reply: {
+          title: 'Die Antwort wurde nicht fertig',
+          body: 'Hermes hat diesen Durchlauf ohne Antwort beendet. Versuchen Sie es erneut, um sie noch einmal zu senden.'
         },
         stream_drop: {
           title: 'Die Antwort wurde abgebrochen',
@@ -5565,6 +5639,8 @@ export const deOverrides = {
       preparingAudio: 'Bereitet Audio vor...',
       stopReading: 'Vorlesen stoppen',
       readAloud: 'Vorlesen',
+      copyFullResponse: 'Vollständige Antwort kopieren',
+      readAloudFullResponseHint: 'Umschalt-Klick: vollständige Antwort vorlesen',
       editMessage: 'Nachricht bearbeiten',
       expandMessage: 'Nachricht aufklappen',
       scrollToBottom: 'Nach unten scrollen',
@@ -5608,13 +5684,13 @@ export const deOverrides = {
       placeholder: 'Geben Sie Ihre Antwort ein…',
       skip: 'Überspringen',
       skipped: 'Übersprungen',
-      continueLabel: 'Weiter',
+      noAnswer: 'Keine Antwort',
       confirmAndContinueLabel: 'Bestätigen und fortfahren',
-      answeredBadge: 'Beantwortet',
+      singleSelectHint: 'Eines auswählen',
+      multiSelectHint: 'Alle Treffer auswählen',
       questionProgress: (answered, total) => `${answered} von ${total} beantwortet`,
-      lateAnswer: (question, choice) => `Re: „${question}“ — meine Antwort: ${choice}`,
-      lateAnswerTip: 'Diese Antwort als Folgenachricht entwerfen',
-      lateAnswerHint: 'Dieser Prompt wartet nicht mehr. Wählen Sie eine Option, um sie als Folgenachricht zu entwerfen.'
+      notDelivered:
+        'Diese Frage hat die App nicht erreicht und kann hier nicht beantwortet werden. Klicken Sie auf Stopp, um den Durchgang zu beenden, und antworten Sie dann im Chat.'
     },
     catalogInstall: {
       preparing: 'Installation wird vorbereitet…',
@@ -5897,9 +5973,6 @@ export const deOverrides = {
     sessionUnavailable: 'Session nicht verfügbar',
     createSessionFailed: 'Neue Session konnte nicht erstellt werden',
     promptFailed: 'Prompt fehlgeschlagen',
-    staleSessionTitle: 'Chat veraltet',
-    staleSessionBody:
-      'Dieses Fenster war hinter einer anderen Ansicht desselben Chats. Die neuesten Nachrichten wurden geladen. Senden Sie erneut, wenn Sie noch möchten.',
     providerCredentialRequired:
       'Fügen Sie Anmeldedaten für einen Anbieter hinzu, bevor Sie Ihre erste Nachricht senden.',
     emptySlashCommand: 'leerer Slash-Befehl',
@@ -6052,6 +6125,11 @@ export const deOverrides = {
   ui: {
     search: {
       clear: 'Suche löschen'
+    },
+    logs: {
+      bottom: 'Zum Ende',
+      search: 'Logs durchsuchen…',
+      top: 'Zum Anfang'
     },
     pagination: {
       label: 'Seitennummerierung',

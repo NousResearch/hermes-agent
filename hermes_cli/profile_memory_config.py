@@ -7,14 +7,21 @@ convention ``hermes_cli.web_routers.memory_providers`` reads): a ``<home>/<provi
 directory (hindsight) or a flat ``<home>/<provider>.json`` (mem0, honcho, supermemory). Copying
 by convention keeps this free of plugin imports: the provider may live in the catalog, not in
 tree, so a hook the plugin must implement could not fix the reported case.
+
+``read_memory_provider_values`` reads a provider's saved settings by the same convention, for
+both setup surfaces (``hermes memory setup`` and the dashboard).
 """
 
 import contextlib
+import json
+import logging
 import os
 import re
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
+
+_log = logging.getLogger(__name__)
 
 # A provider name is a bare directory/file stem; anything else (path separators, ``..``, spaces)
 # would let a hand-edited config.yaml aim the copy outside the source profile.
@@ -69,3 +76,49 @@ def cloned_memory_provider(profile_dir: Path) -> Optional[str]:
     if provider and ((profile_dir / provider).is_dir() or (profile_dir / f"{provider}.json").is_file()):
         return provider
     return None
+
+
+def _read_json_file(path: Path) -> Dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
+    except Exception:
+        _log.debug("Failed to read JSON config from %s", path, exc_info=True)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def read_memory_provider_values(name: str) -> Dict[str, Any]:
+    """A provider's saved settings, wherever it keeps them (``<name>.json``, ``<name>/config.json``,
+    ``memory.<name>``, legacy ``memory.provider_config``, holographic's ``plugins.hermes-memory-store``).
+    Both setup surfaces seed their forms from it: a form seeded from one of these alone offers the
+    defaults as "current", and saving it overwrites the provider's real settings."""
+    from hermes_cli.config import get_hermes_home, load_config
+
+    hermes_home = get_hermes_home()
+    values: Dict[str, Any] = {}
+    for path in (hermes_home / f"{name}.json", hermes_home / name / "config.json"):
+        values.update(_read_json_file(path))
+
+    try:
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+
+    memory_cfg = cfg.get("memory")
+    if isinstance(memory_cfg, dict):
+        provider_cfg = memory_cfg.get(name)
+        if isinstance(provider_cfg, dict):
+            values.update(provider_cfg)
+        legacy_cfg = memory_cfg.get("provider_config")
+        if isinstance(legacy_cfg, dict):
+            values = {**legacy_cfg, **values}
+
+    # Holographic stores under plugins.hermes-memory-store.
+    plugins_cfg = cfg.get("plugins")
+    if name == "holographic" and isinstance(plugins_cfg, dict):
+        holographic_cfg = plugins_cfg.get("hermes-memory-store")
+        if isinstance(holographic_cfg, dict):
+            values.update(holographic_cfg)
+    return values

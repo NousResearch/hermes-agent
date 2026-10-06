@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
-import { exec as execCallback, spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
+import { once } from 'node:events'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -75,7 +76,23 @@ test.runIf(process.platform === 'win32')(
   async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-win-marker-'))
     const marker = path.join(root, '.hermes-update-in-progress')
-    const run = (command: string) => promisify(execCallback)(command, { timeout: 30_000 })
+
+    const run = (command: string) => {
+      // Encoded marker programs exceed cmd.exe's command-line limit. Execute
+      // the generated PowerShell command directly, as a local transport test.
+      const encoded = command.match(
+        /^powershell\.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ([A-Za-z0-9+/=]+)$/
+      )?.[1]
+
+      assert.ok(encoded, 'expected the generated encoded PowerShell command')
+
+      return promisify(execFile)(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
+        { timeout: 30_000, windowsHide: true }
+      )
+    }
+
     const command = atomicWindowsSpawnCommand({ hermesHome: root, python: path.join(root, 'missing-python.exe') })
 
     // An updater: hold <marker>.lock sharing nothing (marker.ps1 Open-MarkerLock),
@@ -119,7 +136,12 @@ test.runIf(process.platform === 'win32')(
       await assert.rejects(run(command))
       await assert.rejects(readFile(marker), { code: 'ENOENT' })
     } finally {
-      updater.kill()
+      if (updater.exitCode === null && updater.signalCode === null) {
+        const exited = once(updater, 'exit')
+        updater.kill()
+        await exited
+      }
+
       await rm(root, { recursive: true, force: true })
     }
   },
@@ -255,9 +277,16 @@ test('Windows gates keep a dead marker while the checkout lock or a lease byte i
   }
 
   const deleteAt = spawnScript.indexOf('[IO.File]::Delete($marker)')
-  const guardAt = spawnScript.indexOf('if($verdict -eq "CLEAR" -and (Test-CheckoutLockHeld $checkoutRoots)){$verdict="HELD"}')
+
+  const guardAt = spawnScript.indexOf(
+    'if($verdict -eq "CLEAR" -and (Test-CheckoutLockHeld $checkoutRoots)){$verdict="HELD"}'
+  )
+
   assert.ok(guardAt > 0 && guardAt < deleteAt, 'the checkout probe must precede the dead-marker delete')
-  assert.match(probeScript, /if\(\$result -eq "CLEAR" -and \(Test-CheckoutLockHeld \$checkoutRoots\)\)\{\$result="HELD"\}/)
+  assert.match(
+    probeScript,
+    /if\(\$result -eq "CLEAR" -and \(Test-CheckoutLockHeld \$checkoutRoots\)\)\{\$result="HELD"\}/
+  )
 })
 
 test('Windows relaunch gate uses strict install-wide marker parsing and fail-closed PID probing', async () => {

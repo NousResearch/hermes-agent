@@ -32,6 +32,9 @@ const electronNative: TestProjectConfiguration = {
   test: {
     name: 'electron',
     environment: 'node',
+    // Real Windows identity probes can each wait up to 15 s for CIM. Some
+    // native tests probe several processes; keep their own timing assertions.
+    testTimeout: process.platform === 'win32' ? 60_000 : 5_000,
     // `e2e/**/*.unit.test.ts` is the e2e HELPERS, not the specs: plain node
     // modules that should be provable without booting Electron. Playwright
     // ignores the same pattern so they run in exactly one runner.

@@ -29,6 +29,13 @@ Step 3: Final step.
 """
 
 
+def _content_for(name: str) -> str:
+    """SKILL_CONTENT with the frontmatter ``name`` aligned to ``name`` — the write
+    paths reject a frontmatter/dir-name divergence (#21782), so setup stays in sync."""
+    return SKILL_CONTENT.replace("name: test-skill", f"name: {name}", 1)
+
+
+
 # ---------------------------------------------------------------------------
 # Fuzzy patching
 # ---------------------------------------------------------------------------
@@ -110,7 +117,7 @@ word word word
             lambda _skill_dir: "blocked",
         )
 
-        result = _create_skill("blocked-skill", SKILL_CONTENT)
+        result = _create_skill("blocked-skill", _content_for("blocked-skill"))
 
         assert result["success"] is False
         assert not (self.skills_dir / "blocked-skill").exists()
@@ -120,7 +127,7 @@ word word word
         """New skill documents override a restrictive process umask."""
         old_umask = os.umask(0o077)
         try:
-            create_result = _create_skill("umask-skill", SKILL_CONTENT)
+            create_result = _create_skill("umask-skill", _content_for("umask-skill"))
             write_result = _write_file(
                 "umask-skill", "references/example.md", "# Reference\n"
             )
@@ -137,7 +144,7 @@ word word word
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     def test_explicit_skill_md_patch_preserves_existing_mode(self):
         """Explicit SKILL.md patch paths preserve the existing document mode."""
-        _create_skill("explicit-skill", SKILL_CONTENT)
+        _create_skill("explicit-skill", _content_for("explicit-skill"))
         skill_md = self.skills_dir / "explicit-skill" / "SKILL.md"
         skill_md.chmod(0o660)
 
@@ -156,10 +163,10 @@ word word word
     @pytest.mark.parametrize("mode", [0o600])
     def test_edit_preserves_existing_mode(self, mode):
         """Full skill edits must preserve private and shared document modes."""
-        _create_skill("mode-skill", SKILL_CONTENT)
+        _create_skill("mode-skill", _content_for("mode-skill"))
         skill_md = self.skills_dir / "mode-skill" / "SKILL.md"
         skill_md.chmod(mode)
-        replacement = SKILL_CONTENT.replace("Step 1: Do the thing.", "Step 1: Done!")
+        replacement = _content_for("mode-skill").replace("Step 1: Do the thing.", "Step 1: Done!")
 
         result = _edit_skill("mode-skill", replacement)
 
@@ -170,7 +177,7 @@ word word word
     @pytest.mark.parametrize("mode", [0o600])
     def test_patched_skill_preserves_existing_mode(self, mode):
         """Atomic patching must preserve both private and shared modes."""
-        _create_skill("mode-skill", SKILL_CONTENT)
+        _create_skill("mode-skill", _content_for("mode-skill"))
         skill_md = self.skills_dir / "mode-skill" / "SKILL.md"
         skill_md.chmod(mode)
 
@@ -184,7 +191,7 @@ word word word
     @pytest.mark.parametrize("mode", [0o600])
     def test_supporting_file_write_preserves_existing_mode(self, mode):
         """Overwriting a reference preserves its existing private or shared mode."""
-        _create_skill("mode-skill", SKILL_CONTENT)
+        _create_skill("mode-skill", _content_for("mode-skill"))
         reference = self.skills_dir / "mode-skill" / "references/example.md"
         reference.parent.mkdir()
         reference.write_text("old\n", encoding="utf-8")
@@ -199,7 +206,7 @@ word word word
     @pytest.mark.parametrize("mode", [0o600])
     def test_supporting_file_patch_preserves_existing_mode(self, mode):
         """Patching a reference preserves its existing private or shared mode."""
-        _create_skill("mode-skill", SKILL_CONTENT)
+        _create_skill("mode-skill", _content_for("mode-skill"))
         reference = self.skills_dir / "mode-skill" / "references/example.md"
         reference.parent.mkdir()
         reference.write_text("old\n", encoding="utf-8")
@@ -221,7 +228,7 @@ word word word
         self, monkeypatch
     ):
         """Blocked reference patches restore content and the original mode."""
-        _create_skill("rollback-skill", SKILL_CONTENT)
+        _create_skill("rollback-skill", _content_for("rollback-skill"))
         reference = self.skills_dir / "rollback-skill" / "references/example.md"
         reference.parent.mkdir()
         reference.write_text("original\n", encoding="utf-8")
@@ -245,10 +252,10 @@ word word word
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     def test_edit_rollback_preserves_existing_mode_when_scan_blocks(self, monkeypatch):
         """Blocked full edits restore both content and the original mode."""
-        _create_skill("rollback-skill", SKILL_CONTENT)
+        _create_skill("rollback-skill", _content_for("rollback-skill"))
         skill_md = self.skills_dir / "rollback-skill" / "SKILL.md"
         skill_md.chmod(0o660)
-        replacement = SKILL_CONTENT.replace("Step 1: Do the thing.", "blocked edit")
+        replacement = _content_for("rollback-skill").replace("Step 1: Do the thing.", "blocked edit")
         monkeypatch.setattr(
             "tools.skill_manager_tool._security_scan_skill",
             lambda _skill_dir: "blocked",
@@ -257,13 +264,13 @@ word word word
         result = _edit_skill("rollback-skill", replacement)
 
         assert result["success"] is False
-        assert skill_md.read_text(encoding="utf-8") == SKILL_CONTENT
+        assert skill_md.read_text(encoding="utf-8") == _content_for("rollback-skill")
         assert stat.S_IMODE(skill_md.stat().st_mode) == 0o660
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     def test_patch_rollback_preserves_existing_mode_when_scan_blocks(self, monkeypatch):
         """Blocked patches restore both content and the original mode."""
-        _create_skill("rollback-skill", SKILL_CONTENT)
+        _create_skill("rollback-skill", _content_for("rollback-skill"))
         skill_md = self.skills_dir / "rollback-skill" / "SKILL.md"
         skill_md.chmod(0o600)
         monkeypatch.setattr(
@@ -276,7 +283,7 @@ word word word
         )
 
         assert result["success"] is False
-        assert skill_md.read_text(encoding="utf-8") == SKILL_CONTENT
+        assert skill_md.read_text(encoding="utf-8") == _content_for("rollback-skill")
         assert stat.S_IMODE(skill_md.stat().st_mode) == 0o600
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
@@ -284,7 +291,7 @@ word word word
         self, monkeypatch
     ):
         """Blocked supporting-file overwrites restore content and mode."""
-        _create_skill("rollback-skill", SKILL_CONTENT)
+        _create_skill("rollback-skill", _content_for("rollback-skill"))
         reference = self.skills_dir / "rollback-skill" / "references/example.md"
         reference.parent.mkdir()
         reference.write_text("original\n", encoding="utf-8")
@@ -302,7 +309,7 @@ word word word
 
     def test_new_supporting_file_rollback_removes_file_when_scan_blocks(self, monkeypatch):
         """Blocked supporting-file creates remove the newly written file."""
-        _create_skill("rollback-skill", SKILL_CONTENT)
+        _create_skill("rollback-skill", _content_for("rollback-skill"))
         reference = self.skills_dir / "rollback-skill" / "references/example.md"
         monkeypatch.setattr(
             "tools.skill_manager_tool._security_scan_skill",

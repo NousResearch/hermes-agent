@@ -491,6 +491,19 @@ stage_repository() {
                 || log_warn "could not disable gc.writeCommitGraph in $INSTALL_DIR"
             git -C "$INSTALL_DIR" config fetch.writeCommitGraph false \
                 || log_warn "could not disable fetch.writeCommitGraph in $INSTALL_DIR"
+            # A treeless (tree:0) checkout from a late-September installer downloads whole
+            # directory snapshots again on every history walk (#129514). Fetch its trees once; the
+            # new filter is recorded only after that succeeds, so `hermes update` retries otherwise.
+            if [ "$(git -C "$INSTALL_DIR" config --get remote.origin.partialclonefilter)" = tree:0 ]; then
+                if run_logged --may-fail "Fetching directory history once (treeless checkout)" \
+                    git -C "$INSTALL_DIR" -c gc.auto=0 -c maintenance.auto=false fetch --refetch \
+                    --filter=blob:none origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"; then
+                    git -C "$INSTALL_DIR" config remote.origin.partialclonefilter blob:none \
+                        || log_warn "could not record the blobless filter in $INSTALL_DIR"
+                else
+                    log_warn "could not fetch the directory history; the next hermes update retries it"
+                fi
+            fi
         fi
         run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
             || fail "git fetch failed"

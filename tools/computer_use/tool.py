@@ -158,13 +158,8 @@ def _cua_permission_mode(session_id: str) -> str:
     return configured
 
 def _new_backend(permission_mode: str) -> ComputerUseBackend:
-    backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
-    if backend_name in {"cua", "cua-driver", ""}:
-        from tools.computer_use.cua_backend import CuaDriverBackend
-        return CuaDriverBackend(permission_mode=permission_mode)
-    if backend_name != "noop":
-        raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
-    return _NoopBackend()  # pragma: no cover
+    from plugins.computer_use import get_active_provider
+    return get_active_provider().create_backend(permission_mode=permission_mode)
 
 def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str) -> ComputerUseBackend:
     """Record a backend in the session caches (the empty session also mirrors it onto the ``_backend`` hook).
@@ -308,7 +303,7 @@ def _noop_stub(name: str, *params: str, result: Any = None):
     return method
 
 class _NoopBackend(ComputerUseBackend):  # pragma: no cover
-    """Test/CI stub (HERMES_COMPUTER_USE_BACKEND=noop). Records ``(name, kwargs)`` calls; returns trivial results."""
+    """Test stub (tests patch ``_new_backend`` to return it). Records ``(name, kwargs)`` calls; returns trivial results."""
 
     def __init__(self) -> None: self.calls: List[Tuple[str, Dict[str, Any]]] = []
     start = stop = lambda self: None
@@ -353,9 +348,11 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     try:
         backend = call.enter_context(_backend_for_call(session_id))
     except Exception as e:
-        return json.dumps({"error": f"computer_use backend unavailable: {e}",
-                           "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
-                                   "If a Python dependency is missing, the error above shows the exact install command."})
+        from plugins.computer_use import DEFAULT_BACKEND, configured_backend_name
+        hint = ({"hint": "If the cua-driver binary is missing, run `hermes computer-use install`. If a Python "
+                         "dependency is missing, the error above shows the exact install command."}
+                if configured_backend_name() == DEFAULT_BACKEND else {})
+        return json.dumps({"error": f"computer_use backend unavailable: {e}", **hint})
     try:
         with call:
             # Re-check under the dispatch lock: approval, backend start-up and lock waits above can take
@@ -947,17 +944,13 @@ def _route_capture_through_aux_vision(cap: CaptureResult, summary: str, *, visib
 
 # ── Availability check (used by the tool registry check_fn) ─────────────────
 def check_computer_use_requirements() -> bool:
-    """macOS/Windows/Linux + cua-driver binary (or env override). `hermes computer-use doctor` names blocked checks."""
-    if sys.platform not in ("darwin", "win32", "linux"):
-        return False
-    from tools.computer_use.cua_backend_driver import cua_driver_binary_available
-    if cua_driver_binary_available():
+    """The selected ``computer_use.backend``'s ``is_available()``. An unregistered name stays True so the call
+    surfaces the "not registered (available: ...)" error instead of the tool silently vanishing."""
+    from plugins.computer_use import get_active_provider
+    try:
+        return get_active_provider().is_available()
+    except LookupError:
         return True
-    # No host driver: the tool is still real when the desktop is placed inside a terminal backend whose image
-    # carries cua-driver (nousresearch/hermes-sandbox:desktop). Placement is config; the binary is probed lazily
-    # at first use, so this stays a cheap check_fn.
-    from tools.bot_desktop import placement
-    return placement.resolve().where == placement.TERMINAL
 
 def get_computer_use_schema() -> Dict[str, Any]:
     from tools.computer_use.schema import COMPUTER_USE_SCHEMA

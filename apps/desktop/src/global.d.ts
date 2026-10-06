@@ -1093,6 +1093,7 @@ export interface DesktopConnectionTestResult {
     | 'auth-failed'
     | 'hermes-not-found'
     | 'host-key-changed'
+    | 'interactive-auth'
     | 'timeout'
     | 'unreachable'
     | 'unsupported-platform'

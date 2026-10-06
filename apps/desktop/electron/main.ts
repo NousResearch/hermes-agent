@@ -611,7 +611,7 @@ import {
   registerUpdateHoldIpc,
   waitForPoolUpdateClearance
 } from './update-hold-wiring'
-import { describeSkippedPrewrite, markerPath, updateHandoffConflict, writeUpdateMarker } from './update-marker'
+import { describeSkippedPrewrite, readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { heldWaitMessage, holdTicker } from './update-marker-gate'
 import { updateConnectionsBeforeLocal } from './update-order'
 import {
@@ -18735,9 +18735,9 @@ function resolveHermesVersion(scope: { connectionId?: string; profile?: string }
 const checkRendererSkew = createBundleSkewChecker(
   INSTALL_STAMP,
   (args, options) => execGit(resolveGitBinary(), args, options),
-  // Sync and conservative: any marker file defers the skew warning; the async
-  // owner-liveness verdict belongs to the boot gate.
-  { isUpdating: () => updateInFlight || isQuittingForHandoff || fs.existsSync(markerPath(HERMES_HOME)) }
+  // Only a LIVE marker defers the warning: Desktop never deletes a dead one,
+  // so a leftover file would otherwise suppress it indefinitely.
+  { isUpdating: async () => updateInFlight || isQuittingForHandoff || Boolean(await readLiveUpdateMarker(HERMES_HOME)) }
 )
 
 async function detectRendererSkew() {

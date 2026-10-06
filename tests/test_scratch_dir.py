@@ -387,3 +387,34 @@ def test_prune_releases_git_worktree_registration_of_idle_entry(tmp_path):
     listing = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True,
                              text=True, stdin=subprocess.DEVNULL, check=True).stdout
     assert str(tree) not in listing and not tree.exists()
+
+
+def test_midprune_resumed_write_is_rescued(tmp_path: Path) -> None:
+    """F1 on #132401, ported from 3f72fd9c8e (#132455): a writer whose cwd is outside
+    scratch — invisible to the reap — resumes during the prune's own reap window and
+    lands a fresh file in a doomed entry. The doomed list is a candidate list, never a
+    verdict: the entry is re-validated with the same idleness walk immediately before
+    deletion, rescued, recorded in ``scratch-prune.log``, and never counted as removed.
+    Red on pre-fix code: the entry is destroyed with the fresh write inside."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "resumed-lane"
+    entry.mkdir()
+    (entry / "old-output.md").write_text("stale content\n", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    for path in (entry / "old-output.md", entry):
+        os.utime(path, (ancient, ancient))
+    fresh = entry / "resumed-work.md"
+
+    def write_during_reap(root, doomed, *args, **kwargs):
+        # The resumed writer lands its fresh write mid-prune: selection is done,
+        # the deletion loop has not started. This is the F1 window.
+        fresh.write_text("FRESH RESUMED WORK\n", encoding="utf-8")
+        return 0
+
+    with patch("hermes_constants_scratch.reap_processes_rooted_in", write_during_reap):
+        assert prune_scratch_dir(scratch) == 0  # rescued — not counted as removed
+    assert fresh.exists(), "fresh mid-prune write was destroyed"
+    assert entry.exists()
+    log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
+    assert f"rescued {str(entry)!r} " in log, log
+    assert f"removed {str(entry)!r} (" not in log, log

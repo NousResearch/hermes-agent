@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 _REAP_GRACE_SECONDS = 3.0
 # ``.git`` files (linked worktrees) are looked for this deep; lanes nest repo/tree/subtree.
 _GIT_FILE_MAX_DEPTH = 4
-# logs/scratch-prune.log: one line per entry deleted and per process signalled (#132401). Same
-# fixed rotation as tool_calls.log.
+# logs/scratch-prune.log: one line per entry deleted, per process signalled, and per
+# entry rescued or vanished mid-prune (#132401). Same fixed rotation as tool_calls.log.
 _PRUNE_LOG_MAX_BYTES = 5 * 1024 * 1024
 _PRUNE_LOG_BACKUPS = 3
 # Paths and process names go in with %r: a control character (a newline in a legal POSIX name)
@@ -245,8 +245,9 @@ def prune_idle_entries(
 ) -> int:
     """Delete top-level entries of *root* with no write anywhere in their subtree for
     *max_idle_hours*, reaping processes and worktree registrations rooted in them first.
-    Each removal and each signalled process is recorded in *log_file*. Returns the count
-    actually removed."""
+    Each removal, each signalled process and each entry rescued mid-prune (touched
+    again after selection) is recorded in *log_file*. Returns the count actually
+    removed."""
     audit = _open_prune_log(log_file)
     try:
         return _prune_idle_entries(root, max_idle_hours, skip_names, audit)
@@ -276,10 +277,28 @@ def _prune_idle_entries(
     repos: set[str] = set()
     removed = 0
     for entry in doomed:
+        # Worktree scan first: a registration whose tree an earlier pass (or hand)
+        # removed is stale even in a rescued entry, and the re-check below sits as
+        # close to the delete as the loop allows.
+        if entry.is_dir() and not entry.is_symlink():
+            repos |= _linked_worktree_repos(entry)
+        # Last-moment re-validation (#132401 C1/F1): ``doomed`` is a snapshot from
+        # before the reap ran, and a writer whose cwd is outside scratch — invisible
+        # to the reap — can land fresh work in that window. The snapshot is a
+        # candidate list, never a verdict: anything touched since selection is
+        # rescued here, not deleted; an unreadable entry is kept, as in selection.
+        if subtree_touched_since(entry, cutoff):
+            if os.path.lexists(entry):
+                audit.info(
+                    "scratch prune: rescued %r — touched since selection, kept",
+                    os.fspath(entry),
+                )
+            else:
+                audit.info("scratch prune: entry %r vanished since selection", os.fspath(entry))
+            continue
         size = _tree_bytes(entry)
         try:
             if entry.is_dir() and not entry.is_symlink():
-                repos |= _linked_worktree_repos(entry)
                 shutil.rmtree(entry, ignore_errors=True)
             else:
                 entry.unlink()

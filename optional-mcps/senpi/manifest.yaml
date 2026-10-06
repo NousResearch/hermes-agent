@@ -26,8 +26,10 @@ auth:
 
 # Seven tools, all enabled. read_senpi_guide is read-only and meant to be
 # called first in a conversation (sessions, approvals, where money moves).
-# ask_agent, resolve_approval and abort_run carry destructiveHint, so Hermes's
-# normal tool-approval flow applies to them.
+# ask_agent, resolve_approval and abort_run carry destructiveHint for clients
+# that read it. Hermes's own pre-call gate engages only when the user sets
+# `trust: untrusted` on this server; the trade gate itself is Senpi's,
+# server-side, and is answered through resolve_approval.
 tools:
   default_enabled:
     - read_senpi_guide
@@ -62,7 +64,10 @@ post_install: |
   You need a Senpi account (https://senpi.ai). Market research works without
   depositing funds.
   CAUTION: through ask_agent your Senpi agent can open or close positions on
-  Hyperliquid in your own account. Every such action pauses and returns
-  status "needs_approval"; it proceeds only if you answer through
-  resolve_approval (allow-once or deny), and an unanswered approval expires
-  after ten minutes. No tool here can withdraw funds from your Senpi account.
+  Hyperliquid in your own account. Senpi's server-side gate pauses every such
+  action and returns status "needs_approval"; it proceeds only if you answer
+  through resolve_approval (allow-once or deny), and an unanswered approval
+  expires after ten minutes. Hermes itself does not ask before ask_agent
+  unless you set `trust: untrusted` for senpi in config.yaml; set it if you
+  want a second prompt on your side. No tool here can withdraw funds from
+  your Senpi account.

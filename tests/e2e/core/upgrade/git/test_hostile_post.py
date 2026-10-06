@@ -551,12 +551,16 @@ def test_sticky_profile_update_logs_and_receipts_land_in_the_root_home(w):
         assert cp.returncode == 0, f"the sticky-profile update failed:\n{diag}"
         # The update's receipts never follow the sticky profile: the root dir is what the Desktop
         # and the hand-off scripts read. pm's own sync receipts stay where pm writes them (the
-        # active home; pm is not the updater's), and pm's reader under the profile still finds them.
+        # active home; pm is not the updater's). pm's reader shows the newest receipt of any kind,
+        # as when both shared one folder: the updater finalizes after pm's sync, so that is this
+        # run's update receipt, mirrored into the profile store pm reads.
         assert not [n for n in prof_after - prof_before if n.startswith("update_")], \
             f"the update wrote update receipts into the profile home {prof_receipts}:\n{diag}"
+        assert [n for n in prof_after - prof_before if n.startswith("pm_") and "-sync-" in n], \
+            f"pm's sync receipt for this update is missing from the profile home {prof_receipts}:\n{diag}"
         pm_cp = w.sb.cli("pm", "status", timeout=300)
-        assert pm_cp.returncode == 0 and json.loads(pm_cp.stdout).get("kind") == "sync", \
-            f"`hermes pm status` under the profile does not show pm's own receipt:\n{H.describe(pm_cp)}\n{diag}"
+        assert pm_cp.returncode == 0 and json.loads(pm_cp.stdout).get("update_id") == rec.get("update_id"), \
+            f"`hermes pm status` under the profile does not show this run's newest receipt:\n{H.describe(pm_cp)}\n{diag}"
         assert log1 > log0, f"the root update.log did not grow:\n{diag}"
         assert rec.get("update_id") != prev.get("update_id") and rec.get("outcome") == "success", \
             f"root latest.json is not this run's success:\n{diag}"

@@ -1078,6 +1078,7 @@ Key tables in `state.db`:
 - `sessions.retention_days` must be a whole number of days `>= 0`. A negative value (or a missing one) is rejected: startup maintenance logs a warning naming the allowed range and skips the sweep instead of treating the future cutoff as "everything" — `sessions.auto_prune: false` is the switch that disables pruning
 - After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space only when **both** gates pass: at least `sessions.min_vacuum_interval_days` (default 30) have elapsed since the last successful `VACUUM`, **and** more than 25% of the file's pages are reclaimable (`PRAGMA freelist_count / page_count`). A dense database never pays for a full rewrite to reclaim a few MB (SQLite does not shrink the file on plain DELETE)
 - Pruning runs at most once per `sessions.min_interval_hours` (default 24); the last-run timestamp is tracked inside `state.db` itself so it's shared across every Hermes process in the same `HERMES_HOME`
+- Write patience is tunable: `sessions.transcript_write_patience_s` (default 60) is how long a turn's transcript append waits for `state.db`'s single SQLite write lock, and `sessions.write_patience_s` (default 20) is the shorter budget every routine write gets. Raise them on a large or heavily contended store where a sibling's checkpoint or `VACUUM` legitimately holds the lock for minutes — a wait preserves the turn's already-done model work, whereas failing and retrying re-runs (and re-pays for) the whole turn. A non-positive or unparseable value is ignored and the default stands.
 
 Without pruning, `state.db` grows without bound — multi-GB files within weeks were reported on gateway + cron installs. If you would rather keep every ended session forever (the pre-#54189 behavior), turn it off in `~/.hermes/config.yaml`:
 
@@ -1088,6 +1089,8 @@ sessions:
   vacuum_after_prune: true  # reclaim disk space after a pruning sweep
   min_vacuum_interval_days: 30 # don't rewrite the DB more often than this
   min_interval_hours: 24    # don't re-run the sweep more often than this
+  transcript_write_patience_s: 60  # seconds a turn's transcript append waits for the write lock
+  write_patience_s: 20      # seconds a routine write waits for the write lock
 ```
 
 Existing installs that already set any of these keys explicitly keep their

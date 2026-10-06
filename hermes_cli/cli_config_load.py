@@ -177,6 +177,11 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
             os.environ["HERMES_CJK_FTS"] = str(sessions_config["cjk_fts"])
         if "search_slow_ms" in sessions_config:
             os.environ["HERMES_SEARCH_SLOW_MS"] = str(sessions_config["search_slow_ms"])
+        if "write_patience_s" in sessions_config:
+            os.environ["HERMES_WRITE_PATIENCE_S"] = str(sessions_config["write_patience_s"])
+        if "transcript_write_patience_s" in sessions_config:
+            os.environ["HERMES_TRANSCRIPT_WRITE_PATIENCE_S"] = str(
+                sessions_config["transcript_write_patience_s"])
 
 
 def _cli_config_defaults():

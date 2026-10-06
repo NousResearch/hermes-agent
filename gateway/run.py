@@ -1986,7 +1986,10 @@ _AGENT_ENV_BRIDGE = {
     "gateway_startup_restore_drain_timeout": "HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT",
     "gateway_startup_warmup_timeout": "HERMES_STARTUP_WARMUP_TIMEOUT"}
 # config-authoritative knobs for the session-search index (env stays the cross-process carrier).
-_SESSIONS_ENV_BRIDGE = {"cjk_fts": "HERMES_CJK_FTS", "search_slow_ms": "HERMES_SEARCH_SLOW_MS"}
+_SESSIONS_ENV_BRIDGE = {
+    "cjk_fts": "HERMES_CJK_FTS", "search_slow_ms": "HERMES_SEARCH_SLOW_MS",
+    "write_patience_s": "HERMES_WRITE_PATIENCE_S",
+    "transcript_write_patience_s": "HERMES_TRANSCRIPT_WRITE_PATIENCE_S"}
 _DISPLAY_ENV_BRIDGE = {
     "busy_input_mode": "HERMES_GATEWAY_BUSY_INPUT_MODE",
     "busy_text_mode": "HERMES_GATEWAY_BUSY_TEXT_MODE",

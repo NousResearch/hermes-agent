@@ -2300,6 +2300,15 @@ DEFAULT_CONFIG = {
         # Minimum hours between auto-maintenance runs (tracked in state.db state_meta, shared across
         # processes).
         "min_interval_hours": 24,
+        # Write-contention patience (seconds): how long a writer waits for state.db's single SQLite
+        # write lock before giving up and failing the write. Transcript appends abort the turn, so
+        # they get the long budget; routine writes the shorter one. Raise these on a large or
+        # contended store where a sibling's checkpoint/VACUUM legitimately holds the lock for minutes
+        # (waiting preserves the turn's already-done model work; failing and retrying re-runs and
+        # re-pays for the whole turn). A non-positive or unparseable value is ignored. Bridged to
+        # HERMES_TRANSCRIPT_WRITE_PATIENCE_S / HERMES_WRITE_PATIENCE_S (hermes_state reads them).
+        "transcript_write_patience_s": 60,
+        "write_patience_s": 20,
 
         # Notice about the compact FTS layout (reclaims ~60%+ of state.db). OPT-IN: legacy indexes
         # stay until `hermes sessions optimize-storage` runs, since the rebuild is disk-heavy on

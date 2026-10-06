@@ -609,6 +609,13 @@ from hermes_cli.personality import (  # noqa: E402,F401
     render_personality_prompt,
     resolve_ephemeral_system_prompt as resolve_ephemeral_system_prompt_from_config)
 
+# ---- Config schema-version stamp ----  (moved into config_version_stamp; re-exported here
+# because callers and tests import these from hermes_cli.config)
+
+from hermes_cli.config_version_stamp import (  # noqa: E402,F401
+    check_config_version, read_config_version_stamp)
+
+
 # ---- Config Migration System ----
 
 # Env vars introduced per config version; migration only mentions vars new since the user's
@@ -894,6 +901,8 @@ def _format_config_get_value(value, *, as_json: bool) -> str:
 
 def get_missing_config_fields() -> List[Dict[str, Any]]:
     """Check which config fields are missing or outdated (recursive)."""
+    from hermes_cli.moa_config import skip_deep_merge
+
     missing = []
 
     def _check(defaults: dict, current: dict, prefix: str = ""):
@@ -904,11 +913,8 @@ def get_missing_config_fields() -> List[Dict[str, Any]]:
             if key not in current:
                 missing.append({"key": full_key, "default": default_value,
                                 "description": f"New config option: {full_key}"})
-            elif (
-                isinstance(default_value, dict)
-                and isinstance(current.get(key), dict)
-                and not (prefix == "moa" and key == "presets")
-            ):
+            elif (isinstance(default_value, dict) and isinstance(current.get(key), dict)
+                    and not skip_deep_merge(prefix, key)):
                 _check(default_value, current[key], full_key)
 
     _check(DEFAULT_CONFIG, load_config())
@@ -934,67 +940,6 @@ def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
     config = load_config()
     values = ((var, cfg_get(config, *f"{SKILL_CONFIG_PREFIX}.{var['key']}".split("."))) for var in all_vars)
     return [var for var, v in values if v is None or (isinstance(v, str) and not v.strip())]
-
-
-def _coerce_config_version(value: Any) -> int:
-    """Return a safe integer config version, treating invalid values as legacy."""
-    if isinstance(value, bool):
-        return 0
-    try:
-        version = int(value)
-    except (TypeError, ValueError):
-        return 0
-    return max(version, 0)
-
-
-def _read_config_version_stamp(*, raise_on_parse_error: bool = False) -> Tuple[Optional[int], int]:
-    """Single raw read behind ``check_config_version()``: ``(stamp, latest_version)`` where
-    *stamp* is ``None`` when config.yaml parsed but carries no ``_config_version`` key (a
-    never-stamped current-schema file, not an ancient install — ``migrate_config()`` gives it only
-    the legacy-key steps). A missing file, or malformed YAML under a tolerant caller, reads as
-    ``latest`` exactly as ``check_config_version()`` always reported it."""
-    latest = _coerce_config_version(DEFAULT_CONFIG.get("_config_version", 1)) or 1
-    config_path = get_config_path()
-    if not config_path.exists():
-        return latest, latest
-
-    try:
-        with open(config_path, encoding="utf-8-sig") as f:
-            config = fast_safe_load(f)
-    except Exception as e:
-        _warn_config_parse_failure(config_path, e)
-        if raise_on_parse_error:
-            raise InvalidUserConfigError(
-                f"Cannot inspect {config_path}: config.yaml is not valid YAML ({e})"
-            ) from e
-        return latest, latest
-
-    if config is None:
-        config = {}  # empty file / bare document: valid first-run state
-    if not isinstance(config, dict):
-        # A list/scalar root parses fine but is just as unusable as broken YAML: save_config()
-        # would refuse it later, after .env was already rewritten. Strict callers see it up front.
-        if raise_on_parse_error:
-            raise InvalidUserConfigError(
-                f"Cannot inspect {config_path}: config.yaml top-level value must be "
-                f"a mapping, got {type(config).__name__}"
-            )
-        config = {}
-    if "_config_version" not in config:
-        return None, latest
-    return _coerce_config_version(config.get("_config_version")), latest
-
-
-def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, int]:
-    """Return ``(current_version, latest_version)`` from the raw on-disk config.
-    Reads the raw file rather than ``load_config()``: the deep-merge would make a file lacking
-    ``_config_version`` inherit the latest version, hiding that the schema was never migrated.
-    Invalid YAML gets a parse warning, not an automatic schema rewrite. Tolerant runtime status
-    callers keep the historical latest/latest fallback for malformed YAML; mutation and explicit
-    validation paths set ``raise_on_parse_error`` so a parse failure or a non-mapping root cannot
-    be mistaken for an up-to-date config. A file with no version key reads as 0."""
-    stamp, latest = _read_config_version_stamp(raise_on_parse_error=raise_on_parse_error)
-    return (0 if stamp is None else stamp), latest
 
 
 # ---- Config structure validation ----
@@ -1352,7 +1297,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     # Validate config.yaml before any migration side effect: sanitize_env_file() rewrites .env,
     # which must not happen when the migration will be refused for malformed YAML.
-    stamp, latest_ver = _read_config_version_stamp(raise_on_parse_error=True)
+    stamp, latest_ver = read_config_version_stamp(raise_on_parse_error=True)
     current_ver = 0 if stamp is None else stamp
 
     try:

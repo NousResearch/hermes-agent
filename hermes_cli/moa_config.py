@@ -291,6 +291,16 @@ def resolve_moa_preset(config: Any, name: str | None = None) -> dict[str, Any]:
     return deepcopy(preset)
 
 
+def skip_deep_merge(prefix: str, key: str) -> bool:
+    """True when the generic missing-config recursion must NOT descend into this section key.
+
+    ``moa.presets`` is a named map; a present-but-partial user map is authoritative
+    (see :func:`apply_user_moa_presets`), so the new-key probe must not imply a
+    union into it.
+    """
+    return prefix == "moa" and key == "presets"
+
+
 def apply_user_moa_presets(merged: dict[str, Any], raw: Any) -> None:
     """Treat an explicit user MoA preset map as authoritative.
 

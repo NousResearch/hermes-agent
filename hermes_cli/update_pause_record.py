@@ -209,12 +209,19 @@ def stamp_tree(token: dict, root: Path | None = None) -> dict:
     root = root or install_root()
     pause_id = token.setdefault("pause_id", uuid.uuid4().hex)
     baselines = token.setdefault("baselines", [])
-    if (root / ".git").exists() and not any(b.get("pause_id") == pause_id for b in baselines):
-        dirty = tracked_changes(root)
-        # The bytes, not just the names: an autostashed edit and git's half-written bytes share a path.
-        baselines.append({"pause_id": pause_id, "pre_sha": head_sha(root), "dirty_at_pause": dirty,
-                          "dirty_digests": {path: _digest(root / path) for path in dirty or []}})
+    if not any(b.get("pause_id") == pause_id for b in baselines) and (state := tree_state(root)):
+        baselines.append({"pause_id": pause_id, **state})
     return token
+
+
+def tree_state(root: Path) -> dict | None:
+    """HEAD, the tracked changes and their bytes now; ``None`` when *root* is not a git checkout."""
+    if not (root / ".git").exists():
+        return None
+    dirty = tracked_changes(root)
+    # The bytes, not just the names: an autostashed edit and git's half-written bytes share a path.
+    return {"pre_sha": head_sha(root), "dirty_at_pause": dirty,
+            "dirty_digests": {path: _digest(root / path) for path in dirty or []}}
 
 
 def _digest(path: Path) -> str | None:
@@ -291,9 +298,36 @@ def _half_written(root: Path, changes: list[str], at_head: list[dict]) -> list[s
         unexpected = sorted(path for path in changes if not _seen_at_pause(root, baseline, path))
         if not unexpected:
             continue
-        targets = baseline.get("move_targets")
-        writable = _paths_between(root, targets) if targets else _paths_a_move_could_write(root)
-        torn = unexpected if writable is None else [path for path in unexpected if path in writable]
+        # move_paths: files a step rewrote toward this HEAD (stash push/apply, reset, checkout --).
+        targets, paths = baseline.get("move_targets"), baseline.get("move_paths")
+        writable = _paths_between(root, targets) if targets else set() if paths else _paths_a_move_could_write(root)
+        torn = unexpected if writable is None else [path for path in unexpected if path in {*writable, *(paths or ())}]
+        if torn:
+            return torn
+    return []
+
+
+def torn_by_move(root: Path, found: dict, changes: list[str] | None) -> list[str] | None:
+    """Paths a move from *found*'s HEAD to the current one wrote that do not hold the current
+    commit's bytes: tracked changes on them that were not already there, byte for byte, when the
+    move started. ``None`` when git cannot say."""
+    writable = _paths_between(root, [found["pre_sha"]]) if found.get("pre_sha") else None
+    if writable is None or changes is None:
+        return None
+    return sorted(path for path in changes if path in writable and not _seen_at_pause(root, found, path))
+
+
+def _landed_torn(root: Path, head: str, changes: list[str], landed: list[dict]) -> list[str]:
+    """Tracked changes at a HEAD a recorded move reached that are not that commit's bytes. git can
+    move HEAD past a file it failed to write (``checkout`` exits 0 after "unable to unlink old"),
+    so a moved HEAD vouches for nothing by itself. The verdict the updater took the moment git
+    returned stands while those paths stay changed: a later dependency sync or stash restore
+    rewriting a file is not the move's doing. A move the updater died before judging is judged now."""
+    for baseline in landed:
+        verdict = (baseline.get("landed") or {}).get(head)
+        if verdict is None:
+            verdict = torn_by_move(root, baseline, changes)
+        torn = list(changes) if verdict is None else [path for path in verdict if path in changes]
         if torn:
             return torn
     return []
@@ -332,18 +366,23 @@ def tree_is_whole(token: dict, root: Path | None = None) -> tuple[bool, str]:
         head = head_sha(root)
         if head is None:
             return False, "the checkout HEAD is unreadable"
-        at_head = [b for b in token.get("baselines") or [] if b.get("pre_sha") == head]
-        if at_head:
-            # HEAD never moved for these pauses: a tracked change one of them did not see is git's
-            # half-written checkout. Each is judged on its own set — a killed run that moved HEAD
-            # elsewhere vouches for nothing here, and this run's set never certifies an older one's.
+        baselines = token.get("baselines") or []
+        at_head = [b for b in baselines if b.get("pre_sha") == head]
+        # HEAD reached by a move these pauses recorded: judged against that commit's tree.
+        landed = [b for b in baselines if b.get("pre_sha") != head
+                  and (head in (b.get("landed") or {}) or head in (b.get("move_targets") or []))]
+        if at_head or landed:
+            # HEAD never moved for the at_head pauses: a tracked change one of them did not see is
+            # git's half-written checkout. Each is judged on its own set — a killed run that moved
+            # HEAD elsewhere vouches for nothing here, and this run's set never certifies an older one's.
             changes = tracked_changes(root)
             if changes is None:
                 return False, "git cannot read the checkout state"
-            torn = _half_written(root, changes, at_head)
+            torn = _half_written(root, changes, at_head) or _landed_torn(root, head, changes, landed)
             if torn:
                 return False, f"the checkout has {len(torn)} file(s) git left half-written (e.g. {torn[0]})"
-            return True, ""
+            if at_head:
+                return True, ""
     if _deps_hold_resume(root):
         return False, "dependencies are not current for the updated code yet"
     return True, ""

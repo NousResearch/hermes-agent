@@ -967,54 +967,59 @@ def _resolved_commit(git_cmd, ref: str) -> str:
 
 
 @contextmanager
-def _checkout_move(token, *targets):
-    """Run one checkout-writing git step (switch, merge, reset, upstream sync, rollback) with the
-    paused gateways' tree gate bound to it BEFORE git writes a file: the commit(s) it can move to,
-    on a baseline taken at the HEAD it starts from. Without that, a step git leaves half-written at
-    an unmoved HEAD is judged against whatever refs a later fetch left, or against no baseline at
-    all once an earlier step moved HEAD. A failed record write raises: the step must not run.
+def _checkout_move(token, *targets, paths=()):
+    """Run one checkout-writing git step (switch, merge, reset, upstream sync, rollback, stash) with
+    the paused gateways' tree gate bound to it BEFORE git writes a file: the commit(s) it can move
+    to and the tracked *paths* it rewrites in place (stash push/apply, ``reset --hard``,
+    ``checkout -- <paths>``), on a baseline taken at the HEAD it starts from. Without that, a step
+    git leaves half-written at an unmoved HEAD is judged against whatever refs a later fetch left,
+    or against no baseline at all once an earlier step moved HEAD. A failed record write raises:
+    the step must not run.
 
     The first step from the pause's own HEAD extends the pause's baseline (it knows the edits that
-    were already there). A later step gets a baseline of its own, retired once git returns with
-    HEAD moved or the tree exactly as the step found it, so a clean refusal never holds the set."""
+    were already there). A later step gets a baseline of its own, retired once git returns with the
+    tree whole: HEAD moved and every file the move wrote holds the new commit, the tree exactly as
+    the step found it, or the step reported ``whole`` on the dict this yields (a stash restore that
+    applied cleanly changes the tree by design). A move is judged the moment git returns (see
+    ``_settle_checkout_move``)."""
+    step: dict = {}
     targets = sorted({t for t in targets if t})
     pause_id = (token or {}).get("pause_id")
-    if not pause_id or not targets:
-        yield
+    root = _pause_record.install_root() if pause_id and (targets or paths) else None
+    found = _pause_record.tree_state(root) if root else None
+    if found is None:  # nothing paused, nothing bound, or not a git checkout: no tree gate to bind
+        yield step
         return
-    root = _pause_record.install_root()
     baselines = token.setdefault("baselines", [])
-    head = _pause_record.head_sha(root)
-    if any(b.get("pause_id") == pause_id and b.get("pre_sha") == head for b in baselines):
-        for target in targets:
-            _pause_record.mark_move(token, target)
-        yield
-        return
-    # stamp_tree on a view sharing *token*'s list: the same HEAD + dirty-digest baseline, keyed per move.
-    move_id = f"{pause_id}@{head}"
-    _pause_record.stamp_tree({"pause_id": move_id, "baselines": baselines}, root)
-    baseline = next((b for b in baselines if b.get("pause_id") == move_id), None)
-    if baseline is None:  # not a git checkout: no tree gate to bind
-        yield
-        return
-    baseline["move_targets"] = sorted({*baseline.get("move_targets", []), *targets})
-    found = {key: baseline.get(key) for key in ("pre_sha", "dirty_at_pause", "dirty_digests")}
+    move_id = f"{pause_id}@{found['pre_sha']}"
+    baseline = next((b for b in baselines if b.get("pre_sha") == found["pre_sha"]
+                     and b.get("pause_id") in (pause_id, move_id)), None)
+    if baseline is None:
+        baseline = {"pause_id": move_id, **found}
+        baselines.append(baseline)
+    for key, bound in (("move_targets", targets), ("move_paths", paths)):
+        if bound:
+            baseline[key] = sorted({*baseline.get(key, []), *bound})
     _pause_record.write({**token, "resume_needed": True})
     try:
-        yield
-    except Exception:
-        _settle_checkout_move(token, move_id, found, root)
-        raise
-    _settle_checkout_move(token, move_id, found, root)
+        yield step
+    finally:
+        _settle_checkout_move(token, baseline, found, root, step)
 
 
-def _settle_checkout_move(token: dict, move_id: str, found: dict, root) -> None:
-    """Retire a returned step's baseline when git left nothing it could have torn: HEAD moved on,
-    or HEAD, dirty paths and their bytes are exactly as the step found them."""
-    now = _pause_record.stamp_tree({"pause_id": move_id, "baselines": []}, root)["baselines"][0]
-    if now["pre_sha"] != found["pre_sha"] or all(now.get(key) == found[key] for key in found):
-        token["baselines"] = [b for b in token["baselines"] if b.get("pause_id") != move_id]
-        _pause_record.write({**token, "resume_needed": True})
+def _settle_checkout_move(token: dict, baseline: dict, found: dict, root, step: dict) -> None:
+    """Record what the returned step left. A moved HEAD gets its verdict now: git can move HEAD
+    past a file it failed to write, and only now are the move's paths untouched by later steps
+    (dependency syncs, stash restores). A step's own baseline is retired when the tree is whole."""
+    now = _pause_record.tree_state(root)
+    moved = now["pre_sha"] != found["pre_sha"]
+    torn = _pause_record.torn_by_move(root, found, now["dirty_at_pause"]) if moved else None
+    if moved and torn is not None:  # unknown stays unjudged: the gate judges it at resume time
+        baseline.setdefault("landed", {})[now["pre_sha"]] = torn
+    whole = torn == [] if moved else step.get("whole") or all(now[key] == found[key] for key in found)
+    if baseline["pause_id"] != token["pause_id"] and whole:
+        token["baselines"] = [b for b in token["baselines"] if b is not baseline]
+    _pause_record.write({**token, "resume_needed": True})
 
 
 def _move_checkout_to(git_cmd, branch, merge_ref, pre_pull_sha) -> None:

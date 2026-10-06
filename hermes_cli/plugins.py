@@ -130,7 +130,7 @@ VALID_HOOKS: Set[str] = {
     # Run-all-then-pick-first (see get_plugin_error_classification). Privacy: error_message/
     # error_body may be unredacted.
     "transform_api_error_classification", "on_session_start", "on_session_end",
-    "on_session_finalize", "on_session_reset",
+    "on_session_finalize", "on_session_reset", "pre_fallback_activate",  # veto a fallback switch: agent/fallback_gate.py
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
@@ -205,7 +205,7 @@ VALID_HOOKS: Set[str] = {
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification"}
+SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification", "pre_fallback_activate"}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()

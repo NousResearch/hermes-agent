@@ -467,6 +467,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_stream_end` | Observer | Dispatched when a streaming response finishes or errors, after the stream closes; return ignored. | `final_text`, `finished`, `error`, `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Full assembled response text; error text may include provider data. |
 | `on_interim_message` | Observer | Dispatched when a mid-loop assistant message is surfaced before the final answer (streaming or non-streaming); return ignored. | `text`, `already_streamed`, `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Full interim assistant text. |
 | `transform_api_error_classification` | Transform | On each failed provider attempt, at the top of the built-in classifier; all callbacks run, then the first dict with a valid `reason` wins (run-all-then-pick-first), and skipped valid results log a runtime warning. Python plugins only. | `provider`, `model`, `status_code`, `error_type`, `error_code`, `error_message`, `error_body`, `error`, `approx_tokens`, `context_length`, `num_messages` | `error_message` and `error_body` may contain raw provider/user data. |
+| [`pre_fallback_activate`](#pre_fallback_activate) | Directive/control | Before every automatic switch onto a `fallback_providers` entry — mid-turn and at resolution time; the first `{"action": "block"}` keeps the primary. Runs on the caller thread, not timeout-bounded; fail-open on errors. Python plugins only. | `stage`, `session_id`, `parent_session_id`, `platform`, `job_id`, `from_provider`, `from_model`, `to_provider`, `to_model`, `reason` | Identifiers and routing metadata only. |
 | `on_session_start` | Observer | First turn of a new session; return ignored. | `session_id`, `model`, `platform` | Identifiers and routing metadata only. |
 | `on_session_end` | Observer | Canonically at each turn finalization; CLI/TUI exits have additional reduced legacy shapes. Return ignored. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; exit paths may add `reason`/`api_request_id` and omit fields. | IDs, model/platform, and outcome; canonical payload has no message body. |
 | `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
@@ -899,6 +900,28 @@ return {"reason": "model_not_found",   # required: a FailoverReason name
 Dispatch is run-all-then-pick-first: every callback runs, failures are isolated, and the first valid result in registration order wins (valid-but-losing results log a runtime warning). Invalid dicts and unknown reasons are skipped, so a broken plugin can never break classification.
 
 **Privacy:** `error_message` and `error_body` may carry unredacted provider data. **Python plugins only** — shell registrations are refused at config parse with a warning.
+
+---
+
+### `pre_fallback_activate`
+
+Fires before **every** automatic switch onto a [`fallback_providers`](./fallback-providers.md) entry: the mid-turn switch (`stage="turn"`, from `try_activate_fallback`) and the resolution-time walkers that pick a fallback when the primary's credentials or quota are unusable before the first request (`stage="startup"` — CLI startup, Desktop/TUI agent build, gateway/one-shot runtime resolution, cron job resolution, init-time client construction). It is the single place to put a consent or policy gate on fallback — for example "only sessions I approved may fall back; ask me otherwise".
+
+Callbacks receive `stage`, `session_id` (the bound session when the caller has none), `parent_session_id`, `platform`, `job_id` (cron resolution only), `from_provider`, `from_model`, `to_provider`, `to_model` and `reason` (a short human-readable failure label). Return `{"action": "block", "message": "..."}` to keep the session on its primary — the primary's own error then surfaces as usual and the message is logged (mid-turn it is also shown with the turn's failure status). Anything else allows the switch. The first valid block wins.
+
+A mid-turn veto ends fallback for the rest of that turn (the chain index is parked at its end), so later recovery paths in the same turn neither ask again nor walk past the veto; the next turn restores the primary and asks again if it fails again.
+
+The hook runs on the caller thread and is **not** timeout-bounded, so a callback may block on a human decision (for example through the approval gate). Dispatch is fail-open: no plugin, a raising callback, or a malformed result never disables fallback — a policy plugin that must fail closed catches its own errors and returns a block directive. **Python plugins only** — shell registrations are refused.
+
+```python
+def gate(session_id, to_provider, to_model, **kwargs):
+    if session_id in ALLOWED_SESSIONS:
+        return None
+    return {"action": "block", "message": f"fallback to {to_model} needs approval"}
+
+def register(ctx):
+    ctx.register_hook("pre_fallback_activate", gate)
+```
 
 ---
 

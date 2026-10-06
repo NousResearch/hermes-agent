@@ -1,14 +1,14 @@
 name: alans-way
 repo: https://github.com/capthvnsen/alans-way-agents
-sha: 55a320485b57e8f575e4e5b7c0c086dd28cce004
+sha: b14dec5e4fcdc810326480c3c4428709058ec7b5
 subdir: alans-way
-version: "0.4.1"
+version: "0.4.2"
 title: "Alan's Way"
 description: Proactive primary bot for a Hermes gateway running on a remote Linux machine. After install, the workspace-setup skill walks that agent through a separate Mac app and Tailscale setup.
 maintainer: capthvnsen
 tier: community
 category: automation
-requires_hermes: ">=0.21"
+requires_hermes: ">=0.21.5"
 docs_url: https://github.com/capthvnsen/alans-way
 readme: true
 platforms: [linux]

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { updateDebt, type UpdateDebtReceipt } from "@hermes/shared";
 import { api } from "@/lib/api";
 import type { ActionStatusResponse } from "@/lib/api";
 import { Toast } from "@nous-research/ui/ui/components/toast";
@@ -8,13 +9,6 @@ import {
   SystemActionsContext,
   type SystemAction,
 } from "./system-actions-context";
-
-// hermes-update status only: the receipt summary's owed post-commit steps (a committed update is
-// exit 0 even while they are owed).
-interface ReceiptDebt {
-  followups?: { step: string; reason: string }[];
-  user_action?: { step: string; reason: string } | null;
-}
 
 const ACTION_NAMES: Record<SystemAction, string> = {
   restart: "gateway-restart",
@@ -32,6 +26,9 @@ export function SystemActionsProvider({
     null,
   );
   const [toast, setToast] = useState<ToastState | null>(null);
+  // The id the update POST returned: the status route attaches the latest receipt when this
+  // action has none, so only a receipt carrying this id may name owed work.
+  const [updateActionId, setUpdateActionId] = useState<string | undefined>();
   const { t } = useI18n();
 
   useEffect(() => {
@@ -58,21 +55,30 @@ export function SystemActionsProvider({
               ? sharedGatewayProfiles(await api.getStatus().catch(() => null))
               : null;
           if (cancelled) return;
-          // C3: exit 0 with owed post-commit steps is still a success, but name what is owed.
-          const receipt = (resp as ActionStatusResponse & { receipt?: ReceiptDebt }).receipt;
+          // C3: a committed update owes its post-commit steps whatever the exit (a partial run
+          // exits 1 after record_user_action): name them on success and on failure. Follow-ups get
+          // the rerun remedy; a user action is the producer's own instruction, verbatim (a rerun
+          // does not restore a parked stash).
+          const debt =
+            activeAction === "update"
+              ? updateDebt((resp as { receipt?: UpdateDebtReceipt }).receipt, updateActionId)
+              : null;
           const owed = [
-            ...(receipt?.followups ?? []),
-            ...(receipt?.user_action ? [receipt.user_action] : []),
-          ].map((step) => step.step);
+            debt?.followups && `${t.status.actionFinishedOwed}: ${debt.followups}`,
+            debt?.userAction,
+          ]
+            .filter(Boolean)
+            .join(". ");
+          const verdict = ok
+            ? shared
+              ? sharedGatewayRestartedMessage(shared.length)
+              : owed
+                ? ""
+                : t.status.actionFinished
+            : `${t.status.actionFailed} (exit ${resp.exit_code ?? "?"})`;
           setToast({
-            type: ok && !owed.length ? "success" : "error",
-            message: ok
-              ? shared
-                ? sharedGatewayRestartedMessage(shared.length)
-                : owed.length
-                  ? `${t.status.actionFinishedOwed}: ${owed.join(", ")}`
-                  : t.status.actionFinished
-              : `${t.status.actionFailed} (exit ${resp.exit_code ?? "?"})`,
+            type: ok && !owed ? "success" : "error",
+            message: [verdict, owed].filter(Boolean).join(" — "),
           });
           return;
         }
@@ -86,7 +92,13 @@ export function SystemActionsProvider({
     return () => {
       cancelled = true;
     };
-  }, [activeAction, t.status.actionFinished, t.status.actionFinishedOwed, t.status.actionFailed]);
+  }, [
+    activeAction,
+    updateActionId,
+    t.status.actionFinished,
+    t.status.actionFinishedOwed,
+    t.status.actionFailed,
+  ]);
 
   const runAction = useCallback(
     async (action: SystemAction) => {
@@ -113,6 +125,7 @@ export function SystemActionsProvider({
             });
             return;
           }
+          setUpdateActionId((resp as { action_id?: string }).action_id);
           setActiveAction(action);
         }
       } catch (err) {

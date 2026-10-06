@@ -1,6 +1,7 @@
 """MCP Server Management CLI — ``hermes mcp`` subcommand."""
 
 import asyncio
+import concurrent.futures
 import logging
 import os
 import re
@@ -510,7 +511,23 @@ def _probe_single_server(
             await server.shutdown()
 
     try:
-        _run_on_mcp_loop(_probe(), timeout=connect_timeout + 10)
+        for attempt in (1, 2):
+            try:
+                _run_on_mcp_loop(_probe(), timeout=connect_timeout + 10)
+                break
+            except concurrent.futures.CancelledError:
+                # A reload (``reload.mcp`` -> ``shutdown_mcp_servers()``) stopped the shared loop and
+                # cancelled every task on it, this probe included: the Desktop tests a server it just
+                # installed while the same install reloads MCP. Not this server's failure, so retry
+                # once on the fresh loop, unless that would open a second OAuth consent. Left alone,
+                # the empty CancelledError reached asyncio.to_thread as a task cancellation and the
+                # dashboard answered 500 "No response returned".
+                if attempt == 2 or (config.get("auth") == "oauth" and not _oauth_tokens_present(name)):
+                    raise RuntimeError(
+                        f"Probing MCP server '{name}' was interrupted by an MCP reload; try again"
+                    ) from None
+                tools_found.clear()
+                _ensure_mcp_loop()
     except BaseException as exc:
         raise _redact_probe_exception(exc) from None
     finally:

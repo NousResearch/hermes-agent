@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { formatCreateTime, lockHolderIsLiveSync, processCreateTimeSync } from './update-marker'
+import { formatCreateTime, lockHolderIsLiveSync, ownCreateTimeSync, processCreateTimeSync } from './update-marker'
 
 const INSTALLATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -52,13 +52,35 @@ function waitForRepair() {
  */
 const EMPTY_LOCK_RECLAIM_POLLS = 20
 
+type RepairLockHolderJudge = (pid: number, recordedCt: number | null, writtenAtS: number) => boolean
+
+/**
+ * The repair lock holder's liveness for ONE wait: liveness is re-read every
+ * 25 ms poll, but each pid's creation time is probed once — on macOS a `ps`,
+ * on Windows a PowerShell of up to 15 s, both blocking the main thread at
+ * module init. Scoped to the wait like `cachedCreateTimeProbe`.
+ */
+function repairLockHolderJudge(): RepairLockHolderJudge {
+  const createTimes = new Map<number, number | null>()
+
+  const createTime = (pid: number) => {
+    if (!createTimes.has(pid)) {
+      createTimes.set(pid, processCreateTimeSync(pid))
+    }
+
+    return createTimes.get(pid) ?? null
+  }
+
+  return (pid, recordedCt, writtenAtS) => lockHolderIsLiveSync(pid, recordedCt, writtenAtS, createTime)
+}
+
 function repairLockBody(): string {
-  const ct = processCreateTimeSync(process.pid)
+  const ct = ownCreateTimeSync()
 
   return `${process.pid}\n${ct === null ? '' : `ct:${formatCreateTime(ct)}\n`}`
 }
 
-function reclaimDeadRepairLock(repairPath: string, emptyPolls: number): boolean {
+function reclaimDeadRepairLock(repairPath: string, emptyPolls: number, holderIsLive: RepairLockHolderJudge): boolean {
   let raw: Buffer
   let writtenAtS: number
 
@@ -76,7 +98,7 @@ function reclaimDeadRepairLock(repairPath: string, emptyPolls: number): boolean 
   const dead =
     pid === null
       ? emptyPolls >= EMPTY_LOCK_RECLAIM_POLLS
-      : !lockHolderIsLiveSync(pid, ctMatch ? Number(ctMatch[1]) : null, writtenAtS)
+      : !holderIsLive(pid, ctMatch ? Number(ctMatch[1]) : null, writtenAtS)
 
   if (!dead) {
     return false
@@ -136,7 +158,7 @@ function dropReclaimClaim(claim: string) {
 }
 
 /** Count consecutive empty-lock polls, then reclaim a dead lock or back off. */
-function waitOnContendedRepairLock(repairPath: string, emptyPolls: number): number {
+function waitOnContendedRepairLock(repairPath: string, emptyPolls: number, holderIsLive: RepairLockHolderJudge): number {
   let polls: number
 
   try {
@@ -145,7 +167,7 @@ function waitOnContendedRepairLock(repairPath: string, emptyPolls: number): numb
     polls = 0
   }
 
-  if (!reclaimDeadRepairLock(repairPath, polls)) {
+  if (!reclaimDeadRepairLock(repairPath, polls, holderIsLive)) {
     waitForRepair()
   }
 
@@ -206,6 +228,7 @@ function loadOrCreateInstallationId(filePath, randomUUID = crypto.randomUUID) {
 
   const repairPath = `${filePath}.repair.lock`
 
+  const holderIsLive = repairLockHolderJudge()
   let emptyPolls = 0
   let ownedBody: Buffer | null = null
 
@@ -225,7 +248,7 @@ function loadOrCreateInstallationId(filePath, randomUUID = crypto.randomUUID) {
         return winner
       }
 
-      emptyPolls = waitOnContendedRepairLock(repairPath, emptyPolls)
+      emptyPolls = waitOnContendedRepairLock(repairPath, emptyPolls, holderIsLive)
 
       continue
     }

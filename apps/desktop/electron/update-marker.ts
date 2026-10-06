@@ -356,19 +356,30 @@ export function cachedCreateTimeProbe(probe: CreateTimeProbe = processCreateTime
   }
 }
 
+/** This process's creation time without a spawn when Electron can tell it (plain Node probes). */
+export function ownCreateTimeSync(): number | null {
+  return ownCreateTime() ?? processCreateTimeSync(process.pid)
+}
+
 /**
  * The judge's identity rule (A7 rule 4) for a lock holder, synchronously, for
  * the module-init repair lock: our own pid is live only at this exact
  * incarnation, and an identity with no comparable creation time is live only
  * within the v1 ceiling counted from `writtenAtS` (the lock's mtime).
+ * `createTime` lets a polling caller probe each holder once per wait.
  */
-export function lockHolderIsLiveSync(pid: number, recordedCt: number | null, writtenAtS: number): boolean {
+export function lockHolderIsLiveSync(
+  pid: number,
+  recordedCt: number | null,
+  writtenAtS: number,
+  createTime: (pid: number) => number | null = processCreateTimeSync
+): boolean {
   return isLiveIdentity(
     identityStateSync(pid, recordedCt, writtenAtS, {
       ourPid: process.pid,
-      ourCt: () => processCreateTimeSync(process.pid),
+      ourCt: ownCreateTimeSync,
       isAlive: candidate => isPidAlive(candidate) && !isZombieState(posixProcessState(candidate)),
-      createTime: processCreateTimeSync,
+      createTime,
       nowS: Date.now() / 1000
     })
   )

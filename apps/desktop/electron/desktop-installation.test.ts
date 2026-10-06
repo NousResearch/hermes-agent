@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import type * as ChildProcess from 'node:child_process'
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -8,6 +9,39 @@ import { test, vi } from 'vitest'
 
 import { loadOrCreateInstallationId, parseInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatCreateTime, processCreateTimeSync } from './update-marker'
+
+// Every `ps` the marker probes run, answerable by a test that plays macOS.
+const ps = vi.hoisted(() => ({ calls: [] as string[][], stub: null as null | ((args: string[]) => string) }))
+
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof ChildProcess>()
+
+  const execFileSync = ((file: string, args: string[], options: any) => {
+    if (file !== 'ps' || !ps.stub) {
+      return actual.execFileSync(file, args, options)
+    }
+
+    ps.calls.push(args)
+
+    return ps.stub(args)
+  }) as typeof actual.execFileSync
+
+  return { ...actual, default: { ...actual, execFileSync }, execFileSync }
+})
+
+function asMacOS(stub: (args: string[]) => string, run: () => void) {
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+  Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' })
+  ps.calls = []
+  ps.stub = stub
+
+  try {
+    run()
+  } finally {
+    ps.stub = null
+    Object.defineProperty(process, 'platform', platform)
+  }
+}
 
 const ID_A = '11111111-1111-4111-8111-111111111111'
 const ID_B = '22222222-2222-4222-8222-222222222222'
@@ -219,3 +253,52 @@ test('a live holder with no creation time is live only within the v1 ceiling', a
     holder.kill()
   }
 })
+
+// Review (kshitijk4poor, P3): the repair lock ran a synchronous `ps` (macOS) /
+// PowerShell (Windows, up to 15 s) on the main thread for our OWN creation time,
+// which Electron already knows, and re-probed the holder's every 25 ms poll.
+test('the repair lock records our creation time from Electron, without a ps spawn', () =>
+  withTempDir(directory => {
+    const filePath = path.join(directory, 'desktop-installation.json')
+    const writes = vi.spyOn(fs, 'writeSync')
+    let lockBody = ''
+    const electron = process as { getCreationTime?: () => number | null }
+    electron.getCreationTime = () => 1_791_079_000_250
+
+    try {
+      asMacOS(
+        () => 'Sun Oct  4 12:00:00 2026',
+        () => assert.equal(loadOrCreateInstallationId(filePath, () => ID_A), ID_A)
+      )
+      lockBody = String(writes.mock.calls[0]?.[1])
+    } finally {
+      delete electron.getCreationTime
+      writes.mockRestore()
+    }
+
+    assert.equal(lockBody, `${process.pid}\nct:1791079000.250\n`)
+    assert.deepEqual(
+      ps.calls.filter(args => args.includes(String(process.pid))),
+      [],
+      'no ps for our own pid'
+    )
+  }))
+
+test('a contended repair lock probes its holder creation time once per wait, liveness every poll', () =>
+  withTempDir(directory => {
+    const filePath = path.join(directory, 'desktop-installation.json')
+    const holder = process.ppid // alive to signal 0
+    const started = Date.UTC(2026, 9, 4, 12) / 1000
+    fs.writeFileSync(`${filePath}.repair.lock`, `${holder}\nct:${formatCreateTime(started)}\n`)
+    let statPolls = 0
+
+    // The holder matches its recorded creation time, then dies into a zombie on the 5th poll.
+    asMacOS(
+      args => (args.includes('lstart=') ? 'Sun Oct  4 12:00:00 2026' : ++statPolls >= 5 ? 'Z' : 'S'),
+      () => assert.equal(loadOrCreateInstallationId(filePath, () => ID_A), ID_A)
+    )
+
+    assert.equal(statPolls, 5, 'liveness is re-read every poll')
+    const holderProbes = ps.calls.filter(args => args.includes('lstart=') && args.includes(String(holder)))
+    assert.equal(holderProbes.length, 1, 'one creation-time probe for the holder')
+  }))

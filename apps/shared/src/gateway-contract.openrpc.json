@@ -26228,6 +26228,42 @@
             "default": "",
             "title": "Text"
           },
+          "client_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Request Id"
+          },
+          "expected_stored_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Stored Session Id"
+          },
+          "expected_session_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Session Key"
+          },
           "display_kind": {
             "anyOf": [
               {
@@ -26409,6 +26445,34 @@
             "default": null,
             "title": "Voice Stopped"
           },
+          "duplicate": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Duplicate"
+          },
+          "messages": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Messages"
+          },
           "user_row_id": {
             "anyOf": [
               {
@@ -26486,7 +26550,8 @@
           "streaming",
           "queued",
           "steered",
-          "redirected"
+          "redirected",
+          "complete"
         ],
         "title": "PromptSubmitStatus",
         "type": "string"

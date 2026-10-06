@@ -2641,6 +2641,9 @@ export interface PromptSubmitParams {
   session_id: string
   profile?: string | null
   text?: unknown
+  client_request_id?: string | null
+  expected_stored_session_id?: string | null
+  expected_session_key?: string | null
   display_kind?: string | null
   interrupted?: boolean | null
   queued?: boolean | null
@@ -2658,12 +2661,14 @@ export interface PromptSubmitParams {
 export interface PromptSubmitResult {
   status?: PromptSubmitStatus | null
   voice_stopped?: boolean | null
+  duplicate?: boolean | null
+  messages?: Record<string, unknown>[] | null
   user_row_id?: number | null
   survivor_user_row_ids?: (number | null)[] | null
   survivor_row_id_map?: Record<string, number | null> | null
   turn_isolation?: boolean | null
 }
-export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected'
+export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected' | 'complete'
 export interface ClipboardPasteParams {
   session_id: string
   profile?: string | null

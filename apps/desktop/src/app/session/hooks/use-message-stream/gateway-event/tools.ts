@@ -90,14 +90,14 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
       clearComputerUseState(sessionId)
     }
 
-    const isComputerUseEvent =
-      payload?.name === 'computer_use' ||
-      (eventType === 'tool.progress' &&
-        (currentCU?.phase === 'running' || currentCU?.phase === 'drafting') &&
-        (!payload?.name || payload?.name === 'computer_use') &&
-        (!toolId || !currentCU?.toolId || toolId === currentCU.toolId))
+    const isComputerUseStart = eventType === 'tool.start' && payload?.name === 'computer_use'
+    const isComputerUseProgress =
+      eventType === 'tool.progress' &&
+      (currentCU?.phase === 'running' || currentCU?.phase === 'drafting') &&
+      (!payload?.name || payload?.name === 'computer_use') &&
+      (!toolId || !currentCU?.toolId || toolId === currentCU.toolId)
 
-    if (isComputerUseEvent) {
+    if (isComputerUseStart || isComputerUseProgress) {
       setComputerUseRunning(sessionId, extractComputerUseArgs(payload), eventType === 'tool.progress')
     }
 

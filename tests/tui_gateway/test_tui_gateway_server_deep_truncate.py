@@ -51,6 +51,17 @@ def test_prompt_submit_refuses_deep_truncation_without_confirm(monkeypatch):
 
         assert _submit(confirm_deep_truncate=True).get("error") is None
         assert replaced == [history[:2]]
+
+        # Durable-carrier cut: the target (101) was absorbed into a repaired live carrier;
+        # the refusal counts live rows from the carrier on, never live minus physical.
+        physical = [{"_row_id": 100, "role": "user", "content": "u0"},
+                    {"_row_id": 101, "role": "user", "content": "u0b"}, *history[1:]]
+        _FakeDB.get_messages_as_conversation = lambda self, key, **_kw: [dict(m) for m in physical]  # type: ignore[attr-defined]
+        sess["running"] = False  # the confirmed submit above left a (never-started) turn
+        sess["history"] = [{"_row_id": 100, "_absorbed_row_ids": [101], "role": "user",
+                            "content": "u0\n\nu0b"}, *history[1:]]
+        carrier = _submit(truncate_before_row_id=101)
+        assert carrier["error"]["data"] == {"archived_messages": 6, "archived_user_turns": 3}
     finally:
         server._sessions.pop("deep-trunc-sid", None)
 

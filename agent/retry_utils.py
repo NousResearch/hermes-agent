@@ -4,6 +4,7 @@ Jittered delays (vs. fixed exponential) prevent thundering-herd retry spikes
 when many sessions hit the same rate-limited provider concurrently.
 """
 
+import hashlib
 import random
 import re
 import threading
@@ -132,6 +133,34 @@ def jittered_backoff(attempt: int, *, base_delay: float = 5.0, max_delay: float 
     # Seed from time + counter so coarse clocks still decorrelate.
     seed = (time.time_ns() ^ (tick * 0x9E3779B9)) & 0xFFFFFFFF
     return delay + random.Random(seed).uniform(0, jitter_ratio * delay)
+
+
+# Rate-limit windows shared by every agent in this process that calls the same endpoint with the same
+# key: the provider meters the key, not the agent. A delegate_task fan-out runs its children as threads
+# here, so without this each child that hits the limit retries on its own short schedule, inside the
+# window a sibling is already waiting out, and spends its retry budget re-tripping the limit.
+_shared_rate_limit_lock = threading.Lock()
+_shared_rate_limit_until: dict[tuple[str, str], float] = {}
+
+
+def join_shared_rate_limit_wait(base_url: Any, api_key: Any, wait_seconds: float) -> float:
+    """Wait for a rate-limited retry: ``wait_seconds`` or the rest of the window another agent sharing
+    ``api_key`` on ``base_url`` already armed, whichever is longer; the window then covers this wait too."""
+    if not isinstance(api_key, str) or not api_key:
+        return wait_seconds
+    key = (str(base_url or "").strip().rstrip("/").lower(), hashlib.sha256(api_key.encode()).hexdigest()[:16])
+    now = time.monotonic()
+    with _shared_rate_limit_lock:
+        wait = max(wait_seconds, _shared_rate_limit_until.get(key, now) - now)
+        _shared_rate_limit_until[key] = now + wait
+        for stale in [k for k, until in _shared_rate_limit_until.items() if until <= now]:
+            del _shared_rate_limit_until[stale]
+    return wait
+
+
+def _reset_shared_rate_limit_windows() -> None:
+    with _shared_rate_limit_lock:
+        _shared_rate_limit_until.clear()
 
 
 def _error_text(error: Any) -> str:

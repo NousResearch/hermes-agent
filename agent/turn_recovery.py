@@ -1421,11 +1421,14 @@ def compute_error_backoff(
     """Pick the wait before the next API retry and announce it. Retry-After wins for
     rate limits and any other retryable error (capped at 600s: Anthropic Tier 1 buckets
     reset in ~171s, so a 120s cap re-tripped the limit); otherwise jittered backoff,
-    replaced by the adaptive policy for 429s / Z.AI overloads. Normal retries are
+    replaced by the adaptive policy for 429s / Z.AI overloads. A 429 wait never ends inside
+    a window another agent on the same key is still waiting out. Normal retries are
     buffered; long Z.AI Coding waits surface immediately."""
     # Imported lazily so tests that patch ``agent.retry_utils.jittered_backoff`` /
     # ``adaptive_rate_limit_backoff`` (incl. the run_agent conftest fast-backoff fixture) intercept.
-    from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff, parse_retry_after_seconds
+    from agent.retry_utils import (
+        adaptive_rate_limit_backoff, jittered_backoff, join_shared_rate_limit_wait, parse_retry_after_seconds,
+    )
 
     # Respect Retry-After on every retryable provider error, not just 429s. Retryable
     # 5xx responses (e.g. Cloudflare 520/524) also carry the header or a structured
@@ -1459,6 +1462,9 @@ def compute_error_backoff(
         wait_time, _backoff_policy = adaptive_rate_limit_backoff(
             retry_count, base_url=str(base_url), model=model, error=api_error, default_wait=wait_time,
         )
+    _own_wait = wait_time
+    if _adaptive:
+        wait_time = join_shared_rate_limit_wait(base_url, getattr(agent, "api_key", None), wait_time)
     _reset = reset_hint(api_error) if _adaptive else ""
     _wait_reason = "Provider overloaded" if is_zai_coding_overload and not is_rate_limited else "Rate limited"
     if _adaptive:
@@ -1494,9 +1500,9 @@ def compute_error_backoff(
         f"⏳ {_live_reason} retrying in {wait_time:.0f}s (attempt {retry_count}/{max_retries})"
     )
     logger.warning(
-        "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
+        "Retrying API call in %ss (attempt %s/%s) %s policy=%s%s error=%s",
         wait_time, retry_count, max_retries, agent._client_log_context(),
-        _backoff_policy or "default", api_error,
+        _backoff_policy or "default", " shared_window" if wait_time > _own_wait else "", api_error,
     )
     return wait_time
 

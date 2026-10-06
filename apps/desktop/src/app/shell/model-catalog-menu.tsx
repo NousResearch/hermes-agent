@@ -68,6 +68,7 @@ import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalModelLoadProgress, LocalRuntimeJob } from '@/types/hermes'
 
 import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
+import { useGatewayConnected } from './use-gateway-connected'
 import { ModelMenuRowIcon, useModelMenuRowDecoration } from './model-menu-row-decorations'
 
 // Lets the host dropdown (model-pill, a kanban field trigger, …) hand the panel
@@ -223,6 +224,7 @@ export function ModelCatalogMenu({
   const searchRef = useRef<HTMLInputElement>(null)
   const collapsedProviders = useStoreCollapsed()
   const defaultEffort = useDefaultEffort()
+  const gatewayConnected = useGatewayConnected(gateway)
   // Which models the user curated in Edit Models. Read HERE rather than taken
   // as a prop: it's one global preference, so every surface that shows a
   // catalog must show the same shortlist. A per-caller opt-in is how the board
@@ -235,6 +237,7 @@ export function ModelCatalogMenu({
   const favoriteKeys = useStore($favoriteModels)
 
   const modelOptions = useQuery({
+    enabled: gatewayConnected,
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
     // Gateway-first even with no session: a connected (possibly remote)
     // gateway owns the model catalog, including virtual providers the local

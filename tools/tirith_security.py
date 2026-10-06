@@ -12,6 +12,7 @@ from contextvars import copy_context
 from pathlib import Path
 
 from hermes_constants import hermes_home_key
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 _REPO = "sheeki03/tirith"
@@ -20,9 +21,18 @@ _COSIGN_IDENTITY_REGEXP = f"^https://github.com/{_REPO}/\\.github/workflows/rele
 _COSIGN_ISSUER = "https://token.actions.githubusercontent.com"
 
 # --- Config helpers ---
+def _env_str(key: str, default: str) -> str:
+    """Env override, or ``default`` when unset or blank: an empty ``TIRITH_BIN=`` line in a .env or
+    compose file means "not set", not "run an executable named ''"."""
+    val = (os.getenv(key) or "").strip()
+    return val or default
+
+
 def _env_bool(key: str, default: bool) -> bool:
-    val = os.getenv(key)
-    return default if val is None else val.lower() in {"1", "true", "yes"}
+    """Env override, or ``default`` when unset or blank: an empty ``TIRITH_ENABLED=`` must not
+    silently turn pre-exec scanning off. Accepts the shared truthy set (``1/true/yes/on``)."""
+    val = (os.getenv(key) or "").strip()
+    return is_truthy_value(val) if val else default
 
 
 def _env_int(key: str, default: int) -> int:
@@ -41,7 +51,7 @@ def _load_security_config() -> dict:
         cfg = {}
     return {
         "tirith_enabled": _env_bool("TIRITH_ENABLED", cfg.get("tirith_enabled", True)),
-        "tirith_path": os.getenv("TIRITH_BIN", cfg.get("tirith_path", "tirith")),
+        "tirith_path": _env_str("TIRITH_BIN", cfg.get("tirith_path", "tirith")),
         "tirith_timeout": _env_int("TIRITH_TIMEOUT", cfg.get("tirith_timeout", 5)),
         "tirith_fail_open": _env_bool("TIRITH_FAIL_OPEN", cfg.get("tirith_fail_open", True))}
 

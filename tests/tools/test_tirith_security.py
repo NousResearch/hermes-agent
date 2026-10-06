@@ -534,3 +534,48 @@ class TestEmojiVariationSelectorSuppression:
 
         assert result["action"] == "warn"
         assert result["findings"] == findings
+
+
+# ---------------------------------------------------------------------------
+# Env overrides in _load_security_config
+# ---------------------------------------------------------------------------
+
+class TestSecurityConfigEnvOverrides:
+    """A blank env override (``TIRITH_ENABLED=`` in a .env or compose file) means "unset"."""
+
+    @pytest.fixture(autouse=True)
+    def _config(self, monkeypatch):
+        for key in ("TIRITH_ENABLED", "TIRITH_BIN", "TIRITH_TIMEOUT", "TIRITH_FAIL_OPEN"):
+            monkeypatch.delenv(key, raising=False)
+        security = {"tirith_enabled": True, "tirith_path": "tirith", "tirith_fail_open": False}
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"security": security})
+
+    @pytest.mark.parametrize("value", ["", "   "])
+    def test_blank_values_keep_config(self, monkeypatch, value):
+        for key in ("TIRITH_ENABLED", "TIRITH_BIN", "TIRITH_FAIL_OPEN"):
+            monkeypatch.setenv(key, value)
+
+        cfg = _tirith_mod._load_security_config()
+
+        assert cfg["tirith_enabled"] is True
+        assert cfg["tirith_path"] == "tirith"
+        assert cfg["tirith_fail_open"] is False
+
+    @pytest.mark.parametrize("value, expected", [
+        ("on", True), (" TRUE ", True), ("1", True), ("yes", True),
+        ("off", False), ("false", False), ("0", False), ("no", False),
+    ])
+    def test_bool_values_use_shared_truthy_set(self, monkeypatch, value, expected):
+        monkeypatch.setenv("TIRITH_FAIL_OPEN", value)
+
+        assert _tirith_mod._load_security_config()["tirith_fail_open"] is expected
+
+    def test_explicit_disable_still_wins(self, monkeypatch):
+        monkeypatch.setenv("TIRITH_ENABLED", "false")
+
+        assert _tirith_mod._load_security_config()["tirith_enabled"] is False
+
+    def test_bin_override_is_stripped(self, monkeypatch):
+        monkeypatch.setenv("TIRITH_BIN", " /opt/tirith/bin/tirith ")
+
+        assert _tirith_mod._load_security_config()["tirith_path"] == "/opt/tirith/bin/tirith"

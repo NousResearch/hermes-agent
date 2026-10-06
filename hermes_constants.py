@@ -633,10 +633,13 @@ def secure_parent_dir(path: Path) -> None:
 def _is_home_policy_dir(parent: Path) -> bool:
     """True when resolved *parent* is the effective hermes home or its profile ``home/`` dir — the
     directories whose mode is operator policy (``HERMES_HOME_MODE`` / managed / container), not
-    per-secret hardening (#133577)."""
-    candidates = [get_hermes_home()]
-    if profile_home := _profile_home_path():
-        candidates.append(Path(profile_home))
+    per-secret hardening (#133577). Both candidates derive from :func:`get_hermes_home` so a
+    platform-default home (no ``HERMES_HOME`` env) is covered by the same resolver."""
+    home = get_hermes_home()
+    candidates = [home]
+    profile_home = home / "home"
+    if profile_home.is_dir():
+        candidates.append(profile_home)
     key = os.path.normcase(str(parent))
     return key in {os.path.normcase(str(c.expanduser().resolve())) for c in candidates}
 

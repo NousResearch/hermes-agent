@@ -536,6 +536,22 @@ class TestSecureParentDir:
         secure_parent_dir(secret_dir / "token.json")
         assert secret_dir.stat().st_mode & 0o777 == 0o700
 
+    @pytest.mark.platforms("posix")
+    def test_profile_home_parent_platform_default_home(self, tmp_path, monkeypatch):
+        """The profile-home candidate derives from get_hermes_home(), so a platform-default
+        home — no HERMES_HOME env at all — is policy-covered too, not just an env-routed one."""
+        home = tmp_path / "default-home"
+        profile_home = home / "home"
+        profile_home.mkdir(parents=True)
+        profile_home.chmod(0o701)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("HERMES_HOME_MODE", "0701")
+        monkeypatch.setattr(hermes_constants, "get_process_hermes_home", lambda: home)
+        monkeypatch.setattr(hermes_constants, "_container_or_chmod_skipped", lambda: False)
+
+        secure_parent_dir(profile_home / "creds.json")
+        assert profile_home.stat().st_mode & 0o777 == 0o701
+
 
 @pytest.mark.platforms("posix")  # POSIX shell stubs; Windows uses .cmd shims
 class TestAgentBrowserRunnable:

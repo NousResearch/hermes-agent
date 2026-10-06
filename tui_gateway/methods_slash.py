@@ -359,15 +359,18 @@ def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, sn
         AGGRESSIVE_UNSUPPORTED, compress_now, parse_compress_args, render_compress_result)
     from agent.manual_compression_feedback import describe_compression_lock_skip, summarize_manual_compression
     from agent.model_metadata import estimate_request_tokens_rough
-    with _session_profile_runtime_scope(session):
+    request = parse_compress_args(arg)
+    if request.aggressive:
+        return AGGRESSIVE_UNSUPPORTED
+    if request.preview:  # report only — history, agent and session key untouched, so no busy claim
+        with session["history_lock"]:
+            preview_messages = list(session.get("history", []))
+        with _session_profile_runtime_scope(session):
+            return "\n".join(render_compress_result(compress_now(agent, preview_messages, request)))
+    with _session_profile_runtime_scope(session), _manual_compress_turn(sid, session):
         with session["history_lock"]:
             before_messages = list(session.get("history", []))
             history_version = int(session.get("history_version", 0))
-        request = parse_compress_args(arg)
-        if request.aggressive:
-            return AGGRESSIVE_UNSUPPORTED
-        if request.preview:  # report only — history, agent and session key untouched
-            return "\n".join(render_compress_result(compress_now(agent, before_messages, request)))
         sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
         tools = getattr(agent, "tools", None) or None
 
@@ -483,7 +486,7 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         if _session_uses_compute_host(session):
             return _compute_host_slash(sid, session, name, command)[1]
         if session.get("running"):
-            return busy_message(name)
+            return busy_message(name, bool(session.get("_manual_compress_active")))
     if (mirror := _SLASH_MIRRORS.get(name)) is None:
         return ""
     try:
@@ -491,6 +494,8 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         # profile scope or /model's credential read raises UnscopedSecretError under multiplex (#122655).
         with _session_profile_runtime_scope(session):
             return mirror(sid, session, agent, arg) or ""
+    except CompressionBusy as e:  # a turn won the race after the unlocked running check above
+        return str(e)
     except Exception as e:
         if name == "compress" and agent:
             from agent.conversation_compression import finalize_context_engine_compression_notification

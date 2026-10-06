@@ -6269,31 +6269,9 @@ _DEFAULT_AUX_TIMEOUT = 30.0
 _COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
 
 
-def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
-    """Config dict for auxiliary.<task>, or {} when unavailable. Plugin-registered tasks get their
-    declared defaults layered under user config (user wins); built-in defaults live in DEFAULT_CONFIG."""
-    if not task:
-        return {}
-    try:
-        from hermes_cli.config import load_config_readonly
-        config = load_config_readonly()
-    except ImportError:
-        return {}
-    aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
-    task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
-    if not isinstance(task_config, dict):
-        task_config = {}
-    try:
-        from hermes_cli.plugins import get_plugin_auxiliary_tasks
-        for _entry in get_plugin_auxiliary_tasks():
-            if _entry.get("key") == task:
-                _defaults = _entry.get("defaults") or {}
-                if isinstance(_defaults, dict):
-                    return {**_defaults, **task_config}
-                break
-    except Exception:
-        pass  # plugin discovery failure must not break aux task config reads
-    return task_config
+# Read-time resolution of auxiliary.<task> (plugin defaults, inherit_from) lives in its own module;
+# re-exported here because callers and tests reach it as agent.auxiliary_client._get_auxiliary_task_config.
+from agent.auxiliary_task_config import _get_auxiliary_task_config  # noqa: E402,F401
 
 
 class CompressionFastLane(NamedTuple):

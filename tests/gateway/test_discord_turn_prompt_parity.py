@@ -129,12 +129,17 @@ async def test_voice_channel_turn_matches_a_typed_turn(monkeypatch: pytest.Monke
         SimpleNamespace(channel=channel, channel_id=channel.id, guild=parent.guild, guild_id=1, user=_USER),
         "/voice join")
     adapter._voice_text_channels = {1: channel.id}
-    adapter._voice_sources = {1: join.source.to_dict()}
+    # A typed `/voice join` binds that message's source, id included; a voice turn must not inherit it
+    # as its own trigger.
+    adapter._voice_sources = {1: {**join.source.to_dict(), "message_id": "1554000000000000000"}}
     adapter._client.get_channel = {channel.id: channel}.get
     if case == "renamed-after-join":
         channel.name, channel.topic = "renamed", "New topic"
     if case == "speaker-uncached":
         adapter._client.get_guild = lambda _id: SimpleNamespace(get_member=lambda _uid: None)
+        # Cached as users only: the joiner's bound nickname still beats their global name.
+        adapter._client.get_user = {42: SimpleNamespace(display_name="alice_global"),
+                                    43: SimpleNamespace(display_name="Bob")}.get
     typed = await _typed(adapter, channel)
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.adapters = {Platform.DISCORD: adapter}
@@ -148,6 +153,12 @@ async def test_voice_channel_turn_matches_a_typed_turn(monkeypatch: pytest.Monke
     spoken = adapter.handle_message.await_args.args[0]
     assert spoken is not typed
     _assert_same_prompt_inputs(typed, spoken)
-    # The join-time name belongs to the joiner only; another uncached speaker never borrows it.
+    assert spoken.source.message_id is None
+    # The join-time name belongs to the joiner only; another uncached speaker never borrows it, and
+    # gets their cached user name (global name, no server nickname) rather than a bare id.
     other = runner._voice_input_source(adapter, 1, 43, channel.id).user_name
-    assert other == ("43" if case == "speaker-uncached" else "Alice")
+    assert other == ("Bob" if case == "speaker-uncached" else "Alice")
+    if case == "speaker-uncached":
+        assert runner._voice_input_source(adapter, 1, 44, channel.id).user_name == "44"  # cached nowhere
+        adapter._voice_sources = {}
+        assert runner._voice_input_source(adapter, 1, 43, channel.id).user_name == "Bob"  # no binding

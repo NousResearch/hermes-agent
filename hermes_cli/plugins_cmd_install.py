@@ -673,13 +673,17 @@ def _select_memory_provider(name: str, console, *, select: bool) -> None:
 
 def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
-    ref: Optional[str] = None, assume_deps_consent: bool = False,
+    ref: Optional[str] = None, assume_deps_consent: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
     pinned SHA (identifier may be empty); *ref* pins a custom source to one full commit SHA (same
     contract as ``--ref``); every path enforces the kill list (no GUI bypass). *assume_deps_consent*
-    is consent the caller already holds for the catalog entry's Python deps (the memory-provider
-    migration under ``security.allow_lazy_installs``), so no terminal is needed to answer the gate."""
+    is consent the caller holds for the Python deps, so no terminal is needed to answer the gate.
+    None (a user's Install click) is the consent the fresh-install enable already acts on: a plugin
+    the config already selects (``memory.provider``) would otherwise be refused every time, while
+    the same plugin unselected installs and enables. A forced replacement still needs explicit consent."""
+    if assume_deps_consent is None:
+        assume_deps_consent = enable and not force
     from hermes_cli import plugins_cmd_catalog as catalog
     warnings: list[str] = []
     entry = None
@@ -704,7 +708,8 @@ def dashboard_install_plugin(
         if entry is not None:
             return catalog.install_catalog_entry(entry, force=force, allow_removed=False,
                                                  assume_deps_consent=assume_deps_consent)
-        return _pc()._install_plugin_core(identifier, force=force, ref=(ref or "").strip() or None)
+        return _pc()._install_plugin_core(identifier, force=force, ref=(ref or "").strip() or None,
+                                          assume_deps_consent=assume_deps_consent)
 
     try:
         target, installed_manifest, installed_name = recorded_install(

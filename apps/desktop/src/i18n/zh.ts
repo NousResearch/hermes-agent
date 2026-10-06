@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
 import { introZh } from './intro-zh'
+import { zhAuxTasks } from './zh_aux_tasks'
 import { zhModelMenu } from './zh_model_menu'
 
 export const zh = defineLocale({
@@ -1725,6 +1726,8 @@ export const zh = defineLocale({
       change: '更改',
       autoUseMain: '自动 · 使用主模型',
       inheritMainEffort: '继承 · 主模型推理强度',
+      inheritsFrom: task => `继承 ${task}`,
+      followTask: task => `跟随 ${task}`,
       providerDefault: '(提供方默认)',
       fallbackAdd: '添加备用模型',
       fallbackEmpty: '未配置备用模型 — 默认模型失败时才会使用备用模型。',
@@ -1736,19 +1739,7 @@ export const zh = defineLocale({
       moaAggregator: '聚合模型',
       moaAggregatorBilled: '执行模型 · 整个运行在此计费',
       moaReferenceHint: '默认每轮仅建议一次',
-      tasks: {
-        vision: { label: '视觉', hint: '图片分析' },
-        compression: { label: '压缩', hint: '上下文压缩' },
-        skills_hub: { label: '技能中心', hint: '技能搜索' },
-        approval: { label: '审批', hint: '智能自动批准' },
-        mcp: { label: 'MCP', hint: 'MCP 工具路由' },
-        title_generation: { label: '标题生成', hint: '会话标题' },
-        review: { label: '评审', hint: '/review 评审子智能体' },
-        triage_specifier: { label: '分类指定', hint: '看板任务规格补全' },
-        kanban_decomposer: { label: '看板分解', hint: '任务拆解' },
-        profile_describer: { label: '配置描述', hint: '自动生成配置描述' },
-        curator: { label: '维护器', hint: '技能使用审查' }
-      }
+      tasks: zhAuxTasks
     },
     localModels: {
       connectionChanged: '本地模型连接已更改',

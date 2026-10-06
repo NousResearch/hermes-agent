@@ -30,6 +30,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
+from agent.conversation_compression_telemetry import _emit_aborted_attempt_telemetry, _emit_compression_attempt_telemetry
 from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
@@ -1466,52 +1467,9 @@ def _session_was_rotated_by_compression(session_db: Any, session_id: str) -> boo
     return bool(session and session.get("ended_at") is not None and session.get("end_reason") == "compression")
 
 
-def _emit_compression_attempt_telemetry(
-    agent: Any, *, started_at: float, commit_status: str, split_status: str, failure_class: str | None = None,
-    commit_started_at: float | None = None,
-) -> None:
-    """Emit one content-free JSON log line for a compression attempt."""
-    with _swallow('failed to emit compression attempt telemetry: %s'):
-        compressor = agent.context_compressor
-        telemetry = getattr(compressor, "_last_compression_telemetry", None)
-        if not isinstance(telemetry, dict):
-            telemetry = {}
-        payload = dict(telemetry)
-        payload.setdefault("event", "compression_attempt")
-        payload.setdefault("attempt_id", getattr(agent, "_compression_attempt_id", "") or uuid.uuid4().hex)
-        payload.setdefault("session_id", getattr(agent, "session_id", "") or "")
-        payload.update(
-            total_duration_ms=int((time.monotonic() - started_at) * 1000), commit_status=commit_status,
-            split_status=split_status,
-        )
-        if commit_started_at is not None:
-            telemetry["commit_ms"] = payload["commit_ms"] = max(0, int((time.monotonic() - commit_started_at) * 1000))
-        if failure_class:
-            payload["failure_class"] = failure_class
-        payload.setdefault("chunking", False)
-        payload.setdefault("chunk_count", 0)
-        payload["fallback_used"] = bool(
-            payload.get("fallback_used")
-            or getattr(compressor, "_last_summary_fallback_used", False)
-            or getattr(compressor, "_last_aux_model_failure_model", None)
-        )
-        logger.info(
-            "context compression attempt telemetry: %s", json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        )
-        from hermes_cli.observability.shared_metrics_events import finish_compression_attempt
-
-        finish_compression_attempt(commit_status, failure_class, getattr(agent.context_compressor, "context_length", None), agent=agent)
-
-
 def _existing_system_prompt(agent: Any, system_message: str) -> str:
     """Cached system prompt, or a fresh build when nothing is cached (abort paths)."""
     return getattr(agent, "_cached_system_prompt", None) or agent._build_system_prompt(system_message)
-
-
-def _emit_aborted_attempt_telemetry(agent: Any, started_at: float, failure_class: str | None) -> None:
-    _emit_compression_attempt_telemetry(
-        agent, started_at=started_at, commit_status="aborted", split_status="aborted", failure_class=failure_class
-    )
 
 
 def _restore_messages_snapshot(messages: list, snapshot: Optional[list]) -> None:
@@ -3973,8 +3931,15 @@ def _run_summary_phase(
         )
         _stop_heartbeat("context compression cancelled")
         lease.release()
+        # Only the user's stop is ``explicit_interrupt`` (counted skipped); a host timeout cancels the fence
+        # without setting the stop event, and that is a real failure (hygiene 30 s budget, 600 s ceiling).
+        _host_cancel = commit_fence is not None and commit_fence.is_cancelled and not (
+            hard_cancel_event is not None and hard_cancel_event.is_set()
+        )
         _emit_aborted_attempt_telemetry(
-            agent, attempt.started_at, (STALL_INTERRUPTED_FAILURE_CLASS if _stall_backoff else "explicit_interrupt")
+            agent, attempt.started_at,
+            STALL_INTERRUPTED_FAILURE_CLASS if _stall_backoff
+            else "commit_fence_cancelled" if _host_cancel else "explicit_interrupt",
         )
         return _SummaryPhase(messages=messages, abort_prompt=_existing_system_prompt(agent, system_message))
     except BaseException as _compress_exc:

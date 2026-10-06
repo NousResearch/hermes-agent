@@ -8,6 +8,7 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
+import type { AuxTaskCopyMap } from './types_aux_tasks'
 import type { ModelMenuTranslations } from './types_model_menu'
 
 /** The locales compiled into the app (`TRANSLATIONS`). */
@@ -60,11 +61,6 @@ interface ToolTitleCopy {
 interface ModeOptionCopy {
   label: string
   description: string
-}
-
-interface AuxTaskCopy {
-  label: string
-  hint: string
 }
 
 export interface Translations {
@@ -1520,6 +1516,8 @@ export interface Translations {
       change: string
       autoUseMain: string
       inheritMainEffort: string
+      inheritsFrom: (task: string) => string
+      followTask: (task: string) => string
       providerDefault: string
       fallbackAdd: string
       fallbackEmpty: string
@@ -1530,7 +1528,7 @@ export interface Translations {
       moaAggregator: string
       moaAggregatorBilled: string
       moaReferenceHint: string
-      tasks: Record<string, AuxTaskCopy>
+      tasks: AuxTaskCopyMap
     }
     localModels: {
       connectionChanged: string

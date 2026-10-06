@@ -1172,6 +1172,12 @@ class VoiceReceiver:
                 self._last_packet_time.pop(ssrc, None)
         return completed
 
+    def discard_pending(self) -> None:
+        """Drop buffered PCM that no poll or flush has emitted yet."""
+        with self._lock:
+            self._buffers.clear()
+            self._last_packet_time.clear()
+
     # --- PCM -> WAV conversion (for Whisper STT) ---
 
     @staticmethod
@@ -1252,10 +1258,13 @@ def _read_discord_prompt_timeout() -> int:
 
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
+from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 
 
-class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, BasePlatformAdapter):
+class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, DiscordSlashAuthMixin,
+                     BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -3873,9 +3882,10 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, BasePlatformAd
             if listen_task:
                 listen_task.cancel()
             guild = self._client.get_guild(guild_id) if self._client is not None else None
+            captured_for = self._voice_text_channels.get(guild_id)
             for user_id, pcm_data in pending_inputs:
                 if self._is_allowed_user(str(user_id), guild=guild, is_dm=False):
-                    await self._process_voice_input(guild_id, user_id, pcm_data)
+                    await self._process_voice_input(guild_id, user_id, pcm_data, captured_for)
             # Tear down the mixer (stops the continuous outgoing stream).
             if getattr(self, "_voice_mixers", None) is not None:
                 self._voice_mixers.pop(guild_id, None)
@@ -4033,52 +4043,17 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, BasePlatformAd
         vc = self._voice_clients.get(guild_id)
         return vc is not None and vc.is_connected()
 
-    def get_voice_channel_info(self, guild_id: int) -> Optional[Dict[str, Any]]:
-        """Return voice channel info (name, members, count, speaking user IDs) or None if not connected."""
-        vc = self._voice_clients.get(guild_id)
-        if not vc or not vc.is_connected():
-            return None
-        channel = vc.channel
-        if not channel:
-            return None
-        members_info = []
-        bot_user = self._client.user if self._client else None
-        for m in channel.members:
-            if bot_user and m.id == bot_user.id:
-                continue  # skip the bot itself
-            members_info.append({"user_id": m.id, "display_name": m.display_name, "is_bot": m.bot})
-        speaking_user_ids: set = set()
-        receiver = self._voice_receivers.get(guild_id)
-        if receiver:
-            now = time.monotonic()
-            with receiver._lock:
-                for ssrc, last_t in receiver._last_packet_time.items():
-                    if now - last_t < 2.0:
-                        uid = receiver._ssrc_to_user.get(ssrc)
-                        if uid:
-                            speaking_user_ids.add(uid)
-        for info in members_info:
-            info["is_speaking"] = info["user_id"] in speaking_user_ids
-        return {
-            "channel_name": channel.name, "member_count": len(members_info),
-            "members": members_info, "speaking_count": len(speaking_user_ids),
-        }
-
-    def get_voice_channel_context(self, guild_id: int) -> str:
-        """Return a human-readable voice channel context string for prompt injection."""
-        info = self.get_voice_channel_info(guild_id)
-        if not info:
-            return ""
-        parts = [f"[Voice channel: #{info['channel_name']} — {info['member_count']} participant(s)]"]
-        for m in info["members"]:
-            status = " (speaking)" if m["is_speaking"] else ""
-            parts.append(f"  - {m['display_name']}{status}")
-        return "\n".join(parts)
-
     # --- Voice listening (Phase 2) ---
 
     # UDP keepalive interval; Discord drops the UDP route after ~60s of silence.
     _KEEPALIVE_INTERVAL = 15
+
+    def discard_pending_voice_input(self, guild_id: int) -> None:
+        """Drop speech the receiver holds but has not emitted, before the text binding moves: audio
+        captured for the old conversation must never be stamped with the new one (#130311)."""
+        receiver = self._voice_receivers.get(guild_id)
+        if receiver is not None:
+            receiver.discard_pending()
 
     async def _voice_listen_loop(self, guild_id: int):
         """Periodically check for completed utterances and process them."""
@@ -4099,6 +4074,8 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, BasePlatformAd
                     except Exception:
                         pass
                 completed = receiver.check_silence()
+                # Each utterance keeps the binding it was collected under, not one set during an earlier STT.
+                captured_for = self._voice_text_channels.get(guild_id)
                 # Pass guild so role checks stay guild-scoped.
                 _vc_guild = self._client.get_guild(guild_id) if self._client is not None else None
                 for user_id, pcm_data in completed:
@@ -4106,14 +4083,14 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, BasePlatformAd
                         continue
                     # User speech is activity too; keeps active listeners connected.
                     self._reset_voice_timeout(guild_id)
-                    await self._process_voice_input(guild_id, user_id, pcm_data)
+                    await self._process_voice_input(guild_id, user_id, pcm_data, captured_for)
         except asyncio.CancelledError:
             pass
         except Exception as e:
             logger.error("Voice listen loop error: %s", e, exc_info=True)
 
-    async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes):
-        """Convert PCM -> WAV -> STT -> callback."""
+    async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes, captured_for: int | None):
+        """Convert PCM -> WAV -> STT -> callback; dropped if the binding moved off *captured_for* during STT."""
         from tools.voice_mode_transcript import is_whisper_hallucination
         tmp_f = tempfile.NamedTemporaryFile(suffix=".wav", prefix="vc_listen_", delete=False)
         wav_path = tmp_f.name
@@ -4128,6 +4105,9 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, BasePlatformAd
             if not transcript or is_whisper_hallucination(transcript):
                 return
             logger.info("Voice input from user %d: %s", user_id, transcript[:100])
+            if getattr(self, "_voice_text_channels", {}).get(guild_id) != captured_for:
+                logger.info("Dropping voice input from user %d: binding moved during transcription", user_id)
+                return
             if self._voice_input_callback:
                 await self._voice_input_callback(
                     guild_id=guild_id, user_id=user_id, transcript=transcript,
@@ -4265,73 +4245,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, BasePlatformAd
             "DISCORD_ALLOWED_CHANNELS, or set DISCORD_ALLOW_ALL_USERS=true for open access.",
             self.name,
         )
-
-    # ── Slash command authorization ─────────────────────────────────────
-    # ``_check_slash_authorization`` mirrors the on_message gates one-for-one. No allowlist =>
-    # fail closed unless allow-all; DISCORD_ALLOWED_CHANNELS alone authorizes per validated channel.
-
-    def _evaluate_slash_authorization(
-        self, interaction: "discord.Interaction",
-    ) -> Tuple[bool, Optional[str]]:
-        """Evaluate slash authorization without responding; returns ``(allowed, reason)``.
-        Shared with side-effect-free callers (``/skill`` autocomplete returns [] per keystroke).
-        Fail closed on malformed payloads: with an allowlist, a missing channel id/user REJECTS.
-        """
-        chan_obj = getattr(interaction, "channel", None)
-        in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
-        channel_ids: set = set()
-        channel_keys: set = set()
-        # Channel scope mirrors on_message; DMs use on_message's DM lockdown path instead.
-        if not in_dm:
-            chan_id_raw = getattr(interaction, "channel_id", None) or getattr(chan_obj, "id", None)
-            if chan_id_raw is not None:
-                channel_ids.add(str(chan_id_raw))
-                # Threads: also test the parent channel, as on_message does.
-                if isinstance(chan_obj, discord.Thread):
-                    parent_id = self._get_parent_channel_id(chan_obj)
-                    if parent_id:
-                        channel_ids.add(str(parent_id))
-            # Name-form keys (ID, name, #name, parent) so name-based lists work for slash too.
-            channel_keys = self._discord_channel_keys_from_channel(
-                chan_obj,
-                self._get_parent_channel_id(chan_obj)
-                if isinstance(chan_obj, discord.Thread)
-                else None,
-            )
-            allowed = self._get_allowed_channels()
-            if allowed:
-                if "*" not in allowed:
-                    if not channel_ids:
-                        # Channel policy configured but no resolvable channel id: fail closed.
-                        return (
-                            False, "channel id missing with DISCORD_ALLOWED_CHANNELS configured",
-                        )
-                    if not (channel_keys & allowed):
-                        return (False, "channel not in DISCORD_ALLOWED_CHANNELS")
-            # Ignored beats allowed, including via a thread's parent.
-            ignored = self._get_ignored_channels()
-            if ignored and channel_ids:
-                if "*" in ignored or (channel_keys & ignored):
-                    return (False, "channel in DISCORD_IGNORED_CHANNELS")
-        # ── User / role allowlist (mirrors on_message line 681) ──
-        user = getattr(interaction, "user", None)
-        allowed_users = getattr(self, "_allowed_user_ids", set()) or set()
-        allowed_roles = getattr(self, "_allowed_role_ids", set()) or set()
-        if user is None or getattr(user, "id", None) is None:
-            # No identifiable user: fail closed even with allow-all; downstream handlers need interaction.user.id.
-            if allowed_users or allowed_roles:
-                return (False, "missing interaction.user with allowlist configured")
-            return (False, "missing interaction.user")
-        user_id = str(user.id)
-        # guild + is_dm scope the role check so the cross-guild DM bypass can't land via slash.
-        # See #12136.
-        interaction_guild = getattr(interaction, "guild", None)
-        if not self._is_allowed_user(
-            user_id, author=user, guild=interaction_guild, is_dm=in_dm,
-            channel_ids=channel_keys if not in_dm else None,
-        ):
-            return (False, "user not in DISCORD_ALLOWED_USERS / DISCORD_ALLOWED_ROLES")
-        return (True, None)
 
     async def _check_slash_authorization(
         self, interaction: "discord.Interaction", command_text: str,
@@ -4967,11 +4880,13 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, BasePlatformAd
         # them — without them a guild- or channel-routed profile never matches a native slash command
         # (#69178).
         parent_id = (self._get_parent_channel_id(interaction.channel) if is_thread else None) or ""
+        # Without the role grant the gateway refuses a role-only member the slash gate admitted.
         source = self.build_source(
             chat_id=str(interaction.channel_id), chat_name=chat_name, chat_type=chat_type,
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
             thread_id=thread_id, chat_topic=chat_topic,
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=parent_id or None,
+            role_authorized=self._slash_role_grant(interaction),
         )
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
@@ -5026,6 +4941,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, BasePlatformAd
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
             thread_id=thread_id, chat_topic=self._get_effective_topic(thread, is_thread=True),
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=_parent_id or None,
+            role_authorized=self._slash_role_grant(interaction),
         )
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)

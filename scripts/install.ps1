@@ -2407,10 +2407,25 @@ function Install-Repository {
         # Git for Windows can fail on atomic file operations (hook templates,
         # config lock files) due to antivirus, OneDrive, or NTFS filter drivers.
         # The -c flag injects config before any file I/O occurs.
+        #
+        # Also pin core.autocrlf=false here, BEFORE the clone runs. Git for
+        # Windows defaults to core.autocrlf=true, which renormalizes the
+        # repo's LF text files to CRLF while they are written to disk during
+        # `git clone`. The autocrlf=false pin further below (around the
+        # "Set per-repo config" comment) only applies AFTER the clone has
+        # already materialized a CRLF working tree -- flipping the setting
+        # at that point does not rewrite files already on disk, so git now
+        # sees every renormalized file as locally modified. The very next
+        # step, pinning to a specific commit/tag via `git checkout --detach`,
+        # then refuses to run on a dirty tree and the whole bootstrap fails
+        # (see the ZIP-fallback path below, which already gets this right by
+        # pinning autocrlf=false before its own checkout).
         Write-Info "Configuring git for Windows compatibility..."
-        $env:GIT_CONFIG_COUNT = "1"
+        $env:GIT_CONFIG_COUNT = "2"
         $env:GIT_CONFIG_KEY_0 = "windows.appendAtomically"
         $env:GIT_CONFIG_VALUE_0 = "false"
+        $env:GIT_CONFIG_KEY_1 = "core.autocrlf"
+        $env:GIT_CONFIG_VALUE_1 = "false"
         git config --global windows.appendAtomically false 2>$null
 
         # Try SSH first, then HTTPS, with -c flag for atomic write fix
@@ -2550,6 +2565,21 @@ function Install-Repository {
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
+            # Defensive safety net: the autocrlf=false pin above (before the
+            # clone) should already keep this tree clean, but belt-and-
+            # suspenders against any other dirt source (a retried/partial
+            # clone, a machine-level git config that overrides env vars,
+            # submodules, etc.) -- a dirty tree here would make the
+            # `checkout --detach` below abort the whole bootstrap. Discard
+            # any local modifications before pinning; this is a freshly
+            # cloned, not-yet-run checkout, so there is nothing user-made to
+            # lose.
+            $dirty = git -c windows.appendAtomically=false status --porcelain 2>$null
+            if ($dirty) {
+                Write-Warn "Freshly cloned tree has local modifications (likely autocrlf renormalization); discarding before pinning..."
+                git -c windows.appendAtomically=false checkout -- . 2>$null
+                git -c windows.appendAtomically=false clean -fd 2>$null
+            }
             if ($Commit) {
                 Write-Info "Pinning to commit $Commit..."
                 git -c windows.appendAtomically=false fetch origin $Commit

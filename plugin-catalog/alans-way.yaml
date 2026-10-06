@@ -1,6 +1,6 @@
 name: alans-way
 repo: https://github.com/capthvnsen/alans-way-agents
-sha: 01f9e638260cb830e386226a63c4f04edb29ddd2
+sha: 3a74614aa6ef43353500553526325c2fc33da9e5
 subdir: alans-way
 version: "0.4.1"
 title: "Alan's Way"
@@ -13,7 +13,7 @@ docs_url: https://github.com/capthvnsen/alans-way
 readme: true
 platforms: [linux]
 known_issues:
-  - "Install this on the remote Linux machine that runs Hermes, not on the Mac. The Mac runs the separate app. Ask the agent to set up Alan's Way; the workspace-setup skill walks through it."
+  - "Install this on the remote Linux machine that runs Hermes, not on the Mac. The Mac app is Apple Silicon only. Ask the agent to set up Alan's Way. If the plugin is already installed, that setup must pass --skip-plugin so this pin stays."
 capabilities:
   provides_tools:
     - proactive_control

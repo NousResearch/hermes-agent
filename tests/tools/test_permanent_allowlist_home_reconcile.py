@@ -6,15 +6,18 @@ import pytest
 import hermes_yaml as yaml
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from agent import secret_scope
 from tools import approval
 
 
 @contextmanager
 def selected_home(home):
     token = set_hermes_home_override(home)
+    secret_token = secret_scope.set_secret_scope({}, profile_home=home)
     try:
         yield
     finally:
+        secret_scope.reset_secret_scope(secret_token)
         reset_hermes_home_override(token)
 
 
@@ -36,13 +39,19 @@ def homes(tmp_path, monkeypatch):
     write_allowlist(named, ["revoked-op", "kept-op"])
     write_allowlist(other, ["other-only"])
     monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setattr(type(tmp_path), "home", lambda: tmp_path)
     monkeypatch.setattr(approval, "_permanent_approved", set())
     monkeypatch.setattr(approval, "_permanent_approved_by_home", {})
     monkeypatch.setattr(approval, "_permanent_baseline_by_home", {})
     monkeypatch.setattr(approval, "_session_approved", {})
-    with selected_home(None):
-        approval.load_permanent_allowlist()
-        yield launch, named, other
+    previous_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    try:
+        with selected_home(None):
+            approval.load_permanent_allowlist()
+            yield launch, named, other
+    finally:
+        secret_scope.set_multiplex_active(previous_multiplex)
 
 
 @pytest.mark.parametrize("initial_load", ["lazy", "explicit"])
@@ -69,6 +78,14 @@ def test_named_home_save_preserves_disk_edits_without_resurrecting_revocation(ho
     with selected_home(other):
         assert approval.is_approved("other-session", "other-only")
         assert not approval.is_approved("other-session", "new-grant")
+    with selected_home(named):
+        assert approval.is_approved("new-session", "new-grant")
+        assert not approval.is_approved("new-session", "revoked-op")
+        # A fresh profile cache after restart sees exactly the durable reconciled list.
+        approval._permanent_approved_by_home.clear()
+        approval._permanent_baseline_by_home.clear()
+        assert approval.is_approved("restarted-session", "new-grant")
+        assert not approval.is_approved("restarted-session", "revoked-op")
 
 
 @pytest.mark.parametrize("scoped", [False, True])

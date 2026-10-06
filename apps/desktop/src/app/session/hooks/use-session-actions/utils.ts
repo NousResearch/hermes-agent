@@ -15,8 +15,6 @@ import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-ima
 import { parseErrorSurface } from '@/lib/error-surface'
 import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
-import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
-import { activeGatewayConnectionId, isActivePrimary } from '@/store/gateway'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
@@ -75,6 +73,7 @@ import {
   persistedTurnsEquivalent,
   transcriptRowIds
 } from './pending-turn-identity'
+import { reconcileOwnerApprovalMode } from './runtime-owner'
 
 function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   let appended = false
@@ -2348,36 +2347,8 @@ interface ApplyRuntimeInfoOptions {
    * per-session state is unaffected.
    */
   foreground?: boolean
-  /**
-   * The backend that produced `info`, when the caller dialled one other than
-   * the ambient gateway (a tile's route, an All-profiles resume, a branch of a
-   * bot's chat). Omitted means the active gateway.
-   */
+  /** The backend that produced `info` when it is not the ambient gateway. */
   owner?: SessionOwnerScope
-}
-
-// The approval chip is keyed by the ACTIVE profile's name, so only the active
-// gateway's runtime may reconcile it — the session.info event path applies the
-// same rule. Another profile's `approvals.mode` written under the active name
-// shows "Manual" on a profile that auto-approves, or the reverse.
-function ownerIsActiveGateway(owner: SessionOwnerScope): boolean {
-  if (!owner) {
-    return true
-  }
-
-  const activeProfile = normalizeProfileKey($activeGatewayProfile.get())
-
-  if (typeof owner === 'string') {
-    // A bare profile dials the profile door (the primary, or a connection-less
-    // pool socket), so it is the active gateway only while that door is active,
-    // never while a registry connection serving a same-named profile is.
-    return normalizeProfileKey(owner) === activeProfile && (isActivePrimary() || activeGatewayConnectionId() === null)
-  }
-
-  return (
-    normalizeProfileKey(owner.profile) === activeProfile &&
-    (owner.connectionId?.trim() || 'local') === (activeGatewayConnectionId() ?? 'local')
-  )
 }
 
 /** Mirror a session's runtime state into the composer atoms the MAIN pane
@@ -2445,9 +2416,7 @@ export function applyRuntimeInfo(
   // reports backend skew and credential warnings just as usefully.
   reportBackendContract(info.desktop_contract)
 
-  if (info.approval_mode !== undefined && ownerIsActiveGateway(owner)) {
-    reconcileApprovalModeForProfile($activeGatewayProfile.get(), info.approval_mode)
-  }
+  reconcileOwnerApprovalMode(info, owner)
 
   requestDesktopOnboardingForCredentialWarning(info.credential_warning)
 

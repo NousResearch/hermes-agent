@@ -1,9 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
-import * as gateway from '@/store/gateway'
 import { $desktopOnboarding, consumePendingCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -75,38 +74,6 @@ describe('applyRuntimeInfo approval mode', () => {
 
     expect(approvalModeForProfile('work')).toBe('smart')
     expect(approvalModeForProfile('default')).toBe('smart')
-  })
-
-  it('never lets another backend runtime set the active profile approval chip', () => {
-    applyRuntimeInfo({ approval_mode: 'manual' })
-
-    // A bot tile, a branch of a bot chat, an All-profiles resume, and a
-    // same-named profile on another connection all report THEIR config.
-    applyRuntimeInfo({ approval_mode: 'off' }, { foreground: false, owner: { connectionId: 'local', profile: 'bot' } })
-    applyRuntimeInfo({ approval_mode: 'off' }, { owner: 'bot' })
-    applyRuntimeInfo({ approval_mode: 'off' }, { owner: { connectionId: 'ssh-box', profile: 'work' } })
-
-    expect(approvalModeForProfile('work')).toBe('manual')
-
-    applyRuntimeInfo({ approval_mode: 'off' }, { owner: { connectionId: 'local', profile: 'work' } })
-
-    expect(approvalModeForProfile('work')).toBe('off')
-
-    applyRuntimeInfo({ approval_mode: 'manual' })
-    // The active socket is (ssh-box, work); a bare 'work' owner dialled the local profile door.
-    const primary = vi.spyOn(gateway, 'isActivePrimary').mockReturnValue(false)
-    const connection = vi.spyOn(gateway, 'activeGatewayConnectionId').mockReturnValue('ssh-box')
-
-    try {
-      applyRuntimeInfo({ approval_mode: 'off' }, { owner: 'work' })
-      expect(approvalModeForProfile('work')).toBe('manual')
-
-      applyRuntimeInfo({ approval_mode: 'off' }, { owner: { connectionId: 'ssh-box', profile: 'work' } })
-      expect(approvalModeForProfile('work')).toBe('off')
-    } finally {
-      primary.mockRestore()
-      connection.mockRestore()
-    }
   })
 })
 

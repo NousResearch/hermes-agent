@@ -233,7 +233,9 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
     # would otherwise reach `", ".join(None)` and crash the whole listing (#32896).
     deliver = job.get("deliver") or ["local"]
     skills = job.get("skills") or ([job["skill"]] if job.get("skill") else [])
-    monitor_source = job.get("monitor_script") or job.get("monitor_url")
+    from cron.monitor import monitor_tool_display
+    monitor_source = (job.get("monitor_script") or job.get("monitor_url")
+                      or monitor_tool_display(job.get("monitor_tool")))
     mon_state = job.get("monitor_state") or {}
     latest_execution = job.get("latest_execution") or {}
     optional = [
@@ -715,7 +717,7 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("repeat", "repeat"), ("script", "script"), ("workdir", "workdir"),
                    ("model", "model"), ("provider", "model_provider"), ("pinned", "pinned"),
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
-                   ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"),
+                   ("monitor_tool", "monitor_tool"), ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"),
                    ("interpreter", "interpreter"))
 
 
@@ -728,6 +730,7 @@ _JOB_DETAIL_LINES = (
     ("script", "  Script: {}"),
     ("monitor_script", "  Monitor: {} (agent runs only on output change)"),
     ("monitor_url", "  Monitor: {} (agent runs only on output change)"),
+    ("monitor_tool", "  Monitor: {} (agent runs only on output change)"),
     ("no_agent", "  Mode: no-agent (script stdout delivered directly)"),
     ("continuity", "  Continuity: on (each run sees the previous run's output)"),
     ("workdir", "  Workdir: {}"),
@@ -736,9 +739,11 @@ _JOB_DETAIL_LINES = (
 
 def _print_job_details(job_data: Dict[str, Any]) -> None:
     """Print the optional Script/Monitor/Mode/Continuity/Workdir lines of a job record."""
+    from cron.monitor import monitor_tool_display
     for key, template in _JOB_DETAIL_LINES:
         if job_data.get(key):
-            print(template.format(job_data[key]))
+            value = monitor_tool_display(job_data[key]) if key == "monitor_tool" else job_data[key]
+            print(template.format(value))
 
 
 def cron_create(args):

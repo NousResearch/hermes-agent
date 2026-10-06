@@ -463,6 +463,7 @@ class CronJobRow(_Open):
     reasoning_effort: str | None = None
     monitor_script: str | None = None
     monitor_url: str | None = None
+    monitor_tool: JsonValue | None = None
     monitor_state: JsonValue | None = None
     no_agent: bool | None = None
     enabled_toolsets: list[str] | None = None

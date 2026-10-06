@@ -3863,6 +3863,7 @@ export interface CronJobRow {
   reasoning_effort?: string | null
   monitor_script?: string | null
   monitor_url?: string | null
+  monitor_tool?: unknown | null
   monitor_state?: unknown | null
   no_agent?: boolean | null
   enabled_toolsets?: string[] | null

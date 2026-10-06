@@ -940,6 +940,44 @@ It picks `no_agent=True` automatically when the message content is fully determi
 
 See the [Script-Only Cron Jobs guide](../../guides/cron-script-only.md) for worked examples.
 
+## Monitor mode (event-triggered jobs)
+
+A monitor job attaches a cheap **source** to an LLM job. Every tick the scheduler runs the source first, hashes its exact output, and only wakes the agent when the output differs from the last agent-triggering tick. An unchanged tick costs no tokens and delivers nothing (it is recorded as a silent `no_change` run); a changed tick injects a `MONITOR CHANGE DETECTED` block — a capped unified diff plus the new output — into the prompt. The first tick always runs as the baseline. A source failure is an **error alert**, never a change, and the stored hash is left alone so a broken source cannot silently stop watching.
+
+Three source kinds, mutually exclusive and incompatible with `--no-agent`:
+
+| Source | Flag / tool field | What runs each tick |
+|---|---|---|
+| Script | `--monitor-script check.sh` / `monitor="check.sh"` | A script under `$HERMES_HOME/scripts/` (same containment and `--interpreter` rules as `--script`) |
+| URL | `--monitor-url https://…` / `monitor="https://…"` | A bounded GET (30 s, 256 KiB) |
+| Tool | `--monitor-tool 'NAME {json}'` / `monitor="tool:NAME {json}"` | One registered tool — a connector, an MCP tool, `web_extract`, … — dispatched with fixed arguments and no LLM |
+
+The tool source is what makes a cron job react to events in connected services without spending a model call while it waits. Hosted connectors have no CLI, so a script cannot poll them; the tool source can:
+
+```bash
+# Wake the agent only when a new unread mail from the vendor shows up
+hermes cron create "every 10m" \
+  --monitor-tool 'connectors__gmail__search {"q": "from:vendor.example is:unread", "max_results": 5}' \
+  --deliver telegram --name "vendor-decisions" \
+  "A new email from the vendor arrived (see the monitor diff). Read the earlier correspondence in the thread, summarize the request and its deadline, and draft a reply for my review."
+```
+
+The same job from chat:
+
+```python
+cronjob(action="create", schedule="every 10m",
+        monitor='tool:connectors__gmail__search {"q": "from:vendor.example is:unread", "max_results": 5}',
+        prompt="A new email from the vendor arrived …", deliver="telegram")
+```
+
+Rules for the tool source:
+
+- The tool runs through the normal dispatch path (hooks, approval rules, middleware), with the same toolset denylist a cron agent gets — `messaging`, `clarify`, `cronjob` (unless `cron.allow_agent_scheduling`) and `agent.disabled_toolsets` are refused up front. A headless approval refusal or any `{"error": …}` result is a source failure.
+- JSON results are re-serialized with sorted keys before hashing, so key order cannot fake a change. Pick arguments whose result set is stable when nothing happened (a filtered search, a fixed page size, no `sort=random`); a result carrying timestamps or request IDs will look changed every tick.
+- Pass `--monitor-tool ''` (or `monitor=""` from the tool) on edit to clear the source and turn the job back into a plain scheduled one.
+
+Pair monitor mode with `--continuity` when the reaction should build on the previous reaction (a decision log, a running triage), or with the per-job notepad (`hermes cron notepad <job_id> set <key> <value>`, injected into every run's prompt) for cursors that must survive silent ticks. Connector tool names follow `connectors__<app>__<tool>` — run `tool_search` in chat (or `hermes tools list`) to find the exact one.
+
 ## Chaining jobs with `context_from`
 
 Cron jobs run in isolated sessions with no memory of previous runs. But sometimes one job's output is exactly what the next job needs. The `context_from` parameter wires that connection automatically — Job B's prompt gets Job A's most recent output prepended as context at runtime.

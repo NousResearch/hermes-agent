@@ -475,3 +475,114 @@ def test_cronjob_tool_update_clears_monitor_script(hermes_env):
     )
     assert result.get("success") is True
     assert get_job(created["job_id"]).get("monitor_script") is None
+
+
+# ---------------------------------------------------------------------------
+# monitor_tool: one registered tool dispatched each tick, no LLM — an event trigger on a
+# connected service that spends nothing while watching.
+# ---------------------------------------------------------------------------
+
+
+def _register_probe_tool(state: dict, *, toolset: str = "web"):
+    """A real registry entry so the monitor source travels the real dispatch path."""
+    from tools.registry import registry
+
+    name = f"probe_inbox_tool_{toolset}"
+
+    def handler(args, **_kw):
+        state["calls"] = state.get("calls", 0) + 1
+        state["last_args"] = dict(args)
+        return json.dumps(state["result"])
+
+    registry.register(name=name, toolset=toolset, schema={"name": name, "description": "probe",
+                      "parameters": {"type": "object", "properties": {}}}, handler=handler)
+    return name
+
+
+def test_monitor_tool_wakes_agent_only_when_result_changes(hermes_env, monkeypatch):
+    """Unchanged tool result → suppressed tick; changed result → agent with the diff; the tool
+    saw the stored args each time and the result is hashed with sorted keys (key order alone is
+    never a change)."""
+    from cron.jobs import create_job, get_job
+    from cron.scheduler import SILENT_MARKER, run_job
+
+    state = {"result": {"threads": ["t1"], "unread": 1}}
+    name = _register_probe_tool(state)
+    job = create_job(
+        prompt="React to the inbox", schedule="every 5m", deliver="local",
+        monitor_tool=f'tool:{name} {{"q": "from:vendor is:unread"}}',
+    )
+    assert job["monitor_tool"] == {"name": name, "args": {"q": "from:vendor is:unread"}}
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+
+    run_job(job)  # baseline
+    assert observed["agent_runs"] == 1 and state["last_args"] == {"q": "from:vendor is:unread"}
+
+    state["result"] = {"unread": 1, "threads": ["t1"]}  # same content, other key order
+    success, doc, final, error = run_job(get_job(job["id"]))
+    assert (success, final, error) == (True, SILENT_MARKER, None)
+    assert observed["agent_runs"] == 1 and "no_change" in doc
+
+    state["result"] = {"threads": ["t1", "t2"], "unread": 2}
+    success, doc, final, error = run_job(get_job(job["id"]))
+    assert success is True and observed["agent_runs"] == 2
+    assert '+    "t2"' in observed["prompts"][1]
+
+
+def test_monitor_tool_error_and_denied_toolset_are_source_failures(hermes_env, monkeypatch):
+    """A tool error result never counts as a change (hash untouched, agent not run), and a tool
+    from a cron-denied toolset is refused before dispatch — the monitor cannot widen what a
+    cron run may do."""
+    from cron.jobs import create_job, get_job
+    from cron.scheduler import run_job
+
+    state = {"result": {"threads": []}}
+    name = _register_probe_tool(state)
+    job = create_job(prompt="React", schedule="every 5m", deliver="local",
+                     monitor_tool={"name": name, "args": {}})
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+    run_job(job)
+    stored_hash = get_job(job["id"])["monitor_state"]["last_output_hash"]
+
+    state["result"] = {"error": "Connectors are not available in this session."}
+    success, doc, final, error = run_job(get_job(job["id"]))
+    assert success is False and "failed" in (error or "")
+    assert observed["agent_runs"] == 1
+    assert get_job(job["id"])["monitor_state"]["last_output_hash"] == stored_hash
+
+    state["result"] = {"threads": []}
+    denied = _register_probe_tool(state, toolset="messaging")
+    from cron.jobs import update_job
+    update_job(job["id"], {"monitor_tool": {"name": denied, "args": {}}})
+    calls_before = state.get("calls", 0)
+    success, doc, final, error = run_job(get_job(job["id"]))
+    assert success is False and "messaging" in (error or "")
+    assert state.get("calls", 0) == calls_before  # refused before dispatch
+    assert observed["agent_runs"] == 1
+
+
+def test_monitor_field_grammar_routes_tool_prefix(hermes_env):
+    """The single model-facing ``monitor`` field: ``tool:`` → monitor_tool, http → URL, else
+    script; a malformed tool spec fails the create instead of storing garbage."""
+    from cron.jobs import get_job
+    from tools.cronjob_job_args import _split_monitor_arg
+    from tools.cronjob_tools import cronjob
+
+    assert _split_monitor_arg("tool:web_extract {\"urls\": [\"https://x\"]}", None, None, None) == (
+        "", "", "tool:web_extract {\"urls\": [\"https://x\"]}")
+    assert _split_monitor_arg("https://x/status", None, None, None) == ("", "https://x/status", "")
+    assert _split_monitor_arg("check.sh", None, None, None) == ("check.sh", "", "")
+
+    bad = json.loads(cronjob(action="create", prompt="React", schedule="every 5m", deliver="local",
+                             monitor_tool="tool:web_extract not-json"))
+    assert bad.get("success") is False and "JSON object" in bad.get("error", "")
+
+    created = json.loads(cronjob(action="create", prompt="React", schedule="every 5m", deliver="local",
+                                 monitor_tool='tool:web_extract {"urls": ["https://x"]}'))
+    assert created.get("success") is True
+    assert get_job(created["job_id"])["monitor_tool"] == {"name": "web_extract", "args": {"urls": ["https://x"]}}
+    cleared = json.loads(cronjob(action="update", job_id=created["job_id"], monitor_tool=""))
+    assert cleared.get("success") is True
+    assert get_job(created["job_id"]).get("monitor_tool") is None

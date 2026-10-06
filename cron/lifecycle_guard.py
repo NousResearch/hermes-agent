@@ -472,6 +472,53 @@ _MAX_LIFECYCLE_SCAN_LINE_BYTES = 64 * 1024
 _MAX_LIFECYCLE_SCAN_PATHS = 1024
 _MAX_LIFECYCLE_SCAN_REMOTE_READS = 64
 
+# Operator relief valve for the caps above (#133745): a legitimate script (e.g. a maintenance
+# script carrying an encoded patch) can hold one physical line far longer than any lifecycle
+# command while staying well under the per-file cap. `security.lifecycle_scan` in the operator's
+# config.yaml may retune a cap — the bound itself is never removed: each key is a positive int
+# clamped to 16x the built-in default, so an effectively-unbounded value cannot silently disable
+# the guard, and anything unreadable/invalid keeps the built-in defaults. Fail-closed verdicts
+# are unchanged. Keys (all optional): max_total_bytes (1 MiB), max_lines (16384),
+# max_line_bytes (64 KiB), max_paths (1024), max_remote_reads (64).
+_MAX_LIFECYCLE_SCAN_OVERRIDE_MULTIPLIER = 16
+_LIFECYCLE_SCAN_LIMIT_KEYS = (  # (config key, budget attr for the effective cap)
+    ("max_total_bytes", "_MAX_LIFECYCLE_SCAN_BYTES"),
+    ("max_lines", "_MAX_LIFECYCLE_SCAN_LINES"),
+    ("max_line_bytes", "_MAX_LIFECYCLE_SCAN_LINE_BYTES"),
+    ("max_paths", "_MAX_LIFECYCLE_SCAN_PATHS"),
+    ("max_remote_reads", "_MAX_LIFECYCLE_SCAN_REMOTE_READS"),
+)
+
+
+def _configured_scan_limits() -> dict[str, int]:
+    """Effective ``security.lifecycle_scan`` overrides (valid values only, already clamped).
+
+    Reads the config through ``load_config_readonly`` (the sanctioned path; raw config.yaml
+    parsing outside owner modules is test-guarded). Total, like the guard itself: any error,
+    missing block or invalid value falls back to the module constants — an unreadable config
+    must never widen or crash the scan (#76762's "a guarded path must never crash the guard").
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        data = load_config_readonly()
+        security = data.get("security") if isinstance(data, dict) else None
+        block = security.get("lifecycle_scan") if isinstance(security, dict) else None
+        if not isinstance(block, dict):
+            return {}
+        limits: dict[str, int] = {}
+        for key, const_name in _LIFECYCLE_SCAN_LIMIT_KEYS:
+            try:
+                value = int(block.get(key))
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                default = globals()[const_name]
+                limits[key] = min(value, default * _MAX_LIFECYCLE_SCAN_OVERRIDE_MULTIPLIER)
+        return limits
+    except Exception:
+        return {}
+
 
 class _LifecycleScanBudget:
     """Shared work budget for one complete referenced-script walk. ``refusal`` records why the walk
@@ -479,31 +526,43 @@ class _LifecycleScanBudget:
     cloud placeholder) so the caller can tell the model the real reason (#113944)."""
 
     __slots__ = ("bytes_remaining", "lines_remaining", "paths_remaining", "remote_reads_remaining",
-                 "refusal")
+                 "max_line_bytes", "exhausted_detail", "refusal")
 
     def __init__(self) -> None:
-        # Read the module constants at construction so tests/operators can lower them at runtime.
-        self.bytes_remaining = _MAX_LIFECYCLE_SCAN_BYTES
-        self.lines_remaining = _MAX_LIFECYCLE_SCAN_LINES
-        self.paths_remaining = _MAX_LIFECYCLE_SCAN_PATHS
-        self.remote_reads_remaining = _MAX_LIFECYCLE_SCAN_REMOTE_READS
+        # Read the module constants at construction so tests/operators can lower them at runtime;
+        # a validated security.lifecycle_scan override may retune a cap (#133745).
+        overrides = _configured_scan_limits()
+        self.bytes_remaining = overrides.get("max_total_bytes", _MAX_LIFECYCLE_SCAN_BYTES)
+        self.lines_remaining = overrides.get("max_lines", _MAX_LIFECYCLE_SCAN_LINES)
+        self.max_line_bytes = overrides.get("max_line_bytes", _MAX_LIFECYCLE_SCAN_LINE_BYTES)
+        self.paths_remaining = overrides.get("max_paths", _MAX_LIFECYCLE_SCAN_PATHS)
+        self.remote_reads_remaining = overrides.get("max_remote_reads", _MAX_LIFECYCLE_SCAN_REMOTE_READS)
         self.refusal: Optional[str] = None
+        self.exhausted_detail: Optional[str] = None
 
     def charge_text(self, text: str) -> bool:
         """Charge *text* before tokenization; False when it does not fit."""
+        self.exhausted_detail = None
         # UTF-8 is >= one byte per code point, so the char count is a free lower bound.
         if len(text) > self.bytes_remaining:
+            self.exhausted_detail = (
+                f"the text is {len(text)} chars with only {self.bytes_remaining} bytes of walk budget left")
             return False
         encoded = len(text.encode("utf-8", errors="replace"))
         if encoded > self.bytes_remaining:
+            self.exhausted_detail = (
+                f"the text is {encoded} UTF-8 bytes with only {self.bytes_remaining} bytes of walk budget left")
             return False
         lines = text.count("\n") + 1
         if lines > self.lines_remaining:
+            self.exhausted_detail = f"the text has {lines} lines against a {self.lines_remaining}-line budget"
             return False
         # One huge token is the quadratic shlex case; bound the longest physical line (chars, a
         # lower bound on bytes — tight enough for a DoS bound without a per-line encode).
         longest = max((len(line) for line in text.split("\n")), default=0)
-        if longest > _MAX_LIFECYCLE_SCAN_LINE_BYTES:
+        if longest > self.max_line_bytes:
+            self.exhausted_detail = (
+                f"the longest physical line is {longest} chars, over the {self.max_line_bytes}-char per-line cap")
             return False
         self.bytes_remaining -= encoded
         self.lines_remaining -= lines
@@ -547,12 +606,16 @@ def lifecycle_scan_root_within_budget(text: str) -> bool:
 
 
 def _budget_exhausted(budget: _LifecycleScanBudget, what: str, depth: int) -> bool:
+    # Name the specific exhausted limit with its effective value and the observed count (#133745):
+    # "under 1 MiB" advice cannot explain a refusal caused by one 82 KiB line.
+    detail = f"; {budget.exhausted_detail}" if budget.exhausted_detail else ""
     logger.warning(
-        "lifecycle guard scan budget exhausted (%s at depth %d); "
-        "failing closed — see _MAX_LIFECYCLE_SCAN_* in cron/lifecycle_guard.py",
-        what, depth,
+        "lifecycle guard scan budget exhausted (%s at depth %d%s); "
+        "failing closed — see security.lifecycle_scan in config.yaml and "
+        "_MAX_LIFECYCLE_SCAN_* in cron/lifecycle_guard.py",
+        what, depth, detail,
     )
-    budget.refusal = f"the scan budget was exhausted ({what} at depth {depth})"
+    budget.refusal = f"the scan budget was exhausted ({what} at depth {depth}{detail})"
     return True
 
 

@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { BrandMark } from '@/components/brand-mark'
 import { SyncStatusCard } from '@/components/sync-status-card'
 import { Button } from '@/components/ui/button'
-import { writeClipboardText } from '@/components/ui/copy-button'
+import { CopyButton, writeClipboardText } from '@/components/ui/copy-button'
 import {
   Dialog,
   DialogContent,
@@ -25,7 +25,7 @@ import type {
   UpdaterMechanismClient
 } from '@/global'
 import { useI18n } from '@/i18n'
-import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
+import { buildCommitChangelog, type CommitGroup, formatFullChangelogText } from '@/lib/commit-changelog'
 import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
 import { cn } from '@/lib/utils'
@@ -128,7 +128,12 @@ export function UpdatesOverlay() {
         )}
 
         {phase === 'manual' && (
-          <ManualView command={apply.command ?? null} message={apply.message} onDone={() => handleClose(false)} />
+          <ManualView
+            command={apply.command ?? null}
+            isBackend={isBackend}
+            message={apply.message}
+            onDone={() => handleClose(false)}
+          />
         )}
 
         {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
@@ -290,6 +295,8 @@ function IdleView({
     copy: u
   })
 
+  const handleCopyFullLog = () => formatFullChangelogText(commits, behind, status.branch)
+
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
@@ -300,9 +307,22 @@ function IdleView({
       </div>
 
       <div className="grid gap-3">
-        {groups.map(group => (
+        {groups.map((group, index) => (
           <div key={group.id}>
-            <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
+              {index === 0 && commits.length > 0 && (
+                <CopyButton
+                  appearance="icon"
+                  buttonSize="icon-xs"
+                  className="-my-1 size-5 shrink-0 text-muted-foreground/70 hover:text-foreground"
+                  iconClassName="size-3"
+                  label={u.copyFullLog}
+                  side="left"
+                  text={handleCopyFullLog}
+                />
+              )}
+            </div>
             <ul className="mt-1.5 grid gap-1.5 text-xs text-foreground">
               {group.items.map(item => (
                 <li className="flex items-start gap-2" key={item}>
@@ -331,7 +351,17 @@ function IdleView({
   )
 }
 
-function ManualView({ command, message, onDone }: { command: string | null; message?: string; onDone: () => void }) {
+function ManualView({
+  command,
+  isBackend,
+  message,
+  onDone
+}: {
+  command: string | null
+  isBackend: boolean
+  message?: string
+  onDone: () => void
+}) {
   const { t } = useI18n()
   const u = t.updates
   const [copied, setCopied] = useState(false)
@@ -356,7 +386,9 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
         <div className="flex flex-col items-center gap-3 text-center">
           <Terminal className="size-8 text-primary" />
 
-          <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
+          <DialogTitle className="text-center text-xl">
+            {isBackend ? u.manualUnavailableTitle : u.manualTitle}
+          </DialogTitle>
           <DialogDescription className="text-center text-sm">{message || u.manualPickedUp}</DialogDescription>
         </div>
 
@@ -373,7 +405,9 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
         <Terminal className="size-8 text-primary" />
 
         <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
-        <DialogDescription className="text-center text-sm">{guidance ?? u.manualBody}</DialogDescription>
+        <DialogDescription className="text-center text-sm">
+          {guidance ?? (isBackend ? u.manualBodyBackend : u.manualBody)}
+        </DialogDescription>
       </div>
 
       <button
@@ -399,7 +433,11 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
         </span>
       </button>
 
-      {!guidance && <p className="text-center text-xs text-muted-foreground">{u.manualPickedUp}</p>}
+      {!guidance && (
+        <p className="text-center text-xs text-muted-foreground">
+          {isBackend ? u.manualPickedUpBackend : u.manualPickedUp}
+        </p>
+      )}
 
       <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
         {u.done}

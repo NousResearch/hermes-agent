@@ -234,6 +234,14 @@ async def _resolve_container_fallback(
             f"'{p}' is not reachable inside the sandbox and no active sandbox "
             f"session is available to read it",
             src=src, origin="container")
+    from tools.terminal_tool_config import translate_mounted_host_path
+    translated = translate_mounted_host_path(
+        str(p),
+        getattr(env, "host_cwd", None) or "",
+        getattr(env, "host_cwd_mount", None) or "/workspace",
+    )
+    if translated:
+        p = Path(translated)
     # Bound the read INSIDE the sandbox: head -c caps at ingest-limit+1 (+1 distinguishes "at the
     # cap" from "over") so /dev/zero can't stream unbounded base64 into host memory. The input
     # redirect avoids argv (leading-dash paths); tr -d instead of GNU-only base64 -w0 (BusyBox).

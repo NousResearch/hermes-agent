@@ -139,16 +139,3 @@ def format_tier1_report(report: Tier1Report, limit: int = 10) -> str:
     if report.incomplete_checks:
         lines.append(f"  (not run: {', '.join(report.incomplete_checks)} — no opinion from these checks)")
     return "\n".join(lines)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Optional  # noqa: F401,E402
-
-SCANNER_NAME = "skillevaluator-tier1"
-
-def scanner_available() -> bool:
-    return shutil.which(SCANNER_BIN) is not None
-# ---- END PLUGIN-COMPAT ----

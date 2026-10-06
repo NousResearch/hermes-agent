@@ -36,8 +36,11 @@ class VersionInfo:
 
     @property
     def display_version(self) -> str:
-        """``<base>+<distance>``: the short form surfaces label a version by.
-        The commit is shown beside it where there is room, never inside it."""
+        """``<base>+<distance>`` when a release is known, else the derived identity.
+        Keep a tagless checkout's ``git.<sha>`` rather than reducing it to unknown.
+        """
+        if self.base_version == "unknown":
+            return self.derived_version
         return _derived_version(self.base_version, self.distance)
 
 
@@ -58,7 +61,7 @@ def _derived_version(
 def _run_git(repo_dir: Path, *args: str) -> str | None:
     try:
         result = subprocess.run(
-            ["git", *args], capture_output=True, text=True, timeout=3, cwd=str(repo_dir)
+            ["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=str(repo_dir)
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -220,7 +223,7 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
         dirty_result = subprocess.run(
             status_command,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=3,
             cwd=str(repo_dir),
         )
@@ -300,7 +303,7 @@ def get_code_identity(refresh: bool = False) -> dict:
     """Return the running install's code identity as a flat dict.
 
     Shape: ``{"sha": full sha | None, "short_sha": str | None, "version":
-    base package version | None, "source": str}`` — what the update
+    base package version | None, "source": str, "commit_date": epoch s | None}`` — what the update
     receipt, runtime inventory, and gateway status stamping consume.
     Backed by :func:`get_version_info` (install stamp first, live git
     second, unknown third), so every consumer shares one resolution
@@ -319,4 +322,5 @@ def get_code_identity(refresh: bool = False) -> dict:
         "short_sha": info.commit[:8] if info.commit else None,
         "version": info.base_version,
         "source": info.source,
+        "commit_date": info.commit_date,
     }

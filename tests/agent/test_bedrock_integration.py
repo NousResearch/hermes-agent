@@ -146,65 +146,55 @@ class TestRuntimeProvider:
         assert result["provider"] == "bedrock"
         assert result["api_mode"] == "bedrock_converse"
 
-    @staticmethod
-    def _resolve_bedrock(monkeypatch, model_id):
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-
-        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIO...MPLE")
-        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
-        monkeypatch.setenv("AWS_REGION", "us-east-2")
-        monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
-        with patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
-             patch("hermes_cli.runtime_provider._get_model_config", return_value={
-                 "provider": "bedrock",
-                 "default": model_id,
-             }):
-            return resolve_runtime_provider(requested="bedrock")
-
-    def _assert_mantle_responses(self, result, model_id):
-        assert result["api_mode"] == "codex_responses", model_id
-        assert result["model"] == model_id
-        assert result["base_url"] == "https://bedrock-mantle.us-east-2.api.aws/openai/v1"
-        assert result["api_key"] == "aws-sdk"
-        assert result["bedrock_openai"] is True, model_id
-
     def test_bedrock_openai_models_route_to_mantle_responses(self, monkeypatch):
         """Bedrock's OpenAI models (GPT-5.5 / GPT-5.6 family) are not Converse
         models — they only answer on the Mantle /openai/v1 Responses surface.
         Every allowlisted ID must route there, with the aws-sdk IAM sentinel."""
         from agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        monkeypatch.setenv("AWS_REGION", "us-east-2")
 
         assert BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+
         for model_id in BEDROCK_OPENAI_RESPONSES_MODEL_IDS:
-            self._assert_mantle_responses(self._resolve_bedrock(monkeypatch, model_id), model_id)
+            with patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
+                 patch("hermes_cli.runtime_provider._get_model_config", return_value={
+                     "provider": "bedrock",
+                     "default": model_id,
+                 }):
+                result = resolve_runtime_provider(requested="bedrock")
 
-    @pytest.mark.parametrize("model_id", ["openai.gpt-6-sol", "openai.gpt-6-luna"])
-    def test_bedrock_bare_gpt6_routes_to_mantle_responses(self, monkeypatch, model_id):
-        """Bare GPT-6 ids are served by Mantle's Responses endpoint (listed by
-        its /v1/models); on-demand bare ids are not invokable on Converse."""
-        from agent.bedrock_adapter import (
-            BEDROCK_DEFAULT_CONTEXT_LENGTH, get_bedrock_context_length, merge_bedrock_openai_model_ids,
-        )
+            assert result["api_mode"] == "codex_responses", model_id
+            assert result["model"] == model_id
+            assert result["base_url"] == "https://bedrock-mantle.us-east-2.api.aws/openai/v1"
+            assert result["api_key"] == "aws-sdk"
+            assert result["bedrock_openai"] is True, model_id
 
-        self._assert_mantle_responses(self._resolve_bedrock(monkeypatch, model_id), model_id)
-        # Sibling paths keyed off the same allowlist: discovery surfaces the Mantle-only id and the
-        # static context table does not fall back to the generic Bedrock default.
-        assert model_id in merge_bedrock_openai_model_ids(["us.anthropic.claude-sonnet-5"])
-        assert get_bedrock_context_length(model_id, probe=False) > BEDROCK_DEFAULT_CONTEXT_LENGTH
+    def test_bedrock_openai_profile_ids_route_to_runtime_converse(self, monkeypatch):
+        """``us.``/``global.`` OpenAI IDs are bedrock-runtime cross-Region profiles; Mantle rejects
+        them ("Geo/Global inference ID: Not supported" on every OpenAI card). They ride the
+        Converse wire on bedrock-runtime, never the Mantle Responses base URL."""
+        from agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+        from hermes_cli.runtime_provider import resolve_runtime_provider
 
-    @pytest.mark.parametrize("model_id", [
-        "us.openai.gpt-6-sol",       # geo inference profile: Converse-only (#115916)
-        "global.openai.gpt-6-luna",  # global inference profile: Converse-only
-        "us.openai.gpt-5.6-sol",
-        "openai.gpt-oss-120b-1:0",   # GPT-OSS is a native Converse model
-    ])
-    def test_bedrock_prefixed_and_oss_openai_ids_stay_on_converse(self, monkeypatch, model_id):
-        """Mantle rejects us./global. inference-profile ids, so they must NOT be
-        rewritten to the Mantle route; GPT-OSS stays on Converse too."""
-        result = self._resolve_bedrock(monkeypatch, model_id)
-        assert result["api_mode"] == "bedrock_converse", model_id
-        assert result["base_url"] == "https://bedrock-runtime.us-east-2.amazonaws.com"
-        assert not result.get("bedrock_openai"), model_id
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        monkeypatch.setenv("AWS_REGION", "us-east-2")
+
+        for model_id in BEDROCK_OPENAI_RESPONSES_MODEL_IDS:
+            for profile_id in (f"us.{model_id}", f"global.{model_id}"):
+                with patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
+                     patch("hermes_cli.runtime_provider._get_model_config", return_value={
+                         "provider": "bedrock", "default": profile_id,
+                     }):
+                    result = resolve_runtime_provider(requested="bedrock")
+
+                assert result["api_mode"] == "bedrock_converse", profile_id
+                assert result["base_url"] == "https://bedrock-runtime.us-east-2.amazonaws.com", profile_id
+                assert not result.get("bedrock_openai"), profile_id
 
     def test_bedrock_openai_models_do_not_fall_back_to_default_context(self):
         """The Mantle OpenAI models have a larger window than the generic
@@ -522,8 +512,7 @@ class TestAuxiliaryClientBedrockResolution:
             "Mantle auxiliary base_url ignored config.yaml bedrock.region"
         )
 
-    @pytest.mark.parametrize("model_id", ["openai.gpt-5.5", "openai.gpt-6-sol"])
-    def test_bedrock_openai_aux_uses_responses_client(self, monkeypatch, model_id):
+    def test_bedrock_openai_aux_uses_responses_client(self, monkeypatch):
         """Auxiliary tasks on Bedrock GPT models use the Mantle Responses
         path (SigV4 http client + aws-sdk sentinel), not the Anthropic shim."""
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
@@ -533,11 +522,29 @@ class TestAuxiliaryClientBedrockResolution:
         with patch("agent.auxiliary_client.OpenAI", return_value=MagicMock()) as mock_openai, \
              patch("agent.bedrock_adapter.build_bedrock_openai_http_client", return_value=MagicMock()):
             from agent.auxiliary_client import resolve_provider_client, CodexAuxiliaryClient
-            client, model = resolve_provider_client("bedrock", model_id)
+            client, model = resolve_provider_client("bedrock", "openai.gpt-5.5")
 
-        assert model == model_id
+        assert model == "openai.gpt-5.5"
         assert isinstance(client, CodexAuxiliaryClient)
         kwargs = mock_openai.call_args.kwargs
         assert kwargs["api_key"] == "aws-sdk"
         assert kwargs["base_url"] == "https://bedrock-mantle.us-east-2.api.aws/openai/v1"
         assert "http_client" in kwargs
+
+    @pytest.mark.parametrize("profile_id", ["us.openai.gpt-6.1-sol", "global.openai.gpt-6-astra",
+                                            "us.openai.gpt-5.6-terra"])
+    def test_bedrock_openai_profile_aux_uses_runtime_converse(self, monkeypatch, profile_id):
+        """Auxiliary calls (compression) on a cross-Region OpenAI profile take the same wire as the
+        primary turn: Converse on bedrock-runtime, model ID unchanged, no Mantle client built."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        monkeypatch.setenv("AWS_REGION", "us-east-2")
+
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            from agent.auxiliary_client import resolve_provider_client, BedrockAuxiliaryClient
+            client, model = resolve_provider_client("bedrock", profile_id)
+
+        assert model == profile_id
+        assert isinstance(client, BedrockAuxiliaryClient)
+        assert client.base_url == "https://bedrock-runtime.us-east-2.amazonaws.com"
+        mock_openai.assert_not_called()

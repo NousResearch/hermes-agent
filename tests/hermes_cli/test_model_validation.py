@@ -57,6 +57,23 @@ class TestCuratedModelsForProvider:
         ):
             assert curated_models_for_provider("nous") == [("m-static", "")]
 
+    def test_stepfun_merges_live_and_static(self):
+        """StepFun Step Plan API returns a subset; curated list merges with static."""
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={"api_key": "***", "base_url": "https://api.stepfun.ai/step_plan/v1"},
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["step-3.5-flash", "step-3.5-flash-2603"],
+        ):
+            models = curated_models_for_provider("stepfun")
+        model_ids = [m[0] for m in models]
+        # Live models appear first, static-only models appended
+        assert model_ids[0] == "step-3.5-flash"
+        assert "step-3.7-flash" in model_ids
+        # No duplicates
+        assert len(model_ids) == len(set(model_ids))
+
 
 # -- normalize_provider ------------------------------------------------------
 
@@ -832,6 +849,25 @@ class TestProfileCatalogAuthoritative:
                 "other-vendor/model-a", "relay-owned-catalog", api_key="k")
         assert result["accepted"] is True
         assert result["recognized"] is True
+
+    def test_nebius_relay_base_url_validates_against_relay_listing(self, monkeypatch):
+        """A configured relay base URL must decide Nebius Token Factory validation (#121388)."""
+        relay_base_url = "https://relay.example.invalid/v1"
+        calls = []
+
+        def fetch_relay_models(_api_key, base_url, **_kwargs):
+            calls.append(base_url)
+            return ["relay-only/model"] if base_url == relay_base_url else ["canonical-only/model"]
+
+        monkeypatch.setattr("hermes_cli.models.provider_model_ids", lambda _provider: ["canonical-only/model"])
+        monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch_relay_models)
+
+        result = validate_requested_model(
+            "relay-only/model", "nebius-token-factory", api_key="k", base_url=relay_base_url)
+
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert calls == [relay_base_url]
 
 
 # -- validate — whitespace in self-hosted / user-configured ids --------------

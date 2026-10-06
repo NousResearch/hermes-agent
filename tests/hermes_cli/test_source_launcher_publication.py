@@ -146,9 +146,7 @@ def test_profile_publication_preserves_shared_launcher_default_home(tmp_path, mo
     (repo / "install-stamp.json").write_text(json.dumps({
         "commit": "abcdef012345", "updateMechanism": "git", "runtimeDir": str(home / "tools"),
     }), encoding="utf-8")
-    site = site_packages(repo / "venv")
-    site.mkdir(parents=True)
-    (site / "selected_probe.py").write_text("VALUE = 'ready'\n", encoding="utf-8")
+    select_generation(repo, "shared", "ready")
     out = tmp_path / ".local" / "bin"
     if publisher == "cmd":
         monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
@@ -191,6 +189,9 @@ def test_profile_publication_preserves_shared_launcher_default_home(tmp_path, mo
     assert_home(profile, profile)
     other_home = tmp_path / "explicit custom home"
     other_home.mkdir()
+    # A custom home is its own dependency root: it sees only generations committed there.
+    monkeypatch.setenv("HERMES_HOME", str(other_home))
+    select_generation(repo, "shared", "ready")
     assert_home(other_home, other_home)
 
 
@@ -237,7 +238,8 @@ def test_materializer_cli_refuses_missing_store_without_publishing(tmp_path, mon
 
 
 @pytest.mark.platforms("posix")
-def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeypatch):
+@pytest.mark.parametrize("legacy_hermes", ["venv-python", "venv-console-script"])
+def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeypatch, legacy_hermes):
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.setenv("HERMES_INSTALL_ROOT", str(repo))
@@ -245,11 +247,16 @@ def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeyp
     out = home / ".local" / "bin"
     out.mkdir(parents=True)
     # Old venv and sibling-ACP wrappers, with an unrelated command sharing bin.
-    (out / "hermes").write_text(f'#!/bin/sh\nexec "{repo}/venv/bin/python" "{repo}/hermes" "$@"\n', encoding="utf-8")
+    old_wrapper = (f'#!/bin/sh\nexec "{repo}/venv/bin/python" "{repo}/hermes" "$@"\n'
+                   if legacy_hermes == "venv-python" else
+                   f'#!/usr/bin/env bash\nunset PYTHONPATH\nunset PYTHONHOME\n'
+                   f'exec "{repo}/venv/bin/hermes" "$@"\n')
+    (out / "hermes").write_text(old_wrapper, encoding="utf-8")
     (out / "hermes-acp").write_text(
         '#!/usr/bin/env bash\n# Hermes Agent — ACP launcher (written by `hermes update`).\n'
         f'exec "{out}/hermes" acp "$@"\n', encoding="utf-8")
-    foreign = f'#!/bin/sh\n# user note about {repo}\nexit 19\n'
+    # Mentions this install only in a comment and runs another checkout's venv.
+    foreign = f'#!/bin/sh\n# user note about {repo}/venv/bin/hermes\nexec "{tmp_path}/other/venv/bin/hermes" "$@"\n'
     (out / "hermes-agent").write_text(foreign, encoding="utf-8")
 
     result = _launchers.expose_cli()
@@ -316,8 +323,12 @@ def _command_survives_generation_collection(tmp_path, monkeypatch, surface):
     assert collect_generations(repo, min_age_seconds=0) == [selected.parent.parent / "old"]
     result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30, encoding="utf-8")
     assert result.returncode == 7, result.stderr
-    assert json.loads(result.stdout)["value"] == "new"
-    assert json.loads(result.stdout)["argv"] == args
+    receipt = result.stdout
+    if surface == "launchd":
+        # stderr_timestamp stamps the child's stdout lines ("YYYY-MM-DD HH:MM:SS,mmm ").
+        receipt = receipt.split(" ", 2)[2]
+    assert json.loads(receipt)["value"] == "new"
+    assert json.loads(receipt)["argv"] == args
 
 
 @pytest.mark.parametrize("surface", ["published", "systemd", "launchd", "ssh", "legacy"])
@@ -427,15 +438,13 @@ def test_dashboard_action_boots_selected_dependencies(tmp_path, monkeypatch):
             proc.wait(timeout=30)
 
 
-@pytest.mark.parametrize("layout", ["legacy", "payload"])
-def test_pre_pm_base_dependencies_activate_only_at_boot(tmp_path, monkeypatch, layout):
+def test_pre_pm_base_dependencies_activate_only_at_boot(tmp_path, monkeypatch):
+    # The in-tree pre-PM venv is never activated; only a sealed payload's own environment is.
     repo, home, _ = fixture_tree(tmp_path, monkeypatch)
-    environment = repo / "venv"
-    if layout == "payload":
-        environment = repo.parent / "payload-deps"
-        (repo.parent / "manifest.json").write_text(
-            json.dumps({"repo": repo.name, "venv": environment.name,
-                        "store": (home / "tools").relative_to(repo.parent).as_posix()}), encoding="utf-8")
+    environment = repo.parent / "payload-deps"
+    (repo.parent / "manifest.json").write_text(
+        json.dumps({"repo": repo.name, "venv": environment.name,
+                    "store": (home / "tools").relative_to(repo.parent).as_posix()}), encoding="utf-8")
     site = site_packages(environment)
     site.mkdir(parents=True)
     editable = tmp_path / "editable"
@@ -464,9 +473,7 @@ def test_service_survives_python_tool_replacement(tmp_path, monkeypatch):
 
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     monkeypatch.setattr(gateway, "PROJECT_ROOT", repo)
-    site = site_packages(repo / "venv")
-    site.mkdir(parents=True)
-    (site / "selected_probe.py").write_text("VALUE = 'ready'\n", encoding="utf-8")
+    select_generation(repo, "shared", "ready")
     store = home / "tools"
     for version in ("python-A", "python-B"):
         python = store / version / "bin" / "python3"
@@ -493,9 +500,7 @@ def test_sync_migrates_old_store_wrapper_before_python_collection(tmp_path, monk
 
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     monkeypatch.setattr(Path, "home", lambda: home)
-    site = site_packages(repo / "venv")
-    site.mkdir(parents=True)
-    (site / "selected_probe.py").write_text("VALUE = 'ready'\n", encoding="utf-8")
+    select_generation(repo, "shared", "ready")
     out = home / ".local/bin"
     out.mkdir(parents=True)
     if not create:
@@ -545,3 +550,132 @@ def test_update_import_probe_uses_selected_dependencies(tmp_path, monkeypatch):
     (repo / "hermes_integrity_probe.py").write_text("import selected_probe\n", encoding="utf-8")
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("hermes_integrity_probe",))
     assert update_cmd_validation._critical_module_import_failures(repo, report_runtime_errors=True) == {}
+
+
+@pytest.mark.platforms("posix")
+def test_stage_launcher_ignores_an_inherited_runtime_directory(tmp_path, monkeypatch):
+    # #131745: a persisted launcher must boot the install's own store python.
+    # An inherited HERMES_RUNTIME_DIR (e2e fixture, desktop toolchain, PM
+    # subprocess env) names a runtime directory for the RUNNING process, never
+    # for the artifacts the process publishes — that store can be a scratch
+    # tree a later cleanup deletes, leaving the launcher dead (exit 127).
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    store = home / "tools"
+    tree_python = store / "python-A" / "bin" / "python3"
+    tree_python.parent.mkdir(parents=True)
+    tree_python.symlink_to(interpreter)
+    (store / "facts.json").write_text(
+        json.dumps({"packages": {"python": {"entry": "python-A"}}}), encoding="utf-8")
+    foreign_store = tmp_path / "foreign" / "tools"
+    foreign_store.mkdir(parents=True)
+    foreign_python = foreign_store / "python-foreign" / "bin" / "python3"
+    foreign_python.parent.mkdir(parents=True)
+    foreign_python.symlink_to(interpreter)
+    (foreign_store / "facts.json").write_text(
+        json.dumps({"packages": {"python": {"entry": "python-foreign"}}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(foreign_store))
+
+    # Publication callers create the bin dir before staging (see
+    # ensure_install_launchers); the launcher writer does not invent it.
+    out = repo / ".hermes" / "bin"
+    out.mkdir(parents=True, exist_ok=True)
+    published = _launchers.stage_launcher("hermes", repo, out)
+
+    assert published is not None
+    wrapper = published.read_text(encoding="utf-8-sig")
+    assert "python-A" in wrapper
+    assert "python-foreign" not in wrapper
+
+
+@pytest.mark.platforms("posix")
+def test_service_launcher_binds_the_tree_store_despite_inherited_runtime_override(tmp_path, monkeypatch):
+    from hermes_cli import gateway
+
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", repo)
+    store = home / "tools"
+    tree_python = store / "python-A" / "bin" / "python3"
+    tree_python.parent.mkdir(parents=True)
+    tree_python.symlink_to(interpreter)
+    (store / "facts.json").write_text(
+        json.dumps({"packages": {"python": {"entry": "python-A"}}}), encoding="utf-8")
+    foreign_store = tmp_path / "foreign" / "tools"
+    foreign_store.mkdir(parents=True)
+    foreign_python = foreign_store / "python-foreign" / "bin" / "python3"
+    foreign_python.parent.mkdir(parents=True)
+    foreign_python.symlink_to(interpreter)
+    (foreign_store / "facts.json").write_text(
+        json.dumps({"packages": {"python": {"entry": "python-foreign"}}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(foreign_store))
+
+    gateway._prepare_service_launcher()
+
+    wrapper = (repo / ".hermes" / "bin" / "hermes").read_text(encoding="utf-8-sig")
+    assert "python-A" in wrapper
+    assert "python-foreign" not in wrapper
+
+
+@pytest.mark.platforms("posix")
+def test_runtime_override_still_selects_the_runtime_python(tmp_path, monkeypatch):
+    # The publication split must not mute the override for execution paths:
+    # resolving a python to RUN still honors HERMES_RUNTIME_DIR by default.
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    foreign_store = tmp_path / "foreign" / "tools"
+    foreign_store.mkdir(parents=True)
+    foreign_python = foreign_store / "python-foreign" / "bin" / "python3"
+    foreign_python.parent.mkdir(parents=True)
+    foreign_python.symlink_to(interpreter)
+    (foreign_store / "facts.json").write_text(
+        json.dumps({"packages": {"python": {"entry": "python-foreign"}}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(foreign_store))
+
+    selected = _launchers.resolve_store_python(repo)
+
+    assert selected == foreign_store / "python-foreign" / "bin" / "python3"
+
+
+def _record_store_python(store: Path, interpreter: Path) -> Path:
+    python = store / "python-fixture" / "bin" / "python3"
+    python.parent.mkdir(parents=True)
+    python.symlink_to(interpreter)
+    (store / "facts.json").write_text(
+        json.dumps({"packages": {"python": {"entry": "python-fixture"}}}), encoding="utf-8")
+    return python
+
+
+@pytest.mark.platforms("posix")
+def test_install_launchers_never_bind_a_fixture_store_under_scratch(tmp_path, monkeypatch):
+    # #131745's layout: a process aimed at an e2e fixture home under the
+    # install's own cache/scratch republishes the real install's launchers.
+    # Idle pruning later deletes that store, and the service exits 127.
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    own = _launchers.resolve_store_python(repo)
+    fixture = home / "cache" / "scratch" / "hermes-e2e-media-overlap-run" / "hermes-home" / "tools"
+    _record_store_python(fixture, interpreter)
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(fixture))
+
+    written = _launchers.ensure_install_launchers(repo, repo / ".hermes" / "bin")
+
+    assert len(written) == len(_launchers.WINDOWS_BIN_LAUNCHERS)
+    for path in written:
+        wrapper = Path(path).read_text(encoding="utf-8-sig")
+        assert "hermes-e2e-media-overlap-run" not in wrapper
+        assert shlex.quote(str(own)) in wrapper
+
+
+@pytest.mark.platforms("posix")
+def test_publication_uses_the_runtime_store_when_the_tree_records_none(tmp_path, monkeypatch):
+    # The desktop source-backend contract keeps its store beside HERMES_HOME
+    # and names it through HERMES_RUNTIME_DIR. A tree with no store of its own
+    # still publishes from that one.
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    (home / "tools" / "facts.json").unlink()
+    runtime = tmp_path / "runtime-tools"
+    python = _record_store_python(runtime, interpreter)
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(runtime))
+
+    written = _launchers.ensure_install_launchers(repo, repo / ".hermes" / "bin")
+
+    assert len(written) == len(_launchers.WINDOWS_BIN_LAUNCHERS)
+    for path in written:
+        assert shlex.quote(str(python)) in Path(path).read_text(encoding="utf-8-sig")

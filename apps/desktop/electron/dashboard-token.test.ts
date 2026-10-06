@@ -14,6 +14,7 @@ import {
   dashboardIndexUrl,
   extractInjectedDashboardToken,
   fetchPublicText,
+  isAttachedBackendTokenDrifted,
   isForeignBackendToken,
   resolveServedDashboardToken
 } from './dashboard-token'
@@ -116,6 +117,19 @@ test('adoptServedDashboardToken refuses a foreign token when our child is dead',
       }),
     /profile "work".*process we did not spawn/
   )
+})
+
+test('isAttachedBackendTokenDrifted flags a live backend serving a different token', () => {
+  const cases = [
+    [{ servedToken: 'new-token', adoptedToken: 'old-token' }, true],
+    [{ servedToken: 'old-token', adoptedToken: 'old-token' }, false],
+    [{ servedToken: null, adoptedToken: 'old-token' }, false],
+    [{ servedToken: '', adoptedToken: 'old-token' }, false]
+  ]
+
+  for (const [input, expected] of cases) {
+    assert.equal(isAttachedBackendTokenDrifted(input as any), expected, JSON.stringify(input))
+  }
 })
 
 test('adoptServedDashboardToken falls back to the spawn token when the fetch fails', async () => {

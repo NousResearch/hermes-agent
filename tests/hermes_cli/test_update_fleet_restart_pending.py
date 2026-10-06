@@ -412,8 +412,9 @@ def test_clean_update_escalates_surviving_serve_as_unaccounted(
     ``hermes-gateway.service``) and an unmanaged ``serve`` on the same
     default profile. The serve survives the update as the SAME process, so
     the update must (1) warn, (2) reconcile it as ``unaccounted`` instead of
-    borrowing the gateway's restart, and (3) exit 1 with a ``partial``
-    receipt — not print a clean success."""
+    borrowing the gateway's restart, and (3) under contract C3 (the code is
+    committed) end ``success`` with an owed ``gateway_restart`` follow-up and
+    the restart obligation still armed — never a silent clean success."""
     from hermes_cli.update_inventory import (
         RuntimeRecord, UpdatePlan, _restart_mechanism,
     )
@@ -460,18 +461,24 @@ def test_clean_update_escalates_surviving_serve_as_unaccounted(
         lambda **_k: [{"pid": 5555, "purpose": "serve", "create_time": 1000.0}],
     )
 
-    with pytest.raises(SystemExit) as excinfo:
-        hermes_main.cmd_update(args)
-    assert excinfo.value.code == 1
+    # Was SystemExit(1): the committed update no longer fails (contract C3).
+    hermes_main.cmd_update(args)
 
     out = capsys.readouterr().out
+    # (1) still warned, unchanged.
     assert "pid 5555" in out and "pre-update code" in out
     assert "Planned runtimes the restart phase never touched" in out
     assert "serve [default] pid 5555" in out
+    assert "follow-up 'gateway_restart'" in out
 
     latest = get_hermes_home() / "logs" / "update_receipts" / "latest.json"
     receipt = json.loads(latest.read_text(encoding="utf-8"))
-    assert receipt["outcome"] == "partial"
+    # (3) was "partial": a success that names the owed restart.
+    assert receipt["outcome"] == "success"
+    assert [f["step"] for f in receipt["followups"]] == ["gateway_restart"]
+    from hermes_cli import update_cmd_fleet
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
+    # (2) the reconciliation verdict is unchanged.
     by_pid = {o["pid"]: o["outcome"] for o in receipt["runtime_outcomes"]}
     assert by_pid == {4444: "restarted", 5555: "unaccounted"}
 
@@ -552,9 +559,11 @@ def test_interrupt_between_pull_and_restart_leaves_marker(
 
     monkeypatch.setattr(hermes_main, "_clear_bytecode_cache", _interrupt)
 
-    with pytest.raises(KeyboardInterrupt):
+    # Was KeyboardInterrupt: Ctrl-C after the commit point exits 130 as an interrupt, not a failure.
+    with pytest.raises(SystemExit) as exc:
         hermes_main.cmd_update(args)
 
+    assert exc.value.code == 130
     assert update_cmd_fleet._fleet_restart_obligation_armed()
     record = json.loads(host_obligation.host_obligation_path().read_text(encoding="utf-8"))
     assert record["expected_sha"] == "def456"
@@ -1068,3 +1077,72 @@ def test_second_profile_attaches_to_completed_host_restart(monkeypatch):
     # A stamp for other code proves nothing about this checkout.
     host_obligation.mark_host_restart_completed("def456")
     assert update_cmd_fleet._fleet_restart_skip_reason(None) is None
+
+
+# ── SHA-less inventory-less obligations discharge on live-fleet evidence (#125952) ──
+#
+# A no-op update whose head capture failed armed the host record with expected_sha=""
+# and no inventory. The reader bailed out on the empty SHA before the fleet check, so
+# the warning could never clear even with every live gateway current on the checkout.
+
+
+def test_startup_warn_discharged_when_sha_less_marker_fleet_current(monkeypatch, capsys):
+    checkout = "e" * 40
+    path = host_obligation.host_obligation_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "version": 1, "started": 0.0, "pid": 424242, "armed_by_profile": "default", "expected_sha": "",
+    }), encoding="utf-8")
+    _patch_marker_sha(monkeypatch, checkout)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": checkout, "code_version": "0.21.5", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""
+    assert not update_cmd_fleet._fleet_restart_obligation_armed()
+
+
+def test_startup_warn_kept_when_sha_less_marker_fleet_is_all_external(monkeypatch, capsys):
+    """Every live gateway serving ANOTHER checkout root says nothing about this checkout's code:
+    the SHA-less marker stays armed exactly as it does with no fleet at all."""
+    checkout = "e" * 40
+    path = host_obligation.host_obligation_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "version": 1, "started": 0.0, "pid": 424242, "armed_by_profile": "default", "expected_sha": "",
+    }), encoding="utf-8")
+    _patch_marker_sha(monkeypatch, checkout)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "other", "pid": 43, "code_sha": "f" * 40, "code_version": "0.21.5", "state": "external",
+             "code_root": "/elsewhere/hermes-agent"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
+
+
+def test_completion_arms_obligation_with_checkout_sha_when_head_capture_empty(monkeypatch):
+    """The armer must never record the poisoned shape: an empty head capture falls back to the
+    checkout identity the reader compares the fleet against."""
+    checkout = "e" * 40
+    _patch_marker_sha(monkeypatch, checkout)
+    armed = []
+    monkeypatch.setattr(update_cmd, "_write_fleet_restart_pending_marker", lambda **kw: armed.append(kw["expected_sha"]))
+    monkeypatch.setattr(update_cmd, "run_completion", lambda request: {"exit_code": 0})
+    monkeypatch.setattr(update_cmd, "_accept_completion_pm_receipt", lambda *a: None)
+    monkeypatch.setattr(update_cmd, "adopt_retired_channel", lambda request: False)
+
+    update_cmd._complete_source_update(
+        {"expected_sha": "", "receipt": {"update_id": "u1"}, "windows_resume": None})
+
+    assert armed == [checkout]

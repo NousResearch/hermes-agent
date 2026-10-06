@@ -353,7 +353,9 @@ def github_release_tags(repo: str, *, strip_prefix: str = "") -> list[str]:
 
 
 def npm_dist_tags(name: str) -> dict:
-    return _get_json(f"https://registry.npmjs.org/-/package/{name}/dist-tags")
+    from pm.index_config import npm_registry
+
+    return _get_json(f"{npm_registry(os.environ)}-/package/{name}/dist-tags")
 
 
 def node_latest_versions() -> list[str]:
@@ -401,40 +403,60 @@ def martin_riedl_versions(target: str) -> list[str]:
     return list((martin_riedl_index().get(target) or {}).keys())
 
 
+_BTBN_TAG = re.compile(r"autobuild-(\d{4})-(\d{2})-\d{2}-\d{2}-\d{2}")
+
+
 def btbn_index() -> dict[str, dict[str, tuple[str, str]]]:
-    """Newest static GPL asset per target/version, as (tag, name).
+    """Newest retained (month-end) static GPL asset per target/version, as (tag, name).
+
+    BtbN keeps only its 14 newest autobuild tags (about two weeks of
+    dailies) plus the last build of each month for two years
+    (util/prunetags.sh), so a pin on a daily tag 404s two weeks later. The
+    current month's newest tag is still a daily the next build displaces,
+    so the newest eligible tag is last month's final build.
 
     Releases also contain macOS, shared and LGPL builds. Retain target
     identity here so discovery and pinning select the same artifact.
     """
-    out: dict[str, dict[str, tuple[str, str]]] = {}
+    releases: list[dict] = []
     for page in range(1, 4):
         data = _get_json(f"https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=30&page={page}")
         if not data:
             break
-        for release in data:
-            if release.get("draft") or release.get("prerelease"):
-                continue
-            tag = release.get("tag_name", "")
-            if tag == "latest":
-                continue
-            for asset in release.get("assets", []):
-                name = asset.get("name", "")
-                # Windows ships .zip, Linux .tar.xz. `gpl-shared`/`lgpl` differ
-                # in the segment after the arch, so requiring "-gpl-<ver>" right
-                # after it excludes both.
-                m = re.fullmatch(
-                    r"ffmpeg-n(\d+\.\d+\.\d+)-.+-"
-                    r"(win|linux)(64|arm64)-gpl-\d+\.\d+\.(?:zip|tar\.xz)",
-                    name,
-                )
-                if m:
-                    version, osname, arch = m.groups()
-                    os_key = "win32" if osname == "win" else "linux"
-                    target = f"{os_key}-{'x64' if arch == '64' else 'arm64'}"
-                    out.setdefault(target, {}).setdefault(version, (tag, name))
+        releases.extend(data)
         if len(data) < 30:
             break
+    out: dict[str, dict[str, tuple[str, str]]] = {}
+    newest_month = None
+    months_seen: set[tuple[str, str]] = set()
+    for release in sorted(releases, key=lambda r: r.get("tag_name", ""), reverse=True):
+        if release.get("draft") or release.get("prerelease"):
+            continue
+        tag = release.get("tag_name", "")
+        dated = _BTBN_TAG.fullmatch(tag)
+        if not dated:  # `latest` floats
+            continue
+        month = dated.groups()
+        if newest_month is None:
+            newest_month = month
+        if month == newest_month or month in months_seen:
+            continue
+        months_seen.add(month)
+        for asset in release.get("assets", []):
+            name = asset.get("name", "")
+            # Windows ships .zip, Linux .tar.xz. `gpl-shared`/`lgpl` differ
+            # in the segment after the arch, so requiring "-gpl-<ver>" right
+            # after it excludes both.
+            m = re.fullmatch(
+                r"ffmpeg-n(\d+\.\d+\.\d+)-.+-"
+                r"(win|linux)(64|arm64)-gpl-\d+\.\d+\.(?:zip|tar\.xz)",
+                name,
+            )
+            if m:
+                version, osname, arch = m.groups()
+                os_key = "win32" if osname == "win" else "linux"
+                target = f"{os_key}-{'x64' if arch == '64' else 'arm64'}"
+                out.setdefault(target, {}).setdefault(version, (tag, name))
     return out
 
 

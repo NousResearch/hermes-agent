@@ -11,11 +11,12 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
+from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_SCAFFOLD_SQL_LIKE
 from utils import safe_json_loads
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_ids import new_session_id
-from hermes_state_common import SCHEMA_SQL, _PREVIEW_RAW_SUBQUERY_SQL, _shape_preview, _sql_session_last_active
+from hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
+from hermes_state_messages import _parse_tool_calls, _tool_calls_count
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -29,7 +30,9 @@ _IMPORT_MESSAGE_TEXT_FIELDS = (
     "tool_call_id", "tool_name", "effect_disposition", "finish_reason",
     "reasoning", "reasoning_content", "platform_message_id", "message_id",
 )
-_IMPORT_MESSAGE_JSON_FIELDS = ("reasoning_details", "codex_reasoning_items", "codex_message_items")
+_IMPORT_MESSAGE_JSON_FIELDS = (
+    "reasoning_details", "codex_reasoning_items", "codex_message_items", "absorbed_message_uids", "tool_call_uids",
+)
 _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            id, source, user_id, model, model_config, system_prompt,
                            system_prompt_hash,
@@ -39,7 +42,7 @@ _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            cwd, git_branch, git_repo_root,
                            billing_provider, billing_base_url, billing_mode,
                            estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
-                           pricing_version, title, api_call_count, archived
+                           pricing_version, title, api_call_count, archived, auto_archived, pinned, hidden
                        )
                        VALUES (
                            :id, :source, :user_id, :model, :model_config,
@@ -50,7 +53,7 @@ _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            :billing_provider, :billing_base_url, :billing_mode,
                            :estimated_cost_usd, :actual_cost_usd, :cost_status,
                            :cost_source, :pricing_version, :title,
-                           :api_call_count, :archived
+                           :api_call_count, :archived, :auto_archived, :pinned, :hidden
                        )"""
 # Columns copied verbatim from the payload; typed columns are converted below.
 _IMPORT_PASSTHROUGH_COLS = (
@@ -61,6 +64,8 @@ _IMPORT_INT_COLS = (
     "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "api_call_count",
 )
 _IMPORT_FLOAT_COLS = ("ended_at", "estimated_cost_usd", "actual_cost_usd")
+# Flags a restore must keep: pinned/hidden/auto_archived drive the prune, listings and resume-unarchive.
+_IMPORT_FLAG_COLS = ("archived", "auto_archived", "pinned", "hidden")
 
 
 def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Optional[str] = "") -> str:
@@ -70,7 +75,7 @@ def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Op
     prompt_join = "" if prompt_select is None else "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash"
     return f"""
             SELECT {select_cols}{prompt_select or ""},
-                {_PREVIEW_RAW_SUBQUERY_SQL},
+                {_sql_preview_raw()},
                 {_sql_session_last_active("s")} AS last_active
             FROM sessions s
             {prompt_join}
@@ -256,9 +261,10 @@ class SessionPortabilityMixin:
         return {s["id"]: s for s in map(self._rich_row, self._read_rows(query, ids))}
 
     def list_skill_scaffolded_sessions(self, limit: int = 200) -> List[Dict[str, Any]]:
-        """Titled sessions whose first user turn was a ``/skill`` invocation (their titles
-        describe the expanded skill body, not the request). Returns ``id``, ``title`` and
-        the first-turn ``content`` so callers can re-derive what was typed. Newest first."""
+        """Titled sessions whose first user turn was a ``/skill`` invocation or a gateway
+        auto-load scaffold (their titles describe the expanded skill body, not the
+        request). Returns ``id``, ``title`` and the first-turn ``content`` so callers can
+        re-derive what was typed. Newest first."""
         rows = self._read_rows("""
                 SELECT s.id, s.title, m.content
                 FROM sessions s
@@ -268,31 +274,37 @@ class SessionPortabilityMixin:
                       AND m2.content IS NOT NULL
                     ORDER BY m2.timestamp, m2.id LIMIT 1
                 )
-                WHERE s.title IS NOT NULL AND m.content LIKE ?
+                WHERE s.title IS NOT NULL AND (m.content LIKE ? OR m.content LIKE ?)
                 ORDER BY s.started_at DESC
                 LIMIT ?
-                """, (SKILL_SCAFFOLD_SQL_LIKE, int(limit)))
+                """, (SKILL_SCAFFOLD_SQL_LIKE, AUTO_LOAD_SCAFFOLD_SQL_LIKE, int(limit)))
         return [dict(row) for row in rows]
 
     # ── Export ─────────────────────────────────────────────────────────────
 
-    def _with_messages(self, session: Dict[str, Any], include_compacted: bool = False) -> Dict[str, Any]:
-        messages = self.get_messages(session["id"], include_compacted=include_compacted)
+    def _with_messages(self, session: Dict[str, Any], include_compacted: bool = False,
+                       include_inactive: bool = False) -> Dict[str, Any]:
+        messages = self.get_messages(session["id"], include_inactive=include_inactive, include_compacted=include_compacted)
         return {**session, "messages": messages, "timings": _export_timings(messages, session["id"])}
 
-    def export_session(self, session_id: str, include_compacted: bool = False) -> Optional[Dict[str, Any]]:
+    def export_session(self, session_id: str, include_compacted: bool = False,
+                       include_inactive: bool = False) -> Optional[Dict[str, Any]]:
         """Export a single session with all its messages as a dict. ``include_compacted`` adds the turns
         in-place compaction archived (the history the user still sees); it stays off for payloads that go
-        back through :meth:`import_sessions`, which would insert those turns as live context."""
+        back through :meth:`import_sessions`, because that projection is deduped and ordered for display, and
+        importing it would make those turns live context. ``include_inactive`` exports every row in storage
+        order with its ``active``/``compacted`` flags, which :meth:`import_sessions` restores as archived."""
         session = self.get_session(session_id)
-        return self._with_messages(session, include_compacted) if session else None
+        return self._with_messages(session, include_compacted, include_inactive) if session else None
 
-    def export_session_lineage(self, session_id: str, include_compacted: bool = False) -> Optional[Dict[str, Any]]:
-        """Export a compression lineage as one logical session dict (``include_compacted`` as in :meth:`export_session`)."""
+    def export_session_lineage(self, session_id: str, include_compacted: bool = False,
+                               include_inactive: bool = False) -> Optional[Dict[str, Any]]:
+        """Export a compression lineage as one logical session dict (flags as in :meth:`export_session`)."""
         lineage_ids = self.get_compression_lineage(session_id)
         if not lineage_ids:
             return None
-        segments = [seg for seg in (self.export_session(sid, include_compacted) for sid in lineage_ids) if seg]
+        segments = [seg for seg in (self.export_session(sid, include_compacted, include_inactive)
+                                    for sid in lineage_ids) if seg]
         if not segments:
             return None
         messages = [msg for seg in segments for msg in (seg.get("messages") or [])]
@@ -302,20 +314,24 @@ class SessionPortabilityMixin:
             "messages": messages, "timings": _export_timings(messages, session_id),
         }
 
-    def export_all(self, source: str = None, include_compacted: bool = False) -> List[Dict[str, Any]]:
-        """Export all sessions (with messages) as dicts, e.g. for JSONL backup (``include_compacted`` as in
-        :meth:`export_session`; that display read dedupes per session, so it skips the batched read)."""
+    def export_all(self, source: str = None, include_compacted: bool = False,
+                   include_inactive: bool = False) -> List[Dict[str, Any]]:
+        """Export all sessions (with messages) as dicts, e.g. for JSONL backup (flags as in
+        :meth:`export_session`; that display read dedupes per session, so it skips the batched read).
+        Backups that go back through :meth:`import_sessions` pass ``include_inactive`` so
+        compaction-archived turns survive the round trip as archived rows."""
         sessions = self.search_sessions(source=source, limit=100000)
         if include_compacted:
-            return [self._with_messages(session, True) for session in sessions]
+            return [self._with_messages(session, True, include_inactive) for session in sessions]
         messages_by_session = {session["id"]: [] for session in sessions}
         session_ids = list(messages_by_session)
+        active_clause = self._active_clause(include_inactive, False)
         # Stay below SQLite's legacy 999-variable limit while replacing the per-session N+1 reads.
         for start in range(0, len(session_ids), 900):
             chunk = session_ids[start:start + 900]
             rows = self._read_all(
                 f"SELECT * FROM messages WHERE session_id IN ({','.join('?' for _ in chunk)}) "
-                "AND active = 1 ORDER BY session_id, id",
+                f"{active_clause} ORDER BY session_id, id",
                 chunk,
             )
             for row in rows:
@@ -330,8 +346,10 @@ class SessionPortabilityMixin:
         heal: a profile bot's rows accumulated in the DEFAULT profile's state.db before the
         desktop routed session RPCs by target session). Pure composition
         ``donor_db.export_session_lineage()`` -> ``self.import_sessions()``: runtime
-        fields reset, already-present ids skipped (idempotent). With ``retire_donor`` and
-        a complete adoption, donor rows are ARCHIVED (never deleted) with
+        fields reset, already-present ids skipped (idempotent). Every message row is carried
+        with its archived state, so turns in-place compaction archived stay visible here and
+        stay out of model context. With ``retire_donor`` and a complete adoption, donor rows
+        are ARCHIVED (never deleted) with
         ``end_reason='adopted_by_profile'`` — deliberately NOT in the recoverable set, so
         resurrection cannot undo an adoption. Returns the ``import_sessions`` dict plus
         ``adopted`` and ``donor_retired`` (True only when EVERY segment retired).
@@ -340,7 +358,9 @@ class SessionPortabilityMixin:
         the same chat 4001'd for the opposite reason. This method moves the conversation to where routing
         now looks for it. See #93091, #93296.
         """
-        payload = donor_db.export_session_lineage(session_id)
+        # Every row, not just live ones: the retired donor is unrecoverable, so any turn left behind
+        # (compaction-archived history included) would be visible nowhere.
+        payload = donor_db.export_session_lineage(session_id, include_inactive=True)
         if not payload:
             return {"ok": False, "adopted": False, "donor_retired": False,
                     "error": f"session {session_id!r} not found in donor store"}
@@ -355,7 +375,7 @@ class SessionPortabilityMixin:
             if not seg_id or self.get_session(seg_id) is None:
                 continue
             donor_count = len(seg.get("messages") or [])
-            local_count = len(self.get_messages(seg_id))
+            local_count = len(self.get_messages(seg_id, include_inactive=True))
             if donor_count > local_count:
                 donor_ahead = True
                 logger.warning("adoption divergence: donor segment %s has %d messages, "
@@ -382,8 +402,8 @@ class SessionPortabilityMixin:
         A retirement failure must not fail the adoption (a later resume retries
         idempotently), but never claims success it didn't have."""
         try:
-            donor_now = len(donor_db.get_messages(seg_id))
-            local_now = len(self.get_messages(seg_id))
+            donor_now = len(donor_db.get_messages(seg_id, include_inactive=True))
+            local_now = len(self.get_messages(seg_id, include_inactive=True))
             if donor_now > local_now:
                 logger.warning(
                     "adoption divergence at retire time: donor segment %s grew to %d messages (local %d) — "
@@ -523,20 +543,37 @@ class SessionPortabilityMixin:
             "id": session_id, "source": str(raw.get("source") or "import"),
             "system_prompt_hash": self._store_system_prompt(conn, raw.get("system_prompt")),
             "started_at": time.time() if started_at is None else started_at,
-            "archived": 1 if raw.get("archived") else 0,
+            **{col: 1 if self._coerce_or(raw.get(col), int, 0) else 0 for col in _IMPORT_FLAG_COLS},
             **{col: raw.get(col) for col in _IMPORT_PASSTHROUGH_COLS},
             **{col: self._coerce_or(raw.get(col), float, None) for col in _IMPORT_FLOAT_COLS},
             **{col: self._coerce_or(raw.get(col), int, 0) for col in _IMPORT_INT_COLS},
         }
+        params["auto_archived"] &= params["archived"]  # only the sweep sets it, and only on rows it archives
         conn.execute(_IMPORT_SESSION_INSERT_SQL, params)
         def _json_value(value: Any) -> Any:
             return safe_json_loads(value, default=value) if isinstance(value, str) else value
         sanitized_messages = [
             {**msg, **{key: _json_value(msg.get(key)) for key in _IMPORT_MESSAGE_JSON_FIELDS}} for msg in messages
         ]
-        total_messages, total_tool_calls = self._insert_message_rows(conn, session_id, sanitized_messages)
+        # A row exported archived (``include_inactive``) must stay archived: inserted live, compacted or
+        # rewound turns would re-enter model context. Flags are coerced like the int session columns, so a
+        # hand-edited "0" archives and a missing/null/unparsable flag imports live (older exports have none).
+        live: List[Dict[str, Any]] = []
+        archived: List[Dict[str, Any]] = []
+        for msg in sanitized_messages:
+            (live if self._coerce_or(msg.get("active"), int, 1) else archived).append(msg)
+        self._insert_message_rows(conn, session_id, sanitized_messages, prune_checkpoints=False)
+        if archived:
+            conn.executemany("UPDATE messages SET active = 0, compacted = ? WHERE id = ?",
+                             [(1 if self._coerce_or(msg.get("compacted"), int, 0) else 0, msg["_row_id"])
+                              for msg in archived])
+        # Pruning keys on live rows, so it runs only now: while every row was still live, an archived row's
+        # newer checkpoint would strip the newest live one, and archived rows keep theirs as in the donor.
+        self._prune_shadowed_checkpoints(conn, session_id, live)
+        # Session counters count live rows only.
         conn.execute("UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
-                     (total_messages, total_tool_calls, session_id))
+                     (len(live), sum(_tool_calls_count(_parse_tool_calls(msg.get("tool_calls"))) for msg in live),
+                      session_id))
 
     @staticmethod
     def _attach_import_parents(conn, parent_updates: List[tuple]) -> int:

@@ -1,5 +1,6 @@
 """Tests for hermes_constants module."""
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -616,23 +617,46 @@ class TestProjectVenvDirOutOfTree:
         monkeypatch.setattr(sys, "prefix", str(venv))
         monkeypatch.setattr(sys, "base_prefix", str(checkout / "no-such-base"))
 
+    @staticmethod
+    def _venv_installed_from(venv, source):
+        from pm.environments import site_packages
+        hermes_constants.venv_python_path(venv).parent.mkdir(parents=True)
+        hermes_constants.venv_python_path(venv).write_text("", encoding="utf-8")
+        dist_info = site_packages(venv) / "hermes_agent-0.0.0.dist-info"
+        dist_info.mkdir(parents=True)
+        (dist_info / "METADATA").write_text("Name: hermes-agent\nVersion: 0.0.0\n", encoding="utf-8")
+        (dist_info / "direct_url.json").write_text(
+            json.dumps({"url": source.resolve().as_uri(), "dir_info": {"editable": True}}), encoding="utf-8")
+
     def test_out_of_tree_install_resolves_the_running_interpreter_venv(self, monkeypatch, tmp_path):
         checkout = tmp_path / "hermes-agent"
         checkout.mkdir()
         venv = tmp_path / "venvs" / "hermes"
-        hermes_constants.venv_python_path(venv).parent.mkdir(parents=True)
-        hermes_constants.venv_python_path(venv).write_text("", encoding="utf-8")
+        self._venv_installed_from(venv, checkout)
         self._running_from(monkeypatch, checkout, venv)
 
         assert hermes_constants.project_venv_dir(checkout) == venv
+
+    def test_another_installs_interpreter_is_never_claimed(self, monkeypatch, tmp_path):
+        """``PYTHONPATH=<dev checkout> <app venv>/bin/python``: the code comes from the dev checkout,
+        but the venv belongs to the app install. Claiming it pointed the dev checkout's update sync at
+        the app's venv, which became an editable install of the dev tree."""
+        dev = tmp_path / "dev" / "hermes-agent"
+        dev.mkdir(parents=True)
+        app = tmp_path / "app" / "hermes-agent"
+        app.mkdir(parents=True)
+        venv = tmp_path / "app" / "venv"
+        self._venv_installed_from(venv, app)
+        self._running_from(monkeypatch, dev, venv)
+
+        assert hermes_constants.project_venv_dir(dev) is None
 
     def test_foreign_root_and_in_tree_venv_are_unchanged(self, monkeypatch, tmp_path):
         """A temp dir / another clone never claims the running venv; an in-tree venv still wins."""
         checkout = tmp_path / "hermes-agent"
         checkout.mkdir()
         venv = tmp_path / "venvs" / "hermes"
-        hermes_constants.venv_python_path(venv).parent.mkdir(parents=True)
-        hermes_constants.venv_python_path(venv).write_text("", encoding="utf-8")
+        self._venv_installed_from(venv, checkout)
         self._running_from(monkeypatch, checkout, venv)
         other = tmp_path / "not-our-checkout"
         other.mkdir()

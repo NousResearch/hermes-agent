@@ -4,14 +4,10 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import shutil
 from pathlib import Path
 
 SOURCE = "playwright e2e"
-EVIDENCE_START = "<!-- hermes-e2e-evidence:start -->"
-EVIDENCE_END = "<!-- hermes-e2e-evidence:end -->"
 
 
 def _files(root: Path, pattern: str) -> list[Path]:
@@ -46,12 +42,6 @@ def _base_screenshot_names(path: Path | None) -> set[str] | None:
     return {name for name in names if isinstance(name, str)}
 
 
-def _stage_name(kind: str, path: Path, results_dir: Path) -> str:
-    relative = path.relative_to(results_dir).as_posix()
-    digest = hashlib.sha256(relative.encode("utf-8")).hexdigest()[:12]
-    return f"{kind}-{digest}-{path.name}"
-
-
 def select_evidence(results_dir: Path, base_manifest: Path | None = None) -> dict:
     """Select only screenshots new to main, plus every generated visual diff."""
     base_names = _base_screenshot_names(base_manifest)
@@ -71,40 +61,8 @@ def select_evidence(results_dir: Path, base_manifest: Path | None = None) -> dic
     return {"screenshots": screenshots, "diffs": diffs}
 
 
-def stage_evidence(results_dir: Path, evidence_dir: Path, selection: dict) -> dict:
-    """Copy selected PNGs into a flat, path-safe evidence artifact."""
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    staged: dict[Path, str] = {}
-
-    def stage(kind: str, path: Path) -> str:
-        if path in staged:
-            return staged[path]
-        name = _stage_name(kind, path, results_dir)
-        shutil.copyfile(path, evidence_dir / name)
-        staged[path] = name
-        return name
-
-    manifest = {"version": 1, "screenshots": [], "diffs": []}
-    for screenshot in selection["screenshots"]:
-        manifest["screenshots"].append({
-            "name": screenshot.name,
-            "file": stage("screenshot", screenshot),
-        })
-    for diff in selection["diffs"]:
-        entry = {"name": diff["diff"].name.removesuffix("-diff.png"), "diff": stage("diff", diff["diff"])}
-        for kind in ("actual", "expected"):
-            if kind in diff:
-                entry[kind] = stage(kind, diff[kind])
-        manifest["diffs"].append(entry)
-
-    (evidence_dir / "e2e-evidence.json").write_text(
-        json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    return manifest
-
-
 def build_status(selection: dict, artifact_url: str = "") -> list[dict]:
-    """Return the review status. The trusted publisher replaces its marker."""
+    """Return the review status for the unified CI review comment."""
     screenshots = selection["screenshots"]
     diffs = selection["diffs"]
     if not screenshots and not diffs:
@@ -122,7 +80,6 @@ def build_status(selection: dict, artifact_url: str = "") -> list[dict]:
         "kind": "info",
         "title": "Desktop E2E visual evidence",
         "summary": "; ".join(summary_parts) + ".",
-        "detail": "\n".join((EVIDENCE_START, "<sub>inline evidence is publishing...</sub>", EVIDENCE_END)),
     }
     if artifact_url:
         result["link"] = artifact_url
@@ -135,7 +92,6 @@ def main() -> int:
     parser.add_argument("--results-dir", type=Path, required=True)
     parser.add_argument("--base-manifest", type=Path)
     parser.add_argument("--manifest-output", type=Path, required=True)
-    parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--artifact-url", default="")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -144,7 +100,6 @@ def main() -> int:
         json.dumps(build_manifest(args.results_dir), sort_keys=True) + "\n", encoding="utf-8"
     )
     selection = select_evidence(args.results_dir, args.base_manifest)
-    stage_evidence(args.results_dir, args.evidence_dir, selection)
     args.output.write_text(
         json.dumps(build_status(selection, args.artifact_url)) + "\n", encoding="utf-8"
     )

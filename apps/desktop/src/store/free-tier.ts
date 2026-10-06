@@ -153,7 +153,7 @@ export async function ackFreeTierNotice(requestGateway: FreeTierRequester): Prom
 }
 
 /**
- * Whether the SELECTED route runs on the free tier: `setup.runtime_check.free_tier`, keyed on the
+ * Whether the SELECTED route runs on the free tier: `setup.runtime_check.free_tier_route`, keyed on the
  * endpoint the backend resolved, not on profile state. `null` until a readiness round answers. A
  * free-tier identity beside the user's own key reads `false` here while `$freeTierStatus.available`
  * stays true — that split is what picks the intro's shape.

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from scripts.releases.versioning import (
     marker_ref, outstanding_attempts, parse_attempt_ref, parse_marker_ref,
-    version_from_tag,
+    tag_record, version_from_tag,
 )
 
 MAX_ATTEMPTS = 3
@@ -201,7 +201,7 @@ def _tag_message(tag: str, expected_object: str, run=output) -> dict:
     if local_object != expected_object or run(["git", "cat-file", "-t", local_object]) != "tag":
         raise ValueError(f"{tag} differs from its remote annotated object")
     try:
-        message = json.loads(run(["git", "tag", "-l", tag, "--format=%(contents)"]))
+        message = tag_record(run(["git", "tag", "-l", tag, "--format=%(contents)"]))
     except json.JSONDecodeError as error:
         raise ValueError(f"{tag} metadata is invalid") from error
     if not isinstance(message, dict):

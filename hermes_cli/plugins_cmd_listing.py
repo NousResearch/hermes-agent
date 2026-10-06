@@ -24,12 +24,14 @@ def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set
         filtered = [entry for entry in filtered if entry[3] != "bundled"]
     if getattr(args, "enabled", False):
         active = _pc()._category_active_names()
-        filtered = [
-            entry for entry in filtered
-            if _pc()._plugin_status(entry[0], enabled, disabled, key=entry[5], source=entry[3], dir_path=entry[4],
-                              active=active) == "enabled"
-        ]
+        filtered = [entry for entry in filtered if _entry_status(entry, enabled, disabled, active) == "enabled"]
     return filtered
+
+
+def _entry_status(entry: tuple, enabled: set, disabled: set, active: set) -> str:
+    """``_plugin_status`` for one ``_discover_all_plugins`` row."""
+    name, _version, _description, source, dir_path, key = entry
+    return _pc()._plugin_status(name, enabled, disabled, key, source=source, dir_path=dir_path, active=active)
 
 
 _STATUS_MARKUP = {"disabled": "[red]disabled[/red]", "enabled": "[green]enabled[/green]"}
@@ -132,42 +134,14 @@ def cmd_show(name: str) -> None:
     console.print(f"[dim]Status:[/dim] {status}")
     console.print(f"[dim]Source:[/dim] {source}")
     console.print(f"[dim]Key:[/dim] {key}")
+    if dir_path and source != "bundled":
+        from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+        from hermes_cli.plugin_isolation_audit import audit_plugin_dir
+        audit = audit_plugin_dir(Path(dir_path), manifest)
+        runs_in = ("plugin host" if isolation_mode() == ISOLATION_HOST and audit.host_ready
+                   else "refused (plugins.isolation: host)" if isolation_mode() == ISOLATION_HOST
+                   else "Hermes process")
+        console.print(f"[dim]Runs in:[/dim] {runs_in} [dim]— {audit.summary()}[/dim]")
     console.print("[dim]Emits:[/dim] " + (", ".join(emits) if emits else "[dim](none)[/dim]"))
     console.print("[dim]Listens:[/dim] " + (", ".join(listens) if listens else "[dim](none)[/dim]"))
     console.print()
-
-
-def cmd_compat(args: Any | None = None) -> None:
-    """``hermes plugins compat`` — which installed plugins import paths scheduled for removal, and where."""
-    import sys
-    from pathlib import Path
-    from hermes_cli.plugin_compat import (
-        ALLOW_KEY, COMPAT_REMOVAL, compat_report, removal_in_effect, scan_plugin, summary_lines)
-    console = _pc()._console()
-    path = getattr(args, "path", None)
-    if path:
-        hits = scan_plugin(Path(path).expanduser().resolve())
-        report = {Path(path).name: hits} if hits else {}
-    else:
-        report = compat_report(force=True)
-    if getattr(args, "json", False):
-        print(json.dumps({"removal_date": COMPAT_REMOVAL, "in_effect": removal_in_effect(),
-                          "plugins": {k: [h.__dict__ for h in v] for k, v in report.items()}}, indent=2))
-        sys.exit(1 if report else 0)
-    if not report:
-        console.print(f"[green]✓ No enabled plugin imports paths scheduled for removal on {COMPAT_REMOVAL}.[/green]")
-        return
-    head, tail = summary_lines(report)
-    console.print(f"[bold {'red' if removal_in_effect() else 'yellow'}]{head}[/]")
-    console.print(f"[dim]{tail}[/dim]")
-    for name, hits in sorted(report.items()):
-        table = _pc()._table(((f"{name}  ({len(hits)} import{'s' if len(hits) != 1 else ''})", "bold"), ("old path", "yellow"), ("new path", "green")),
-                       title=None, show_lines=False)
-        for h in hits:
-            table.add_row(f"{h.file}:{h.line}", h.old, h.new)
-        console.print()
-        console.print(table)
-    console.print()
-    console.print(f"[dim]After {COMPAT_REMOVAL} these plugins are not loaded. Update them, or force-load with "
-                  f"plugins.{ALLOW_KEY}: true in config.yaml (the old paths still break once the compat layer is reverted).[/dim]")
-    sys.exit(1)

@@ -1,4 +1,3 @@
-"""Writes the setup facts agreed during onboarding into the default profile's user memory."""
 import json
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -30,14 +29,11 @@ def remember_onboarding(answers: dict) -> dict:
     if len(content) > 2000:
         raise ValueError('Onboarding facts are too long to remember')
 
-    # The entry must land in the 'default' profile directory even when this RPC arrives on the guide's
-    # backend or under a custom Hermes home.
     token = set_hermes_home_override(get_profile_dir('default'))
     try:
         result = json.loads(memory_tool(action='add', target='user', content=content, store=load_on_disk_store()))
         if not result.get('success') or result.get('staged'):
             raise ValueError(result.get('error') or result.get('message') or 'Memory was not saved')
-        # memory_tool can report success without the entry reaching disk, so read it back from a fresh store.
         if content not in load_on_disk_store().user_entries:
             raise ValueError('Could not verify saved onboarding facts')
         return {'saved': True, 'profile': 'default', 'target': 'user'}

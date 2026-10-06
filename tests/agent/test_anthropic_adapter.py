@@ -29,6 +29,28 @@ class TestIsOAuthToken:
         assert _is_oauth_token("sk-ant-api03-abcdef1234567890") is False
 
 
+def test_missing_sdk_error_reports_why_the_lazy_install_did_not_land(monkeypatch):
+    """A completed install that needs a restart must not tell the user to install it again."""
+    import pm
+    from agent import anthropic_adapter
+    from pm.package import InstallError
+
+    restart = InstallError("venv", "anthropic installed; restart Hermes to activate the new dependency environment")
+
+    def ensure_import(extra):
+        raise restart
+
+    monkeypatch.setattr(pm, "ensure_import", ensure_import)
+    monkeypatch.setattr(anthropic_adapter, "_anthropic_sdk", ...)
+    monkeypatch.setattr(anthropic_adapter, "_anthropic_install_error", None)
+    monkeypatch.setitem(sys.modules, "anthropic", None)
+
+    with pytest.raises(ImportError) as excinfo:
+        build_anthropic_client("sk-ant-api03-test")
+    assert str(restart) in str(excinfo.value)
+    assert pm.install_hint("anthropic") not in str(excinfo.value)
+
+
 class TestBuildAnthropicClient:
 
 
@@ -528,7 +550,7 @@ class TestRunOauthSetupToken:
 
     def test_returns_token_from_credential_files(self, monkeypatch, tmp_path):
         """After subprocess completes, reads credentials from Claude Code files."""
-        monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
+        monkeypatch.setattr("agent.anthropic_adapter.find_claude_code_cli", lambda _: "/usr/bin/claude")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
 
@@ -558,7 +580,7 @@ class TestRunOauthSetupToken:
 
     def test_returns_none_when_no_creds_found(self, monkeypatch, tmp_path):
         """Returns None when subprocess completes but no credentials are found."""
-        monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
+        monkeypatch.setattr("agent.anthropic_adapter.find_claude_code_cli", lambda _: "/usr/bin/claude")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)

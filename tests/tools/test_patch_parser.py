@@ -400,7 +400,7 @@ class TestValidationPhase:
                 }
                 content = files.get(path)
                 if content is None:
-                    return SimpleNamespace(content=None, error=f"File not found: {path}")
+                    return SimpleNamespace(content=None, error=f"File not found: {path}", not_found=True)
                 return SimpleNamespace(content=content, error=None)
 
             def write_file(self, path, content, pre_content=None):
@@ -454,7 +454,7 @@ class TestValidationPhase:
             def read_file_raw(self, path):
                 if path == "exists.py":
                     return SimpleNamespace(content=original, error=None)
-                return SimpleNamespace(content=None, error=f"File not found: {path}")
+                return SimpleNamespace(content=None, error=f"File not found: {path}", not_found=True)
 
             def write_file(self, path, content):
                 written[path] = content
@@ -485,7 +485,7 @@ class TestValidationPhase:
             def read_file_raw(self, path):
                 if path in state:
                     return SimpleNamespace(content=state[path], error=None)
-                return SimpleNamespace(content=None, error=f"File not found: {path}")
+                return SimpleNamespace(content=None, error=f"File not found: {path}", not_found=True)
 
             def delete_file(self, path):
                 state.pop(path, None)
@@ -634,7 +634,7 @@ class TestV4ALspDiagnosticsPropagation:
 
         class FakeFileOps:
             def read_file_raw(self, path):
-                return SimpleNamespace(content=None, error=f"File not found: {path}")
+                return SimpleNamespace(content=None, error=f"File not found: {path}", not_found=True)
 
             def write_file(self, path, content, pre_content=None):
                 return SimpleNamespace(error=None, lsp_diagnostics=diag_block)
@@ -689,7 +689,7 @@ class TestV4ALspDiagnosticsPropagation:
 
         class FakeFileOps:
             def read_file_raw(self, path):
-                return SimpleNamespace(content=None, error=f"File not found: {path}")
+                return SimpleNamespace(content=None, error=f"File not found: {path}", not_found=True)
 
             def write_file(self, path, content, pre_content=None):
                 # lsp_diagnostics omitted entirely (older WriteResult shape).
@@ -725,7 +725,7 @@ class TestV4ALspDiagnosticsPropagation:
 
         class FakeFileOps:
             def read_file_raw(self, path):
-                return SimpleNamespace(content=None, error=f"File not found: {path}")
+                return SimpleNamespace(content=None, error=f"File not found: {path}", not_found=True)
 
             def write_file(self, path, content, pre_content=None):
                 return SimpleNamespace(error=None, lsp_diagnostics=per_file[path])
@@ -750,7 +750,7 @@ class _DictFileOps:
     def read_file_raw(self, path):
         if path in self.files:
             return SimpleNamespace(content=self.files[path], error=None)
-        return SimpleNamespace(content="", error="file not found")
+        return SimpleNamespace(content="", error="file not found", not_found=True)
 
     def write_file(self, path, content, pre_content=None):
         self.files[path] = content

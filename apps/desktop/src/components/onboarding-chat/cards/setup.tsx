@@ -1,9 +1,3 @@
-/**
- * The three setup cards: accent, connectors, and layout. The accent and layout picks apply as soon as they are
- * clicked; the connector picks are only recorded. The option lists come from onboarding-chat/options.tsx, so the cards
- * and the previews stay in agreement without the model listing the options.
- */
-
 import { useStore } from '@nanostores/react'
 import { Puzzle } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
@@ -52,14 +46,10 @@ interface ConnectorPicksProps {
   plugins: OnboardingPlugin[]
 }
 
-/** The picks themselves, fed by ConnectorsCard. Plugins lead the one group (NS-960 D1). */
 export function ConnectorPicks({ catalog, commit, done, locked, plugins }: ConnectorPicksProps) {
   const answers = useStore($onboardingAnswers)
   const [query, setQuery] = useState('')
 
-  // Only what the gateway carries. A pick is a slug the build chat can hand
-  // straight to manage_connections; a name the gateway does not carry would be
-  // a pick the build chat cannot honour.
   const rows = useMemo(() => (catalog.status === 'ready' ? orderConnectorPicks(catalog.rows) : []), [catalog])
   const search = query.trim().toLowerCase()
 
@@ -93,8 +83,6 @@ export function ConnectorPicks({ catalog, commit, done, locked, plugins }: Conne
     return `apps I use, not connected yet: ${apps}${tools ? `; plugins picked, not installed yet: ${tools}` : ''}`
   }
 
-  // Nothing to pick from: the toolset is off or the gateway is unreachable.
-  // The step still has to end, so the card offers Skip.
   if (plugins.length === 0 && (catalog.status === 'unavailable' || (catalog.status === 'ready' && rows.length === 0))) {
     return (
       <CardFrame
@@ -166,9 +154,6 @@ export function ConnectorPicks({ catalog, commit, done, locked, plugins }: Conne
           </div>
         </>
       )}
-      {/* Picking is a preference, not an authorization: nothing is signed into
-          here. Saying so is what keeps the Connect cards later from reading as
-          a second ask for the same thing. */}
       <p className="text-xs text-muted-foreground">
         <strong className="font-medium text-foreground">Nothing connects or installs yet.</strong> Hermes will offer to
         link these, or install a plugin, when a task needs them, and asks first.
@@ -212,12 +197,10 @@ export function LookCard({ attrs, locked, messageId }: CardProps) {
     if (requested && receipt && !answers.committed.includes(receipt)) {
       pickAccent(requested, receipt)
     } else {
-      // Restore an unfinished choice without replaying a historical directive over a newer pick.
       setAccentOverride(answers.accent)
     }
   }, [answers.accent, answers.committed, done, locked, receipt, requested])
 
-  // Chat choices update the existing picker; they do not create a second question card.
   if (attrs.value !== undefined) {
     return null
   }
@@ -243,17 +226,12 @@ export function LookCard({ attrs, locked, messageId }: CardProps) {
 export function LayoutCard({ locked }: CardProps) {
   const answers = useStore($onboardingAnswers)
   const { commit, done } = useCardCommit('layout')
-  // The stored answer defaults to 'basic', so nothing renders selected and Continue stays disabled until the user
-  // clicks. The flag lives in a store because applying the picked layout replaces the pane tree and remounts this
-  // card, which would clear local state.
   const picked = useStore($chatLayoutPicked)
 
   const pickLayout = (id: string) => {
     $chatLayoutPicked.set(true)
     setOnboardingAnswers({ layout: id })
 
-    // The pick answers "how much of the machinery do you want to see" too;
-    // Skip leaves the mode alone, so only an actual choice sets it.
     const layout = LAYOUTS.find(candidate => candidate.id === id)
 
     const preset = registry.getArea('layouts').find(contribution => contribution.id === id)
@@ -262,11 +240,6 @@ export function LayoutCard({ locked }: CardProps) {
       return
     }
 
-    // Every pick goes through assembly, including re-picks. The first pick grows the window and places the panes,
-    // holding the chat and the cursor over this card at the same screen position; later picks rearrange in place.
-    // Swapping only the preset tree on a re-pick kept the previous layout's dismissals and dock records, and the two
-    // layouts came up mixed together.
-    // SAFETY: Layout presets declare data: LayoutNode (pane-shell/tree/presets.ts).
     assembleChatOnboarding(preset.id, preset.data as LayoutNode, layout?.mode)
   }
 

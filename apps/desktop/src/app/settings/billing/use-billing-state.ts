@@ -218,7 +218,7 @@ export function deriveBillingView(
   // Read BEFORE the logged-out branch: a free-tier install has no account, so
   // `logged_in` is false and the generic "connect your account" notice would
   // otherwise win and tell the user to go to the portal.
-  if (billing.free_tier) {
+  if (billing.free_tier_account) {
     return freeTierView(billing, b)
   }
 
@@ -419,7 +419,7 @@ function creditsPerMonthDisplay(
 ): string | undefined {
   const credits = Number((monthlyCredits ?? '').replace(/,/g, ''))
 
-  return Number.isFinite(credits) && credits > 0 ? b.creditsPerMonth(`$${credits.toLocaleString('en-US')}`) : undefined
+  return Number.isFinite(credits) && credits > 0 ? b.creditsPerMonth(formatMoney(credits)) : undefined
 }
 
 /**

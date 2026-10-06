@@ -1069,6 +1069,11 @@ class TestDiscoverAndRegister:
 class TestMCPServerTask:
     """Test the MCPServerTask lifecycle with mocked MCP SDK."""
 
+    @pytest.fixture(autouse=True)
+    def _no_pm_launcher(self, monkeypatch):
+        # Launcher resolution is not under test here, and a CI host has no PM-managed Node.
+        monkeypatch.setattr("tools.mcp_tool_config._managed_launcher", lambda command: None)
+
     def _mock_stdio_and_session(self, session):
         """Return patches for stdio_client and ClientSession as async CMs."""
         mock_read, mock_write = MagicMock(), MagicMock()
@@ -1992,12 +1997,14 @@ class _CompatType:
 
 try:
     from mcp.types import (
+        ClientCapabilities,
         CreateMessageResult,
         ErrorData,
         SamplingCapability,
         TextContent,
     )
 except ImportError:
+    ClientCapabilities = _CompatType
     CreateMessageResult = _CompatType
     ErrorData = _CompatType
     SamplingCapability = _CompatType
@@ -2489,6 +2496,58 @@ class TestMetricsTracking:
 # 13. session_kwargs()
 # ---------------------------------------------------------------------------
 
+
+    @staticmethod
+    def _capability_payload(capability):
+        if hasattr(capability, "model_dump"):
+            return capability.model_dump(exclude_none=True)
+        return {k: v for k, v in vars(capability).items() if v is not None}
+
+    @classmethod
+    def _client_capability_payload(cls, sampling_capability):
+        capabilities = ClientCapabilities(sampling=sampling_capability)
+        return cls._capability_payload(capabilities)
+
+    def test_default_omits_tools_capability(self):
+        """Strict servers reject unknown sampling.tools, so it stays off by default (#5468)."""
+        handler = SamplingHandler("sk", {})
+        assert handler.expose_client_tools is False
+        cap = handler.session_kwargs()["sampling_capabilities"]
+        assert isinstance(cap, SamplingCapability)
+        assert cap.tools is None
+        assert "tools" not in self._capability_payload(cap)
+        assert self._client_capability_payload(cap) == {"sampling": {}}
+
+    def test_sampling_tools_capability_is_opt_in(self):
+        handler = SamplingHandler("sk3", {"expose_client_tools": True})
+        cap = handler.session_kwargs()["sampling_capabilities"]
+        assert isinstance(cap.tools, SamplingToolsCapability)
+        assert "tools" in self._capability_payload(cap)
+        assert self._client_capability_payload(cap) == {"sampling": {"tools": {}}}
+
+    @pytest.mark.parametrize(
+        "raw_value, expected",
+        [
+            (False, False),
+            ("false", False),
+            ("0", False),
+            ("off", False),
+            (True, True),
+            ("true", True),
+            ("1", True),
+            ("yes", True),
+        ],
+    )
+    def test_sampling_tools_capability_parses_bool_flags(self, raw_value, expected):
+        handler = SamplingHandler("sk4", {"expose_client_tools": raw_value})
+        cap = handler.session_kwargs()["sampling_capabilities"]
+        payload = self._capability_payload(cap)
+        if expected:
+            assert isinstance(cap.tools, SamplingToolsCapability)
+            assert "tools" in payload
+        else:
+            assert cap.tools is None
+            assert "tools" not in payload
 
 # ---------------------------------------------------------------------------
 # 14. MCPServerTask integration

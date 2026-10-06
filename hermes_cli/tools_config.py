@@ -87,7 +87,6 @@ CONFIGURABLE_TOOLSETS = [
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
-    ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
@@ -107,8 +106,8 @@ def gui_toolset_label(label: str) -> str:
 
 
 # OFF by default for new installs (still in _HERMES_CORE_TOOLS; the checklist won't pre-select them). x_search
-# auto-enables when xAI creds exist (mirrors HASS_TOKEN → homeassistant); its check_fn still gates the schema.
-_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "a2a", "kanban"}
+# auto-enables when xAI creds exist; its check_fn still gates the schema.
+_DEFAULT_OFF_TOOLSETS = {"spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "a2a", "kanban"}
 
 # Config-only capabilities: provider setup in `hermes tools` (TOOL_CATEGORIES) but not model toolsets — zero
 # schemas, own switch (``stt.enabled``), never in ``platform_toolsets`` or the per-platform checklist.
@@ -131,15 +130,6 @@ def _xai_credentials_present() -> bool:
     except ImportError:  # pragma: no cover — secret_scope is in-repo
         get_secret = os.environ.get
     return bool(str(get_secret("XAI_API_KEY") or "").strip())
-
-
-def _homeassistant_credentials_present() -> bool:
-    """Return whether the active profile has a Home Assistant token."""
-    try:
-        from agent.secret_scope import get_secret
-        return bool((get_secret("HASS_TOKEN", "") or "").strip())
-    except Exception:
-        return False
 
 
 def _toolset_configuration_platform(ts_key: str, default: str = "cli") -> str:
@@ -355,14 +345,6 @@ TOOL_CATEGORIES = {
                  post_setup="browser_use_cli"),
         ],
     },
-    "homeassistant": {
-        "name": "Smart Home", "icon": "🏠",
-        "providers": [
-            _row("Home Assistant", tag="REST API integration",
-                 env_vars=[_key("HASS_TOKEN", "Home Assistant Long-Lived Access Token"),
-                           _key("HASS_URL", "Home Assistant URL", default="http://homeassistant.local:8123")]),
-        ],
-    },
     "spotify": {
         "name": "Spotify", "icon": "🎵",
         "providers": [_row("Spotify Web API", tag="PKCE OAuth — opens the setup wizard", post_setup="spotify")],
@@ -490,20 +472,12 @@ def _configurable_subset_of(tool_names: Set[str], platform: str) -> Set[str]:
 
 def _default_off_toolsets(platform: str, explicitly_configured: bool) -> Set[str]:
     """Toolsets to strip from an implicit (composite-derived) enable set. A platform named after a default-off
-    toolset (``homeassistant``) keeps it, except platform-restricted ones (``discord`` on discord stays OFF); a
-    configured HASS_TOKEN is an explicit opt-in that must survive platforms resolving without a saved list.
+    toolset keeps it, except platform-restricted ones (``discord`` on discord stays OFF).
     Platform-native default-off toolsets (``discord`` on discord) are off for unconfigured platforms as a
     security opt-in — an explicitly saved list IS that opt-in and lets them through."""
     default_off = set(_DEFAULT_OFF_TOOLSETS)
     if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
         default_off.remove(platform)
-    # Home Assistant is already runtime-gated by its check_fn (requires HASS_TOKEN to register any tools).
-    # When a user has configured HASS_TOKEN, they've explicitly opted in — don't also strip it via
-    # _DEFAULT_OFF_TOOLSETS, which would silently drop HA from platforms (e.g. cron) that run through
-    # _get_platform_tools without an explicit saved toolset list. Without this, Norbert's HA cron jobs
-    # regressed after #14798 made cron honor per-platform tool config.
-    if "homeassistant" in default_off and _homeassistant_credentials_present():
-        default_off.remove("homeassistant")
     if explicitly_configured:
         default_off -= {ts for ts in default_off if platform in (_TOOLSET_PLATFORM_RESTRICTIONS.get(ts) or ())}
     return default_off
@@ -600,6 +574,25 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
         toolset_names = [_platform_default_toolset(platform)]
     # YAML may parse bare numeric names (``12306:``) as int; normalise so sorted() never mixes types.
     toolset_names = [str(ts) for ts in toolset_names]
+
+    # Expand legacy toolset aliases.  Older Hermes versions and clients used
+    # bare ``"hermes"`` as a composite toolset covering both the CLI and the
+    # API-server surface.  Modern code expects ``"hermes-cli"`` (and
+    # ``"hermes-api-server"`` for the HTTP endpoint), so configs persisted
+    # by those older versions still carry the legacy name; without expansion
+    # ``resolve_toolset("hermes")`` returns ``[]`` — all tools silently
+    # disappear.
+    _LEGACY_TOOLSET_ALIASES: dict = {
+        "hermes": ("hermes-cli", "hermes-api-server"),
+    }
+    expanded: list = []
+    for name in toolset_names:
+        aliases = _LEGACY_TOOLSET_ALIASES.get(name)
+        if aliases:
+            expanded.extend(aliases)
+        else:
+            expanded.append(name)
+    toolset_names = expanded
 
     configurable_keys = _configurable_keys()
     plugin_ts_keys = _get_plugin_toolset_keys()
@@ -1120,34 +1113,3 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     print(color(f"  Tool configuration saved to {display_hermes_home()}/config.yaml", Colors.DIM))
     print(color("  Changes take effect on next 'hermes' or gateway restart.", Colors.DIM))
     print()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import shutil  # noqa: F401,E402
-import subprocess  # noqa: F401,E402
-import sys  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'MANAGED_FEATURE_COVERAGE_CATEGORY': ('hermes_cli.nous_subscription', 'MANAGED_FEATURE_COVERAGE_CATEGORY'),
-    'NOUS_MANAGED_PROVIDER': ('tools.tool_backend_helpers', 'NOUS_MANAGED_PROVIDER'),
-    'base_url_hostname': ('utils', 'base_url_hostname'),
-    'fal_key_is_configured': ('tools.tool_backend_helpers', 'fal_key_is_configured'),
-    'format_nous_portal_entitlement_message': ('hermes_cli.nous_account', 'format_nous_portal_entitlement_message'),
-    'is_truthy_value': ('utils', 'is_truthy_value'),
-    'save_env_value': ('hermes_cli.config', 'save_env_value'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

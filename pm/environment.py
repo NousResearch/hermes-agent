@@ -45,20 +45,31 @@ _RESOLVER_MARKERS = (
 )
 
 
+# A package's own build ran and failed; a fetch/download failure never prints this.
+_BUILD_MARKERS = ("the build backend returned an error",)
+
+
 class ResolutionConflict(InstallError):
     """uv's resolver proved the union has no valid solution."""
+
+
+class BuildFailure(InstallError):
+    """A package's build backend ran and failed."""
 
 
 def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallError:
     """Turn a failed `uv <stage>` into the right classified error.
 
-    Resolver-conflict output → ResolutionConflict; anything else (fetch,
-    build, tooling) → plain InstallError with the tail of the output.
+    Resolver-conflict output → ResolutionConflict; a build backend that ran and
+    failed → BuildFailure; anything else (fetch, tooling) → plain InstallError
+    with the tail of the output.
     """
     cause = f"uv {stage} exited {returncode}: {output.strip()[-600:]}"
     lowered = output.lower()
     if any(marker in lowered for marker in _RESOLVER_MARKERS):
         return ResolutionConflict("venv", cause)
+    if any(marker in lowered for marker in _BUILD_MARKERS):
+        return BuildFailure("venv", cause)
     return InstallError("venv", cause)
 
 
@@ -261,6 +272,18 @@ class PythonEnvironment:
         # Explicit index credentials survive, but cannot redirect the project,
         # interpreter or cache selected by the operation.
         env = _base_environment(self.env)
+        if self.no_config:
+            # --no-config only removes config files; the pip-mirror bridge
+            # (pm.index_config) reaches uv as env vars. The pinned runtime
+            # builder asked to be isolated from ambient index configuration:
+            # re-resolving its official-index lockfile against a mirror trips
+            # `--locked` (#124418), and a fully-pinned graph never needs a
+            # mirror to resolve. Index-REDIRECT settings are dropped; transport
+            # knobs (UV_NATIVE_TLS / UV_INSECURE_HOST / UV_HTTP_TIMEOUT) survive
+            # — corporate networks need them to reach the pinned URLs at all.
+            from pm.index_config import is_index_redirect
+
+            env = {key: value for key, value in env.items() if not is_index_redirect(key)}
         env.update(UV_PYTHON=str(self.python), UV_PROJECT_ENVIRONMENT=str(self.destination),
                    UV_CACHE_DIR=str(self.cache), UV_PYTHON_DOWNLOADS="never")
         with tempfile.TemporaryDirectory(prefix="pm-uv-config-") as config:

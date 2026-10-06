@@ -421,14 +421,3 @@ def render_frames(payload: dict[str, Any], *, cols: int = 80, rows: int = 16, fr
         "buckets": _bucket_rows(buckets, payload), "summary": build_summary(payload), "axis": axis_labels(payload),
         "count": len(payload.get("nodes", [])), "cols": cols, "rows": rows,
     }
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-Grid = list  # list[Row]
-
-Run = list  # [text, style, alpha, hex?]
-# ---- END PLUGIN-COMPAT ----

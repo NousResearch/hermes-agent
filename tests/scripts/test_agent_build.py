@@ -247,6 +247,10 @@ def test_payload_smoke_uses_relocated_manifest_commands(tmp_path):
         "  print(json.dumps([sys.argv[1:], dependency.VALUE]))\n"
         " else: print('fast path')\n", encoding="utf-8")
     data["bin_dir"] = "libexec"
+    harness = Path(data["site_packages"]) / "browser_harness"
+    harness.mkdir()
+    (harness / "__init__.py").write_text("", encoding="utf-8")
+    (harness / "run.py").write_text("print('harness ok')\n", encoding="utf-8")
     assert build_cli(data, out, tmp_path).returncode == 0
     shutil.rmtree(source)
     env = dict(os.environ, PYTHONPATH="/foreign", PYTHONHOME="/foreign", HERMES_PYTHON="/foreign")
@@ -255,6 +259,11 @@ def test_payload_smoke_uses_relocated_manifest_commands(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert '"prepared"' in result.stdout
     assert out.is_dir(), "smoke must restore the artifact for packaging"
+    assert "harness ok" in result.stdout
+    shutil.rmtree(harness)
+    no_harness = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    assert no_harness.returncode != 0
+    assert "browser-harness failed" in no_harness.stdout + no_harness.stderr
     dependency = Path(data['site_packages']) / 'dependency.py'
     dependency.unlink()
     missing_dep = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)

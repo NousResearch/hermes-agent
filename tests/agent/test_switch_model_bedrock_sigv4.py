@@ -84,6 +84,7 @@ def test_fallback_to_bedrock_binds_runtime_not_generic_client(aws_env, api_mode)
     ("openai.gpt-5.6-sol", MANTLE, "codex_responses"),
     # Inference-profile ids and every other vendor stay on Converse.
     ("us.openai.gpt-6-sol", RUNTIME_EU, "bedrock_converse"),
+    ("global.openai.gpt-6-luna", RUNTIME_EU, "bedrock_converse"),
     ("us.amazon.nova-pro-v1:0", RUNTIME_EU, "bedrock_converse"),
     ("openai.gpt-oss-120b-1:0", RUNTIME_EU, "bedrock_converse"),
 ])

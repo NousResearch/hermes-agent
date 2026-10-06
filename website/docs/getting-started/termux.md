@@ -6,6 +6,12 @@ description: "Install Hermes Agent on Android from its signed Termux APT reposit
 
 # Hermes on Android with Termux
 
+:::danger Termux is currently broken
+The Termux package does not work right now. A fix is in progress and will
+ship soon. Until then, the steps below may fail or install a package that
+does not run.
+:::
+
 The Termux package runs Hermes on **aarch64 (arm64-v8a)** Android devices.
 Two APT channels are published under
 `https://hermes-assets.nousresearch.com/releases/termux/<channel>`:

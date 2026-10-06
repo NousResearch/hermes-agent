@@ -338,6 +338,84 @@ def test_deleted_desktop_branch_is_persisted_only_after_definitive_probe(install
     assert not branch_file.read_bytes().startswith(b"\xef\xbb\xbf")
 
 
+def _bare_origin(installation):
+    """Point the checkout at a real bare remote holding main; no GitHub repository is involved."""
+    root, linked, home, base, head, responses, requests, git = installation
+    remote = home / "remote.git"
+    git("init", "--bare", "-b", "main", str(remote))
+    git("remote", "set-url", "origin", str(remote))
+    git("push", "-q", "origin", "main")
+    git("fetch", "-q", "origin")
+
+
+def _commit_on(git, branch, message):
+    git("checkout", "-q", branch)
+    git("commit", "-q", "--allow-empty", "-m", message)
+    sha = git("rev-parse", "HEAD")
+    git("checkout", "-q", "main")
+    return sha
+
+
+@pytest.mark.parametrize("pinned_by", ["desktop", "current"])
+def test_never_pushed_branch_keeps_its_pin(installation, pinned_by):
+    """#105042: an empty advertisement for a branch that was never pushed is not a deletion."""
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    _bare_origin(installation)
+    git("branch", "local-work")
+    _commit_on(git, "local-work", "unpushed work")
+    branch_file = home / "desktop-update.json"
+    if pinned_by == "desktop":
+        branch_file.write_text(json.dumps({"branch": "local-work"}))
+    else:
+        git("checkout", "-q", "local-work")
+    status = check_for_updates(install_root=root, home=home, branch_config_path=branch_file)
+    assert status["branch"] == "local-work", status
+    assert status["error"] == "branch-local-only"
+    assert status["localOnly"] is True
+    assert "never been pushed" in status["message"]
+    assert "targetSha" not in status
+    if pinned_by == "desktop":
+        assert json.loads(branch_file.read_text()) == {"branch": "local-work"}
+    else:
+        assert not branch_file.exists()
+    assert requests == [MAIN_CHANNEL]
+
+
+@pytest.mark.parametrize("merge", ["fast-forward", "rebase", "unmerged"])
+def test_deleted_remote_branch_heals_only_when_its_commits_are_in_main(installation, merge):
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    _bare_origin(installation)
+    git("branch", "pushed")
+    work = _commit_on(git, "pushed", "published work")
+    git("push", "-q", "-u", "origin", "pushed")
+    if merge == "fast-forward":
+        git("merge", "-q", "--ff-only", "pushed")
+    elif merge == "rebase":
+        git("commit", "-q", "--allow-empty", "-m", "upstream moved on")
+        git("cherry-pick", "--allow-empty", work)
+    if merge != "unmerged":
+        git("push", "-q", "origin", "main")
+    # Upstream deletes the branch; the prune removes the tracking ref but keeps the upstream config.
+    git("push", "-q", "origin", "--delete", "pushed")
+    git("fetch", "-q", "--prune", "origin")
+    assert git("for-each-ref", "refs/remotes/origin/pushed") == ""
+    branch_file = home / "desktop-update.json"
+    branch_file.write_text(json.dumps({"branch": "pushed"}))
+    status = check_for_updates(install_root=root, home=home, branch_config_path=branch_file)
+    if merge == "unmerged":
+        assert status["branch"] == "pushed", status
+        assert status["error"] == "branch-local-only"
+        assert "not in main" in status["message"]
+        assert json.loads(branch_file.read_text())["branch"] == "pushed"
+    else:
+        assert "error" not in status, status
+        assert status["branch"] == "main"
+        assert status["targetSha"] == git("rev-parse", "origin/main")
+        assert json.loads(branch_file.read_text())["branch"] == "main"
+
+
 def test_inherited_git_target_cannot_redirect_an_explicit_install(installation, monkeypatch):
     from hermes_cli.source_check import check_for_updates
     root, linked, home, base, head, responses, requests, git = installation

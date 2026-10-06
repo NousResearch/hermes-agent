@@ -37,6 +37,7 @@ vi.mock('@/i18n', () => ({
           backgroundRunning: 'Running in background',
           finishedUnread: 'Finished',
           handoffOrigin: (platform: string) => `Started on ${platform}`,
+          continuationOrigin: 'Automatic continuation — this conversation was compressed and continued',
           messageCount: (count: number) => `${count} messages`,
           needsInput: 'Needs input',
           sessionActions: 'Session actions',
@@ -125,10 +126,21 @@ vi.mock('@/store/windows', async importOriginal => {
 
 // SessionActionsMenu open behavior is covered in session-actions-menu.test.tsx
 // against the real component. Stub it here so this file stays focused on the
-// row chrome.
+// row chrome (handoff avatar tip, etc.) — but record the props so the row's
+// own state plumbing (e.g. the archived flag, #98813) is still asserted.
+const menuProps = vi.hoisted(() => vi.fn())
+
 vi.mock('./session-actions-menu', () => ({
-  SessionActionsMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  SessionContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>
+  SessionActionsMenu: (props: { children?: React.ReactNode }) => {
+    menuProps(props)
+
+    return <>{props.children}</>
+  },
+  SessionContextMenu: (props: { children?: React.ReactNode }) => {
+    menuProps(props)
+
+    return <>{props.children}</>
+  }
 }))
 
 vi.mock('./use-profile-prewarm', () => ({
@@ -260,6 +272,22 @@ describe('SidebarSessionRow', () => {
       expect(screen.queryByRole('tooltip')).toBeNull()
     })
   })
+
+  // The Archived view reuses the row menu, and the menu needs the row's
+  // archived state to label its shared verb Unarchive (#98813).
+  it('forwards the archived state to the row menu', () => {
+    menuProps.mockClear()
+    renderRow(makeSession({ archived: true, title: 'Archived row' }))
+
+    expect(menuProps).toHaveBeenCalledWith(expect.objectContaining({ archived: true }))
+  })
+
+  it('forwards the non-archived state to the row menu', () => {
+    menuProps.mockClear()
+    renderRow(makeSession({ title: 'Live row' }))
+
+    expect(menuProps).toHaveBeenCalledWith(expect.objectContaining({ archived: false }))
+  })
 })
 
 // Regression for #83617: the row shell once spread the FULL dnd-kit handle, so
@@ -267,7 +295,7 @@ describe('SidebarSessionRow', () => {
 // reached the KeyboardSensor's activator — a drag armed, and the sensor then
 // ate the next Space at window level (the rename input dropped the keystroke).
 describe('SidebarSessionRow inside the sortable list', () => {
-  function SortableRow({ session }: { session: SessionInfo }) {
+  function SortableRow({ onResume, session }: { onResume: () => void; session: SessionInfo }) {
     const { dragHandleProps, dragging, ref, reorderable, style } = useSortableBindings(session.id)
 
     return (
@@ -279,7 +307,7 @@ describe('SidebarSessionRow inside the sortable list', () => {
         onArchive={noop}
         onDelete={noop}
         onPin={noop}
-        onResume={noop}
+        onResume={onResume}
         onToggleUnread={noop}
         ref={ref}
         reorderable={reorderable}
@@ -290,7 +318,7 @@ describe('SidebarSessionRow inside the sortable list', () => {
     )
   }
 
-  function Host({ session }: { session: SessionInfo }) {
+  function Host({ onResume, session }: { onResume: () => void; session: SessionInfo }) {
     // The sidebar's own sensor set (index.tsx dndSensors).
     const sensors = useSensors(
       useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -299,7 +327,7 @@ describe('SidebarSessionRow inside the sortable list', () => {
 
     return (
       <ReorderableList ids={[session.id]} onReorder={noop} sensors={sensors}>
-        <SortableRow session={session} />
+        <SortableRow onResume={onResume} session={session} />
       </ReorderableList>
     )
   }
@@ -307,7 +335,7 @@ describe('SidebarSessionRow inside the sortable list', () => {
   const space = { code: 'Space', key: ' ' }
 
   it('lets Space through to a focused row control instead of arming a keyboard drag', () => {
-    const { container } = render(<Host session={makeSession({ title: 'Renamable' })} />)
+    const { container } = render(<Host onResume={noop} session={makeSession({ title: 'Renamable' })} />)
     const kebab = screen.getByRole('button', { name: 'Session actions' })
     kebab.focus()
 
@@ -318,12 +346,37 @@ describe('SidebarSessionRow inside the sortable list', () => {
   })
 
   it('still starts a keyboard reorder from the grabber', () => {
-    const { container } = render(<Host session={makeSession({ title: 'Renamable' })} />)
+    const { container } = render(<Host onResume={noop} session={makeSession({ title: 'Renamable' })} />)
     const grabber = container.querySelector<HTMLElement>('[data-reorder-handle]')!
 
     grabber.focus()
     fireEvent.keyDown(grabber, space)
     expect(grabber.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  // #38072 finding 3 (axe nested-interactive): the grabber (dnd-kit
+  // role="button" + tabIndex) must be a SIBLING of the row's primary action,
+  // never a descendant of it. The row body is a div carrying the gesture
+  // handlers; the title is the row's real button and its click bubbles to
+  // the body's resolver, so pointer users keep click-anywhere-on-the-row.
+  it('renders the grabber outside any button, with the title as the row button', () => {
+    const onResume = vi.fn()
+    const { container } = render(<Host onResume={onResume} session={makeSession({ title: 'Renamable' })} />)
+
+    const grabber = container.querySelector<HTMLElement>('[data-reorder-handle]')!
+
+    // Handle semantics survive (keyboard reorder above depends on them)…
+    expect(grabber.getAttribute('role')).toBe('button')
+    expect(grabber.tabIndex).toBe(0)
+    // …but it no longer nests inside the row's primary button.
+    expect(grabber.closest('button')).toBeNull()
+
+    // The title line is the row button; clicks on it resume via the body
+    // div's bubbled resolver (no onClick of its own).
+    const title = screen.getByRole('button', { name: 'Renamable' })
+    expect(title.closest('[data-reorder-handle]')).toBeNull()
+    fireEvent.click(title)
+    expect(onResume).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -382,5 +435,29 @@ describe('SidebarSessionRow decoration slots', () => {
     })
 
     expect(screen.queryByTestId('lead-deco')).toBeNull()
+  })
+})
+
+// #121148: a projected compression continuation renders as a plain
+// top-level row that reads as a brand-new conversation — and the sealed
+// predecessor it replaced used to nest like a branch users deleted as
+// accidents. The row must carry a visible continuation affordance.
+describe('SidebarSessionRow continuation badge', () => {
+  const continuationGlyph = (container: HTMLElement) => container.querySelector('.codicon-layers')
+
+  it('paints the continuation glyph for a projected compression tip', () => {
+    const { container } = renderRow(makeSession({ continuation_kind: 'compression', title: 'Long-running chat' }))
+
+    expect(continuationGlyph(container)).not.toBeNull()
+  })
+
+  it('paints nothing for a plain session and for a branch', () => {
+    const plain = renderRow(makeSession({ title: 'Plain' }))
+
+    expect(continuationGlyph(plain.container)).toBeNull()
+
+    const branch = renderRow(makeSession({ parent_session_id: 'parent', title: 'A real branch' }))
+
+    expect(continuationGlyph(branch.container)).toBeNull()
   })
 })

@@ -16,6 +16,8 @@ _GGUF_MAGIC = b"GGUF"
 # Split GGUF naming: "<stem>-00001-of-00003.gguf"; the part suffix is not part of the model id.
 SPLIT_PART_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
 _PART_SUFFIX_RE = re.compile(r"-\d{5}-of-\d{5}$")
+# Same tensor selection as context_policy's per-block FFN -ot override.
+_FFN_WEIGHT = re.compile(r"blk\.(\d+)\.ffn_.*\.weight")
 
 
 def model_id_from_stem(stem: str) -> str:
@@ -58,6 +60,9 @@ class GGUFHeader:
     n_tensors: int = 0
     tensor_bytes: int = 0          # exact sum over the tensor table
     embd_table_bytes: int = 0      # token_embd.weight (duplicated host-side when fully offloaded)
+    # block index -> bytes of that block's FFN weights (the tensors a `blk\.N\.ffn_.*\.weight`
+    # -ot override moves), so spill placement can move only as many blocks as it needs.
+    ffn_block_bytes: dict[int, int] = field(default_factory=dict)
 
     # ── typed accessors ──────────────────────────────────────
 
@@ -80,7 +85,33 @@ class GGUFHeader:
         "full_attention_interval",
         "GDN-hybrid discriminator (qwen35 family): every Nth layer is full attention, the rest "
         "are linear/recurrent. 0 = not present.")
+    key_length_swa = _arch_int(
+        "attention.key_length_swa",
+        "Per-token key size for sliding-window layers when it differs from the global "
+        "attention.key_length (e.g. gemma3/gemma4). 0 = not present.")
+    value_length_swa = _arch_int(
+        "attention.value_length_swa",
+        "Per-token value size for sliding-window layers when it differs from the global "
+        "attention.value_length. 0 = not present.")
     del _arch_int
+
+    @property
+    def sliding_window_pattern(self) -> list[int] | None:
+        """Per-layer SWA pattern declared by the file itself: a truthy entry marks a
+        sliding-window layer, falsy marks global. None when the file doesn't declare the per-layer
+        array form (older GGUFs, architectures without per-layer SWA metadata, or files that use
+        the scalar period form instead — see `sliding_window_pattern_period`)."""
+        v = self._arch_key("attention.sliding_window_pattern")
+        return [int(x) for x in v] if isinstance(v, list) else None
+
+    @property
+    def sliding_window_pattern_period(self) -> int:
+        """Scalar SWA period declared by the file: llama.cpp also permits
+        `attention.sliding_window_pattern` as a single integer N (every Nth layer is full
+        attention, e.g. Gemma-family writers) rather than a per-layer array. 0 when absent or when
+        the file uses the array form instead — callers should fall back to a coarser signal."""
+        v = self._arch_key("attention.sliding_window_pattern")
+        return int(v) if isinstance(v, int) and not isinstance(v, bool) else 0
 
     @property
     def n_vocab(self) -> int:
@@ -181,6 +212,7 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
 
         tensor_bytes = 0
         embd_bytes = 0
+        ffn_block_bytes: dict[int, int] = {}
         for _ in range(n_tensors):
             name = read_str(f)
             (n_dims,) = read(f, "<I")
@@ -198,7 +230,10 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
             tensor_bytes += nbytes
             if name == "token_embd.weight":
                 embd_bytes = nbytes
+            elif m := _FFN_WEIGHT.match(name):
+                block = int(m.group(1))
+                ffn_block_bytes[block] = ffn_block_bytes.get(block, 0) + nbytes
 
     return GGUFHeader(path=str(path), version=version, metadata=metadata,
                       n_tensors=n_tensors, tensor_bytes=tensor_bytes,
-                      embd_table_bytes=embd_bytes)
+                      embd_table_bytes=embd_bytes, ffn_block_bytes=ffn_block_bytes)

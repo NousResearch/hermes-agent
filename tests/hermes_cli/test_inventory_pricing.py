@@ -116,7 +116,7 @@ def test_model_options_cold_pricing_fetch_runs_off_the_request_path(monkeypatch)
         if cached_only:
             return {}
         fetch_started.set()
-        release_fetch.wait(timeout=5)
+        release_fetch.wait(timeout=30)
         return {}
 
     row = {
@@ -152,13 +152,15 @@ def test_model_options_cold_pricing_fetch_runs_off_the_request_path(monkeypatch)
         elapsed = monotonic() - started_at
         assert payload["providers"][0]["slug"] == "openrouter"
         assert "pricing" not in payload["providers"][0]
-        assert elapsed < 2.0, f"cold picker blocked for {elapsed:.2f}s"
-        assert fetch_started.wait(timeout=1), "pricing should prewarm in the background"
+        # A regression that runs the fetch inline blocks for the fake's full 30s wait, so this
+        # bound keeps its teeth; a loaded CI runner alone took 2.58s past the old 2s bound.
+        assert elapsed < 10.0, f"cold picker blocked for {elapsed:.2f}s"
+        assert fetch_started.wait(timeout=10), "pricing should prewarm in the background"
     finally:
         threads = list(inv._pricing_prewarm_threads.values())
         release_fetch.set()
         for thread in threads:
-            thread.join(timeout=2)
+            thread.join(timeout=10)
 
 
 def test_cold_nous_entitlement_keeps_models_unselectable(monkeypatch):
@@ -204,7 +206,7 @@ def test_prewarm_preserves_context_and_runs_once_per_profile(tmp_path, monkeypat
         label = scope["PROFILE_MARKER"]
         observed[label] = (hermes_home_key(), dict(scope))
         started[label].set()
-        release.wait(timeout=5)
+        release.wait(timeout=30)
 
     monkeypatch.setattr(inv, "_apply_pricing", capture_context)
 
@@ -221,8 +223,8 @@ def test_prewarm_preserves_context_and_runs_once_per_profile(tmp_path, monkeypat
                 reset_hermes_home_override(home_token)
 
         assert threads[0] is not threads[1]
-        assert started["a"].wait(timeout=1)
-        assert started["b"].wait(timeout=1)
+        assert started["a"].wait(timeout=10)
+        assert started["b"].wait(timeout=10)
         assert observed["a"] == (
             hermes_home_key(tmp_path / "a"),
             {"PROFILE_MARKER": "a"},
@@ -235,7 +237,7 @@ def test_prewarm_preserves_context_and_runs_once_per_profile(tmp_path, monkeypat
         release.set()
         for thread in threads:
             if thread is not None:
-                thread.join(timeout=2)
+                thread.join(timeout=10)
 
 
 def test_prewarm_deduplicates_inflight_scope_and_cleans_up(monkeypatch):
@@ -248,26 +250,26 @@ def test_prewarm_deduplicates_inflight_scope_and_cleans_up(monkeypatch):
     def blocked_prewarm(_rows):
         calls.append(None)
         started.set()
-        release.wait(timeout=5)
+        release.wait(timeout=30)
 
     monkeypatch.setattr(inv, "_apply_pricing", blocked_prewarm)
     rows = [{"slug": "openrouter", "models": ["vendor/model"]}]
 
     first = inv._prewarm_pricing_async(rows)
     try:
-        assert started.wait(timeout=1)
+        assert started.wait(timeout=10)
         second = inv._prewarm_pricing_async(rows)
         assert second is first
         assert len(calls) == 1
     finally:
         release.set()
-        first.join(timeout=2)
+        first.join(timeout=10)
 
     assert not first.is_alive()
     assert inv._pricing_prewarm_threads == {}
 
     retry = inv._prewarm_pricing_async(rows)
-    retry.join(timeout=2)
+    retry.join(timeout=10)
     assert retry is not first
     assert len(calls) == 2
     assert inv._pricing_prewarm_threads == {}
@@ -300,7 +302,7 @@ def test_prewarm_endpoint_rotation_starts_a_new_worker(tmp_path, monkeypatch):
     def fetch_pricing(*, base_url, **_kwargs):
         started[base_url].set()
         if base_url == endpoint_a:
-            release_a.wait(timeout=5)
+            release_a.wait(timeout=30)
         return models_pricing._cache_catalog(base_url, expected[base_url])
 
     monkeypatch.setattr(models_pricing, "fetch_models_with_pricing", fetch_pricing)
@@ -320,7 +322,7 @@ def test_prewarm_endpoint_rotation_starts_a_new_worker(tmp_path, monkeypatch):
                 current_base_url=endpoint_a,
             )
         )
-        assert started[endpoint_a].wait(timeout=1)
+        assert started[endpoint_a].wait(timeout=10)
 
         active_endpoint["value"] = endpoint_b
         threads.append(
@@ -332,8 +334,8 @@ def test_prewarm_endpoint_rotation_starts_a_new_worker(tmp_path, monkeypatch):
         )
 
         assert threads[0] is not threads[1]
-        assert started[endpoint_b].wait(timeout=1)
-        threads[1].join(timeout=2)
+        assert started[endpoint_b].wait(timeout=10)
+        threads[1].join(timeout=10)
         assert not threads[1].is_alive()
         assert models_pricing.get_pricing_for_provider(
             "nous", cached_only=True
@@ -342,7 +344,7 @@ def test_prewarm_endpoint_rotation_starts_a_new_worker(tmp_path, monkeypatch):
         release_a.set()
         for thread in threads:
             if thread is not None:
-                thread.join(timeout=2)
+                thread.join(timeout=10)
         reset_hermes_home_override(token)
 
 
@@ -376,7 +378,7 @@ def test_prewarm_nous_rotation_when_another_provider_is_current(tmp_path, monkey
     def fetch_pricing(*, base_url, **_kwargs):
         started[base_url].set()
         if base_url == endpoint_a:
-            release_a.wait(timeout=5)
+            release_a.wait(timeout=30)
         return models_pricing._cache_catalog(base_url, expected[base_url])
 
     monkeypatch.setattr(models_pricing, "fetch_models_with_pricing", fetch_pricing)
@@ -396,7 +398,7 @@ def test_prewarm_nous_rotation_when_another_provider_is_current(tmp_path, monkey
                 current_base_url="https://openrouter.ai/api/v1",
             )
         )
-        assert started[endpoint_a].wait(timeout=1)
+        assert started[endpoint_a].wait(timeout=10)
 
         active_endpoint["value"] = endpoint_b
         threads.append(
@@ -408,8 +410,8 @@ def test_prewarm_nous_rotation_when_another_provider_is_current(tmp_path, monkey
         )
 
         assert threads[0] is not threads[1]
-        assert started[endpoint_b].wait(timeout=1)
-        threads[1].join(timeout=2)
+        assert started[endpoint_b].wait(timeout=10)
+        threads[1].join(timeout=10)
         assert not threads[1].is_alive()
         assert models_pricing.get_pricing_for_provider(
             "nous", cached_only=True
@@ -418,7 +420,7 @@ def test_prewarm_nous_rotation_when_another_provider_is_current(tmp_path, monkey
         release_a.set()
         for thread in threads:
             if thread is not None:
-                thread.join(timeout=2)
+                thread.join(timeout=10)
         reset_hermes_home_override(token)
 
 
@@ -560,7 +562,7 @@ def test_prewarm_cache_scope_uses_custom_row_endpoint_identity(monkeypatch):
     thread = inv._prewarm_pricing_async([
         {"slug": "custom:unrelated-name", "api_url": "https://openrouter.ai/api/v1", "models": ["vendor/model"]},
     ])
-    thread.join(timeout=2)
+    thread.join(timeout=10)
 
     assert observed == [(
         "custom:unrelated-name",

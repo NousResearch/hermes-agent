@@ -54,7 +54,9 @@ $script:live=@{};foreach($p in $case.live.PSObject.Properties){$script:live[[int
 
 const powershell = ['pwsh', 'powershell'].find(shell => spawnSync(shell, ['-NoProfile', '-Command', 'exit 0']).status === 0)
 
-test.skipIf(!powershell)('the Windows remote marker judge agrees with every corpus judge case', async () => {
+// A cold pwsh start plus ~40 corpus cases is the slowest thing in this project
+// (4.7s green on CI); give it room beyond the project default.
+test.skipIf(!powershell)('the Windows remote marker judge agrees with every corpus judge case', { timeout: 30_000 }, async () => {
   const corpus = JSON.parse(readFileSync(corpusPath, 'utf8'))
   const dir = mkdtempSync(path.join(os.tmpdir(), 'hermes-remote-ps-judge-'))
   const script = path.join(dir, 'replay.ps1')

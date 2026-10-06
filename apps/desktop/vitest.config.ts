@@ -35,7 +35,13 @@ const electronNative: TestProjectConfiguration = {
     // `e2e/**/*.unit.test.ts` is the e2e HELPERS, not the specs: plain node
     // modules that should be provable without booting Electron. Playwright
     // ignores the same pattern so they run in exactly one runner.
-    include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}', 'e2e/**/*.unit.test.ts']
+    include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}', 'e2e/**/*.unit.test.ts'],
+    // These tests drive real processes (python3, pwsh, Electron, a PM backend).
+    // A cold pwsh replay of the marker corpus takes 2.7-4.7s on a healthy
+    // runner and tripped vitest's untouched 5000ms default on two main runs
+    // (37462244280, 37466179251). Same headroom as the ui project above.
+    testTimeout: 15_000,
+    hookTimeout: 30_000
   }
 }
 

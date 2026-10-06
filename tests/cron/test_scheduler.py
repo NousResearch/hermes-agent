@@ -2667,6 +2667,38 @@ class TestPartialDeliveryOutcome:
         assert result is None
         assert "_delivery_partial" not in job
 
+    def _deliver_with_bot_chat(self, receipt_status):
+        """The job's own Bot Chat plus one email target whose send is refused. ``receipt_status``
+        is the Bot Chat receipt left behind (``None`` = admitted and completed, no error)."""
+        import cron.scheduler_delivery as delivery
+
+        job = {"id": "partial-job", "deliver": "bot-chat,email:a@example.com"}
+
+        def bot_chat(job, content, profile, **kwargs):
+            if receipt_status is None:
+                return None
+            job.setdefault("_bot_chat_delivery_receipts", {})["bot-chat:(own)"] = {
+                "status": receipt_status, "delivery_id": "d-1"}
+            return f"bot-chat delivery {receipt_status}"
+
+        with patch.object(delivery, "_deliver_to_bot_chat", side_effect=bot_chat):
+            result = self._deliver(
+                job, {"delivery": {"partial_ok": True}}, [ConnectionError("SMTP connection refused")])
+        return job, result
+
+    @pytest.mark.parametrize("receipt_status", ["queued", "claimed"])
+    def test_on_queued_bot_chat_receipt_is_not_a_delivered_target(self, receipt_status):
+        """Admission to the Bot Chat queue is not proof of delivery: if the mailbox owner never
+        drains it, nothing arrived. With the only other target failed, the run stays failed."""
+        job, result = self._deliver_with_bot_chat(receipt_status)
+        assert result is not None and "a@example.com" in result
+        assert "_delivery_partial" not in job
+
+    def test_on_completed_bot_chat_delivery_counts_as_delivered(self):
+        job, result = self._deliver_with_bot_chat(None)
+        assert result is not None and "a@example.com" in result
+        assert job["_delivery_partial"] is True
+
     def test_classify_partial_only_when_flagged(self):
         from cron.scheduler import _classify_delivery_outcome
 

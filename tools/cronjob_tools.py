@@ -323,7 +323,8 @@ def _run_heartbeat(job_name: str):
 def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) -> Dict[str, Any]:
     """Fire an already-claimed job through the shared ``run_one_job`` body (split from
     ``_execute_job_now`` so the background path can claim synchronously and hand the run
-    to a worker). Returns {"claimed": True, "success": bool, "error": ...}."""
+    to a worker). Returns {"claimed": True, "success": bool, "error": ...}, plus
+    ``delivery_warning`` on a successful ``delivery_partial`` run."""
     job_id = job["id"]
     _registered = False
     fire_owner = None
@@ -394,18 +395,22 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         # "delivery_failed": the run succeeded but output never reached the user — not a
         # success for the caller; surface last_delivery_error.
         run_error = refreshed.get("last_error")
-        if last_status in {"delivery_failed", "delivery_partial"} and not run_error:
+        if last_status == "delivery_failed" and not run_error:
             run_error = refreshed.get("last_delivery_error")
         # That is NOT a success for the caller — the calling agent relays this result — so report it as
         # failed and surface the delivery error, which lives in last_delivery_error (last_error is None for
         # these runs, and a bare success=False with error=None reads as an unexplained failure). See #83993.
-        # "delivery_partial" (cron.delivery.partial_ok): the output reached at least one target;
-        # the failed targets are reported in ``error``.
+        # "delivery_partial" (cron.delivery.partial_ok): the output reached at least one target, so
+        # the run is a success. The failed targets go in ``delivery_warning``, never ``error``:
+        # every return here keeps ``error`` non-null only alongside ``success`` False.
         ok = last_status in {"ok", "delivery_queued", "delivery_partial"}
         if execution is not None and execution.get("status") != "completed":
             ok = False
             run_error = execution.get("error") or f"execution ended in {execution.get('status') or 'unknown'} state"
-        return {"claimed": True, "success": bool(processed and ok), "error": run_error}
+        result = {"claimed": True, "success": bool(processed and ok), "error": run_error}
+        if result["success"] and last_status == "delivery_partial" and refreshed.get("last_delivery_error"):
+            result["delivery_warning"] = refreshed["last_delivery_error"]
+        return result
     except Exception as e:
         logger.error("Failed to execute cron job %s immediately: %s", job_id, e)
         with contextlib.suppress(Exception):
@@ -514,6 +519,7 @@ def _manual_run_completion(
         f"Cron job '{job_name}' ({job_id}) finished its manual run.",
         f"Result: {'ok' if res.get('success') else 'FAILED'}"
         + (f" — {res.get('error')}" if res.get("error") else ""),
+        *([f"Partial delivery: {res['delivery_warning']}"] if res.get("delivery_warning") else []),
         f"Delivery target: {deliver}" + _manual_run_delivery_note(deliver, refreshed),
     ]
     if refreshed.get("next_run_at"):
@@ -804,6 +810,8 @@ def _action_run(job: Dict[str, Any], a: Dict[str, Any]) -> str:
             "Already being fired by the scheduler; not run again.")
     elif exec_result.get("error"):
         result["execution_error"] = exec_result["error"]
+    if exec_result.get("delivery_warning"):
+        result["execution_delivery_warning"] = exec_result["delivery_warning"]
     return _dumps({"success": True, "job": result})
 
 

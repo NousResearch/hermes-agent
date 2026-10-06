@@ -370,21 +370,50 @@ class TestManualRunReportsDeliveryFailure:
         assert res["success"] is False
         assert "502" in res["error"]
 
-    def test_delivery_partial_status_is_success_and_names_failed_target(self):
-        """cron.delivery.partial_ok: the output reached a target, so the run succeeded; the
-        failed target still comes back in ``error``."""
-        refreshed = {
-            "id": "job-run-1",
-            "last_status": "delivery_partial",
-            "last_error": None,
-            "last_delivery_error": "delivery to email:a@example.com failed: refused",
-        }
+    _PARTIAL = {
+        "id": "job-run-1",
+        "last_status": "delivery_partial",
+        "last_error": None,
+        "last_delivery_error": "delivery to email:a@example.com failed: refused",
+    }
+
+    def test_delivery_partial_status_is_success_with_a_delivery_warning(self):
+        """cron.delivery.partial_ok: the output reached a target, so the run succeeded. The
+        failed target comes back in ``delivery_warning``; ``error`` stays null, as it does on
+        every other successful return."""
         with patch("tools.cronjob_tools.claim_job_for_fire",
                    return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
              patch("cron.scheduler.run_one_job", return_value=True), \
-             patch("tools.cronjob_tools.get_job", return_value=refreshed):
+             patch("tools.cronjob_tools.get_job", return_value=dict(self._PARTIAL)):
             res = _execute_job_now(dict(_JOB))
 
         assert res["claimed"] is True
         assert res["success"] is True
-        assert "email:a@example.com" in res["error"]
+        assert res["error"] is None
+        assert "email:a@example.com" in res["delivery_warning"]
+
+    def test_delivery_partial_run_action_has_no_execution_error(self):
+        claimed = {**_JOB, "fire_claim": {"by": "manual-owner"}}
+        with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
+             patch("tools.cronjob_tools.claim_job_for_fire", return_value=claimed), \
+             patch("cron.scheduler.run_one_job", return_value=True), \
+             patch("tools.cronjob_tools.get_job", return_value=dict(self._PARTIAL)):
+            out = json.loads(cronjob(action="run", job_id="job-run-1"))
+
+        assert out["job"]["execution_success"] is True
+        assert "execution_error" not in out["job"]
+        assert "email:a@example.com" in out["job"]["execution_delivery_warning"]
+
+    def test_delivery_partial_background_completion_is_not_an_error(self):
+        from tools.cronjob_tools import _manual_run_completion
+
+        res = {"claimed": True, "success": True, "error": None,
+               "delivery_warning": self._PARTIAL["last_delivery_error"]}
+        with patch("tools.cronjob_tools.get_job", return_value=dict(self._PARTIAL)), \
+             patch("tools.cronjob_tools._latest_job_output_excerpt", return_value=""):
+            done = _manual_run_completion(res, "job-run-1", "nightly", "email:a@example.com,slack", 0.0)
+
+        assert done["status"] == "completed"
+        assert done["error"] is None
+        assert "Result: ok" in done["summary"]
+        assert "Partial delivery: delivery to email:a@example.com failed: refused" in done["summary"]

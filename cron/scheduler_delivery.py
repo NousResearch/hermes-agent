@@ -2098,9 +2098,10 @@ def _deliver_result(
 
     delivery_errors = []
     suppressed_targets = 0  # local: `job` is snapshotted into durable deferred records mid-loop
-    # Per-target tally for cron.delivery.partial_ok: targets that received the output (including
-    # Bot Chat admissions still queued) and targets that failed outright. Caveats on a target that
-    # did receive the output (dropped media, thread fallback) do not count as failed targets.
+    # Per-target tally for cron.delivery.partial_ok: targets that received the output and targets
+    # that failed outright. Caveats on a target that did receive the output (dropped media, thread
+    # fallback) do not count as failed targets. A Bot Chat admission still queued or claimed is in
+    # neither list: it has not failed, and it is not proof of delivery until its receipt is terminal.
     delivered_targets: list = []
     failed_targets: list = []
     for target in targets:
@@ -2122,8 +2123,6 @@ def _deliver_result(
                 if not receipt or receipt["status"] not in ("queued", "claimed"):
                     delivery_errors.append(bot_chat_error)
                     failed_targets.append(receipt_target)
-                else:
-                    delivered_targets.append(receipt_target)
                 if receipt and receipt["status"] == "ambiguous":
                     unverified_targets.append(bot_chat_error)
             elif not bot_chat_suppressed:

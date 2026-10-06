@@ -615,7 +615,8 @@ target failed outright records `last_status: delivery_partial` (execution
 delivery outcome `partial`). `last_delivery_error` still names every failed
 target, `hermes cron list` shows it in yellow, `hermes cron doctor` reports
 it as a delivery issue, and a manual `cronjob run` reports `success: true`
-with the failed targets in `error`. A run where every target received the output but with a caveat (an
+with the failed targets in `delivery_warning` (`error` stays null). A Bot Chat
+target whose delivery is still queued counts as neither delivered nor failed. A run where every target received the output but with a caveat (an
 attachment dropped, a thread fallback) is not partial and stays
 `delivery_failed`. Jobs run by a restart-safe external worker hand delivery to
 the gateway queue and keep the all-or-nothing status.

@@ -15,7 +15,7 @@ from agent.skill_commands import describe_skill_invocation
 from hermes_state_common import (
     FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
-    MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
+    MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS, casefold_sql,
     escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
 )
 
@@ -45,14 +45,7 @@ _QUOTED_PHRASE_RE = re.compile(r'"[^"]*"')
 # Column list shared by every search route (snippet + metadata, never content).
 _SEARCH_SELECT_TAIL = "m.timestamp, m.tool_name, s.source, s.model, s.started_at AS session_started"
 _LIKE_SNIPPET_SQL = "substr(m.content, max(1, instr(m.content, ?) - 40), 120) AS snippet"
-_LIKE_ANY_COLUMN_SQL = (
-    "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"
-)
-_LIKE_COALESCED_COLUMN_SQL = (
-    "(COALESCE(m.content, '') LIKE ? ESCAPE '\\' OR "
-    "COALESCE(m.tool_name, '') LIKE ? ESCAPE '\\' OR "
-    "COALESCE(m.tool_calls, '') LIKE ? ESCAPE '\\')"
-)
+_LIKE_COLUMNS = ("m.content", "m.tool_name", "m.tool_calls")
 # ``sort`` -> ORDER BY for the FTS routes; unknown values are rank-only (user input passes through).
 _FTS_ORDER_BY = {"newest": "ORDER BY m.timestamp DESC, rank", "oldest": "ORDER BY m.timestamp ASC, rank"}
 # Indexed neighbor seeks avoid scanning whole sessions for a sparse set of hits.
@@ -101,9 +94,19 @@ def _quote_fts_tokens(raw_query: str) -> str:
     )
 
 
-def _like_params(term: str) -> List[str]:
-    """One ``%term%`` bind per column of ``_LIKE_ANY_COLUMN_SQL``."""
-    return [f"%{_escape_like(term)}%"] * 3
+def _like_any_column(term: str, *, coalesce: bool = False) -> Tuple[str, List[str]]:
+    """``%term%`` on content, tool_name or tool_calls -> (predicate, one bind per column).
+
+    SQLite's LIKE folds ASCII case only, so both sides compare casefolded (``casefold_sql``).
+    The fold is unconditional, not gated on the needle's script: an all-ASCII needle must still
+    find a casefold-equal non-ASCII spelling ("ss" in "Straße", "fi" in "ﬁle"), or these message
+    scans disagree with the title/model/branch filters (``_contains`` in hermes_state_maintenance)
+    that fold the same corpus unconditionally. These LIKE routes are already full scans used as
+    fallbacks (CJK, unindexed gap, OR-relaxed retry, FTS fail-open)."""
+    columns = [casefold_sql(f"COALESCE({col}, '')" if coalesce else col) for col in _LIKE_COLUMNS]
+    term = term.casefold()
+    predicate = " OR ".join(f"{col} LIKE ? ESCAPE '\\'" for col in columns)
+    return f"({predicate})", [f"%{_escape_like(term)}%"] * len(columns)
 
 
 def _strip_cjk_wildcards(raw_query: str) -> str:
@@ -845,6 +848,14 @@ class SessionSearchMixin:
         # 5. Quote dotted/hyphenated/underscored terms in ONE pass (sequential passes
         # double-quote ``my-app.config``).
         sanitized = re.sub(r"\b(\w+(?:[._-]\w+)+)\b", r'"\1"', sanitized)
+        # 5b. '-', '.' and '`' are not bareword characters either: left outside the phrases
+        # step 5 just quoted, '-rf' parses as a column filter and a stray dot ('.env',
+        # 'fixed it.') is a syntax error. Then collapse operator runs ('AND NOT' -> 'NOT',
+        # 'OR OR' -> 'OR'; FTS5 operators are binary) and re-trim dangling ones.
+        sanitized = re.sub(r'"[^"]*"|[.`-]', lambda m: m.group(0) if len(m.group(0)) > 1 else " ", sanitized)
+        sanitized = re.sub(r"\b(?:(?:AND|OR|NOT)\s+)+(AND|OR|NOT)\b", r"\1", sanitized)
+        sanitized = re.sub(r"(?i)^(AND|OR|NOT)\b\s*", "", sanitized.strip())
+        sanitized = re.sub(r"(?i)\s+(AND|OR|NOT)\s*$", "", sanitized.strip())
         # 6. Restore preserved quoted phrases.
         for i, quoted in enumerate(_quoted_parts):
             sanitized = sanitized.replace(f"\x00Q{i}\x00", quoted)
@@ -997,8 +1008,9 @@ class SessionSearchMixin:
                 continue
             clauses: List[str] = []
             for term, negated in group:
-                clauses.append(f"NOT {_LIKE_COALESCED_COLUMN_SQL}" if negated else _LIKE_COALESCED_COLUMN_SQL)
-                params.extend(_like_params(term))
+                predicate, term_params = _like_any_column(term, coalesce=True)
+                clauses.append(f"NOT {predicate}" if negated else predicate)
+                params.extend(term_params)
                 if snippet_term is None and not negated:
                     snippet_term = term
             compiled_groups.append(f"({' AND '.join(clauses)})")
@@ -1128,9 +1140,17 @@ class SessionSearchMixin:
         else:
             sql, params = self._fts_match_sql("messages_fts", query, **route)
             try:
-                matches = [dict(row) for row in self._read_all(sql, params)]
-            except sqlite3.OperationalError:
-                return []  # FTS5 syntax error despite sanitization
+                try:
+                    matches = [dict(row) for row in self._read_all(sql, params)]
+                except sqlite3.OperationalError:
+                    # FTS5 syntax error despite sanitization: retry once with every token a plain
+                    # phrase rather than answer "no results" before any fallback has run. Nested so
+                    # corruption surfacing on the retry still reaches the fail-open arm below.
+                    sql, params = self._fts_match_sql("messages_fts", _quote_fts_tokens(query), **route)
+                    try:
+                        matches = [dict(row) for row in self._read_all(sql, params)]
+                    except sqlite3.OperationalError:
+                        return []
             except sqlite3.DatabaseError as exc:
                 # Corruption parent class: detach the derived indexes and answer from
                 # canonical rows; repair paths own the rebuild.
@@ -1208,8 +1228,9 @@ class SessionSearchMixin:
             if matches is not None:
                 return matches
         non_op_tokens = _non_operator_tokens(raw_query) or [raw_query]
-        like_params: list = [p for tok in non_op_tokens for p in _like_params(tok)]
-        like_where = [f"({' OR '.join([_LIKE_ANY_COLUMN_SQL] * len(non_op_tokens))})"]
+        token_likes = [_like_any_column(tok) for tok in non_op_tokens]
+        like_params: list = [p for _, binds in token_likes for p in binds]
+        like_where = [f"({' OR '.join(sql for sql, _ in token_likes)})"]
         filters = {k: route[k] for k in ("include_inactive", "source_filter", "exclude_sources", "role_filter",
                                          "after_ts", "before_ts")}
         _search_filter_clauses(like_where, like_params, **filters)
@@ -1228,8 +1249,9 @@ class SessionSearchMixin:
                  if tok and tok.upper() not in _LIKE_SKIP_TOKENS]
         if not terms:
             return []
-        where = ["m.id > ? AND m.id <= ?", *([_LIKE_ANY_COLUMN_SQL] * len(terms))]
-        params: list = [status["indexed"], status["total"], *(p for term in terms for p in _like_params(term))]
+        term_likes = [_like_any_column(term) for term in terms]
+        where = ["m.id > ? AND m.id <= ?", *(sql for sql, _ in term_likes)]
+        params: list = [status["indexed"], status["total"], *(p for _, binds in term_likes for p in binds)]
         _search_filter_clauses(where, params, **filters)
         return self._like_rows(where, [terms[0], *params, limit], order_by="ORDER BY m.timestamp DESC",
                                limit_sql="LIMIT ?")

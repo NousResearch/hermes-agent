@@ -173,6 +173,29 @@ def test_desktop_session_search_stamps_the_requested_profile(monkeypatch):
     } == {("worker", False)}
 
 
+def test_boolean_operators_survive_the_prefix_rewrite():
+    """The search box prefixes each word so partial words match ("dock" -> "dock*"), but a
+    boolean operator session search honours must reach it as an operator, not as "OR*"."""
+    from hermes_state import SessionDB, _default_db_path
+
+    db = SessionDB(_default_db_path())
+    try:
+        db.create_session(session_id="s_docker", source="cli")
+        db.append_message("s_docker", role="user", content="docker networking is broken")
+        db.create_session(session_id="s_k8s", source="cli")
+        db.append_message("s_k8s", role="user", content="kubernetes pods crash")
+    finally:
+        db.close()
+
+    def found(q):
+        return {row["session_id"] for row in asyncio.run(_rt_sessions.search_sessions(q=q))["results"]}
+
+    assert found("dock") == {"s_docker"}
+    assert found("docker OR kube") == {"s_docker", "s_k8s"}
+    assert found("docker NOT kubernetes") == {"s_docker"}
+    assert found("docker AND networking") == {"s_docker"}
+
+
 def test_desktop_session_search_attaches_profile_to_rich_results(monkeypatch):
     class _RichFakeSessionDB(_FakeSessionDB):
         def get_session_rich_row(self, session_id):

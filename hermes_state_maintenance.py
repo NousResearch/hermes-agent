@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from hermes_state_common import (
     AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _non_continuation_child_sql, _placeholders, _sql_session_last_active,
-    escape_like as _escape_like
+    casefold_sql, escape_like as _escape_like
 )
 from hermes_startup_watchdog import report_startup_progress
 
@@ -22,7 +22,7 @@ _COST_SQL = "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0)"
 
 
 def _like(value: str) -> str:
-    return f"%{_escape_like(value.lower())}%"
+    return f"%{_escape_like(value.casefold())}%"
 
 
 def _cwd_prefix_filter(value: str) -> Tuple[List[str], list]:
@@ -33,6 +33,11 @@ def _cwd_prefix_filter(value: str) -> Tuple[List[str], list]:
 
 def _one(clause: str, conv=None):
     return lambda v: ([clause], [conv(v) if conv else v])
+
+
+def _contains(column: str):
+    """Case-insensitive substring filter on *column*, in any script (``%``/``_`` match literally)."""
+    return _one(casefold_sql(f"COALESCE({column}, '')") + " LIKE ? ESCAPE '\\'", _like)
 
 
 def _seconds_since(now: float, raw) -> Optional[float]:
@@ -55,17 +60,17 @@ _PRUNE_FILTERS = (
     ("started_before", "notnone", _one("s.started_at < ?")),
     ("started_after", "notnone", _one("s.started_at >= ?")),
     ("source", "truthy", _one("s.source = ?")),
-    ("title_like", "truthy", _one("LOWER(COALESCE(s.title, '')) LIKE ? ESCAPE '\\'", _like)),
+    ("title_like", "truthy", _contains("s.title")),
     ("end_reason", "truthy", _one("s.end_reason = ?")),
     ("cwd_prefix", "truthy", _cwd_prefix_filter),
     ("min_messages", "notnone", _one("s.message_count >= ?")),
     ("max_messages", "notnone", _one("s.message_count <= ?")),
-    ("model_like", "truthy", _one("LOWER(COALESCE(s.model, '')) LIKE ? ESCAPE '\\'", _like)),
+    ("model_like", "truthy", _contains("s.model")),
     ("provider", "truthy", _one("LOWER(COALESCE(s.billing_provider, '')) = ?", str.lower)),
     ("user_id", "truthy", _one("s.user_id = ?")),
     ("chat_id", "truthy", _one("s.chat_id = ?")),
     ("chat_type", "truthy", _one("s.chat_type = ?")),
-    ("branch_like", "truthy", _one("LOWER(COALESCE(s.git_branch, '')) LIKE ? ESCAPE '\\'", _like)),
+    ("branch_like", "truthy", _contains("s.git_branch")),
     ("min_tokens", "notnone", _one(_TOKENS_SQL + " >= ?")),
     ("max_tokens", "notnone", _one(_TOKENS_SQL + " <= ?")),
     ("min_cost", "notnone", _one(_COST_SQL + " >= ?")),

@@ -259,6 +259,42 @@ def test_preserve_prefix_carries_a_flapping_tool_forward(monkeypatch):
     assert "browser_navigate" in agent.valid_tool_names
 
 
+def test_preserve_prefix_reapplies_config_and_dynamic_schema_gates(monkeypatch):
+    """Prefix stability must not resurrect tools the live session policy removed.
+
+    Simulate a live toolset update that explicitly removes ``terminal`` while
+    ``browser_exec`` is otherwise still permitted. The fresh definition build
+    correctly omits both: terminal by config and browser_exec by its real
+    session-level dynamic gate. A prefix-preserving merge may carry transient
+    check_fn misses, but must not carry either policy exclusion back in.
+    """
+    agent = _agent(["read_file", "terminal", "browser_exec"])
+    _serve(monkeypatch, [_tool("read_file")])
+    _registered(monkeypatch, ["read_file", "terminal", "browser_exec"])
+
+    # Keep browser_exec config-permitted so this test exercises both layers:
+    # terminal is removed by the NEW live override; browser_exec then falls
+    # through the real model_tools dynamic-schema gate because terminal is gone.
+    seen_policy = []
+
+    def permitted(enabled, disabled):
+        seen_policy.append((enabled, disabled))
+        return {"read_file", "browser_exec"}
+
+    monkeypatch.setattr(_mcp_agent, "_toolset_permitted_names", permitted)
+
+    added = _mcp_agent.refresh_agent_mcp_tools(
+        agent,
+        enabled_override=["hermes-cli"],
+        disabled_override=["terminal"],
+        preserve_prefix=True,
+    )
+
+    assert seen_policy == [(["hermes-cli"], ["terminal"])]
+    assert added == set()
+    assert [t["function"]["name"] for t in agent.tools] == ["read_file"]
+    assert agent.valid_tool_names == {"read_file"}
+
 def test_preserve_prefix_appends_late_arrivals_at_the_tail(monkeypatch):
     """``get_definitions`` sorts by name, so a late tool can splice in at 0.
 

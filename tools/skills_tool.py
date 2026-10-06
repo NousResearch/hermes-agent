@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Skills Tool — list and view skill documents (progressive disclosure). A skill is a directory
 holding SKILL.md (YAML frontmatter + instructions) plus optional references/, templates/, assets/,
-scripts/. `skills_list` returns name/description only; `skill_view` returns full content and
+scripts/, evals/. `skills_list` returns name/description only; `skill_view` returns full content and
 linked files. Sibling modules (skills_tool_setup / _plugin / _dedup) re-export here."""
 
 import json
@@ -383,11 +383,14 @@ def _collect_skill_candidates(name, local_category_name, all_dirs):
 
 
 # (support dir, globs, recursive, files only) — order is the linked_files key order.
+# NB: "evals" surfaces a skill's evaluation cases — declarative eval_cases.yaml
+# and scripted evals (.py/.js/.rb/etc.) — as first-class linked files.
 _LINKED_FILE_SPECS = (
     ("references", ["*.md"], False, False),
     ("templates", ["*.md", "*.py", "*.yaml", "*.yml", "*.json", "*.tex", "*.sh"], True, False),
     ("assets", ["*"], True, True),
-    ("scripts", ["*.py", "*.sh", "*.bash", "*.js", "*.ts", "*.rb"], False, False))
+    ("scripts", ["*.py", "*.sh", "*.bash", "*.js", "*.ts", "*.rb"], False, False),
+    ("evals", ["*"], True, False))
 
 
 def _skill_linked_files(skill_dir: Optional[Path]) -> dict:
@@ -671,7 +674,7 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts, evals). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts/evals. To access those, call again with file_path parameter.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -681,7 +684,7 @@ SKILL_VIEW_SCHEMA = {
             },
             "file_path": {
                 "type": "string",
-                "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
+                "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py', 'evals/eval_cases.yaml', 'evals/run_evals.py'). Omit to get the main SKILL.md content.",
             },
         },
         "required": ["name"],

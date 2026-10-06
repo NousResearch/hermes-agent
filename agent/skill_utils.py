@@ -28,7 +28,9 @@ EXCLUDED_SKILL_DIRS = frozenset((
 
 # Progressive-disclosure support dirs inside a skill package: loaded explicitly
 # via skill_view(skill, file_path=...), never scanned as standalone skills.
-SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
+# "evals" holds a skill's evaluation cases — declarative (eval_cases.yaml)
+# and scripted (.py/.js/.rb/etc.) — as first-class supporting files.
+SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts", "evals"))
 
 def is_excluded_skill_path(path, *, root: Optional[Path] = None) -> bool:
     """True if *path* should be skipped by skill scanners (VCS/dependency/cache

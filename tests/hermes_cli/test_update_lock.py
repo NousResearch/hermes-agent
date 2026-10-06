@@ -192,6 +192,22 @@ def test_v2_marker_naming_our_pid_at_a_nearby_creation_time_is_a_killed_update(m
     lock.release()
 
 
+def test_one_incarnation_rule_when_our_own_creation_time_is_unreadable(marker, monkeypatch):
+    """Degraded (our creation time unreadable): we write no-ct claims, so a no-ct claim naming our
+    pid is ours and a ct one is a previous incarnation. The marker reader said so while the
+    holder-record reader answered "unprovable" and named the dead incarnation as the holder."""
+    from hermes_cli import update_lock
+
+    monkeypatch.setattr(update_lock, "_OWN_CT", {"pid": os.getpid(), "ct": None})
+    now = int(time.time())
+    for text, ours in ((f"{os.getpid()}\n{now}\n", True), (f"{os.getpid()}\n{now}\nct:{now - 1}.000\n", False)):
+        marker.write_text(text, encoding="utf-8")
+        parsed = update_lock._parse_marker(marker.read_bytes())
+        assert parsed.owner_live() is ours
+        assert update_lock.incarnation_live(os.getpid(), parsed.create_time) is ours, text
+        assert update_lock._lock_holder(marker).held is not ours, text
+
+
 def test_release_leaves_a_marker_a_handoff_partner_now_owns(marker):
     """The desktop writes the marker, then the Tauri updater takes ownership.
 

@@ -257,9 +257,11 @@ def incarnation_live(pid: int, recorded_ct=None) -> bool | None:
     process, a different incarnation of the pid, or a claim naming OUR pid that is not us — our
     own pid is ours only within :data:`_OWN_CREATE_TIME_EPSILON` of our creation time, and a
     claim without a creation time naming our pid is a previous incarnation (a fresh pid
-    namespace hands a killed update's pid to the next launch). ``None``: alive but unprovable —
-    no creation time recorded, or the live one unreadable (Windows denies elevated/other-user
-    pids); each caller applies its own bound (the marker: the v1 age ceiling).
+    namespace hands a killed update's pid to the next launch) — unless our own creation time is
+    unreadable: then we write no-ct claims ourselves, so a no-ct claim is ours and a ct one is
+    not (``marker.rs`` agrees). ``None``: alive but unprovable — no creation time recorded, or
+    the live one unreadable (Windows denies elevated/other-user pids); each caller applies its
+    own bound (the marker: the v1 age ceiling, :func:`_identity_live`).
 
     ``recorded_ct`` is a float or the marker spelling ``"ct:<seconds>"``.
     """
@@ -267,20 +269,7 @@ def incarnation_live(pid: int, recorded_ct=None) -> bool | None:
         pid = int(pid)
     except (TypeError, ValueError):
         return False
-    if pid <= 0:
-        return False
-    recorded = _as_ct(recorded_ct)
-    if pid == os.getpid():
-        own = _own_create_time()
-        if own is None:
-            return None  # degraded: we cannot tell our incarnations apart
-        return recorded is not None and abs(own - recorded) <= _OWN_CREATE_TIME_EPSILON
-    if not _pid_alive(pid):
-        return False
-    if recorded is None:
-        return None
-    actual = process_create_time(pid)
-    return None if actual is None else abs(actual - recorded) <= CREATE_TIME_TOLERANCE_SECONDS
+    return _incarnation(pid, _as_ct(recorded_ct), _real_world())
 
 
 @dataclass(frozen=True)
@@ -299,28 +288,26 @@ def _real_world() -> _World:
     return _World(os.getpid(), _own_create_time(), time.time(), _pid_alive, process_create_time)
 
 
-def _identity_live(pid: int, create_time: float | None, age: float, world: _World | None = None) -> bool:
-    """C1 rule 3 + A1 + A7 rule 4 for one (pid, ct) identity of a marker ``age`` seconds old.
-
-    Alive (not a zombie) and, when a creation time was recorded, the same process: a matching
-    creation time is live however old the marker is. Without that proof — a v1 marker, or a
-    creation time we cannot read — the pid may be a reused one, so only the legacy age ceiling
-    bounds it. Our own pid follows :func:`incarnation_live` (exact creation time, no-ct = dead).
-    """
-    w = world or _real_world()
+def _incarnation(pid: int, recorded: float | None, w: _World) -> bool | None:
+    """:func:`incarnation_live` against world ``w``."""
     if pid <= 0:
         return False
     if pid == w.pid:  # we are alive by definition: only the incarnation is in question
         if w.ct is None:
-            # Degraded: our own creation time is unreadable, so our claims are v1 too.
-            return create_time is None
-        return create_time is not None and abs(w.ct - create_time) <= _OWN_CREATE_TIME_EPSILON
+            return recorded is None
+        return recorded is not None and abs(w.ct - recorded) <= _OWN_CREATE_TIME_EPSILON
     if not w.alive(pid):
         return False
-    actual = None if create_time is None else w.ct_of(pid)
-    if actual is None:
-        return age <= UPDATE_MARKER_MAX_AGE_SECONDS
-    return abs(actual - create_time) <= CREATE_TIME_TOLERANCE_SECONDS
+    actual = None if recorded is None else w.ct_of(pid)
+    return None if actual is None else abs(actual - recorded) <= CREATE_TIME_TOLERANCE_SECONDS
+
+
+def _identity_live(pid: int, create_time: float | None, age: float, world: _World | None = None) -> bool:
+    """C1 rule 3 + A1 + A7 rule 4 for one (pid, ct) identity of a marker ``age`` seconds old:
+    :func:`incarnation_live`, where an unprovable identity (a v1 marker, or a creation time we
+    cannot read) may be a reused pid, so only the legacy age ceiling bounds it."""
+    verdict = _incarnation(pid, create_time, world or _real_world())
+    return age <= UPDATE_MARKER_MAX_AGE_SECONDS if verdict is None else verdict
 
 
 def _identity_line(pid: int | None = None) -> str:
@@ -801,17 +788,6 @@ def marker_mutex(path: Path, *, wait: float = MUTEX_WAIT_SECONDS):
             _windows_close(handle)
         else:
             os.close(handle)  # closing the only fd of this open file description drops the flock
-
-
-def _compare_and_delete(path: Path, expected: bytes) -> bool:
-    """Delete ``path`` only while it still holds exactly ``expected`` — compared and unlinked under
-    the marker mutex, so no claim can be published in between (A7; C1 rule 5 was not CAS)."""
-    with marker_mutex(path):
-        if _read_bytes(path) != expected:
-            return False
-        with suppress(FileNotFoundError):
-            path.unlink()
-        return True
 
 
 def _compare_and_swap(path: Path, expected: bytes, new: bytes) -> bool:

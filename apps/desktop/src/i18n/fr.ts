@@ -1146,6 +1146,7 @@ export const frOverrides = {
       technicalDesc: 'Inclure les arguments/résultats bruts des outils et les détails de bas niveau.',
       themeTitle: 'Thème',
       themeDesc: "Palettes desktop uniquement. Le mode sélectionné s'applique par-dessus.",
+      themeVariant: 'Variante',
       themeSearchPlaceholder: 'Rechercher dans vos thèmes ou sur le Marketplace VS Code…',
       themeProfileNote: profile => `Enregistré pour le profil ${profile} — chaque profil conserve son propre thème.`,
       installTitle: 'Installer depuis VS Code',

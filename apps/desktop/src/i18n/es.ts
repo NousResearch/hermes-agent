@@ -1143,6 +1143,7 @@ export const esOverrides = {
       technicalDesc: 'Incluye argumentos/resultados sin procesar y detalles de bajo nivel.',
       themeTitle: 'Tema',
       themeDesc: 'Paletas solo para escritorio. Se aplican sobre el modo seleccionado.',
+      themeVariant: 'Variante',
       themeSearchPlaceholder: 'Busca en tus temas o en el VS Code Marketplace…',
       themeProfileNote: profile => `Guardado para el perfil ${profile}; cada perfil conserva su propio tema.`,
       installTitle: 'Instalar desde VS Code',

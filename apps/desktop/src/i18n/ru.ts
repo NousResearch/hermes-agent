@@ -677,6 +677,7 @@ export const ru = defineLocale({
       technicalDesc: 'Показывать сырые аргументы/результаты инструментов и низкоуровневые детали.',
       themeTitle: 'Тема',
       themeDesc: 'Только палитры для приложения. Выбранный режим применяется поверх.',
+      themeVariant: 'Вариант',
       themeProfileNote: profile => `Сохранено для профиля ${profile} — у каждого профиля своя тема.`,
       installTitle: 'Установить из VS Code',
       installDesc:

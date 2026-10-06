@@ -331,6 +331,7 @@ export const arSettings = {
       technicalDesc: 'يعرض تفاصيل أكثر عن الأدوات والتنفيذ.',
       themeTitle: 'الثيم',
       themeDesc: 'اختر ثيم سطح المكتب.',
+      themeVariant: 'المتغير',
       themeProfileNote: profile => `سيطبق هذا الثيم على الملف الشخصي ${profile}.`,
       installTitle: 'تثبيت ثيم',
       installDesc: 'ألصق رابط ثيم أو اسمه لتثبيته.',

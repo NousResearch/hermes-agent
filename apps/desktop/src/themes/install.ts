@@ -9,12 +9,93 @@
 
 import type { DesktopMarketplaceThemeResult } from '@/global'
 
-import type { DesktopTheme } from './types'
+import type { DesktopTerminalPalette, DesktopTheme, DesktopThemeColors, DesktopThemeVariant } from './types'
 import { installUserTheme } from './user-themes'
 import { convertVscodeColorTheme, parseVscodeTheme, vscodeThemeSlug } from './vscode'
 
 /** A `publisher.extension` id, e.g. `dracula-theme.theme-dracula`. */
 export const MARKETPLACE_ID_RE = /^[\w-]+\.[\w-]+$/
+
+/** One contributed palette, before it is folded into the family. */
+interface ContributedPalette {
+  mode: 'light' | 'dark'
+  label: string
+  palette: DesktopThemeColors
+  terminal?: DesktopTerminalPalette
+}
+
+/** Tolerant variant slug: lowercase, alnum + dashes, no `vsc-` prefix. */
+const variantSlug = (label: string): string =>
+  label
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || 'variant'
+
+/**
+ * Drop the shared label prefix so a picker shows "Wave", not "Kanagawa Wave".
+ * Whole leading words only, and never to the point of emptying a label.
+ */
+function stripCommonPrefix(labels: string[]): string[] {
+  const tokens = labels.map(label => label.trim().split(/\s+/))
+  const first = tokens[0] ?? []
+  let shared = 0
+
+  for (let i = 0; i < first.length; i++) {
+    const token = first[i].toLowerCase()
+
+    if (tokens.every(parts => parts[i]?.toLowerCase() === token)) {
+      shared = i + 1
+    } else {
+      break
+    }
+  }
+
+  if (shared === 0) {
+    return labels
+  }
+
+  const stripped = tokens.map(parts => parts.slice(shared).join(' '))
+
+  return stripped.some(label => !label) ? labels : stripped
+}
+
+/**
+ * Keep a family's same-mode flavors (Kanagawa's Wave/Dragon/Lotus) as pickable
+ * variants. A plain light+dark pair needs none — the mode toggle covers it.
+ */
+function buildVariants(palettes: ContributedPalette[]): DesktopThemeVariant[] | undefined {
+  const lights = palettes.filter(palette => palette.mode === 'light').length
+  const darks = palettes.filter(palette => palette.mode === 'dark').length
+
+  if (lights <= 1 && darks <= 1) {
+    return undefined
+  }
+
+  const labels = stripCommonPrefix(palettes.map(palette => palette.label))
+  const seen = new Set<string>()
+
+  const variants = palettes.map((palette, index): DesktopThemeVariant => {
+    let name = variantSlug(labels[index])
+
+    while (seen.has(name)) {
+      name = `${name}-${index}`
+    }
+
+    seen.add(name)
+
+    return {
+      name,
+      label: labels[index],
+      mode: palette.mode,
+      colors: palette.palette,
+      ...(palette.terminal ? { terminal: palette.terminal } : {})
+    }
+  })
+
+  return variants.length > 1 ? variants : undefined
+}
 
 /** Parse + convert + persist a pasted VS Code theme JSON. */
 export function installVscodeThemeFromText(text: string, opts?: { label?: string; source?: string }): DesktopTheme {
@@ -34,29 +115,33 @@ export function installVscodeThemeFromText(text: string, opts?: { label?: string
  * variant onto `darkColors`. The result is a single picker entry whose light/dark
  * toggle switches between the real variants. A single-variant extension fills
  * both slots with its one palette (the toggle is a no-op, as it must be).
+ *
+ * Extensions with several palettes in ONE mode (Kanagawa Flavors) can't fit
+ * the pair, so those extras ride along as `variants` for the card picker.
  */
 export function buildThemeFromMarketplace(result: DesktopMarketplaceThemeResult): DesktopTheme {
   if (!result.themes.length) {
     throw new Error(`"${result.extensionId}" does not contribute any color themes.`)
   }
 
-  const variants = result.themes.map(file => {
+  const palettes: ContributedPalette[] = result.themes.map(file => {
     const raw = parseVscodeTheme(file.contents)
     const label = file.label || raw.name || result.displayName
     const { mode, theme } = convertVscodeColorTheme(raw, { label, source: result.extensionId })
 
-    return { mode, palette: theme.colors, terminal: theme.terminal }
+    return { mode, label, palette: theme.colors, terminal: theme.terminal }
   })
 
-  const fallback = variants[0]
-  const light = variants.find(variant => variant.mode === 'light') ?? fallback
-  const dark = variants.find(variant => variant.mode === 'dark') ?? fallback
+  const fallback = palettes[0]
+  const light = palettes.find(palette => palette.mode === 'light') ?? fallback
+  const dark = palettes.find(palette => palette.mode === 'dark') ?? fallback
 
   // The terminal ANSI palette tracks the painted variant the same way colors do
   // (light → terminal, dark → darkTerminal); each falls back to the other so a
   // single-variant import still themes the terminal in both modes.
   const terminal = light.terminal ?? dark.terminal
   const darkTerminal = dark.terminal ?? light.terminal
+  const variants = buildVariants(palettes)
 
   return {
     name: vscodeThemeSlug(result.displayName),
@@ -65,7 +150,8 @@ export function buildThemeFromMarketplace(result: DesktopMarketplaceThemeResult)
     colors: light.palette,
     darkColors: dark.palette,
     ...(terminal ? { terminal } : {}),
-    ...(darkTerminal ? { darkTerminal } : {})
+    ...(darkTerminal ? { darkTerminal } : {}),
+    ...(variants ? { variants } : {})
   }
 }
 

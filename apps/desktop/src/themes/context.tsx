@@ -35,6 +35,14 @@ import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme, R
 import { retintTheme } from './retint'
 import type { DesktopTheme, DesktopThemeColors } from './types'
 import { $userThemes, listAllThemes, resolveTheme } from './user-themes'
+import {
+  activeVariantName,
+  persistThemeVariant,
+  storedThemeVariant,
+  THEME_VARIANTS_KEY,
+  variantForMode,
+  variantsForMode
+} from './variants'
 
 // Legacy global skin (pre per-profile themes). Still the inheritance fallback
 // for any profile without its own assignment, so single-profile users and old
@@ -135,7 +143,7 @@ const storedSkin = (profile: string): string =>
   (profile === BOOT_PROFILE_KEY ? (localDisplaySkinName ?? DEFAULT_SKIN_NAME) : DEFAULT_SKIN_NAME)
 
 /** Everything a peer window could change that this one has to repaint for. */
-const APPEARANCE_KEYS = new Set([SKIN_KEY, PROFILE_SKINS_KEY, MODE_KEY, PROFILE_MODES_KEY])
+const APPEARANCE_KEYS = new Set([SKIN_KEY, PROFILE_SKINS_KEY, MODE_KEY, PROFILE_MODES_KEY, THEME_VARIANTS_KEY])
 
 const rememberActiveProfileKey = (profile: string) => persistString(LAST_PROFILE_KEY, profile)
 
@@ -179,26 +187,54 @@ function synthLightColors(seed: DesktopTheme): DesktopThemeColors {
   }
 }
 
-/** Returns the seed palette for a given skin + mode (no overrides applied). */
-export function getBaseColors(skinName: string, mode: 'light' | 'dark'): DesktopThemeColors {
+/**
+ * Returns the seed palette for a given skin + mode (no overrides applied).
+ * `variantName` selects an alternate same-mode palette, resolved against the
+ * mode actually painted (a dark-only family renders dark under "light").
+ */
+export function getBaseColors(
+  skinName: string,
+  mode: 'light' | 'dark',
+  variantName: string | null = null
+): DesktopThemeColors {
   const seed = resolveTheme(skinName) ?? nousTheme
 
-  if (mode === 'dark') {
-    return seed.darkColors ?? seed.colors
-  }
+  const base =
+    mode === 'dark' ? (seed.darkColors ?? seed.colors) : seed.darkColors ? seed.colors : synthLightColors(seed)
 
-  return seed.darkColors ? seed.colors : synthLightColors(seed)
+  const variant = variantName ? variantForMode(seed, renderedModeFor(base, mode), variantName) : undefined
+
+  return variant?.colors ?? base
 }
 
-function deriveTheme(skinName: string, mode: 'light' | 'dark'): DesktopTheme {
+function deriveTheme(skinName: string, mode: 'light' | 'dark', variantName: string | null = null): DesktopTheme {
   const seed = resolveTheme(skinName) ?? nousTheme
+
+  const variant = variantName
+    ? variantForMode(seed, renderedModeFor(getBaseColors(skinName, mode), mode), variantName)
+    : undefined
+
+  // A variant's terminal palette replaces only its own mode's slot.
+  const terminal = variant
+    ? variant.mode === 'light'
+      ? (variant.terminal ?? seed.terminal)
+      : seed.terminal
+    : seed.terminal
+
+  const darkTerminal = variant
+    ? variant.mode === 'dark'
+      ? (variant.terminal ?? seed.darkTerminal)
+      : seed.darkTerminal
+    : seed.darkTerminal
 
   return {
     ...seed,
     name: `${skinName}-${mode}`,
     label: `${seed.label} ${mode === 'light' ? 'Light' : 'Dark'}`,
     description: `${seed.label} ${mode} palette`,
-    colors: getBaseColors(skinName, mode),
+    colors: getBaseColors(skinName, mode, variantName),
+    ...(terminal ? { terminal } : {}),
+    ...(darkTerminal ? { darkTerminal } : {}),
     // A backend skin named `default`/`mono`/… keeps the desktop's own palette
     // (never shadowed — see ingestBackendSkin), but its customCSS is carried
     // separately in $backendCustomCSS. The seed's own customCSS (non-built-in
@@ -390,7 +426,8 @@ if (typeof window !== 'undefined') {
   const profile = BOOT_PROFILE_KEY
   const pref = modePref.resolve(profile)
   const resolved = resolveMode(pref)
-  const theme = deriveTheme(normalizeSkin(storedSkin(profile)), resolved)
+  const skin = normalizeSkin(storedSkin(profile))
+  const theme = deriveTheme(skin, resolved, storedThemeVariant(profile, skin))
   applyTheme(theme, resolved)
   syncNativeTheme(pref, renderedModeFor(theme.colors, resolved))
 }
@@ -411,7 +448,12 @@ interface ThemeContextValue {
    */
   renderedMode: 'light' | 'dark'
   availableThemes: Array<{ name: string; label: string; description: string }>
+  /** Same-mode flavor picks for the active family's rendered mode, if any. */
+  themeVariants: Array<{ name: string; label: string }>
+  /** The variant currently painted, or null. */
+  themeVariant: string | null
   setTheme: (name: string) => void
+  setThemeVariant: (name: string) => void
   setMode: (mode: ThemeMode) => void
   /**
    * Paint a theme with an explicit light/dark, without persistence. This is
@@ -431,7 +473,10 @@ const ThemeContext = createContext<ThemeContextValue>({
   resolvedMode: 'light',
   renderedMode: 'light',
   availableThemes: SKIN_LIST,
+  themeVariants: [],
+  themeVariant: null,
   setTheme: () => {},
+  setThemeVariant: () => {},
   setMode: () => {},
   previewTheme: () => {},
   clearThemePreview: () => {}
@@ -475,6 +520,13 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     typeof window === 'undefined' ? 'system' : modePref.resolve(BOOT_PROFILE_KEY)
   )
 
+  // The active family's flavor pick, read from storage so the first paint matches.
+  const [variantName, setVariantNameState] = useState<string | null>(() =>
+    typeof window === 'undefined'
+      ? null
+      : storedThemeVariant(BOOT_PROFILE_KEY, normalizeSkin(storedSkin(BOOT_PROFILE_KEY)))
+  )
+
   // Follow profile switches: paint the profile's assigned skin + mode and
   // remember it for the next boot's first paint.
   useEffect(() => {
@@ -494,9 +546,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       }
 
       const live = normalizeProfileKey($activeGatewayProfile.get())
+      const liveSkin = normalizeSkin(storedSkin(live))
 
       setThemeNameState(storedSkin(live))
       setModeState(modePref.resolve(live))
+      setVariantNameState(storedThemeVariant(live, liveSkin))
     }
 
     window.addEventListener('storage', onStorage)
@@ -521,17 +575,39 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     [themeName, userThemes, backendThemes, registryVersion]
   )
 
+  // A family switch (or a profile switch) starts on that family's own pick.
+  useEffect(() => {
+    setVariantNameState(storedThemeVariant(profileKey, committedName))
+  }, [profileKey, committedName])
+
+  // Keyed off the rendered mode, not the preference: a dark-only family paints
+  // dark under "light", and its variants live on that surface.
+  const { themeVariant, themeVariants } = useMemo(() => {
+    const seed = resolveTheme(committedName)
+    const rendered = renderedModeFor(getBaseColors(committedName, resolvedMode), resolvedMode)
+    const options = variantsForMode(seed, rendered)
+
+    return {
+      themeVariant: activeVariantName(seed, rendered, variantName),
+      themeVariants: options.length > 1 ? options.map(({ name, label }) => ({ name, label })) : []
+    }
+    // The theme stores are resolveTheme's reactivity, like normalizeSkin above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [committedName, resolvedMode, variantName, userThemes, backendThemes, registryVersion])
+
   const paintedName = preview ? preview.name : committedName
   const paintedMode = preview ? preview.mode : resolvedMode
+  // A preview paints the family default; only a committed pick carries a flavor.
+  const paintedVariant = preview ? null : themeVariant
 
   const activeTheme = useMemo(
-    () => deriveTheme(paintedName, paintedMode),
+    () => deriveTheme(paintedName, paintedMode, paintedVariant),
     // deriveTheme resolves its seed through the merged registry, so the theme
     // stores are its reactivity too — an in-place palette edit of the ACTIVE
     // skin (live theme authoring) must repaint, not just a name switch. The
     // backend CSS store matters the same way for built-in-named user skins.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [paintedName, paintedMode, userThemes, backendThemes, backendCustomCSS, registryVersion]
+    [paintedName, paintedMode, paintedVariant, userThemes, backendThemes, backendCustomCSS, registryVersion]
   )
 
   // Dev-only accent retint. `null` (always, in production) returns the theme
@@ -566,8 +642,26 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     recordFeatureUse('skins')
     setPreview(null)
     setThemeNameState(next)
+    // Adopt the incoming family's stored flavor so the next paint is its pick.
+    setVariantNameState(storedThemeVariant(liveProfile(), next))
     skinPref.assign(liveProfile(), next)
   }, [])
+
+  const setThemeVariant = useCallback(
+    (name: string) => {
+      const variants = resolveTheme(committedName)?.variants
+
+      if (!Array.isArray(variants) || !variants.some(variant => variant.name === name)) {
+        return
+      }
+
+      recordFeatureUse('skins')
+      setPreview(null)
+      setVariantNameState(name)
+      persistThemeVariant(liveProfile(), committedName, name)
+    },
+    [committedName]
+  )
 
   const setMode = useCallback((next: ThemeMode) => {
     recordFeatureUse('skins')
@@ -605,7 +699,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       resolvedMode,
       renderedMode,
       availableThemes,
+      themeVariants,
+      themeVariant,
       setTheme,
+      setThemeVariant,
       setMode,
       previewTheme,
       clearThemePreview
@@ -617,7 +714,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       resolvedMode,
       renderedMode,
       availableThemes,
+      themeVariants,
+      themeVariant,
       setTheme,
+      setThemeVariant,
       setMode,
       previewTheme,
       clearThemePreview

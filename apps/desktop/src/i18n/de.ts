@@ -1141,6 +1141,7 @@ export const deOverrides = {
       technicalDesc: 'Rohe Tool-Argumente/-Ergebnisse und Low-Level-Details einbeziehen.',
       themeTitle: 'Theme',
       themeDesc: 'Nur Desktop-Paletten. Der gewählte Modus wird oben drauf angewendet.',
+      themeVariant: 'Variante',
       themeSearchPlaceholder: 'Ihre Themes oder den VS Code Marketplace durchsuchen…',
       themeProfileNote: profile => `Für das Profil ${profile} gespeichert — jedes Profil behält sein eigenes Theme.`,
       installTitle: 'Aus VS Code installieren',

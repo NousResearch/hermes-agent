@@ -267,11 +267,12 @@ def resolve_plugin_load_order(manifests: Mapping[str, "PluginManifest"]) -> List
 
 def _detect_kind_from_source(source_text: str) -> Optional[str]:
     """Kind implied by source markers (mirrors plugins/memory ``_is_memory_provider_dir`` and
-    plugins/cron_providers ``_is_cron_provider_dir``): memory- or cron-provider markers -> ``exclusive``;
+    plugins/cron_providers ``_is_cron_provider_dir``): memory-, cron- or computer-use-provider markers -> ``exclusive``;
     ``register_provider`` + ``ProviderProfile`` -> ``model-provider``; else ``None``. Keeps these kinds out
     of the general manager's eager import (its PluginContext has no ``register_cron_scheduler``, #62951)."""
     if any(marker in source_text for marker in (
-            "register_memory_provider", "MemoryProvider", "register_cron_scheduler", "CronScheduler")):
+            "register_memory_provider", "MemoryProvider", "register_cron_scheduler", "CronScheduler",
+            "register_computer_use_provider", "ComputerUseProvider")):
         return "exclusive"
     if "register_provider" in source_text and "ProviderProfile" in source_text:
         return "model-provider"

@@ -826,12 +826,9 @@ class GatewayShutdownMixin:
         _maybe_update_status(force=True)
         if not self._running_agents and not (_cron0 or _api0 or _deferred0):
             return snapshot, False
-        # Cron has its own deadline: a chat turn is announced+resumable; a killed cron run is a permanent failure.
-        # ``timeout`` (``restart_drain_timeout``) defaults to 0 because interrupting a chat turn is
-        # announced and resumable; a cron run killed mid-flight is recorded in jobs.json as a permanent
-        # failure nobody is waiting on. Sharing one budget meant the default config could report
-        # ``timed_out=True`` after 0.00s with a cron job in flight and kill it — the drain never even
-        # entered this loop (#82161).
+        # Cron and api_server runs ride the cron floor: a chat turn is announced+resumable, but a killed
+        # cron run is a permanent failure and a killed /v1 run fails a caller blocked on its result.
+        # On ``restart_drain_timeout``'s 0 default they were killed after 0.00s (#82161, #132989).
         started = loop.time()
         deadline = started + timeout
         cron_deadline = started + (timeout if cron_timeout is None else cron_timeout)
@@ -839,7 +836,7 @@ class GatewayShutdownMixin:
         def _still_draining() -> bool:
             now = loop.time()
             agents, cron, api, deferred = self._drain_work_counts()
-            return bool(((agents or api or deferred) and now < deadline) or (cron and now < cron_deadline))
+            return bool(((agents or deferred) and now < deadline) or ((cron or api) and now < cron_deadline))
 
         # Both budgets at 0 = an expired deadline (loop unentered), so timed_out still comes from real state.
         while _still_draining():
@@ -1910,11 +1907,11 @@ class GatewayShutdownMixin:
         _cron_timeout = resolve_cron_drain_budget(
             timeout, _cron_drain_cfg, watchdog_delay=_cron_leash, elapsed=ctx.elapsed(),
         )
-        if _cron_at_start and _cron_timeout > timeout:
+        if (_cron_at_start or _api_at_start) and _cron_timeout > timeout:
             logger.info(
-                "Shutdown drain: %d in-flight cron job(s) — waiting up to "
+                "Shutdown drain: %d in-flight cron job(s), %d api_server run(s) — waiting up to "
                 "%.0fs for them (cron_drain_timeout=%.0fs, restart_drain_timeout=%.0fs)",
-                _cron_at_start, _cron_timeout, _cron_drain_cfg, timeout,
+                _cron_at_start, _api_at_start, _cron_timeout, _cron_drain_cfg, timeout,
             )
         _drain_started_at = time.monotonic()
         ctx.active_agents, ctx.timed_out = await self._drain_active_agents(timeout, _cron_timeout)

@@ -634,6 +634,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   continueBootstrapLocal: () => ipcRenderer.invoke('hermes:bootstrap:continue-local'),
   recycleBackend: profile => ipcRenderer.invoke('hermes:backend:recycle', profile),
   resetBootstrap: () => ipcRenderer.invoke('hermes:bootstrap:reset'),
+  updateHold: {
+    recheck: () => ipcRenderer.invoke('hermes:update-hold:recheck'),
+    quit: () => ipcRenderer.invoke('hermes:update-hold:quit'),
+    startAnyway: (request: { holdId: string; confirmed: true }) =>
+      ipcRenderer.invoke('hermes:update-hold:start-anyway', request)
+  },
   repairBootstrap: () => ipcRenderer.invoke('hermes:bootstrap:repair'),
   cancelBootstrap: () => ipcRenderer.invoke('hermes:bootstrap:cancel'),
   onBootstrapEvent: callback => {

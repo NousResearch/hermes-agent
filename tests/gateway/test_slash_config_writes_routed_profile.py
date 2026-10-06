@@ -15,8 +15,10 @@ import pytest
 import hermes_yaml as yaml
 
 import gateway.run as gateway_run
-from gateway.config import GatewayConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner, _profile_runtime_scope
+from gateway.session import SessionSource
+from gateway.session_identity import RoutingIdentity
 from tools import write_approval as wa
 
 
@@ -59,8 +61,8 @@ def homes(tmp_path, monkeypatch):
     routed_home = tmp_path / "profiles" / "beta"
     default_home.mkdir()
     routed_home.mkdir(parents=True)
-    (default_home / "config.yaml").write_text("agent:\n  reasoning_effort: medium\n")
-    (routed_home / "config.yaml").write_text("agent:\n  reasoning_effort: none\n")
+    (default_home / "config.yaml").write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
+    (routed_home / "config.yaml").write_text("agent:\n  reasoning_effort: none\n", encoding="utf-8")
     monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
     monkeypatch.setenv("HERMES_HOME", str(default_home))
     return default_home, routed_home
@@ -77,10 +79,68 @@ async def test_slash_config_writes_hit_routed_profile_and_leave_default_untouche
         await runner._handle_memory_command(_Event("approval on"))
         await runner._handle_skills_command(_Event("approval on"))
 
-    routed = yaml.safe_load((routed_home / "config.yaml").read_text())
+    routed = yaml.safe_load((routed_home / "config.yaml").read_text(encoding="utf-8-sig"))
     assert routed["agent"]["reasoning_effort"] == "high"
     assert routed["memory"]["write_approval"] is True
     assert routed["skills"]["write_approval"] is True
+    assert (default_home / "config.yaml").read_bytes() == default_before
+
+
+def test_plugin_mutation_requires_transport_and_routed_administrators(homes, monkeypatch):
+    """The receiving bot admits the command; the runtime profile owns the persisted change."""
+    default_home, routed_home = homes
+    (routed_home / "config.yaml").write_text(
+        "gateway:\n  platforms:\n    buzz:\n      extra:\n"
+        "        group_allow_admin_from: [routed-admin, both-admin]\n",
+        encoding="utf-8",
+    )
+    default_before = (default_home / "config.yaml").read_bytes()
+    routed_before = (routed_home / "config.yaml").read_bytes()
+    platform = Platform("buzz")
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        multiplex_profiles=True,
+        platforms={platform: PlatformConfig(extra={
+            "group_allow_admin_from": ["transport-admin", "both-admin"],
+        })},
+    )
+    runner._primary_profile_name = "default"
+    runner._plugin_source_identity_candidates = lambda source: (source.user_id,)
+    runner._plugin_channel_policy_capability_granted = lambda *_args: True
+    source = SessionSource(platform=platform, chat_id="channel", chat_type="group", profile="beta")
+    source._identity = RoutingIdentity(
+        transport_profile="default", runtime_profile="beta",
+        authorization_home=default_home, runtime_home=routed_home,
+    )
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_command", lambda _name: {"with_context": False})
+    monkeypatch.setattr("hermes_cli.plugins.plugin_command_access_level", lambda *_args: "admin")
+
+    def update_config(raw, channel, policy, value):
+        raw["gateway"]["platforms"]["buzz"]["extra"]["channel_modes"] = {channel: {policy: value}}
+        return channel, value, True
+
+    def persist():
+        return runner._persist_plugin_channel_policy(
+            plugin_id="platforms/buzz", platform="buzz", profile_home=routed_home,
+            channel_id="channel", policy="listen", value="always",
+            source_identity_candidates=(source.user_id,), config_updater=update_config,
+        )
+
+    source.user_id = "routed-admin"
+    assert "admin-only" in runner._check_slash_access(source, "buzz", "listen always")
+    source.user_id = "transport-admin"
+    assert runner._check_slash_access(source, "buzz", "listen always") is None
+    with pytest.raises(PermissionError, match="explicitly configured"):
+        persist()
+    assert (routed_home / "config.yaml").read_bytes() == routed_before
+
+    source.user_id = "both-admin"
+    assert runner._check_slash_access(source, "buzz", "listen always") is None
+    assert persist() == ("channel", "always")
+    routed = yaml.safe_load((routed_home / "config.yaml").read_text(encoding="utf-8-sig"))
+    assert routed["gateway"]["platforms"]["buzz"]["extra"]["channel_modes"] == {
+        "channel": {"listen": "always"},
+    }
     assert (default_home / "config.yaml").read_bytes() == default_before
 
 
@@ -111,7 +171,7 @@ async def test_memory_and_skills_review_commands_use_routed_profile_from_dispatc
     with _profile_runtime_scope(default_home):
         assert "routed-memory-approve" in await runner.slash("memory", "pending")
         assert "Approved 1 memory write(s)." in await runner.slash("memory", f"approve {memory_approve['id']}")
-        assert "routed approved" in (routed_home / "memories" / "MEMORY.md").read_text()
+        assert "routed approved" in (routed_home / "memories" / "MEMORY.md").read_text(encoding="utf-8-sig")
         assert "Rejected pending memory write" in await runner.slash("memory", f"reject {memory_reject['id']}")
         assert "routed-skill-reject" in await runner.slash("skills", "pending")
         assert "Pending skill write" in await runner.slash("skills", f"diff {skill_reject['id']}")
@@ -122,7 +182,7 @@ async def test_memory_and_skills_review_commands_use_routed_profile_from_dispatc
         assert "set to 'on'" in await runner.slash("skills", "approval on")
         assert gateway_run._gateway_config_home() == default_home  # ambient scope restored per dispatch
 
-    routed = yaml.safe_load((routed_home / "config.yaml").read_text())
+    routed = yaml.safe_load((routed_home / "config.yaml").read_text(encoding="utf-8-sig"))
     assert routed["memory"]["write_approval"] is True
     assert routed["skills"]["write_approval"] is True
     assert not (default_home / "pending").exists()

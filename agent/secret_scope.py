@@ -391,14 +391,22 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
 def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
     """Build a profile's secret mapping from ``<home>/.env`` plus its external
     secret sources. Global vars are NOT copied in — ``get_secret`` reads those
-    from ``os.environ`` — so the scope holds only profile secrets."""
+    from ``os.environ`` — so the scope holds only profile secrets.
+
+    The home's ``.env`` is authoritative for any key it defines: layering the
+    external source over it would let a cluster-level ``secrets.command`` (one
+    canonical value per process) alias a sibling's credential into this
+    profile's multiplex scope (#74265 review). The source still fills in keys
+    the .env did not define, preserving cold-profile hydration."""
     secrets = load_env_file(Path(hermes_home) / ".env")
     try:
         from hermes_cli.env_loader import get_secret_source_values
         external_secrets = get_secret_source_values(Path(hermes_home))
     except Exception:
         external_secrets = {}
-    secrets.update((k, v) for k, v in external_secrets.items() if not _is_global_env(k))
+    # .env wins; external source fills in cold-profile keys only.
+    secrets.update((k, v) for k, v in external_secrets.items()
+                   if k not in secrets and not _is_global_env(k))
     # The DEFAULT profile's config.yaml allow_all_users grant lives only in os.environ (bridged by
     # gateway.config_loader); scoped gate readers under multiplex never fall to os.environ, so seed it
     # into that profile's own mapping. A secondary never inherits it (#80099 class).

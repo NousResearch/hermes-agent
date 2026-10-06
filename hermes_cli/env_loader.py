@@ -195,8 +195,17 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         from agent.secret_scope import _is_global_env, load_env_file
         from agent.secret_sources.registry import apply_all
 
+        # Snapshot the home's own .env BEFORE the source runs: the source's
+        # ``override_existing`` semantics will overwrite any name it supplies
+        # inside ``local_env``, so reading back from local_env cannot tell us
+        # which values came from .env vs. the source. The cluster's
+        # ``secrets.command`` (e.g. agent_vault_telegram_secrets.sh) can return
+        # one canonical value for every profile; without this snapshot a
+        # sibling's token (friday's TELEGRAM_BOT_TOKEN) aliases into default's
+        # per-home scope and the multiplex preflight fires a phantom duplicate.
+        env_defined = dict(load_env_file(home / ".env"))
         local_env = {name: value for name, value in os.environ.items() if _is_global_env(name)}
-        local_env.update(load_env_file(home / ".env"))
+        local_env.update(env_defined)
         # Mirror load_hermes_dotenv()'s .op.env bootstrap (1Password token lives in gitignored .op.env)
         # or cold profiles fail 1Password hydration. .env wins.
         # Without seeding it here a cold profile configured for the supported .op.env flow fails 1Password
@@ -222,9 +231,19 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     # or skipped because the private mapping already had it — is a source-owned name the routed-child scrub
     # must know about, or a sibling still inherits the launch value for it (review on f5f88d5058).
     _record_supplied_names(report)
+    # Use the .env snapshot, not ``local_env``: the source's override_existing
+    # semantics will have overwritten any name it supplied inside ``local_env``,
+    # so reading back from there cannot tell us which values came from .env
+    # vs. the source. For names .env defines the .env value wins (per-home
+    # truth); for cold-profile keys the source value fills the gap. The
+    # snapshot now records per-home truth, and a cluster-level source cannot
+    # paste a sibling's value into a peer's scope (#74265 review).
     values: dict[str, str] = {}
     for name, applied in report.provenance.items():
-        value = local_env.get(name)
+        if name in env_defined:
+            value = env_defined[name]
+        else:
+            value = local_env.get(name)
         if value is None:
             continue
         _SECRET_SOURCES[name] = applied.source

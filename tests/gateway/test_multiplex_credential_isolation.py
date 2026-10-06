@@ -279,3 +279,141 @@ def test_cold_profile_hydrates_external_source_without_global_env(
     assert calls["count"] == 1
     assert "TEST_PROVIDER_API_KEY" not in os.environ
     assert "EXPLICIT_API_KEY" not in os.environ
+
+
+class TestHotProfileDotenvBeatsVaultForSelfKey:
+    """When a cluster-level ``secrets.command`` (e.g. agent_vault_telegram_secrets.sh) returns
+    ONE canonical value for every profile instead of the per-profile value, the per-home
+    snapshot must still record the home's own .env literal — a sibling's bot token cannot
+    alias into this profile's multiplex scope (multiplex preflight then reports a phantom
+    duplicate credential; the runtime would park the mis-aliased adapter).
+
+    Regression for the load_gateway_config env-leak (t_d4753072)."""
+
+    def test_build_scope_does_not_alias_sibling_token(self, tmp_path, monkeypatch):
+        """A .env-defined key must NOT be overwritten by the external source value.
+
+        Without the fix, ``build_profile_secret_scope`` layers external source values
+        over .env via ``dict.update``; when a cluster source returns friday's token for
+        default's TELEGRAM_BOT_TOKEN, default's scope ends up holding friday's token.
+        With the fix, .env-defined keys skip the source layer entirely."""
+        from agent.secret_sources import registry
+        from agent.secret_sources.base import FetchResult
+        from agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
+        from agent.secret_scope import build_profile_secret_scope
+        from hermes_cli import env_loader
+
+        home = tmp_path / "default_home"
+        home.mkdir()
+        (home / ".env").write_text(
+            "TELEGRAM_BOT_TOKEN=default-token\n"
+            "PROFILE_OWN_KEY=default-value\n",
+            encoding="utf-8",
+        )
+
+        def _fake_apply_all(_cfg, _home, *, environ=None):
+            # Source uses override_existing=True semantics: overwrites .env value.
+            environ["TELEGRAM_BOT_TOKEN"] = "sibling-token"
+            # Source also supplies a cold-profile key the .env did not define.
+            environ["COLD_VAULT_KEY"] = "vault-value"
+            return ApplyReport(
+                sources=[
+                    SourceReport(
+                        name="fake-cluster",
+                        label="Fake Cluster",
+                        result=FetchResult(),
+                        applied=["TELEGRAM_BOT_TOKEN", "COLD_VAULT_KEY"],
+                    )
+                ],
+                provenance={
+                    "TELEGRAM_BOT_TOKEN": AppliedVar(
+                        name="TELEGRAM_BOT_TOKEN",
+                        source="fake-cluster",
+                        shape="mapped",
+                        overrode_env=True,
+                    ),
+                    "COLD_VAULT_KEY": AppliedVar(
+                        name="COLD_VAULT_KEY",
+                        source="fake-cluster",
+                        shape="mapped",
+                        overrode_env=False,
+                    ),
+                },
+            )
+
+        monkeypatch.setattr(registry, "apply_all", _fake_apply_all)
+        monkeypatch.setattr(
+            env_loader, "_load_secrets_config",
+            lambda _home: {"fake-cluster": {"enabled": True}},
+        )
+        env_loader.reset_secret_source_cache()
+
+        # build_profile_secret_scope reads the snapshot built by _hydrate_profile_secret_sources;
+        # trigger that explicitly so the test exercises the FULL pipeline (hydrate + scope build).
+        env_loader.hydrate_profile_secret_sources(home)
+        scope = build_profile_secret_scope(home)
+
+        # .env-defined key keeps its home-true value, not the cluster's sibling value.
+        assert scope["TELEGRAM_BOT_TOKEN"] == "default-token", (
+            f"cluster source aliased sibling token into default's scope: {scope.get('TELEGRAM_BOT_TOKEN')!r}"
+        )
+        # Cold-profile key (not in .env) still resolves from the source.
+        assert scope["COLD_VAULT_KEY"] == "vault-value"
+        # .env-only key untouched.
+        assert scope["PROFILE_OWN_KEY"] == "default-value"
+
+        env_loader.reset_secret_source_cache()
+
+    def test_hydrate_records_dotenv_value_not_vault_value(self, tmp_path, monkeypatch):
+        """The per-home snapshot stored in ``_SECRET_SOURCE_VALUES_BY_HOME`` must record
+        the home's own .env literal for names .env defines, NOT the cluster source's
+        value. This is the upstream fix; the scope-build test above is the downstream
+        proof."""
+        from agent.secret_sources import registry
+        from agent.secret_sources.base import FetchResult
+        from agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
+        from hermes_cli import env_loader
+
+        home = tmp_path / "default_home"
+        home.mkdir()
+        (home / ".env").write_text(
+            "TELEGRAM_BOT_TOKEN=default-token\n",
+            encoding="utf-8",
+        )
+
+        def _fake_apply_all(_cfg, _home, *, environ=None):
+            environ["TELEGRAM_BOT_TOKEN"] = "sibling-token"
+            return ApplyReport(
+                sources=[
+                    SourceReport(
+                        name="fake-cluster",
+                        label="Fake Cluster",
+                        result=FetchResult(),
+                        applied=["TELEGRAM_BOT_TOKEN"],
+                    )
+                ],
+                provenance={
+                    "TELEGRAM_BOT_TOKEN": AppliedVar(
+                        name="TELEGRAM_BOT_TOKEN",
+                        source="fake-cluster",
+                        shape="mapped",
+                        overrode_env=True,
+                    ),
+                },
+            )
+
+        monkeypatch.setattr(registry, "apply_all", _fake_apply_all)
+        monkeypatch.setattr(
+            env_loader, "_load_secrets_config",
+            lambda _home: {"fake-cluster": {"enabled": True}},
+        )
+        env_loader.reset_secret_source_cache()
+
+        env_loader.hydrate_profile_secret_sources(home)
+        snapshot = env_loader.get_secret_source_values(home)
+
+        assert snapshot == {"TELEGRAM_BOT_TOKEN": "default-token"}, (
+            f"snapshot recorded sibling value: {snapshot!r}"
+        )
+
+        env_loader.reset_secret_source_cache()

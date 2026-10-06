@@ -27,9 +27,9 @@ def loop_agent():
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
-            base_url="https://api.deepseek.com/v1",
-            model="deepseek-reasoner",
-            provider="deepseek",
+            base_url="http://127.0.0.1:8000/v1",
+            model="nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+            provider="vllm",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,

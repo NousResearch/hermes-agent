@@ -4,6 +4,7 @@ import {
   type ModelOptionsResult,
 } from "@hermes/shared";
 
+import type { AuxiliaryModelsResponse } from "./api-aux";
 import { dashboardServingProfile } from "./profile-bootstrap";
 
 // The dashboard can be served either at the root of its host (e.g.
@@ -31,6 +32,7 @@ import {
   clearDashboardTokenReloadAttempt,
 } from "@/lib/dashboard-auth-reload";
 import { apiErrorFromNetworkFailure, apiErrorFromResponse } from "@/lib/api-error";
+import type { AutomationBlueprint } from "@/lib/automation-blueprints";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -650,10 +652,7 @@ export const api = {
     ),
   getSharedMetricsConsent: (profile = getManagementProfile()) =>
     fetchJSON<SharedMetricsConsent>(appendProfileParam("/api/shared-metrics/consent", profile)),
-  saveSharedMetricsConsent: (
-    answer: { enabled: boolean; send: boolean },
-    profile = getManagementProfile(),
-  ) =>
+  saveSharedMetricsConsent: (answer: { enabled: boolean; send: boolean }, profile = getManagementProfile()) =>
     fetchJSON<SharedMetricsConsent>(appendProfileParam("/api/shared-metrics/consent", profile), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1994,12 +1993,13 @@ export interface PlatformStatus {
   updated_at: string;
 }
 
-/** One profile's shared-metrics answer; `decided` is false until either key is written. */
+/** One profile's shared-metrics answer; `reask` = a pre-fix "off" asked once more. */
 export interface SharedMetricsConsent {
   enabled: boolean;
   send: boolean;
   decided: boolean;
   managed: boolean;
+  reask?: boolean;
 }
 
 export interface StatusResponse {
@@ -2476,29 +2476,6 @@ export interface CronDeliveryTarget {
   home_env_var: string | null;
 }
 
-export interface AutomationBlueprintField {
-  name: string;
-  type: "time" | "enum" | "text" | "weekdays";
-  label: string;
-  default: string | null;
-  options: string[];
-  optional: boolean;
-  /** When false, options are suggestions — any value is accepted. */
-  strict?: boolean;
-  help: string;
-}
-
-export interface AutomationBlueprint {
-  key: string;
-  title: string;
-  description: string;
-  category: string;
-  tags: string[];
-  fields: AutomationBlueprintField[];
-  command: string;
-  appUrl: string;
-}
-
 export interface SkillInfo {
   name: string;
   description: string;
@@ -2597,17 +2574,7 @@ export interface ModelInfoResponse {
 
 export type { ModelOptionProvider, ModelOptionsResult };
 
-export interface AuxiliaryTaskAssignment {
-  task: string;
-  provider: string;
-  model: string;
-  base_url: string;
-}
-
-export interface AuxiliaryModelsResponse {
-  tasks: AuxiliaryTaskAssignment[];
-  main: { provider: string; model: string };
-}
+export type { AuxiliaryModelsResponse, AuxiliaryTaskAssignment } from "./api-aux";
 
 export interface MoaModelSlot {
   provider: string;

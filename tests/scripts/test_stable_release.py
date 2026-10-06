@@ -19,6 +19,7 @@ from scripts.releases.stable import (
     check_claim, ensure_final_tag, plan_receipt_transitions, plan_transitions, read_manifest,
     require_stable_identity, require_success, stable_context, validate_candidates, validate_receipt,
 )
+from scripts.releases.versioning import tag_record
 
 BASE = "https://releases.example"
 ROOT = Path(__file__).resolve().parents[2]
@@ -547,7 +548,7 @@ def test_publish_attempt_writes_the_receipt_retargets_and_copies_no_bytes(tmp_pa
 
     commit, tag_object = _claim_fixture(tmp_path, tag="rc.2-v1.2.3", version="1.2.3")
     monkeypatch.chdir(tmp_path / "repo")
-    epoch = json.loads(subprocess.check_output(
+    epoch = tag_record(subprocess.check_output(
         ["git", "tag", "-l", "rc.2-v1.2.3", "--format=%(contents)"],
         text=True, encoding="utf-8"))["claimEpoch"]
     manifest_bytes = b'{"schema":2}\n'
@@ -597,7 +598,7 @@ def test_publish_attempt_writes_the_receipt_retargets_and_copies_no_bytes(tmp_pa
     )
 
     assert digest == docker_digest
-    receipt = json.loads(subprocess.check_output(
+    receipt = tag_record(subprocess.check_output(
         ["git", "tag", "-l", "v1.2.3", "--format=%(contents)"],
         text=True, encoding="utf-8"))
     assert receipt["claimTag"] == "rc.2-v1.2.3"
@@ -628,7 +629,7 @@ def test_publish_attempt_refuses_a_release_that_is_no_longer_a_draft(tmp_path, m
 
     commit, tag_object = _claim_fixture(tmp_path, tag="rc.2-v1.2.3", version="1.2.3")
     monkeypatch.chdir(tmp_path / "repo")
-    epoch = json.loads(subprocess.check_output(
+    epoch = tag_record(subprocess.check_output(
         ["git", "tag", "-l", "rc.2-v1.2.3", "--format=%(contents)"],
         text=True, encoding="utf-8"))["claimEpoch"]
     release = {"id": 42, "tag_name": "rc.2-v1.2.3", "draft": False, "prerelease": False,

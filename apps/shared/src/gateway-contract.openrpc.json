@@ -314,7 +314,7 @@
     },
     {
       "name": "browser.manage",
-      "summary": "Inspect, attach to, or drop the CDP browser the tools use; ``messages`` narrate a connect.",
+      "summary": "Inspect, attach to, or drop the CDP browser the tools use, or switch Browser Use mode (``use``, applies to new sessions); ``messages`` narrate a connect.",
       "params": [
         {
           "name": "params",
@@ -1011,6 +1011,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/FreeTierAckNoticeResult"
+        }
+      }
+    },
+    {
+      "name": "free_tier.challenge_result",
+      "summary": "Report a browser window outcome for the matching pending attempt; mint remains authoritative.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/FreeTierChallengeResultParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/FreeTierChallengeResult"
         }
       }
     },
@@ -4908,6 +4926,44 @@
         "title": "AgentsListResult",
         "type": "object"
       },
+      "ApprovalCancelledPayload": {
+        "additionalProperties": false,
+        "description": "``session_lifecycle._announce_cancelled_gateway_approvals`` (broadcast).\n\nOne frame for every pending approval dropped by an interrupt / reap / teardown (#106678) \u2014 the\ndeny-resolve is silent without it, so a reconnecting client's prompt looks lost rather than cancelled.\n``cancelled_count`` is the number of dropped entries; ``request_ids`` omits empty/missing ids, so the\ntwo can disagree when an entry has no request_id.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "stored_session_id": {
+            "title": "Stored Session Id",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "cancelled_count": {
+            "title": "Cancelled Count",
+            "type": "integer"
+          },
+          "request_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Request Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session_id",
+          "stored_session_id",
+          "reason",
+          "cancelled_count",
+          "request_ids"
+        ],
+        "title": "ApprovalCancelledPayload",
+        "type": "object"
+      },
       "ApprovalChoice": {
         "enum": [
           "once",
@@ -7082,7 +7138,8 @@
         "enum": [
           "status",
           "connect",
-          "disconnect"
+          "disconnect",
+          "use"
         ],
         "title": "BrowserAction",
         "type": "string"
@@ -7359,6 +7416,18 @@
             "default": null,
             "title": "Url"
           },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Enabled"
+          },
           "session_id": {
             "anyOf": [
               {
@@ -7420,6 +7489,18 @@
             ],
             "default": null,
             "title": "Messages"
+          },
+          "browser_use": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser Use"
           }
         },
         "required": [
@@ -7869,6 +7950,21 @@
             ],
             "default": null,
             "title": "Desktop"
+          },
+          "desktop_subcommands": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Desktop Subcommands"
           }
         },
         "title": "CommandCatalogMeta",
@@ -11313,7 +11409,10 @@
           "last_delivery_unverified": {
             "anyOf": [
               {
-                "type": "boolean"
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               {
                 "type": "null"
@@ -13863,6 +13962,106 @@
         "title": "FreeTierAckNoticeResult",
         "type": "object"
       },
+      "FreeTierChallengePayload": {
+        "additionalProperties": true,
+        "description": "``hermes_cli/anon_challenge.py::BrowserChallenge.as_payload``: the ``free_tier.challenge``\nevent, and ``free_tier.status``'s ``challenge`` field for a client that connected after it.",
+        "properties": {
+          "type": {
+            "const": "browser",
+            "title": "Type",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "expires_in": {
+            "title": "Expires In",
+            "type": "integer"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "attempt": {
+            "default": 0,
+            "title": "Attempt",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "type",
+          "url",
+          "required",
+          "expires_in",
+          "message"
+        ],
+        "title": "FreeTierChallengePayload",
+        "type": "object"
+      },
+      "FreeTierChallengeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "accepted"
+        ],
+        "title": "FreeTierChallengeResult",
+        "type": "object"
+      },
+      "FreeTierChallengeResultParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "attempt": {
+            "default": 0,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "outcome": {
+            "enum": [
+              "done",
+              "failed",
+              "closed",
+              "timeout",
+              "refused",
+              "error",
+              "unsupported"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "outcome"
+        ],
+        "title": "FreeTierChallengeResultParams",
+        "type": "object"
+      },
       "FreeTierProvisionResult": {
         "additionalProperties": false,
         "properties": {
@@ -14005,6 +14204,17 @@
             ],
             "default": null,
             "title": "Retry After"
+          },
+          "challenge": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FreeTierChallengePayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -18365,6 +18575,18 @@
             "default": null,
             "title": "Response Previewed"
           },
+          "response_reused": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Response Reused"
+          },
           "response_transformed": {
             "anyOf": [
               {
@@ -18802,6 +19024,11 @@
             "title": "Fast",
             "type": "boolean"
           },
+          "ultrafast": {
+            "default": false,
+            "title": "Ultrafast",
+            "type": "boolean"
+          },
           "reasoning": {
             "title": "Reasoning",
             "type": "boolean"
@@ -19125,6 +19352,28 @@
             ],
             "default": null,
             "title": "Unavailable Models"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderLimit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderUsage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -21886,6 +22135,7 @@
           "no_interactive_session",
           "version_too_old",
           "missing_app",
+          "unsupported_gpu",
           "unknown"
         ],
         "title": "PluginServerState",
@@ -23253,6 +23503,18 @@
             "default": 0,
             "title": "Message Count",
             "type": "integer"
+          },
+          "live_message_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Live Message Count"
           }
         },
         "required": [
@@ -23554,6 +23816,18 @@
             "default": 0,
             "title": "Message Count",
             "type": "integer"
+          },
+          "live_message_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Live Message Count"
           }
         },
         "required": [
@@ -24332,7 +24606,7 @@
       },
       "ProfilesListResult": {
         "additionalProperties": false,
-        "description": "``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself.",
+        "description": "``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself;\n``install_id`` (as on ``/api/status``) names the machine that answered.",
         "properties": {
           "profiles": {
             "items": {
@@ -24345,6 +24619,11 @@
             "default": true,
             "title": "Bot Mode Protocol",
             "type": "boolean"
+          },
+          "install_id": {
+            "default": "",
+            "title": "Install Id",
+            "type": "string"
           }
         },
         "title": "ProfilesListResult",
@@ -26340,6 +26619,173 @@
         ],
         "title": "PromptSubmitStatus",
         "type": "string"
+      },
+      "ProviderLimit": {
+        "additionalProperties": false,
+        "description": "``hermes_cli/inventory.py::_apply_limits`` \u2014 ``account``: the whole login is rate-limited until\n``resets_at`` (ISO, absent when unknown); ``models``: only these models are, each until its time.",
+        "properties": {
+          "scope": {
+            "enum": [
+              "account",
+              "models"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "resets_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resets At"
+          },
+          "models": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Models"
+          }
+        },
+        "required": [
+          "scope"
+        ],
+        "title": "ProviderLimit",
+        "type": "object"
+      },
+      "ProviderUsage": {
+        "additionalProperties": false,
+        "description": "``hermes_cli/inventory.py::_apply_usage`` \u2014 the provider's subscription usage, from cache.\n\nMulti-entry credential pools carry ``accounts`` (one row per account; the legacy ``windows``\nstays EMPTY there \u2014 a provider-wide percentage across different logins would be fabricated).\nSingle-account providers keep the legacy ``windows`` gauge.",
+        "properties": {
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderUsageWindow"
+            },
+            "title": "Windows",
+            "type": "array"
+          },
+          "accounts": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ProviderUsageAccount"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Accounts"
+          }
+        },
+        "title": "ProviderUsage",
+        "type": "object"
+      },
+      "ProviderUsageAccount": {
+        "additionalProperties": false,
+        "description": "One account of a provider's credential pool (``hermes_cli/inventory.py::_pool_usage_accounts``).\n``id`` is a stable non-secret account identity (never a key or URL); ``label`` may be empty (UI\nfalls back to a localized \"Account N\"). ``windows`` is empty while the account's usage is not\nyet known \u2014 state carries the meaning, never a fabricated gauge.\n\n``state``: ``ready`` \u2014 live quota below the cap (numeric windows present); ``limited`` \u2014 a live\ncredential-wide cooldown or exhausted account-scoped quota windows; ``unknown`` \u2014 no live\nnumeric windows (failed/empty fetch, stale snapshot, provider without a usage API);\n``unavailable`` \u2014 DEAD auth row (kept visible, never a quota row).\n\n``resets_at``: for a limited account, the LATEST of its exhausted account-scoped windows (or a\nlive cooldown when later); ``None`` when unknown (the frontend renders its own advisory, e.g.\nthe earliest limited sibling).",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderUsageWindow"
+            },
+            "title": "Windows",
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "ready",
+              "limited",
+              "unknown",
+              "unavailable"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "resets_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resets At"
+          }
+        },
+        "required": [
+          "id",
+          "state"
+        ],
+        "title": "ProviderUsageAccount",
+        "type": "object"
+      },
+      "ProviderUsageWindow": {
+        "additionalProperties": false,
+        "description": "One subscription usage window (``agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour\nsession or the weekly cap, with how much of it is spent and when it rolls over (ISO).\n\n``scope``: ``account`` \u2014 exhausting the window exhausts the whole login (Codex session/weekly,\nso a limited account's resets_at must wait for it); ``model`` \u2014 the window caps only one model\nfamily (Anthropic Opus/Sonnet weekly) and can never imply the account itself is out of quota.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "used_percent": {
+            "title": "Used Percent",
+            "type": "number"
+          },
+          "resets_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resets At"
+          },
+          "scope": {
+            "default": "account",
+            "enum": [
+              "account",
+              "model"
+            ],
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "used_percent"
+        ],
+        "title": "ProviderUsageWindow",
+        "type": "object"
       },
       "QueuedPrompt": {
         "additionalProperties": false,
@@ -28572,6 +29018,18 @@
             ],
             "default": null,
             "title": "Count"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
           }
         },
         "required": [
@@ -28681,6 +29139,18 @@
             ],
             "default": null,
             "title": "Cwd"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
           }
         },
         "required": [
@@ -28752,6 +29222,18 @@
             ],
             "default": null,
             "title": "Name"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
           }
         },
         "required": [
@@ -29623,6 +30105,18 @@
             "default": null,
             "title": "Fast"
           },
+          "service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Service Tier"
+          },
           "close_on_disconnect": {
             "default": false,
             "title": "Close On Disconnect",
@@ -29642,6 +30136,18 @@
             "default": false,
             "title": "Follow Profile Config",
             "type": "boolean"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
           }
         },
         "title": "SessionCreateParams",
@@ -30556,6 +31062,18 @@
             "default": 0,
             "title": "Message Count",
             "type": "integer"
+          },
+          "live_message_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Live Message Count"
           },
           "source": {
             "default": "",
@@ -32294,7 +32812,7 @@
       },
       "SharedMetricsConsentResult": {
         "additionalProperties": false,
-        "description": "The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while\n``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults\nare not an answer).",
+        "description": "The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while\n``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults\nare not an answer) and it is not a ``reask``: an \"off\" from before the type-ahead fix, offered\nonce more with the reason.",
         "properties": {
           "enabled": {
             "title": "Enabled",
@@ -32306,6 +32824,11 @@
           },
           "decided": {
             "title": "Decided",
+            "type": "boolean"
+          },
+          "reask": {
+            "default": false,
+            "title": "Reask",
             "type": "boolean"
           }
         },
@@ -39188,6 +39711,18 @@
       ]
     },
     {
+      "name": "approval.cancelled",
+      "summary": "Pending gateway approvals were dropped by interrupt/reap/teardown; the wait resolved as deny (not a user refusal).",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ApprovalCancelledPayload"
+          }
+        }
+      ]
+    },
+    {
       "name": "background.complete",
       "summary": "A /background side agent finished.",
       "params": [
@@ -39363,6 +39898,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ErrorPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "free_tier.challenge",
+      "summary": "The account service wants a browser challenge cleared before the free-tier token exchange (broadcast); the desktop loads ``url`` in a hidden window.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/FreeTierChallengePayload"
           }
         }
       ]

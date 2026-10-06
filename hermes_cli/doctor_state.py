@@ -15,16 +15,6 @@ from hermes_state_common import FTS_STORAGE_VERSION
 from hermes_state_holders import read_only_db_uri
 
 
-def _honcho_is_configured_for_doctor() -> bool:
-    """Return True when Honcho is configured, even if this process has no active session."""
-    try:
-        from plugins.memory import import_provider_module
-        cfg = import_provider_module("honcho", "client").HonchoClientConfig.from_global_config()
-        return bool(cfg.enabled and (cfg.api_key or cfg.base_url))
-    except Exception:
-        return False
-
-
 def _doctor_memory_config(hermes_home: Path | None = None) -> dict:
     """Return the effective memory section used by doctor diagnostics."""
     from hermes_cli.doctor import HERMES_HOME
@@ -589,52 +579,13 @@ def _check_skills_hub(should_fix: bool, f: Finding) -> None:
                    ("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)"))
 
 
-def _memory_provider_honcho(issues: list) -> None:
-    from plugins.memory import import_provider_module
-    client = import_provider_module("honcho", "client")
-    hcfg = client.HonchoClientConfig.from_global_config()
-    cfg_path = client.resolve_config_path()
-    if not cfg_path.exists():
-        # Config file missing — env-var fallback may still have resolved it.
-        check_bool(hcfg.api_key or hcfg.base_url,
-                   ("Honcho configured via environment variables", f"config file {cfg_path} not found, using HONCHO_API_KEY env var"),
-                   ("Honcho config not found", "run: hermes memory setup"))
-    elif not hcfg.enabled:
-        check_info(f"Honcho disabled (set enabled: true in {cfg_path} to activate)")
-    elif not (hcfg.api_key or hcfg.base_url):
-        _fail_and_issue("Honcho API key or base URL not set", "run: hermes memory setup",
-                        "No Honcho API key — run 'hermes memory setup'", issues)
-    else:
-        client.reset_honcho_client()
-        try:
-            client.get_honcho_client(hcfg)
-            check_ok("Honcho connected", f"workspace={hcfg.workspace_id} mode={hcfg.recall_mode} freq={hcfg.write_frequency}")
-        except Exception as _e:
-            _fail_and_issue("Honcho connection failed", str(_e), f"Honcho unreachable: {_e}", issues)
-
-
-def _memory_provider_mem0(issues: list) -> None:
-    from plugins.memory import import_provider_module
-    mem0_cfg = import_provider_module("mem0")._load_config()
-    if mem0_cfg.get("api_key", ""):
-        check_ok("Mem0 API key configured")
-        check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
-    else:
-        _fail_and_issue("Mem0 API key not set", "(set MEM0_API_KEY in .env or run hermes memory setup)",
-                        "Mem0 is set as memory provider but API key is missing", issues)
-
-
-# provider -> (checker, ImportError row, ImportError issue, label for "check failed")
-_MEMORY_PROVIDER_CHECKS = {
-    "honcho": (_memory_provider_honcho, ("honcho-ai not installed", "run hermes memory setup"),
-               "Honcho dependencies missing — run hermes memory setup, then restart Hermes", "Honcho"),
-    "mem0": (_memory_provider_mem0, ("Mem0 plugin not loadable", "run hermes memory setup"),
-             "Mem0 dependencies missing — run hermes memory setup, then restart Hermes", "Mem0"),
-}
+# provider -> (checker, ImportError row, ImportError issue, label for "check failed"); every provider
+# still bundled or catalog-installed uses the generic check.
+_MEMORY_PROVIDER_CHECKS: dict = {}
 
 
 def _memory_provider_generic(name: str) -> None:
-    """Generic check for other memory providers (openviking, hindsight, etc.)."""
+    """Generic check for every memory provider (openviking, mem0, honcho, hindsight, ...)."""
     from plugins.memory import load_memory_provider
     _provider = load_memory_provider(name)
     if _provider and _provider.is_available():
@@ -642,7 +593,10 @@ def _memory_provider_generic(name: str) -> None:
     elif _provider:
         check_warn(f"{name} configured but not available", "run: hermes memory status")
     else:
-        check_warn(f"{name} plugin not found", "run: hermes memory setup")
+        from plugins.memory import find_provider_dir
+        from hermes_cli.memory_provider_migration import catalog_install_hint
+        hint = catalog_install_hint(name, category="memory") if find_provider_dir(name) is None else None
+        check_warn(f"{name} plugin not found", f"run: {hint or 'hermes memory setup'}")
 
 
 @doctor_check()

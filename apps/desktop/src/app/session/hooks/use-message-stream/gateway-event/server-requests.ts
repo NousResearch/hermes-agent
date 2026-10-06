@@ -1,5 +1,10 @@
 import { JSON_RPC_INTERNAL_ERROR } from '@hermes/shared'
 
+import {
+  hasLivePreviewSurface,
+  requestPopoutPreviewAct,
+  requestPopoutPreviewRead
+} from '@/app/chat/right-rail/preview-popout-bridge'
 import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import {
   abortPreviewTyping,
@@ -15,6 +20,7 @@ import type { TourAction, TourStep } from '@/lib/tour'
 import { normalizeQuestions, setClarifyRequest } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import type { PreviewOwner } from '@/store/preview-ownership'
 import {
   receiveApprovalRequest,
   setSecretRequest,
@@ -24,8 +30,13 @@ import {
   setVaultUnlockRequest
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
-import { $sessions, sessionMatchesStoredId } from '@/store/session'
-import { $sessionTiles } from '@/store/session-states'
+import { $selectedStoredSessionId, $sessions, lineageAliases, sessionMatchesStoredId } from '@/store/session'
+import {
+  $sessionStates,
+  $sessionTiles,
+  previewScopeForRuntime,
+  storedSessionIdForRuntimeId
+} from '@/store/session-states'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
 
@@ -47,6 +58,23 @@ const loadPreviewEngine = () => {
 }
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+
+/** Whose preview tabs a scoped agent request may see: the requesting
+ *  runtime's stored id plus the tabs that runtime opened before the id bound,
+ *  and the pins of the profile that runtime belongs to — never the viewed
+ *  profile's pins on another profile's behalf. An id that does not resolve
+ *  yet has no stored id — the runtime's own pending tabs — never the focused
+ *  session's tabs. Only an unscoped request (no id) falls through to the
+ *  focused session (undefined). */
+const previewOwnerFor = (sessionId: string): PreviewOwner | undefined =>
+  sessionId
+    ? {
+        profile: previewScopeForRuntime(sessionId),
+        runtimeId: sessionId,
+        sessionId: storedSessionIdForRuntimeId(sessionId)
+      }
+    : undefined
+
 const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
 
 /** Answer a string-valued request with a JSON-encoded result ('' = nothing / unavailable). */
@@ -143,6 +171,48 @@ export function windowHostsSession(
 }
 
 /**
+ * The window.read claim. window.read has no per-window pane, but its answer is
+ * keyed to the ANSWERING window's bounds — "below" is measured from them — so
+ * the only window that may answer is one showing the conversation. The strict
+ * host check strands real states (#121609): the HUD shows the conversation
+ * without holding it active (main holds the id on its behalf — hud-shell.tsx),
+ * and after the HUD hands the conversation back the app window's active id
+ * still names the pre-handoff runtime until a resume re-binds it (verified
+ * live: only an explicit session resume restored the answer). So beyond the
+ * strict checks, the asked id may resolve to a conversation this window
+ * SHOWS: the selected stored session or a tile's stored session, matched
+ * through lineageAliases (compression rotates the runtime tip under the
+ * stored identity) and the session-state cache, which records which stored id
+ * each runtime id maps to — an entry's stored id is what this window observed
+ * for that runtime, so a stale entry still maps within its own conversation.
+ * No shown conversation — nothing claimed, as before.
+ *
+ * Scoped to window.read only. preview.act and tour refuse unless
+ * isActiveSession (raw id equality), so a tolerated claim there would turn
+ * another window's silence into a false refusal that wins the multi-window
+ * race — and a tour refusal latches session["tour_bridge"] = "answered",
+ * converting every later tour action in the session into a full 45s wait.
+ * Pane-owned reads keep #113348's owner-waiting semantics.
+ */
+export function windowReadClaimsSession(sessionId: string, activeSessionId: null | string): boolean {
+  if (windowHostsSession(sessionId, activeSessionId)) {
+    return true
+  }
+
+  const sessions = $sessions.get()
+
+  const shown = [$selectedStoredSessionId.get(), ...$sessionTiles.get().map(tile => tile.storedSessionId)]
+
+  return shown.some(
+    stored =>
+      stored !== null &&
+      (stored === sessionId ||
+        lineageAliases(stored, sessions).includes(sessionId) ||
+        ($sessionStates.get()[sessionId]?.storedSessionId ?? null) === stored)
+  )
+}
+
+/**
  * Panes are local to one desktop window, while gateway requests fan out
  * to every connected window. A scoped request may only be answered by the
  * window hosting its session (primary view or a tile). During reconnect,
@@ -152,16 +222,28 @@ export function windowHostsSession(
  */
 export function previewSessionRoute({
   activeSessionId,
+  method,
   replayed,
   sessionId,
   storedIdForRuntimeId
 }: {
   activeSessionId: null | string
+  method?: string
   replayed: boolean | undefined
   sessionId: string
   storedIdForRuntimeId?: (runtimeId: string) => string | undefined
 }): PreviewSessionRoute {
-  if (!sessionId || windowHostsSession(sessionId, activeSessionId, storedIdForRuntimeId)) {
+  if (!sessionId) {
+    return 'run'
+  }
+
+  // window.read routes through the tolerant claim (see windowReadClaimsSession);
+  // every other window-owned request keeps the strict host check.
+  if (
+    method === 'window.read'
+      ? windowReadClaimsSession(sessionId, activeSessionId)
+      : windowHostsSession(sessionId, activeSessionId, storedIdForRuntimeId)
+  ) {
     return 'run'
   }
 
@@ -423,11 +505,22 @@ const terminalRead: Handler = ({ request }) => {
   answerValue(request, readActiveTerminal({ count: num(request.params.count), start: num(request.params.start) }))
 }
 
-const previewRead: Handler = ({ request }) => {
+const previewRead: Handler = ({ request, sessionId }) => {
   // read_preview tool: the active preview tab's page text is async. Empty = nothing open.
-  void readActivePreview({ count: num(request.params.count), start: num(request.params.start) }).then(result =>
+  // The window that passes the session gate may be the chat window while the
+  // live webview lives in the popped-out Browser renderer — forward there
+  // first; a null (no pop-out answered) falls back to the legacy local read.
+  // A local read sees only the tabs the requesting session can see.
+  const opts = { count: num(request.params.count), start: num(request.params.start) }
+  const owner = previewOwnerFor(sessionId)
+
+  void (async () => {
+    const result = hasLivePreviewSurface(owner)
+      ? await readActivePreview(opts, owner)
+      : ((await requestPopoutPreviewRead(opts, owner)) ?? (await readActivePreview(opts, owner)))
+
     answerValue(request, result)
-  )
+  })()
 }
 
 const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
@@ -447,6 +540,10 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
     return
   }
 
+  // The agent drives ITS session's page: with a tile focused, the primary's
+  // agent must not reach into the tile's tabs (#73890).
+  const owner = previewOwnerFor(sessionId)
+
   // The keystroke loop has to be able to stop when this request is withdrawn
   // (tool timeout or turn interrupt). The local interrupted flag can flip
   // before request.cancel arrives; poll it so Stop cuts the loop off too.
@@ -460,35 +557,50 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
       }, 50)
     : undefined
 
-  void loadPreviewEngine()
-    .then(run =>
-      run(
-        {
-          allowShortcut: p.allow_shortcut === true,
-          amount: p.amount as never,
-          key: p.key as never,
-          kind: (str(p.action) || '') as never,
-          max: p.max as never,
-          ref: p.ref as never,
-          selector: p.selector as never,
-          submit: p.submit as never,
-          text: p.text as never,
-          to: p.to as PreviewActAction['to']
-        },
-        signal
-      )
-    )
-    .then(
-      result => answerValue(request, result),
-      error => answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
-    )
-    .finally(() => {
+  const action = {
+    allowShortcut: p.allow_shortcut === true,
+    amount: p.amount as never,
+    key: p.key as never,
+    kind: (str(p.action) || '') as never,
+    max: p.max as never,
+    ref: p.ref as never,
+    selector: p.selector as never,
+    submit: p.submit as never,
+    text: p.text as never,
+    to: p.to as PreviewActAction['to']
+  }
+
+  void (async () => {
+    try {
+      // After pop-out the live webview lives in the Browser window; this
+      // window still owns the session gate, so forward the action there and
+      // answer with the pop-out's result. No pop-out answering (null) falls
+      // through to the local engine, which keeps the legacy NOTHING_OPEN
+      // error for a genuinely closed pane.
+      if (!hasLivePreviewSurface(owner)) {
+        const remote = await requestPopoutPreviewAct(action, owner)
+
+        if (remote) {
+          answerValue(request, remote)
+
+          return
+        }
+      }
+
+      const run = await loadPreviewEngine()
+      const result = await run(action, signal, owner)
+
+      answerValue(request, result)
+    } catch (error) {
+      answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
+    } finally {
       if (watch !== undefined) {
         clearInterval(watch)
       }
 
       releasePreviewTyping(request.id, signal)
-    })
+    }
+  })()
 }
 
 const windowRead: Handler = ({ request }) => {
@@ -503,7 +615,7 @@ const windowRead: Handler = ({ request }) => {
   )
 }
 
-const tour: Handler = ({ isActiveSession, request }) => {
+const tour: Handler = ({ isActiveSession, request, sessionId }) => {
   // tour tool: one guided-tour action via driver.js, app DOM or preview guest
   // page. Active session only, same window-ownership rule as preview.act
   // (WINDOW_OWNED_REQUESTS).
@@ -535,7 +647,8 @@ const tour: Handler = ({ isActiveSession, request }) => {
           text: p.text as never,
           title: p.title as never
         },
-        p.surface === 'preview' ? 'preview' : 'app'
+        p.surface === 'preview' ? 'preview' : 'app',
+        previewOwnerFor(sessionId)
       )
     )
     .then(
@@ -583,9 +696,26 @@ export function handleServerRequest(
     deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId ?? undefined
 
   if (WINDOW_OWNED_REQUESTS.has(request.method)) {
-    const route = previewSessionRoute({ activeSessionId, replayed: request.replayed, sessionId, storedIdForRuntimeId })
+    // Route window.read through the tolerant claim (see windowReadClaimsSession);
+    // every other window-owned request keeps the strict host check.
+    const route = previewSessionRoute({
+      activeSessionId,
+      method: request.method,
+      replayed: request.replayed,
+      sessionId,
+      storedIdForRuntimeId
+    })
 
     if (route === 'ignore') {
+      // Silence alone lets the owner win the fanout race (#113348:
+      // resolve_response keeps the FIRST response, so a fast empty or
+      // wrong-geometry answer from a non-claiming window could beat the
+      // claimant's real answer), but a decline is not an answer: the backend
+      // counts it as that client's vote and keeps the request open for the
+      // owner, settling only once every attached window declined (#119333).
+      // So an unclaimed window.read — even in a tolerated state where no
+      // window claims it (#121609) — fails fast instead of stalling the tool
+      // for its whole deadline.
       declineNotShown(request)
 
       return true

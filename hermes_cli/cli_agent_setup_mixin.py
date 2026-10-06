@@ -523,16 +523,18 @@ class CLIAgentSetupMixin:
 
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Effective model/runtime config for one turn — always the session's primary
-        provider. With `/fast` on (service_tier == "priority") attach request_overrides;
+        provider. With a static `/fast` tier (fast / ultrafast) attach request_overrides;
         auto/cold tiers are applied per request by agent.fast_mode instead."""
+        from agent.fast_mode import STATIC_TIERS
         from hermes_cli.models import resolve_fast_mode_overrides
         runtime = _current_runtime(self)
         route = {"model": self.model, "runtime": runtime, "signature": _route_signature(self.model, runtime)}
         overrides = None
-        if getattr(self, "service_tier", None) == "priority":
+        tier = getattr(self, "service_tier", None)
+        if tier in STATIC_TIERS:
             try:
                 overrides = resolve_fast_mode_overrides(
-                    route["model"], provider=runtime["provider"], base_url=runtime["base_url"])
+                    route["model"], provider=runtime["provider"], base_url=runtime["base_url"], tier=tier)
             except Exception:
                 pass
         route["request_overrides"] = overrides

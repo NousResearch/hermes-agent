@@ -36,6 +36,7 @@ import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
 import { SharedMetricsConsentDialog } from '@/components/shared-metrics/consent-dialog'
 import { TipHost } from '@/components/tips'
+import { UpdateHoldOverlay } from '@/components/update-hold-overlay'
 import { emitGatewayEvent } from '@/contrib/events'
 import { translateNow } from '@/i18n'
 import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
@@ -195,6 +196,23 @@ export { WiredPane } from './context'
 // Only the RPCs issued by session creation follow the handoff's profile pin.
 const HANDOFF_CREATE_LEG_METHODS = new Set(['config.set', 'session.close', 'session.create'])
 
+// Generic in-app route intents raised by toast recovery buttons (Open Keys,
+// Open Gateways, Maintenance …) fired from stores with no router context.
+function useRouteRequestNavigation(navigate: ReturnType<typeof useNavigate>): void {
+  const routeRequest = useStore($routeRequest)
+  const routeRequestSeenRef = useRef(0)
+
+  // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
+  useEffect(() => {
+    if (!routeRequest || routeRequest.seq === routeRequestSeenRef.current) {
+      return
+    }
+
+    routeRequestSeenRef.current = routeRequest.seq
+    navigate(routeRequest.path)
+  }, [navigate, routeRequest])
+}
+
 export function ContribWiring({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const location = useLocation()
@@ -207,7 +225,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // intent counter here; the ref skips the initial mount value.
   const billingSettingsSeenRef = useRef(0)
   const poolLimitsSettingsSeenRef = useRef(0)
-  const routeRequestSeenRef = useRef(0)
   const backendRestartSeenRef = useRef(0)
   const cronReviewSeenRef = useRef(0)
   const activeTranscriptSignatureRef = useRef(new Map<string, string>())
@@ -220,22 +237,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const activeSessionId = useStore($activeSessionId)
   const billingSettingsRequest = useStore($billingSettingsRequest)
   const poolLimitsSettingsRequest = useStore($poolLimitsSettingsRequest)
-  const routeRequest = useStore($routeRequest)
   const backendRestartRequest = useStore($backendRestartRequest)
   const cronReviewRequest = useStore($cronReviewRequest)
   const currentCwd = useStore($currentCwd)
 
-  // Generic in-app route intents raised by toast recovery buttons (Open Keys,
-  // Open Gateways, Maintenance …) fired from stores with no router context.
-  // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
-  useEffect(() => {
-    if (!routeRequest || routeRequest.seq === routeRequestSeenRef.current) {
-      return
-    }
-
-    routeRequestSeenRef.current = routeRequest.seq
-    navigate(routeRequest.path)
-  }, [navigate, routeRequest])
+  useRouteRequestNavigation(navigate)
 
   // "Restart Hermes" from a toast: recycle the local backend the user is
   // looking at (same IPC the Models page uses), then let the boot hook re-dial.
@@ -562,6 +568,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const {
     archiveSession,
     branchCurrentSession,
+    branchLoadedSession,
     branchStoredSession,
     createBackendSessionForSend,
     openNewSessionTile,
@@ -569,6 +576,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     resumeSession,
     selectSidebarItem,
     startFreshSessionDraft,
+    submitTextToNewSession,
     unarchiveSession
   } = useSessionActions({
     activeSessionId,
@@ -583,6 +591,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onFreshDraftRouteIntent: clearRoutedSessionIntent,
     requestGateway,
     resetViewSync,
+    routedSessionId,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef,
@@ -791,6 +800,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // the tile TAB menu needs, without touching the primary view).
   useSessionTileDelegate({
     archiveSession,
+    branchLoadedSession,
     branchStoredSession,
     executeSlashCommand,
     removeSession,
@@ -806,7 +816,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // The global-hotkey Quick Entry window's bridge: its captured text rides the
   // SAME submit machinery the normal composer uses (current chat / picked
   // session / new session), and it hears gateway truth from this window.
-  useQuickEntryBridge({ startFreshSessionDraft, submitText })
+  useQuickEntryBridge({ submitText, submitTextToNewSession })
 
   // Leaving HUD mode hands this window the session back (see hud/handoff).
   useHudHandoff({ navigate, resumeSession })
@@ -1401,6 +1411,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       <UpdatesOverlay />
       <GatewayConnectingOverlay />
       <BootFailureOverlay />
+      <UpdateHoldOverlay />
       <CommandPalette />
       <PluginInstallModal />
       <PetGenerateOverlay />

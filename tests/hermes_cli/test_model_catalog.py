@@ -446,8 +446,9 @@ class TestIntegrationWithModelsModule:
         full_row = _nous(full)
         assert full_row is not None and full_row["models"] == expected
 
+        # The Nous row is already curated, so an int cap never trims it (its free tier sits last).
         one_row = _nous(one)
-        assert one_row is not None and one_row["models"] == expected[:1]
+        assert one_row is not None and one_row["models"] == expected
 
         zero_row = _nous(zero)
         # 0 means an empty model list — NOT unlimited. total_models still real.

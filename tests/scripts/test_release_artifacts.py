@@ -37,7 +37,7 @@ def test_macos_channel_request_records_without_cli_tag(tmp_path, monkeypatch):
     }
     root = tmp_path / 'release'
     root.mkdir()
-    package = root / 'HermesBundled-channel-mac-arm64.zip'
+    package = root / 'HermesBundled-1.2.3-mac-arm64.zip'
     app = root / 'mac-arm64' / 'Hermes.app'
     app.mkdir(parents=True)
     with zipfile.ZipFile(package, 'w') as archive:

@@ -152,6 +152,23 @@ def _approx_tokens(text: str) -> int:
     return max(1, estimate_tokens_rough(text))
 
 
+def _head_within_budget(text: str, budget: int) -> str:
+    """Longest prefix of ``text`` whose ``_approx_tokens`` fits ``budget``. A plain ``budget * CHARS_PER_TOKEN``
+    char slice would keep ~2x the budget of Cyrillic and ~4x of CJK; ASCII still gets that many chars."""
+    from agent.model_metadata import CHARS_PER_TOKEN
+    head = text[:max(0, budget) * CHARS_PER_TOKEN]  # every char costs >= 1/CHARS_PER_TOKEN token
+    if head.isascii():  # ASCII costs exactly ceil(len / CHARS_PER_TOKEN): the cap already fits
+        return head
+    lo, hi = 0, len(head)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _approx_tokens(text[:mid]) <= budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo]
+
+
 def _extract_item_text(item: Any) -> Optional[str]:
     """Measurable text from a Responses item (string/multipart/metadata), or None."""
     if not isinstance(item, dict):
@@ -173,6 +190,32 @@ def _extract_item_text(item: Any) -> Optional[str]:
         parts.extend(c.strip() for c in candidates if isinstance(c, str) and c.strip())
     text = " ".join(parts)
     return text if text.strip() else None
+
+
+def _input_text_parts_cost(content: Any) -> Optional[int]:
+    """Measure only the adapter-owned text-only shape, including whitespace and empty parts."""
+    if not isinstance(content, list) or not content or not all(
+        isinstance(part, dict) and part.get("type") == "input_text"
+        and isinstance(part.get("text"), str) for part in content
+    ):
+        return None
+    return sum(_approx_tokens(part["text"]) for part in content)
+
+
+def _truncate_input_text_parts(content: List[Dict[str, Any]], budget: int) -> List[Dict[str, Any]]:
+    """Copy the head of validated input_text parts without flattening their metadata."""
+    head = []
+    for part in content:
+        text = part["text"]
+        cost = _approx_tokens(text)
+        if cost > budget:
+            kept = _head_within_budget(text, budget)
+            if kept:
+                head.append({**part, "text": kept})
+            break
+        head.append(part)
+        budget -= cost
+    return head
 
 
 def _has_retainable_image_content(item: Any) -> bool:
@@ -209,8 +252,10 @@ def prune_pre_checkpoint_items(
 
     - The NEWEST contiguous run of checkpoints wins; relative order is preserved.
     - User messages are kept verbatim within ``retained_user_token_budget``; the boundary
-      message is head-truncated when it only partially fits (string content only). A
-      recognized image-only user message is retained whole at one-token cost.
+      message is head-truncated when it only partially fits (strings or text-only typed
+      ``input_text`` parts, preserving part metadata). An oversized unsupported/mixed-content
+      boundary stops older user retention rather than substituting an older ask. A recognized
+      image-only user message is retained whole at one-token cost.
     - Summaries are retained whole within ``retained_summary_token_budget``, never sliced
       (framing would corrupt) and never duplicated.
     - ``item_sources`` (parallel to ``items``) is the raw chat message each item came from.
@@ -273,7 +318,8 @@ def prune_pre_checkpoint_items(
             text = flatten_message_text(source.get("content"))
             _src_role = source.get("role")
             _retain_summary(text if text.strip() else None,
-                            {"role": _src_role if _src_role in ("user", "assistant") else "assistant", "content": text})
+                            {"type": "message", "role": _src_role if _src_role in ("user", "assistant") else "assistant",
+                             "content": text})
             continue
         # Typed non-message items never carry role=user or a summary flag.
         if "type" in item and item.get("type") != "message":
@@ -290,14 +336,25 @@ def prune_pre_checkpoint_items(
         if is_summary:
             _retain_summary(text, item)
         elif user_remaining > 0:
-            cost = _approx_tokens(text)
+            content = item.get("content")
+            parts_cost = _input_text_parts_cost(content)
+            cost = parts_cost if parts_cost is not None else _approx_tokens(text)
             if cost <= user_remaining:
                 retained_reversed.append(item)
                 user_remaining -= cost
-            elif isinstance(item.get("content"), str):
-                truncated = {**item, "content": item["content"][: user_remaining * 4]}
-                if truncated["content"].strip():
-                    retained_reversed.append(truncated)
+            else:
+                if isinstance(content, str):
+                    head = _head_within_budget(content, user_remaining)
+                    keep = bool(head.strip())
+                elif parts_cost is not None:
+                    head = _truncate_input_text_parts(content, user_remaining)
+                    keep = any(part["text"].strip() for part in head)
+                else:
+                    keep = False
+                if keep:
+                    retained_reversed.append({**item, "content": head})
+                # A non-truncatable boundary (e.g. text + image) must not let
+                # an older completed ask replace the newer oversized ask.
                 user_remaining = 0
 
     result = items[first_cp : last_cp + 1] + list(reversed(retained_reversed)) + items[last_cp + 1 :]

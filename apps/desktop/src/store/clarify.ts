@@ -32,11 +32,22 @@ export const bareChoice = (choice: string): string =>
   choice.endsWith(RECOMMENDED_LABEL) ? choice.slice(0, -RECOMMENDED_LABEL.length).trim() : choice
 
 /**
+ * Per-choice display cap. The clarify tool enforces the same limit at the
+ * source (`tools/clarify_tool.py::MAX_CHOICE_CHARS`) and declares it in the
+ * schema, so an over-limit choice is rejected before any surface renders;
+ * this filter is the last line of defence against a stale/other producer.
+ * Not a one-line label limit — long option text wraps (`wrap-anywhere`),
+ * newlines are kept so option reasons can read as multiple lines.
+ */
+export const MAX_CHOICE_CHARS = 8000
+
+/**
  * Validate and normalize a choices array.
  *
- * Keeps non-blank, newline-free strings of length ≤ 200; drops everything else
- * and returns an empty array when nothing usable survives — the caller then
- * falls back to a free-text answer instead of dead buttons.
+ * Keeps non-blank strings (newlines allowed) whose bare text is within
+ * MAX_CHOICE_CHARS; drops everything else and returns an empty array when
+ * nothing usable survives — the caller then falls back to a free-text
+ * answer instead of dead buttons.
  */
 export function normalizeChoices(choices: unknown): string[] {
   if (!Array.isArray(choices)) {
@@ -44,7 +55,7 @@ export function normalizeChoices(choices: unknown): string[] {
   }
 
   return choices.filter(
-    (c): c is string => typeof c === 'string' && c.trim().length > 0 && bareChoice(c).length <= 200 && !c.includes('\n')
+    (c): c is string => typeof c === 'string' && c.trim().length > 0 && bareChoice(c).length <= MAX_CHOICE_CHARS
   )
 }
 

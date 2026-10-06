@@ -26,6 +26,9 @@ def test_gateway_failure_writer_preserves_accepted_turn_identity(tmp_path):
     assert receipt.exists(), result.stdout + result.stderr
     data = json.loads(receipt.read_text())
     assert all(row["reached"] for row in data["observations"]), data
+    # A startup lazy install (tirith → PM runtime) would download over the real network on a
+    # background thread and pollute the archive case's process-wide tracemalloc window.
+    assert data["blocked_external_attempts"] == [], data["blocked_external_attempts"]
     assert data["passed"] == data["total"], data["observations"]
     assert result.returncode == 0, result.stdout + result.stderr
 

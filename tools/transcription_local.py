@@ -28,10 +28,45 @@ from tools.transcription_common import (
 logger = logging.getLogger("tools.transcription_tools")
 
 
+_LOCAL_LANGUAGE_ALIASES = {
+    "繁體中文": "zh",
+    "繁体中文": "zh",
+    "简体中文": "zh",
+    "簡體中文": "zh",
+}
+_THREE_LETTER_WHISPER_CODES = frozenset({"haw", "yue"})
+
+
+def _normalize_local_stt_language(
+    language: Optional[str], supported_languages: object = None
+) -> Optional[str]:
+    """Return a Whisper language code, or None so the caller can fall back safely."""
+    if not isinstance(language, str) or not language.strip():
+        return None
+    raw = language.strip()
+    folded = raw.casefold().replace("_", "-")
+    candidate = _LOCAL_LANGUAGE_ALIASES.get(raw, folded.split("-", 1)[0])
+    code_shape_is_valid = len(candidate) == 2 or candidate in _THREE_LETTER_WHISPER_CODES
+    if not (candidate.isascii() and candidate.isalpha() and code_shape_is_valid):
+        logger.warning("Local STT language %r is not a language code; using fallback", raw)
+        return None
+
+    if isinstance(supported_languages, (list, tuple, set, frozenset)):
+        supported_codes = {str(code).casefold() for code in supported_languages}
+        if candidate not in supported_codes:
+            logger.warning("Local STT language %r is unsupported; using fallback", raw)
+            return None
+    return candidate
+
+
 def _get_local_command_template() -> Optional[str]:
     configured = os.getenv(LOCAL_STT_COMMAND_ENV, "").strip()
     if configured:
         return configured
+    from tools.transcription_whisper_cpp import whisper_cpp_command
+    managed_command = whisper_cpp_command()
+    if managed_command:
+        return managed_command
     whisper_binary = _find_whisper_binary()
     return (f"{shlex.quote(whisper_binary)} {{input_path}} --model {{model}} --output_format txt "
             "--output_dir {output_dir} --language {language}") if whisper_binary else None
@@ -271,9 +306,14 @@ def _transcribe_local_command(
     if not command_template:
         return _error_result(f"{LOCAL_STT_COMMAND_ENV} not configured and no local whisper binary was found")
     # Language: hook override > stt.local.language > stt.language > env > "en".
-    language = language or _resolve_stt_language("local") or DEFAULT_LOCAL_STT_LANGUAGE
+    configured_language = language or _resolve_stt_language("local")
+    language = _normalize_local_stt_language(configured_language) or DEFAULT_LOCAL_STT_LANGUAGE
     normalized_model = _normalize_local_model(model_name)
     try:
+        if not os.getenv(LOCAL_STT_COMMAND_ENV, "").strip():
+            from tools.transcription_whisper_cpp import ensure_whisper_cpp_models, whisper_cpp_command
+            if command_template == whisper_cpp_command():
+                ensure_whisper_cpp_models(normalized_model)
         with tempfile.TemporaryDirectory(prefix="hermes-local-stt-") as output_dir:
             prepared_input, prep_error = _prepare_local_audio(file_path, output_dir)
             if prep_error:

@@ -9,6 +9,7 @@ the dispatcher and the cached local model + idle-unload state; backends live in
 ``transcription_{common,audio,local,cloud,command}``.
 """
 
+import contextvars
 import logging
 import os
 import shutil
@@ -32,7 +33,8 @@ from tools.transcription_audio import (
 from tools.transcription_local import (
     _get_idle_unload_seconds, _has_local_command, _join_confident_segments,
     _load_local_whisper_model, _looks_like_cuda_lib_error, _normalize_local_model,
-    _transcribe_local_command, _try_lazy_install_stt, build_local_transcribe_kwargs)
+    _normalize_local_stt_language, _transcribe_local_command, _try_lazy_install_stt,
+    build_local_transcribe_kwargs)
 # The ``_transcribe_<provider>`` handlers are looked up in this module's globals by _dispatch_stt_provider.
 from tools.transcription_cloud import (  # noqa: F401  (handlers dispatched via globals())
     _has_xai_stt_credentials, _resolve_openai_audio_client_config, _transcribe_deepinfra,
@@ -74,6 +76,9 @@ _last_transcription_time: float = 0.0
 _idle_unload_thread: Optional[threading.Thread] = None
 _idle_unload_stop = threading.Event()
 _idle_unload_mgmt_lock = threading.Lock()
+# (context, fallback timeout) of the last caller that loaded or used the model: whose profile's
+# stt.local.unload_after_idle_seconds the watcher applies. Guarded by _idle_unload_mgmt_lock.
+_idle_unload_policy: tuple[contextvars.Context, int] = (contextvars.copy_context(), 0)
 _IDLE_UNLOAD_CHECK_INTERVAL = 30  # seconds between idle checks
 
 
@@ -282,22 +287,37 @@ def _unload_local_model() -> None:
             _local_model_name = None
 
 
+def _configured_idle_unload_seconds() -> int:
+    return _get_idle_unload_seconds(_load_stt_config().get("local") or {})
+
+
 def _start_idle_unload_watcher(timeout_seconds: int) -> None:
-    """Ensure the single idle-unload watcher thread is running. The loop re-reads
-    ``stt.local.unload_after_idle_seconds`` every cycle so config edits apply within one interval;
-    ``timeout_seconds`` seeds the first cycle so a just-written config is honored even if a
-    concurrent read races. Exits after unloading, when the timeout becomes 0, or when the model is gone."""
-    global _idle_unload_thread
+    """Ensure the single idle-unload watcher thread is running, governed by the caller's profile.
+
+    One process can serve several profiles, each with its own
+    ``stt.local.unload_after_idle_seconds``, and they share the one cached model. The policy that
+    governs it is the one of whoever last loaded or used it: every call records the caller's
+    context (profile scope included) and the loop re-reads the setting inside that context each
+    cycle, so config edits still apply within one interval and a watcher started under profile A
+    stops applying A's policy once profile B warms or transcribes. ``timeout_seconds`` is the
+    fallback when that read fails. Exits after unloading, when the timeout becomes 0, or when the
+    model is gone."""
+    global _idle_unload_thread, _idle_unload_policy
     with _idle_unload_mgmt_lock:
+        _idle_unload_policy = (contextvars.copy_context(), timeout_seconds)
         if _idle_unload_thread is not None and _idle_unload_thread.is_alive():
             return
 
-        def _watch(initial_timeout=timeout_seconds):
+        def _watch():
             while not _idle_unload_stop.wait(_IDLE_UNLOAD_CHECK_INTERVAL) and _local_model is not None:
+                with _idle_unload_mgmt_lock:
+                    owner_context, fallback = _idle_unload_policy
                 try:
-                    timeout = _get_idle_unload_seconds(_load_stt_config().get("local") or {})
-                except Exception:  # noqa: BLE001 - keep the seed value
-                    timeout = initial_timeout
+                    # A copy: a Context can't be entered twice at once, and the owner's own
+                    # request may still be running in the original.
+                    timeout = owner_context.copy().run(_configured_idle_unload_seconds)
+                except Exception:  # noqa: BLE001 - keep the owner's last known value
+                    timeout = fallback
                 if timeout <= 0:
                     break  # unload disabled mid-flight — stand down
                 if time.monotonic() - _last_transcription_time >= timeout:
@@ -360,8 +380,15 @@ def _transcribe_local(
             return _error_result("Local whisper model failed to load")
         # pre_transcription hook overrides win over config-resolved values.
         transcribe_kwargs = build_local_transcribe_kwargs(stt_config)
-        transcribe_kwargs.update({k: v for k, v in (("language", language), ("initial_prompt", prompt))
-                                  if v})
+        effective_language = language if language is not None else transcribe_kwargs.get("language")
+        normalized_language = _normalize_local_stt_language(
+            effective_language, getattr(model, "supported_languages", None))
+        if normalized_language:
+            transcribe_kwargs["language"] = normalized_language
+        else:
+            transcribe_kwargs.pop("language", None)
+        if prompt:
+            transcribe_kwargs["initial_prompt"] = prompt
         try:
             segments, info = model.transcribe(file_path, **transcribe_kwargs)
             # faster-whisper's transcribe() is lazy: the decode (and with it the

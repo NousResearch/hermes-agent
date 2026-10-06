@@ -1888,14 +1888,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
     @classmethod
     def _select_recall_candidates(cls, items: List[Dict[str, Any]], query: str, *, limit: int, score_threshold: float) -> List[Dict[str, Any]]:
         """Threshold + dedupe (uri, then abstract+category — events/cases stay URI-distinct),
-        ranked by score + L2 leaf boost + query-token overlap."""
-        tokens = ["".join(ch for ch in raw if ch.isalnum()) for raw in query.lower().replace("_", " ").split()]
-        tokens = [token for token in tokens if len(token) >= 2][:8]
+        ranked by score + L2 leaf boost. No query-token overlap boost: server scores sit in a
+        band of about +/-0.01, so a literal-overlap bonus decided the order and buried
+        cross-language hits (queries and memories in different languages share no tokens)."""
 
         def rank(item: Dict[str, Any]) -> float:
-            text = f"{item.get('uri', '')} {cls._recall_abstract(item)}".lower()
-            overlap_boost = min(0.2, sum(1 for token in tokens if token in text) * 0.05)
-            return cls._clamp_score(item.get("score")) + (0.12 if item.get("level") == 2 else 0.0) + overlap_boost
+            return cls._clamp_score(item.get("score")) + (0.12 if item.get("level") == 2 else 0.0)
 
         seen_uri, seen_key = set(), set()
         filtered: List[Dict[str, Any]] = []

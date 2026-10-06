@@ -233,7 +233,7 @@ def test_turn_activity_buckets_reach_long_agentic_loops(count, bucket):
 def test_v3_schema_accepts_exactly_the_contract_values():
     import hermes_cli.observability as observability
 
-    schema = json.loads((Path(observability.__file__).parent / "schemas/hermes.shared_metrics.v3.schema.json").read_text())
+    schema = json.loads((Path(observability.__file__).parent / "schemas/hermes.shared_metrics.v4.schema.json").read_text())
     by_name = {d["properties"]["name"]["const"]: d for d in schema["$defs"].values() if "properties" in d}
     refs = {item["$ref"].rsplit("/", 1)[1] for item in schema["properties"]["metrics"]["items"]["oneOf"]}
     for metric in (contract.TASK_COST_METRIC, contract.WASTED_TOKENS_METRIC, contract.TOOL_OUTPUT_TRUNCATION_METRIC,

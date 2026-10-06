@@ -274,6 +274,25 @@ def list_providers() -> list[ProviderProfile]:
     return result
 
 
+def unlisted_provider_names() -> set[str]:
+    """Registered profiles that discovery surfaces (provider pickers, setup lists, the accounts tab)
+    must not offer: pre-release ones the user has not opted into.
+
+    Resolution never consults this: an unlisted profile still resolves, authenticates and serves
+    turns by name. A raising ``listed()`` counts as unlisted, because a broken gate must never
+    advertise a dark launch.
+    """
+    hidden: set[str] = set()
+    for profile in list_providers():
+        try:
+            if not profile.listed():
+                hidden.add(profile.name)
+        except Exception:
+            logger.debug("provider %s listed() raised; hiding it", profile.name, exc_info=True)
+            hidden.add(profile.name)
+    return hidden
+
+
 def _home_layer(*, force_stamp_check: bool = False) -> _HomeLayer:
     """The layer for the home bound right now, importing plugin dirs it has not seen yet."""
     layer, home, key = _bound_home_layer()

@@ -2525,9 +2525,7 @@ export function useSessionActions({
                   streamId: resumedRunning ? inFlightRecovery.streamId : null,
                   turnStartedAt: resumedRunning ? (inFlightRecovery.turnStartedAt ?? resumedTurnStartedAt) : null
                 }
-              : {
-                  turnStartedAt: resumedRunning && resumedTurnStartedAt !== null ? resumedTurnStartedAt : null
-                }),
+              : { turnStartedAt: resumedRunning && resumedTurnStartedAt !== null ? resumedTurnStartedAt : null }),
             ...livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection),
             ...(clearedClarifyProjection
               ? {

@@ -1,19 +1,16 @@
 """SIGKILL any process left in this systemd unit's cgroup.
 
-Runs as ``ExecStopPost=`` so it only fires after the gateway's main process
-has exited. The gateway already reaps its own tool subprocesses on a clean
-shutdown; this is the safety net for long-lived helpers it doesn't track
-(``adb``, platform bridges, etc.) that would otherwise be orphaned in the
-cgroup and block ``Restart=always`` — issue #37454.
-
-We deliberately iterate ``cgroup.procs`` and send per-PID SIGKILLs instead
-of writing ``1`` to ``cgroup.kill``: the original failure mode in #37454
-was the kernel returning ``EINVAL`` on the cgroup-wide kill, while per-PID
-signal delivery uses a separate code path that still works.
+Runs as ``ExecStopPost=`` after the gateway's main process has exited: the
+safety net for long-lived helpers the gateway doesn't track (``adb``, platform
+bridges) that would otherwise be orphaned in the cgroup and block
+``Restart=always``.  Per-PID SIGKILLs over ``cgroup.procs`` are used instead of
+writing ``1`` to ``cgroup.kill``: the kernel has returned ``EINVAL`` on the
+cgroup-wide kill while per-PID signal delivery still works.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import signal
@@ -28,53 +25,103 @@ def _own_cgroup_path() -> str | None:
     except OSError:
         return None
     match = re.search(r"^0::(.+)$", text, re.MULTILINE)
-    if not match:
-        return None
-    return match.group(1).strip()
+    return match.group(1).strip() if match else None
 
 
 def _read_cgroup_pids(cgroup_path: str) -> list[int]:
-    procs_file = Path(f"/sys/fs/cgroup{cgroup_path}/cgroup.procs")
     try:
-        raw = procs_file.read_text(encoding="utf-8")
+        raw = Path(f"/sys/fs/cgroup{cgroup_path}/cgroup.procs").read_text(encoding="utf-8")
     except OSError:
         return []
     pids: list[int] = []
     for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            pids.append(int(line))
-        except ValueError:
-            continue
+        with contextlib.suppress(ValueError):
+            pids.append(int(line.strip()))
     return pids
 
 
-def reap_cgroup(cgroup_path: str | None = None) -> int:
-    """SIGKILL every PID in the cgroup other than the caller. Returns the count killed."""
-    if cgroup_path is None:
-        cgroup_path = _own_cgroup_path()
+def _parent_is_systemd() -> bool:
+    """True when this process was spawned by a systemd manager (ExecStopPost etc.).
+
+    Any other parent (an agent terminal tool, a shell) shares a *live*
+    process's cgroup, so reaping there would SIGKILL that process. No PID-1
+    shortcut: in a container the gateway itself can be PID 1 (or init can be
+    ``tini``), so PID 1 must present as systemd too; an unreadable
+    ``/proc/<ppid>/comm`` fails closed.
+    """
+    ppid = os.getppid()
+    try:
+        return Path(f"/proc/{ppid}/comm").read_text(encoding="utf-8").strip() == "systemd"
+    except OSError:
+        return False
+
+
+def _live_gateway_among(pids: list[int]) -> bool:
+    """True when one of ``pids`` is a live Hermes gateway runtime.
+
+    A PID whose command line can't be read has already exited (or is a
+    zombie) — exactly what the reaper clears — so only a readable,
+    gateway-shaped command line blocks. Uses the *runtime* matcher (``run``
+    or ``restart``): without a service manager, ``gateway restart`` runs the
+    gateway in-process and is itself the live runtime.
+    """
+    from gateway.status import _read_process_cmdline, looks_like_gateway_runtime_command_line
+
+    for pid in pids:
+        cmdline = _read_process_cmdline(pid)
+        if cmdline and looks_like_gateway_runtime_command_line(cmdline):
+            return True
+    return False
+
+
+def reap_cgroup(cgroup_path: str | None = None) -> int | None:
+    """SIGKILL every PID in the cgroup other than the caller. Returns the count killed.
+
+    Returns None (no signals) when a live gateway process is still in the
+    cgroup — the reaper must never signal the live gateway, however invoked.
+    """
+    cgroup_path = _own_cgroup_path() if cgroup_path is None else cgroup_path
     if not cgroup_path:
         return 0
-    own = os.getpid()
+    me = os.getpid()
+    others = [pid for pid in _read_cgroup_pids(cgroup_path) if pid != me]
+    if not others:
+        return 0
+    if _live_gateway_among(others):
+        print(
+            "cgroup_cleanup: refusing — a live gateway process is still in the "
+            "cgroup; reaping would SIGKILL it. Stop the service first (then "
+            "ExecStopPost reaps its orphans), or call reap_cgroup(path) once "
+            "the gateway process has exited.",
+            file=sys.stderr,
+        )
+        return None
     killed = 0
+    # Kill from a fresh read: the guard above can take seconds (status import,
+    # per-PID cmdline/ps fallback), so `others` may hold exited/reused PIDs and
+    # miss orphans spawned meanwhile.
     for pid in _read_cgroup_pids(cgroup_path):
-        if pid == own:
+        if pid == me:
             continue
         try:
             os.kill(pid, signal.SIGKILL)  # windows-footgun: ok — Linux-only (reads /proc, /sys/fs/cgroup; runs from a systemd unit)
             killed += 1
-        except ProcessLookupError:
-            continue
-        except PermissionError:
+        except (ProcessLookupError, PermissionError):
             continue
     return killed
 
 
 def main() -> int:
-    reap_cgroup()
-    return 0
+    if not _parent_is_systemd():
+        print(
+            "cgroup_cleanup: refusing — not spawned by systemd. Running this "
+            "inside a live process's cgroup would SIGKILL that process. "
+            "Run it via the systemd unit's ExecStopPost, or call "
+            "reap_cgroup(cgroup_path) with an explicit stopped-service path.",
+            file=sys.stderr,
+        )
+        return 1
+    return 1 if reap_cgroup() is None else 0
 
 
 if __name__ == "__main__":

@@ -11,11 +11,24 @@ import path from 'node:path'
 import simpleGit from 'simple-git'
 
 import { resolveRequestedPathForIpc } from './hardening'
+import { execGit, noConsoleGitEnv, simpleGitBinary, windowsGitHost } from './no-console-git'
 
 const COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
 const COMMIT_CONTEXT_UNTRACKED_MAX = 80
+const REVIEW_FILE_CAP = 2_000
 const UNTRACKED_LINE_COUNT_CONCURRENCY = 16
 const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
+
+// simple-git 3.x validates a custom binary path against an ASCII whitelist —
+// `isBadArgument` in node_modules/simple-git/dist/cjs/index.js accepts only
+// `/^([a-z]:)?([a-z0-9/.\_~-]+)$/i`. Everything outside it is "restricted": a
+// space in the default `C:\Program Files\Git\...`, the parentheses in
+// `Program Files (x86)`, the accented user name in `C:\Users\João\...`. Without
+// the escape hatch simple-git THROWS on such a path; with it, it console.warns
+// this exact message — the flag only downgrades the throw. Exported so gitFor
+// and its tests share one source of truth.
+export const SIMPLE_GIT_UNSAFE_BINARY_WARN =
+  'Invalid value supplied for custom binary, restricted characters must be removed or supply the unsafe.allowUnsafeCustomBinary option'
 
 // GUI-launched Electron apps on macOS inherit only a minimal PATH (no
 // /opt/homebrew/bin or /usr/local/bin), so `gh` — and the `git` gh shells out
@@ -29,21 +42,74 @@ function ghEnv(ghBin) {
   return { ...process.env, PATH: [...extra, process.env.PATH].filter(Boolean).join(path.delimiter) }
 }
 
-// Run the `gh` CLI in a repo. Resolves { ok, stdout } so callers branch on
-// availability/auth without a throw. gh missing/unauthed → ok:false.
-function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string }> {
+// Run the `gh` CLI in a repo. Resolves { ok, stdout, stderr } so callers branch
+// on availability/auth without a throw. gh missing/unauthed → ok:false.
+function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   return new Promise(resolve => {
     execFile(
       ghBin || 'gh',
       args,
       { cwd, env: ghEnv(ghBin), windowsHide: true, timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
-      (err, stdout) => resolve({ ok: !err, stdout: String(stdout || '') })
+      (err, stdout, stderr) =>
+        resolve({ ok: !err, stdout: String(stdout || ''), stderr: String(err?.stderr ?? stderr ?? '') })
     )
   })
 }
 
 function gitFor(cwd, gitBin) {
-  return simpleGit({ baseDir: cwd, binary: gitBin || 'git', maxConcurrentProcesses: 4, trimmed: false })
+  // `gitBin` is resolved inside the Electron main process from known install
+  // locations or PATH — never renderer/user input, and the Windows tuple below is
+  // built there too: `gitBin` is the resolved install/path and the python host is
+  // this process's own interpreter. simple-git's ASCII whitelist accepts
+  // backslashes but rejects every character outside it — the space in the default
+  // `C:\Program Files\Git\cmd\git.exe`, the parentheses in `Program Files (x86)`,
+  // the accent in `C:\Users\João\...` — and without the escape hatch it THROWS
+  // inside the factory, silently breaking the Review pane. Key the hatch on "we
+  // resolved this binary ourselves", not on a `/\s/` guess, which still throws for
+  // every other restricted character. Falling back to PATH instead is not an
+  // option (often absent in GUI-launched apps, and a PATH lookup could resolve a
+  // repo-local git.exe).
+  // On Windows the binary tuple is [python.exe, host script]. simple-git has no
+  // creationFlags slot; the script spawns the real git with CREATE_NO_WINDOW and
+  // forwards argv unchanged.
+  const host = windowsGitHost()
+  const binary = simpleGitBinary(gitBin, host)
+  const unsafe = Boolean(gitBin) || Array.isArray(binary)
+
+  const makeGit = () =>
+    simpleGit({
+      baseDir: cwd,
+      binary,
+      maxConcurrentProcesses: 4,
+      trimmed: false,
+      ...(unsafe ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
+    })
+
+  if (!unsafe) {
+    return makeGit()
+  }
+
+  // With the escape hatch set, simple-git still console.warns that same message on
+  // every factory call — the flag only downgrades the throw to a warning. The
+  // binary was resolved by this process, never supplied by the renderer, so on
+  // Windows (where the standard git lives under a spaced "Program Files") that
+  // warning is pure console spam. Filter exactly that message, for the
+  // synchronous factory call only.
+  const originalWarn = console.warn
+
+  console.warn = (message?: unknown, ...rest: unknown[]) => {
+    if (typeof message !== 'string' || !message.startsWith(SIMPLE_GIT_UNSAFE_BINARY_WARN)) {
+      originalWarn(message, ...rest)
+    }
+  }
+
+  try {
+    const git = makeGit()
+
+    return Array.isArray(binary) ? git.env(noConsoleGitEnv(process.env, gitBin || 'git')) : git
+  } finally {
+    console.warn = originalWarn
+  }
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve
@@ -240,7 +306,7 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
       const range = scope === 'branch' ? `${base}...HEAD` : base
       const summary = await git.diffSummary([range])
 
-      const files = summary.files.map(file => ({
+      const files = summary.files.slice(0, REVIEW_FILE_CAP).map(file => ({
         path: resolveRenamePath(file.file),
         added: 'insertions' in file ? file.insertions : 0,
         removed: 'deletions' in file ? file.deletions : 0,
@@ -249,12 +315,22 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
       }))
 
       // "Last turn" also surfaces files created since the baseline (untracked).
-      if (scope === 'lastTurn') {
-        const status = await git.status()
+      if (scope === 'lastTurn' && files.length < REVIEW_FILE_CAP) {
+        // Keep untracked directories compact. A recursive status can produce
+        // hundreds of thousands of rows for browser profiles, generated
+        // artifacts, or dependency trees before the response reaches the
+        // renderer.
+        const status = await git.status(['--untracked-files=normal'])
+        const knownPaths = new Set(files.map(file => file.path))
 
         for (const path of status.not_added) {
-          if (!files.some(f => f.path === path)) {
+          if (files.length >= REVIEW_FILE_CAP) {
+            break
+          }
+
+          if (!knownPaths.has(path)) {
             files.push({ path, added: 0, removed: 0, status: '?', staged: false })
+            knownPaths.add(path)
           }
         }
       }
@@ -267,7 +343,10 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
 
     // Default: uncommitted (staged + unstaged + untracked), one row per path.
     const [status, staged, unstaged] = await Promise.all([
-      git.status(),
+      // `normal` reports an untracked directory as one row instead of walking
+      // every descendant. The result is also capped before per-file stat/read
+      // work and before crossing the Electron IPC boundary.
+      git.status(['--untracked-files=normal']),
       git.diffSummary(['--cached']),
       git.diffSummary([])
     ])
@@ -275,7 +354,7 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
     const stagedCounts = countsByPath(staged)
     const unstagedCounts = countsByPath(unstaged)
 
-    const files = status.files.map(file => {
+    const files = status.files.slice(0, REVIEW_FILE_CAP).map(file => {
       const filePath = resolveRenamePath(file.path)
       const sc = stagedCounts.get(filePath) || { added: 0, removed: 0 }
       const uc = unstagedCounts.get(filePath) || { added: 0, removed: 0 }
@@ -333,14 +412,13 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
   // Untracked file: no worktree diff exists, so synthesize an all-add diff via
   // --no-index (exits non-zero by design when files differ, so go around
   // simple-git's reject-on-nonzero with a raw execFile).
-  return new Promise(resolve => {
-    execFile(
-      gitBin || 'git',
-      ['diff', '--no-index', '--', '/dev/null', filePath],
-      { cwd, windowsHide: true, timeout: 30_000, maxBuffer: 32 * 1024 * 1024 },
-      (_err, stdout) => resolve(String(stdout || ''))
-    )
-  })
+  return execGit(gitBin || 'git', ['diff', '--no-index', '--', '/dev/null', filePath], {
+    cwd,
+    timeoutMs: 30_000
+  }).then(
+    result => result.stdout,
+    () => ''
+  )
 }
 
 // Working-tree-vs-HEAD diff for ONE file — the "what changed since the last
@@ -371,14 +449,13 @@ async function fileDiffVsHead(repoPath, filePath, gitBin) {
     return ''
   }
 
-  return new Promise(resolve => {
-    execFile(
-      gitBin || 'git',
-      ['diff', '--no-index', '--', '/dev/null', filePath],
-      { cwd, windowsHide: true, timeout: 30_000, maxBuffer: 32 * 1024 * 1024 },
-      (_err, stdout) => resolve(String(stdout || ''))
-    )
-  })
+  return execGit(gitBin || 'git', ['diff', '--no-index', '--', '/dev/null', filePath], {
+    cwd,
+    timeoutMs: 30_000
+  }).then(
+    result => result.stdout,
+    () => ''
+  )
 }
 
 async function reviewStage(repoPath, filePath, gitBin) {
@@ -557,6 +634,111 @@ async function reviewShipInfo(repoPath, ghBin) {
   }
 }
 
+// GraphQL asks per branch, so the answer can't be crowded out the way a
+// `gh pr list` page can. Aliases let one request carry many branches; 50 keeps
+// the document well inside GitHub's node budget.
+const PR_QUERY_BRANCH_CHUNK = 50
+const PR_QUERY_BRANCH_CAP = 300
+
+const PR_NODE_FIELDS = 'number state isDraft isCrossRepository title url headRefName'
+
+function prQueryFor(owner, name, branches, numbers) {
+  const fields = [
+    ...branches.map(
+      (branch, i) =>
+        `b${i}: pullRequests(headRefName: ${JSON.stringify(branch)}, first: 5, ` +
+        `orderBy: {field: CREATED_AT, direction: DESC}) ` +
+        `{ nodes { ${PR_NODE_FIELDS} } }`
+    ),
+    // A PR recovered from a transcript is known by number, and asking for it
+    // directly also tells us its branch — so it lands in the same by-branch map
+    // as everything else.
+    ...numbers.map((number, i) => `n${i}: pullRequest(number: ${number}) { ${PR_NODE_FIELDS} }`)
+  ].join('\n')
+
+  return `query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) {\n${fields}\n} }`
+}
+
+const prPayload = pr => ({
+  branch: String(pr.headRefName),
+  draft: Boolean(pr.isDraft),
+  number: Number(pr.number) || 0,
+  state: String(pr.state || '').toLowerCase(),
+  title: String(pr.title || ''),
+  url: String(pr.url || '')
+})
+
+// The PR for each of the given branches, keyed by branch. Asks GitHub about the
+// branches we actually have sessions on rather than listing the repo's newest
+// PRs and hoping ours are in the page — on a busy repo they are not. One
+// GraphQL request per 50 branches; reads only.
+async function reviewPrList(repoPath, ghBin, branches, numbers) {
+  let cwd
+
+  try {
+    cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review PR list' })
+  } catch {
+    return { ghReady: false, prs: [] }
+  }
+
+  const wanted = [...new Set((branches || []).filter(Boolean).map(String))].slice(0, PR_QUERY_BRANCH_CAP)
+  const byNumber = [...new Set((numbers || []).map(Number).filter(Boolean))].slice(0, PR_QUERY_BRANCH_CAP)
+
+  if (wanted.length === 0 && byNumber.length === 0) {
+    return { ghReady: false, prs: [] }
+  }
+
+  const repo = await runGh(['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], cwd, ghBin)
+  const [owner, name] = repo.stdout.trim().split('/')
+
+  if (!repo.ok || !owner || !name) {
+    // gh missing, unauthenticated, or no GitHub remote — all "nothing to badge".
+    return { ghReady: false, prs: [] }
+  }
+
+  const prs = []
+  const chunks = []
+
+  for (let start = 0; start < wanted.length; start += PR_QUERY_BRANCH_CHUNK) {
+    chunks.push([wanted.slice(start, start + PR_QUERY_BRANCH_CHUNK), []])
+  }
+
+  for (let start = 0; start < byNumber.length; start += PR_QUERY_BRANCH_CHUNK) {
+    chunks.push([[], byNumber.slice(start, start + PR_QUERY_BRANCH_CHUNK)])
+  }
+
+  for (const [branchChunk, numberChunk] of chunks) {
+    const query = prQueryFor(owner, name, branchChunk, numberChunk)
+    const res = await runGh(['api', 'graphql', '-f', `query=${query}`], cwd, ghBin)
+
+    if (!res.ok) {
+      continue
+    }
+
+    try {
+      const repository = JSON.parse(res.stdout)?.data?.repository ?? {}
+
+      for (const key of Object.keys(repository)) {
+        // Asked for by number, so it's ours by construction — a fork PR can't
+        // be recovered from our own transcript. Asked for by branch, it has to
+        // prove it: fork PRs share our branch namespace, and a contributor's
+        // `main` is how a session on trunk ends up badged with a stranger's PR.
+        const pr = key.startsWith('n')
+          ? repository[key]
+          : (repository[key]?.nodes ?? []).find(node => node && !node.isCrossRepository)
+
+        if (pr?.headRefName) {
+          prs.push(prPayload(pr))
+        }
+      }
+    } catch {
+      // A malformed chunk drops its branches; the rest still resolve.
+    }
+  }
+
+  return { ghReady: true, prs }
+}
+
 // Create a PR for the current branch (pushing first so gh has a remote ref),
 // letting gh fill title/body from the commits. Returns the new PR url.
 async function reviewCreatePr(repoPath, gitBin, ghBin) {
@@ -567,7 +749,12 @@ async function reviewCreatePr(repoPath, gitBin, ghBin) {
   const created = await runGh(['pr', 'create', '--fill'], cwd, ghBin)
 
   if (!created.ok) {
-    throw new Error('gh pr create failed (is gh installed and authenticated?)')
+    // gh's own stderr says why the create failed (e.g. "no commits between
+    // main and feature", missing auth, a repo in an uncreatable state). Surface
+    // it instead of the generic fallback, which lied whenever gh was fine.
+    const reason = created.stderr.trim() || 'is gh installed and authenticated?'
+
+    throw new Error(`gh pr create failed: ${reason}`)
   }
 
   const url = created.stdout.trim().split('\n').filter(Boolean).pop() || ''
@@ -610,7 +797,11 @@ async function repoStatus(repoPath, gitBin) {
   let status
 
   try {
-    status = await git.status()
+    // The coding rail needs compact change truth, not every generated file.
+    // `simple-git` defaults bare `-u` to recursive `all`, which can make a
+    // generated workspace consume gigabytes before the 200-row UI cap is
+    // applied. `normal` reports each untracked directory as one entry.
+    status = await git.status(['--untracked-files=normal'])
   } catch {
     // Not a repo / git unavailable / remote backend.
     return null
@@ -652,11 +843,10 @@ async function repoStatus(repoPath, gitBin) {
   }
 
   // `git diff HEAD` ignores untracked files, so a turn that only creates new
-  // files (the common case — a fresh module, a demo dir) showed +0 in the rail
-  // while the review pane counted them. Fold untracked insertions into `added`
-  // so the rail matches reality. Bounded (size cap + concurrency) like the
-  // review tree; only the capped file slice is counted so a huge untracked tree
-  // can't stall the probe.
+  // files (the common case — a fresh module) showed +0 in the rail while the
+  // review pane counted them. Fold top-level untracked file insertions into
+  // `added`; directories reported by the compact `normal` scan intentionally
+  // remain at zero rather than recursively walking their contents.
   try {
     const untracked = status.not_added.slice(0, 500)
 
@@ -677,13 +867,16 @@ async function repoStatus(repoPath, gitBin) {
 export {
   branchBase,
   fileDiffVsHead,
+  gitFor,
   repoStatus,
   resolveRenamePath,
+  REVIEW_FILE_CAP,
   reviewCommit,
   reviewCommitContext,
   reviewCreatePr,
   reviewDiff,
   reviewList,
+  reviewPrList,
   reviewPush,
   reviewRevert,
   reviewRevParse,

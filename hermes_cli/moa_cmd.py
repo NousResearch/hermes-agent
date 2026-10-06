@@ -12,7 +12,6 @@ from hermes_cli.moa_config import DEFAULT_MOA_PRESET_NAME, normalize_moa_config
 def _prompt_choice(title: str, rows: list[str], default: int = 0) -> int:
     try:
         from hermes_cli.curses_ui import curses_radiolist
-
         return curses_radiolist(title, rows, selected=default, cancel_returns=default)
     except Exception:
         for idx, row in enumerate(rows, start=1):
@@ -28,16 +27,23 @@ def _prompt_choice(title: str, rows: list[str], default: int = 0) -> int:
 
 def _model_options() -> list[dict[str, Any]]:
     payload = build_models_payload(
+        # Keep the profile override inside the worker thread so the full sync picker build (config load,
+        # pricing, refresh probes) runs off the event loop under the requested profile. Use
+        # _config_profile_scope (contextvar only, no skill-module lock) — the payload build can block for
+        # 15s on a models.dev cache miss, and _profile_scope's RLock held across that block starves
+        # concurrent /api/config and freezes the server (#58576).
         load_picker_context(),
-        include_unconfigured=True,
+        # Slot pickers must only offer providers the user can actually call.
+        # Including setup-only rows makes an unconfigured canonical provider
+        # (usually OpenRouter, due to catalog ordering) become the default.
+        include_unconfigured=False,
         picker_hints=True,
         canonical_order=True,
         pricing=True,
         capabilities=True,
-        max_models=200,
-    )
+        max_models=200)
     providers = payload.get("providers") or []
-    return [p for p in providers if p.get("slug") and p.get("models")]
+    return [p for p in providers if p.get("slug") and str(p.get("slug")).strip().lower() != "moa" and p.get("models")]
 
 
 def _pick_slot(current: dict[str, str] | None = None) -> dict[str, str]:
@@ -45,10 +51,7 @@ def _pick_slot(current: dict[str, str] | None = None) -> dict[str, str]:
     if not providers:
         raise RuntimeError("No configured model providers found. Run `hermes model` first.")
     current_provider = (current or {}).get("provider", "")
-    provider_default = next(
-        (idx for idx, p in enumerate(providers) if p.get("slug") == current_provider),
-        0,
-    )
+    provider_default = next((idx for idx, p in enumerate(providers) if p.get("slug") == current_provider), 0)
     provider_rows = [f"{p.get('name') or p.get('slug')}  ({p.get('slug')})" for p in providers]
     provider = providers[_prompt_choice("Select provider", provider_rows, provider_default)]
     models = list(provider.get("models") or [])
@@ -60,76 +63,129 @@ def _pick_slot(current: dict[str, str] | None = None) -> dict[str, str]:
     return {"provider": str(provider.get("slug") or ""), "model": str(model)}
 
 
+def _format_slot(slot: dict[str, Any]) -> str:
+    label = f"{slot['provider']}:{slot['model']}"
+    effort = str(slot.get("reasoning_effort") or "").strip()
+    return f"{label} [reasoning={effort}]" if effort else label
+
+
+def _provider_mismatch_notice(
+    cfg: dict[str, Any], aggregator: dict[str, Any]
+) -> str | None:
+    main_provider = ""
+    if isinstance(cfg, dict):
+        model_section = cfg.get("model")
+        if isinstance(model_section, dict):
+            main_provider = str(model_section.get("provider") or "").strip().lower()
+    agg_provider = str((aggregator or {}).get("provider") or "").strip().lower()
+    if (
+        not main_provider
+        or not agg_provider
+        or main_provider in ("moa", "auto")  # "auto" is a routing pseudo-provider, not a billing seat
+        or main_provider == agg_provider
+    ):
+        return None
+    return (
+        f"Aggregator is on {agg_provider}; the whole tool loop will be billed there, "
+        f"not to {main_provider}."
+    )
+
+
 def _print_config(config: dict[str, Any]) -> None:
-    cfg = normalize_moa_config(config.get("moa") if isinstance(config, dict) else {})
+    cfg = _moa_section(config)
     print("Mixture of Agents presets")
     print(f"Default: {cfg['default_preset']}")
-    active = cfg.get("active_preset") or "(off)"
-    print(f"Active in config: {active}")
+    print(f"Active in config: {cfg.get('active_preset') or '(off)'}")
     for name, preset in cfg["presets"].items():
-        marker = "*" if name == cfg["default_preset"] else " "
-        print(f"\n{marker} {name}")
-        print("  Reference models:")
+        print(f"\n{'*' if name == cfg['default_preset'] else ' '} {name}")
+        print("  Reference models (advise once per user turn by default):")
         for idx, slot in enumerate(preset["reference_models"], start=1):
-            print(f"    {idx}. {slot['provider']}:{slot['model']}")
-        agg = preset["aggregator"]
-        print(f"  Aggregator: {agg['provider']}:{agg['model']}")
+            print(f"    {idx}. {_format_slot(slot)}")
+        agg_slot = preset["aggregator"]
+        print(
+            f"  Aggregator: {_format_slot(agg_slot)} (acting model — runs every step and carries almost all of the cost)"
+        )
+        notice = _provider_mismatch_notice(config, agg_slot)
+        if notice:
+            print(f"    note: {notice}")
+
+
+def _moa_section(cfg: Any) -> dict[str, Any]:
+    return normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
+
+
+def _save(cfg: dict, moa: dict[str, Any]) -> None:
+    cfg["moa"] = normalize_moa_config(moa)
+    save_config(cfg)
+
+
+def _cmd_list(cfg: dict, args) -> None:
+    _print_config(cfg)
+
+
+def _cmd_configure(cfg: dict, args) -> None:
+    moa = _moa_section(cfg)
+    preset_name = (getattr(args, "name", None) or moa.get("default_preset") or DEFAULT_MOA_PRESET_NAME).strip()
+    current = moa["presets"].get(preset_name, moa["presets"][moa["default_preset"]])
+    print(f"Configure MoA preset: {preset_name}")
+    print("Pick at least one reference model; choose Done when finished.")
+    refs: list[dict[str, str]] = []
+    existing = list(current.get("reference_models") or [])
+    while True:
+        base = existing[len(refs)] if len(refs) < len(existing) else None
+        picked = _pick_slot(base)
+        picked["enabled"] = bool((base or {}).get("enabled", True))
+        refs.append(picked)
+        if _prompt_choice("Add another reference model?", ["Add another", "Done"], 1) == 1:
+            break
+    print("Configure aggregator model.")
+    print(
+        "The aggregator is the acting model: it runs every tool-loop step, and almost all of the run's cost lands on its provider."
+    )
+    current = dict(current)
+    current["reference_models"] = refs
+    current["aggregator"] = _pick_slot(current.get("aggregator"))
+    moa["presets"][preset_name] = current
+    moa.setdefault("default_preset", preset_name)
+    notice = _provider_mismatch_notice(cfg, current["aggregator"])
+    if notice:
+        print(notice)
+    _save(cfg, moa)
+    print(f"Saved MoA preset: {preset_name}")
+    _print_config(cfg)
+
+
+def _cmd_delete(cfg: dict, args) -> None:
+    moa = _moa_section(cfg)
+    preset_name = (getattr(args, "name", None) or "").strip()
+    if not preset_name:
+        raise SystemExit("Usage: hermes moa delete <name>")
+    if preset_name not in moa["presets"]:
+        raise SystemExit(f"Unknown MoA preset: {preset_name}")
+    if len(moa["presets"]) <= 1:
+        raise SystemExit("Cannot delete the only MoA preset")
+    del moa["presets"][preset_name]
+    if moa["default_preset"] == preset_name:
+        moa["default_preset"] = next(iter(moa["presets"]))
+    if moa.get("active_preset") == preset_name:
+        moa["active_preset"] = ""
+    _save(cfg, moa)
+    print(f"Deleted MoA preset: {preset_name}")
+
+
+_SUBCOMMANDS = {
+    "list": _cmd_list,
+    "ls": _cmd_list,
+    "config": _cmd_configure,
+    "configure": _cmd_configure,
+    "delete": _cmd_delete}
 
 
 def cmd_moa(args) -> None:
     """Manage Mixture of Agents model presets."""
     cfg = load_config()
     sub = getattr(args, "moa_command", None) or "list"
-
-    if sub in {"list", "ls"}:
-        _print_config(cfg)
-        return
-
-    if sub in {"config", "configure"}:
-        moa = normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
-        preset_name = (getattr(args, "name", None) or moa.get("default_preset") or DEFAULT_MOA_PRESET_NAME).strip()
-        current = moa["presets"].get(preset_name, moa["presets"][moa["default_preset"]])
-        print(f"Configure MoA preset: {preset_name}")
-        print("Pick at least one reference model; choose Done when finished.")
-        refs: list[dict[str, str]] = []
-        existing = list(current.get("reference_models") or [])
-        idx = 0
-        while True:
-            base = existing[idx] if idx < len(existing) else None
-            refs.append(_pick_slot(base))
-            idx += 1
-            choice = _prompt_choice("Add another reference model?", ["Add another", "Done"], 1)
-            if choice == 1:
-                break
-        print("Configure aggregator model.")
-        current = dict(current)
-        current["reference_models"] = refs
-        current["aggregator"] = _pick_slot(current.get("aggregator"))
-        moa["presets"][preset_name] = current
-        moa.setdefault("default_preset", preset_name)
-        cfg["moa"] = normalize_moa_config(moa)
-        save_config(cfg)
-        print(f"Saved MoA preset: {preset_name}")
-        _print_config(cfg)
-        return
-
-    if sub == "delete":
-        moa = normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
-        preset_name = (getattr(args, "name", None) or "").strip()
-        if not preset_name:
-            raise SystemExit("Usage: hermes moa delete <name>")
-        if preset_name not in moa["presets"]:
-            raise SystemExit(f"Unknown MoA preset: {preset_name}")
-        if len(moa["presets"]) <= 1:
-            raise SystemExit("Cannot delete the only MoA preset")
-        del moa["presets"][preset_name]
-        if moa["default_preset"] == preset_name:
-            moa["default_preset"] = next(iter(moa["presets"]))
-        if moa.get("active_preset") == preset_name:
-            moa["active_preset"] = ""
-        cfg["moa"] = normalize_moa_config(moa)
-        save_config(cfg)
-        print(f"Deleted MoA preset: {preset_name}")
-        return
-
-    raise SystemExit(f"Unknown moa subcommand: {sub}")
+    handler = _SUBCOMMANDS.get(sub)
+    if handler is None:
+        raise SystemExit(f"Unknown moa subcommand: {sub}")
+    handler(cfg, args)

@@ -2,7 +2,11 @@
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from agent.conversation_compression import (
+    CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
+    ROUTINE_COMPRESSION_STATUS_SAMPLES,
+)
+from gateway.config import Platform
 from gateway.run import (
     _prepare_gateway_status_message,
     _sanitize_gateway_final_response,
@@ -10,31 +14,93 @@ from gateway.run import (
 
 # Every human-facing chat surface that must receive noise-filtered,
 # secret-redacted, provider-error-sanitized output (not just Telegram).
+# The filtering functions under test (_prepare_gateway_status_message /
+# _sanitize_gateway_final_response) are platform-agnostic shared logic in
+# gateway.run — a representative platform subset is sufficient; per-platform
+# copies were near-duplicate parametrizations.
 CHAT_PLATFORMS = [
     "telegram",
-    "whatsapp",
-    "discord",
     "slack",
-    "signal",
-    "matrix",
-    "mattermost",
-    "dingtalk",
     "feishu",
-    "wecom",
-    "weixin",
-    "bluebubbles",
-    "qqbot",
-    "homeassistant",
-    "sms",
 ]
 
 NOISY_STATUS_MESSAGES = [
     "🗜️ Preflight compression check before sending...",
+    (
+        "📦 Pre-API compression: ~123,456 tokens near the context/output limit. "
+        "Compacting before the next model call."
+    ),
     "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
+    "💤 Resumed after 3600s idle — compacting ~120,000 tokens before continuing.",
     "⚠️  Session compressed 12 times — accuracy may degrade. Consider /new to start fresh.",
     "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
     "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
     "⏳ Retrying in 4.2s (attempt 1/3)...",
+    # Buffered overflow/attempt-cap retry chatter (replayed on retry exhaustion).
+    "🗜️ Context too large (~250,000 tokens) — compressing (1/3)...",
+    "🗜️ Compressed 30 → 12 messages, retrying...",
+    "🗜️ Compressed ~250,000 → ~120,000 tokens, retrying...",
+    "🗜️ Context reduced to 120,000 tokens (was 250,000), retrying...",
+    # Post-#69332 auto-lower wording + aux-provider/lock chatter.
+    (
+        "⚠ Compression model small (openrouter) context is 32,000 tokens, but "
+        "the main model big (anthropic)'s compression threshold was 100,000 "
+        "tokens. Auto-lowered this session's threshold to 30,000 tokens so "
+        "compression can run."
+    ),
+    (
+        "⚠ Configured auxiliary compression provider 'openai' is unavailable — "
+        "context compression will drop middle turns without a summary. Check "
+        "auxiliary.compression in config.yaml and reauthenticate that provider."
+    ),
+    (
+        "⚠ Skipping concurrent compression — another path is already "
+        "compressing this session. Will retry after it finishes."
+    ),
+]
+
+# Messages that must NEVER be swallowed by the compression-noise filter:
+# deliberate carve-outs from routine-compression silence — manual /compress
+# feedback (manual_compression_feedback.py headlines) and abort/failure
+# notices that require user action.
+VISIBLE_COMPRESSION_MESSAGES = [
+    "Compressed: 30 → 12 messages",
+    "Compression aborted: 30 messages preserved",
+    "Compressed with fallback: 30 → 12 messages",
+    "No changes from compression: 30 messages",
+    (
+        "⚠ Compression aborted: auth failure. No messages were dropped — "
+        "conversation continues unchanged. Run /compress to retry, or /new "
+        "to start a fresh session."
+    ),
+    (
+        "⚠ Compression returned an empty transcript. No session split was "
+        "performed; conversation continues unchanged."
+    ),
+    # Manual /compress lock-skip feedback (issue #57631): both the
+    # confirmed-holder and unconfirmed-acquire wordings must reach the user.
+    (
+        "⏳ Compression already in progress for this session "
+        "(holder: pid=12345:tid=7:agent=1:nonce=ab). Please wait for it to "
+        "finish."
+    ),
+    (
+        "⏳ Compression skipped: could not acquire this session's "
+        "compression lock. Another compression may still be running, or "
+        "the lock check failed — try again shortly."
+    ),
+    # Blocked-overflow warning (#62625/#62708): the context is over the
+    # compression threshold but compression is blocked (summary-LLM cooldown
+    # or the anti-thrash breaker). FAILURE-CLASS — must reach chat users so
+    # they can /new or /compress before the session dies at the hard token
+    # limit. Formatted from the SAME template the emit site uses, so a
+    # rewording that drifts into the noise regex fails here.
+    CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
+        tokens=85_000, threshold=72_000, reason="cooldown:30"
+    ),
+    CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
+        tokens=85_000, threshold=72_000, reason="ineffective"
+    ),
 ]
 
 
@@ -68,6 +134,12 @@ def test_programmatic_surfaces_keep_raw_status():
         )
 
 
+@pytest.mark.parametrize("message", ["still on it", "⏳ Working — 3 min"])
+def test_telegram_status_keeps_legitimate_heartbeat_messages(message):
+    """The compression filter must not swallow user-facing work heartbeats."""
+    assert _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", message) == message
+
+
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)
 @pytest.mark.parametrize("message", NOISY_STATUS_MESSAGES)
 def test_all_chat_gateways_suppress_noise(platform, message):
@@ -75,7 +147,37 @@ def test_all_chat_gateways_suppress_noise(platform, message):
     assert _prepare_gateway_status_message(platform, "warn", message) is None
 
 
-@pytest.mark.parametrize("platform", ["whatsapp", "slack", "signal", "matrix"])
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+@pytest.mark.parametrize(
+    "message", ROUTINE_COMPRESSION_STATUS_SAMPLES, ids=lambda m: m[:32]
+)
+def test_all_routine_compression_statuses_suppressed_from_source_constants(
+    platform, message
+):
+    """Every ROUTINE compression status the agent actually emits is filtered.
+
+    Iterates the sample-formatted status strings built from the SAME
+    constants the emission sites use (agent/conversation_compression.py's
+    ROUTINE_COMPRESSION_STATUS_SAMPLES), so a reworded emit site that drifts
+    past the noise regex fails here without anyone remembering to re-copy
+    the literal into this file.
+    """
+    assert _prepare_gateway_status_message(platform, "lifecycle", message) is None
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+@pytest.mark.parametrize("message", VISIBLE_COMPRESSION_MESSAGES, ids=lambda m: m[:32])
+def test_manual_compress_feedback_and_failure_notices_stay_visible(platform, message):
+    """Manual /compress feedback and abort notices must never be swallowed.
+
+    These are the deliberate carve-outs from routine-compression silence
+    (#16775 failures, manual_compression_feedback.py) — widening the noise
+    regex must not start eating them.
+    """
+    assert _prepare_gateway_status_message(platform, "warn", message) == message
+
+
+@pytest.mark.parametrize("platform", ["slack", "matrix"])
 def test_chat_gateways_redact_secret_in_provider_error(platform):
     """Provider-error bodies carrying secrets must never reach chat users.
 
@@ -93,11 +195,11 @@ def test_chat_gateways_redact_secret_in_provider_error(platform):
     assert "sk-ABCDEF0123456789abcdef0123" not in sanitized
     assert "sk-ABCDEF" not in sanitized
     assert "HTTP 401" not in sanitized
-    # The user gets the safe provider-error category instead of the raw body.
-    assert "provider" in sanitized.lower()
+    # The user gets the safe error category and a command to run instead of the raw body.
+    assert "sign-in" in sanitized.lower() and "/login" in sanitized
 
 
-@pytest.mark.parametrize("platform", ["whatsapp", "slack", "signal", "matrix"])
+@pytest.mark.parametrize("platform", ["slack", "matrix"])
 def test_chat_gateways_redact_secret_in_non_error_body(platform):
     """Secrets must be redacted even when no provider-error rewrite fires.
 
@@ -120,10 +222,8 @@ def test_chat_gateways_redact_secret_in_non_error_body(platform):
 
     assert "sk-ABCDEF0123456789abcdef0123" not in sanitized
     assert "sk-ABCDEF" not in sanitized
-    # The secret body is gone — assert the invariant, not the specific mask
-    # marker. The outbound redactor delegates to redact_sensitive_text (#23810),
-    # which masks as `***`/partial; the local pattern fallback uses `[REDACTED]`.
-    assert "***" in sanitized or "[REDACTED]" in sanitized
+    # redact_for_egress masks a prefix token through _mask_token: `***` or a head...tail stub.
+    assert "***" in sanitized
     # Non-secret prose is preserved — redaction is surgical, not a wholesale
     # rewrite, on bodies that are not provider-error envelopes.
     assert "here is the example request you asked for" in sanitized
@@ -153,6 +253,29 @@ def test_chat_gateways_drop_interrupt_sentinel(platform):
     assert _sanitize_gateway_final_response("local", sentinel) == sentinel
 
 
+@pytest.mark.parametrize("platform", [*CHAT_PLATFORMS, Platform.BLUEBUBBLES])
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("<|eos|>", ""),
+        ("<|eos|><|eos|>\n", ""),
+        ("normal answer<|eos|>", "normal answer"),
+        ("normal answer<|eos|>  \n", "normal answer"),
+        ("literal <|eos|> in the middle stays visible", "literal <|eos|> in the middle stays visible"),
+        ("case variant remains literal: <|EOS|>", "case variant remains literal: <|EOS|>"),
+        ("inline code remains literal: `<|eos|>`", "inline code remains literal: `<|eos|>`"),
+    ],
+)
+def test_chat_gateways_strip_terminal_eos_control_tokens(platform, raw, expected):
+    """Provider EOS control tokens are transport metadata, never user-facing chat bubbles."""
+    assert _sanitize_gateway_final_response(platform, raw) == expected
+
+
+def test_local_surface_keeps_terminal_eos_control_token():
+    """Raw/programmatic surfaces retain provider output byte-for-byte."""
+    assert _sanitize_gateway_final_response("local", "normal answer<|eos|>") == "normal answer<|eos|>"
+
+
 def test_telegram_status_sanitizes_raw_provider_security_errors():
     """Provider policy/security bodies should be replaced before chat delivery."""
     raw = (
@@ -163,7 +286,7 @@ def test_telegram_status_sanitizes_raw_provider_security_errors():
     sanitized = _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", raw)
 
     assert sanitized is not None
-    assert "provider rejected" in sanitized.lower()
+    assert "rejected this request" in sanitized.lower()
     assert "cybersecurity risk" not in sanitized.lower()
     assert "HTTP 400" not in sanitized
     assert "req_123" not in sanitized
@@ -178,7 +301,7 @@ def test_telegram_final_response_sanitizes_raw_provider_errors():
 
     sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
 
-    assert "provider rejected" in sanitized.lower()
+    assert "rejected this request" in sanitized.lower()
     assert "cybersecurity risk" not in sanitized.lower()
     assert "HTTP 400" not in sanitized
     assert "req_abc" not in sanitized
@@ -193,16 +316,11 @@ def test_telegram_final_response_redacts_auth_secrets():
 
     sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
 
-    assert "authentication failed" in sanitized.lower()
-    assert "check the configured credentials" in sanitized.lower()
+    assert "sign-in" in sanitized.lower()
+    assert "/login" in sanitized
     assert "sk-live" not in sanitized
 
 
-def test_telegram_final_response_keeps_normal_answers():
-    """Normal assistant content should not be rewritten."""
-    answer = "Here is the clean summary you asked for."
-
-    assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
 
 
 # Synthetic credential shapes from #23810. Bodies are placeholder gibberish —
@@ -241,324 +359,3 @@ def test_chat_gateways_redact_all_issue_23810_credential_shapes(platform, shape_
     # Prose around the secret is preserved — redaction is surgical.
     assert "here is the token you asked me to echo" in sanitized
     assert sanitized.endswith("done.")
-
-
-# ---------------------------------------------------------------------------
-# Operator-configured outbound suppression (suppress_outbound)
-# ---------------------------------------------------------------------------
-
-
-def _clear_suppress_caches():
-    import gateway.run as run
-
-    run._SUPPRESS_OUTBOUND_CFG_CACHE.clear()
-    run._SUPPRESS_OUTBOUND_COMPILED.clear()
-
-
-@pytest.fixture
-def suppress_config(monkeypatch, tmp_path):
-    """Write a real config.yaml under a temp HERMES_HOME for suppress_outbound.
-
-    Returns a setter: call it with (global_patterns, per_platform) to write
-    the YAML and point config resolution at it. Every resolution then runs
-    the real ``load_gateway_config()`` YAML bridges (top-level
-    ``suppress_outbound`` plus ``platforms.<name>.suppress_outbound``) — no
-    stubbing of the loader. Clears the config and compiled-pattern caches
-    around each write so tests cannot leak into each other (or into the
-    unrelated tests above).
-    """
-    import yaml
-
-    import gateway.run as run
-
-    home = tmp_path / "hermes-home"
-    home.mkdir()
-    # load_gateway_config() resolves via get_hermes_home() (env), while
-    # gateway.run's path helpers use the module-level _hermes_home snapshot —
-    # point both at the temp home so the cache key and the loaded file agree.
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(run, "_hermes_home", home)
-
-    def _set(global_patterns=None, per_platform=None):
-        cfg_doc = {}
-        if global_patterns is not None:
-            cfg_doc["suppress_outbound"] = list(global_patterns)
-        if per_platform:
-            cfg_doc["platforms"] = {
-                platform.value: {"suppress_outbound": list(patterns)}
-                for platform, patterns in per_platform.items()
-            }
-        (home / "config.yaml").write_text(
-            yaml.safe_dump(cfg_doc), encoding="utf-8"
-        )
-        # Two writes can land within one mtime tick, so drop the resolved
-        # config rather than trusting the stamp within a single test.
-        _clear_suppress_caches()
-        return home
-
-    _clear_suppress_caches()
-    yield _set
-    _clear_suppress_caches()
-
-
-def test_suppress_outbound_drops_matching_final_response(suppress_config):
-    """A configured pattern drops the final reply on a chat surface."""
-    suppress_config(global_patterns=[r"^Liked it\.$"])
-
-    assert _sanitize_gateway_final_response(Platform.TELEGRAM, "Liked it.") == ""
-    # re.search semantics: unanchored patterns match anywhere.
-    suppress_config(global_patterns=[r"Interrupting current task"])
-    assert (
-        _sanitize_gateway_final_response(
-            Platform.TELEGRAM, "Interrupting current task to handle your message..."
-        )
-        == ""
-    )
-
-
-def test_suppress_outbound_drops_matching_status_message(suppress_config):
-    """The same patterns cover the status/notice send path."""
-    suppress_config(global_patterns=[r"Interrupting current task"])
-
-    assert (
-        _prepare_gateway_status_message(
-            Platform.TELEGRAM, "lifecycle", "Interrupting current task..."
-        )
-        is None
-    )
-
-
-def test_suppress_outbound_exempts_raw_platforms(suppress_config):
-    """Programmatic surfaces must never be muted by operator patterns."""
-    suppress_config(global_patterns=[r".*"])  # suppress everything
-
-    text = "Liked it."
-    for platform in ("local", "api_server", "webhook", "msgraph_webhook"):
-        assert _sanitize_gateway_final_response(platform, text) == text
-        assert _prepare_gateway_status_message(platform, "warn", text) == text
-
-
-def test_suppress_outbound_per_platform_extends_global(suppress_config):
-    """platforms.<name>.suppress_outbound extends (not replaces) the global list."""
-    suppress_config(
-        global_patterns=[r"^Liked it\.$"],
-        per_platform={Platform.TELEGRAM: [r"^Gateway restarted"]},
-    )
-
-    # Telegram gets global + its own pattern.
-    assert _sanitize_gateway_final_response(Platform.TELEGRAM, "Liked it.") == ""
-    assert (
-        _sanitize_gateway_final_response(Platform.TELEGRAM, "Gateway restarted (v2)")
-        == ""
-    )
-    # Other chat platforms only get the global pattern.
-    assert _sanitize_gateway_final_response(Platform.DISCORD, "Liked it.") == ""
-    assert (
-        _sanitize_gateway_final_response(Platform.DISCORD, "Gateway restarted (v2)")
-        == "Gateway restarted (v2)"
-    )
-
-
-def test_suppress_outbound_invalid_regex_warns_and_skips(suppress_config, caplog):
-    """An invalid regex warns once, is skipped, and never crashes or over-drops."""
-    import logging
-
-    suppress_config(global_patterns=[r"[unclosed", r"^Liked it\.$"])
-
-    with caplog.at_level(logging.WARNING):
-        # Valid pattern still enforced despite the broken sibling.
-        assert _sanitize_gateway_final_response(Platform.TELEGRAM, "Liked it.") == ""
-        # Non-matching text passes through untouched.
-        answer = "Here is the clean summary you asked for."
-        assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
-
-    assert any(
-        "invalid suppress_outbound pattern" in record.getMessage()
-        and "[unclosed" in record.getMessage()
-        for record in caplog.records
-    )
-
-
-def test_suppress_outbound_empty_config_is_passthrough(suppress_config):
-    """No configured patterns = zero behavior change."""
-    suppress_config(global_patterns=[])
-
-    answer = "Liked it."
-    assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
-    assert (
-        _prepare_gateway_status_message(Platform.TELEGRAM, "info", answer) == answer
-    )
-
-
-def test_suppress_outbound_non_matching_text_untouched(suppress_config):
-    """Patterns only drop matches; everything else flows through unchanged."""
-    suppress_config(global_patterns=[r"^Liked it\.$"])
-
-    answer = "I liked it. Here is the longer review you asked for."
-    assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
-
-
-def test_suppress_outbound_case_sensitive_as_written(suppress_config):
-    """Patterns compile as written; operators opt into (?i) themselves."""
-    suppress_config(global_patterns=[r"^liked it\.$"])
-    assert _sanitize_gateway_final_response(Platform.TELEGRAM, "Liked it.") == "Liked it."
-
-    suppress_config(global_patterns=[r"(?i)^liked it\.$"])
-    assert _sanitize_gateway_final_response(Platform.TELEGRAM, "Liked it.") == ""
-
-
-def test_get_suppress_outbound_resolution_order():
-    """GatewayConfig.get_suppress_outbound: global first, then platform, deduped."""
-    cfg = GatewayConfig(
-        platforms={
-            Platform.TELEGRAM: PlatformConfig(
-                enabled=True,
-                extra={"suppress_outbound": [r"^B$", r"^A$"]},
-            )
-        },
-        suppress_outbound=[r"^A$"],
-    )
-
-    assert cfg.get_suppress_outbound(Platform.TELEGRAM) == [r"^A$", r"^B$"]
-    assert cfg.get_suppress_outbound(Platform.DISCORD) == [r"^A$"]
-    assert cfg.get_suppress_outbound(None) == [r"^A$"]
-
-
-def test_suppress_outbound_loaded_from_real_config_yaml(suppress_config):
-    """load_gateway_config() bridges suppress_outbound from a real config.yaml.
-
-    Exercises the actual YAML loader (temp HERMES_HOME) for both the global
-    key and the platforms.<name>.suppress_outbound per-platform extension.
-    """
-    from gateway.config import load_gateway_config
-
-    suppress_config(
-        global_patterns=[r"^Liked it\.$"],
-        per_platform={Platform.TELEGRAM: [r"^Gateway restarted"]},
-    )
-
-    cfg = load_gateway_config()
-    assert cfg.suppress_outbound == [r"^Liked it\.$"]
-    telegram_cfg = cfg.platforms.get(Platform.TELEGRAM)
-    assert telegram_cfg is not None
-    assert telegram_cfg.extra.get("suppress_outbound") == [r"^Gateway restarted"]
-    assert cfg.get_suppress_outbound(Platform.TELEGRAM) == [
-        r"^Liked it\.$",
-        r"^Gateway restarted",
-    ]
-    assert cfg.get_suppress_outbound(Platform.DISCORD) == [r"^Liked it\.$"]
-
-
-def test_suppress_outbound_routed_profiles_do_not_share_cache(tmp_path):
-    """Context-local profile homes must never reuse each other's rules.
-
-    Regression for the mtime-only cache key: two profile config files with
-    identical mtimes are distinct cache entries because the resolved config
-    path is part of the identity. The cache is deliberately NOT cleared
-    between the profile switches below — that reuse is what's under test.
-    """
-    import os
-
-    from hermes_constants import (
-        reset_hermes_home_override,
-        set_hermes_home_override,
-    )
-
-    home_a = tmp_path / "profile-a"
-    home_b = tmp_path / "profile-b"
-    home_a.mkdir()
-    home_b.mkdir()
-    (home_a / "config.yaml").write_text(
-        "suppress_outbound:\n  - '^From profile A$'\n", encoding="utf-8"
-    )
-    (home_b / "config.yaml").write_text(
-        "suppress_outbound:\n  - '^From profile B$'\n", encoding="utf-8"
-    )
-    # Force identical mtimes so an mtime-only cache key would alias them.
-    stat_a = (home_a / "config.yaml").stat()
-    os.utime(home_b / "config.yaml", ns=(stat_a.st_atime_ns, stat_a.st_mtime_ns))
-
-    _clear_suppress_caches()
-    try:
-        token = set_hermes_home_override(home_a)
-        try:
-            assert (
-                _sanitize_gateway_final_response(Platform.TELEGRAM, "From profile A")
-                == ""
-            )
-            assert (
-                _sanitize_gateway_final_response(Platform.TELEGRAM, "From profile B")
-                == "From profile B"
-            )
-        finally:
-            reset_hermes_home_override(token)
-
-        token = set_hermes_home_override(home_b)
-        try:
-            # With the old mtime-only key this resolved profile A's rules.
-            assert (
-                _sanitize_gateway_final_response(Platform.TELEGRAM, "From profile B")
-                == ""
-            )
-            assert (
-                _sanitize_gateway_final_response(Platform.TELEGRAM, "From profile A")
-                == "From profile A"
-            )
-        finally:
-            reset_hermes_home_override(token)
-    finally:
-        _clear_suppress_caches()
-
-
-@pytest.mark.asyncio
-async def test_suppress_outbound_covers_active_session_shutdown_notice(suppress_config):
-    """The direct shutdown-notification send honors suppress_outbound."""
-    from unittest.mock import MagicMock
-
-    from gateway.session import build_session_key
-    from tests.gateway.restart_test_helpers import (
-        make_restart_runner,
-        make_restart_source,
-    )
-
-    suppress_config(global_patterns=[r"Gateway (restarting|shutting down)"])
-
-    runner, adapter = make_restart_runner()
-    source = make_restart_source()
-    session_key = build_session_key(source)
-    runner._running_agents = {session_key: MagicMock()}
-    runner._cache_session_source(session_key, source)
-
-    await runner._notify_active_sessions_of_shutdown()
-    assert adapter.sent_calls == []
-
-    # Control: with no matching pattern the same rail delivers the notice.
-    suppress_config(global_patterns=[])
-    await runner._notify_active_sessions_of_shutdown()
-    assert len(adapter.sent_calls) == 1
-    assert "Gateway shutting down" in adapter.sent_calls[0][1]
-
-
-@pytest.mark.asyncio
-async def test_suppress_outbound_covers_home_channel_shutdown_broadcast(suppress_config):
-    """The home-channel shutdown broadcast honors suppress_outbound too."""
-    from gateway.config import HomeChannel
-    from tests.gateway.restart_test_helpers import make_restart_runner
-
-    suppress_config(global_patterns=[r"Gateway (restarting|shutting down)"])
-
-    runner, adapter = make_restart_runner()
-    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
-        platform=Platform.TELEGRAM,
-        chat_id="home-chat",
-        name="Telegram Home",
-    )
-
-    await runner._notify_active_sessions_of_shutdown()
-    assert adapter.sent_calls == []
-
-    suppress_config(global_patterns=[])
-    await runner._notify_active_sessions_of_shutdown()
-    assert len(adapter.sent_calls) == 1
-    assert adapter.sent_calls[0][0] == "home-chat"
-    assert "Gateway shutting down" in adapter.sent_calls[0][1]

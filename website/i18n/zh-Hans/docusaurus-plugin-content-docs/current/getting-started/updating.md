@@ -24,9 +24,9 @@ hermes update
 
 运行 `hermes update` 时，将依次执行以下步骤：
 
-1. **配对数据快照** — 保存一份轻量级的更新前状态快照（涵盖 `~/.hermes/pairing/`、飞书评论规则及其他运行时修改的状态文件）。可通过 [快照与回滚](../user-guide/checkpoints-and-rollback.md) 中描述的快照恢复流程进行恢复，或从 Hermes 写入 `~/.hermes/` 目录旁的最新快速快照 zip 文件中提取。
+1. **更新前快照** — Hermes 在每个 profile 的 `state-snapshots/` 目录中保存指定的状态文件，包括配对数据、cron 任务、`config.yaml`、`.env` 和 `auth.json`。自动快速快照会跳过单个大于 1 GiB 的文件。`updates.pre_update_backup` 可选择 `quick`、`full` 或 `off`。完整归档遵循[备份排除规则](../reference/faq.md#hermes-backup-vs-hermes-profile-export)。恢复方法见[快照与回滚](../user-guide/checkpoints-and-rollback.md)。快速快照恢复的是状态文件，不是应用程序代码。
 2. **Git pull** — 从 `main` 分支拉取最新代码并更新子模块
-3. **依赖安装** — 运行 `uv pip install -e ".[all]"` 以获取新增或变更的依赖项
+3. **依赖安装** — 运行 `python -m pm.cli install` 以获取新增或变更的依赖项
 4. **配置迁移** — 检测自当前版本以来新增的配置选项并提示设置
 5. **Gateway 自动重启** — 更新完成后刷新正在运行的 gateway，使新代码立即生效。由服务管理的 gateway（Linux 上的 systemd、macOS 上的 launchd）通过服务管理器重启；手动启动的 gateway 在 Hermes 能将运行中的 PID 映射回某个 profile 时会自动重新启动。
 
@@ -47,10 +47,16 @@ hermes update --backup
 ```yaml
 # ~/.hermes/config.yaml
 updates:
-  pre_update_backup: true
+  pre_update_backup: full
 ```
 
-`--backup` 在早期版本中是始终开启的行为，但在大型 home 目录上会给每次更新增加数分钟时间，因此现已改为按需启用。上述轻量级配对数据快照仍会无条件执行。
+`updates.pre_update_backup` 有三种模式：
+
+- `quick` 保存上述指定的状态文件。这是默认模式。
+- `full` 另加一份遵循[备份排除规则](../reference/faq.md#hermes-backup-vs-hermes-profile-export)的 zip 归档。大型数据目录可能需要几分钟。
+- `off` 禁用更新前备份。`--no-backup` 为单次运行选择此模式。
+
+旧版布尔值仍然有效：`true` 等同于 `full`，`false` 等同于 `off`。
 
 ### Windows：另一个 `hermes.exe` 正在运行
 
@@ -120,7 +126,7 @@ tail -f ~/.hermes/logs/update.log
 ### 查看当前版本
 
 ```bash
-hermes version
+hermes --version
 ```
 
 与 [GitHub releases 页面](https://github.com/NousResearch/hermes-agent/releases) 上的最新版本进行比较。
@@ -147,7 +153,7 @@ export VIRTUAL_ENV="$(pwd)/venv"
 git pull origin main
 
 # Reinstall (picks up new dependencies)
-uv pip install -e ".[all]"
+python -m pm.cli install
 
 # Check for new config options
 hermes config check
@@ -166,7 +172,7 @@ git log --oneline -10
 
 # Roll back to a specific commit
 git checkout <commit-hash>
-uv pip install -e ".[all]"
+python -m pm.cli install
 
 # Restart the gateway if running
 hermes gateway restart
@@ -176,7 +182,7 @@ hermes gateway restart
 
 ```bash
 git checkout v0.6.0
-uv pip install -e ".[all]"
+python -m pm.cli install
 ```
 
 :::warning

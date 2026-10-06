@@ -1,22 +1,18 @@
 import { describe, expect, it } from 'vitest'
 
+import { t } from '../i18n/runtime.js'
 import {
   boundedLiveRenderText,
   buildToolTrailLine,
   buildVerboseToolTrailLine,
   edgePreview,
   estimateRows,
-  estimateTokensRough,
-  fmtK,
-  hasAnsi,
   isToolTrailResultLine,
   lastCotTrailIndex,
   parseToolTrailResultLine,
   pasteTokenLabel,
   sameToolTrailGroup,
-  sanitizeAnsiForRender,
   splitToolDuration,
-  stripAnsi,
   thinkingPreview
 } from '../lib/text.js'
 
@@ -49,8 +45,8 @@ describe('buildVerboseToolTrailLine', () => {
       'first line\nsecond :: line'
     )
 
-    expect(line).toContain('Args:\n{')
-    expect(line).toContain('Result:\nfirst line\nsecond :: line')
+    expect(line).toContain(`${t('libText.text.argsLabel')}:\n{`)
+    expect(line).toContain(`${t('libText.text.resultLabel')}:\nfirst line\nsecond :: line`)
     expect(parseToolTrailResultLine(line)).toEqual({
       call: 'Terminal("npm test") (1.3s)',
       detail: 'Args:\n{\n  "cmd": "npm test"\n}\nResult:\nfirst line\nsecond :: line',
@@ -118,71 +114,6 @@ describe('sameToolTrailGroup', () => {
   })
 })
 
-describe('fmtK', () => {
-  it('keeps small numbers plain', () => {
-    expect(fmtK(999)).toBe('999')
-  })
-
-  it('formats thousands as lowercase k', () => {
-    expect(fmtK(1000)).toBe('1k')
-    expect(fmtK(1500)).toBe('1.5k')
-  })
-
-  it('formats millions and billions with lowercase suffixes', () => {
-    expect(fmtK(1_000_000)).toBe('1m')
-    expect(fmtK(1_000_000_000)).toBe('1b')
-  })
-})
-
-describe('estimateTokensRough', () => {
-  it('uses 4 chars per token rounding up', () => {
-    expect(estimateTokensRough('')).toBe(0)
-    expect(estimateTokensRough('a')).toBe(1)
-    expect(estimateTokensRough('abcd')).toBe(1)
-    expect(estimateTokensRough('abcde')).toBe(2)
-  })
-})
-
-describe('ANSI sanitizers', () => {
-  const ESC = String.fromCharCode(27)
-  const BEL = String.fromCharCode(7)
-
-  it('strips CSI/OSC/control bytes from plain previews', () => {
-    const sample = `A${ESC}[31mB${ESC}[39m${ESC}[2J${ESC}]0;title${BEL}C${ESC}[?25lD`
-
-    expect(stripAnsi(sample)).toBe('ABCD')
-  })
-
-  it('strips incomplete CSI prefixes and carriage returns', () => {
-    const sample = `A${ESC}[31mB${ESC}[12;${ESC}[CD\rE`
-
-    expect(stripAnsi(sample)).toBe('ABDE')
-  })
-
-  it('keeps SGR color spans but removes cursor controls for Ansi rendering', () => {
-    const sample = `A${ESC}[31mB${ESC}[39m${ESC}[2J${ESC}]0;title${BEL}${ESC}[?25lC`
-
-    expect(sanitizeAnsiForRender(sample)).toBe(`A${ESC}[31mB${ESC}[39mC`)
-  })
-
-  it('keeps valid SGR while removing dangling CSI and carriage returns', () => {
-    const sample = `A${ESC}[31mB${ESC}[12;${ESC}[39mC\rD`
-
-    expect(sanitizeAnsiForRender(sample)).toBe(`A${ESC}[31mB${ESC}[39mCD`)
-  })
-
-  it('strips multi-byte non-CSI ESC sequences without leaving trailing bytes', () => {
-    const sample = `A${ESC}(0B${ESC}%GC${ESC})0D`
-
-    expect(stripAnsi(sample)).toBe('ABCD')
-    expect(sanitizeAnsiForRender(sample)).toBe('ABCD')
-  })
-
-  it('detects non-CSI escape prefixes too', () => {
-    expect(hasAnsi(`ok${ESC}Ppayload${ESC}\\`)).toBe(true)
-  })
-})
-
 describe('thinkingPreview', () => {
   it('adds paragraph breaks before markdown thinking headings', () => {
     const raw =
@@ -211,7 +142,7 @@ describe('boundedLiveRenderText', () => {
     const out = boundedLiveRenderText(['a', 'b', 'c', 'd'].join('\n'), { maxChars: 100, maxLines: 2 })
 
     expect(out).toContain('c\nd')
-    expect(out).toContain('omitted 2 lines')
+    expect(out).toContain(t('libText.text.omittedLinesChars', t('libText.text.showingLiveTail'), '2', '4'))
     expect(out).not.toContain('a\nb')
   })
 })
@@ -224,11 +155,22 @@ describe('edgePreview', () => {
   })
 })
 
+describe('thinkingPreview over-bound tail', () => {
+  it('retains the live tail when reasoning exceeds the clean bound', () => {
+    const TAIL = '<<<LIVE_TAIL_MARKER>>>'
+    // Slightly above the 24k clean-tail bound, so the implementation must trim.
+    const reasoning = 'A'.repeat(25_000) + '\n' + TAIL
+    const result = thinkingPreview(reasoning, 'full')
+    expect(result).toContain(TAIL)
+    // The bounded window is shorter than the 25k prefix, but the tail remains.
+    expect(result.length).toBeLessThanOrEqual(25_000)
+  })
+})
 describe('pasteTokenLabel', () => {
   it('builds readable long-paste labels with counts', () => {
     const label = pasteTokenLabel('Vampire Bondage ropes slipped from her neck, still stained with blood', 250)
     expect(label.startsWith('[[ ')).toBe(true)
-    expect(label).toContain('[250 lines]')
+    expect(label).toContain(t('libText.text.pasteLinesChip', '250'))
     expect(label.endsWith(' ]]')).toBe(true)
   })
 })

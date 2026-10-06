@@ -1,0 +1,16 @@
+name: memtomem
+repo: https://github.com/memtomem/memtomem
+sha: 5b7034126574a2956b6a328622006a46b2a0e367
+subdir: packages/memtomem-hermes-plugin
+version: "0.1.2"
+description: "Markdown-first long-term memory shared across your coding agents: a local memtomem MCP server plus six memory skills (index, recall, remember, search, setup, status). Notes live in ~/.memtomem and are searchable from Hermes, Claude Code, Codex CLI and Kimi Code. Runs at user scope. Disclosure — the server is launched with `uvx --python 3.12` and downloaded from PyPI (memtomem[onnx]==0.6.7) on first start, with Python 3.12 if uv cannot find one; it runs as a stdio MCP server for the session and reads the directories you ask it to index. With a fresh BM25-only configuration nothing else leaves the machine; an existing memtomem configuration may enable Hugging Face model downloads, a remote embedding or LLM provider, Cohere reranking or search webhooks."
+maintainer: memtomem
+tier: community
+category: general
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/memtomem/memtomem/tree/5b7034126574a2956b6a328622006a46b2a0e367/packages/memtomem-hermes-plugin
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

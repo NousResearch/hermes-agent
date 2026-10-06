@@ -23,6 +23,7 @@ import { useI18n } from '@/i18n'
 import { AlertCircle } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import type { ActionStatusResponse } from '@/types/hermes'
 
@@ -53,7 +54,9 @@ export function MaintenancePanel() {
   const { t } = useI18n()
   const mm = t.commandCenter.maintenance
 
-  const [actionName, setActionName] = useState<null | string>(null)
+  // A fresh object per launch: the backend reuses one fixed name per op, so a bare name
+  // would leave the tail effect's deps unchanged when the same op runs again.
+  const [tailTarget, setTailTarget] = useState<null | { name: string }>(null)
   const [actionStatus, setActionStatus] = useState<ActionStatusResponse | null>(null)
   const [curator, setCurator] = useState<CuratorStatusResponse | null>(null)
   const [curatorBusy, setCuratorBusy] = useState(false)
@@ -78,17 +81,18 @@ export function MaintenancePanel() {
 
   // Tail the most recently launched spawn action.
   useEffect(() => {
-    if (!actionName) {
+    if (!tailTarget) {
       return
     }
 
+    const { name } = tailTarget
     let cancelled = false
     let polls = 0
     let timer: null | number = null
 
     const poll = async () => {
       try {
-        const status = await getActionStatus(actionName, 200)
+        const status = await getActionStatus(name, 200)
 
         if (cancelled) {
           return
@@ -115,7 +119,7 @@ export function MaintenancePanel() {
         window.clearTimeout(timer)
       }
     }
-  }, [actionName])
+  }, [tailTarget])
 
   const launch = useCallback(
     async (label: string, start: () => Promise<ActionResponse>) => {
@@ -124,7 +128,7 @@ export function MaintenancePanel() {
       try {
         const started = await start()
         setActionStatus(null)
-        setActionName(started.name)
+        setTailTarget({ name: started.name })
         notify({ kind: 'success', title: mm.actionStarted(label), message: '' })
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
@@ -169,7 +173,7 @@ export function MaintenancePanel() {
 
   const doResetMemory = useCallback(
     async (target: 'all' | 'memory' | 'user', label: string) => {
-      if (!window.confirm(mm.resetConfirm(label))) {
+      if (!(await confirm({ destructive: true, title: mm.resetConfirm(label) }))) {
         return
       }
 

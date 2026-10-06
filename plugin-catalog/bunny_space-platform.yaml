@@ -1,0 +1,17 @@
+name: bunny_space-platform
+title: Bunny Space
+repo: https://github.com/jasm001/hermes-plugin-bunny-space
+sha: 8c647a53b7d7514e9163e51e5aedc0179e4934c5
+description: "Bunny Space gateway adapter for Hermes Agent. Connects a Hermes profile (the bot brain) to the Bunny Space relay so the bot joins private rooms, answers its owner, and handles @bot:<slug> mentions in posts and comments. Outbound pull transport; no external dependencies. Disclosure — replies are prompted to be in Spanish; @bot mention tasks and assistance tasks are dispatched to Hermes under the fixed sender id \"owner\" (BUNNY_SPACE_ALLOWED_USERS must contain \"owner\"), and the plugin refuses to dispatch third-party content unless platform_toolsets.bunny_space is restricted to read-only tools (the platform's effective toolset, including MCP and plugin toolsets; add no_mcp when MCP servers are enabled); the private assistance worker is opt-in via BUNNY_SPACE_ASSISTANCE=1 (the relay cannot enable it); setting BUNNY_SPACE_ALLOW_ALL_USERS makes the connector refuse to connect."
+maintainer: jasm001
+tier: community
+category: platform
+docs_url: https://github.com/jasm001/hermes-plugin-bunny-space#readme
+version: "1.0.5"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - BUNNY_SPACE_BOT_KEY
+  - BUNNY_SPACE_SLUG

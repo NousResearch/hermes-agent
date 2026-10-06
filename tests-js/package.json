@@ -1,0 +1,27 @@
+{
+  "name": "@hermes/root-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run test && npm run lint",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "fix": "npm run lint:fix"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "4.0.9",
+    "@types/plist": "3.0.5",
+    "get-windows": "9.3.0",
+    "jsdom": "29.1.1",
+    "node-pty": "1.1.0",
+    "plist": "3.1.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  },
+  "dependencies": {
+    "@playwright/test": "1.62.1",
+    "zod": "4.4.3"
+  }
+}

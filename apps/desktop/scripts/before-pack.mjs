@@ -1,4 +1,3 @@
-'use strict'
 /**
  * before-pack.mjs — electron-builder beforePack hook.
  *
@@ -42,26 +41,21 @@
  * resolve rather than throw — worst case electron-builder hits the original
  * ENOENT, which is no worse than not having this hook at all.
  *
- * 2. Re-stages node-pty's native files for the ACTUAL target platform/arch
- *    of this pack. `npm run build` already staged node-pty once for the
- *    host machine (see scripts/stage-native-deps.mjs), which is correct for
- *    single-arch builds matching the host. But electron-builder can target
- *    a different arch than the host (cross-build), or pack multiple archs
- *    from one `npm run build` (e.g. `dist:mac` => x64 + arm64). Only this
- *    hook knows the real per-target arch, via `context.arch` /
- *    `context.electronPlatformName` — so it re-stages on top of whatever
- *    `npm run build` left behind, per target, right before files are read
- *    for packing.
+ * 2. Copies the target's admitted native tree. Acquisition belongs to native
+ * preparation before packaging, never this hook.
  *
  * electron-builder passes a context with:
  *   - appOutDir:            the unpacked app directory about to be staged
  *   - electronPlatformName: 'win32' | 'darwin' | 'linux'
  *   - arch:                 Arch enum (0=ia32, 1=x64, 2=armv7l, 3=arm64, 4=universal)
  */
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync, rmSync, renameSync } from 'node:fs'
+import path from 'node:path'
 import { Arch } from 'electron-builder'
-import { stageNodePty } from './stage-native-deps.mjs'
+import { copyNativeInputs } from './prepared-native-deps.mjs'
+import { removeDirSync } from './stage-native-deps.mjs'
 
+/** @param {string | null | undefined} appOutDir @returns {boolean} */
 export function cleanStaleAppOutDir(appOutDir) {
   if (!appOutDir || typeof appOutDir !== 'string') {
     return false
@@ -73,13 +67,64 @@ export function cleanStaleAppOutDir(appOutDir) {
   // can't block the wipe. retry/maxRetries rides out transient EBUSY on
   // Windows where an AV/indexer may briefly hold a handle.
   rmSync(appOutDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  // Node's native rmSync silently deletes nothing on non-ASCII Windows
+  // paths (nodejs/node#56049, fixed in v24.13.1) — without this check the
+  // stale tree survives and the "removed" log below lies. Fall back to
+  // the libuv-backed walk, which handles those paths on every version.
+  if (existsSync(appOutDir)) {
+    removeDirSync(appOutDir)
+  }
   return true
 }
 
+/**
+ * Keep manual recovery material for raw in-place Windows packs (#69179).
+ * Preserve `<appOutDir>.bak` only when the output holds the product executable.
+ * The CLI builds in a separate staging directory and rejects invalid output
+ * before promotion. Its live-app transaction does not consume this backup.
+ *
+ * Returns true when the tree was preserved (appOutDir no longer exists), false
+ * when there was nothing worth preserving (caller falls through to the wipe).
+ * A rename failure (AV holding a handle) also returns false — the wipe is the
+ * safe fallback and matches pre-#69179 behavior exactly.
+ */
+/** @param {string | null | undefined} appOutDir @param {string} [productExeName] @returns {boolean} */
+export function preserveRollbackBackup(appOutDir, productExeName = 'Hermes.exe') {
+  if (!appOutDir || typeof appOutDir !== 'string' || !existsSync(appOutDir)) {
+    return false
+  }
+  if (!existsSync(path.join(appOutDir, productExeName))) {
+    // Partial/corrupt tree (interrupted prior pack) — not rollback material.
+    return false
+  }
+  const backupDir = `${appOutDir}.bak`
+  try {
+    rmSync(backupDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    // Same non-ASCII rmSync no-op as cleanStaleAppOutDir: a surviving .bak
+    // makes the rename fail and the previous build is wiped instead of kept.
+    if (existsSync(backupDir)) {
+      removeDirSync(backupDir)
+    }
+    renameSync(appOutDir, backupDir)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** @param {import("app-builder-lib").BeforePackContext} context @returns {Promise<void>} */
 export default async function beforePack(context) {
   const appOutDir = context && context.appOutDir
+  const platformName = context && context.electronPlatformName
   try {
-    if (cleanStaleAppOutDir(appOutDir)) {
+    // Windows: keep the previous working build as rollback material for the
+    // post-build integrity gate (#69179) instead of destroying it. Falls
+    // through to the plain wipe when the old tree is partial/corrupt or the
+    // rename fails.
+    const productExe = `${(context && context.packager?.appInfo?.productFilename) || 'Hermes'}.exe`
+    if (platformName === 'win32' && preserveRollbackBackup(appOutDir, productExe)) {
+      console.log(`[before-pack] preserved previous unpacked dir for rollback: ${appOutDir}.bak`)
+    } else if (cleanStaleAppOutDir(appOutDir)) {
       console.log(`[before-pack] removed stale unpacked dir before staging: ${appOutDir}`)
     }
   } catch (err) {
@@ -88,25 +133,11 @@ export default async function beforePack(context) {
     console.warn(`[before-pack] could not clean ${appOutDir} (${err.message}); continuing`)
   }
 
-  try {
-    const platform = context && context.electronPlatformName
-    const archName = context && typeof context.arch === 'number' ? Arch[context.arch] : undefined
-    if (platform && archName) {
-      if (archName === 'universal') {
-        console.warn(
-          '[before-pack] target arch is "universal" — node-pty has no universal prebuild; ' +
-            'staged binary will be whichever single-arch copy npm run build left behind. ' +
-            'lipo-merge x64/arm64 .node files manually if you need a true universal build.'
-        )
-      } else {
-        await stageNodePty({ platform, arch: archName })
-        console.log(`[before-pack] re-staged node-pty for target ${platform}-${archName}`)
-      }
-    }
-  } catch (err) {
-    // This one SHOULD fail the build — a missing/wrong native binary for the
-    // target arch means a broken package shipped to users, which is worse
-    // than a build that fails loudly here.
-    throw new Error(`[before-pack] failed to stage node-pty for this target: ${err.message}`)
-  }
+  const platform = context && context.electronPlatformName
+  const arch = context && typeof context.arch === 'number' ? Arch[context.arch] : undefined
+  if (!platform || !arch) return
+  const app = context.packager.projectDir
+  const source = path.resolve(app, '../..')
+  const nativeDeps = process.env.HERMES_PREPARED_NATIVE_DEPS || path.join(app, 'build/native-deps')
+  copyNativeInputs({ source, nativeDeps, out: path.join(app, 'dist/node_modules'), platform, arch })
 }

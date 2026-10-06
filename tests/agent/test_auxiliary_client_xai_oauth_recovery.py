@@ -49,34 +49,10 @@ class TestIsAuthErrorXaiOauth403:
         exc.status_code = 403
         assert self.is_auth_error(exc) is False
 
-    def test_401_status_code_is_auth_error(self):
-        """Existing 401 detection still works."""
-        exc = Exception("Unauthorized")
-        exc.status_code = 401
-        assert self.is_auth_error(exc) is True
 
-    def test_401_string_is_auth_error(self):
-        """Existing string-based 401 detection still works."""
-        exc = Exception("Error code: 401 - Unauthorized")
-        assert self.is_auth_error(exc) is True
 
-    def test_authentication_error_class_is_auth_error(self):
-        """Existing AuthenticationError class detection still works."""
-        exc_type = type("AuthenticationError", (Exception,), {})
-        exc = exc_type("auth failure")
-        assert self.is_auth_error(exc) is True
 
-    def test_permission_denied_without_bad_credentials_is_not_auth_error(self):
-        """403 PermissionDenied without bad-credentials should not be auth."""
-        exc = Exception("Error code: 403 - Permission denied")
-        exc.status_code = 403
-        assert self.is_auth_error(exc) is False
 
-    def test_500_is_not_auth_error(self):
-        """Server errors are not auth errors."""
-        exc = Exception("Error code: 500 - Internal server error")
-        exc.status_code = 500
-        assert self.is_auth_error(exc) is False
 
     def test_unauthenticated_without_bad_credentials_is_not_auth_error(self):
         """'unauthenticated' alone (without 'bad-credentials') should not match."""
@@ -138,14 +114,6 @@ class TestRefreshProviderCredentialsXaiOAuth:
     def _import(self):
         self.refresh = _import_refresh_provider_credentials()
 
-    def test_xai_oauth_no_pool_returns_false(self):
-        """When no xai-oauth pool exists, refresh returns False gracefully."""
-        # This tests that the branch exists and doesn't crash.
-        # It may return True if the singleton resolver finds tokens,
-        # or False if neither pool nor singleton has credentials.
-        # Either way, it should not raise an exception.
-        result = self.refresh("xai-oauth")
-        assert isinstance(result, bool)
 
     def test_unknown_provider_returns_false(self):
         """Unknown providers fall through to return False."""

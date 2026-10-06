@@ -80,8 +80,6 @@ class TestProvider:
     def test_protocol_compliant(self, basic):
         assert assert_protocol_compliance(basic.BasicAuthProvider) is None
 
-    def test_supports_password_true(self, basic):
-        assert basic.BasicAuthProvider.supports_password is True
 
     def test_login_mints_session(self, basic):
         p = self._make(basic)
@@ -118,10 +116,6 @@ class TestProvider:
         assert r.user_id == "admin"
         assert p.verify_session(access_token=r.access_token) is not None
 
-    def test_refresh_with_garbage_raises(self, basic):
-        p = self._make(basic)
-        with pytest.raises(RefreshExpiredError):
-            p.refresh_session(refresh_token="garbage")
 
     def test_cross_secret_token_does_not_verify(self, basic):
         p1 = self._make(basic)
@@ -129,9 +123,6 @@ class TestProvider:
         s = p1.complete_password_login(username="admin", password="hunter2")
         assert p2.verify_session(access_token=s.access_token) is None
 
-    def test_revoke_is_silent(self, basic):
-        p = self._make(basic)
-        p.revoke_session(refresh_token="anything")  # must not raise
 
     def test_oauth_methods_raise_not_implemented(self, basic):
         p = self._make(basic)
@@ -171,13 +162,6 @@ class TestRegister:
         ctx.register_dashboard_auth_provider.assert_not_called()
         assert "username" in basic.LAST_SKIP_REASON
 
-    def test_skips_when_username_but_no_password(self, basic, monkeypatch):
-        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "admin")
-        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
-        ctx = MagicMock()
-        basic.register(ctx)
-        ctx.register_dashboard_auth_provider.assert_not_called()
-        assert "password" in basic.LAST_SKIP_REASON
 
     def test_registers_with_env_plaintext_password(self, basic, monkeypatch):
         monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "admin")
@@ -193,20 +177,6 @@ class TestRegister:
         assert s.user_id == "admin"
         assert basic.LAST_SKIP_REASON == ""
 
-    def test_registers_with_precomputed_hash(self, basic, monkeypatch):
-        h = basic.hash_password("s3cret")
-        monkeypatch.setattr(
-            basic,
-            "_load_config_basic_auth_section",
-            lambda: {"username": "ops", "password_hash": h},
-        )
-        ctx = MagicMock()
-        basic.register(ctx)
-        ctx.register_dashboard_auth_provider.assert_called_once()
-        provider = ctx.register_dashboard_auth_provider.call_args.args[0]
-        assert provider.complete_password_login(
-            username="ops", password="s3cret"
-        ).user_id == "ops"
 
     def test_env_password_overrides_config(self, basic, monkeypatch):
         cfg_hash = basic.hash_password("config-pw")

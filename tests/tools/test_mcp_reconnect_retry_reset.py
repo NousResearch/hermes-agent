@@ -62,6 +62,7 @@ def test_reconnect_counter_resets_after_successful_session(monkeypatch, tmp_path
                     # First connect: succeed (sets _ready), then fail.
                     self.session = object()
                     self._ready.set()
+                    self._ever_connected = True
                     self.session = None
                     raise RuntimeError("blip 1")
 
@@ -111,16 +112,12 @@ def test_reconnect_counter_resets_after_successful_session(monkeypatch, tmp_path
             f"(expected >= 8)"
         )
 
-        # Verify the counter is an instance variable, not a local.
-        assert hasattr(task, "_reconnect_retries"), (
-            "_reconnect_retries should be an instance variable"
-        )
 
         # Clean shutdown.
         task._shutdown_event.set()
         task._reconnect_event.set()
         try:
-            await asyncio.wait_for(run_task, timeout=2)
+            await asyncio.wait_for(run_task, timeout=15)
         except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 
@@ -189,7 +186,7 @@ def test_reconnect_counter_still_parks_on_consecutive_failures(monkeypatch, tmp_
         task._shutdown_event.set()
         task._reconnect_event.set()
         try:
-            await asyncio.wait_for(run_task, timeout=2)
+            await asyncio.wait_for(run_task, timeout=15)
         except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 

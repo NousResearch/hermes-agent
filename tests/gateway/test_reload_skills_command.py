@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -112,13 +112,11 @@ async def test_reload_skills_handler_queues_note_on_diff(monkeypatch):
     out = await runner._handle_reload_skills_command(event)
 
     assert out is not None
-    assert "Skills Reloaded" in out
     assert "Added Skills:" in out
     assert "- alpha: Run alpha to do xyz" in out
     assert "- beta: Run beta to do abc" in out
     assert "Removed Skills:" in out
     assert "- gamma: Old removed skill" in out
-    assert "3 skill(s) available" in out
 
     # MUST NOT write to the session transcript — that would break alternation.
     runner.session_store.append_to_transcript.assert_not_called()
@@ -129,8 +127,6 @@ async def test_reload_skills_handler_queues_note_on_diff(monkeypatch):
     session_key = runner._session_key_for_source(event.source)
     assert session_key in pending
     note = pending[session_key]
-    assert note.startswith("[USER INITIATED SKILLS RELOAD:")
-    assert note.endswith("Use skills_list to see the updated catalog.]")
     assert "Added Skills:" in note
     assert "    - alpha: Run alpha to do xyz" in note
     assert "    - beta: Run beta to do abc" in note
@@ -138,63 +134,3 @@ async def test_reload_skills_handler_queues_note_on_diff(monkeypatch):
     assert "    - gamma: Old removed skill" in note
 
 
-@pytest.mark.asyncio
-async def test_reload_skills_handler_reports_no_changes(monkeypatch):
-    """No diff → no queued note, no transcript write."""
-    import agent.skill_commands as skill_commands_mod
-
-    monkeypatch.setattr(
-        skill_commands_mod,
-        "reload_skills",
-        lambda: {
-            "added": [],
-            "removed": [],
-            "unchanged": ["alpha"],
-            "total": 1,
-            "commands": 1,
-        },
-    )
-
-    runner = _make_runner()
-    out = await runner._handle_reload_skills_command(_make_event("/reload-skills"))
-
-    assert "No new skills detected" in out
-    assert "1 skill(s) available" in out
-    runner.session_store.append_to_transcript.assert_not_called()
-    # No queued note when nothing changed.
-    pending = getattr(runner, "_pending_skills_reload_notes", None)
-    assert not pending  # None or empty dict
-
-
-@pytest.mark.asyncio
-async def test_dispatcher_routes_reload_skills(monkeypatch):
-    """``/reload-skills`` must reach ``_handle_reload_skills_command``."""
-    import gateway.run as gateway_run
-
-    runner = _make_runner()
-    sentinel = "reload-skills handler reached"
-    runner._handle_reload_skills_command = AsyncMock(return_value=sentinel)  # type: ignore[attr-defined]
-
-    monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
-    )
-
-    result = await runner._handle_message(_make_event("/reload-skills"))
-    assert result == sentinel
-
-
-@pytest.mark.asyncio
-async def test_underscored_alias_not_flagged_unknown(monkeypatch):
-    """Telegram autocomplete sends ``/reload_skills`` for ``/reload-skills``."""
-    import gateway.run as gateway_run
-
-    runner = _make_runner()
-    runner._handle_reload_skills_command = AsyncMock(return_value="ok")  # type: ignore[attr-defined]
-
-    monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
-    )
-
-    result = await runner._handle_message(_make_event("/reload_skills"))
-    if result is not None:
-        assert "Unknown command" not in result

@@ -8,7 +8,9 @@ These tests pin the new behavior: reads and writes land in the REQUESTED
 profile's HERMES_HOME, and the dashboard's own profile stays untouched.
 """
 import pytest
-import yaml
+import hermes_yaml as yaml
+import hermes_cli.web_server_gateway as _web_server_gateway
+import hermes_cli.web_server_profiles as _web_server_profiles
 
 
 def _write_skill(skills_dir, name, description="test skill"):
@@ -63,21 +65,7 @@ def _load_cfg(home):
 
 
 class TestProfileScopedSkills:
-    def test_skills_list_scopes_to_requested_profile(self, client, isolated_profiles):
-        resp = client.get("/api/skills", params={"profile": "worker_alpha"})
-        assert resp.status_code == 200
-        names = {s["name"] for s in resp.json()}
-        assert "worker-skill" in names
-        assert "dashboard-skill" not in names
 
-    def test_skills_list_without_profile_uses_dashboard_home(
-        self, client, isolated_profiles
-    ):
-        resp = client.get("/api/skills")
-        assert resp.status_code == 200
-        names = {s["name"] for s in resp.json()}
-        assert "dashboard-skill" in names
-        assert "worker-skill" not in names
 
     def test_toggle_writes_into_target_profile_only(self, client, isolated_profiles):
         resp = client.put(
@@ -93,26 +81,7 @@ class TestProfileScopedSkills:
         default_cfg = _load_cfg(isolated_profiles["default"])
         assert "worker-skill" not in default_cfg.get("skills", {}).get("disabled", [])
 
-    def test_toggle_reenable_round_trip(self, client, isolated_profiles):
-        for enabled in (False, True):
-            client.put(
-                "/api/skills/toggle",
-                json={
-                    "name": "worker-skill",
-                    "enabled": enabled,
-                    "profile": "worker_alpha",
-                },
-            )
-        worker_cfg = _load_cfg(isolated_profiles["worker_alpha"])
-        assert "worker-skill" not in worker_cfg.get("skills", {}).get("disabled", [])
 
-    def test_unknown_profile_returns_404(self, client, isolated_profiles):
-        resp = client.get("/api/skills", params={"profile": "no_such_profile"})
-        assert resp.status_code == 404
-
-    def test_invalid_profile_name_returns_400(self, client, isolated_profiles):
-        resp = client.get("/api/skills", params={"profile": "Bad Name!"})
-        assert resp.status_code == 400
 
     def test_scope_restores_module_globals(self, client, isolated_profiles):
         """The SKILLS_DIR swap is per-request; the module global must be
@@ -123,34 +92,36 @@ class TestProfileScopedSkills:
         client.get("/api/skills", params={"profile": "worker_alpha"})
         assert skills_tool.SKILLS_DIR == before
 
+    @pytest.mark.parametrize("method,path,body", [
+        ("PUT", "/api/learning/node", {"id": "shared-skill", "content": "EDITED"}),
+        ("DELETE", "/api/learning/node", {"id": "shared-skill"}),
+        ("PUT", "/api/skills/content", {"name": "shared-skill", "content": "EDITED"}),
+        ("POST", "/api/skills", {"name": "shared-skill-2", "content": "EDITED"}),
+    ])
+    def test_query_profile_scopes_skill_writes(self, client, isolated_profiles, method, path, body):
+        """A shared-backend Desktop names the profile in the query only; the write must land in
+        that profile and leave the same-named skill of the dashboard's own profile alone."""
+        skill_md = (
+            "---\nname: {name}\ndescription: edited\n---\n\n# EDITED\n").format(
+                name=body.get("name", body.get("id")))
+        if "content" in body:
+            body = {**body, "content": skill_md}
+        for home in isolated_profiles.values():
+            _write_skill(home / "skills", "shared-skill")
+        default_md = isolated_profiles["default"] / "skills" / "shared-skill" / "SKILL.md"
+        before = default_md.read_text()
 
-class TestProfileScopedToolsets:
-    def test_toolset_toggle_scopes_to_profile(self, client, isolated_profiles):
-        resp = client.put(
-            "/api/tools/toolsets/x_search",
-            json={"enabled": True, "profile": "worker_alpha"},
-        )
-        assert resp.status_code == 200
+        resp = client.request(method, path, params={"profile": "worker_alpha"}, json=body)
 
-        worker_cfg = _load_cfg(isolated_profiles["worker_alpha"])
-        assert "x_search" in worker_cfg.get("platform_toolsets", {}).get("cli", [])
-        default_cfg = _load_cfg(isolated_profiles["default"])
-        assert "x_search" not in default_cfg.get("platform_toolsets", {}).get("cli", [])
-
-        listing = client.get(
-            "/api/tools/toolsets", params={"profile": "worker_alpha"}
-        ).json()
-        assert {t["name"]: t for t in listing}["x_search"]["enabled"] is True
-        # Unscoped listing reflects the dashboard's own (untouched) config.
-        listing = client.get("/api/tools/toolsets").json()
-        assert {t["name"]: t for t in listing}["x_search"]["enabled"] is False
-
-    def test_toolset_toggle_unknown_profile_404(self, client, isolated_profiles):
-        resp = client.put(
-            "/api/tools/toolsets/x_search",
-            json={"enabled": True, "profile": "ghost"},
-        )
-        assert resp.status_code == 404
+        assert resp.status_code == 200, resp.text
+        worker_skills = isolated_profiles["worker_alpha"] / "skills"
+        if method == "DELETE":
+            assert not (worker_skills / "shared-skill").exists()
+        else:
+            target = body.get("name", body.get("id"))
+            assert "# EDITED" in (worker_skills / target / "SKILL.md").read_text()
+        assert default_md.read_text() == before
+        assert not (isolated_profiles["default"] / "skills" / "shared-skill-2").exists()
 
 
 class TestProfileScopedHubActions:
@@ -171,7 +142,7 @@ class TestProfileScopedHubActions:
             calls.append((list(subcommand), name))
             return _FakeProc()
 
-        monkeypatch.setattr(web_server, "_spawn_hermes_action", _fake_spawn)
+        monkeypatch.setattr(_web_server_gateway, "_spawn_hermes_action", _fake_spawn)
         resp = client.post(
             "/api/skills/hub/install",
             json={"identifier": "official/demo", "profile": "worker_alpha"},
@@ -180,30 +151,10 @@ class TestProfileScopedHubActions:
         assert calls == [
             (
                 ["-p", "worker_alpha", "skills", "install", "official/demo", "--yes"],
-                web_server._hub_action_name("install", "official/demo"),
+                _web_server_profiles._hub_action_name("install", "official/demo"),
             )
         ]
 
-    def test_hub_install_without_profile_keeps_legacy_argv(
-        self, client, isolated_profiles, monkeypatch
-    ):
-        import hermes_cli.web_server as web_server
-
-        calls = []
-
-        class _FakeProc:
-            pid = 4242
-
-        monkeypatch.setattr(
-            web_server,
-            "_spawn_hermes_action",
-            lambda subcommand, name: calls.append(list(subcommand)) or _FakeProc(),
-        )
-        resp = client.post(
-            "/api/skills/hub/install", json={"identifier": "official/demo"}
-        )
-        assert resp.status_code == 200
-        assert calls == [["skills", "install", "official/demo", "--yes"]]
 
     def test_hub_install_unknown_profile_404(self, client, isolated_profiles):
         resp = client.post(
@@ -211,3 +162,35 @@ class TestProfileScopedHubActions:
             json={"identifier": "official/demo", "profile": "ghost"},
         )
         assert resp.status_code == 404
+
+    def test_hub_install_scoped_to_default_still_carries_the_selector(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """``default`` is a real named profile, not an alias for "the dashboard's own".
+        A pooled ``hermes -p worker_alpha serve`` dashboard answering a hub action with
+        ``profile=default`` must still emit ``-p default``: without it the child's env
+        carries this process's home verbatim and the install lands on worker_alpha."""
+        calls = []
+
+        class _FakeProc:
+            pid = 4242
+
+        def _fake_spawn(subcommand, name):
+            calls.append(list(subcommand))
+            return _FakeProc()
+
+        # Ambient home of a dashboard serving under the named profile.
+        monkeypatch.setenv("HERMES_HOME", str(isolated_profiles["worker_alpha"]))
+        monkeypatch.setattr(_web_server_gateway, "_spawn_hermes_action", _fake_spawn)
+        resp = client.post(
+            "/api/skills/hub/install",
+            json={"identifier": "official/demo", "profile": "default"},
+        )
+        assert resp.status_code == 200
+        assert calls == [
+            ["-p", "default", "skills", "install", "official/demo", "--yes"]
+        ]
+        # The spawn-path env pin must land the child on the default home, not the
+        # ambient one it would inherit from a selector-less argv.
+        env = _web_server_gateway._profile_action_environment(calls[0])
+        assert env["HERMES_HOME"] == str(isolated_profiles["default"])

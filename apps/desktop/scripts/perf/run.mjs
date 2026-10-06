@@ -28,13 +28,16 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { withCpuProfile } from './lib/cdp.mjs'
-import { compareScenario, loadBaseline, updateBaseline } from './lib/baseline.mjs'
+import { compareScenario, loadBaseline, platformKey, updateBaseline } from './lib/baseline.mjs'
 import { attach, buildProdRenderer, coldStartSamples, startIsolatedInstance } from './lib/launch.mjs'
 import { cpuProfileTopSelf, median } from './lib/stats.mjs'
 import { CI_SCENARIOS, SCENARIOS } from './scenarios/index.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const BASELINE_PATH = join(HERE, 'baseline.json')
+// The bucket this run is measured against. Totals are machine-specific, so a
+// run only gates against the numbers this platform produced.
+const PLATFORM = platformKey()
 
 function parseArgs(argv) {
   const positional = []
@@ -121,7 +124,15 @@ async function main() {
   // ci + cold metrics are stable enough to gate against the baseline; backend
   // scenarios vary too much with the live environment, so they're report-only.
   const GATED = new Set(['ci', 'cold'])
-  const baseline = loadBaseline(BASELINE_PATH)
+  const baseline = loadBaseline(BASELINE_PATH, PLATFORM)
+
+  if (!baseline.gated) {
+    console.log(
+      `[perf] no ${PLATFORM} baseline committed` +
+        (baseline.availablePlatforms.length ? ` (have: ${baseline.availablePlatforms.join(', ')})` : '') +
+        ' — reporting metrics, NOT gating. Capture one on this machine with --update-baseline.'
+    )
+  }
   const results = []
   let regressed = false
 
@@ -202,8 +213,9 @@ async function main() {
   }
 
   if (flags['update-baseline']) {
-    updateBaseline(BASELINE_PATH, results.filter(r => GATED.has(r.tier)))
-    console.log(`\nupdated ${BASELINE_PATH}`)
+    const written = updateBaseline(BASELINE_PATH, results.filter(r => GATED.has(r.tier)), PLATFORM)
+
+    console.log(`\nupdated ${BASELINE_PATH} [${written.platform}]: ${written.scenarios.join(', ')}`)
     return
   }
 

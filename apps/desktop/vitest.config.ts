@@ -35,7 +35,11 @@ const electronNative: TestProjectConfiguration = {
     // `e2e/**/*.unit.test.ts` is the e2e HELPERS, not the specs: plain node
     // modules that should be provable without booting Electron. Playwright
     // ignores the same pattern so they run in exactly one runner.
-    include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}', 'e2e/**/*.unit.test.ts']
+    // `scripts/**/*.test.{ts,mjs}` — the `**/` matters. `scripts/**.test.mjs`
+    // (what this used to say) treats `**` as part of a filename, so it stops at
+    // one path segment and a test colocated with its module under
+    // `scripts/<dir>/` is silently never collected.
+    include: ['electron/**/*.test.ts', 'scripts/**/*.test.{ts,mjs}', 'e2e/**/*.unit.test.ts']
   }
 }
 

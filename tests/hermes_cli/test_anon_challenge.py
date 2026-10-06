@@ -26,6 +26,12 @@ def presented(monkeypatch):
     return seen
 
 
+def _desktop_backend(monkeypatch):
+    """The backend Desktop spawned: the inherited flag plus the per-spawn credential."""
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "spawn-token")
+
+
 def _resolve():
     from hermes_cli.auth_nous import resolve_nous_runtime_credentials
     assert anon_auth.is_guest_state(anon_auth.ensure_portal_identity(explicit=True))
@@ -42,7 +48,7 @@ class TestWhatTheClientSends:
         assert sent["user_agent"].startswith("hermes-agent/") and "(cli;" in sent["user_agent"]
 
     def test_the_desktop_backend_reports_the_desktop_surface(self, nas, monkeypatch):
-        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        _desktop_backend(monkeypatch)
         _resolve()
         assert nas.token_requests[-1]["body"]["client"]["surface"] == "desktop"
         assert "(desktop;" in nas.token_requests[-1]["user_agent"]
@@ -258,15 +264,16 @@ class TestWhoWaits:
         assert _resolve()["api_key"]
         assert len(presented) == 1                       # the 429 did not skip presenting
 
-    def test_a_desktop_flag_without_a_gateway_falls_back_to_the_terminal(self, monkeypatch, capsys):
-        """HERMES_DESKTOP is inherited by CLIs the desktop spawns; with no gateway in this process
-        there is nobody to announce to, so the link is printed instead of silently waiting."""
-        import sys
+    def test_an_inherited_desktop_flag_is_not_the_desktop_surface(self, nas, monkeypatch, capsys):
+        """A ``hermes`` run in the desktop's terminal pane inherits HERMES_DESKTOP but not the spawn
+        credential: it reports ``cli`` to the service and prints the link where its user is."""
         import webbrowser
         monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
         monkeypatch.setenv("SSH_TTY", "/dev/pts/0")
-        monkeypatch.delitem(sys.modules, "tui_gateway.server", raising=False)
         monkeypatch.setattr(webbrowser, "open", lambda _url: False)
+        _resolve()
+        assert nas.token_requests[-1]["body"]["client"]["surface"] == "cli"
         anon_challenge.present(anon_challenge.BrowserChallenge(f"{PORTAL}/challenge?code=t", True, 600, 2, "m"))
         assert f"{PORTAL}/challenge?code=t" in capsys.readouterr().err
 
@@ -363,7 +370,7 @@ class TestOptionalChallenge:
     def test_the_desktop_backend_announces_it_and_waits_on_nothing(self, nas, presented, monkeypatch):
         announced = []
         monkeypatch.setattr(anon_challenge, "_announce", announced.append)
-        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        _desktop_backend(monkeypatch)
         nas.optional_challenge = True
         assert _resolve()["api_key"]
         assert [c.required for c in announced] == [False]
@@ -388,7 +395,7 @@ class TestOptionalChallenge:
 class TestPresenting:
     def test_the_desktop_backend_announces_and_never_opens_a_browser(self, monkeypatch):
         announced, opened = [], []
-        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        _desktop_backend(monkeypatch)
         monkeypatch.setattr(anon_challenge, "_announce", lambda c: announced.append(c) or True)
         monkeypatch.setattr(anon_challenge, "_present_in_terminal", opened.append)
         challenge = anon_challenge.BrowserChallenge(f"{PORTAL}/challenge?code=t", True, 600, 2, "m")

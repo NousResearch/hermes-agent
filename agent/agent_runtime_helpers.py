@@ -3332,6 +3332,9 @@ def tool_results_this_turn(messages: List[Dict[str, Any]]) -> int:
 # Trigger glosses mirror the English group;
 # the whole branch stays tail-anchored so a plan mentioned mid-reply ("让我先看下。答案是 42。")
 # still reads as an answer.
+# Bare-colon tail: a CJK reply ENDING on ：/: announced a list or action and then stopped
+# ("…开始下载：" / "以下是要点：") — nothing after the colon means nothing was delivered.
+# No English branch; a colon can be legitimate formatting in English prose.
 _TRAILING_CONTINUE_INTENT_RE = re.compile(
     r"(?:\blet me now\b|\bi(?:['\u2019])?ll now\b|\bi will now\b"
     r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b)"
@@ -3341,7 +3344,8 @@ _TRAILING_CONTINUE_INTENT_RE = re.compile(
     r"|(?:现在|马上|立刻|立即|这就)[^。！？\n]{0,40}(?:推进|开始|执行|继续|处理|运行|启动|检查|部署|构建|进行|操作|来做|搞定|重试|跑|查|做)"
     r"|(?:同时|一起|并行|一块)[^。！？\n]{0,40}(?:推进|开始|执行|继续|处理|运行|启动|检查|部署|构建|进行|操作|来做|搞定|重试|跑|查|做)"
     r"|(?:继续|接着)[^。！？\n]{0,30}(?:推进|执行|处理|进行|操作|开始|跑|查|做))"
-    r"[^。！？\n]{0,60}[。！？]?\s*$", re.IGNORECASE,
+    r"[^。！？\n]{0,60}[。！？]?\s*$"
+    r"|[^\x00-\x7F][^\n]{0,155}[：:]\s*$", re.IGNORECASE,
 )
 
 # Content longer than this is a substantive reply, not a dangling ack.
@@ -3370,6 +3374,8 @@ def trailing_continue_intent(text: str) -> bool:
 # do,look}, "please let me" + one of {start,try,check,fix,send,do,look}, "I('ll)" + one of
 # {start,try,check,fix,send,do,look,run,fire}. The CJK groups mirror
 # _TRAILING_CONTINUE_INTENT_RE: self-plans plus now/together/keep-going action announcements.
+# Bare-colon tail mirrors the visible detector: a CJK reasoning tail ENDING on ：/: is an
+# announced-but-unfinished action, not an answer.
 _PROMOTED_REASONING_PLAN_TAIL_RE = re.compile(
     r"(?:^|[.!?:\u3002\uff01\uff1f\u2014\u2013\n\uff0c,\uff1b;]\s*|\u2026\s*)"
     r"(?:let(?:['\u2019]s| me)\b|i(?:['\u2019]ll| will| need to| should| am going to|['\u2019]m going to)\b"
@@ -3383,7 +3389,8 @@ _PROMOTED_REASONING_PLAN_TAIL_RE = re.compile(
     r"|(?:\u73b0\u5728|\u9a6c\u4e0a|\u7acb\u523b|\u7acb\u5373|\u8fd9\u5c31)[^\u3002\uff01\uff1f\n]{0,40}(?:\u63a8\u8fdb|\u5f00\u59cb|\u6267\u884c|\u7ee7\u7eed|\u5904\u7406|\u8fd0\u884c|\u542f\u52a8|\u68c0\u67e5|\u90e8\u7f72|\u6784\u5efa|\u8fdb\u884c|\u64cd\u4f5c|\u6765\u505a|\u641e\u5b9a|\u91cd\u8bd5|\u8dd1|\u67e5|\u505a)"
     r"|(?:\u540c\u65f6|\u4e00\u8d77|\u5e76\u884c|\u4e00\u5757)[^\u3002\uff01\uff1f\n]{0,40}(?:\u63a8\u8fdb|\u5f00\u59cb|\u6267\u884c|\u7ee7\u7eed|\u5904\u7406|\u8fd0\u884c|\u542f\u52a8|\u68c0\u67e5|\u90e8\u7f72|\u6784\u5efa|\u8fdb\u884c|\u64cd\u4f5c|\u6765\u505a|\u641e\u5b9a|\u91cd\u8bd5|\u8dd1|\u67e5|\u505a)"
     r"|(?:\u7ee7\u7eed|\u63a5\u7740)[^\u3002\uff01\uff1f\n]{0,30}(?:\u63a8\u8fdb|\u6267\u884c|\u5904\u7406|\u8fdb\u884c|\u64cd\u4f5c|\u5f00\u59cb|\u8dd1|\u67e5|\u505a))"
-    r"[^.!?\n\u3002\uff01\uff1f]{0,160}(?:[.:\u2026\u3002\uff01\uff1f]+)?\s*$",
+    r"[^.!?\n\u3002\uff01\uff1f]{0,160}(?:[.:\u2026\u3002\uff01\uff1f]+)?\s*$"
+    r"|[^\x00-\x7F][^\n]{0,200}[\uff1a:]\s*$",
     re.IGNORECASE,
 )
 

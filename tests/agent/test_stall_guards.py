@@ -412,6 +412,27 @@ def test_cjk_controls_do_not_fire():
         assert not trailing_continue_intent(tail), tail
 
 
+def test_detects_cjk_bare_colon_tails():
+    # A CJK reply ending on a bare colon announced a list/action and stopped —
+    # nothing after the colon means nothing was delivered (local-model v3 shape).
+    for tail in (
+        "找到了 YouTube 播放列表，开始下载：",
+        "以下是要点：",
+        "马上安装：",
+    ):
+        assert trailing_continue_intent(tail), tail
+
+
+def test_ignores_non_cjk_colon_tails():
+    # English colon tails keep the old behavior (a colon can be legit formatting).
+    for tail in (
+        "The answer is 42:",
+        "Here is the plan:",
+        "时间：12:30",
+    ):
+        assert not trailing_continue_intent(tail), tail
+
+
 # ── batch-cycle loop breaker (port of can1357/oh-my-pi#10521) ───────────────
 
 
@@ -540,3 +561,13 @@ def test_promoted_reasoning_detector_ignores_cjk_stated_answers():
         "数据处理已经完成，结果全部写入了报告文件。",
     ):
         assert not promoted_reasoning_announces_action(text), text
+
+
+def test_promoted_reasoning_detector_catches_cjk_bare_colon_tails():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    for tail in (
+        "好，开始下载：",
+        "找到了列表，下面是全部条目：",
+    ):
+        assert promoted_reasoning_announces_action(tail), tail

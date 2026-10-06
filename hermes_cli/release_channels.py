@@ -15,7 +15,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 MAX_SEQUENCE = 2**32 - 1
 MAX_METADATA = 4 * 1024 * 1024
 
-_HEADERS = {
+UPDATER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) hermes-update/1.0",
     "Cache-Control": "no-cache",
 }
@@ -300,7 +300,7 @@ class ChannelReader:
                 url,
                 # ``read_bytes`` also serves YAML/XML feeds during publication;
                 # keep representation negotiation neutral at this byte layer.
-                headers={**_HEADERS, "Accept": "*/*"},
+                headers={**UPDATER_HEADERS, "Accept": "*/*"},
             ), timeout=30) as response:
                 if response.geturl() != url:
                     raise ChannelError("Channel archive redirects are not permitted")

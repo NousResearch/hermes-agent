@@ -2,7 +2,7 @@ import { configure } from '@testing-library/react'
 
 import { InertResizeObserver } from './src/test/jsdom'
 
-// Shared tooltips measure their arrow through Radix's useSize hook.
+// Shared tooltips measure their arrow through Radix's useSize hook; Masonry measures lanes.
 // Geometry assertions still belong in a real browser, not this inert observer. Assigned,
 // not `vi.stubGlobal`, so a test's `vi.unstubAllGlobals()` cannot strip it.
 globalThis.ResizeObserver ??= InertResizeObserver as unknown as typeof ResizeObserver
@@ -51,7 +51,7 @@ globalThis.IntersectionObserver = class {
   }
 } as typeof IntersectionObserver
 
-// Idle prefetches and feature queries (`CSS.supports`) run on mount.
+// Idle prefetches and feature queries (Masonry's `CSS.supports`) run on mount.
 // jsdom has neither API; idle work never fires and every feature reads as absent.
 globalThis.requestIdleCallback ??= () => 0
 globalThis.cancelIdleCallback ??= () => undefined

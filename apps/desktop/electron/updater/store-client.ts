@@ -4,9 +4,8 @@ import { type StoreResult, StoreStrategy, type StoreStrategyDeps } from './store
 
 export interface StoreClientDeps extends Omit<StoreStrategyDeps, 'run'> {
   python: string
-  module: string
-  /** PYTHONPATH for the payload python: the bundled core code, then its dependencies. */
-  pythonPath: string
+  script: string
+  sitePackages: string
   env: NodeJS.ProcessEnv
   windowHandle: () => Buffer | null
   run?: typeof runAppInstallerChecker
@@ -47,7 +46,7 @@ export function createStoreStrategy(deps: StoreClientDeps): StoreStrategy {
   return new StoreStrategy({
     ...deps,
     run: async mode => {
-      const env: NodeJS.ProcessEnv = { ...deps.env, PYTHONPATH: deps.pythonPath }
+      const env: NodeJS.ProcessEnv = { ...deps.env, PYTHONPATH: deps.sitePackages }
       delete env.PYTHONHOME
       delete env.VIRTUAL_ENV
       delete env.PYTHONEXECUTABLE
@@ -65,7 +64,7 @@ export function createStoreStrategy(deps: StoreClientDeps): StoreStrategy {
         args.push('--hwnd', hwnd)
       }
 
-      const result = await run(deps.python, deps.module, {
+      const result = await run(deps.python, deps.script, {
         args,
         env,
         timeoutMs: mode === 'check' ? APPINSTALLER_CHECK_TIMEOUT_MS : 1_830_000,

@@ -725,8 +725,6 @@ export const arSettings = {
       defaultsLabel: 'الافتراضيات',
       reasoning: 'الاستدلال',
       reasoningOff: 'إيقاف',
-      speed: 'السرعة',
-      speedStandard: 'قياسية',
       defaultsFailed: 'فشل حفظ افتراضيات النموذج',
       loadFailed: 'تعذر تحميل النماذج',
       restartRequired: 'بعد التحديث ما زال هذا الخلفية يشغّل كودا قديما. أعد تشغيله لتحميل الكود الجديد.',

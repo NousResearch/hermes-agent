@@ -706,13 +706,9 @@ def test_real_openai_key_is_never_routed_or_sent_to_openrouter(monkeypatch):
     ("https://proxy.corp.example/v1", ""),
     ("proxy.corp.example:8080/v1", ""),  # scheme-less still names a foreign host
     ("https://openrouter.ai/api/v1", "sk-openai-fallback"),
-    ("http://openrouter.ai/api/v1", ""),  # same host, http: another origin
-    ("https://openrouter.ai:8443/api/v1", ""),  # same host, another port
-    ("https://openrouter.ai:443/api/v1", "sk-openai-fallback"),  # default port spelled out: same origin
 ])
 def test_openai_key_bound_to_another_host_never_reaches_openrouter(monkeypatch, openai_base_url, expected_key):
-    """OPENAI_API_KEY is an OpenRouter fallback only while OPENAI_BASE_URL doesn't bind it elsewhere:
-    a bound key follows its exact origin, so the same hostname over http:// or on another port is elsewhere."""
+    """OPENAI_API_KEY is an OpenRouter fallback only while OPENAI_BASE_URL doesn't bind it elsewhere."""
     from hermes_cli.runtime_provider_backends import _resolve_openrouter_runtime
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("OPENAI_BASE_URL", openai_base_url)

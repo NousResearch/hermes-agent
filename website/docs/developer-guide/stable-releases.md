@@ -159,8 +159,7 @@ python scripts/release.py abandon --version 0.21.5 --remote origin
 
 `publish` performs a synchronous supersession preflight, then dispatches the same
 ordered controller used by automatic recovery. It refuses a known burned version
-below a newer published release. `abandon` force-cancels the attempt's
-in-progress `Stable Release` runs, deletes the draft when one exists,
+below a newer published release. `abandon` deletes the draft when one exists,
 writes an `abandoned-rc.<N>-vX.Y.Z` marker ref, and keeps the attempt ref. The
 marker is the record of abandonment; the attempt ref is never deleted. The
 version is not spent, so the next cut is `rc.<N+1>-vX.Y.Z`.
@@ -305,7 +304,8 @@ the short SHA. All desktop icon formats derive from the same artwork.
 One-off stamps use `source: commit-build`. No app update feed or App Installer
 subscription is published for them, and both the GUI and bundled CLI refuse
 update requests. They direct the recipient to ask the developer for a new
-build. Source checkouts are separate: `main` is their only valid channel.
+build. Source checkout channels are separate: `hermes update --set-channel`
+remains available there and selects the published release's source commit.
 
 `--build-commit` prints its deterministic downloads-page URL before dispatch,
 including in dry runs:

@@ -174,12 +174,10 @@ class ProfilesListParams(ProfileParams):
 
 
 class ProfilesListResult(Result):
-    """``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself;
-    ``install_id`` (as on ``/api/status``) names the machine that answered."""
+    """``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself."""
 
     profiles: list[ProfileRow] = Field(default_factory=list)
     bot_mode_protocol: bool = True
-    install_id: str = ""
 
 
 method("profiles.list", params=ProfilesListParams, result=ProfilesListResult,

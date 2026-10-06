@@ -23,8 +23,7 @@ Env vars::
 
 No anonymous tier at Perplexity itself. The managed route serves search through
 ``perplexity-gateway.<TOOL_GATEWAY_DOMAIN>`` as ``search_type: "fast"``, which the
-gateway serves to any Nous identity (paid, unpaid or anonymous guest); a direct key
-takes precedence.
+gateway serves to any Nous identity (paid or not); a direct key takes precedence.
 Managed extract stays on Firecrawl.
 
 Extract caveat: Perplexity's only supported page-content route returns the
@@ -72,12 +71,18 @@ def _missing_key_error() -> str:
     return f"PERPLEXITY_API_KEY is not set. Get a key at {_KEY_URL}"
 
 
-def _managed_gateway(token_reader=None):
-    """Nous Tool Gateway config when web_search is on the managed route, else None."""
-    from tools import managed_tool_gateway as gw
-    from tools.web_tools import _managed_web_search
+def _managed_gateway(token_reader=None, managed=None):
+    """Nous Tool Gateway config when web_search is on the managed route, else None.
 
-    if not _managed_web_search():
+    ``managed`` lets a caller that already resolved the route reuse that answer instead of
+    walking the autodetect ladder again."""
+    from tools import managed_tool_gateway as gw
+
+    if managed is None:
+        from tools.web_tools import _managed_web_search
+
+        managed = _managed_web_search()
+    if not managed:
         return None
     return gw.resolve_free_search_gateway(token_reader=token_reader)
 
@@ -211,17 +216,17 @@ class PerplexityWebSearchProvider(WebSearchProvider):
                 return {"success": False, "error": "Interrupted"}
 
             from agent.web_search_provider import get_provider_env
-            from tools.managed_tool_gateway import resolve_free_search_gateway
             from tools.web_tools import _managed_web_search
 
             direct = bool(get_provider_env("PERPLEXITY_API_KEY"))
             managed = False if direct else _managed_web_search()
-            gateway = resolve_free_search_gateway() if managed else None
+            gateway = _managed_gateway(managed=managed) if managed else None
             if gateway is None and managed:
-                from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, selection_error
+                from tools.tool_backend_helpers import (
+                    NOUS_MANAGED_PROVIDER, fast_search_unavailable_message, selection_error)
 
-                raise ValueError(selection_error(
-                    "web", NOUS_MANAGED_PROVIDER, "there is no usable Nous identity (sign in with `/login`)"))
+                raise ValueError(selection_error("web", NOUS_MANAGED_PROVIDER,
+                                                 fast_search_unavailable_message()))
             logger.info("Perplexity search: '%s' (limit=%d%s)", query, limit, ", managed" if gateway else "")
             payload = {
                 "query": query,

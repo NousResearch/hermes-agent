@@ -451,7 +451,7 @@ The management endpoint families — `/api/config`, `/api/env`, `/api/skills`,
 `/api/tools/toolsets`, `/api/mcp`,
 `/api/model/{info,options,auxiliary,set,recommended-default}`,
 `/api/cron/{delivery-targets,blueprints}`, `/api/audio/voice-config`,
-`/api/ops/debug-share`, `/api/learning/{graph,node}`, and `/api/dashboard/plugins/hub` —
+`/api/ops/debug-share`, `/api/learning/graph`, and `/api/dashboard/plugins/hub` —
 accept an optional `?profile=<name>` query parameter (or `"profile"` in the
 JSON body for writes) that scopes the read/write to that profile's
 `HERMES_HOME`. Omitted = the dashboard's own profile. Unknown profile names

@@ -101,16 +101,10 @@ def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
         return _SCHEMA_CACHE[key]
 
     try:
-        from plugins.memory import _is_bundled
-        from hermes_cli.plugin_isolation import user_plugin_host
-        host = None if _is_bundled(provider_dir) else user_plugin_host()
-        if host is not None:  # plugins.isolation: host — a user schema file is user code too
-            schema = _schema_from_record(host.config_schema(path))
-        else:
-            spec = importlib.util.spec_from_file_location(f"_hermes_memory_config_schema.{name}", path)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            schema = getattr(module, "CONFIG_SCHEMA", None)
+        spec = importlib.util.spec_from_file_location(f"_hermes_memory_config_schema.{name}", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        schema = getattr(module, "CONFIG_SCHEMA", None)
     except Exception:
         # Never cache a failed load: it would pin an empty panel until restart.
         _log.exception("failed to load config schema for memory provider %r", name)
@@ -119,15 +113,3 @@ def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
     if schema is not None:
         _SCHEMA_CACHE[key] = schema
     return schema
-
-
-def _schema_from_record(record) -> ProviderConfigSchema | None:
-    """Rebuild a schema that crossed the plugin-host boundary as plain data."""
-    if not record:
-        return None
-    fields = tuple(
-        ProviderField(**{**f, "options": tuple(ProviderFieldOption(**o) for o in f.get("options") or ()),
-                         "aliases": tuple(f.get("aliases") or ()),
-                         "env_fallbacks": tuple(f.get("env_fallbacks") or ())})
-        for f in record.get("fields") or ())
-    return ProviderConfigSchema(**{**record, "fields": fields})

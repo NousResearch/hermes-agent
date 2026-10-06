@@ -319,7 +319,7 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
     serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
     is deliberately NOT forwarded — it under-reports levels that work."""
-    from hermes_cli.models import model_supports_ultrafast, resolve_fast_mode_overrides
+    from hermes_cli.models import model_supports_fast_mode
 
     try:
         from agent.models_dev import get_model_capabilities
@@ -330,6 +330,7 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
         slug = row.get("slug") or ""
         caps: dict[str, dict[str, Any]] = {}
         read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
+
         for model in row.get("models") or []:
             reasoning = True
             if get_model_capabilities is not None and slug:
@@ -340,11 +341,7 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
                 except Exception:
                     reasoning = True
 
-            fast = resolve_fast_mode_overrides(
-                model, provider=slug, base_url=row.get("api_url")) is not None
-            entry: dict[str, Any] = {"fast": fast, "reasoning": reasoning}
-            if fast and model_supports_ultrafast(model):
-                entry["ultrafast"] = True
+            entry: dict[str, Any] = {"fast": bool(model_supports_fast_mode(model)), "reasoning": reasoning}
 
             if reasoning and read_reasoning_catalog is not None:
                 try:
@@ -640,8 +637,6 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
             continue
         try:
             pricing_kwargs = {"cached_only": True} if cached_only else {}
-            if slug.startswith("custom:"):
-                pricing_kwargs["base_url"] = str(row.get("api_url") or "")
             raw_pricing = get_pricing_for_provider(slug, **pricing_kwargs) or {}
         except Exception:
             raw_pricing = {}
@@ -746,18 +741,10 @@ def _prewarm_pricing_async(
     from hermes_constants import hermes_home_key
     from hermes_cli.models_pricing import pricing_cache_scope
 
-    slugs = {
-        (
-            str(row.get("slug") or "").lower(),
-            str(row.get("api_url") or "") if str(row.get("slug") or "").lower().startswith("custom:") else "",
-        )
-        for row in rows if row.get("slug")
-    }
+    slugs = {str(row.get("slug") or "").lower() for row in rows if row.get("slug")}
     endpoint_scope = tuple(sorted(
-        (slug, pricing_cache_scope(
-            slug, base_url=base_url, current_provider=current_provider, current_base_url=current_base_url,
-        ))
-        for slug, base_url in slugs))
+        (slug, pricing_cache_scope(slug, current_provider=current_provider, current_base_url=current_base_url))
+        for slug in slugs))
     prewarm_key = (hermes_home_key(), endpoint_scope)
 
     with _pricing_prewarm_lock:

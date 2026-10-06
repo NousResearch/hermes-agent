@@ -116,29 +116,3 @@ def build_activity_snapshot(
         "last_activity_ts": when, "last_activity_desc": desc, "description": desc, "provenance": prov,
         **(extra or {}),
     }
-
-
-class AwakeIdleMeter:
-    """Removes host sleep from a polling watchdog's idle readings.
-
-    Idle time is measured on the wall clock, which keeps running while the host sleeps, so a laptop
-    that sleeps 15 minutes mid-turn wakes up "idle" for 15 minutes and the first poll after resume
-    kills a turn that never had a chance to run. ``time.monotonic()`` pauses during sleep on macOS
-    (``mach_absolute_time``) and Linux (``CLOCK_MONOTONIC``), so the two clocks drift apart by the
-    time spent asleep. Call :meth:`measure` once per poll with the wall-clock idle seconds.
-    """
-
-    def __init__(self) -> None:
-        self._wall, self._mono = time.time(), time.monotonic()
-        self._asleep_s = 0.0
-
-    def measure(self, idle_s: float) -> float:
-        """Return *idle_s* minus the sleep observed since the agent's last activity."""
-        wall, mono = time.time(), time.monotonic()
-        slept_s = max(0.0, (wall - self._wall) - (mono - self._mono))
-        self._asleep_s += slept_s
-        self._wall, self._mono = wall, mono
-        # The idle sample may predate sleep observed by these clock reads. Keep that new
-        # credit until the next poll; only older credit can be trimmed by renewed activity.
-        self._asleep_s = max(0.0, min(self._asleep_s, idle_s + slept_s))
-        return max(0.0, idle_s - self._asleep_s)

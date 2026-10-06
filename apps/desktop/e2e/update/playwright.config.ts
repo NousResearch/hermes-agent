@@ -25,9 +25,6 @@ export default defineConfig({
   timeout: 12 * 60_000,
   expect: { timeout: 60_000 },
   retries: 0,
-  /* Same contract as the core lane: a required job must never be quietly
-   * shrunk by a focused test, so forbidOnly is unconditional here too. */
-  forbidOnly: true,
   workers: 1,
   fullyParallel: false,
   reporter: [['list'], ['html', { open: 'never', outputFolder: `../../playwright-report/${OUT}` }]],

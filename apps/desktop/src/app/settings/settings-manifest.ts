@@ -154,7 +154,7 @@ export const SETTINGS_MANIFEST = {
   advanced: {
     keepAwake: {
       subpage: 'desktop',
-      keywords: ['sleep', 'awake', 'caffeinate', 'idle', 'overnight', 'power', 'while working', 'turn'],
+      keywords: ['sleep', 'awake', 'caffeinate', 'idle', 'overnight', 'power'],
       copy: t => ({ label: t.settings.config.keepAwakeTitle, description: t.settings.config.keepAwakeDesc })
     },
     disableF12: {

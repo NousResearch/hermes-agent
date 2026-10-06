@@ -55,8 +55,6 @@ export function ReasoningMenuPanel(props: ModelMenuHostProps) {
       onSetOptions={patch => controller.setOptions(patch, row)}
       provider={provider}
       reasoning={caps?.reasoning ?? true}
-      serviceTier={controller.current.serviceTier}
-      ultrafastSupported={caps?.ultrafast ?? false}
     />
   )
 }

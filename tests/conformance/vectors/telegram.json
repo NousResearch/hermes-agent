@@ -319,7 +319,7 @@
       "category": "adversarial",
       "expect": "semantic",
       "input": "```\na\n```\nmid\n```\nb\n```\nend ```inline``` tail",
-      "native_output": "```\na\n```\nmid\n```\nb\n```\nend \\`\\``inline`\\`\\` tail"
+      "native_output": "```\na\n```\nmid\n```\nb\n```\nend ```inline``` tail"
     }
   ]
 }

@@ -81,10 +81,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  // A save reads the bot's server namespace (profiles.list) before writing it.
-  request.mockImplementation(async (method: string) =>
-    method === 'profiles.list' ? { profiles: [{ name: 'default' }, { name: 'ghost' }] } : { applied: { ui_meta: true } }
-  )
+  request.mockResolvedValue({ applied: { ui_meta: true } })
 })
 
 describe('hiding persists locally and cross-machine', () => {

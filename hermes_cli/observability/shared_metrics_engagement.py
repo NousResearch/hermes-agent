@@ -44,9 +44,7 @@ _ACTIVE_THRESHOLDS = (
 _SWITCH_THRESHOLDS = ((2, "1"), (4, "2_to_3"), (11, "4_to_10"), (31, "11_to_30"))
 # Task entrypoints that are a person using Hermes. Unattended cron runs (counted by hermes.cron.run),
 # delegated children, background review forks, batch and API/python embedding are not engagement.
-# ``one_shot`` keeps the treatment it had while it read ``interactive``: a person typing ``hermes -z`` and a
-# script looping it look the same from inside the process; the label lets the rollup split them instead.
-_ENGAGED_ENTRYPOINTS = frozenset({"gateway_message", "interactive", "one_shot"})
+_ENGAGED_ENTRYPOINTS = frozenset({"gateway_message", "interactive"})
 _INTERACTION_METRICS = frozenset({contract.TASK_STARTED_METRIC, contract.TASK_FINISHED_METRIC})
 _ALL = "*"
 

@@ -21,7 +21,7 @@ import {
   type InputHandlerResult,
   type OverlayState
 } from './interfaces.js'
-import { $isBlocked, $overlayState, hasSensitivePrompt, patchOverlayState, SENSITIVE_PROMPTS } from './overlayStore.js'
+import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { respondToServerRequest } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
@@ -165,35 +165,40 @@ export function applyVoiceRecordResponse(
   }
 }
 
-type SensitivePrompt = (typeof SENSITIVE_PROMPTS)[number]
-
-const DISMISSED_PROMPT_NOTICE: { [K in SensitivePrompt]: (req: NonNullable<OverlayState[K]>) => string } = {
-  sudo: () => t('session.input.sudoCancelled'),
-  secret: () => t('session.input.secretCancelled'),
-  vaultUnlock: req => t('session.input.vaultStaysLocked', req.displayName),
-  vaultSaveLogin: req => t('session.input.loginNotSaved', req.site),
-  vaultCode: req => t('session.input.codeSkipped', req.site)
-}
-
-const dismissedNotice = <K extends SensitivePrompt>(key: K, req: NonNullable<OverlayState[K]>) =>
-  DISMISSED_PROMPT_NOTICE[key](req)
-
-/** Decline the open credential prompt with an empty value so the blocked tool resolves now. */
 export function dismissSensitivePrompt(
-  overlay: Pick<OverlayState, SensitivePrompt>,
+  overlay: Pick<OverlayState, 'secret' | 'sudo' | 'vaultUnlock'>,
   rpc: GatewayRpc,
   sys: (text: string) => void
 ) {
-  for (const key of SENSITIVE_PROMPTS) {
-    const req = overlay[key]
+  if (overlay.sudo) {
+    const requestId = overlay.sudo.requestId
 
-    if (req) {
-      patchOverlayState({ [key]: null })
-      sys(dismissedNotice(key, req))
-      respondToServerRequest(req.requestId, { value: '' })
+    patchOverlayState({ sudo: null })
+    sys(t('session.input.sudoCancelled'))
 
-      return
-    }
+    respondToServerRequest(requestId, { value: '' })
+
+    return
+  }
+
+  if (overlay.secret) {
+    const requestId = overlay.secret.requestId
+
+    patchOverlayState({ secret: null })
+    sys(t('session.input.secretCancelled'))
+
+    respondToServerRequest(requestId, { value: '' })
+
+    return
+  }
+
+  if (overlay.vaultUnlock) {
+    const requestId = overlay.vaultUnlock.requestId
+
+    patchOverlayState({ vaultUnlock: null })
+    sys(t('session.input.vaultStaysLocked', overlay.vaultUnlock.displayName))
+
+    respondToServerRequest(requestId, { value: '' })
   }
 }
 
@@ -274,7 +279,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
     }
 
-    if (hasSensitivePrompt(overlay)) {
+    if (overlay.sudo || overlay.secret || overlay.vaultUnlock) {
       return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys)
     }
 
@@ -563,7 +568,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return
       }
 
-      if (isCtrl(key, ch, 'c') || (key.escape && hasSensitivePrompt(overlay))) {
+      if (isCtrl(key, ch, 'c') || (key.escape && (overlay.secret || overlay.sudo || overlay.vaultUnlock))) {
         cancelOverlayFromCtrlC()
       } else if (key.escape && overlay.sessions) {
         patchOverlayState({ sessions: false })

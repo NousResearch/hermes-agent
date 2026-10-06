@@ -139,11 +139,8 @@ def _pick_provider_base_url(entry: Dict[str, Any], provider_key: str) -> str:
         # dropped (#14457).
         if re.search(r"\{[^}]+\}", candidate):
             return candidate
-        try:
-            parsed = urlparse(candidate)
-        except ValueError:  # e.g. "http://[::1/v1" — one bad entry must not break every caller
-            parsed = None
-        if parsed and parsed.scheme and parsed.netloc:
+        parsed = urlparse(candidate)
+        if parsed.scheme and parsed.netloc:
             return candidate
         logger.warning(
             "providers.%s: '%s' value '%s' is not a valid URL "

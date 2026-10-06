@@ -7,16 +7,6 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 export const RELAUNCH_WAITER_SCRIPT = 'update-relaunch-waiter.ps1'
-
-/**
- * The waiter ships as an app resource (electron-builder win.extraResources):
- * it is PowerShell run outside the package, not core code, and the sealed
- * payload's snapshot omits scripts/.
- */
-export function relaunchWaiterScript(resourcesPath: string): string {
-  return path.join(resourcesPath, RELAUNCH_WAITER_SCRIPT)
-}
-
 export const RELAUNCH_WAITER_READY_FILENAME = 'ready.txt'
 export const DEFAULT_RELAUNCH_WAITER_TIMEOUT_SECONDS = 900
 export const DEFAULT_RELAUNCH_WAITER_HANDSHAKE_MS = 10_000
@@ -37,7 +27,7 @@ export interface RelaunchWaiterOptions {
   processStartTimeMs: number
   /** The MSIX identity name of this install (e.g. NousResearch.HermesBundled). */
   identityName: string
-  /** Absolute path to the waiter script shipped in the app's resources. */
+  /** Absolute path to the waiter script inside the payload repo snapshot. */
   scriptPath: string
   timeoutSeconds?: number
 }

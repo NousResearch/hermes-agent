@@ -470,9 +470,7 @@
        fill to keep. Unset at the default, so the mix is a no-op and the bubble
        is the theme's fill exactly as before. The border stays put either way —
        at full transparency the outline is what still marks your turn. */
-    /* 用户气泡（自己发的消息）底色改为浅蓝 #cfe8ff；仍保留 Appearance → Message
-       Bubble 透明度滑块（--user-bubble-keep）的作用。 */
-    --dt-user-bubble: color-mix(in srgb, #cfe8ff var(--user-bubble-keep, 100%), transparent);
+    --dt-user-bubble: color-mix(in srgb, var(--ui-chat-bubble-background) var(--user-bubble-keep, 100%), transparent);
     --dt-user-bubble-border: var(--ui-stroke-tertiary);
 
     --dt-font-sans:

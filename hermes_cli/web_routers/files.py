@@ -376,10 +376,7 @@ async def proxy_remote_media(url: str, request: Request):
     (#74564), returning the same ``data_url`` shape as ``/api/media``. Only
     allowlisted image CDNs; the bytes stay behind the size cap."""
     _require_token(request)
-    try:
-        parsed = urllib.parse.urlparse((url or "").strip())
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="A remote image URL is required") from exc
+    parsed = urllib.parse.urlparse((url or "").strip())
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise HTTPException(status_code=400, detail="A remote image URL is required")
     if not _media_proxy_host_allowed(parsed.hostname):
@@ -849,7 +846,7 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
             _raise_fs_backend_error(exc)
         return {"ok": True, "path": target, "byteSize": byte_size}
 
-    target = _fs_path(payload.path, decode_fallback=False)
+    target = _fs_path(payload.path)
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 

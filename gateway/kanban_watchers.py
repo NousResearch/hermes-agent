@@ -122,22 +122,16 @@ class GatewayKanbanWatchersMixin:
 
     def _kanban_sub_op(self, board: Optional[str], op: str, sub: dict, **extra: Any) -> None:
         """Sync helper (runs in to_thread): call ``kanban_db_notify.<op>`` for one subscription on its board."""
-        from hermes_cli import kanban_db as _kb
         from hermes_cli import kanban_db_connect as _kbc
         from hermes_cli import kanban_db_notify as _kbn
-        # Cursor writes are machine flow: the sub's board slug must resolve
-        # through the env pin on a dispatcher-pinned box (same as the notifier
-        # tick), or advance/rewind land on a per-slug DB the notifier never
-        # reads and cursors silently reset.
-        with _kb.pin_first_board_resolution():
-            conn = _kbc.connect(board=board)
-            try:
-                getattr(_kbn, op)(
-                    conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
-                    thread_id=sub.get("thread_id") or "", **extra,
-                )
-            finally:
-                conn.close()
+        conn = _kbc.connect(board=board)
+        try:
+            getattr(_kbn, op)(
+                conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
+                thread_id=sub.get("thread_id") or "", **extra,
+            )
+        finally:
+            conn.close()
 
     def _kanban_advance(self, sub: dict, cursor: int, board: Optional[str] = None) -> None:
         self._kanban_sub_op(board, "advance_notify_cursor", sub, new_cursor=cursor)

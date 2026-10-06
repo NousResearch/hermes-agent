@@ -61,12 +61,6 @@ export interface ScriptedProvider {
   url: string
   /** Register the steps a turn keyed by `marker` answers with (step i = i-th completion of that turn). */
   script: (marker: string, steps: Step[]) => void
-  /**
-   * Script marker-less traffic (a background review fork, an auxiliary call)
-   * whose last user message contains `needle`. `label` stands in for the
-   * marker in `completions` and `streamStarted`.
-   */
-  scriptPrompt: (label: string, needle: string, steps: Step[]) => void
   completions: RecordedCompletion[]
   /** Resolves once the first chunk of `marker`'s step has been written to the wire. */
   streamStarted: (marker: string, step?: number) => Promise<void>
@@ -87,7 +81,7 @@ function textOf(content: unknown): string {
   return ''
 }
 
-function turnPosition(messages: any[]): { marker: null | string; prompt: string; step: number } {
+function turnPosition(messages: any[]): { marker: null | string; step: number } {
   let lastUser = -1
 
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -99,14 +93,13 @@ function turnPosition(messages: any[]): { marker: null | string; prompt: string;
   }
 
   if (lastUser < 0) {
-    return { marker: null, prompt: '', step: 0 }
+    return { marker: null, step: 0 }
   }
 
-  const prompt = textOf(messages[lastUser].content)
-  const marker = MARKER_RE.exec(prompt)?.[0] ?? null
+  const marker = MARKER_RE.exec(textOf(messages[lastUser].content))?.[0] ?? null
   const step = messages.slice(lastUser + 1).filter(m => m?.role === 'assistant').length
 
-  return { marker, prompt, step }
+  return { marker, step }
 }
 
 function chunk(model: string, delta: Record<string, unknown>, finish: null | string = null): string {
@@ -123,7 +116,6 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 15))
 
 export function startScriptedProvider(): Promise<ScriptedProvider> {
   const scripts = new Map<string, Step[]>()
-  const promptScripts: { label: string; needle: string; steps: Step[] }[] = []
   const completions: RecordedCompletion[] = []
   const started = new Map<string, Gate>()
 
@@ -278,17 +270,15 @@ export function startScriptedProvider(): Promise<ScriptedProvider> {
       }
 
       const messages: any[] = Array.isArray(body.messages) ? body.messages : []
-      const { marker, prompt, step: stepIndex } = turnPosition(messages)
-      const byPrompt = marker ? undefined : promptScripts.find(entry => prompt.includes(entry.needle))
-      const key = marker ?? byPrompt?.label ?? null
-      const steps = marker ? scripts.get(marker) : byPrompt?.steps
+      const { marker, step: stepIndex } = turnPosition(messages)
+      const steps = marker ? scripts.get(marker) : undefined
       // Unscripted traffic (auxiliary calls, a marker-less prompt) gets a
       // fixed short answer; it is recorded, never matched to a scenario.
       const step: Step = steps?.[Math.min(stepIndex, steps.length - 1)] ?? { text: ['ok'] }
       const model = typeof body.model === 'string' ? body.model : 'mock-model'
 
       const rec: RecordedCompletion = {
-        marker: steps ? key : null,
+        marker: steps ? marker : null,
         step: stepIndex,
         stream: body.stream === true,
         sentText: '',
@@ -317,9 +307,6 @@ export function startScriptedProvider(): Promise<ScriptedProvider> {
         url: `http://127.0.0.1:${port}`,
         script: (marker, steps) => {
           scripts.set(marker, steps)
-        },
-        scriptPrompt: (label, needle, steps) => {
-          promptScripts.push({ label, needle, steps })
         },
         completions,
         streamStarted: (marker, step = 0) => startedGate(`${marker}#${step}`).opened,

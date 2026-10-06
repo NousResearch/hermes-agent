@@ -206,10 +206,7 @@ def missing_provider_credentials_message(provider_id: str) -> str:
         pconfig = PROVIDER_REGISTRY.get(provider_id)
     env_vars = tuple(getattr(pconfig, "api_key_env_vars", None) or ())
     problem, remedy = "no API key was found", ""
-    from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
-    if provider_id in LLAMACPP_ALIASES:
-        problem, remedy = "no local llama.cpp server is running", "Start it in Settings → Providers → Local models"
-    elif env_vars:
+    if env_vars:
         remedy = f"Set the {env_vars[0]} environment variable"
     elif pconfig is None:
         remedy = f"Set the {provider_id.upper().replace('-', '_')}_API_KEY environment variable"

@@ -1478,9 +1478,7 @@ export function groupSpeakerLabel(name?: null | string, group?: null | string) {
   if (boundary !== -1) {
     const connection = trimmed.slice(0, boundary)
     const profile = trimmed.slice(boundary + 2)
-    // Exact key only: the bare `profile` key is a single-source record and
-    // names whichever machine wrote it, never this connection's bot.
-    const title = String(meta?.[trimmed]?.title || '').trim()
+    const title = String(meta?.[trimmed]?.title || meta?.[profile]?.title || '').trim()
     const label = title || (profile.toLowerCase() === 'default' ? 'Hermes' : profile)
 
     // Another connection still exposes this name: keep them tellable apart.
@@ -1497,11 +1495,8 @@ export function groupSpeakerLabel(name?: null | string, group?: null | string) {
   }
 
   // Legacy rungs for names the roster cannot place: a bare-keyed Bot Mode
-  // title (single-source rosters only — once rows are connection-scoped the
-  // bare key cannot say which machine it named), then the local row's
-  // display_name, then default → Hermes.
-  const scoped = rows.some(bot => bot.sourceScoped || bot.remoteSource)
-  const title = scoped ? '' : String(meta?.[trimmed]?.title || '').trim()
+  // title, then the local row's display_name, then default → Hermes.
+  const title = String(meta?.[trimmed]?.title || '').trim()
 
   if (title) {
     return title

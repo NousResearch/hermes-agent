@@ -23,7 +23,6 @@ export type AgentPluginServerState =
   | 'no_interactive_session'
   | 'version_too_old'
   | 'missing_app'
-  | 'unsupported_gpu'
   | 'unknown'
 
 export interface AgentPluginServer {

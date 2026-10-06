@@ -1080,7 +1080,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
-        self._username_resolved_ids: set = set()  # IDs resolved from username entries (gateway authz union)
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
         # Gate env snapshot captured in connect() inside the owning profile's scope; None until then.
         # None until then; accessors fall back to live scope-aware reads (issue #72348).
@@ -2952,15 +2951,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 summary["unchanged"] += 1
                 continue
             if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
-                # Upsert alone recreates the command: Discord's create endpoint
-                # overwrites the existing same-name command ("Returns 201 if a
-                # command with the same name does not already exist, or a 200
-                # if it does"). Delete-first strands the command deleted when
-                # the small command-management bucket 429s the upsert mid-sync;
-                # upsert-first keeps the command available even then. The
-                # obsolete-path delete-first below is different: an upsert
-                # pushing the live total over 100 fails with 30032 (breaks ALL
-                # slash commands), so an app at the cap must shrink first.
+                await mutate(http.delete_global_command, app_id, current.id)
                 await mutate(http.upsert_global_command, app_id, desired)
                 summary["recreated"] += 1
                 continue
@@ -4326,12 +4317,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return {"name": str(chat_id), "type": "dm", "error": str(e)}
 
     async def _resolve_allowed_usernames(self) -> None:
-        """Resolve username entries in DISCORD_ALLOWED_USERS to numeric IDs.
-
-        Only the account username is matched: it is unique, while a display name or server nickname is
-        chosen by the member and can copy an allowlisted name.
-        """
-        self._username_resolved_ids = set()
+        """Resolve username/display-name entries in DISCORD_ALLOWED_USERS to numeric IDs."""
         if not self._allowed_user_ids or not self._client:
             return
         numeric_ids = set()
@@ -4347,7 +4333,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not to_resolve:
             return
         print(f"[{self.name}] Resolving {len(to_resolve)} username(s): {', '.join(to_resolve)}")
-        display_only = set()
+        resolved_count = 0
         for guild in self._client.guilds:
             # Fetch full member list (requires members intent)
             try:
@@ -4359,25 +4345,22 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 continue
             for member in members:
                 name_lower = member.name.lower()
-                if name_lower in to_resolve:
+                display_lower = member.display_name.lower()
+                global_lower = (member.global_name or "").lower()
+                matched = name_lower in to_resolve or display_lower in to_resolve or global_lower in to_resolve
+                if matched:
                     uid = str(member.id)
                     numeric_ids.add(uid)
-                    self._username_resolved_ids.add(uid)
-                    to_resolve.discard(name_lower)
-                    print(f"[{self.name}] Resolved '{name_lower}' -> {uid} ({member.name}#{member.discriminator})")
-                    continue
-                for shown in (member.display_name, member.global_name):
-                    if shown and shown.lower() in to_resolve:
-                        display_only.add(shown.lower())
+                    resolved_count += 1
+                    matched_name = name_lower if name_lower in to_resolve else (
+                        display_lower if display_lower in to_resolve else global_lower
+                    )
+                    to_resolve.discard(matched_name)
+                    print(f"[{self.name}] Resolved '{matched_name}' -> {uid} ({member.name}#{member.discriminator})")
             if not to_resolve:
                 break
         if to_resolve:
             print(f"[{self.name}] Could not resolve usernames: {', '.join(to_resolve)}")
-            for entry in sorted(to_resolve & display_only):
-                print(
-                    f"[{self.name}] '{entry}' matches only a display name or server nickname, which any member "
-                    "can set; allowlist that member's username or numeric user ID instead"
-                )
         # Adapter-local: under multiplex_profiles os.environ writes would clobber other profiles.
         # Update the internal set. Keep the resolved IDs adapter-local first: under multiplex_profiles,
         # writing os.environ here would clobber every OTHER profile's DISCORD_ALLOWED_USERS after this
@@ -4390,8 +4373,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not _multiplex_active():
             # Single-profile: legacy env rewrite so gateway env-based auth sees numeric IDs.
             os.environ["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
-        if self._username_resolved_ids:
-            print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {len(self._username_resolved_ids)} resolved ID(s)")
+        if resolved_count:
+            print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {resolved_count} resolved ID(s)")
 
     def format_message(self, content: str) -> str:
         """Format for Discord: GFM tables become bullet lists (Discord doesn't render pipe tables)."""
@@ -4963,10 +4946,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def resolved_allowlist_user_ids(self) -> set:
         """Numeric IDs from connect-time username resolution.
         The env mirror of ``_allowed_user_ids`` doesn't survive the per-turn .env hot-reload, so the
-        gateway authz layer unions these in. Only IDs resolved from username entries: numeric entries
-        are read live from the reloaded env, so one removed there (``hermes pairing revoke``, a hand
-        edit) must not stay authorized from this connect-time snapshot until restart."""
-        return set(self._username_resolved_ids)
+        gateway authz layer unions these in. Numeric only: passing "*" through would widen access."""
+        allowed = getattr(self, "_allowed_user_ids", None) or set()
+        return {str(uid) for uid in allowed if str(uid).isdigit()}
 
     def _discord_allow_all_users(self) -> bool:
         """Per-profile DISCORD_ALLOW_ALL_USERS flag."""

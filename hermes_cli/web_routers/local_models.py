@@ -35,7 +35,6 @@ from hermes_cli.local_runtime import (
     binaries, bootstrap, catalog, context_policy, estimator, growth, hardware, hf_browse,
     load_progress, presets, supervisor,
 )
-from agent.memory_provider import spawn_context_thread
 from pm.downloader import Download, DownloadPaused, Source
 
 from hermes_cli.local_runtime.endpoint import _state_endpoint
@@ -269,7 +268,7 @@ def _spawn_job(job: Dict[str, Any], name: str, body: Callable[[], None], *, fail
             job["status"] = "running"
             job["error"] = None
         try:
-            spawn_context_thread(_run, name=name).start()
+            threading.Thread(target=_run, daemon=True, name=name).start()
         except Exception:
             _RUNNING.pop(job["job_id"], None)
             if on_exit is not None:
@@ -743,8 +742,8 @@ async def local_models_delete(model_id: str):
         path.unlink(missing_ok=True)
     # Growth state dies with the model: a re-download starts back at its zero-spill window, not a stale grown one.
     _quiet(lambda: growth.clear_window_override(model_id), None, debug="window-override clear skipped")
-    spawn_context_thread(_refresh_runtime, args=("post-delete runtime refresh skipped",),
-                         name="lr-post-delete").start()
+    threading.Thread(target=_refresh_runtime, args=("post-delete runtime refresh skipped",), daemon=True,
+                     name="lr-post-delete").start()
     return {"ok": True}
 
 
@@ -775,17 +774,6 @@ def _quickstart_target(body: QuickstartBody, budget):
         "no catalog model fits this machine — open Local Models to browse for a smaller build"))
 
 
-def _repriced_quickstart(job: Dict[str, Any], body: QuickstartBody, variant):
-    """Re-pick once the engine is installed, before any bytes are committed: a Vulkan/HIP GPU's
-    type and size come from that engine's own device probe, so the preflight price was a guess."""
-    entry, picked = _quickstart_target(body, hardware.probe_budget(planning=True))
-    if picked.model_id != variant.model_id:
-        with _JOBS_LOCK:
-            job.update(target=entry.display_name, model_id=entry.id)
-    plan = _download_plan(entry, picked)
-    return entry, picked, plan if any(not dest.is_file() for _, dest, _ in plan) else []
-
-
 @router.post("/api/local-models/quickstart")
 def local_models_quickstart(body: QuickstartBody, profile: Optional[str] = None):
     """One job: install the runtime (if missing), download this machine's build of the recommended model (if
@@ -804,11 +792,9 @@ def local_models_quickstart(body: QuickstartBody, profile: Optional[str] = None)
         raise HTTPException(status_code=409, detail="Setup is already running")
     job = _job("quickstart", entry.display_name, model_id=entry.id)
     def _run():
-        nonlocal entry, variant, download_plan
         if need_runtime and binaries.installed_engine(backend) is None:
             _install_engine_job(job, backend)
-            entry, variant, download_plan = _repriced_quickstart(job, body, variant)
-        if download_plan:
+        if need_download:
             # Each phase has its own complete download plan. Resume within a
             # phase retains counters until PM reports the durable bytes.
             if job["phase"] != "downloading":

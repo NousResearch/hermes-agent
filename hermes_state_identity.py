@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, MutableMapping, Optional
 
 from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS, uid_list
 from agent.message_sanitization import coalesce_tool_call_id
@@ -94,18 +94,3 @@ def _restore_identity_columns(row: Any, msg: MutableMapping[str, Any]) -> None:
     _restore_row_identity(row, msg)
     if row["absorbed_message_uids"] and (absorbed := _uid_list(row["absorbed_message_uids"])):
         msg[ABSORBED_MESSAGE_UIDS] = absorbed
-
-
-def _stable_tool_key(row: Any) -> Optional[Tuple[Any, ...]]:
-    """Display-dedupe key of a tool-calling assistant row built from its stable call ids instead of the arguments a
-    prune rewrites (#117750: a pruned carried-forward copy must collapse with its durable original). ``None`` for
-    every other row and for an incomplete id set, so the caller keeps the full content key: a tool RESULT row keeps
-    its payload in the key, because folding the archived full output into its pruned stub would drop the original
-    from compacted history and transcript exports, and distinct id-less calls never merge."""
-    if row["role"] != "assistant":
-        return None
-    calls = _json_or(row["tool_calls"] or "[]", [], "Failed to deserialize tool_calls, falling back to []")
-    call_ids = tuple(coalesce_tool_call_id(tc) for tc in calls or ())
-    if call_ids and all(call_ids):
-        return ("assistant", None, row["timestamp"], row["tool_call_id"], call_ids, row["tool_name"])
-    return None

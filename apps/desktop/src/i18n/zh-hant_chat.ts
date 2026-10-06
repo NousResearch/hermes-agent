@@ -121,7 +121,7 @@ export const zhHantChat = {
       '/init': '掃描儲存庫並產生或更新 AGENTS.md 專案指引',
       '/suggestions': '檢視建議的自動化項目（接受或略過）',
       '/blueprint': '使用 blueprint 範本設定自動化',
-      '/browser': '管理代理瀏覽器 [connect|disconnect|status|use]',
+      '/browser': '管理瀏覽器 CDP 連線 [connect|disconnect|status]（僅限本機 gateway）',
       '/palette': '開啟模糊搜尋指令面板（也可使用 Ctrl+P）',
       '/usage': '顯示 Token 用量與速率限制；`reset` 可兌換保留的 Codex 限額重設',
       '/subscription': '檢視你的 Nous 方案，並在瀏覽器中變更',

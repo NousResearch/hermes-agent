@@ -315,14 +315,12 @@ Then activate it; there is no separate setup command to remember:
 | Shell | Enter | Leave |
 |---|---|---|
 | Bash | `source ./activate` | `deactivate` |
-| fish | `source ./activate.fish` | `deactivate` |
 | PowerShell | `. .\activate.ps1` | `deactivate` |
 
 The leading dot and space in PowerShell are required. Executing
 `.\activate.ps1` without dot-sourcing does not provide the same session scope.
-`activate` uses Bash syntax. Use Bash for this recipe rather than `sh`, or
-assuming that a Zsh startup file has Bash semantics; fish has its own
-`activate.fish`, which behaves the same.
+The POSIX script uses Bash syntax. Use Bash for this recipe rather than `sh`,
+fish, or assuming that a Zsh startup file has Bash semantics.
 
 Each activation invokes PM's install/sync path and trusts the recorded tool
 digest instead of re-hashing every entry. PM still installs a missing tool and
@@ -343,17 +341,6 @@ Start in a clean shell rather than nesting this inside another venv.
 `deactivate` restores the environment values captured by the activation script,
 and removes the function and the prompt prefix.
 It does not uninstall packages or stop processes that you started.
-
-To run one command or script in that environment without activating a shell,
-prefix it with `scripts/run-in-hermes-env`. It applies the same environment to
-that command only, syncing first when there is none to inherit or the inherited
-one is stale, and leaves your shell untouched. `scripts/run_tests.sh` re-runs
-itself this way, and the repo's Python scripts hand themselves to it from their
-shebang.
-
-```bash
-scripts/run-in-hermes-env python scripts/release.py --help
-```
 
 Verify the interpreter and source before doing work:
 

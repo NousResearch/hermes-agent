@@ -37,15 +37,6 @@ export function bundledPayload(
   }
 }
 
-/**
- * PYTHONPATH for running a bundled core module with the payload python: the
- * bundled core code first, then the venv's dependencies. This is the order the
- * bin/ launchers give sys.path (scripts/build/launcher_wrapper.py).
- */
-export function payloadPythonPath(payload: Pick<PayloadInfo, 'repoDir' | 'sitePackages'>): string {
-  return [payload.repoDir, payload.sitePackages].join(path.delimiter)
-}
-
 // ─── update channel ─────────────────────────────────────────────────────────
 //
 // The CLI owns the channel records; Electron only reads the install id for

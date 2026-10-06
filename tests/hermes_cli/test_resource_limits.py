@@ -227,22 +227,18 @@ def test_serve_startup_applies_limit_before_web_server(monkeypatch):
     monkeypatch.setattr(main_web_build, "_build_web_ui", lambda *args, **kwargs: True)
     monkeypatch.setattr(cli_main, "_maybe_setup_dashboard_auth_interactively", lambda args: None)
     monkeypatch.setattr(hermes_cli.plugins, "discover_plugins", lambda: None)
-    served: dict = {}
     monkeypatch.setattr(
         hermes_cli.web_server,
         "start_server",
-        lambda **kwargs: (calls.append("server"), served.update(kwargs)),
+        lambda **kwargs: calls.append("server"),
     )
-    # Desktop SSH serve: the owner watchdog's lock sits next to the validated token (#132034).
-    token_dir = Path("/home/u/.hermes/desktop-ssh") / ("f" * 32)
-    monkeypatch.setattr(cli_main, "_read_ssh_session_token_file", lambda path: "s" * 64)
 
     args = SimpleNamespace(
         status=False,
         stop=False,
         headless_backend=True,
-        ssh_owner_nonce="0123456789abcdef",
-        ssh_session_token_file=str(token_dir / "0123456789abcdef.token"),
+        ssh_owner_nonce=None,
+        ssh_session_token_file=None,
         host="127.0.0.1",
         port=0,
         no_open=True,
@@ -255,7 +251,6 @@ def test_serve_startup_applies_limit_before_web_server(monkeypatch):
     cli_main.cmd_dashboard(args)
 
     assert calls == ["limit", "server"]
-    assert served["ssh_lock_path"] == token_dir / "backend.lock.json"
 
 
 @pytest.mark.platforms("linux")

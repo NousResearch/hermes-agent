@@ -338,44 +338,6 @@ describe('usePromptActions /title', () => {
   })
 })
 
-describe('usePromptActions /browser use', () => {
-  beforeEach(() => setSessions(() => [sessionInfo()]))
-
-  afterEach(() => {
-    cleanup()
-    $connection.set(null)
-    vi.restoreAllMocks()
-  })
-
-  // `use` is offered by the subcommand picker; it once fell to the usage line. It writes the
-  // profile's browser.backend, so it runs on remote backends too (connect stays local-only).
-  it.each([
-    ['/browser use', true],
-    ['/browser use off', false]
-  ])('%s switches Browser Use mode through browser.manage, remote backends included', async (text, enabled) => {
-    $connection.set({ connectionId: 'hermes01', mode: 'remote' } as never)
-    const requestGateway = vi.fn(async () => ({ browser_use: enabled, connected: false }) as never)
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        refreshSessions={vi.fn(async () => undefined)}
-        requestGateway={requestGateway}
-      />
-    )
-
-    await handle!.submitText(text)
-
-    expect(requestGateway).toHaveBeenCalledWith('browser.manage', {
-      action: 'use',
-      enabled,
-      session_id: RUNTIME_SESSION_ID
-    })
-    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
-  })
-})
-
 describe('usePromptActions /stop', () => {
   afterEach(() => {
     cleanup()

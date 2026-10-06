@@ -15,7 +15,6 @@ from typing import Optional
 
 from pm import paths
 from pm.downloader import DownloadPaused, ProgressFn
-from pm.filesystem import remove_tree
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.plugin_inputs import Candidates, Members, PluginInput, Selection, StagedUpdate
@@ -218,7 +217,7 @@ def _refuse_lazy(name: str, what: str) -> InstallError:
     return error
 
 
-def _remove_entry(store: Store, entry_name: str, *, attempts: int = 5) -> None:
+def _remove_entry(store: Store, entry_name: str) -> None:
     """Remove a replaced or failed entry, retrying transient Windows holds.
 
     Corruption may leave a file where the directory belonged. Failure
@@ -227,66 +226,25 @@ def _remove_entry(store: Store, entry_name: str, *, attempts: int = 5) -> None:
     import time
 
     entry = store.entry(entry_name)
-    for attempt in range(attempts):
+    for attempt in range(5):
         try:
             if entry.is_symlink() or not entry.is_dir():
                 entry.unlink(missing_ok=True)
             else:
-                remove_tree(entry)
+                shutil.rmtree(entry)
             return
         except FileNotFoundError:
             return
-        except OSError:
-            if attempt == attempts - 1:
+        except OSError as e:
+            if attempt == 4:
                 raise
             time.sleep(0.2 * (attempt + 1))
-
-
-_SET_ASIDE_PREFIX = ".reclaim-"
-
-
-def _discard_entry(store: Store, entry_name: str) -> None:
-    """Drop a tree a finished publish or restore left behind as garbage.
-
-    A running Hermes process can keep the replaced interpreter's DLLs mapped
-    far past the retry window, and failing here reports a completed install
-    as broken (#124807). Windows still allows renaming a tree with mapped
-    images, so it moves to a `.reclaim-*` name: its slot is free for the next
-    publish, no restore ever picks it up, and the next install or
-    `hermes pm gc` deletes it once the hold is gone.
-    """
-    import uuid
-
-    try:
-        _remove_entry(store, entry_name)
-        return
-    except OSError as e:
-        error = e
-    try:
-        store.entry(entry_name).rename(store.entry(f"{_SET_ASIDE_PREFIX}{uuid.uuid4().hex}"))
-    except OSError:
-        LOG.warning("could not remove or set aside %s: %s", entry_name, error)
-        return
-    LOG.warning("%s is still in use (%s); set aside for the next install or `hermes pm gc`",
-                entry_name, error)
-
-
-def _reclaim_set_aside(store: Store) -> int:
-    """Delete set-aside trees whose hold is gone; the caller holds the store lock."""
-    removed = 0
-    for item in sorted(store.root.glob(f"{_SET_ASIDE_PREFIX}*")):
-        try:
-            _remove_entry(store, item.name, attempts=1)
-        except OSError:
-            continue
-        removed += 1
-    return removed
 
 
 def _remove_downloads(store: Store, artifacts: list[dict]) -> None:
     """Release this package's archives after publication, under its store lock."""
     for artifact in artifacts:
-        _discard_entry(store, f"fetch-{artifact['sha256']}")
+        _remove_entry(store, f"fetch-{artifact['sha256']}")
 
 
 def _entry_verified(package: Package, fact: dict, store: Store, target: str) -> bool:
@@ -313,7 +271,7 @@ def _restore_previous_entry(store: Store, entry, previous) -> None:
             displaced.rename(entry)
         raise
     if had_entry:
-        _discard_entry(store, displaced.name)
+        _remove_entry(store, displaced.name)
 
 
 @contextmanager
@@ -332,7 +290,7 @@ def _publish_entry(package, store, staged, entry, previous_entry, target):
             _restore_previous_entry(store, entry, previous_entry)
         raise
     if previous_entry.exists():
-        _discard_entry(store, previous_entry.name)
+        _remove_entry(store, previous_entry.name)
 
 
 def _settle_previous_entry(package, store, entry, previous_entry, previous, target) -> None:
@@ -343,7 +301,7 @@ def _settle_previous_entry(package, store, entry, previous_entry, previous, targ
     # an interrupted stage always restores its prior usable bytes.
     if (previous and previous.get("entry") == entry.name
             and _entry_verified(package, previous, store, target)):
-        _discard_entry(store, previous_entry.name)
+        _remove_entry(store, previous_entry.name)
     else:
         _restore_previous_entry(store, entry, previous_entry)
 
@@ -423,7 +381,6 @@ def _install(
         previous = facts.get(package.name) if facts is not None else None
         previous_entry = store.entry(f".previous-{'stage-' if facts is None else ''}{entry_name}")
         _settle_previous_entry(package, store, entry, previous_entry, previous, target)
-        _reclaim_set_aside(store)
         if (_entry_current(package, lockfile, facts, store, entry, previous, version, pin, target)
                 and not _fresh_copy):
             _remove_downloads(store, artifacts)

@@ -42,7 +42,7 @@ describe('syncBackendLocalePacks', () => {
           { id: 'pl', endonym: 'Polski', rtl: false, source: 'plugin:hermes-lang-pl' }
         ]
       },
-      { pl: { 'common.save': 'Zapisz', 'connectorsPage.searchPlaceholder': '{0} wyników' } },
+      { pl: { 'common.save': 'Zapisz', 'catalog.results': '{0} wyników' } },
       calls
     )
 
@@ -52,7 +52,7 @@ describe('syncBackendLocalePacks', () => {
     expect(isRegisteredLocale('pl')).toBe(true)
     expect(languageOptions().find(option => option.id === 'pl')).toMatchObject({ endonym: 'Polski', source: 'backend' })
     expect(resolveTranslations('pl').common.save).toBe('Zapisz')
-    expect(resolveTranslations('pl').connectorsPage.searchPlaceholder(5)).toBe('5 wyników')
+    expect(resolveTranslations('pl').catalog.results(5)).toBe('5 wyników')
     expect(resolveTranslations('pl').common.cancel).toBe(TRANSLATIONS.en.common.cancel)
   })
 

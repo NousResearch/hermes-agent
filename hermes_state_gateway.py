@@ -397,27 +397,18 @@ class SessionGatewayMixin:
         return len(doomed)
 
     def prune_never_active_keyed_sessions(
-        self, *, older_than_days: float, sessions_dir: Optional[Path] = None) -> Tuple[int, int, int]:
+        self, *, older_than_days: float, sessions_dir: Optional[Path] = None) -> Tuple[int, int]:
         """Delete never-active keyed rows and the routing entries naming them; returns
-        ``(sessions_deleted, routing_entries_deleted, sessions_skipped)``. Deletion goes through
-        :meth:`delete_sessions` (one transaction; delegate cascade, FTS, transcripts).
-        Rows under a live turn lease or compression lock are skipped (#123583): the
-        never-active predicate reads committed state, so a keyed row whose first turn lease
-        is already held — its messages not yet flushed — would otherwise be deleted
-        mid-turn. Routing entries are dropped only after the rows commit, for every
-        candidate except the guarded ones: rows that vanished concurrently are gone too,
-        and a stale entry outliving its target would have the gateway resume a
-        nonexistent id. The row sweep is one transaction; routing entries are dropped in a
-        second write after it commits. ``sessions_skipped`` counts only the guarded rows."""
+        ``(sessions_deleted, routing_entries_deleted)``. Routing entries go first: a stale
+        entry outliving its target would have the gateway resume a nonexistent id.
+        Deletion goes through :meth:`delete_session` (delegate cascade, FTS, transcripts)."""
         candidates = self.list_never_active_keyed_sessions(older_than_days=older_than_days)
         if not candidates:
-            return (0, 0, 0)
+            return (0, 0)
         ids = {str(row["id"]) for row in candidates}
-        skipped: List[str] = []
-        deleted = self.delete_sessions(
-            list(ids), sessions_dir=sessions_dir, exclude_active_write_guards=True, skipped_ids=skipped)
-        routing_deleted = self._delete_routing_entries_for_sessions(ids - set(skipped))
-        return (deleted, routing_deleted, len(skipped))
+        routing_deleted = self._delete_routing_entries_for_sessions(ids)
+        deleted = sum(1 for sid in ids if self.delete_session(sid, sessions_dir=sessions_dir))
+        return (deleted, routing_deleted)
 
     def list_gateway_sessions(
         self, *, platform: Optional[str] = None, active_only: bool = True) -> List[Dict[str, Any]]:

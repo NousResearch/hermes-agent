@@ -667,54 +667,8 @@ class TestValidateCronBaseUrl:
     def test_named_custom_matching_host_allowed(self, monkeypatch):
         self._patch_named_legit(monkeypatch)
         assert self._v("custom:legit", "https://legit.example/v1") is None
-        # Same origin spelled differently: explicit default port, case, trailing dot/slash.
-        assert self._v("custom:legit", "https://LEGIT.example.:443/v1/") is None
-
-    def test_stored_key_only_goes_to_the_configured_origin(self, monkeypatch):
-        # The stored key is bound to the configured origin, not to its hostname: another
-        # scheme, port or subdomain is a different endpoint the operator never configured.
-        from hermes_cli.auth import PROVIDER_REGISTRY
-        reg, known = next((k, p.inference_base_url) for k, p in PROVIDER_REGISTRY.items()
-                          if str(getattr(p, "inference_base_url", "")).startswith("https://"))
-
-        def refused_off_origin(prov, h):
-            for bu in (f"http://{h}/v1", f"http://{h}:443/v1", f"https://{h}:8443/v1",
-                       f"https://eu.{h}/v1",
-                       f"{h}/v1", "http://[::1/v1"):
-                err = self._v(prov, bu)
-                assert err and "not allowed" in err, (prov, bu)
-
-        assert self._v(reg, known) is None  # registry provider arm
-        refused_off_origin(reg, known.split("://", 1)[1].split("/", 1)[0])
-        self._patch_named_legit(monkeypatch)  # named custom provider arm
-        refused_off_origin("custom:legit", "legit.example")
-
-    def test_bare_custom_sends_a_stored_key_only_to_a_configured_origin(self, monkeypatch):
-        # Whatever key the real resolver would attach to a bare-custom base_url, the guard lets
-        # the job through only at the origin the operator configured. No key: still pure BYOK.
-        from hermes_cli.config import get_config_path
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-
-        configured, stored = "https://api.acmellm.example/v1", "sk-stored-acmellm-key"
-        monkeypatch.setenv("ACMELLM_API_KEY", stored)
-        get_config_path().write_text(
-            f"custom_providers:\n  - name: acme\n    base_url: {configured}\n"
-            "  - name: broken\n    base_url: http://[::1/v1\n", encoding="utf-8")
-
-        def attached(bu):
-            return resolve_runtime_provider(requested="custom", explicit_base_url=bu)["api_key"]
-
-        for bu in ("http://api.acmellm.example:8080/v1", "http://api.acmellm.example/v1",
-                   "https://api.acmellm.example:8443/v1", "https://eu.acmellm.example/v1"):
-            assert attached(bu) == stored, bu
-            err = self._v("custom", bu)
-            assert err and "not allowed" in err, bu
-        # A URL urlparse rejects is refused, not raised out of create/update.
-        err = self._v("custom", "http://[::1/v1")
-        assert err and "not allowed" in err and "not a valid URL" in err
-        assert self._v("custom", configured) is None
-        keyless = "http://192.0.2.10:8080/v1"
-        assert attached(keyless) != stored and self._v("custom", keyless) is None
+        # subdomain of the configured host is still the provider's own endpoint
+        assert self._v("custom:legit", "https://eu.legit.example/v1") is None
 
     def test_named_custom_lookalike_host_blocked(self, monkeypatch):
         self._patch_named_legit(monkeypatch)

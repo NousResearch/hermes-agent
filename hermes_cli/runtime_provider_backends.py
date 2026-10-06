@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 from agent.azure_identity_adapter import is_token_provider
 from agent.secret_scope import get_secret_str
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname, base_url_origin
+from utils import base_url_host_matches, base_url_hostname
 
 
 def _rp():
@@ -158,14 +158,12 @@ def _resolve_openrouter_runtime(
     )
     if is_openrouter_context:
         # OPENAI_API_KEY is a legacy home for an OpenRouter key. When OPENAI_BASE_URL binds it, it
-        # goes only to that origin: another scheme or port on the same host is another endpoint.
-        # Unbound, openrouter.ai gets it only when it is OpenRouter-shaped (sk-or-), so a real OpenAI
-        # key never reaches a third party.
+        # goes only to that host. Unbound, openrouter.ai gets it only when it is OpenRouter-shaped
+        # (sk-or-), so a real OpenAI key never reaches a third party.
         openai_key = get_secret_str("OPENAI_API_KEY")
-        openai_base_url = get_secret_str("OPENAI_BASE_URL", "").strip()
-        if base_url_hostname(openai_base_url):
-            openai_origin = base_url_origin(openai_base_url)  # empty on a bad port: bound, matches nothing
-            openai_key_ok = bool(openai_origin[1]) and openai_origin == base_url_origin(base_url)
+        openai_base_host = base_url_hostname(get_secret_str("OPENAI_BASE_URL", "").strip())
+        if openai_base_host:
+            openai_key_ok = openai_base_host == base_url_hostname(base_url)
         else:
             openai_key_ok = not is_openrouter_url or rp.looks_like_openrouter_key(openai_key)
         candidates = [explicit_api_key, get_secret_str("OPENROUTER_API_KEY"),

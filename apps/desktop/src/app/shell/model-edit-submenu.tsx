@@ -22,9 +22,7 @@ import { isThinkingEnabled, reasoningEffortClamp, resolveReasoningEffort } from 
  *  - `variant`: a separate `…-fast` sibling model selected via the model field.
  */
 export type FastControl =
-  | { kind: 'none' }
-  | { kind: 'param'; on: boolean; canEnable?: boolean }
-  | { kind: 'variant'; baseId: string; fastId: string; on: boolean }
+  { kind: 'none' } | { kind: 'param'; on: boolean } | { kind: 'variant'; baseId: string; fastId: string; on: boolean }
 
 /** Resolve the fast mechanism for a model: prefer the speed=fast parameter
  *  when the backend supports it, else fall back to a `…-fast` sibling model. */
@@ -56,7 +54,7 @@ export function resolveFastControl(
   // param on (carried over from a previous model), expose the toggle so it can
   // be turned off rather than stranded.
   if (currentFastMode) {
-    return { kind: 'param', on: true, canEnable: false }
+    return { kind: 'param', on: true }
   }
 
   return { kind: 'none' }
@@ -78,8 +76,6 @@ interface ModelEditSubmenuProps {
   effortWire?: string
   /** How fast mode is offered for this model (param toggle vs. variant swap). */
   fastControl: FastControl
-  serviceTier?: string
-  ultrafastSupported?: boolean
   /** Whether this row's model is the active one. */
   isActive: boolean
   /** This row's model id. */
@@ -90,7 +86,7 @@ interface ModelEditSubmenuProps {
    *  session, a preset store, or the gateway itself — the owning surface's
    *  controller decides what an edit means. That's what lets the same submenu
    *  drive a live chat session and a detached per-task override. */
-  onSetOptions: (patch: { effort?: string; fast?: boolean; serviceTier?: string }) => void
+  onSetOptions: (patch: { effort?: string; fast?: boolean }) => void
   /** This row's provider slug. */
   provider: string
   /** Whether this model supports reasoning effort. */
@@ -118,8 +114,6 @@ export function ModelOptionsContent({
   effort,
   effortWire,
   fastControl,
-  serviceTier,
-  ultrafastSupported = false,
   isActive,
   onSelectModel,
   onSetOptions,
@@ -153,11 +147,9 @@ export function ModelOptionsContent({
   }
 
   const hasFast = fastControl.kind !== 'none'
-  const unsupportedSpeed = fastControl.kind === 'param' && fastControl.canEnable === false
-  const ultrafastOn = serviceTier === 'ultrafast'
-  const fastOn = fastControl.kind === 'none' ? false : fastControl.on && !ultrafastOn
+  const fastOn = fastControl.kind === 'none' ? false : fastControl.on
 
-  return !hasFast && !ultrafastSupported && !reasoning ? (
+  return !hasFast && !reasoning ? (
     <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{copy.noOptions}</div>
   ) : (
     <>
@@ -173,32 +165,10 @@ export function ModelOptionsContent({
           />
         </DropdownMenuItem>
       ) : null}
-      {unsupportedSpeed ? (
-        <DropdownMenuItem
-          className={dropdownMenuRow}
-          onSelect={event => {
-            event.preventDefault()
-            onSetOptions({ serviceTier: 'normal' })
-          }}
-        >
-          {copy.useStandardSpeed}
-        </DropdownMenuItem>
-      ) : hasFast ? (
+      {hasFast ? (
         <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
           {copy.fast}
-          <Switch aria-label={copy.fast} checked={fastOn} className="ml-auto" onCheckedChange={setFast} size="xs" />
-        </DropdownMenuItem>
-      ) : null}
-      {ultrafastSupported ? (
-        <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
-          {copy.ultrafast}
-          <Switch
-            aria-label={copy.ultrafast}
-            checked={ultrafastOn}
-            className="ml-auto"
-            onCheckedChange={checked => onSetOptions({ serviceTier: checked ? 'ultrafast' : 'normal' })}
-            size="xs"
-          />
+          <Switch checked={fastOn} className="ml-auto" onCheckedChange={setFast} size="xs" />
         </DropdownMenuItem>
       ) : null}
       {reasoning ? (

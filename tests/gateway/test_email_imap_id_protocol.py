@@ -102,7 +102,7 @@ def test_id_negotiation_preserves_inbox_connection(monkeypatch, id_mode):
             lambda *args, **kwargs: imaplib.IMAP4(*address, timeout=5),
         )
 
-        assert adapter._fetch_new_messages(lambda _c: True) == []
+        assert adapter._fetch_new_messages() == []
         assert adapter._last_fetch_failed is False
 
     assert commands.count("ID") == (0 if id_mode == "absent" else 1)

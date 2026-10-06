@@ -703,22 +703,19 @@ async def get_learning_node(id: str, profile: Optional[str] = None):
 
 
 @router.delete("/api/learning/node")
-async def delete_learning_node(body: LearningNodeRef, profile: Optional[str] = None):
-    """Delete a journey node — skills are archived (restorable), memories removed.
-
-    ``?profile=`` is honoured too: a shared-backend Desktop scopes this call by query only, and
-    ignoring it archived the same-named skill of the launch profile instead."""
+async def delete_learning_node(body: LearningNodeRef):
+    """Delete a journey node — skills are archived (restorable), memories removed."""
     from agent.learning_mutations import delete_node
     return await _learning_mutation(
-        body.profile or profile, lambda: delete_node(body.id), 400, "delete failed")
+        body.profile, lambda: delete_node(body.id), 400, "delete failed")
 
 
 @router.put("/api/learning/node")
-async def update_learning_node(body: LearningNodeEdit, profile: Optional[str] = None):
-    """Rewrite a journey node's content (SKILL.md or memory chunk); profile as for DELETE."""
+async def update_learning_node(body: LearningNodeEdit):
+    """Rewrite a journey node's content (SKILL.md or memory chunk)."""
     from agent.learning_mutations import edit_node
     return await _learning_mutation(
-        body.profile or profile, lambda: edit_node(body.id, body.content), 400, "edit failed")
+        body.profile, lambda: edit_node(body.id, body.content), 400, "edit failed")
 
 
 # Portal — Nous Portal auth + Tool Gateway routing status (read-only).
@@ -796,7 +793,6 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None,
     unlike the other diagnostics actions: the point is the shareable URLs, returned as a
     structured payload the dashboard renders as copyable links."""
     from hermes_cli.debug import build_debug_share
-    from hermes_cli.debug_redaction import redact_debug_support_text
     req = body or DebugShareRequest()
     try:
         result = await config_scoped_to_thread(profile, lambda: build_debug_share(
@@ -805,12 +801,10 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None,
         raise  # an unknown ?profile= is the scope's 404, not a failed share
     except RuntimeError as exc:
         # Required summary-report upload failed (offline / paste service down).
-        error = redact_debug_support_text(exc)
-        raise HTTPException(status_code=502, detail=f"Upload failed: {error}")
+        raise HTTPException(status_code=502, detail=f"Upload failed: {exc}")
     except Exception as exc:
         _log.exception("debug share failed")
-        error = redact_debug_support_text(exc)
-        raise HTTPException(status_code=500, detail=f"Failed: {error}")
+        raise HTTPException(status_code=500, detail=f"Failed: {exc}")
 
     return {"ok": True, "urls": result.urls, "failures": result.failures,
             "redacted": result.redacted, "auto_delete_seconds": result.auto_delete_seconds}

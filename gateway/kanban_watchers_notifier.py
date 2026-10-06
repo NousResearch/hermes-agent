@@ -30,17 +30,6 @@ def _kbn():
     from hermes_cli import kanban_db_notify
     return kanban_db_notify
 
-
-def _pin_first():
-    """Machine-flow board resolution: env pins outrank the enumerated slug.
-
-    The slug here came from ``list_boards()``, not from a user — on a box whose
-    env pins ``HERMES_KANBAN_DB`` every board must resolve to the pinned file
-    or the notifier reads per-slug DBs nobody writes (see
-    ``kanban_db.pin_first_board_resolution``)."""
-    from hermes_cli import kanban_db
-    return kanban_db.pin_first_board_resolution()
-
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
@@ -254,24 +243,21 @@ class _Collector:
             logger.debug("kanban notifier: no connected adapters; skipping tick")
             return self.deliveries
         # Poll each resolved DB path once: several slugs can map to one DB when
-        # HERMES_KANBAN_DB pins the board path. The whole tick resolves pin-first:
-        # on a dispatcher-pinned box each enumerated slug must map to the pinned
-        # DB, never to that slug's own (empty) physical file.
+        # HERMES_KANBAN_DB pins the board path.
         kb = self.kb
-        with _pin_first():
-            seen_db_paths: set[str] = set()
-            for board_meta in _list_boards(kb):
-                slug = board_meta.get("slug") or kb.DEFAULT_BOARD
-                db_path = board_meta.get("db_path")
-                try:
-                    resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(kb.kanban_db_path(slug).resolve())
-                except Exception:
-                    resolved_db_path = f"slug:{slug}"
-                if resolved_db_path in seen_db_paths:
-                    logger.debug("kanban notifier: skipping duplicate board slug %s for DB %s", slug, resolved_db_path)
-                    continue
-                seen_db_paths.add(resolved_db_path)
-                self.collect_board(slug)
+        seen_db_paths: set[str] = set()
+        for board_meta in _list_boards(kb):
+            slug = board_meta.get("slug") or kb.DEFAULT_BOARD
+            db_path = board_meta.get("db_path")
+            try:
+                resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(kb.kanban_db_path(slug).resolve())
+            except Exception:
+                resolved_db_path = f"slug:{slug}"
+            if resolved_db_path in seen_db_paths:
+                logger.debug("kanban notifier: skipping duplicate board slug %s for DB %s", slug, resolved_db_path)
+                continue
+            seen_db_paths.add(resolved_db_path)
+            self.collect_board(slug)
         return self.deliveries
 
     def _board_has_subs(self, slug: str) -> bool:

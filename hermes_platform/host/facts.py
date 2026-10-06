@@ -233,12 +233,7 @@ _GPU_SCAN_LIMIT = 16
 
 
 def classify_gpu_vendors(vendor_ids: list[str]) -> str:
-    """Return the highest-priority GPU class for PCI vendor ids, or ``none``.
-
-    ``unknown`` when devices were seen but none of their vendor ids could be read.
-    """
-    if vendor_ids and not any(v.strip() for v in vendor_ids):
-        return "unknown"
+    """Return the highest-priority GPU class for PCI vendor ids, or ``none``."""
     found = {_GPU_PCI_VENDORS.get(v.strip().lower().removeprefix("0x")) for v in vendor_ids}
     return next((name for name in _GPU_PRIORITY if name in found), "none")
 
@@ -268,8 +263,6 @@ def _windows_gpu_vendor_ids() -> list[str] | None:
                 device_id = _winreg_str(f"{_DISPLAY_CLASS_KEY}\\{subkey}", "MatchingDeviceId").upper()
                 if "VEN_" in device_id:
                     vendors.append(device_id.split("VEN_", 1)[1][:4])
-                elif subkey.isdigit():  # an adapter whose id could not be read
-                    vendors.append("")
     except OSError:
         return None
     return vendors

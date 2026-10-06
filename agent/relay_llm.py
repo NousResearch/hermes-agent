@@ -289,14 +289,6 @@ def _aclose_on_loop(loop: asyncio.AbstractEventLoop, stream: Any) -> bool:
     return True
 
 
-def _next_provider_chunk(callback: Callable[..., Any], raw_iterator: Any) -> tuple[Any, bool]:
-    """Read one synchronous provider chunk without leaking StopIteration through a Future."""
-    try:
-        return callback(next, raw_iterator), False
-    except StopIteration:
-        return None, True
-
-
 class ManagedLlmStream(Iterator[Any]):
     """Synchronous view of one Relay-managed provider stream, driven from the worker thread."""
 
@@ -360,11 +352,9 @@ class ManagedLlmStream(Iterator[Any]):
                 run_callback(self._on_stream_created, raw_stream)
             raw_iterator = run_callback(iter, raw_stream)
             while True:
-                # Off the loop: Relay pulls the next provider chunk before it hands over the
-                # current one, so a blocking read here withholds each chunk until the provider
-                # sends the next. Text vanishes for every provider pause and a steer aborts it.
-                chunk, exhausted = await asyncio.to_thread(_next_provider_chunk, run_callback, raw_iterator)
-                if exhausted:
+                try:
+                    chunk = run_callback(next, raw_iterator)
+                except StopIteration:
                     break
                 if self._accept_chunk is not None and not run_callback(self._accept_chunk, chunk):
                     break
@@ -422,7 +412,7 @@ class ManagedLlmStream(Iterator[Any]):
                 return
             try:
                 if self._loop is not None:
-                    self._finish_logical("cancelled" if _is_cancellation(exc) else "failed", error=exc)
+                    self._finish_logical("cancelled" if _is_cancellation(exc) else "failed")
                     self._loop.close()
             finally:
                 self._loop = None
@@ -460,23 +450,14 @@ class ManagedLlmStream(Iterator[Any]):
             )
         return recoverable
 
-    def _finish_logical(self, outcome: str, error: BaseException | None = None) -> None:
-        """Complete the logical LLM scope unless the caller deferred it. An auxiliary stream
-        that ended in ``error`` reports it like a deferred auxiliary call does."""
+    def _finish_logical(self, outcome: str) -> None:
+        """Complete the logical LLM scope unless the caller deferred it."""
         if self._defer_logical_completion:
             return
-        error_class = None
-        if error is not None and self._logical_model_name is not None:
-            from agent import auxiliary_call_outcome
-            if auxiliary_call_outcome.is_cancellation(error):
-                outcome = "cancelled"
-            else:
-                error_class = auxiliary_call_outcome.error_class(
-                    error, provider=self._logical_provider_name or "", model=self._logical_model_name)
         _complete_logical(
             self._logical, outcome=outcome, model_name=self._logical_model_name,
             provider_name=self._logical_provider_name, response_model_name=self._logical_response_model_name,
-            operation_lease=self._runtime_lease, error_class=error_class,
+            operation_lease=self._runtime_lease,
         )
         self._logical = None
 
@@ -506,12 +487,12 @@ class ManagedLlmStream(Iterator[Any]):
         except BaseException as exc:
             callback_error = self._callback_error
             if callback_error is not None and relay_runtime._is_relay_wrapped_callback_error(exc, callback_error):
-                self._close(logical_outcome="failed", error=callback_error)
+                self._close(logical_outcome="failed")
                 raise callback_error
             if self._recoverable_relay_failure(exc):
                 self._preserve_pending_provider_chunks()
                 return next(self)
-            self._close(logical_outcome="cancelled" if _is_cancellation(exc) else "failed", error=exc)
+            self._close(logical_outcome="cancelled" if _is_cancellation(exc) else "failed")
             raise
         for index, (encoded, raw) in enumerate(self._raw_chunks):
             if _json_equal(chunk, encoded):
@@ -567,7 +548,7 @@ class ManagedLlmStream(Iterator[Any]):
                 self._keep_first_close_error(exc)
                 logger.debug("Provider stream cleanup failed", exc_info=True)
 
-    def _close(self, *, logical_outcome: str, error: BaseException | None = None) -> None:
+    def _close(self, *, logical_outcome: str) -> None:
         if self._closed:
             return
         self._closed = True
@@ -582,7 +563,7 @@ class ManagedLlmStream(Iterator[Any]):
                     close_loop = _aclose_on_loop(loop, self._stream)
                 except Exception as exc:
                     self._keep_first_close_error(exc)
-            self._finish_logical(logical_outcome, error)
+            self._finish_logical(logical_outcome)
             if close_loop:
                 loop.close()
         finally:
@@ -702,7 +683,6 @@ def _logical_parent(
 def _complete_logical(
     logical: _LogicalCall | None, *, outcome: str, model_name: str | None = None, provider_name: str | None = None,
     response_model_name: str | None = None, operation_lease: relay_runtime.RelayOperationLease | None = None,
-    error_class: str | None = None,
 ) -> None:
     if logical is None:
         return
@@ -715,8 +695,6 @@ def _complete_logical(
         output.update({"model": model_name, "provider": provider_name})
         if response_model_name is not None:
             output["response_model"] = response_model_name
-        if error_class is not None:
-            output["error_class"] = error_class
     with turn.finalize_lock:
         with turn.logical_llm_lock:
             if turn.logical_llm_calls.get(request_id) is not handle:
@@ -738,11 +716,8 @@ def _complete_logical(
             logger.warning("Hermes Relay logical LLM finalization failed", exc_info=True)
             return
         if popped is False:
-            # A call running beside the turn (title generation) finishes under the turn's own
-            # live scopes; keep its result so the drain reports it instead of an orphan.
-            lease.host.defer_scope_output(handle, output)
             logger.debug(
-                "Left logical LLM scope %s under a concurrent scope; the drain closes it with its result",
+                "Left logical LLM scope %s under a concurrent turn's scope; session close drains it",
                 request_id,
             )
         with turn.logical_llm_lock:
@@ -757,11 +732,8 @@ def _is_cancellation(error: BaseException) -> bool:
 def complete_logical_call(
     api_request_id: str, *, outcome: str, model_name: str | None = None,
     provider_name: str | None = None, response_model_name: str | None = None,
-    error_class: str | None = None,
 ) -> None:
-    """Complete the active turn's logical LLM call after caller validation. ``error_class``
-    (a classifier reason) rides on a call that reports its route: the error that ended a
-    failed call, or the last one a successful call recovered from."""
+    """Complete the active turn's logical LLM call after caller validation."""
     turn = relay_runtime.active_turn()
     if turn is None or not api_request_id:
         return
@@ -770,7 +742,7 @@ def complete_logical_call(
     if handle is not None:
         _complete_logical(
             (turn, handle, api_request_id), outcome=outcome, model_name=model_name,
-            provider_name=provider_name, response_model_name=response_model_name, error_class=error_class,
+            provider_name=provider_name, response_model_name=response_model_name,
         )
 
 

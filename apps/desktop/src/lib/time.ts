@@ -22,9 +22,6 @@ export const fmtDayTime = new Intl.DateTimeFormat(undefined, {
 // Medium date + short time (command center session detail).
 export const fmtDateTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
-// Weekday + full date + clock (message time tooltips).
-export const fmtFullDateTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeStyle: 'short' })
-
 // Date only, "5 Jun 2026" (starmap tooltip).
 export const fmtDate = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
 

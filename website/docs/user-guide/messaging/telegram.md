@@ -114,21 +114,6 @@ Notes:
   instance partially processed. Telegram's offset usually prevents this,
   but time-sensitive commands sent during a long outage will run on boot.
 
-### Concurrent update handling
-
-Updates from different chats are processed concurrently, so one slow turn
-(a long provider retry, a large download) no longer stalls every other chat.
-Updates from the same chat still run one after another, in arrival order.
-The cross-chat pool defaults to 32; an invalid value logs a warning and uses
-the default:
-
-```yaml
-platforms:
-  telegram:
-    extra:
-      max_concurrent_updates: 32   # 1 restores fully sequential processing
-```
-
 ### Repeated inbound updates
 
 Hermes suppresses repeated Telegram `update_id` values before message batching,

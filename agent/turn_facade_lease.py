@@ -14,8 +14,6 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from hermes_state_pidns import holder_namespace_token
-
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
 
@@ -259,10 +257,8 @@ def admit_durable_turn_lease(
     # X-Hermes-Session-Id, /v1/runs session_id, fingerprint-derived chat ids) are not
     # process-unique, and the first turn creates the row mid-turn, so a second writer would
     # otherwise find the row, take an unheld lease and interleave its turn into this one.
-    # pidns stamp: see hermes_state_pidns.
     holder = (
-        f"pid={os.getpid()}{holder_namespace_token()}:turn={relay_turn_id}"
-        f":platform={task_context['platform'] or 'unknown'}"
+        f"pid={os.getpid()}:turn={relay_turn_id}:platform={task_context['platform'] or 'unknown'}"
     )
     reload_needed = announced = False
 

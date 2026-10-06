@@ -22,7 +22,7 @@ from typing import Any
 
 # Jobs that can never run on a release (push/tag) event, plus the deferred
 # Desktop E2E. These are the only skips a strict run tolerates.
-PR_ONLY_JOBS = ("history-check", "lockfile-diff", "supply-chain")
+PR_ONLY_JOBS = ("history-check", "lockfile-diff", "supply-chain", "review-labels")
 DEFERRED_JOBS = ("e2e-desktop",)
 EXCLUDED_JOBS = frozenset((*PR_ONLY_JOBS, *DEFERRED_JOBS))
 

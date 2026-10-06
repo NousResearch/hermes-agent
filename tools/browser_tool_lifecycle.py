@@ -726,11 +726,6 @@ def cleanup_all_browsers() -> None:
     except Exception:
         pass
 
-    def _stop_harness():
-        from tools.browser_use_cli import stop_harness_daemons
-        stop_harness_daemons()
-    _best_effort("Browser Use harness daemon stop", _stop_harness)
-
     _install._discover_homebrew_node_dirs.cache_clear()
     _bt._chromium_autoinstall_attempted = False
     # Each resolved flag flips BEFORE its cache is nulled so a concurrent reader never

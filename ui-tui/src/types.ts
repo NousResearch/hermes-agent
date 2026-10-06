@@ -201,24 +201,6 @@ export interface VaultUnlockReq {
   requestId: string
 }
 
-/**
- * `vault.save_login` server→client request — save a new website login from a
- * browser sign-in page. Two-step capture (identifier shown, password masked);
- * the answer goes only to the encrypted vault, never to the model.
- */
-export interface VaultSaveLoginReq {
-  origin: string
-  requestId: string
-  site: string
-}
-
-/** `vault.code` server→client request — a one-time sign-in code the user reads from their device. */
-export interface VaultCodeReq {
-  hint: string
-  requestId: string
-  site: string
-}
-
 export interface PanelData {
   sections: PanelSection[]
   title: string

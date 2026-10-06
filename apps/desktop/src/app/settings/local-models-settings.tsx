@@ -113,6 +113,9 @@ function ScopedLocalModelsSettings(): ReactElement {
 
   const failedInstall: boolean = jobs.some(
     (job: LocalRuntimeJob): boolean => job.kind === 'runtime-install' && job.status === 'error'
+      // Same recency contract as lastError: a failed install superseded by
+      // a completed retry is history, not a reason to leave the hero.
+      && !supersededByDone(jobs, job)
   )
 
   if ((qJob || (needsSetup && !configure && heroModel)) && !otherActiveJob && !installStarting && !failedInstall) {

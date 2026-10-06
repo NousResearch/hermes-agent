@@ -456,7 +456,7 @@ describe('LocalModelsSettings', () => {
     // output was empty) stays in the backend job registry forever, but a
     // newer install job finished OK after it — the pane must not keep
     // painting the old error next to the green up-to-date row.
-    $localRuntimeJobs.set([
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
       {
         job_id: 'ok-install',
         kind: 'runtime-install',
@@ -500,7 +500,7 @@ describe('LocalModelsSettings', () => {
     })
     // Order flipped: the failure is the LATEST word for this kind — only
     // a strictly newer done job may retire an error, never an older one.
-    $localRuntimeJobs.set([
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
       {
         job_id: 'bad-install',
         kind: 'runtime-install',
@@ -532,6 +532,94 @@ describe('LocalModelsSettings', () => {
     await renderFullPane()
 
     expect(await screen.findByText(/download interrupted/)).toBeTruthy()
+  })
+
+  it('keeps a model-download error current when a different model succeeds later', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      runtime_backend: 'cuda'
+    })
+    // The supersession key is the OPERATION (kind + target), not the kind
+    // alone: model A's failure at t=1000 was never retried, so a success
+    // for unrelated model B at t=2000 must not retire it — the review
+    // blocker on kind-only supersession.
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
+      {
+        job_id: 'ok-b',
+        kind: 'model-download',
+        target: 'Huge Model',
+        model_id: REFUSED_MODEL.id,
+        status: 'done',
+        phase: 'done',
+        detail: '',
+        total_bytes: null,
+        done_bytes: 0,
+        error: null,
+        started_at: 2000
+      },
+      {
+        job_id: 'bad-a',
+        kind: 'model-download',
+        target: 'Qwen3.6 27B',
+        model_id: FITTING_MODEL.id,
+        status: 'error',
+        phase: 'verifying',
+        detail: '',
+        total_bytes: null,
+        done_bytes: 0,
+        error: 'model A download broke — try again',
+        started_at: 1000
+      }
+    ])
+
+    await renderFullPane()
+    await screen.findByText('Qwen3.6 27B')
+
+    expect(await screen.findByText(/model A download broke/)).toBeTruthy()
+  })
+
+  it('retires a model-download error superseded by a successful retry of the same model', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      runtime_backend: 'cuda'
+    })
+    // The other direction of the same contract: a later success for the
+    // SAME target IS a completed retry and retires the earlier error.
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
+      {
+        job_id: 'ok-a',
+        kind: 'model-download',
+        target: 'Qwen3.6 27B',
+        model_id: FITTING_MODEL.id,
+        status: 'done',
+        phase: 'done',
+        detail: '',
+        total_bytes: null,
+        done_bytes: 0,
+        error: null,
+        started_at: 2000
+      },
+      {
+        job_id: 'bad-a',
+        kind: 'model-download',
+        target: 'Qwen3.6 27B',
+        model_id: FITTING_MODEL.id,
+        status: 'error',
+        phase: 'verifying',
+        detail: '',
+        total_bytes: null,
+        done_bytes: 0,
+        error: 'model A download broke — try again',
+        started_at: 1000
+      }
+    ])
+
+    await renderFullPane()
+    await screen.findByText('Qwen3.6 27B')
+
+    expect(screen.queryByText(/model A download broke/)).toBeNull()
   })
 })
 

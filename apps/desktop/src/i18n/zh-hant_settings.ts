@@ -1050,6 +1050,8 @@ export const zhHantSettings = {
       change: '變更',
       autoUseMain: '自動 · 使用主要模型',
       inheritMainEffort: '繼承 · 主要模型推理強度',
+      inheritsFrom: task => `繼承 ${task}`,
+      followTask: task => `跟隨 ${task}`,
       providerDefault: '(提供方預設)',
       moaTitle: '混合代理（Mixture of Agents）',
       moaPreset: '預設',

@@ -1,6 +1,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { esAuxTasks } from './es_aux_tasks'
 import { esModelMenu } from './es_model_menu'
 import { introEs } from './intro-es'
 
@@ -2119,6 +2120,8 @@ export const esOverrides = {
       change: 'Cambiar',
       autoUseMain: 'auto · usar modelo principal',
       inheritMainEffort: 'heredar · esfuerzo del modelo principal',
+      inheritsFrom: task => `hereda de ${task}`,
+      followTask: task => `Seguir ${task}`,
       providerDefault: '(predeterminado del proveedor)',
       fallbackAdd: 'Añadir respaldo',
       fallbackEmpty: 'No hay modelos de respaldo; se usa el modelo predeterminado salvo que falle.',
@@ -2130,52 +2133,7 @@ export const esOverrides = {
       moaAggregator: 'Agregador',
       moaAggregatorBilled: 'modelo que actúa · se factura por la ejecución',
       moaReferenceHint: 'asesora una vez por turno por defecto',
-      tasks: {
-        vision: {
-          label: 'Visión',
-          hint: 'Análisis de imágenes'
-        },
-        compression: {
-          label: 'Compresión',
-          hint: 'Compactación de contexto'
-        },
-        skills_hub: {
-          label: 'Hub de skills',
-          hint: 'Búsqueda de skills'
-        },
-        approval: {
-          label: 'Aprobación',
-          hint: 'Aprobación automática inteligente'
-        },
-        mcp: {
-          label: 'MCP',
-          hint: 'Enrutamiento de herramientas MCP'
-        },
-        title_generation: {
-          label: 'Generación de títulos',
-          hint: 'Títulos de sesión'
-        },
-        review: {
-          label: 'Revisión',
-          hint: 'subagente revisor de /review'
-        },
-        triage_specifier: {
-          label: 'Especificador de triaje',
-          hint: 'Detalle de especificaciones de Kanban'
-        },
-        kanban_decomposer: {
-          label: 'Descomponedor de Kanban',
-          hint: 'Descomposición de tareas'
-        },
-        profile_describer: {
-          label: 'Descriptor de perfiles',
-          hint: 'Descripciones automáticas de perfiles'
-        },
-        curator: {
-          label: 'Curador',
-          hint: 'Revisión de uso de skills'
-        }
-      }
+      tasks: esAuxTasks
     },
     localModels: {
       connectionChanged: 'Cambió la conexión de los modelos locales',

@@ -41,7 +41,7 @@ BGM. It is written in Chinese and tuned for Chinese-language narration.
   through `vision_analyze` instead of a separate API key.
 - Optional: an AI music provider (MiniMax, Suno) for generated BGM.
 
-Linux and macOS only: the upstream workflow writes intermediates under `/tmp`
+Linux and macOS only: the upstream workflow writes intermediates to the system temp directory
 and uses platform font paths for title overlays.
 
 Full documentation: https://github.com/znyupup/ai-video-editing-skill#readme

@@ -1,0 +1,17 @@
+name: maqami-travel
+repo: https://github.com/negm17111995/mcp-server
+sha: 063201bd3306c2effc531b66c2abee7ab8110002
+description: "Search hotels (3M+ hotels) and flights worldwide on MAQAMI, read hotel details and reviews, then prebook and book, through the official MAQAMI Travel MCP server (Streamable HTTP at mcp.maqami.co, no account or key), with the maqami-travel-booking skill bundled. Portable Agent Plugins v1 package (mcp.json + skills/). Disclosure — connects to the hosted MAQAMI MCP server at mcp.maqami.co; the tool arguments the agent sends (destinations, dates, guests and, for a booking, guest and payment details) go to it. Prebook and book create real reservations; the skill tells the agent to confirm with the user first."
+maintainer: negm17111995
+tier: community
+category: tools
+title: MAQAMI Travel
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/negm17111995/mcp-server#readme
+version: "1.0.6"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

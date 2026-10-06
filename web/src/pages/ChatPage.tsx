@@ -99,6 +99,14 @@ import {
   TERMINAL_FONT_FAMILY,
 } from "@/lib/terminal-font-refit";
 import { loseWebglContexts } from "@/lib/xterm-webgl-release";
+import {
+  buildTerminalTheme,
+  DEFAULT_TERMINAL_BACKGROUND,
+  DEFAULT_TERMINAL_FOREGROUND,
+  terminalFontSizeForWidth,
+  terminalLineHeightForWidth,
+  terminalTierWidthPx,
+} from "@/lib/terminal-appearance";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
@@ -120,57 +128,6 @@ function generateChannelId(scope?: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2)}-${Date.now().toString(
     36,
   )}`;
-}
-
-// Colors for the terminal body.  Matches the dashboard's dark teal canvas
-// with cream foreground — we intentionally don't pick monokai or a loud
-// theme, because the TUI's skin engine already paints the content; the
-// terminal chrome just needs to sit quietly inside the dashboard.
-const DEFAULT_TERMINAL_BACKGROUND = "#000000";
-const DEFAULT_TERMINAL_FOREGROUND = "#f0e6d2";
-
-function buildTerminalTheme(background: string, foreground: string) {
-  return {
-    background,
-    foreground,
-    cursor: foreground,
-    cursorAccent: background,
-    selectionBackground:
-      foreground.length === 7 ? `${foreground}44` : foreground,
-  };
-}
-
-/**
- * CSS width for xterm font tiers.
- *
- * Prefer the terminal host's `clientWidth` — Chrome DevTools device mode often
- * keeps `window.innerWidth` at the full desktop value while the *drawn* layout
- * is phone-sized, which made us pick desktop font sizes (~14px) and look huge.
- */
-function terminalTierWidthPx(host: HTMLElement | null): number {
-  if (typeof window === "undefined") return 1280;
-  const fromHost = host?.clientWidth ?? 0;
-  if (fromHost > 2) return Math.round(fromHost);
-  const doc = document.documentElement?.clientWidth ?? 0;
-  const vv = window.visualViewport;
-  const inner = window.innerWidth;
-  const vvw = vv?.width ?? inner;
-  const layout = Math.min(inner, vvw, doc > 0 ? doc : inner);
-  return Math.max(1, Math.round(layout));
-}
-
-function terminalFontSizeForWidth(layoutWidthPx: number): number {
-  if (layoutWidthPx < 300) return 7;
-  if (layoutWidthPx < 360) return 8;
-  if (layoutWidthPx < 420) return 9;
-  if (layoutWidthPx < 520) return 10;
-  if (layoutWidthPx < 720) return 11;
-  if (layoutWidthPx < 1024) return 12;
-  return 14;
-}
-
-function terminalLineHeightForWidth(layoutWidthPx: number): number {
-  return layoutWidthPx < 1024 ? 1.02 : 1.15;
 }
 
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
@@ -336,7 +293,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // tabs because the dep wouldn't change on tab switch.
   const [mobilePanelOpenRaw, setMobilePanelOpenRaw] = useState(false);
   const mobilePanelOpen = isActive && mobilePanelOpenRaw;
-
   // Collapse toggle for the desktop chat side panel (model + sessions),
   // persisted in localStorage so the choice survives reloads.
   const [chatPanelCollapsed, setChatPanelCollapsed] = useState(
@@ -376,7 +332,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     () => buildTerminalTheme(terminalBg, terminalFg),
     [terminalBg, terminalFg],
   );
-
   // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
   // switches. That is great for ordinary /chat navigation, but it means query
   // param changes do NOT remount the component. Resume-in-chat from the
@@ -604,11 +559,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Browser-embedded chat runs the TUI in inline mode. Keep transcript
       // history in xterm.js so the browser wheel can scroll it directly.
       scrollback: 5000,
-      // Enable screen-reader mode so VoiceOver / NVDA can discover the
-      // off-screen textarea xterm creates for assistive technology.
-      // Without this the chat composer is invisible to screen readers.
-      // See #36784.
-      screenReaderMode: true,
+      screenReaderMode: true, // AT textarea; composer a11y (#36784)
       theme: terminalTheme,
     });
     termRef.current = term;
@@ -740,13 +691,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
 
-      // Let Tab / Shift+Tab escape the terminal so screen-reader and keyboard
-      // users can navigate to other page controls (WCAG 2.1.2 No Keyboard Trap).
-      // Folding into the existing handler — xterm stores one handler per
-      // terminal (lib/xterm.js CoreBrowserTerminal.attachCustomKeyEventHandler
-      // assigns directly to `_customKeyEventHandler`), so registering Tab
-      // escape separately would silently overwrite the clipboard handler and
-      // Tab would never escape. See #36784.
+      // Tab/Shift+Tab escape the terminal (WCAG 2.1.2); xterm stores one
+      // key handler per Terminal, so a second registration overwrites this one.
       if (ev.key === "Tab") return false;
 
       // Copy: Cmd+C on macOS, Ctrl+C or Ctrl+Shift+C elsewhere. Copy only

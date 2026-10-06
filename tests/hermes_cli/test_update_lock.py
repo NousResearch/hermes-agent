@@ -140,6 +140,94 @@ def test_marker_owned_by_a_zombie_self_heals(marker):
         os.waitpid(pid, 0)  # reap so the test leaks no children
 
 
+def _read_with_an_interloper(marker, claim_as_winner):
+    """Wrap ``read_live_update`` so that, on its first no-live-lock read, another
+    updater enters the read-to-write window and writes the marker first.
+
+    The only way to exercise the TOCTOU window deterministically: the marker file
+    itself stays real, only the interleaving point is injected.
+    """
+    real_read = read_live_update
+    injected = False
+
+    def read_after_the_other_updater(path=None, reap_stale=True):
+        nonlocal injected
+        holder = real_read(path=path, reap_stale=reap_stale)
+        if holder is None and not injected:
+            injected = True
+            claim_as_winner()
+        return holder
+
+    return read_after_the_other_updater
+
+
+def test_create_race_loser_fails_closed(marker, other_pid, monkeypatch):
+    """#86528: two updaters read "no live lock" in the same window.
+
+    Whoever reaches the marker second must lose the create and refuse, not
+    overwrite the winner's claim — the overwrite is what lets two update flows
+    mutate one checkout concurrently.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.update_lock.read_live_update",
+        _read_with_an_interloper(marker, lambda: _claim(marker, other_pid)),
+    )
+
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is False
+    assert lock.acquired is False
+    assert lock.holder is not None and lock.holder.pid == other_pid
+    winner_pid = int(marker.read_text(encoding="utf-8").splitlines()[0])
+    assert winner_pid == other_pid, "the winner keeps the claim"
+
+
+def test_create_race_loser_with_partial_marker_fails_closed(marker, monkeypatch):
+    """A losing updater may re-read while the winner's non-atomic write is mid-flight.
+
+    The Electron gate truncates-then-writes, so the re-read can see no parseable
+    holder. The loser must still back off (#86528): a ``None`` holder means the
+    earlier side owns the claim, not that the lock is free.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.update_lock.read_live_update",
+        _read_with_an_interloper(marker, lambda: marker.write_text("")),
+    )
+
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is False
+    assert lock.acquired is False
+    assert lock.holder is None
+    assert marker.exists(), "a mid-write winner's marker must survive the loser's refusal"
+
+
+def test_create_race_loser_acquires_when_the_winner_releases(marker, other_pid, monkeypatch):
+    """The lost create's re-read may find the winner already finished (#86528).
+
+    A marker that vanished between the lost create and the re-read means the
+    earlier side released; refusing then would tell the user an update is
+    "already running" that has in fact completed.
+    """
+    real_read = read_live_update
+    calls = {"n": 0}
+
+    def read_then_release(path=None, reap_stale=True):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            marker.unlink()  # the winner finishes and releases before our re-read
+        holder = real_read(path=path, reap_stale=reap_stale)
+        if calls["n"] == 1 and holder is None:
+            _claim(marker, other_pid)  # the interloper claims during our read window
+        return holder
+
+    monkeypatch.setattr("hermes_cli.update_lock.read_live_update", read_then_release)
+
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True
+    assert lock.acquired is True
+    lock.release()
+    assert not marker.exists()
+
+
 def test_marker_naming_our_own_pid_is_adopted(marker, monkeypatch):
     """A killed update's marker names the pid its retry gets (containers restart pid numbering).
 

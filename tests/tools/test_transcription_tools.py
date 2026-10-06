@@ -734,6 +734,18 @@ class TestTranscribeAudioDispatch:
 
         assert mock_local.call_args[0][1] == "small"
 
+    def test_call_language_override_reaches_provider(self, sample_ogg):
+        config = {"provider": "openai", "openai": {"model": "gpt-4o-mini-transcribe"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="openai"), \
+             patch("tools.transcription_tools._transcribe_openai",
+                   return_value={"success": True, "transcript": "hello"}) as mock_openai:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg, language="en")
+
+        assert result["success"] is True
+        assert mock_openai.call_args.kwargs["language"] == "en"
+
 # ============================================================================
 # _transcribe_mistral
 # ============================================================================

@@ -14,12 +14,33 @@ import type {
   ToolsConfigureResponse
 } from '../../../gatewayTypes.js'
 import { t } from '../../../i18n/runtime.js'
+import type { TranslationKey } from '../../../i18n/types.js'
 import type { PanelSection } from '../../../types.js'
 import { applyDelegationStatus, getDelegationState } from '../../delegationStore.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { getSpawnHistory, pushDiskSnapshot, setDiffPair, type SpawnSnapshot } from '../../spawnHistoryStore.js'
 import { noSkillsInstalled } from '../../userMessages.js'
-import type { SlashCommand } from '../types.js'
+import type { SlashCommand, SlashRunCtx } from '../types.js'
+
+// Text subcommands handed to the Python slash worker all share one render:
+// request `slash.exec`, drop the reply when a newer slash superseded it, prefix
+// the worker warning, and page output longer than 180 chars or 2 lines.
+const runViaSlashWorker = (ctx: SlashRunCtx, cmd: string, noOutput: TranslationKey, title: TranslationKey): void => {
+  ctx.gateway.gw
+    .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+    .then(r => {
+      if (ctx.stale()) {
+        return
+      }
+
+      const body = r?.output || t(noOutput)
+      const text = r?.warning ? `${t('slashCmd.ops.slashWorker.warning', r.warning)}\n${body}` : body
+      const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
+
+      long ? ctx.transcript.page(text, t(title)) : ctx.transcript.sys(text)
+    })
+    .catch(ctx.guardedErr)
+}
 
 interface SkillInfo {
   category?: string
@@ -541,25 +562,6 @@ export const opsCommands: SlashCommand[] = [
       const { rpc } = ctx.gateway
       const { panel, sys } = ctx.transcript
 
-      const runViaSlashWorker = () => {
-        ctx.gateway.gw
-          .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
-          .then(r => {
-            if (ctx.stale()) {
-              return
-            }
-
-            const body = r?.output || t('slashCmd.ops.slashWorker.skillsNoOutput')
-            const formatted = r?.warning ? `${t('slashCmd.ops.slashWorker.warning', r.warning)}\n${body}` : body
-            const long = formatted.length > 180 || formatted.split('\n').filter(Boolean).length > 2
-
-            long
-              ? ctx.transcript.page(formatted, t('slashCmd.ops.slashWorker.skillsTitle'))
-              : ctx.transcript.sys(formatted)
-          })
-          .catch(ctx.guardedErr)
-      }
-
       if (sub === 'list') {
         rpc<SkillsListResponse>('skills.manage', { action: 'list' })
           .then(
@@ -715,7 +717,7 @@ export const opsCommands: SlashCommand[] = [
         return
       }
 
-      runViaSlashWorker()
+      runViaSlashWorker(ctx, cmd, 'slashCmd.ops.slashWorker.skillsNoOutput', 'slashCmd.ops.slashWorker.skillsTitle')
     }
   },
 
@@ -730,20 +732,7 @@ export const opsCommands: SlashCommand[] = [
         return patchOverlayState({ pluginsHub: true })
       }
 
-      ctx.gateway.gw
-        .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
-        .then(r => {
-          if (ctx.stale()) {
-            return
-          }
-
-          const body = r?.output || t('slashCmd.ops.slashWorker.pluginsNoOutput')
-          const text = r?.warning ? `${t('slashCmd.ops.slashWorker.warning', r.warning)}\n${body}` : body
-          const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
-
-          long ? ctx.transcript.page(text, t('slashCmd.ops.slashWorker.pluginsTitle')) : ctx.transcript.sys(text)
-        })
-        .catch(ctx.guardedErr)
+      runViaSlashWorker(ctx, cmd, 'slashCmd.ops.slashWorker.pluginsNoOutput', 'slashCmd.ops.slashWorker.pluginsTitle')
     }
   },
 
@@ -754,20 +743,7 @@ export const opsCommands: SlashCommand[] = [
       const [subcommand, ...names] = arg.trim().split(/\s+/).filter(Boolean)
 
       if (subcommand !== 'disable' && subcommand !== 'enable') {
-        ctx.gateway.gw
-          .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
-          .then(r => {
-            if (ctx.stale()) {
-              return
-            }
-
-            const body = r?.output || t('slashCmd.ops.slashWorker.toolsNoOutput')
-            const text = r?.warning ? `${t('slashCmd.ops.slashWorker.warning', r.warning)}\n${body}` : body
-            const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
-
-            long ? ctx.transcript.page(text, t('slashCmd.ops.slashWorker.toolsTitle')) : ctx.transcript.sys(text)
-          })
-          .catch(ctx.guardedErr)
+        runViaSlashWorker(ctx, cmd, 'slashCmd.ops.slashWorker.toolsNoOutput', 'slashCmd.ops.slashWorker.toolsTitle')
 
         return
       }

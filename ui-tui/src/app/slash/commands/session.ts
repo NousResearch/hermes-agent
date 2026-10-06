@@ -20,7 +20,17 @@ import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
-import type { SlashCommand } from '../types.js'
+import type { SlashCommand, SlashRunCtx } from '../types.js'
+
+// config.get + the staleness/null-result guard shared by the status reads.
+// Returns the promise so callers chain `.catch` exactly where they do today.
+const readConfig = (ctx: SlashRunCtx, params: Record<string, unknown>, render: (r: ConfigGetValueResponse) => void) =>
+  ctx.gateway.rpc<ConfigGetValueResponse>('config.get', params).then(ctx.guarded<ConfigGetValueResponse>(render))
+
+// config.set + the guarded render shared by the config writes. Returns the
+// promise so callers chain `.catch` exactly where they do today.
+const writeConfig = (ctx: SlashRunCtx, params: Record<string, unknown>, render: (r: ConfigSetResponse) => void) =>
+  ctx.gateway.rpc<ConfigSetResponse>('config.set', params).then(ctx.guarded<ConfigSetResponse>(render))
 
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
 const REASONING_SESSION_FLAGS = new Set(['--session'])
@@ -142,47 +152,47 @@ export const sessionCommands: SlashCommand[] = [
       }
 
       const switchModel = (confirmExpensiveModel = false) =>
-        ctx.gateway
-          .rpc<ConfigSetResponse>('config.set', {
+        writeConfig(
+          ctx,
+          {
             confirm_expensive_model: confirmExpensiveModel,
             key: 'model',
             session_id: ctx.sid,
             value: modelValueForConfigSet(arg)
-          })
-          .then(
-            ctx.guarded<ConfigSetResponse>(r => {
-              if (r.confirm_required) {
-                patchOverlayState({
-                  confirm: {
-                    cancelLabel: t('slashCmd.session.model.cancel'),
-                    confirmLabel: t('slashCmd.session.model.switchAnyway'),
-                    danger: true,
-                    detail: r.confirm_message || r.warning || t('slashCmd.session.model.expensiveDetail'),
-                    onConfirm: () => switchModel(true),
-                    title: t('slashCmd.session.model.expensiveTitle')
-                  }
-                })
+          },
+          r => {
+            if (r.confirm_required) {
+              patchOverlayState({
+                confirm: {
+                  cancelLabel: t('slashCmd.session.model.cancel'),
+                  confirmLabel: t('slashCmd.session.model.switchAnyway'),
+                  danger: true,
+                  detail: r.confirm_message || r.warning || t('slashCmd.session.model.expensiveDetail'),
+                  onConfirm: () => switchModel(true),
+                  title: t('slashCmd.session.model.expensiveTitle')
+                }
+              })
 
-                return
-              }
+              return
+            }
 
-              if (!r.value) {
-                return ctx.transcript.sys(t('slashCmd.session.model.invalidResponse'))
-              }
+            if (!r.value) {
+              return ctx.transcript.sys(t('slashCmd.session.model.invalidResponse'))
+            }
 
-              ctx.transcript.sys(
-                r.deferred
-                  ? t('slashCmd.session.model.switchedDeferred', r.value)
-                  : t('slashCmd.session.model.switched', r.value)
-              )
-              ctx.local.maybeWarn(r)
+            ctx.transcript.sys(
+              r.deferred
+                ? t('slashCmd.session.model.switchedDeferred', r.value)
+                : t('slashCmd.session.model.switched', r.value)
+            )
+            ctx.local.maybeWarn(r)
 
-              patchUiState(state => ({
-                ...state,
-                info: state.info ? { ...state.info, model: r.value! } : { model: r.value!, skills: {}, tools: {} }
-              }))
-            })
-          )
+            patchUiState(state => ({
+              ...state,
+              info: state.info ? { ...state.info, model: r.value! } : { model: r.value!, skills: {}, tools: {} }
+            }))
+          }
+        )
 
       switchModel()
     }
@@ -231,21 +241,19 @@ export const sessionCommands: SlashCommand[] = [
         return
       }
 
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'personality', session_id: ctx.sid, value: arg }).then(
-        ctx.guarded<ConfigSetResponse>(r => {
-          if (r.history_reset) {
-            ctx.session.resetVisibleHistory(r.info ?? null)
-          }
+      writeConfig(ctx, { key: 'personality', session_id: ctx.sid, value: arg }, r => {
+        if (r.history_reset) {
+          ctx.session.resetVisibleHistory(r.info ?? null)
+        }
 
-          const value = r.value || t('slashCmd.session.personality.defaultValue')
-          ctx.transcript.sys(
-            r.history_reset
-              ? t('slashCmd.session.personality.changedCleared', value)
-              : t('slashCmd.session.personality.changed', value)
-          )
-          ctx.local.maybeWarn(r)
-        })
-      )
+        const value = r.value || t('slashCmd.session.personality.defaultValue')
+        ctx.transcript.sys(
+          r.history_reset
+            ? t('slashCmd.session.personality.changedCleared', value)
+            : t('slashCmd.session.personality.changed', value)
+        )
+        ctx.local.maybeWarn(r)
+      })
     }
   },
 
@@ -460,13 +468,9 @@ export const sessionCommands: SlashCommand[] = [
       const value = arg.trim().toLowerCase()
 
       if (!value) {
-        return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'theme' })
-          .then(
-            ctx.guarded<ConfigGetValueResponse>(r =>
-              ctx.transcript.sys(t('slashCmd.session.theme.current', r.value || 'auto'))
-            )
-          )
+        return readConfig(ctx, { key: 'theme' }, r =>
+          ctx.transcript.sys(t('slashCmd.session.theme.current', r.value || 'auto'))
+        )
       }
 
       if (!['auto', 'light', 'dark'].includes(value)) {
@@ -477,19 +481,14 @@ export const sessionCommands: SlashCommand[] = [
       // failed config.set must not leave the session showing a theme that
       // reverts on restart. A few ms later than an optimistic flip, but the
       // env/theme state and config.yaml never disagree.
-      ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'theme', value })
-        .then(
-          ctx.guarded<ConfigSetResponse>(r => {
-            if (r.value === undefined) {
-              return
-            }
+      writeConfig(ctx, { key: 'theme', value }, r => {
+        if (r.value === undefined) {
+          return
+        }
 
-            applyConfiguredTuiTheme(value)
-            ctx.transcript.sys(t('slashCmd.session.theme.switched', value))
-          })
-        )
-        .catch(ctx.guardedErr)
+        applyConfiguredTuiTheme(value)
+        ctx.transcript.sys(t('slashCmd.session.theme.switched', value))
+      }).catch(ctx.guardedErr)
     }
   },
 
@@ -498,22 +497,16 @@ export const sessionCommands: SlashCommand[] = [
     name: 'skin',
     run: (arg, ctx) => {
       if (!arg) {
-        return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'skin' })
-          .then(
-            ctx.guarded<ConfigGetValueResponse>(r =>
-              ctx.transcript.sys(t('slashCmd.session.skin.current', r.value || t('slashCmd.session.skin.defaultValue')))
-            )
-          )
+        return readConfig(ctx, { key: 'skin' }, r =>
+          ctx.transcript.sys(t('slashCmd.session.skin.current', r.value || t('slashCmd.session.skin.defaultValue')))
+        )
       }
 
-      ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'skin', value: arg })
-        .then(
-          ctx.guarded<ConfigSetResponse>(
-            r => r.value && ctx.transcript.sys(t('slashCmd.session.skin.switched', r.value))
-          )
-        )
+      writeConfig(
+        ctx,
+        { key: 'skin', value: arg },
+        r => r.value && ctx.transcript.sys(t('slashCmd.session.skin.switched', r.value))
+      )
     }
   },
 
@@ -525,32 +518,26 @@ export const sessionCommands: SlashCommand[] = [
       const value = arg.trim().toLowerCase()
 
       if (!value) {
-        return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'indicator' })
-          .then(
-            ctx.guarded<ConfigGetValueResponse>(r =>
-              ctx.transcript.sys(t('slashCmd.session.indicator.current', r.value || DEFAULT_INDICATOR_STYLE))
-            )
-          )
+        return readConfig(ctx, { key: 'indicator' }, r =>
+          ctx.transcript.sys(t('slashCmd.session.indicator.current', r.value || DEFAULT_INDICATOR_STYLE))
+        )
       }
 
       if (!(INDICATOR_STYLES as readonly string[]).includes(value)) {
         return ctx.transcript.sys(t('slashCmd.session.indicator.usage', INDICATOR_STYLES.join('|')))
       }
 
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'indicator', value }).then(
-        ctx.guarded<ConfigSetResponse>(r => {
-          if (!r.value) {
-            return
-          }
+      writeConfig(ctx, { key: 'indicator', value }, r => {
+        if (!r.value) {
+          return
+        }
 
-          // Hot-swap the running TUI immediately so the next render
-          // uses the new style without waiting for the 5s mtime poll
-          // to re-apply config.full.
-          patchUiState({ indicatorStyle: value as IndicatorStyle })
-          ctx.transcript.sys(t('slashCmd.session.indicator.switched', r.value))
-        })
-      )
+        // Hot-swap the running TUI immediately so the next render
+        // uses the new style without waiting for the 5s mtime poll
+        // to re-apply config.full.
+        patchUiState({ indicatorStyle: value as IndicatorStyle })
+        ctx.transcript.sys(t('slashCmd.session.indicator.switched', r.value))
+      })
     }
   },
 
@@ -558,13 +545,9 @@ export const sessionCommands: SlashCommand[] = [
     help: 'toggle yolo mode (per-session approvals)',
     name: 'yolo',
     run: (_arg, ctx) => {
-      ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: ctx.sid })
-        .then(
-          ctx.guarded<ConfigSetResponse>(r =>
-            ctx.transcript.sys(r.value === '1' ? t('slashCmd.session.yolo.on') : t('slashCmd.session.yolo.off'))
-          )
-        )
+      writeConfig(ctx, { key: 'yolo', session_id: ctx.sid }, r =>
+        ctx.transcript.sys(r.value === '1' ? t('slashCmd.session.yolo.on') : t('slashCmd.session.yolo.off'))
+      )
     }
   },
 
@@ -573,40 +556,36 @@ export const sessionCommands: SlashCommand[] = [
     name: 'reasoning',
     run: (arg, ctx) => {
       if (!arg) {
-        return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'reasoning', session_id: ctx.sid })
-          .then(
-            ctx.guarded<ConfigGetValueResponse>(
-              r =>
-                r.value &&
-                ctx.transcript.sys(t('slashCmd.session.reasoning.currentWithDisplay', r.value, r.display || 'hide'))
-            )
-          )
+        return readConfig(
+          ctx,
+          { key: 'reasoning', session_id: ctx.sid },
+          r =>
+            r.value &&
+            ctx.transcript.sys(t('slashCmd.session.reasoning.currentWithDisplay', r.value, r.display || 'hide'))
+        )
       }
 
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', reasoningConfigPayload(arg, ctx.sid ?? '')).then(
-        ctx.guarded<ConfigSetResponse>(r => {
-          if (!r.value) {
-            return
-          }
+      writeConfig(ctx, reasoningConfigPayload(arg, ctx.sid ?? ''), r => {
+        if (!r.value) {
+          return
+        }
 
-          if (r.value === 'hide') {
-            patchUiState(state => ({
-              ...state,
-              sections: { ...state.sections, thinking: 'hidden' },
-              showReasoning: false
-            }))
-          } else if (r.value === 'show') {
-            patchUiState(state => ({
-              ...state,
-              sections: { ...state.sections, thinking: 'expanded' },
-              showReasoning: true
-            }))
-          }
+        if (r.value === 'hide') {
+          patchUiState(state => ({
+            ...state,
+            sections: { ...state.sections, thinking: 'hidden' },
+            showReasoning: false
+          }))
+        } else if (r.value === 'show') {
+          patchUiState(state => ({
+            ...state,
+            sections: { ...state.sections, thinking: 'expanded' },
+            showReasoning: true
+          }))
+        }
 
-          ctx.transcript.sys(t('slashCmd.session.reasoning.current', r.value))
-        })
-      )
+        ctx.transcript.sys(t('slashCmd.session.reasoning.current', r.value))
+      })
     }
   },
 
@@ -622,35 +601,25 @@ export const sessionCommands: SlashCommand[] = [
       }
 
       if (!mode || mode === 'status') {
-        return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'fast', session_id: ctx.sid })
-          .then(
-            ctx.guarded<ConfigGetValueResponse>(r =>
-              ctx.transcript.sys(t('slashCmd.session.fast.mode', fastModeWord(r.value)))
-            )
-          )
-          .catch(ctx.guardedErr)
+        return readConfig(ctx, { key: 'fast', session_id: ctx.sid }, r =>
+          ctx.transcript.sys(t('slashCmd.session.fast.mode', fastModeWord(r.value)))
+        ).catch(ctx.guardedErr)
       }
 
-      ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'fast', session_id: ctx.sid, value: mode })
-        .then(
-          ctx.guarded<ConfigSetResponse>(r => {
-            const next = fastModeWord(r.value)
-            ctx.transcript.sys(t('slashCmd.session.fast.mode', next))
-            patchUiState(state => ({
-              ...state,
-              info: state.info
-                ? {
-                    ...state.info,
-                    fast: next !== 'normal',
-                    service_tier: { fast: 'priority', normal: '', ultrafast: 'ultrafast' }[next]
-                  }
-                : state.info
-            }))
-          })
-        )
-        .catch(ctx.guardedErr)
+      writeConfig(ctx, { key: 'fast', session_id: ctx.sid, value: mode }, r => {
+        const next = fastModeWord(r.value)
+        ctx.transcript.sys(t('slashCmd.session.fast.mode', next))
+        patchUiState(state => ({
+          ...state,
+          info: state.info
+            ? {
+                ...state.info,
+                fast: next !== 'normal',
+                service_tier: { fast: 'priority', normal: '', ultrafast: 'ultrafast' }[next]
+              }
+            : state.info
+        }))
+      }).catch(ctx.guardedErr)
     }
   },
 
@@ -666,26 +635,16 @@ export const sessionCommands: SlashCommand[] = [
       }
 
       if (!mode || mode === 'status') {
-        return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'busy' })
-          .then(
-            ctx.guarded<ConfigGetValueResponse>(r => {
-              const current = r.value || 'interrupt'
-              ctx.transcript.sys(t('slashCmd.session.busy.mode', current))
-            })
-          )
-          .catch(ctx.guardedErr)
+        return readConfig(ctx, { key: 'busy' }, r => {
+          const current = r.value || 'interrupt'
+          ctx.transcript.sys(t('slashCmd.session.busy.mode', current))
+        }).catch(ctx.guardedErr)
       }
 
-      ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'busy', value: mode })
-        .then(
-          ctx.guarded<ConfigSetResponse>(r => {
-            const next = r.value || mode
-            ctx.transcript.sys(t('slashCmd.session.busy.mode', next))
-          })
-        )
-        .catch(ctx.guardedErr)
+      writeConfig(ctx, { key: 'busy', value: mode }, r => {
+        const next = r.value || mode
+        ctx.transcript.sys(t('slashCmd.session.busy.mode', next))
+      }).catch(ctx.guardedErr)
     }
   },
 
@@ -693,13 +652,11 @@ export const sessionCommands: SlashCommand[] = [
     help: 'cycle verbose tool-output mode (updates live agent)',
     name: 'verbose',
     run: (arg, ctx) => {
-      ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'verbose', session_id: ctx.sid, value: arg || 'cycle' })
-        .then(
-          ctx.guarded<ConfigSetResponse>(
-            r => r.value && ctx.transcript.sys(t('slashCmd.session.verbose.current', r.value))
-          )
-        )
+      writeConfig(
+        ctx,
+        { key: 'verbose', session_id: ctx.sid, value: arg || 'cycle' },
+        r => r.value && ctx.transcript.sys(t('slashCmd.session.verbose.current', r.value))
+      )
     }
   },
 

@@ -229,24 +229,13 @@ def _git_retirement_proof(request: dict, terminal: dict, git_cmd, cwd,
             # retirement. The apply path re-judges decisively below.
             return False
         # The apply path CAN fetch: refill the grafted history, then judge on
-        # real history. Same custody lane as the pinned-target fetch below.
-        from hermes_cli.update_custody import run_git as custody_git
-
+        # real history. Same custody lane (and the same guarded preparation)
+        # as the pinned-target fetch below.
         try:
-            custody_git(
-                git_cmd, ["fetch", "--unshallow", "--no-tags", "origin", request["commit"]],
-                cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=900, stdin=subprocess.DEVNULL, env=source_git_env(),
-            )
-        except (OSError, subprocess.SubprocessError):
-            pass  # the rev-list/merge-base re-run below keeps the refusal honest
-        result = run_git("rev-list", "--ancestry-path", f"{request['commit']}..HEAD")
-        if result.returncode == 0 and result.stdout.strip():
-            raise ValueError("Source retirement would downgrade a newer source commit; select the destination channel explicitly")
-        proof = run_git("merge-base", "--is-ancestor", "HEAD", request["commit"])
-        if proof.returncode == 0:
-            return True
-        raise ValueError("Source retirement cannot verify that the installed source is equal to or an ancestor of the destination; select the destination channel explicitly")
+            _strict_git_fetch(git_cmd, cwd, ["fetch", "--unshallow", "--no-tags", "origin", request["commit"]], 900)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass  # the classification below keeps the refusal honest
+        return _classify_strict_ancestry(request, git_cmd, cwd, run_git)
     # The target commit is not locally visible (the depth-1 era never healed,
     # and update_cmd keeps shallow installs shallow until the apply fetch).
     # main's fetch-free refusal still applies first: an install already sitting
@@ -274,24 +263,62 @@ def _git_retirement_proof(request: dict, terminal: dict, git_cmd, cwd,
         # and let the presentation flag the unproven ancestry instead.
         return False
     # The apply path CAN fetch. Pull exactly the pinned commit (cheap even on
-    # shallow installs, unlike a full unshallow) and judge on real history.
-    # The fetch runs through the updater's custody runner (git_argv custody
-    # config, job-bound child on Windows, the owner-death watchdog's fetch
-    # lane) instead of a bare subprocess.run a killed updater could orphan.
-    from hermes_cli.gitlock import clear_stale_git_locks
-    from hermes_cli.update_custody import run_git as custody_git
-
+    # shallow installs, unlike a full unshallow) and judge on real history
+    # through the same bounded shallow-aware classifier as the refilled path
+    # above.
     try:
-        clear_stale_git_locks(Path(cwd))
-        fetch = custody_git(
-            git_cmd, ["fetch", "--no-tags", "origin", request["commit"]], cwd=cwd,
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=300, stdin=subprocess.DEVNULL, env=source_git_env(),
-        )
+        _strict_git_fetch(git_cmd, cwd, ["fetch", "--no-tags", "origin", request["commit"]], 300)
     except (OSError, subprocess.SubprocessError) as exc:
         raise ValueError("Source retirement cannot verify that the installed source is not newer; select the destination channel explicitly") from exc
+    return _classify_strict_ancestry(request, git_cmd, cwd, run_git)
+
+
+def _strict_git_fetch(git_cmd, cwd, fetch_args, timeout: int) -> subprocess.CompletedProcess:
+    """The one strict-fetch lane: guarded preparation, then the custody fetch.
+
+    Both apply-path fetch branches (the grafted-history refill and the pinned
+    -target fetch) share this: the age/liveness-guarded stale-lock cleanup
+    (an abandoned ``shallow.lock`` otherwise fails every fetch with exit 128
+    before the updater's own later recovery is reachable), then the fetch
+    itself through the updater's custody runner (git_argv custody config,
+    job-bound child on Windows, the owner-death watchdog's fetch lane) instead
+    of a bare ``subprocess.run`` a killed updater could orphan.
+    """
+    from pathlib import Path
+
+    from hermes_cli.gitlock import clear_stale_git_locks
+    from hermes_cli.source_check import source_git_env
+    from hermes_cli.update_custody import run_git as custody_git
+
+    clear_stale_git_locks(Path(cwd))
+    fetch = custody_git(
+        git_cmd, fetch_args, cwd=cwd, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=timeout,
+        stdin=subprocess.DEVNULL, env=source_git_env(),
+    )
     if fetch.returncode != 0:
         raise ValueError("Source retirement cannot verify that the installed source is not newer; select the destination channel explicitly")
+    return fetch
+
+
+def _classify_strict_ancestry(request: dict, git_cmd, cwd, run_git) -> bool:
+    """The one post-fetch verdict, shared by both strict fetch branches.
+
+    A shallow boundary can survive the fetch (a depth-1 fetch of the pinned
+    target leaves its ancestors grafted), which makes an older HEAD read as
+    divergent. Before any refusal, refill the grafted history once
+    (``--unshallow`` under the same guarded fetch lane) and re-judge on real
+    history; only a real-history descendant or divergent pair is refused, so
+    the first attempt admits an eligible older install instead of requiring a
+    retry.
+    """
+    shallow = run_git("rev-parse", "--is-shallow-repository")
+    if shallow.returncode == 0 and shallow.stdout.strip() == "true":
+        try:
+            _strict_git_fetch(git_cmd, cwd,
+                              ["fetch", "--unshallow", "--no-tags", "origin", request["commit"]], 900)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass  # the classification below keeps the refusal honest
     result = run_git("rev-list", "--ancestry-path", f"{request['commit']}..HEAD")
     if result.returncode != 0:
         raise ValueError("Source retirement cannot verify that the installed source is not newer; select the destination channel explicitly")

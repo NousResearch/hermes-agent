@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -89,6 +90,13 @@ def _op(home: Path, *args: str) -> tuple[int, str, str]:
 def _log(home: Path) -> str:
     path = home / 'logs/desktop-update-handoff.log'
     return path.read_text(encoding='utf-8-sig') if path.exists() else ''
+
+
+def _custodian(home: Path, handoff: int) -> str:
+    """The pid windows.ps1 names on line 1 before any update work starts: its custodian, which
+    outlives the hand-off so an old Desktop never reads a dead owner ('' until it is named)."""
+    found = re.search(rf'names its custodian pid (\d+) \(hand-off pid {handoff}\)', _log(home))
+    return found.group(1) if found else ''
 
 
 class _HeldLock:

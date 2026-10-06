@@ -36,6 +36,7 @@ $script:MarkerBlocker = 0
 $script:MarkerOwnCtText = $null
 $script:MarkerLastHeartbeat = $null
 $script:MarkerCustodian = $null     # the watcher process Start-MarkerCustodian started
+$script:MarkerOwner = $null         # @{ Pid; Ct } of that watcher once line 1 names it instead of us
 $script:MarkerReleaseWaited = $false   # the R6 wait ran (windows.ps1 re-stamps the result after it)
 $script:StartedAt = $null
 $script:MarkerRunPattern = '\A[A-Za-z0-9._-]{1,128}\z'
@@ -198,9 +199,10 @@ function Get-MarkerDelegateLine($Info) {
 function New-MarkerContext {
     # Who "we" are and how a pid is probed; the corpus test injects its own.
     # Fresh creation times: a judgement here decides a claim, a delegate or a
-    # hand-over, which must never ride a reused pid's cached identity.
-    $own = Get-LiveProcessCt $PID
-    return @{ OwnPid = [int64]$PID; OwnCt = $own.Ct; Now = (Get-UnixNow); Probe = { param($p) Get-LiveProcessCt $p -Fresh } }
+    # hand-over, which must never ride a reused pid's cached identity. Once line
+    # 1 names our custodian (Start-MarkerCustodian), the claim is "ours" as that.
+    $own = if ($script:MarkerOwner) { $script:MarkerOwner } else { @{ Pid = $PID; Ct = (Get-LiveProcessCt $PID).Ct } }
+    return @{ OwnPid = [int64]$own.Pid; OwnCt = $own.Ct; Now = (Get-UnixNow); Probe = { param($p) Get-LiveProcessCt $p -Fresh } }
 }
 
 function Get-MarkerIdentityState([int64]$ProcessId, $RecordedCt, [int64]$StartedAt, $Ctx) {

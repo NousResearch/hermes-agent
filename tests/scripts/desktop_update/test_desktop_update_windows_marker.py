@@ -17,6 +17,7 @@ import pytest
 
 from tests.installation_launcher_fixture import publish_fixture_launcher
 from tests.scripts.desktop_update.legacy_desktop_reader import legacy_read
+from tests.scripts.desktop_update.windows_handoff_support import _HeldLock
 
 ROOT = Path(__file__).resolve().parent.parent.parent.parent
 SCRIPT = ROOT / 'scripts/desktop-update/windows.ps1'
@@ -305,8 +306,10 @@ def test_script_killed_right_after_spawning_the_update_leaves_a_live_marker(tmp_
     """C1 rule 6, written by the script itself: windows.ps1 is killed (taskkill /F, no /T) while
     its `hermes update` child is only starting up and has not taken the update lock. The marker
     must still read LIVE through the child named on line 4 -- also to an old packaged Desktop,
-    which judges line 1 alone, so the hand-off's custodian takes line 1 -- and be released once
-    that child is gone."""
+    which judges line 1 alone, so line 1 names the hand-off's custodian before the update starts
+    and the first old-reader read right after the kill (the marker lock held, so nothing can
+    take over yet) already sees a live owner (review 5423056011) -- and be released once that
+    child is gone."""
     install = tmp_path / 'checkout'
     publish_fixture_launcher(install, HOLD_CLI)
     home = tmp_path / 'home'; home.mkdir()
@@ -329,8 +332,14 @@ def test_script_killed_right_after_spawning_the_update_leaves_a_live_marker(tmp_
         settle = time.monotonic() + 3
         while time.monotonic() < settle and not any(line.startswith('delegate:') for line in _marker_lines(marker)):
             time.sleep(0.01)
-        subprocess.run(['taskkill', '/F', '/PID', str(script.pid)], capture_output=True, check=True)
-        script.wait(timeout=30)
+        a7 = _HeldLock(home)   # no marker mutation (a takeover included) until we let go
+        try:
+            subprocess.run(['taskkill', '/F', '/PID', str(script.pid)], capture_output=True, check=True)
+            script.wait(timeout=30)
+            seen = legacy_read(home)
+            assert seen['live'] is not None and seen['kept'], ('hand-off just died', seen)
+        finally:
+            a7.release()
         child = int(child_pid_file.read_text(encoding='utf-8-sig'))
         deadline = time.monotonic() + 60
         while (lines := _marker_lines(marker))[:1] in ([], [str(script.pid)]):   # the custodian takes over

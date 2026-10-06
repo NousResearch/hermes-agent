@@ -23,6 +23,7 @@ from tests.scripts.desktop_update.windows_handoff_support import (
     _finish,
     _op,
     _HeldLock,
+    _custodian,
 )
 
 
@@ -81,7 +82,7 @@ def test_a7_concurrent_claimants_over_a_dead_marker_yield_one_owner(tmp_path: Pa
         refused = [c for c in claimants if c.poll() == 2]
         running = [c for c in claimants if c.poll() is None]
         assert len(running) == 1 and len(refused) == 3, [c.returncode for c in claimants]
-        assert marker.read_bytes().decode().split('\n')[0] == str(running[0].pid)
+        assert marker.read_bytes().decode().split('\n')[0] == _custodian(home, running[0].pid)
     finally:
         hold.touch()
         for c in claimants:
@@ -113,7 +114,8 @@ exit 1
 def test_script_killed_before_publishing_the_delegate_runs_no_update(tmp_path: Path) -> None:
     """Kill cell at the pre-publication boundary: windows.ps1 has created its `hermes update`
     child but has not published it as the marker delegate (the marker lock is held elsewhere).
-    Killed there, no update instruction may have run and the marker must read DEAD."""
+    Killed there, no update instruction may have run, and the custodian line 1 names releases
+    the marker (nothing holds the checkout)."""
     install = tmp_path / 'checkout'
     publish_fixture_launcher(install, HOLD_CLI)
     home = tmp_path / 'home'; home.mkdir()
@@ -126,7 +128,8 @@ def test_script_killed_before_publishing_the_delegate_runs_no_update(tmp_path: P
     lock = None
     try:
         deadline = time.monotonic() + 60
-        while not (marker.exists() and marker.read_bytes().split(b'\n')[0] == str(script.pid).encode()):
+        while not (marker.exists() and _custodian(home, script.pid)
+                   and marker.read_bytes().split(b'\n')[0] == _custodian(home, script.pid).encode()):
             assert time.monotonic() < deadline and script.poll() is None, 'script never claimed'
             time.sleep(0.02)
         lock = _HeldLock(home)   # after the claim, before the delegate publication
@@ -141,7 +144,7 @@ def test_script_killed_before_publishing_the_delegate_runs_no_update(tmp_path: P
         assert not ran.exists(), 'the update child ran before it was published as the delegate'
         assert not _alive(child_pid), 'the never-resumed update child outlived its script'
         lines = marker.read_bytes().decode().split('\n')
-        assert lines[0] == str(script.pid), lines
+        assert lines[0] == _custodian(home, script.pid), lines
         assert not any(line.startswith('delegate:') for line in lines), lines
     finally:
         if lock:
@@ -150,4 +153,8 @@ def test_script_killed_before_publishing_the_delegate_runs_no_update(tmp_path: P
         if script.poll() is None:
             subprocess.run(['taskkill', '/T', '/F', '/PID', str(script.pid)], capture_output=True)
             script.wait()
-    assert _op(home, '-MarkerOp', 'reclaim')[:2] == (0, 'reclaimed\n')
+    deadline = time.monotonic() + 60   # the custodian releases the marker once the lock is free
+    while (verdict := _op(home, '-MarkerOp', 'reclaim')[1]).startswith('live '):
+        assert time.monotonic() < deadline
+        time.sleep(0.2)
+    assert verdict in ('absent\n', 'reclaimed\n')

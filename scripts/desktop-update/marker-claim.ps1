@@ -235,9 +235,10 @@ function Invoke-MarkerRelease {
         Start-Sleep -Seconds 1
         $waited++
     }
-    Stop-MarkerCustodian
+    # The custodian (line 1) is stopped only once the release is done: until
+    # then an old Desktop must keep reading a live owner.
     $lock = Open-MarkerLock
-    if ($null -eq $lock) { Write-HandoffLog "update marker lock stayed busy; leaving the marker to identity-checking readers"; return }
+    if ($null -eq $lock) { Stop-MarkerCustodian; Write-HandoffLog "update marker lock stayed busy; leaving the marker to identity-checking readers"; return }
     try {
         if (-not [System.IO.File]::Exists($MarkerPath)) { return }
         $info = ConvertFrom-MarkerText (Read-MarkerText)
@@ -258,6 +259,7 @@ function Invoke-MarkerRelease {
         Write-HandoffLog "could not release the update marker: $($_.Exception.Message)"
     } finally {
         $lock.Dispose()
+        Stop-MarkerCustodian
     }
 }
 
@@ -283,12 +285,16 @@ function Update-MarkerHeartbeat {
 }
 
 function Start-MarkerCustodian {
-    # An old packaged Desktop judges the marker by lines 1 and 2 alone, and the
-    # heartbeat above runs in this process: killed outright (taskkill /F runs
-    # no finally) it would leave line 1 naming a dead pid while the resumed
-    # `hermes update` or a completion survivor still mutates the checkout. A
-    # hidden watcher process takes the claim over then (Invoke-MarkerCustody);
-    # Invoke-MarkerRelease stops it once our own release is decided.
+    # An old packaged Desktop judges the marker by lines 1 and 2 alone (never
+    # the delegate or the marker lock), and we can be killed outright
+    # (taskkill /F runs no finally) while the resumed `hermes update` or a
+    # completion survivor still mutates the checkout. A takeover after our
+    # death would leave an instant in which line 1 names a dead pid. So, before
+    # any update work starts, a hidden watcher process that outlives us is
+    # named on line 1 and the claim becomes "ours" as that watcher
+    # ($script:MarkerOwner). If we die it keeps the marker until that work is
+    # gone (Invoke-MarkerCustody); Invoke-MarkerRelease stops it once our own
+    # release is done.
     if ($script:MarkerClaim -notin @('claimed', 'adopted')) { return }
     $exe = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
     # A trailing backslash would escape the closing quote (CommandLineToArgvW).
@@ -298,6 +304,23 @@ function Start-MarkerCustodian {
         $script:MarkerCustodian = Start-Process -FilePath $exe -ArgumentList $arguments -WindowStyle Hidden -PassThru -ErrorAction Stop
     } catch {
         Write-HandoffLog "could not start the update marker custodian: $($_.Exception.Message)"
+        return
+    }
+    $custodian = $script:MarkerCustodian.Id
+    $probe = Get-LiveProcessCt $custodian -Fresh
+    $lock = if ($probe.Alive -and $null -ne $probe.Ct) { Open-MarkerLock } else { $null }
+    if ($null -eq $lock) { Write-HandoffLog "could not name the update marker custodian; it takes over only if this hand-off dies"; return }
+    try {
+        $ctx = New-MarkerContext
+        $read = Read-MarkerLocked $ctx
+        $info = $read.Info
+        if ($null -ne $info -and $read.Judgement.OwnerState -eq 'ours' -and
+            (Set-MarkerBodyLocked (Format-MarkerBody $custodian $ctx.Now (Format-Ct $probe.Ct) (Get-MarkerDelegateLine $info) $info.Runs))) {
+            $script:MarkerOwner = @{ Pid = $custodian; Ct = $probe.Ct }
+            Write-HandoffLog "update marker names its custodian pid $custodian (hand-off pid $PID)"
+        }
+    } finally {
+        $lock.Dispose()
     }
 }
 
@@ -308,32 +331,39 @@ function Stop-MarkerCustodian {
 }
 
 function Invoke-MarkerCustody([int]$Of) {
-    # -MarkerOp custody: once hand-off pid $Of is gone, if its claim is still
-    # published while its delegate runs or the checkout lock is held, name this
-    # process on line 1 and keep line 2 young until both end (bounded like the
-    # R6 wait), then release. A claim the hand-off released or handed over is
-    # no longer its own: nothing to keep. Only the hand-off ever wrote a
-    # delegate, so an unlocked look finding neither one nor a held checkout
-    # lock is final -- no need to wait out a busy marker lock.
+    # -MarkerOp custody: once hand-off pid $Of is gone, keep its claim -- which
+    # names this process on line 1 since before the update work started
+    # (Start-MarkerCustodian) -- and line 2 young while its delegate runs or the
+    # checkout lock is held (bounded like the R6 wait), then release. Had that
+    # handover failed, take the claim over now. A claim the hand-off released
+    # or handed on is no longer its own: nothing to keep. Only the hand-off
+    # ever wrote a delegate, so an unlocked look is enough to decide.
     $watched = Get-Process -Id $Of -ErrorAction SilentlyContinue
     if ($watched) { $watched.WaitForExit() }
-    $peek = ConvertFrom-MarkerText (Read-MarkerText)
-    if ($null -eq $peek -or $peek.Pid -ne $Of -or ($peek.DelegatePid -le 0 -and -not (Test-CheckoutLockHeld))) { return }
-    $lock = Open-MarkerLock
-    if ($null -eq $lock) { return }
-    try {
-        $ctx = New-MarkerContext
-        $read = Read-MarkerLocked $ctx
-        $info = $read.Info
-        if ($null -eq $info -or $info.Pid -ne $Of -or (Test-ProcessIdentityLive $Of $info.Ct)) { return }
-        $delegate = if ($read.Judgement.DelegateState -eq 'live') { Get-MarkerDelegateLine $info } else { $null }
+    $info = ConvertFrom-MarkerText (Read-MarkerText)
+    if ($null -eq $info -or $info.Pid -notin @($Of, $PID)) { return }
+    $delegate = Get-MarkerDelegateLine $info
+    # Line 1 naming our own live pid is us: judge it by the creation time the
+    # hand-off recorded for us, not one re-derived another way.
+    if ($info.Pid -eq $PID) { $script:MarkerOwner = @{ Pid = $PID; Ct = $info.Ct } }
+    if ($info.Pid -eq $Of) {
         if (-not $delegate -and -not (Test-CheckoutLockHeld)) { return }
-        if (-not (Set-MarkerBodyLocked (Format-MarkerBody $PID $ctx.Now (Format-Ct $ctx.OwnCt) $delegate $info.Runs))) { return }
-    } finally {
-        $lock.Dispose()
+        $lock = Open-MarkerLock
+        if ($null -eq $lock) { return }
+        try {
+            $ctx = New-MarkerContext
+            $read = Read-MarkerLocked $ctx
+            $info = $read.Info
+            if ($null -eq $info -or $info.Pid -ne $Of -or (Test-ProcessIdentityLive $Of $info.Ct)) { return }
+            $delegate = if ($read.Judgement.DelegateState -eq 'live') { Get-MarkerDelegateLine $info } else { $null }
+            if (-not $delegate -and -not (Test-CheckoutLockHeld)) { return }
+            if (-not (Set-MarkerBodyLocked (Format-MarkerBody $PID $ctx.Now (Format-Ct $ctx.OwnCt) $delegate $info.Runs))) { return }
+        } finally {
+            $lock.Dispose()
+        }
     }
     $script:MarkerClaim = 'claimed'
-    Write-HandoffLog "update hand-off pid $Of died while its update still holds the checkout; pid $PID keeps the update marker"
+    Write-HandoffLog "update hand-off pid $Of is gone; pid $PID keeps the update marker while its update holds the checkout"
     for ($waited = 0; ($delegate -and (Test-ProcessIdentityLive $info.DelegatePid $info.DelegateCt)) -or (Test-CheckoutLockHeld); $waited++) {
         if ($waited -ge $script:MarkerReleaseWaitSeconds) { return }
         Update-MarkerHeartbeat

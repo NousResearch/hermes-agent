@@ -574,11 +574,16 @@ def _speak_streaming(text: str, stop_event: Optional[threading.Event]) -> bool:
     # chunked streamer registered in tools.tts_streaming, route the whole reply through the same
     # stream_tts_to_speaker pipeline the CLI voice mode uses — audio starts on sentence one instead of after
     # full synthesis. Falls through to the legacy whole-file path when no streamer resolves.
-    from tools.tts_streaming import resolve_streaming_provider
-    from tools.tts_tool import _load_tts_config
+    from tools.tts_tool import check_tts_requirements
     from tools.tts_tool_speaker import stream_tts_to_speaker
 
-    if resolve_streaming_provider(_load_tts_config()) is None:
+    # Don't gate on ``resolve_streaming_provider``: the dispatcher inside
+    # ``stream_tts_to_speaker`` already falls back to per-sentence sync synthesis
+    # (``_SyncSentencePipeline``) for providers with no chunked streamer (Piper, edge),
+    # so audio still starts on sentence one. Gating on the streamer alone would send
+    # those providers down the whole-file path (synthesize the entire reply before the
+    # first byte plays).
+    if not check_tts_requirements():
         return False
     text_queue: "queue.Queue" = queue.Queue()
     text_queue.put(text)

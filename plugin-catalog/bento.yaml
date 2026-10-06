@@ -1,0 +1,35 @@
+name: bento
+repo: https://github.com/shagghiesuperstar/hermes-plugin-bento
+sha: "f490ed02c0e377acc9112bf57192bacedbbcd9b1"
+description: "Bento (bentonow.com) email marketing: subscribers, tags, fields, events incl. $purchase, stats, draft/scheduled broadcasts and transactional email, with dry-run + human-approval gates on every send. Native Python plugin, no dependencies. Disclosure — sends real email (bento_email_send, bento_broadcast_schedule), and events, purchases and consent changes can trigger Bento Flows that email people; calls only app.bentonow.com (an operator base_url override is limited to https *.bentonow.com or loopback) with the BENTO_* keys from the profile .env; no telemetry, no self-update; T2/T3 calls go to the Hermes approval prompt, which asks no human under YOLO, approvals.mode off, or cron/single-query/unattended mode set to approve. T3 sends then still need a dry-run confirm token and hard guards, but T2 writes (events, purchases, consent, bulk upserts) need no token unless safety.tier2 is token_only; T1 writes (tags, tag/field definitions, drafts, upserts up to bulk_threshold) are never gated and still run under environment=disabled; environment=staging does not block sends, only environment=disabled blocks T2/T3."
+maintainer: shagghiesuperstar
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/shagghiesuperstar/hermes-plugin-bento#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - bento_subscriber_get
+    - bento_subscriber_upsert
+    - bento_subscriber_tag
+    - bento_subscriber_consent
+    - bento_tag_list
+    - bento_tag_create
+    - bento_field_list
+    - bento_field_create
+    - bento_event_track
+    - bento_purchase_track
+    - bento_broadcast_list
+    - bento_broadcast_create
+    - bento_broadcast_schedule
+    - bento_email_send
+    - bento_stats
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - BENTO_PUBLISHABLE_KEY
+    - BENTO_SECRET_KEY
+    - BENTO_SITE_UUID

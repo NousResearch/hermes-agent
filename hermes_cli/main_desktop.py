@@ -1566,7 +1566,7 @@ def _diagnose_esbuild_ignore_scripts(output: Optional[str]) -> None:
 def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, env: dict,
                            icons: Path | None = None) -> Optional[Path]:
     """Build prepared desktop sources, then publish the verified staged app."""
-    from pm.progress import run_contained
+    from hermes_cli.source_build import run_in_custody  # npm writes the checkout: update custody
 
     if not source_mode and sys.platform == "win32" and (ancestor := _desktop_ancestor_in(desktop_dir)):
         # The Desktop running this build holds the exe lock the promotion rename needs,
@@ -1600,11 +1600,11 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
         if stopped:
             print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
     try:
-        run_contained(build_cmd, f"Building desktop {build_label}", cwd=desktop_dir, env=build_env)
+        run_in_custody(desktop_dir.parents[1], build_cmd, f"Building desktop {build_label}", cwd=desktop_dir, env=build_env)
         if staging_dir is not None:
-            run_contained([npm, "run", "builder", "--", "--dir", "--publish", "never",
+            run_in_custody(desktop_dir.parents[1], [npm, "run", "builder", "--", "--dir", "--publish", "never",
                            f"-c.directories.output={staging_dir}"], "Packaging the desktop app",
-                          cwd=desktop_dir, env=build_env)
+                           cwd=desktop_dir, env=build_env)
         packaged_executable = (
             _promote_staged_desktop_app(desktop_dir, staging_dir) if staging_dir is not None else None
         )

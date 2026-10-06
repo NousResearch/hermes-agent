@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
 
+# Old updaters load _no_prompt_git_kwargs from here after the checkout swap (frozen surface).
+from hermes_cli._subprocess_compat import no_prompt_git_kwargs as _no_prompt_git_kwargs
 from hermes_cli.config import get_hermes_home  # noqa: F401  (re-exported; patched via update_cmd)
 from hermes_cli import update_handoff as _update_handoff
 from hermes_cli.update_cmd_common import _best_effort
@@ -59,11 +61,12 @@ from hermes_cli.update_cmd_fleet import (  # noqa: F401
     _restart_systemd_gateway_units,
     _run_pending_fleet_restart, _service_restart_sec,
     _service_unit_supports_graceful_sigusr1_restart, _surviving_gateway_pids_after_failed_restart,
-    _systemctl, _systemctl_reset_and_restart, _verify_fleet_after_update,
+    _systemctl, _systemctl_reset_and_restart,
     _wait_for_service_active, _warn_gateway_restart_phase_aborted,
     _warn_incomplete_gateway_fleet_restart, _warn_pending_fleet_restart,
     _warn_pending_fleet_restart_on_startup, _write_fleet_restart_pending_marker,
     _write_gateway_update_exit_code)
+from hermes_cli.update_cmd_fleet_verify import _verify_fleet_after_update  # noqa: F401
 from hermes_cli.update_cmd_zip import (  # noqa: F401
     _ZIP_PRESERVED_TOP_LEVEL, _ZIP_STAGING_ARTIFACT_SUFFIXES, _abort_zip_update_if_dirty_tree,
     _atomic_replace_dir, _commit_staged_replacements, _discard_staged,
@@ -193,25 +196,6 @@ def _map_ssl_cert_file_for_git(git_cmd) -> None:
     os.environ["GIT_SSL_CAINFO"] = bundle
 
 
-def _no_prompt_git_kwargs() -> dict:
-    """``subprocess.run`` kwargs for the updater's network git calls.
-
-    GitHub answers anonymous fetches with HTTP 401 during outages (and for
-    unreachable repos); git then prompts ``Username for 'https://github.com':``
-    on the inherited terminal and the update sits there forever. Disable the
-    prompt so the fetch fails fast into ``_classify_fetch_failure``. Only the
-    *prompt* is disabled — a configured credential helper / askpass still
-    runs, so a private-fork origin keeps authenticating non-interactively.
-    """
-    env = dict(os.environ)
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    env["GCM_INTERACTIVE"] = "Never"
-    # Every network git spawn (fetch/pull/shallow heal) runs under a console-less
-    # desktop backend on Windows; hide the per-spawn console (#117781).
-    from hermes_cli._subprocess_compat import windows_hide_flags
-    return {"stdin": subprocess.DEVNULL, "env": env, "creationflags": windows_hide_flags()}
-
-
 _UPDATE_CRITICAL_FILES = (
     "hermes_cli/main.py", "hermes_cli/config.py", "hermes_cli/__init__.py",
     "hermes_cli/web_server.py", "cli.py", "run_agent.py", "model_tools.py", "toolsets.py",
@@ -276,9 +260,13 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     # calls, so layer them instead of passing the keyword twice.
     spawn_kwargs = {"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()} if network else {}
     spawn_kwargs.setdefault("creationflags", windows_hide_flags())
+    from hermes_cli.update_custody import run_git
+
+    # The one custody policy (R2): local mutators keep the update's checkout lock fd, network
+    # git runs without it and dies with us, no git forks a detached gc/maintenance child.
     try:
-        return subprocess.run(
-            git_cmd + args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
+        return run_git(
+            git_cmd, args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
             text=True, encoding="utf-8", errors="replace", check=check,
             **spawn_kwargs)
     except subprocess.TimeoutExpired as exc:
@@ -309,8 +297,10 @@ def _heal_stale_shallow_checkout(repo_root: Path, branch: str) -> None:
 def _capture_head_sha(git_cmd, cwd) -> str | None:
     """Return the current HEAD SHA, or None if it can't be resolved."""
     try:
-        result = subprocess.run(
-            git_cmd + ["rev-parse", "HEAD"],
+        from hermes_cli.update_custody import run_git
+
+        result = run_git(
+            git_cmd, ["rev-parse", "HEAD"],
             cwd=cwd,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
@@ -561,7 +551,9 @@ def _log_only_write(text: str) -> None:
     log_file = getattr(stream, "_log", None)
     with suppress(Exception):
         if log_file is None:
-            log_path = get_hermes_home() / "logs" / "update.log"
+            from hermes_constants import get_default_hermes_root
+
+            log_path = get_default_hermes_root() / "logs" / "update.log"  # the root home's tee
             log_path.parent.mkdir(parents=True, exist_ok=True)
             with log_path.open("a", encoding="utf-8") as fallback:
                 fallback.write(text)
@@ -735,6 +727,39 @@ def _source_completion_request(opts, plan, snapshot_id, windows_resume, desktop,
     }
 
 
+def _settle_windows_resume(request: dict) -> None:
+    """This run's post-commit resume attempt is over (the completion child's, or the A6 branch's).
+
+    A failure is already the ``windows_resume`` follow-up, so neither the command's ``finally``
+    nor the atexit net may replay it: a replay waits again and its error would fail a committed
+    update (C3).
+    """
+    import atexit
+
+    from hermes_cli import update_cmd_windows
+
+    atexit.unregister(_m()._resume_windows_gateways_after_update)
+    atexit.unregister(update_cmd_windows._resume_windows_gateways_after_update)
+    request["windows_resume_settled"] = True
+
+
+def _resume_paused_gateways_at_exit(token: dict | None, request: dict | None) -> None:
+    """The command's last resume of gateways it paused; a failure is reported, never raised.
+
+    Raising here would replace the run's own exit (a committed update's 0, or the original
+    failure) with the restart's error. Skipped when the post-commit attempt already ran.
+    """
+    if not token or not token.get("resume_needed") or (request or {}).get("windows_resume_settled"):
+        return
+    try:
+        _m()._resume_windows_gateways_after_update(token)
+    except Exception as exc:  # health: allow BLE001 -- a restart failure is owed, not the update's status
+        from hermes_cli.update_receipt import owe_followup
+
+        owe_followup(request["receipt"]["update_id"] if request else None, "windows_resume",
+                     f"Windows gateway recovery failed: {exc}")
+
+
 def _complete_source_update(request: dict | None) -> None:
     # Never "Update complete!" while this run's local patches sit unrestored in the stash (#122557).
     unrestored = _unrestored_autostash_notice()
@@ -753,21 +778,60 @@ def _complete_source_update(request: dict | None) -> None:
     # A head capture that came back empty must not arm an SHA-less record: it names no code the
     # fleet can be proven current on, so the warning could never clear (#125952).
     _write_fleet_restart_pending_marker(expected_sha=request.get("expected_sha") or _current_checkout_sha() or "")
-    result = run_completion(request)
+    # Pre-swap module (imported with run_completion above): never the replacement tree's.
+    from hermes_cli.update_completion import settle_lost_completion
+    lost = False
+    try:
+        result = run_completion(request)
+    except KeyboardInterrupt as interrupt:
+        # Ctrl-C after the commit point: the tree is new, so the run is interrupted, never "failed".
+        _completion_receipt.finalize_interrupted_update_receipt("KeyboardInterrupt: interrupted after the code was updated")
+        raise SystemExit(130) from interrupt
+    except Exception as exc:  # health: allow BLE001 -- after the commit point a lost completion is owed, never a failed update (C3)
+        result, lost = settle_lost_completion(request, f"{type(exc).__name__}: {exc}"), True
+    if not lost and result.get("receipt") is None and result["exit_code"] == 130:
+        _completion_receipt.finalize_interrupted_update_receipt("the completion was interrupted after the code was updated")
+    elif not lost and result.get("receipt") is None and result["exit_code"]:
+        # The child crashed (OOM, SIGKILL) or never answered (run_completion maps every answer
+        # without a correlated terminal receipt to non-zero): the same owed tail (review P2).
+        result, lost = settle_lost_completion(
+            request, result.get("error") or f"the completion process exited {result['exit_code']}"), True
     _accept_completion_pm_receipt(result.get("pm_receipt"), request["receipt"]["update_id"])
+    if result.get("receipt") is not None:
+        # The child closed the run: drop the stale pre-child context before anything below can
+        # write it (a later follow-up amends the terminal archive), and let the command boundary
+        # answer the gateway status from the receipt (C3, review regression 3).
+        _completion_receipt.adopt_terminal_receipt(result["receipt"])
+        current = _completion_receipt._current.get()
+        if current is not None:
+            _completion_receipt._current.reset(current.current_token)
     token = request["windows_resume"]
     if token is not None and result.get("windows_resume") is not None:
         resumed = dict(result["windows_resume"])
         token.clear()
         token.update(resumed)
-    if result.get("receipt") is not None:
-        current = _completion_receipt._current.get()
-        if current is not None:
-            _completion_receipt._current.reset(current.current_token)
+        _settle_windows_resume(request)
+    elif token and token.get("resume_needed") and not result["exit_code"]:
+        # Dependencies owed (A6) or a lost completion: no child resumed paused gateways; this process can.
+        try:
+            _m()._resume_windows_gateways_after_update(token)
+        except Exception as exc:  # health: allow BLE001 -- the code is committed (C3)
+            from hermes_cli.update_receipt import owe_followup
+
+            owe_followup(request["receipt"]["update_id"], "windows_resume", f"Windows gateway recovery failed: {exc}")
+        _settle_windows_resume(request)
     if result["exit_code"]:
         raise SystemExit(result["exit_code"])
-    if adopt_retired_channel(request):
-        print(f"→ Source subscription moved to {request['channel_retirement']['destination']}")
+    if lost:
+        return  # a retired channel is adopted after a verified completion only; the next update adopts it
+    try:
+        if adopt_retired_channel(request):
+            print(f"→ Source subscription moved to {request['channel_retirement']['destination']}")
+    except Exception as exc:  # health: allow BLE001 -- the code is committed (C3); the next update re-adopts
+        from hermes_cli.update_receipt import owe_followup
+
+        owe_followup(request["receipt"]["update_id"], "channel_adoption", str(exc) or type(exc).__name__,
+                     retry="the next `hermes update` adopts it again")
 
 
 def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_ref=None) -> None:
@@ -1527,8 +1591,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 target_sha=release_sha, completion_request=completion_request,
                 **({"target_repository": target_repository} if target_repository else {}))
         finally:
-            if _windows_gateway_resume and _windows_gateway_resume.get("resume_needed"):
-                _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            _resume_paused_gateways_at_exit(_windows_gateway_resume, completion_request)
 
         return
 
@@ -1622,5 +1685,4 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 e, args, gateway_mode, had_desktop_app_before_update, target_sha=release_sha,
                 target_repository=target_repository, completion_request=completion_request)
         finally:
-            if _windows_gateway_resume and _windows_gateway_resume.get("resume_needed"):
-                _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            _resume_paused_gateways_at_exit(_windows_gateway_resume, completion_request)

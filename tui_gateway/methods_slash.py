@@ -359,7 +359,7 @@ def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, sn
         AGGRESSIVE_UNSUPPORTED, compress_now, parse_compress_args, render_compress_result)
     from agent.manual_compression_feedback import describe_compression_lock_skip, summarize_manual_compression
     from agent.model_metadata import estimate_request_tokens_rough
-    with _session_profile_runtime_scope(session):
+    with _session_profile_runtime_scope(session), _manual_compress_turn(sid, session):
         with session["history_lock"]:
             before_messages = list(session.get("history", []))
             history_version = int(session.get("history_version", 0))

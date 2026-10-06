@@ -787,14 +787,20 @@ _USAGE_COUNTERS = (
 
 def _snapshot_review_usage(review_agent: Any) -> Dict[str, Any]:
     """Snapshot in-memory usage counters from a review fork (pre-close)."""
+    status = getattr(review_agent, "session_cost_status", None)
+    source = getattr(review_agent, "session_cost_source", None)
     return {
         **{key: getattr(review_agent, key, None) for key in ("model", "provider", "base_url")},
         **{key: int(getattr(review_agent, f"session_{key}", 0) or 0) for key in _USAGE_COUNTERS},
         "estimated_cost_usd": getattr(review_agent, "session_estimated_cost_usd", None),
-        # Provenance from the fork's last estimate; without it this row lands NULL and is
-        # indistinguishable from a computed artifact when auditing by (cost_status, cost_source).
-        "cost_status": getattr(review_agent, "session_cost_status", None),
-        "cost_source": getattr(review_agent, "session_cost_source", None),
+        # agent_init.py seeds session_cost_status="unknown" / session_cost_source="none"
+        # as CONSTRUCTOR DEFAULTS, so a fork that never priced a turn still carries them
+        # — and _record_review_usage_to_parent only checks that counters are non-zero,
+        # not that any turn was priced. Emitting that pair non-NULL makes insights.py
+        # trust the accumulated 0.0 instead of recomputing, the same defect as the aux
+        # chokepoint. Pass it through only when an actual estimate produced it.
+        **({"cost_status": status, "cost_source": source}
+           if not (status == "unknown" and source == "none") else {}),
     }
 
 

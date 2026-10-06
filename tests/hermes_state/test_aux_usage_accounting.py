@@ -272,7 +272,14 @@ class TestAmbientAccountingContext:
         db.create_session("s1", source="cli")
         token = set_accounting_context(db, "s1")
         try:
-            record_aux_usage(_mk_response(model="gemini-3-flash"), "vision", provider="gemini")
+            # gemini-3-flash-preview is in the OFFLINE static table
+            # (usage_pricing.py, google-pricing-2026-07-07), so this row is priced
+            # deterministically even on a cold cache / fresh CI tmp-home. The bare
+            # `gemini-3-flash` alias is NOT in the table and can only be resolved via
+            # the network pricing API, which conftest's per-test HERMES_HOME makes
+            # unreachable — its status then degrades to ('unknown','none') and the
+            # assertions below would pass vacuously without proving pass-through.
+            record_aux_usage(_mk_response(model="gemini-3-flash-preview"), "vision", provider="gemini")
         finally:
             reset_accounting_context(token)
         rows = _usage_rows(db, "s1")
@@ -282,12 +289,59 @@ class TestAmbientAccountingContext:
         # Same estimator call, so the stored pair is exactly what it returned.
         from agent.usage_pricing import estimate_usage_cost, normalize_usage
         expected = estimate_usage_cost(
-            "gemini-3-flash",
+            "gemini-3-flash-preview",
             normalize_usage(_mk_response().usage, provider="gemini"),
             provider="gemini",
         )
+        # Guard against the vacuous pass: an unpriced row would satisfy the two
+        # assertions above with ('unknown','none'), so pin the priced outcome.
+        assert expected.status == "estimated", expected
         assert rows[0]["cost_status"] == expected.status
         assert rows[0]["cost_source"] == expected.source
+
+    def test_unpriced_aux_row_keeps_provenance_null(self, db):
+        """A failed estimate must leave NULL, NOT 'unknown' — insights recompute on NULL.
+
+        ``agent/insights.py`` decides between trusting the stored cost and recomputing
+        from tokens purely on whether provenance is set::
+
+            stored_cost = r["estimated_cost_usd"] if r.get("cost_status") or r.get("cost_source") else None
+
+        ``estimate_usage_cost`` returns ``(amount_usd=None, status='unknown')`` when the
+        model is absent from the static table and the network pricing API is unreachable
+        (conftest points HERMES_HOME at a per-test tmpdir, so the cache is always cold
+        there). Writing that pair non-NULL pins the row's 0.0 as trusted and the session
+        is under-reported forever, exactly where pricing data is missing.
+
+        ``gemini-3-flash`` is not in ``usage_pricing``'s static table (the offline name is
+        ``gemini-3-flash-preview``), so it takes that path deterministically.
+        """
+        from agent.aux_accounting import (
+            record_aux_usage,
+            reset_accounting_context,
+            set_accounting_context,
+        )
+
+        db.create_session("s1", source="cli")
+        token = set_accounting_context(db, "s1")
+        try:
+            record_aux_usage(_mk_response(model="gemini-3-flash"), "vision", provider="gemini")
+        finally:
+            reset_accounting_context(token)
+        rows = _usage_rows(db, "s1")
+        assert len(rows) == 1
+        # The amount column is written as float(x or 0.0) (hermes_state_usage.py), so it
+        # reads back 0.0 here either way — the reviewer's own repro shows
+        # `row: cost=0.0 status=None` on base. The amount is NOT the discriminator;
+        # provenance is.
+        assert rows[0]["cost_status"] is None, (
+            "an unpriced aux call must not stamp cost_status — insights.py reads any "
+            "non-NULL provenance as licence to trust the stored 0.0 instead of "
+            "recomputing from tokens, permanently under-reporting the session"
+        )
+        assert rows[0]["cost_source"] is None, rows[0]
+        # The consumer's own expression: NULL provenance => recompute path.
+        assert not (rows[0]["cost_status"] or rows[0]["cost_source"])
 
 
 

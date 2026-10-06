@@ -78,12 +78,14 @@ def record_aux_usage(
         cost_status = cost_source = None
         try:
             cost = estimate_usage_cost(model, usage, provider=provider, base_url=base_url)
+            # Provenance travels ONLY with a number. A failed estimate (model not in the
+            # static table, pricing API unreachable) returns amount_usd=None with
+            # status='unknown' — writing that pair non-NULL tells insights.py to trust the
+            # 0.0 already in the row instead of recomputing from tokens, so a pricing gap
+            # would silently under-report forever. Leave both NULL to keep the recompute.
             if cost.amount_usd is not None:
                 estimated_cost = float(cost.amount_usd)
-            # Provenance travels with the number: without it the row is indistinguishable
-            # from a computed artifact, and auditing session_model_usage by
-            # (cost_status, cost_source) cannot separate real cost from a bad one.
-            cost_status, cost_source = cost.status, cost.source
+                cost_status, cost_source = cost.status, cost.source
         except Exception:
             logger.debug("Aux usage cost estimation failed", exc_info=True)
         session_db.record_auxiliary_usage(

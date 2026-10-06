@@ -479,6 +479,13 @@ class A2AAdapter(BasePlatformAdapter):
             logger.debug("A2A: tool registry unavailable for Agent Card", exc_info=True)
         return protocol.skills_from_toolsets(configured or [])
 
+    def pending_reply_count(self) -> int:
+        """Requests whose caller is still blocked on the reply (live-session turns and profile
+        forwards). The gateway's stop drain waits on these like api_server runs: the remote agent
+        does not resume, so a killed one fails its task for good."""
+        with self._pending_lock:
+            return len(self._active_tasks)
+
     def _add_pending(self, task_id: str, context_id: str) -> Future:
         fut: Future = Future()
         with self._pending_lock:

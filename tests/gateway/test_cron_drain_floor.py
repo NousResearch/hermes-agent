@@ -86,6 +86,55 @@ class TestDrainWaitsForCronOnDefaultConfig:
         assert timed_out is False, "api_server run was interrupted on the 0s chat budget (#132989)"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("served_profile", [False, True])
+    async def test_zero_drain_timeout_still_waits_for_an_awaited_a2a_reply(self, served_profile):
+        """An A2A caller is blocked on message/send like a /v1 caller: its task rides the cron floor.
+
+        Main profile: the turn is in ``_running_agents`` like a chat turn. Served profile: a forward
+        to another profile's ``hermes chat`` is not in ``_running_agents`` at all.
+        """
+        from gateway.config import PlatformConfig
+        from plugins.platforms.a2a.adapter import A2AAdapter
+
+        runner, _adapter = make_restart_runner()
+        a2a = A2AAdapter(PlatformConfig(enabled=True))
+        if served_profile:
+            runner._profile_adapters = {"work": {Platform("a2a"): a2a}}
+            a2a._activate_task("task-forward")
+        else:
+            runner.adapters = {Platform("a2a"): a2a}
+            runner._running_agents = {"agent:main:a2a:dm:ctx-1": object()}
+            a2a._add_pending("task-live", "ctx-1")
+
+        async def reply():
+            await asyncio.sleep(0.12)
+            runner._running_agents = {}
+            a2a._pop_pending("task-forward" if served_profile else "task-live")
+
+        task = asyncio.create_task(reply())
+        _snapshot, timed_out = await runner._drain_active_agents(0.0, 2.0)
+        still_awaited = a2a.pending_reply_count()
+        await task
+
+        assert still_awaited == 0, "the drain returned while an A2A caller was still waiting on its reply"
+        assert timed_out is False
+
+    @pytest.mark.asyncio
+    async def test_a_broken_or_mock_reply_hook_never_holds_or_crashes_the_drain(self):
+        from unittest.mock import MagicMock
+
+        def boom():
+            raise RuntimeError("adapter torn down")
+
+        runner, _adapter = make_restart_runner()
+        runner.adapters = {Platform.TELEGRAM: MagicMock(), Platform.DISCORD: SimpleNamespace(pending_reply_count=boom)}
+        runner._running_agents = {"sess-1": object()}
+
+        _snapshot, timed_out = await runner._drain_active_agents(0.0, 30.0)
+
+        assert timed_out is True and runner._drain_work_counts()[4] == 0
+
+    @pytest.mark.asyncio
     async def test_cron_floor_is_bounded_not_indefinite(self):
         """A job that never finishes must still lose, or a cron-triggered
         restart (the reporter's `hermes update` job) would deadlock: the job

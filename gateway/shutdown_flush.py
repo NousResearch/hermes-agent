@@ -16,6 +16,7 @@ import itertools
 import json
 import logging
 import os
+import sqlite3
 import time
 import uuid
 from pathlib import Path
@@ -29,6 +30,14 @@ logger = logging.getLogger(__name__)
 TRANSCRIPT_CAP_DROP_REASON = "transcript_cap_drop"
 # Monotonic tiebreaker so same-second spool files replay in drop order.
 _TRANSCRIPT_SPOOL_SEQ = itertools.count()
+
+# How long a transcript spool whose parent session row is missing is PRESERVED before recovery
+# treats it as permanently orphaned and unlinks it. A resume may recreate the same session id
+# moments after the spool was written (recover_pending_to_db runs after runner.start(), so a live
+# session's own row is not guaranteed to exist yet), so a first-pass miss must not destroy a
+# recoverable message. Past this window the session is gone for good and keeping the file only
+# reproduces the same foreign-key failure on every future boot.
+_ORPHAN_SPOOL_GRACE_S = 300.0
 
 
 def _get_flush_dir():
@@ -252,6 +261,44 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
     return recovered
 
 
+def _session_row_missing(session_db, session_id: str) -> Optional[bool]:
+    """True when *session_id* provably has no ``sessions`` row; ``None`` when the store cannot
+    answer (no such API, read error). ``messages.session_id REFERENCES sessions(id)`` with
+    ``PRAGMA foreign_keys=ON`` (hermes_state.py), so appending to a pruned session raises
+    sqlite3.IntegrityError — a permanent condition, not a transient one.
+
+    Checked BEFORE the append so recovery can classify the payload instead of letting an
+    IntegrityError propagate: ``recover_pending_to_db``'s except branch deliberately never unlinks,
+    so one orphaned spool file re-raised the same error on every subsequent boot forever.
+    """
+    probe = getattr(session_db, "get_session", None)
+    if not callable(probe):
+        return None
+    try:
+        return probe(session_id) is None
+    except Exception as exc:  # a store that cannot answer must not be read as "missing"
+        logger.debug("Session-existence probe failed for %s: %s", session_id, exc)
+        return None
+
+
+def _session_resurrectable_after_grace(path: Path) -> bool:
+    """Whether a spool whose parent session is missing is still inside the recovery window.
+
+    A resume can recreate the SAME session id moments later (``runner.start()`` completes before
+    ``_recover_pending_flushes`` runs, so a live session's row is not guaranteed to exist at the
+    moment its own spool is read). Unlinking on the first miss would silently destroy recoverable
+    messages. So a miss only DROPs once the file has sat past the grace window; inside it the file
+    is preserved and retried, exactly as today, without an IntegrityError per boot.
+
+    Bounded by mtime, so the retry loop still terminates — which is the whole defect.
+    """
+    try:
+        age_s = time.time() - path.stat().st_mtime
+    except OSError:
+        return False
+    return age_s < _ORPHAN_SPOOL_GRACE_S
+
+
 def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
                          session_resolver=None) -> bool:
     """Append one flush payload to ``session_db``; False (file kept) when structurally invalid."""
@@ -265,9 +312,41 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
             logger.warning("Cannot recover structurally invalid transcript spool "
                            "file %s; preserved for manual inspection", path)
             return False
-        session_db.append_message(session_id=spooled_sid, role=message.get("role", "unknown"),
-                                  content=message.get("content") or "",
-                                  timestamp=message.get("timestamp") or payload.get("ts"))
+        role, content = message.get("role", "unknown"), message.get("content") or ""
+        timestamp = message.get("timestamp") or payload.get("ts")
+
+        def _drop_if_orphaned(probe_result: Optional[bool], reason: str) -> bool:
+            """Unlink a spool whose parent session row is gone. Returns True when the file was
+            dropped, so the caller returns False (NOT counted as recovered) with nothing left on
+            disk — the poisoned spool cannot re-fail on the next boot."""
+            if probe_result is not True:
+                return False
+            if _session_resurrectable_after_grace(path):
+                # Still inside the window in which the row may legitimately appear; preserve the
+                # file exactly as before (this is the path that would otherwise log a foreign-key
+                # failure once per boot while the session is still coming up).
+                logger.debug("Transcript spool %s for session %s has no session row yet; "
+                             "preserving for retry within the %ss grace window",
+                             path, spooled_sid, _ORPHAN_SPOOL_GRACE_S)
+                return False
+            logger.warning("Dropping orphaned transcript spool %s: session %s no longer exists "
+                           "(%s)", path, spooled_sid, reason)
+            path.unlink(missing_ok=True)
+            return True
+
+        missing = _session_row_missing(session_db, spooled_sid)
+        if missing and _drop_if_orphaned(missing, "no sessions row"):
+            return False
+        try:
+            session_db.append_message(session_id=spooled_sid, role=role,
+                                      content=content, timestamp=timestamp)
+        except sqlite3.IntegrityError as exc:
+            # The probe said the row exists (or could not answer) but the insert still violated the
+            # foreign key — the row was deleted between the two, or this store enforces it
+            # differently. Same classification: orphaned spool, not a retryable error.
+            if _drop_if_orphaned(True, f"append rejected: {exc}"):
+                return False
+            raise
         return True
     session_key, data = payload.get("session_key", ""), payload.get("data", {})
     text = data.get("text", "")

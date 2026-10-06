@@ -103,8 +103,8 @@ from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, TurnContextUpdate
 from gateway.platforms.helpers import ThreadParticipationTracker
 from gateway.session import SessionSource
-from plugins.platforms.matrix.room_context import MatrixRoomState, fetch_room_entries, format_room_notes
 from plugins.platforms.matrix.permalinks import event_permalink, room_via_servers
+from plugins.platforms.matrix.room_context import MatrixRoomState, fetch_room_entries, format_room_notes
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)

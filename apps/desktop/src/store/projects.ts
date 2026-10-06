@@ -62,13 +62,17 @@ import { recordFeatureUse } from './desktop-metrics'
 // membership; these atoms are the renderer's cached view.
 
 export const $projects = atom<ProjectInfo[]>([])
+
+// The atom itself lives in ./project-tree (a leaf); re-exported here so every
+// existing import path keeps working — projects.ts remains its only writer.
+import { $projectTree } from './project-tree'
+export { $projectTree }
 export const $activeProjectId = atom<null | string>(null)
 
 // The authoritative project -> repo -> lane tree (overview), served by
 // `projects.tree`. Lanes carry counts + structure; per-project session rows are
 // fetched lazily on drill-in via `fetchProjectSessions`. This is the single
 // source of project membership — the desktop no longer derives it.
-export const $projectTree = atom<SidebarProjectTree[]>([])
 export const $projectTreeLoading = atom(false)
 // Backend-resolved session -> project owner, the ONE authority the row
 // classifiers (filter, bucket, color, label) and the lane overlay share, so a

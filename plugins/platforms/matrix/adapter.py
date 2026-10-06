@@ -1735,6 +1735,11 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Reaction-driven approval: the bot seeds one reaction per offered choice."""
+        approval_id = str((prompt.metadata or {}).get("approval_id") or "").strip()
+        if not approval_id:
+            # resolve_gateway_approval without an id falls through to the oldest
+            # waiter. A reaction card that cannot name its request must not be sent.
+            return SendResult(success=False, error="Matrix reaction card requires approval_id")
         if not self._client:
             return SendResult(success=False, error="Not connected")
         from plugins.platforms.matrix.approval_cards import (
@@ -1756,7 +1761,7 @@ class MatrixAdapter(BasePlatformAdapter):
             self._approval_prompt_by_session.setdefault(session_key, set()).add(message_id)
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
-                expires_at=expires_at, approval_id=str(send_meta.get("approval_id") or "") or None,
+                expires_at=expires_at, approval_id=approval_id,
                 command=redacted_command, description=prompt.description or "dangerous command",
                 allow_permanent=allow_permanent, allow_session=allow_session,
                 smart_denied=prompt.smart_denied, metadata=send_meta,
@@ -2611,11 +2616,19 @@ class MatrixAdapter(BasePlatformAdapter):
             choices=self._approval_reaction_map)
         if choice is None:
             return handled
+        approval_id = str(getattr(prompt, "approval_id", "") or "").strip()
+        if not approval_id:
+            # Never call resolve_gateway_approval without an id: that selects the
+            # oldest waiter. Typed !approve / !deny stay FIFO; this path does not.
+            logger.warning(
+                "Matrix reaction card %s has no approval_id; refusing to resolve session %s",
+                reacts_to, getattr(prompt, "session_key", ""),
+            )
+            return True
         try:
             from tools.approval import consume_gateway_approval_outcome, resolve_gateway_approval
             count = resolve_gateway_approval(
-                prompt.session_key, choice,
-                **({"approval_id": prompt.approval_id} if prompt.approval_id else {}),
+                prompt.session_key, choice, approval_id=approval_id,
             )
             if count:
                 prompt.resolved = True

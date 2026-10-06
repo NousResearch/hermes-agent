@@ -691,6 +691,7 @@ class TestMatrixApprovalCardLifecycle:
                 command="rm -rf /tmp/test",
                 session_key="sess-1",
                 description="recursive delete",
+                metadata={"approval_id": "approval-expanded"},
             )
 
         assert result.success is True
@@ -740,6 +741,7 @@ class TestMatrixApprovalCardLifecycle:
                 description="recursive delete",
                 allow_permanent=True,
                 allow_session=False,
+                metadata={"approval_id": "approval-once-deny"},
             )
 
         assert result.success is True
@@ -750,6 +752,86 @@ class TestMatrixApprovalCardLifecycle:
         assert prompt.allow_session is False
         emojis = [call.args[2] for call in adapter._send_reaction.await_args_list]
         assert emojis == ["✅", "❌"]
+
+    @pytest.mark.asyncio
+    async def test_reaction_card_without_approval_id_fails_closed(self, monkeypatch):
+        """A reaction card with no approval_id is not sent, and cannot resolve the oldest waiter.
+
+        Typed !approve / !deny stay FIFO. Only the reaction-card path is fail-closed.
+        """
+        monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@user:example.org")
+        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+        from tools import approval as approval_mod
+        from tools.approval_gateway_wait import _ApprovalEntry
+
+        session_key = "sess-missing-approval-id"
+        oldest = _ApprovalEntry({"command": "rm -rf /tmp/oldest"})
+        newer = _ApprovalEntry({"command": "rm -rf /tmp/newer"})
+        with approval_mod._lock:
+            approval_mod._gateway_queues[session_key] = [oldest, newer]
+
+        adapter = MatrixAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="tok",
+                extra={"homeserver": "https://matrix.example.org"},
+            )
+        )
+        adapter._client = types.SimpleNamespace()
+        adapter._user_id = "@bot:example.org"
+        adapter.send = AsyncMock(
+            return_value=types.SimpleNamespace(success=True, message_id="$should-not-send")
+        )
+        adapter._send_reaction = AsyncMock(return_value="$r")
+        bare = None
+        try:
+            result = await adapter.send_exec_approval(
+                chat_id="!room:example.org",
+                command="rm -rf /tmp/card",
+                session_key=session_key,
+                description="missing id",
+            )
+            assert result.success is False
+            assert "approval_id" in (result.error or "")
+            adapter.send.assert_not_awaited()
+            adapter._send_reaction.assert_not_awaited()
+            assert not adapter._approval_prompts_by_event
+            assert oldest.event.is_set() is False
+            assert newer.event.is_set() is False
+
+            bare = _MatrixApprovalPrompt(
+                session_key=session_key,
+                chat_id="!room:example.org",
+                message_id="$bare",
+                command="rm -rf /tmp/bare",
+                description="no id",
+            )
+            adapter._approval_prompts_by_event["$bare"] = bare
+            adapter._approval_prompt_by_session[session_key] = {"$bare"}
+            event = types.SimpleNamespace(
+                sender="@user:example.org",
+                event_id="$react-bare",
+                room_id="!room:example.org",
+                content={"m.relates_to": {"event_id": "$bare", "key": "✅"}},
+            )
+            with patch("tools.approval.resolve_gateway_approval") as resolve:
+                await adapter._on_reaction(event)
+            resolve.assert_not_called()
+            assert oldest.result is None
+            assert oldest.event.is_set() is False
+            assert newer.event.is_set() is False
+
+            # Typed resolution still names the oldest waiter when no id is supplied.
+            assert approval_mod.resolve_gateway_approval(session_key, "once") == 1
+            assert oldest.result == "once"
+            assert oldest.event.is_set() is True
+            assert newer.event.is_set() is False
+        finally:
+            bare = adapter._approval_prompts_by_event.get("$bare")
+            if bare is not None:
+                bare.resolved = True
+                adapter._forget_matrix_approval_prompt("$bare", bare)
+            approval_mod.clear_session(session_key)
 
     @pytest.mark.asyncio
     async def test_concurrent_same_session_prompts_keep_distinct_identity(self, monkeypatch):

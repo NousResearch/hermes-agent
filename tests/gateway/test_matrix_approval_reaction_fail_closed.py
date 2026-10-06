@@ -99,6 +99,7 @@ def _make_prompt(chat_id="!testroom:matrix.org"):
         session_key="session-abc",
         chat_id=chat_id,
         message_id="$prompt-event-1",
+        approval_id="approval-1",
     )
 
 
@@ -110,7 +111,7 @@ def _run(adapter, event):
     adapter._redact_bot_approval_reactions = AsyncMock()
 
     fake_approval = types.ModuleType("tools.approval")
-    fake_approval.resolve_gateway_approval = lambda session_key, choice: 1
+    fake_approval.resolve_gateway_approval = lambda session_key, choice, approval_id=None: 1
     fake_approval.consume_gateway_approval_outcome = (
         lambda session_key, approval_id: None
     )

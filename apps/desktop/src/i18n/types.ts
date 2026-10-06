@@ -1913,7 +1913,6 @@ export interface Translations {
       activeBackend: string
       activeBackendHint: string
       useBackend: string
-      nousManagedHint: string
       nousIncluded: string
       nousAuthNeededTitle: string
       nousAuthNeededMessage: (provider: string) => string
@@ -1940,7 +1939,6 @@ export interface Translations {
       postSetupFailed: (step: string) => string
       webSearchActive: (backend: string) => string
       webExtractActive: (backend: string) => string
-      webViaNous: string
       webCapabilityUnset: string
       webUseForSearch: string
       webUseForExtract: string

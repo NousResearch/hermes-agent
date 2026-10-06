@@ -2274,7 +2274,6 @@ export const en: Translations = {
       activeBackend: 'Active',
       activeBackendHint: 'This is your active backend',
       useBackend: 'Use this backend',
-      nousManagedHint: 'Runs through the Nous Tool Gateway, billed to your subscription — no API key needed.',
       nousIncluded: 'Included with a Nous subscription — sign in with your Nous account to activate.',
       nousAuthNeededTitle: 'Sign in with your Nous account',
       nousAuthNeededMessage: provider =>
@@ -2304,7 +2303,6 @@ export const en: Translations = {
       postSetupFailed: step => `Failed to run ${step} setup`,
       webSearchActive: backend => `Search: ${backend}`,
       webExtractActive: backend => `Extract: ${backend}`,
-      webViaNous: 'Nous subscription',
       webCapabilityUnset: 'not set',
       webUseForSearch: 'Use for Search',
       webUseForExtract: 'Use for Extract',

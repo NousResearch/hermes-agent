@@ -792,6 +792,9 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
     return <p className="px-1 py-3 text-xs text-muted-foreground">{copy.noProviders}</p>
   }
 
+  // The gateway route is labelled with the managed row's own (server-provided) name.
+  const managedRowName = providers.find(p => p.managed_nous_feature)?.name
+
   return (
     <div className="grid gap-2">
       {toolset === 'web' && cfg.active_search_backend !== undefined && (
@@ -801,12 +804,12 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
         <div className="flex flex-wrap items-center gap-2 px-1">
           <Pill>
             {copy.webSearchActive(
-              cfg.search_via_nous ? copy.webViaNous : cfg.active_search_backend || copy.webCapabilityUnset
+              (cfg.search_via_nous && managedRowName) || cfg.active_search_backend || copy.webCapabilityUnset
             )}
           </Pill>
           <Pill>
             {copy.webExtractActive(
-              cfg.extract_via_nous ? copy.webViaNous : cfg.active_extract_backend || copy.webCapabilityUnset
+              (cfg.extract_via_nous && managedRowName) || cfg.active_extract_backend || copy.webCapabilityUnset
             )}
           </Pill>
         </div>
@@ -908,10 +911,8 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
                     )}
                   </div>
                 )}
-                {provider.requires_nous_auth && (
-                  <p className="text-[0.72rem] text-muted-foreground">
-                    {status === 'needs_auth' ? copy.nousIncluded : copy.nousManagedHint}
-                  </p>
+                {provider.requires_nous_auth && status === 'needs_auth' && (
+                  <p className="text-[0.72rem] text-muted-foreground">{copy.nousIncluded}</p>
                 )}
                 {provider.env_vars.length === 0 ? (
                   <p className="text-[0.72rem] text-muted-foreground">{copy.noApiKeyRequired}</p>

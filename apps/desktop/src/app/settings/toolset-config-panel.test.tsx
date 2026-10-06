@@ -961,7 +961,7 @@ describe('ToolsetConfigPanel', () => {
 
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="web" />)
 
-      expect(await screen.findByText('Search: Nous subscription')).toBeTruthy()
+      expect(await screen.findByText('Search: Nous Subscription')).toBeTruthy()
       expect(screen.getByText('Extract: firecrawl')).toBeTruthy()
       const nousRow = screen.getByRole('button', { name: /Nous Subscription/ })
       const byokRow = screen.getByRole('button', { name: /^Firecrawl/ })

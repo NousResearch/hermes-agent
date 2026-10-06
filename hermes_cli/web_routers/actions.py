@@ -415,12 +415,20 @@ def _latest_update_receipt_summary() -> Optional[Dict[str, Any]]:
         return None
     try:
         post = receipt.get("post_update") or {}
-        return {
+        preservation = receipt.get("local_preservation") or {}
+        summary = {
             **{k: receipt.get(k) for k in ("outcome", "started_at", "finished_at")},
             "pre_sha": (receipt.get("pre_update") or {}).get("sha"),
             "post_sha": post.get("sha"), "post_version": post.get("version"),
             "fleet_states": sorted({str(e.get("state")) for e in receipt.get("fleet") or [] if isinstance(e, dict)}),
         }
+        if isinstance(preservation, dict) and preservation:
+            summary["local_preservation"] = {
+                key: preservation.get(key)
+                for key in ("id", "upstream_revision", "active_groups", "inactive_groups",
+                            "base_ref", "restore_policy", "keep_stash")
+            }
+        return summary
     except Exception:
         return None
 

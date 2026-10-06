@@ -62,9 +62,12 @@ Adding one: register in that table (no `if name == ...` chain); `tools/todo_tool
   the truncation is logged, never queued as a chat status warning — `context_file_max_chars` does not raise that cap).
 - **Strict role alternation.** Never two same-role messages in a row; never a synthetic user
   message injected mid-loop. The one exception is `/steer`, delivered as a standalone user row
-  after a tool result (`assistant(tool_calls) → tool → user` is legal on every provider path) —
-  never smeared onto the already-persisted tool row, which append-only persistence would leave
-  divergent from the live request. Cron deliveries live in their own session for this reason.
+  after a tool result. `assistant(tool_calls) → tool → user` is valid canonical history for
+  steering and post-interruption input. Mistral-family Chat Completions destinations
+  conservatively get a request-only assistant bridge in `ChatCompletionsTransport.convert_messages`; never
+  persist that bridge or smear new input onto an already-persisted tool row. Interruption
+  diagnostics belong in the turn outcome, not a fabricated assistant completion. Cron
+  deliveries live in their own session.
 - **Context files** (`agent/prompt_builder.py`) load from the CWD only at startup and are capped
   (`CONTEXT_FILE_MAX_CHARS` / dynamic cap from the context window / `context_file_max_chars`).
   Never load an install-tree `AGENTS.md` as project context (PR #64611); subdirectory hints reject

@@ -462,9 +462,15 @@ class ChatCompletionsTransport(ProviderTransport):
         strip_reasoning_details = not (native_type or _route_replays_reasoning_details(kwargs.get("base_url")))
         sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning_details, native_type))
                            for m in messages]
-        if all(s is None for _, s in sanitized_pairs):
-            return messages
-        return [m if s is None else s for m, s in sanitized_pairs]
+        sanitized = messages if all(s is None for _, s in sanitized_pairs) else [
+            m if s is None else s for m, s in sanitized_pairs
+        ]
+        from agent.tool_role_projection import project_tool_user_boundaries
+
+        return project_tool_user_boundaries(
+            sanitized, model=kwargs.get("model"), base_url=kwargs.get("base_url"),
+            provider=getattr(kwargs.get("provider_profile"), "name", None) or kwargs.get("provider_name"),
+        )
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Tools are already in OpenAI format — identity."""
@@ -479,7 +485,10 @@ class ChatCompletionsTransport(ProviderTransport):
         path below (is_kimi, is_openrouter, ...) is only reached for unregistered providers.
         """
         _profile = params.get("provider_profile")
-        sanitized = self.convert_messages(messages, model=model, base_url=params.get("base_url"), provider_profile=_profile)
+        sanitized = self.convert_messages(
+            messages, model=model, base_url=params.get("base_url"), provider_profile=_profile,
+            provider_name=params.get("provider_name"),
+        )
         if _profile:
             return self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)
 

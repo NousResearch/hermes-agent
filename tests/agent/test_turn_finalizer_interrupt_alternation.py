@@ -1,18 +1,14 @@
-"""Regression test for #48879.
+"""Interrupted history retains actual events; provider projection owns role bridges.
 
-When a turn is interrupted via ``/stop`` right after a tool completes — but
-before the assistant streams any final text — the transcript tail is a raw
-``tool`` message. Persisting that tail unmodified means the next user message
-lands as ``... tool → user``, a role-alternation violation that strict
-providers (Gemini, Claude) react to by hallucinating a continuation of the
-user's message before transitioning into the assistant persona.
-
-``finalize_turn`` closes the tool-call sequence on interrupt by appending a
-synthetic ``assistant`` message before persistence. ``final_response`` is
-typically empty on an interrupt, so the placeholder text is used rather than
-an empty-content assistant turn.
+Non-interrupted failure/recovery responses remain visible and durable.
 """
 
+from copy import deepcopy
+
+import pytest
+
+from hermes_state import SessionDB
+from agent.turn_recovery import abort_turn_on_interrupt
 
 from agent.turn_finalizer import finalize_turn
 
@@ -39,6 +35,7 @@ class _StubAgent:
         self.base_url = "http://stub"
         self.session_id = "sess-1"
         self.quiet_mode = True
+        self.log_prefix = ""
         self.platform = "cli"
         self._interrupt_requested = False
         self._interrupt_message = None
@@ -85,6 +82,9 @@ class _StubAgent:
     def _emit_status(self, *a, **k):
         pass
 
+    def _vprint(self, *a, **k):
+        pass
+
     def _safe_print(self, *a, **k):
         pass
 
@@ -97,7 +97,7 @@ class _StubAgent:
     def _drain_pending_steer(self):
         return None
 
-    def clear_interrupt(self):
+    def clear_interrupt(self, **kwargs):
         pass
 
     def _sync_external_memory_for_turn(self, **k):
@@ -146,27 +146,37 @@ def _assert_no_tool_then_user(messages):
             )
 
 
-def test_interrupt_after_tool_closes_sequence_with_placeholder():
+@pytest.mark.parametrize("exit_path", ["finalizer", "recovery"])
+@pytest.mark.parametrize("has_partial", [False, True])
+def test_interruption_preserves_actual_history_after_reload(tmp_path, exit_path, has_partial):
     agent = _StubAgent()
     messages = _interrupted_tool_tail()
-    _finalize(agent, messages, interrupted=True, final_response=None)
-
-    # Tail must now be an assistant message, not a raw tool result.
-    assert messages[-1]["role"] == "assistant"
-    # Empty final_response falls back to the explicit placeholder rather
-    # than persisting an empty-content assistant turn.
-    assert messages[-1]["content"].strip()
-
-    # The persisted snapshot is alternation-safe: appending a new user
-    # message would follow an assistant, not an orphan tool.
-    assert agent.persisted_messages is not None
-    assert agent.persisted_messages[-1]["role"] == "assistant"
-    follow_on = agent.persisted_messages + [{"role": "user", "content": "forget it"}]
-    _assert_no_tool_then_user(follow_on)
-
-
-
-
+    if has_partial:
+        messages.append({"role": "assistant", "content": "Partial answer", "display_metadata": {"interrupted": True}})
+    original = deepcopy(messages)
+    db_path = tmp_path / "state.db"
+    with SessionDB(db_path=db_path) as db:
+        db.create_session(agent.session_id, source="cli")
+        agent._persist_session = lambda rows, _history: db.replace_messages(agent.session_id, rows)
+        if exit_path == "finalizer":
+            result = _finalize(agent, messages, interrupted=True, final_response="Operation interrupted.")
+        else:
+            result = abort_turn_on_interrupt(
+                agent, messages, None, 1, abort_message="Stopped", interrupt_text="Operation interrupted.",
+            )
+    with SessionDB(db_path=db_path) as reopened:
+        saved = reopened.get_messages_as_conversation(agent.session_id)
+    assert result["interrupted"] is True
+    assert result["completed"] is False
+    assert [(row["role"], row["content"]) for row in messages] == [
+        (row["role"], row["content"]) for row in original
+    ]
+    # Neither the durable transcript nor the next user turn acquires a fabricated answer.
+    assert [(row["role"], row["content"]) for row in saved] == [
+        (row["role"], row["content"]) for row in original
+    ]
+    assert saved[1]["tool_calls"] == original[1]["tool_calls"]
+    assert saved[2]["tool_call_id"] == original[2]["tool_call_id"]
 
 
 def test_interrupt_without_tool_tail_adds_nothing():

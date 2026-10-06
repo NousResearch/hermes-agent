@@ -240,11 +240,8 @@ def _recover_final_from_stream(agent, final_response, interrupted, failed) -> Tu
 def _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream) -> None:
     """Shape the transcript tail before the durable snapshot (scaffolding already dropped
     and ``final_response`` already stream-recovered by the caller)."""
-    # An interrupt can leave a tool result as the tail; close the sequence so strict
-    # providers don't see ``tool → user`` (placeholder: final_response is usually empty).
-    if interrupted:
-        from agent.message_sanitization import close_interrupted_tool_sequence
-        close_interrupted_tool_sequence(messages, final_response)
+    # An interrupt is an outcome, not an assistant response. Keep actual events;
+    # provider-specific role bridges belong on the request copy, never in history.
 
     # Recovery ``break`` sites can return a final_response with no closing assistant
     # row; enforce "delivered final_response ⇒ assistant row" here. Compare content,
@@ -541,8 +538,8 @@ def finalize_turn(
     # follow-up assistant text, is the Desktop/TUI "silent stop" (#55316, #54756): the
     # composer returns to ready (or keeps spinning) while the durable transcript ends
     # at a raw ``tool`` row — the user never learns the turn stopped, and the next user
-    # message lands as ``tool → user``. Interrupted tails keep
-    # ``close_interrupted_tool_sequence``; this is the non-interrupt sibling. Mint the
+    # message lands as ``tool → user``. Unlike an explicit interruption, this needs
+    # a visible explanation of the unexpected stop. Mint the
     # exit reason, fail the turn, and synthesize the visible close so the tail close in
     # ``_persist_step`` persists an assistant row. A turn that already streamed text is
     # left alone: ``_recover_final_from_stream`` owns that recovery (#95514).

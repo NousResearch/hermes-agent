@@ -5,7 +5,7 @@ from openai import AsyncOpenAI, OpenAI
 from agent.transports.chat_completions import ChatCompletionsTransport
 
 
-def prepare_chat_messages(client, kwargs: dict) -> dict:
+def prepare_chat_messages(client, kwargs: dict, *, provider: str | None = None) -> dict:
     """Sanitize actual Chat Completions SDK requests, not native adapter replay.
 
     Auxiliary and MoA callers can retain a prepared request before the virtual
@@ -15,6 +15,6 @@ def prepare_chat_messages(client, kwargs: dict) -> dict:
     if not isinstance(client, (OpenAI, AsyncOpenAI)) or "messages" not in kwargs:
         return kwargs
     messages = ChatCompletionsTransport().convert_messages(
-        kwargs["messages"], model=kwargs.get("model"), base_url=str(getattr(client, "base_url", "") or ""),
+        kwargs["messages"], model=kwargs.get("model"), provider_name=provider, base_url=str(getattr(client, "base_url", "") or ""),
     )
     return {**kwargs, "messages": messages}

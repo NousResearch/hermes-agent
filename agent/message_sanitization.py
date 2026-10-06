@@ -284,18 +284,14 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     return "{}"
 
 
-def close_interrupted_tool_sequence(messages: list, final_response: Any = None) -> bool:
-    """Append a synthetic assistant turn when an interrupted tail is a tool result: a transcript
-    ending on a raw ``tool`` message makes the next user message land as ``tool → user``, an
-    alternation violation strict providers (Gemini, Claude) answer by hallucinating a
-    continuation. Mutates in place; True if a closing turn was appended."""
+def append_tool_tail_response(messages: list, final_response: str) -> bool:
+    """Persist a delivered failure/recovery response after a tool tail, once."""
     last = messages[-1] if messages else None
-    if not isinstance(last, dict) or last.get("role") != "tool":
+    if not isinstance(last, dict) or last.get("role") != "tool" or not final_response.strip():
         return False
-    text = final_response if isinstance(final_response, str) else ""
     from agent.message_metadata import append_message
 
-    append_message(messages, {"role": "assistant", "content": text.strip() or "Operation interrupted."})
+    append_message(messages, {"role": "assistant", "content": final_response.strip()})
     return True
 
 
@@ -446,7 +442,7 @@ def _looks_like_corrupt_image_rejection(error_body: str) -> bool:
 
 
 __all__ = [
-    "_SURROGATE_RE", "close_interrupted_tool_sequence",
+    "_SURROGATE_RE", "append_tool_tail_response",
     "_sanitize_surrogates", "_sanitize_structure_surrogates", "_sanitize_messages_surrogates",
     "coerce_tool_name",
     "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",

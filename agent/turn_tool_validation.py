@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.message_metadata import append_message
-from agent.message_sanitization import (close_interrupted_tool_sequence, coalesce_tool_call_id,
+from agent.message_sanitization import (append_tool_tail_response, coalesce_tool_call_id,
                                           normalize_provider_tool_call_ids)
 from agent.turn_failure_copy import site_copy, stamp_failure
 from hermes_constants import FINISH_REASON_LENGTH
@@ -55,9 +55,9 @@ def _append_tool_error_results(messages, tool_calls, content_for) -> None:
 
 def _partial_exit(agent, messages, conversation_history, api_call_count, final_response: str) -> Dict[str, Any]:
     """Terminal partial result. Prior retries or an earlier tool batch leave a tool-result
-    tail; close it as interrupt aborts do so the next turn is not tool→user (#48879).
-    This path never reaches finalize_turn, so persist here."""
-    close_interrupted_tool_sequence(messages, final_response)
+    tail; persist the delivered failure response here because this path never
+    reaches finalize_turn."""
+    append_tool_tail_response(messages, final_response)
     agent._persist_session(messages, conversation_history)
     return stamp_failure({
         "final_response": final_response,

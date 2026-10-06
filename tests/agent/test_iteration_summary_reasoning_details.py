@@ -103,3 +103,17 @@ class TestSummaryPrefixParity:
         # The sanitizer is in-place and list-content parts are shared nested dicts:
         # history must keep its stored bytes.
         assert history == snapshot
+
+
+@pytest.mark.parametrize("provider,model,strict", [("mistral", "opaque-model", True), ("moa", "mistral-team", False)])
+def test_summary_builder_forwards_the_destination_identity(make_agent, provider, model, strict):
+    agent = make_agent("http://127.0.0.1:1/v1", "custom")
+    agent.provider, agent.model = provider, model
+    history = copy.deepcopy(_HISTORY) + [{"role": "user", "content": "New direction"}]
+    original = copy.deepcopy(history)
+    api_messages = _iteration_summary_api_messages(agent, history)
+    wire = _build_api_kwargs_for_mode(agent, api_messages)["messages"]
+    roles = [m["role"] for m in wire if m["role"] != "system"]
+    assert roles == (["user", "assistant", "tool", "assistant", "user"] if strict else ["user", "assistant", "tool", "user"])
+    assert wire[-1]["content"] == "New direction"
+    assert history == original

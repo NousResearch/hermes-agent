@@ -189,7 +189,7 @@ def handle_api_interrupt(
     interrupted = True
     # A Stop during the empty-response nudge request leaves the synthetic assistant+nudge
     # pair after an executed tool result; strip it so the row appended below follows the tool
-    # row (the finalizer then closes the tail with this exit's own reason).
+    # row. With no partial output, preserve the tool tail and return only a diagnostic.
     agent._drop_trailing_empty_response_scaffolding(messages)
     _partial = agent._strip_think_blocks(
         getattr(agent, "_current_streamed_assistant_text", "") or ""

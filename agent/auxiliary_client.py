@@ -2628,7 +2628,7 @@ def _relay_sync_completion(
 ) -> Any:
     from agent.auxiliary_wire import prepare_chat_messages
 
-    kwargs = prepare_chat_messages(client, kwargs)
+    kwargs = prepare_chat_messages(client, kwargs, provider=provider)
     # The progress hook is installed per TASK, so every attempt (retries, recovery rungs, fallbacks)
     # must stream through _create_with_progress or the compression watchdog sees silence (#98466).
     # Recovery rungs / credential retries keep the task's ``no_progress_timeout`` window; the
@@ -2667,7 +2667,7 @@ async def _relay_async_completion(
 ) -> Any:
     from agent.auxiliary_wire import prepare_chat_messages
 
-    kwargs = prepare_chat_messages(client, kwargs)
+    kwargs = prepare_chat_messages(client, kwargs, provider=provider)
     # Async twin of the seam default above (#98466).
     callback = create or (lambda request: _acreate_with_progress(client, request))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
@@ -2696,7 +2696,7 @@ def _relay_sync_stream(
 ) -> Any:
     from agent.auxiliary_wire import prepare_chat_messages
 
-    kwargs = prepare_chat_messages(client, kwargs)
+    kwargs = prepare_chat_messages(client, kwargs, provider=provider)
     # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
     # rewritten) the real conversation; applying it to `kwargs` would hand Relay an empty one.
     create = lambda request: client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client))  # noqa: E731

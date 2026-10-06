@@ -237,7 +237,7 @@ def _assert_saved_tool_pairs_stay_live(result, db, sid):
     assert saved_calls and saved_calls == saved_results
     # The next turn replays result["messages"]: a pair missing there is a side effect the model re-runs.
     assert saved_calls <= live_calls and saved_results <= live_results
-    assert saved[-1]["role"] != "tool"
+    assert saved[-1]["role"] == ("tool" if result.get("interrupted") else "assistant")
 
 
 def test_empty_response_give_up_keeps_the_executed_tool_call_live(real_loop):
@@ -266,8 +266,9 @@ def test_stop_during_empty_response_recovery_keeps_the_executed_tool_call_live(r
     assert real_loop.ledger.read_text() == "PAYMENT #1 SENT\n"
     assert result["interrupted"] is True
     _assert_saved_tool_pairs_stay_live(result, real_loop.db, real_loop.sid)
-    # The Stop owner strips the nudge scaffold itself and closes with its own reason.
-    assert result["messages"][-1]["content"] == result["final_response"]
+    # The Stop owner strips retry scaffolding but does not invent an assistant answer.
+    assert result["messages"][-1]["role"] == "tool"
+    assert result["messages"][-1]["tool_call_id"] == "call_write"
 
 
 def test_housekeeping_fallback_names_its_final_a_reused_response(real_loop):

@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.error_classifier import FailoverReason
 from agent.message_metadata import append_message
-from agent.message_sanitization import close_interrupted_tool_sequence
+from agent.message_sanitization import append_tool_tail_response
 from agent.repetition_guard import is_repetition_dominated
 from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_failure_copy import content_policy_copy, provider_label_for, site_copy, stamp_failure
@@ -438,7 +438,7 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
         _final_response = _TRUNCATED_FINAL
     agent._cleanup_task_resources(st.effective_task_id)
     # Prior tool batches can leave a tool-result tail; this path never reaches finalize_turn.
-    close_interrupted_tool_sequence(st.messages, _final_response)
+    append_tool_tail_response(st.messages, _final_response)
     return st.end_turn(
         _final_response, cleanup=False,
         failure=(_failure, True),
@@ -500,7 +500,7 @@ def recover_from_truncation(
         )
         # Prior tool batches can leave a tool-result tail; this path never reaches
         # finalize_turn (same as the truncated-tool-call terminal above).
-        close_interrupted_tool_sequence(st.messages, _CONTEXT_OVERFLOW_PARTIAL_FINAL)
+        append_tool_tail_response(st.messages, _CONTEXT_OVERFLOW_PARTIAL_FINAL)
         # Carry the #98722 typed exhaustion bit so the gateway resets/moves future
         # input to a clean session instead of leaving this bloated one authoritative
         # for the next turn.

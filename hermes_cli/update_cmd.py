@@ -27,7 +27,7 @@ from hermes_cli.update_completion import run_completion
 from hermes_cli.update_channel import adopt_retired_channel
 from pm.receipt import accept_worker_receipt as _accept_completion_pm_receipt
 from hermes_cli import update_receipt as _completion_receipt, update_cmd_config as _completion_config
-from hermes_cli._old_updater import stop_for_relaunch
+from hermes_cli._old_updater import in_historical_update, stop_for_relaunch
 from hermes_cli._early_recovery import git_operation_in_progress, interrupted_pull_marker
 from hermes_cli import update_cmd_check as _check
 
@@ -116,29 +116,53 @@ from hermes_cli.update_cmd_maint import (  # noqa: F401
 logger = logging.getLogger(__name__)
 
 
-def get_default_hermes_root() -> NoReturn:
-    # Shim to suppress old updater work until relaunch. No path is safe to invent.
-    stop_for_relaunch()
+def get_default_hermes_root() -> Path:
+    # Historical handoff inside a real updater; otherwise inert: a live process
+    # asking for the checkout root legitimately wants this checkout (#124881).
+    if in_historical_update():
+        stop_for_relaunch()
+    return Path(__file__).resolve().parents[1]
 
 
 def _ensure_uv_for_termux(pip_cmd: list[str]) -> NoReturn:
-    # Shim to stop the old updater doing work until relaunch, not bootstrap uv.
-    stop_for_relaunch()
+    # Hand off only inside a real updater (tools.lazy_deps.install_specs,
+    # #127672): a mixed-graph call outside one is refused, never continued.
+    if in_historical_update():
+        stop_for_relaunch()
+    raise ImportError(
+        "hermes_cli.update_cmd._ensure_uv_for_termux is retired; runtime "
+        "dependency bootstrapping is unavailable."
+    )
 
 
 def _ensure_venv_pip(pip_cmd: list, python_exe: str) -> NoReturn:
-    # Shim to stop the old updater doing work until relaunch, not bootstrap pip.
-    stop_for_relaunch()
+    # Hand off only inside a real updater; see _ensure_uv_for_termux.
+    if in_historical_update():
+        stop_for_relaunch()
+    raise ImportError(
+        "hermes_cli.update_cmd._ensure_venv_pip is retired; runtime "
+        "dependency bootstrapping is unavailable."
+    )
 
 
 def _pip_install_prefix(uv_bin) -> NoReturn:
-    # Shim to stop the old updater doing work until relaunch, not form an install.
-    stop_for_relaunch()
+    # Hand off only inside a real updater; see _ensure_uv_for_termux.
+    if in_historical_update():
+        stop_for_relaunch()
+    raise ImportError(
+        "hermes_cli.update_cmd._pip_install_prefix is retired; runtime "
+        "dependency installation is unavailable."
+    )
 
 
 def _refuse_update_for_contended_shims(exc: BaseException) -> NoReturn:
-    # Shim to stop the old updater doing work until relaunch. Write no markers.
-    stop_for_relaunch()
+    # Hand off only inside a real updater; see _ensure_uv_for_termux.
+    if in_historical_update():
+        stop_for_relaunch()
+    raise ImportError(
+        "hermes_cli.update_cmd._refuse_update_for_contended_shims is retired; "
+        "shim contention is handled by PM staging."
+    )
 
 
 def _shim_quarantine_error_type() -> type[Exception]:
@@ -511,21 +535,32 @@ def _print_called_process_error_tail(
 
 
 def _write_update_incomplete_marker() -> None:
-    # Historical updater hook. PM's successful facts determine completion.
-    stop_for_relaunch()
+    # Hand off inside a real updater; a live process must never write an
+    # interrupted-install breadcrumb it cannot own (#124881). No-op elsewhere:
+    # PM's successful facts determine completion, and a stray current-frame
+    # caller writing this marker parks every later boot on "update finishing".
+    if in_historical_update():
+        stop_for_relaunch()
 
 
 def _write_lazy_refresh_incomplete_marker() -> None:
-    # Historical updater hook. There is no separate lazy-refresh transaction.
-    stop_for_relaunch()
+    # Hand off inside a real updater; no-op elsewhere (see
+    # _write_update_incomplete_marker). There is no separate lazy-refresh
+    # transaction to record.
+    if in_historical_update():
+        stop_for_relaunch()
 
 
 
 def _filter_non_gateway_concurrent_instances(
     matches: list[tuple[int, str]],
 ) -> list[tuple[int, str]]:
-    # Historical updater hook; PM never replaces a running venv's executables.
-    stop_for_relaunch()
+    # Hand off inside a real updater; otherwise report no concurrent holders.
+    # A live process must never act on this list (PM never replaces a running
+    # venv's executables), so the inert answer is an empty one, not the input.
+    if in_historical_update():
+        stop_for_relaunch()
+    return []
 
 
 def _log_only_write(text: str) -> None:

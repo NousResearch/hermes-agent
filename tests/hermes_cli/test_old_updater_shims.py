@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -20,23 +21,7 @@ from tests.compat.old_updater_support import (
     "module,name,args,kwargs,cached",
     [
         *((f"hermes_cli.{module}", name, args, kwargs, None) for module, name, args, kwargs in [
-        ("managed_uv", "ensure_uv", (), {}),
-        ("managed_uv", "ensure_uv", (), {"repair_observer": lambda result: pytest.fail("repair observer ran")}),
-        ("managed_uv", "update_managed_uv", (), {}),
-        ("managed_uv", "update_managed_uv", (), {"force": True}),
-        ("managed_uv", "resolve_uv", (), {}),
-        ("managed_uv", "managed_python_env", (), {}),
-        ("managed_uv", "managed_python_env", (Path("checkout"),), {"install_dir": Path("python"), "base_env": {}}),
-        ("managed_uv", "rebuild_venv", ("uv", Path("venv")), {}),
-        ("managed_uv", "rebuild_venv", ("uv", Path("venv"), "3.11"), {}),
         ("psutil_android", "prepare_patched_psutil_sdist", (Path("psutil.tar.gz"), Path("src")), {}),
-        ("update_cmd", "_ensure_uv_for_termux", (["python", "-m", "pip"],), {}),
-        ("update_cmd", "_ensure_venv_pip", (["python", "-m", "pip"], "python"), {}),
-        ("update_cmd", "_pip_install_prefix", (None,), {}),
-        ("update_cmd", "_pip_install_prefix", ("uv",), {}),
-        ("update_cmd", "_refuse_update_for_contended_shims", (RuntimeError("locked"),), {}),
-        ("tools_config", "install_cua_driver", (),
-         {"upgrade": True, "require_confirmed_update": True, "show_installer_progress": False}),
         ("update_cmd", "_capture_active_lazy_features", (), {}),
         ("update_cmd", "_refresh_active_lazy_features", (), {}),
         ("update_cmd", "_refresh_active_lazy_features", (["browser"],), {}),
@@ -50,10 +35,6 @@ from tests.compat.old_updater_support import (
         ("update_cmd", "_rebuild_desktop_after_update", (Path("desktop"),),
          {"had_desktop_app_before_update": False}),
         ("update_cmd", "_path_uid", (Path("venv"),), {}),
-        ("update_cmd", "_write_update_incomplete_marker", (), {}),
-        ("update_cmd", "_write_lazy_refresh_incomplete_marker", (), {}),
-        ("update_cmd", "_reload_updated_runtime_modules", (), {}),
-        ("update_cmd_maint", "_reload_updated_runtime_modules", (), {}),
     ]),
         *(("hermes_cli.main", name, args, kwargs, None) for name, args, kwargs in [
         ("_desktop_stamp_path", (), {}),
@@ -88,14 +69,11 @@ from tests.compat.old_updater_support import (
          {"env": {"VIRTUAL_ENV": "venv"}, "features": ["browser"]}),
         ("_refresh_active_memory_provider_dependencies", (), {}),
         ("_npm_lockfile_changed", (Path("checkout"),), {}),
-        ("_write_update_incomplete_marker", (), {}),
-        ("_reload_updated_runtime_modules", (), {}),
     ] for cached in (False, True)),
         ("hermes_cli.main_web_build", "_run_with_idle_timeout", (["npm", "ci"], Path("web")), {}, None),
         ("hermes_cli.main_web_build", "_run_npm_install_deterministic", ("npm", Path("web")), {}, None),
         ("hermes_cli.main_web_build", "_nixos_build_env", (), {}, None),
         ("hermes_cli.main", "_reexec_dependency_sync_off_windows_shim", (), {}, None),
-        ("hermes_cli.update_cmd", "get_default_hermes_root", (), {}, None),
         ("hermes_cli.tools_config", "_pip_install", (["--quiet", "honcho-ai"],), {}, None),
         ("hermes_cli.tools_config", "_pip_install", (["--quiet", "honcho-ai"],), {"timeout": 120, "capture_output": False}, None),
     ],
@@ -117,6 +95,115 @@ def test_retired_dependency_entrypoints_handoff_without_fallback(module, name, a
     with fresh_child.exits():
         getattr(importlib.import_module(module), name)(*args, **kwargs)
     assert (args, kwargs) == before
+
+
+def _run_in_historical_frame(target, module_name):
+    """Wrap a retired entrypoint in a historical-updater-shaped caller.
+
+    The frame-scoped handoffs (#127672, #124881) transfer control only under
+    ``cmd_update``/``_cmd_update_impl`` in the updater modules, without the
+    current updater's sentinel local. Real old updaters provide that frame;
+    this wrapper reproduces it (exec globals carry ``__name__``) without
+    depending on deep Git history.
+    """
+    namespace = {"__name__": module_name, "target": target}
+    exec(
+        "def cmd_update(*args, **kwargs):\n"
+        "    pre_update_version = 'old-version'\n"
+        "    return target(*args, **kwargs)\n",
+        namespace,
+    )
+    return namespace["cmd_update"]
+
+
+@pytest.mark.parametrize("module,name,args,kwargs", [
+    ("hermes_cli.update_cmd", "_ensure_uv_for_termux", (["python", "-m", "pip"],), {}),
+    ("hermes_cli.update_cmd", "_ensure_venv_pip", (["python", "-m", "pip"], "python"), {}),
+    ("hermes_cli.update_cmd", "_pip_install_prefix", (None,), {}),
+    ("hermes_cli.update_cmd", "_pip_install_prefix", ("uv",), {}),
+    ("hermes_cli.update_cmd", "_refuse_update_for_contended_shims", (RuntimeError("locked"),), {}),
+    ("hermes_cli.tools_config", "install_cua_driver", (),
+     {"upgrade": True, "require_confirmed_update": True, "show_installer_progress": False}),
+    ("hermes_cli.managed_uv", "ensure_uv", (), {}),
+    ("hermes_cli.managed_uv", "ensure_uv", (), {"repair_observer": lambda result: pytest.fail("repair observer ran")}),
+    ("hermes_cli.managed_uv", "update_managed_uv", (), {}),
+    ("hermes_cli.managed_uv", "update_managed_uv", (), {"force": True}),
+    ("hermes_cli.managed_uv", "resolve_uv", (), {}),
+    ("hermes_cli.managed_uv", "managed_python_env", (), {}),
+    ("hermes_cli.managed_uv", "managed_python_env", (Path("checkout"),), {"install_dir": Path("python"), "base_env": {}}),
+    ("hermes_cli.managed_uv", "rebuild_venv", ("uv", Path("venv")), {}),
+    ("hermes_cli.managed_uv", "rebuild_venv", ("uv", Path("venv"), "3.11"), {}),
+    ("hermes_cli.update_cmd_maint", "_prepare_updated_checkout", (Path("checkout"),), {"desktop": False}),
+])
+def test_retired_entrypoints_refuse_outside_a_historical_update(module, name, args, kwargs, monkeypatch):
+    """A live serve/dashboard reaching a retired installer must not become an update:
+    it gets a catchable refusal, and no takeover child ever starts (#124881)."""
+    from hermes_cli import _old_updater
+
+    child = Mock(side_effect=AssertionError("takeover child started from a live caller"))
+    monkeypatch.setattr(_old_updater, "_run_child", child)
+    monkeypatch.setattr(_old_updater, "_result", None)
+    with pytest.raises(ImportError, match="retired"):
+        getattr(importlib.import_module(module), name)(*args, **kwargs)
+    child.assert_not_called()
+
+
+@pytest.mark.parametrize("module,name,args,kwargs", [
+    ("hermes_cli.update_cmd", "get_default_hermes_root", (), {}),
+    ("hermes_cli.update_cmd", "_write_update_incomplete_marker", (), {}),
+    ("hermes_cli.update_cmd", "_write_lazy_refresh_incomplete_marker", (), {}),
+    ("hermes_cli.update_cmd", "_filter_non_gateway_concurrent_instances", ([(123, "hermes.exe")],), {}),
+    ("hermes_cli.update_cmd", "_reload_updated_runtime_modules", (), {}),
+    ("hermes_cli.update_cmd_maint", "_purge_stale_hermes_modules", (), {}),
+    ("hermes_cli.update_cmd_maint", "_reload_updated_runtime_modules", (), {}),
+    ("hermes_cli.update_cmd_maint", "_reload_process_scan_modules", (), {}),
+    ("hermes_cli.update_cmd_maint", "_finish_dashboard_update_cleanup", (["npm missing"],), {}),
+    ("hermes_cli.dashboard_procs", "_detect_concurrent_hermes_instances", (Path("Scripts"),), {"exclude_pid": 123}),
+    ("hermes_cli.main", "_write_update_incomplete_marker", (), {}),
+])
+def test_retired_probes_are_inert_outside_a_historical_update(module, name, args, kwargs, monkeypatch, tmp_path):
+    """A live caller gets the inert answer current startup expects (empty scan,
+    this checkout's root, no marker write) instead of exiting into the
+    takeover child (#124881)."""
+    from hermes_cli import _old_updater
+
+    child = Mock(side_effect=AssertionError("takeover child started from a live caller"))
+    monkeypatch.setattr(_old_updater, "_run_child", child)
+    monkeypatch.setattr(_old_updater, "_result", None)
+    # No interrupted-install breadcrumb may appear from a live caller.
+    monkeypatch.chdir(tmp_path)
+    result = getattr(importlib.import_module(module), name)(*args, **kwargs)
+    child.assert_not_called()
+    if name == "get_default_hermes_root":
+        assert result == Path(importlib.import_module(module).__file__).resolve().parents[1]
+    elif name == "_filter_non_gateway_concurrent_instances":
+        assert result == []
+    elif name == "_detect_concurrent_hermes_instances":
+        assert result == []
+    elif name == "_print_update_summary":
+        assert result is False
+    else:
+        assert result is None
+    assert not (tmp_path / ".update-incomplete").exists()
+    assert not (tmp_path / ".lazy-refresh-incomplete").exists()
+
+
+@pytest.mark.parametrize("module,name,args,kwargs", [
+    ("hermes_cli.update_cmd", "_ensure_uv_for_termux", (["python", "-m", "pip"],), {}),
+    ("hermes_cli.managed_uv", "ensure_uv", (), {}),
+    ("hermes_cli.update_cmd", "get_default_hermes_root", (), {}),
+    ("hermes_cli.update_cmd", "_write_update_incomplete_marker", (), {}),
+    ("hermes_cli.dashboard_procs", "_detect_concurrent_hermes_instances", (Path("Scripts"),), {"exclude_pid": 123}),
+])
+def test_historical_update_frames_still_hand_off(module, name, args, kwargs, fresh_child):
+    """Inside a real updater frame the converted stubs keep their original
+    contract: installer-shaped names transfer to the takeover child, marker
+    writes ride along, and scans never classify processes in the old parent."""
+    fresh_child.returncode = 19
+    target = getattr(importlib.import_module(module), name)
+    wrapped = _run_in_historical_frame(target, "hermes_cli.update_cmd")
+    with fresh_child.exits():
+        wrapped(*args, **kwargs)
 
 
 @pytest.mark.parametrize("module,name,specs,declares_version", [
@@ -175,13 +262,18 @@ def test_ensure_uv_stops_both_historical_return_contracts(unpack, status, fresh_
     from hermes_cli.managed_uv import ensure_uv
 
     fresh_child.returncode = status
-    with fresh_child.exits():
+
+    def historical_update():
         if unpack:
             uv, fresh_bootstrap = ensure_uv()
         else:
             uv = ensure_uv()
         # A falsy result is NOT inert: old callers install through pip instead.
         subprocess.run([uv, "pip", "install"] if uv else [sys.executable, "-m", "pip", "install"])
+
+    historical_update = _run_in_historical_frame(historical_update, "hermes_cli.main")
+    with fresh_child.exits():
+        historical_update()
 
 
 def test_retired_probes_and_refreshes_do_no_work(no_external_work, tmp_path):
@@ -242,16 +334,25 @@ def test_old_updater_retains_its_code_but_loads_new_managed_uv(old_updater, fres
     old._m = lambda: old_main
     old._write_update_incomplete_marker = lambda: prefix.append("old-marker")
     old._editable_install_is_current = lambda *args: False
+
+    def old_update_frame():
+        # Historical updaters run under cmd_update/_cmd_update_impl; the
+        # frame-scoped handoffs (#127672, #124881) check for that shape.
+        pre_update_version = "old-version"
+        old._sync_python_dependencies_after_pull(
+            ["git"], "main", "before-pull", active_lazy_features=[],
+            active_tool_dependencies=[], _windows_gateway_resume=resume,
+        )
+
+    old_update_frame = _run_in_historical_frame(old_update_frame, "hermes_cli.main")
+
     old._ensure_venv_pip = no_external_work
     old._ensure_uv_for_termux = no_external_work
     resume = {"resume_needed": True, "profiles": {"work": "old-pid"}}
     before = deepcopy(resume)
     before_files = set(tmp_path.rglob("*"))
     with fresh_child.exits():
-        old._sync_python_dependencies_after_pull(
-            ["git"], "main", "before-pull", active_lazy_features=[],
-            active_tool_dependencies=[], _windows_gateway_resume=resume,
-        )
+        old_update_frame()
     assert prefix == ["ownership", "self-lock", "old-marker"]
     assert fresh_child.requests[0]["windows_resume"] == before
     # No acknowledgement means the historical caller still owns recovery.

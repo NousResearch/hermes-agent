@@ -2269,7 +2269,15 @@ _FROZEN_ATTR_SOURCES: dict[str, str] = {
 def __getattr__(name):
     """Resolve the frozen updater surface on first read (see _FROZEN_UPDATER_SURFACE)."""
     if name == "_write_update_incomplete_marker":
-        from hermes_cli._old_updater import stop_for_relaunch as value
+        # Frame-scoped handoff (#124881): inside a real updater the marker
+        # write transfers to the takeover child; any other frame gets a no-op
+        # so a live process cannot write an interrupted-install breadcrumb it
+        # does not own (it would park every later boot on "update finishing").
+        from hermes_cli._old_updater import in_historical_update, stop_for_relaunch
+
+        def value() -> None:
+            if in_historical_update():
+                stop_for_relaunch()
     else:
         module = _FROZEN_ATTR_SOURCES.get(name)
         if module is None:

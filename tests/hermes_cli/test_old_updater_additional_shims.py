@@ -13,6 +13,7 @@ from tests.compat.old_updater_support import (
     fresh_child as fresh_child,
     no_external_work as no_external_work,
 )
+from tests.hermes_cli.test_old_updater_shims import _run_in_historical_frame
 
 
 @pytest.mark.parametrize("command,profile", [
@@ -43,13 +44,20 @@ def test_retired_constants_reload_handoffs_old_gateway_recovery(fresh_child, mon
     # Shipped get_python_path uses this fallback when its constants module is stale.
     monkeypatch.delattr(hermes_constants, "venv_python_path")
     before = dict(vars(hermes_constants))
-    with fresh_child.exits():
+
+    def old_gateway_recovery():
+        # Historical updaters run under cmd_update/_cmd_update_impl; the
+        # frame-scoped handoffs (#127672, #124881) check for that shape.
+        pre_update_version = "old-version"
         try:
             from hermes_constants import venv_python_path
         except ImportError:
             from hermes_cli.managed_uv import _reload_hermes_constants
-            venv_python_path = _reload_hermes_constants().venv_python_path
+            return _reload_hermes_constants().venv_python_path
         pytest.fail(f"old recovery continued with {venv_python_path}")
+
+    with fresh_child.exits():
+        _run_in_historical_frame(old_gateway_recovery, "hermes_cli.main")()
     assert vars(hermes_constants) == before
 
 
@@ -83,6 +91,8 @@ def test_historical_payload_survives_bridge_and_cleanup_requires_ack(handled, fr
     from hermes_cli import update_receipt
     from hermes_cli.managed_uv import ensure_uv
 
+    ensure_uv = _run_in_historical_frame(ensure_uv, "hermes_cli.main")
+
     @dataclass
     class HistoricalPlan:
         profiles: list[str]
@@ -114,8 +124,15 @@ def test_historical_payload_survives_bridge_and_cleanup_requires_ack(handled, fr
         "argv": argv,
     })
     fresh_child.result = {"resume_handled": handled, "receipt_handled": handled}
-    with fresh_child.exits():
+
+    def historical_update():
+        # Historical updaters run under cmd_update/_cmd_update_impl; the
+        # frame-scoped handoffs (#127672, #124881) check for that shape.
+        pre_update_version = "old-version"
         ensure_uv()
+
+    with fresh_child.exits():
+        historical_update()
     request = fresh_child.requests[0]
     assert {key: request[key] for key in expected} == expected
     assert _pre_update_plan.profiles == expected["plan"]["profiles"]

@@ -2182,11 +2182,27 @@ def _inject_context_engine_tools(agent):
             _ra().logger.debug("Context engine on_session_start: %s", _ce_err)
 
 
-def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
+def _configure_ollama_num_ctx(
+    agent, _model_cfg, _config_context_length, _custom_providers=None
+):
     # Ollama defaults num_ctx to 2048, so detect the max window and send num_ctx per request.
     # model.ollama_num_ctx overrides; model.context_length caps the detected value (VRAM).
     agent._ollama_num_ctx: int | None = None
     _override = _model_cfg.get("ollama_num_ctx") if isinstance(_model_cfg, dict) else None
+    _override_source = "model.ollama_num_ctx" if _override is not None else None
+    if _override is None and _custom_providers:
+        # A provider-scoped pin (custom_providers[].models.<model>.ollama_num_ctx) is the same
+        # override one route down: without this read only the top-level model block reached the
+        # request and the per-provider pin silently fell back to the /api/show probe (#123398).
+        _route_override = None
+        with suppress(Exception):
+            from hermes_cli.config_providers import get_custom_provider_ollama_num_ctx
+            _route_override = get_custom_provider_ollama_num_ctx(
+                agent.model, agent.base_url, custom_providers=_custom_providers
+            )
+        if _route_override is not None:
+            _override = _route_override
+            _override_source = "custom_providers[].models ollama_num_ctx"
     if _override is not None:
         try:
             agent._ollama_num_ctx = int(_override)
@@ -2219,7 +2235,7 @@ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
         _ra().logger.info(
             "Local server num_ctx: will request %d tokens (%s)",
             agent._ollama_num_ctx,
-            "model.ollama_num_ctx" if _override is not None else "model max from Ollama /api/show",
+            _override_source or "model max from Ollama /api/show",
         )
 
 
@@ -2514,7 +2530,7 @@ def init_agent(
         agent, _agent_cfg, base_url
     )
     _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db)
-    _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length)
+    _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length, _custom_providers)
     _enforce_minimum_context(agent)
     _warn_nonagentic_hermes_model(agent)
     _inject_context_engine_tools(agent)

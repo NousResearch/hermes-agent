@@ -16,7 +16,12 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from hermes_cli.config import cfg_get, get_process_hermes_home
+from hermes_cli.static_mime import register_static_mime_types
 from utils import env_var_enabled
+
+# The bundle is served by StaticFiles and the SPA route below, so its types must not depend on
+# this host's registry (see static_mime). Registered at import: any request can be the first one.
+register_static_mime_types()
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")

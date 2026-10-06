@@ -1008,6 +1008,20 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_compress is False
 
+    def test_llama_cpp_failed_to_parse_grammar_400_hits_strip_and_retry(self):
+        """llama.cpp build 9993 (common/sampling.cpp:263) answers tool schemas the grammar
+        compiler rejects with a 400 whose body says "failed to parse grammar" — that is the
+        only wording on the HTTP path ("error parsing grammar" just logs to stderr), so the
+        strip-and-retry recovery must fire instead of a hard fallback (#133921)."""
+        e = MockAPIError(
+            "Failed to initialize samplers: failed to parse grammar",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom", model="local-llama")
+        assert result.reason == FailoverReason.llama_cpp_grammar_pattern
+        assert result.retryable is True
+        assert result.should_compress is False
+
     def test_openai_regex_lookaround_rejection_strips_pattern_and_retries(self):
         """Strict OpenAI-compatible endpoints reject ``pattern`` lookaround with a 400 (#42631).
         Driven through the production path (classifier → ``recover_after_classification``):

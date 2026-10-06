@@ -626,6 +626,10 @@ def test_launcher_alias_provenance(child_env, monkeypatch, link_at, profile):
 
 @pytest.mark.parametrize("has_facts", [True, False])
 def test_runtime_provenance_is_independent_of_aliases_and_virtual_env(child_env, monkeypatch, has_facts):
+    """With or without a committed facts.json, the runtime site-packages under the managed
+    ``environments`` store is owned by residence (facts prove the selected generation;
+    store residence proves any generation, #133668) while the unrelated alias and the
+    user's own venv stay."""
     from pm.environments import runtime_facts_path
     payload = child_env / "payload"
     runtime = payload / "state/environments/candidate/venv"
@@ -650,10 +654,36 @@ def test_runtime_provenance_is_independent_of_aliases_and_virtual_env(child_env,
     (user_venv / "pyvenv.cfg").write_text("version = 3.13\n", encoding="utf-8")
     base = {"VIRTUAL_ENV": str(user_venv), "PYTHONPATH": os.pathsep.join(map(str, [site, alias, user_site]))}
     result = local._sanitize_subprocess_env(base)
-    expected = [str(user_site)] if has_facts else [str(site), str(user_site)]
-    assert result["PYTHONPATH"].split(os.pathsep) == expected
+    assert result["PYTHONPATH"].split(os.pathsep) == [str(user_site)]
     assert "VIRTUAL_ENV" not in result
     assert base["VIRTUAL_ENV"] == str(user_venv)
+
+
+def test_previous_generation_site_packages_stays_owned(child_env, monkeypatch):
+    """A dependency update commits a newer generation while the gateway keeps running; the
+    process env still names the PREVIOUS generation (activate_dependencies stamped it at boot,
+    #133668). Residence under the install's managed ``environments`` store proves ownership
+    for ANY generation, so the stale site-packages must not reach a child of a different
+    Python. Non-site-packages store paths and foreign site-packages stay untouched."""
+    payload = child_env / "payload"
+    generations = payload / "state" / "environments"
+    old_site = generations / "stale" / "venv" / (
+        "Lib/site-packages" if os.name == "nt" else "lib/python3.14/site-packages")
+    old_site.mkdir(parents=True)
+    monkeypatch.setattr("pm.environments.install_state_dir", lambda repo: payload / "state")
+    monkeypatch.setattr(local, "_in_venv", False)
+    monkeypatch.setattr(local, "_hermes_site_packages", None)
+    monkeypatch.setattr(local, "_hermes_repo_root_aliases", ())
+    stranger_site = child_env / "stranger" / "lib" / "python3.14" / "site-packages"
+    stranger_site.mkdir(parents=True)
+    store_bin = generations / "stale" / "venv" / "bin"
+    env = {"PYTHONPATH": os.pathsep.join(map(str, [old_site, stranger_site, store_bin]))}
+    pp._strip_hermes_owned_pythonpath(env)
+    assert env["PYTHONPATH"].split(os.pathsep) == [str(stranger_site), str(store_bin)]
+    # The shared spawn guard must apply the same ownership on every child surface.
+    scrubbed = local._sanitize_subprocess_env(
+        {"PYTHONPATH": os.pathsep.join(map(str, [old_site, stranger_site]))})
+    assert scrubbed["PYTHONPATH"] == str(stranger_site)
 
 
 @pytest.mark.parametrize("existing,expected", [

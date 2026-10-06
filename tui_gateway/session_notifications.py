@@ -47,8 +47,8 @@ def _notif_resolve_event_key(evt_key: str, session: dict | None = None) -> str:
 
 
 def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) -> bool:
-    """True if ``evt`` is owned by a *different* live session. Background completions carry the ``session_key`` of the
-    session that started the work; async delegation completions also carry ``origin_ui_session_id`` (the live TUI tab)."""
+    """True if ``evt`` is owned by a *different* live session. Process and delegation completions carry the durable
+    ``session_key`` and the exact ``origin_ui_session_id`` of the tab that started the work."""
     evt_ui_sid = str(evt.get("origin_ui_session_id") or "")
     if evt_ui_sid:
         if evt_ui_sid == str(sid or "") and not session.get("_finalized"):
@@ -96,8 +96,13 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
     resolved matches) — the fail-closed gate for addressed notifications, without the orphan-adoption fallback."""
     if session.get("_finalized"):
         return False
-    if str(evt.get("origin_ui_session_id") or "") == str(sid or ""):
+    origin_ui_sid = str(evt.get("origin_ui_session_id") or "")
+    if origin_ui_sid == str(sid or ""):
         return True
+    if origin_ui_sid and _notif_locked_sessions(
+        lambda ss: origin_ui_sid in ss and not ss[origin_ui_sid].get("_finalized"), False
+    ):
+        return False
     evt_key = str(evt.get("session_key") or "")
     current_keys = _notif_current_keys(sid, session)
     return bool(evt_key) and (evt_key in current_keys or _notif_resolve_event_key(evt_key, session) in current_keys)

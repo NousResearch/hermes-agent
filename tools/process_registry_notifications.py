@@ -11,6 +11,18 @@ _DONE = ("completed", "success")
 _REASON_STATUS = {"lost": "marked lost because the process backend disappeared", "failed_start": "failed to start"}
 
 
+def process_event_identity(session) -> dict:
+    """Preserve the same process and live-tab identity in every notification."""
+    return {
+        "session_id": session.id,
+        "session_key": session.session_key,
+        "origin_ui_session_id": session.origin_ui_session_id,
+        "task_id": session.task_id,
+        "owner_task_id": session.owner_task_id,
+        "command": session.command,
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class ProcessNotificationBatch:
     """Keep completion identity until the owning surface starts its turn."""

@@ -250,13 +250,15 @@ def yield_to_background_handler(
     adoptable host process) and the foreground wait continues."""
     if env_type != "local":
         return None
+    from gateway.session_context import get_session_env
+    origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
 
     def _handler(proc, output_so_far: str) -> dict:
         from tools.process_registry import process_registry
         session = process_registry.adopt_local(
             proc, command=command, cwd=cwd, task_id=effective_task_id,
             owner_task_id=task_id or effective_task_id, session_key=session_key,
-            output_so_far=output_so_far)
+            output_so_far=output_so_far, origin_ui_session_id=origin_ui_session_id)
         _stamp_routing_if_gateway(process_registry, session, session_key)
         logger.info("foreground command yielded to background as %s (pid %s)", session.id, session.pid)
         return {

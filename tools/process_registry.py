@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
 from hermes_cli.config import get_hermes_home
 
-from tools.process_registry_notifications import format_process_notification
+from tools.process_registry_notifications import format_process_notification, process_event_identity
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
@@ -908,12 +908,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
     def _watch_event_base(session: ProcessSession) -> dict:
         """Session identity + watcher routing fields shared by every watch event."""
         return {
-            "session_id": session.id,
-            "session_key": session.session_key,
-            "origin_ui_session_id": session.origin_ui_session_id,
-            "task_id": session.task_id,
-            "owner_task_id": session.owner_task_id,
-            "command": session.command,
+            **process_event_identity(session),
             **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
         }
 
@@ -1270,13 +1265,14 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
     def adopt_local(
         self, proc: subprocess.Popen, *, command: str, cwd: Optional[str], task_id: str = "",
         session_key: str = "", owner_task_id: str = "", output_so_far: str = "",
-        notify_on_complete: bool = True) -> ProcessSession:
+        notify_on_complete: bool = True, origin_ui_session_id: str = "") -> ProcessSession:
         """Take over a still-running foreground Popen as a tracked background session
         (yield-to-background: the user sent a message while the command was running).
         The caller has stopped its own drain thread; the registry's reader continues from
         the pipe's current position and ``output_so_far`` seeds the buffer so nothing
         already captured is lost."""
-        session = self._new_session(command, task_id, owner_task_id, session_key, cwd)
+        session = self._new_session(command, task_id, owner_task_id, session_key, cwd,
+                                    origin_ui_session_id=origin_ui_session_id)
         session.process = proc
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
@@ -1648,12 +1644,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         if was_running and session.notify_on_complete:
             notification = {
                 "type": "completion",
-                "session_id": session.id,
-                "session_key": session.session_key,
-                "origin_ui_session_id": session.origin_ui_session_id,
-                "task_id": session.task_id,
-                "owner_task_id": session.owner_task_id,
-                "command": session.command,
+                **process_event_identity(session),
                 **({"handoff_note": session.handoff_note} if session.handoff_note else {}),
                 **self._exit_fields(session),
                 # A consumer that relays the output (a bot DM's reply) must know it is not whole.

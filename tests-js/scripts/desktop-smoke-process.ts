@@ -147,8 +147,6 @@ function linuxListeningPid(port: number, candidates: NativeProcess[]): number[] 
   }).map((candidate: NativeProcess): number => candidate.pid)
 }
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-
 /** Epoch seconds a live process started (psutil's `create_time` basis), or null when unreadable. */
 function processStartTime(pid: number): number | null {
   try {
@@ -162,14 +160,14 @@ function processStartTime(pid: number): number | null {
     }
 
     if (process.platform === 'darwin') {
-      // `Sun Oct  4 15:20:01 2026`, local time, whole seconds.
-      const lstart = execFileSync('ps', ['-p', String(pid), '-o', 'lstart='],
-        { encoding: 'utf8', timeout: 30_000, env: { ...process.env, LC_ALL: 'C' }, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+      // `Sun Oct  4 15:20:01 2026`, whole seconds. Rendered in UTC: local time
+      // repeats an hour when DST ends, which would misdate a backend by 3600 s.
+      const lstart = execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 30_000,
+        env: { ...process.env, LC_ALL: 'C', TZ: 'UTC0' }, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 
-      const match = /^\w{3}\s+(\w{3})\s+(\d+)\s+(\d+):(\d+):(\d+)\s+(\d{4})$/.exec(lstart)
+      const started = Date.parse(`${lstart} GMT`) / 1000
 
-      return match ? new Date(Number(match[6]), MONTHS.indexOf(match[1]), Number(match[2]), Number(match[3]),
-        Number(match[4]), Number(match[5])).getTime() / 1000 : null
+      return Number.isNaN(started) ? null : started
     }
 
     const ms = nativeText('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',

@@ -1438,6 +1438,35 @@ class TestSenderAuthentication(unittest.TestCase):
         )
         self.assertTrue(ok, reason)
 
+    def test_auth_pass_authenticates(self):
+        """PurelyMail and other MTAs stamp auth=pass for authenticated senders."""
+        for ar in (
+            "purelymail.com; auth=pass",
+            "purelymail.com; auth=pass (login)",
+            "purelymail.com (auth relay); auth=pass",
+            "purelymail.com; auth=pass header.from=example.com",
+            "purelymail.com; auth=pass smtp.auth=admin@example.com",
+            "purelymail.com; auth=pass smtp.auth=admin",
+        ):
+            ok, reason = self._verify("admin@example.com", [ar], authserv_id="purelymail.com")
+            self.assertTrue(ok, (ar, reason))
+            self.assertEqual(reason, "auth=pass")
+
+    def test_auth_pass_misaligned_or_failing_rejected(self):
+        """Misaligned sender properties, failing verdicts, or multiple auth clauses reject."""
+        for ar in (
+            "purelymail.com; auth=fail",
+            "purelymail.com; auth=pass header.from=evil.test",
+            "purelymail.com; auth=pass smtp.auth=attacker@evil.test",
+            "purelymail.com; auth=pass smtp.auth=otheruser",
+            "purelymail.com; auth=pass; auth=pass",
+            "purelymail.com; auth=pass; auth=fail",
+            "purelymail.com; dmarc=fail (auth=pass)",
+            'purelymail.com; dmarc=fail reason="auth=pass"',
+        ):
+            ok, reason = self._verify("admin@example.com", [ar], authserv_id="purelymail.com")
+            self.assertFalse(ok, (ar, reason))
+
 
 def test_oversized_cron_output_is_delivered_as_one_whole_email():
     """No 4000-char truncation footer pointing at a file on the gateway host: the router hands

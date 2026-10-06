@@ -70,7 +70,7 @@ _PREAUTH_FETCH = (
     f"<0.{_MAX_PREAUTH_HEADER_BYTES + 1}>)"
 )
 # Authentication-Results clause head (``dmarc=pass``), matched only at the start of a clause.
-_AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
+_AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf|auth)\s*=\s*([a-z]+)", re.IGNORECASE)
 _NO_AUTH_RESULTS_REASON = "no Authentication-Results header"
 _UNTRUSTED_AUTHSERV_REASON = "no Authentication-Results from trusted authserv-id"
 _MISSING_AUTHSERV_REASON = "authserv-id is not configured; refusing to trust Authentication-Results"
@@ -86,7 +86,7 @@ _MISSING_AUTHSERV_HINT = (" Set EMAIL_AUTHSERV_ID (or platforms.email.authserv_i
 # One token of a clause: a property we read (``header.from=x``; the value may be or contain a quoted-string), or
 # any other whitespace-delimited token consumed whole, so text inside quotes or other values is never read as a prop.
 _QUOTED = r'"(?:[^"\\]|\\.)*"'
-_AUTH_PROP_RE = re.compile(r'(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*((?:%s|[^\s";])+)'
+_AUTH_PROP_RE = re.compile(r'(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from|smtp\.auth)\s*=\s*((?:%s|[^\s";])+)'
                            r'|(?:%s|[^\s"])+' % (_QUOTED, _QUOTED), re.IGNORECASE)
 
 
@@ -368,7 +368,7 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     ``Authentication-Results`` header stamped by the *receiving* server. It prepends, so only the
     FIRST instance is authoritative, and it must match the required, already-normalised *authserv_id* exactly. A matching id is a
     pin, not proof of provenance: the receiving MTA must strip inbound results claiming its id (RFC 8601).
-    True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d``) pass. No header or no pin → fail-closed
+    True on DMARC pass, aligned SPF pass, aligned DKIM (``header.d``) pass, or auth=pass. No header or no pin → fail-closed
     (opt out via ``EmailAdapter._require_authenticated_sender``)."""
     from_domain = _domain_of(from_addr)
     if not from_domain:
@@ -386,7 +386,7 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         return False, _UNTRUSTED_AUTHSERV_REASON
     # Each verdict comes from the head of its own clause (split outside quotes/comments) and its domains only from that
     # clause: a quoted local part or comment can otherwise smuggle ``spf=pass``/``header.d=`` (GHSA-rxqh-5572-8m77).
-    results: Dict[str, List[Tuple[str, List[Tuple[str, str]]]]] = {"dmarc": [], "spf": [], "dkim": []}
+    results: Dict[str, List[Tuple[str, List[Tuple[str, str]]]]] = {"dmarc": [], "spf": [], "dkim": [], "auth": []}
     for clause in clauses:
         if m := _AUTH_METHOD_RE.match(clause):
             results[m.group(1).lower()].append((m.group(2).lower(), _auth_props(clause)))
@@ -394,6 +394,18 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     def aligned(props: List[Tuple[str, str]], names: Tuple[str, ...], *, required: bool = True) -> bool:
         domains = [_domain_of(v) for p, v in props if p in names]
         return (bool(domains) or not required) and all(_domains_aligned(d, from_domain) for d in domains)
+
+    def auth_aligned(props: List[Tuple[str, str]]) -> bool:
+        domains = []
+        for p, v in props:
+            if p in ("header.from", "header.d"):
+                domains.append(_domain_of(v))
+            elif p in ("smtp.auth", "smtp.mailfrom", "smtp.from", "envelope-from"):
+                if "@" in v or "." in v:
+                    domains.append(_domain_of(v))
+                elif v.lower() != from_addr.partition("@")[0].lower():
+                    return False
+        return all(_domains_aligned(d, from_domain) for d in domains)
 
     if len(results["dmarc"]) > 1:
         return False, "ambiguous dmarc result"
@@ -408,6 +420,10 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     if any(r == "pass" and aligned(props, ("header.d",) if any(p == "header.d" for p, _ in props) else ("header.from",))
            for r, props in results["dkim"]):
         return True, "dkim=pass aligned"
+    if len(results["auth"]) > 1:
+        return False, "ambiguous auth result"
+    if any(r == "pass" and auth_aligned(props) for r, props in results["auth"]):
+        return True, "auth=pass"
     return False, f"authentication failed ({trusted[:120]})"
 
 

@@ -536,9 +536,8 @@ def test_external_worker_crash_recovers_uncertain_attempt(monkeypatch):
     process.poll.return_value = 9
     process.wait.return_value = 9
 
-    assert scheduler._wait_for_external_cron_worker(
-        process, execution_id="exec-1"
-    ) is True
+    with pytest.raises(scheduler._ExternalWorkerPostHandoffError, match="status 9"):
+        scheduler._wait_for_external_cron_worker(process, execution_id="exec-1")
     recover.assert_called_once_with()
     assert get.call_count == 2
 
@@ -912,6 +911,59 @@ def test_dispatch_failure_opens_incident_and_delivers_failure_notice(
         "suppressed_acked"
 
 
+@pytest.mark.parametrize("failing_stage", ["handoff", "claim_dispatch"])
+def test_dispatch_failure_notice_resolves_the_owning_profiles_home_channel(
+    execution_ledger, monkeypatch, tmp_path, failing_stage
+):
+    """Under multiplex the failure notice for a failed handoff resolves the job's home channel
+    through ``get_secret``. The in-process run path installs the owning profile's secret scope
+    before delivery; the dispatch-failure branch must too, or the read fails closed with
+    UnscopedSecretError and the notice never leaves. Same for a crash in the in-process body
+    before the run starts (``claim_dispatch`` raising)."""
+    import cron.incidents as incidents
+    import cron.scheduler as scheduler
+    import cron.scheduler_delivery as delivery
+    from agent import secret_scope
+
+    home = tmp_path / "profiles" / "worker"
+    home.mkdir(parents=True)
+    (home / ".env").write_text('TELEGRAM_HOME_CHANNEL="111111111"\n', encoding="utf-8")
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: home)
+    monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+
+    def _handoff_boom(_job):
+        raise RuntimeError("worker exited before ownership acknowledgement")
+
+    if failing_stage == "handoff":
+        monkeypatch.setattr(scheduler, "_launch_external_cron_worker", _handoff_boom)
+    else:
+        monkeypatch.setattr(scheduler, "_launch_external_cron_worker", lambda _job: False)
+        monkeypatch.setattr(scheduler, "claim_dispatch", _handoff_boom)
+    monkeypatch.setattr(scheduler, "mark_job_run", lambda *_a, **_k: True)
+    resolved = []
+
+    def _deliver(job, content, **_kw):
+        resolved.append(delivery._env_home_target_chat_id("telegram"))
+        return None
+
+    monkeypatch.setattr(scheduler, "_deliver_result", _deliver)
+
+    record = execution_ledger.create_execution("job-scoped", source="builtin")
+    job = {"id": "job-scoped", "execution_id": record["id"], "deliver": "telegram"}
+    secret_scope.set_multiplex_active(True)
+    try:
+        assert secret_scope.current_secret_scope() is None
+        assert scheduler.run_one_job(job, adapters=None) is (failing_stage == "handoff")
+        assert secret_scope.current_secret_scope() is None  # scope does not leak past the fire
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+    assert resolved == ["111111111"]
+    assert len(incidents.list_incidents()) == 1
+    finished = execution_ledger.get_execution(record["id"])
+    assert finished["delivery_outcome"] == "delivered"
+
+
 def test_shutdown_does_not_interrupt_restart_safe_waiter():
     import cron.scheduler as scheduler
 
@@ -1172,7 +1224,7 @@ def test_post_handoff_waiter_failure_records_bookkeeping_without_alert(
     import cron.incidents as incidents
     import cron.scheduler as scheduler
 
-    def _body_boom(_process, *, execution_id):
+    def _body_boom(_process, *, execution_id, **_kwargs):
         raise RuntimeError("cron external worker exited before durable recovery")
 
     monkeypatch.setattr(scheduler, "_wait_for_external_cron_worker_body", _body_boom)
@@ -1196,3 +1248,44 @@ def test_post_handoff_waiter_failure_records_bookkeeping_without_alert(
     assert len(marks) == 1 and marks[0][0][1] is False
     assert marks[0][0][2].startswith("Restart-safe cron worker failed after handoff: ")
     assert execution_ledger.get_execution(record["id"])["status"] == "failed"
+
+
+def test_restart_wait_counts_exclude_only_scoped_workers(tmp_path, monkeypatch):
+    """Only a worker in its OWN scope may be skipped by the gateway restart wait.
+
+    A ``degraded`` dispatch is still an external subprocess but stays in the gateway cgroup, so a
+    systemd stop kills it mid-run and the restart wait must keep holding for it. A run the scheduler
+    already reports as wedged is excluded too: the gateway subtracts both counts, and a run in both
+    sets would be subtracted twice.
+    """
+    import cron.scheduler as scheduler
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [])
+    jobs = ("job-scoped", "job-degraded", "job-scoped-wedged")
+    for job_id in jobs:
+        assert scheduler.try_register_running_job(job_id)
+    try:
+        scheduler._record_external_cron_worker("job-scoped", 4321, scope_isolated=True)
+        scheduler._record_external_cron_worker("job-degraded", 4322, scope_isolated=False)
+        scheduler._record_external_cron_worker("job-scoped-wedged", 4323, scope_isolated=True)
+        assert scheduler.get_restart_wait_cron_counts() == {
+            "awaitable": 1, "wedged": 0, "restart_safe": 2}
+        details = {d["job_id"]: d["restart_safe"] for d in scheduler.get_running_job_details()}
+        assert details == {"job-scoped": True, "job-degraded": False, "job-scoped-wedged": True}
+
+        with scheduler._running_lock:
+            scheduler._running_since[scheduler._inflight_key("job-scoped-wedged")] = (
+                time.time() - 702 * 60)
+        assert scheduler.get_wedged_job_ids() == frozenset({"job-scoped-wedged"})
+        # Wedged and scoped: counted once, as wedged.
+        assert scheduler.get_restart_wait_cron_counts() == {
+            "awaitable": 1, "wedged": 1, "restart_safe": 1}
+    finally:
+        for job_id in jobs:
+            scheduler.release_running_job(job_id)
+    # Scoped to THIS test's claims: the module keeps other runs' entries (a launch that never went
+    # through a claim, e.g. a stubbed worker in a sibling test, is not this test's to assert on).
+    keys = {scheduler._inflight_key(job_id) for job_id in jobs}
+    assert not keys & scheduler._scope_isolated_job_ids
+    assert not keys & set(scheduler._running_worker_pids)

@@ -29,8 +29,7 @@ const REASONING_GLOBAL_FLAGS = new Set(['--global'])
 type FastModeWord = 'fast' | 'normal' | 'ultrafast'
 
 // `config.get/set fast` answer fast | ultrafast | normal (auto/cold windows read as normal here).
-const fastModeWord = (value: unknown): FastModeWord =>
-  value === 'fast' || value === 'ultrafast' ? value : 'normal'
+const fastModeWord = (value: unknown): FastModeWord => (value === 'fast' || value === 'ultrafast' ? value : 'normal')
 
 const modelValueForConfigSet = (arg: string) => {
   const trimmed = arg.trim()

@@ -67,6 +67,7 @@ def _pinned_manifest(repo: str, sha: str, subdir: str) -> Optional[Dict[str, Any
 
 
 def _server_presence(decl: Any, liveness_raw: Any, title: str) -> Presence:
+    from hermes_platform.declaration import gpu_label
     from hermes_platform.host import facts
     from hermes_platform.resolver.app import AppResolver
     from hermes_platform.resolver.availability import availability
@@ -78,6 +79,8 @@ def _server_presence(decl: Any, liveness_raw: Any, title: str) -> Presence:
         return UNKNOWN
     if available.state in ("missing_app", "unsupported_os"):
         return Presence("missing_app", f"needs {title}")
+    if available.state == "unsupported_gpu":
+        return Presence("missing_app", f"needs {gpu_label(decl.required_gpu)}")
     if available.state == "version_too_old":
         found = f" (found {available.version})" if available.version else ""
         return Presence("missing_app", f"needs {title} {available.min_version} or newer{found}")

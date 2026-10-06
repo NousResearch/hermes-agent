@@ -96,7 +96,8 @@ def will_retry(job: Dict[str, Any]) -> bool:
     may hold the interim notice. Called before ``mark_job_run``."""
     repeat = job.get("repeat") or {}
     times = repeat.get("times")
-    if times is not None and times > 0 and int(repeat.get("completed") or 0) + 1 >= times:
+    counted = 0 if is_retry_run(job) else 1  # a ladder re-run does not count (``ladder_rung``)
+    if times is not None and times > 0 and int(repeat.get("completed") or 0) + counted >= times:
         return False  # _advance_after_run completes the job; plan_retry never runs
     from cron.jobs import _parse_aware, compute_next_run
 
@@ -122,6 +123,16 @@ def is_retry_fire(job: Dict[str, Any], next_run: str) -> bool:
     """
     state = job.get(STATE_KEY) or {}
     return state.get("at") == next_run and state.get("expr") == (job.get("schedule") or {}).get("expr")
+
+
+def is_retry_run(job: Dict[str, Any]) -> bool:
+    """True when this dispatch snapshot fired the ladder instant parked by ``plan_retry``: a
+    re-run of an occurrence that already counted toward ``repeat``, so it must not count again.
+    Manual runs carry no ``_scheduled_instant`` and always count."""
+    from cron.occurrences import scheduled_instant
+
+    instant = job.get("_scheduled_instant")
+    return instant is not None and scheduled_instant((job.get(STATE_KEY) or {}).get("at")) == instant
 
 
 def plan_retry(job: Dict[str, Any]) -> bool:

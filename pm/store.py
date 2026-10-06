@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import IO
 
-from pm.filesystem import is_junction
+from pm.filesystem import is_junction, retry_held
 
 
 
@@ -272,7 +272,8 @@ def _zip_symlink(member: str, target: str, dest: Path) -> None:
 
 def flatten_single_dir(dest: Path) -> None:
     """Hoist a lone top-level dir's contents unless it IS the layout
-    (bin/, cmd/, lib/...). Refuses on name collisions."""
+    (bin/, cmd/, lib/...). Refuses on name collisions. The tree was extracted
+    seconds ago, when a Windows scanner still holds it (#131884)."""
     keep = {"bin", "cmd", "lib", "libexec", "share", "etc", "usr"}
     entries = list(dest.iterdir())
     if len(entries) != 1 or not entries[0].is_dir() or entries[0].name in keep:
@@ -282,8 +283,8 @@ def flatten_single_dir(dest: Path) -> None:
         target = dest / item.name
         if target.exists():
             return
-        item.rename(target)
-    inner.rmdir()
+        retry_held(lambda: item.rename(target))
+    retry_held(inner.rmdir)
 
 
 def merge_tree(src: Path, dst: Path) -> None:
@@ -298,7 +299,7 @@ def merge_tree(src: Path, dst: Path) -> None:
         if target.exists():
             raise FileExistsError(f"archives disagree about {rel}")
         target.parent.mkdir(parents=True, exist_ok=True)
-        item.replace(target)
+        retry_held(lambda: item.replace(target))
 
 
 def tree_digest(root: Path) -> str:

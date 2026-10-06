@@ -63,7 +63,7 @@ def test_session_create_logs_when_a_client_override_beats_the_profile_default(_c
     """A composer pick silently decided every new chat's model; agent.log must name it (#107410)."""
     from tui_gateway import server
 
-    monkeypatch.setattr(server, "_session_default_model", lambda session: "deepseek-v4-flash")
+    monkeypatch.setattr(server, "_session_default_route", lambda session: ("deepseek-v4-flash", ""))
     with caplog.at_level(logging.INFO):
         response, _ = _create({"model": "gpt-5.5", "provider": "openrouter"})
         pinned = [r.getMessage() for r in caplog.records if "client override" in r.getMessage()]

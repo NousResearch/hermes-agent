@@ -167,10 +167,8 @@ export function createPoolRetirer<E extends PoolRetireEntry>(deps: PoolRetirerDe
         // (lastStreamedAt) so a keepalive-fresh but stream-idle entry can
         // still be retired (#105239). The retirer keeps every other
         // safeguard: identity, admission permit, activeTurn veto, proof probe.
-        return retire(
-          key,
-          entry,
-          () => idleEligibility ? idleEligibility(entry) : Date.now() - (entry.lastActiveAt || 0) > idleMs
+        return retire(key, entry, () =>
+          idleEligibility ? idleEligibility(entry) : Date.now() - (entry.lastActiveAt || 0) > idleMs
         )
       }),
     evictTo: (keep: number, freshMs: number) =>

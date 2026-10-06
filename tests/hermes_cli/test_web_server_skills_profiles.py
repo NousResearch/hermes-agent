@@ -92,6 +92,37 @@ class TestProfileScopedSkills:
         client.get("/api/skills", params={"profile": "worker_alpha"})
         assert skills_tool.SKILLS_DIR == before
 
+    @pytest.mark.parametrize("method,path,body", [
+        ("PUT", "/api/learning/node", {"id": "shared-skill", "content": "EDITED"}),
+        ("DELETE", "/api/learning/node", {"id": "shared-skill"}),
+        ("PUT", "/api/skills/content", {"name": "shared-skill", "content": "EDITED"}),
+        ("POST", "/api/skills", {"name": "shared-skill-2", "content": "EDITED"}),
+    ])
+    def test_query_profile_scopes_skill_writes(self, client, isolated_profiles, method, path, body):
+        """A shared-backend Desktop names the profile in the query only; the write must land in
+        that profile and leave the same-named skill of the dashboard's own profile alone."""
+        skill_md = (
+            "---\nname: {name}\ndescription: edited\n---\n\n# EDITED\n").format(
+                name=body.get("name", body.get("id")))
+        if "content" in body:
+            body = {**body, "content": skill_md}
+        for home in isolated_profiles.values():
+            _write_skill(home / "skills", "shared-skill")
+        default_md = isolated_profiles["default"] / "skills" / "shared-skill" / "SKILL.md"
+        before = default_md.read_text()
+
+        resp = client.request(method, path, params={"profile": "worker_alpha"}, json=body)
+
+        assert resp.status_code == 200, resp.text
+        worker_skills = isolated_profiles["worker_alpha"] / "skills"
+        if method == "DELETE":
+            assert not (worker_skills / "shared-skill").exists()
+        else:
+            target = body.get("name", body.get("id"))
+            assert "# EDITED" in (worker_skills / target / "SKILL.md").read_text()
+        assert default_md.read_text() == before
+        assert not (isolated_profiles["default"] / "skills" / "shared-skill-2").exists()
+
 
 class TestProfileScopedHubActions:
     def test_hub_install_spawns_with_profile_flag(

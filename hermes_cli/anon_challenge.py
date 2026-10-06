@@ -43,14 +43,14 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, Optional, TypeVar
 from urllib.parse import urlparse
 
+from hermes_cli.anon_auth import (
+    ANON_CHALLENGE_REQUIRED, ANON_FAILURE_COPY, ANON_SIGNIN_REQUIRED, _anon_headers, _mint_memo_key)
 from hermes_cli.auth_constants import AuthError, httpx
 
 logger = logging.getLogger("hermes_cli.auth")
 
 BROWSER_CAPABILITY = "browser-v1"
 CHALLENGE_EVENT = "free_tier.challenge"
-ANON_CHALLENGE_REQUIRED = "anon_challenge_required"
-ANON_SIGNIN_REQUIRED = "anon_signin_required"
 
 # How long one exchange attempt waits for its challenge. The page normally clears in seconds; this
 # bounds the interactive case (a human solving a check) without parking a request for the ticket's
@@ -62,8 +62,6 @@ _EXPIRES_MIN_SECONDS, _EXPIRES_MAX_SECONDS, _EXPIRES_DEFAULT_SECONDS = 30.0, 900
 _MESSAGE_MAX_CHARS = 300
 
 CHALLENGE_COPY = "Nous needs to run a quick check before starting your free session."
-CHALLENGE_PENDING_COPY = "Finish the quick check in your browser, then try again."
-SIGNIN_REQUIRED_COPY = "Free guest access isn't available here. Sign in with a Nous account to continue."
 
 T = TypeVar("T")
 
@@ -84,20 +82,21 @@ class BrowserChallenge:
 
 class AnonChallengeRequired(AuthError):
     """The exchange needs a browser challenge first. Carries what :func:`run_with_challenge` needs
-    to work it: the challenge, and the portal, credential and trust to poll with (set by the exchange)."""
+    to work it: the challenge, and the portal, credential and auth state (its ``tls`` block) to poll with."""
 
-    def __init__(self, challenge: BrowserChallenge) -> None:
+    def __init__(self, challenge: BrowserChallenge, *, portal_base_url: str, anon_token: str,
+                 auth_state: Dict[str, Any]) -> None:
         super().__init__(challenge.message, provider="nous", code=ANON_CHALLENGE_REQUIRED, retryable=True)
         self.challenge = challenge
-        self.portal_base_url = ""
-        self.anon_token = ""
-        self.auth_state: Optional[Dict[str, Any]] = None
+        self.portal_base_url = portal_base_url
+        self.anon_token = anon_token
+        self.auth_state = auth_state
 
 
 def signin_required_error(message: Any = None) -> AuthError:
     """The service will not serve this client without an account (or asked for something this
     version cannot do). Terminal for the process, like a closed gate."""
-    return AuthError(server_message(message) or SIGNIN_REQUIRED_COPY, provider="nous",
+    return AuthError(server_message(message) or ANON_FAILURE_COPY[ANON_SIGNIN_REQUIRED], provider="nous",
                      code=ANON_SIGNIN_REQUIRED, retryable=False)
 
 
@@ -128,14 +127,15 @@ def client_surface() -> str:
 def client_info() -> Dict[str, Any]:
     """The self-reported ``client`` block on a token exchange. It sorts honest clients (which
     surface, which challenge primitives) for the service's rules; it proves nothing, by design."""
-    from hermes_cli import __version__
-    return {"name": "hermes-agent", "version": __version__, "surface": client_surface(),
+    from hermes_cli.version_info import get_version_info
+    return {"name": "hermes-agent", "version": get_version_info().base_version, "surface": client_surface(),
             "platform": sys.platform, "capabilities": [BROWSER_CAPABILITY]}
 
 
 def user_agent() -> str:
-    from hermes_cli import __version__
-    return f"hermes-agent/{__version__} ({client_surface()}; {sys.platform}; {platform.machine() or 'unknown'})"
+    from hermes_cli.version_info import get_version_info
+    return (f"hermes-agent/{get_version_info().base_version} "
+            f"({client_surface()}; {sys.platform}; {platform.machine() or 'unknown'})")
 
 
 # --- Parsing ------------------------------------------------------------------------------------------
@@ -180,12 +180,16 @@ def parse_browser_challenge(payload: Dict[str, Any], portal_base_url: str) -> Op
     return None
 
 
-def challenge_error(payload: Dict[str, Any], portal_base_url: str) -> AuthError:
+def challenge_error(payload: Dict[str, Any], *, portal_base_url: str, anon_token: str,
+                    auth_state: Dict[str, Any]) -> AuthError:
     """The error for a 428 ``challenge_required``: a challenge to work, or (nothing offered that
     this version can run) the sign-in fallback."""
     challenge = parse_browser_challenge(payload, portal_base_url)
-    # The payload's ``message`` describes the challenge, so it is not reused for the fallback.
-    return AnonChallengeRequired(challenge) if challenge else signin_required_error()
+    if challenge is None:
+        # The payload's ``message`` describes the challenge, so it is not reused for the fallback.
+        return signin_required_error()
+    return AnonChallengeRequired(challenge, portal_base_url=portal_base_url, anon_token=anon_token,
+                                 auth_state=auth_state)
 
 
 # --- Pending challenge: what a status read shows --------------------------------------------------------
@@ -216,7 +220,6 @@ def _work_lock() -> threading.Lock:
 
 
 def _profile_key() -> str:
-    from hermes_cli.anon_auth import _mint_memo_key
     return _mint_memo_key()
 
 
@@ -359,7 +362,6 @@ def _poll_status(client: httpx.Client, portal_base_url: str, anon_token: str) ->
     """One status read. Anything that is not a clear ``pending`` / ``needs_interaction`` ends the
     wait: the exchange that follows is the authority on whether the credential is cleared. (A
     passed challenge reads ``none``: passing detaches the ticket.)"""
-    from hermes_cli.anon_auth import _anon_headers
     try:
         response = client.post(f"{portal_base_url.rstrip('/')}/api/anonymous/challenge/status",
                                headers=_anon_headers(), json={"token": anon_token})
@@ -427,7 +429,7 @@ def wait_for_challenge(exc: AnonChallengeRequired) -> bool:
 
 def _still_pending(cause: AnonChallengeRequired) -> AuthError:
     message = ("The quick check couldn't finish. Try again." if _host_outcome(cause.challenge)
-               else CHALLENGE_PENDING_COPY)
+               else ANON_FAILURE_COPY[ANON_CHALLENGE_REQUIRED])
     error = AuthError(message, provider="nous", code=ANON_CHALLENGE_REQUIRED, retryable=True)
     error.__cause__ = cause
     return error

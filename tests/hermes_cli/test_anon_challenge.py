@@ -405,12 +405,10 @@ class TestPresenting:
     def test_the_stdio_tui_gateway_hands_the_link_to_its_client(self, monkeypatch, capsys):
         """The TUI keeps its gateway's stderr as a log the user never sees: the challenge goes to the
         client over the JSON-RPC channel instead of being printed there."""
-        import sys
-        import types
         sent = []
-        server = types.SimpleNamespace(_stdio_is_rpc_channel=True,
-                                       _broadcast_global_event=lambda event, payload: sent.append((event, payload)))
-        monkeypatch.setitem(sys.modules, "tui_gateway.server", server)
+        from tui_gateway import server
+        monkeypatch.setattr(server, "_stdio_is_rpc_channel", True)
+        monkeypatch.setattr(server, "_broadcast_global_event", lambda event, payload: sent.append((event, payload)))
         challenge = anon_challenge.BrowserChallenge(f"{PORTAL}/challenge?code=t", True, 600, 2, "m")
         with anon_challenge.background_caller():
             anon_challenge.present(challenge)

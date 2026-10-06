@@ -52,6 +52,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**one-three-one-rule**](../user-guide/skills/optional/communication/communication-one-three-one-rule.md) | 1-3-1 decision briefs: problem, three options, one pick. |
+| [**telegram-checklist**](../user-guide/skills/optional/communication/communication-telegram-checklist.md) | Create, append, and complete native Telegram task lists. |
 
 ## creative
 

@@ -36,6 +36,7 @@ from typing import Any, Dict, Optional, Tuple
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+# Heuristic coalescing window, not a Telegram API constraint.
 _SEND_PATH_RECOVERY_DEBOUNCE_SECONDS = 1.0
 
 

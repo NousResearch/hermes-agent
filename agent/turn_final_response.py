@@ -84,8 +84,9 @@ def finish_text_response(
             result=result,
         )
 
-    # Reasoning-only clean stop: some reasoning parsers (vLLM nemotron_v3 past ~500K
-    # prompt tokens) file the whole answer as reasoning when the model omits the closing
+    # Reasoning-only clean stop on a trusted route (``answer_in_reasoning_capability``; on
+    # any other route reasoning is private and takes the recovery ladder): some reasoning
+    # parsers (vLLM nemotron_v3 past ~500K prompt tokens) file the whole answer as reasoning when the model omits the closing
     # delimiter. ``finish_reason == "stop"`` means the provider considers generation
     # complete, so the empty-response ladder would only re-bill the same input to arrive
     # at a truncated preview of this text; promote the reasoning to the visible answer
@@ -112,7 +113,12 @@ def finish_text_response(
             for d in getattr(assistant_message, "reasoning_details", None) or ()
         )
     ):
-        _promoted = agent._extract_reasoning(assistant_message) or None
+        from agent.agent_runtime_helpers import answer_in_reasoning_capability
+
+        _promoted = (
+            agent._extract_reasoning(assistant_message)
+            if answer_in_reasoning_capability(agent) else None
+        )
         if _promoted:
             # WARNING, not INFO: a model that keeps ending turns this way is stalled
             # (planning monologue, zero tool calls) while the turn reports "complete".

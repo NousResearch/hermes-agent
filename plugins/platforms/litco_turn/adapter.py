@@ -9,7 +9,9 @@ since LitKit reads results from the turn stream, not from pushes.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from typing import Any, Dict, Optional
 
 from gateway.config import Platform
@@ -30,6 +32,13 @@ class LitcoTurnAdapter(BasePlatformAdapter):
         self._env = {key: str(get_scoped_secret(key) or "") for key in ENV_KEYS}
         if not self._env["LITCO_MATTER_ID"] and self._extra.get("matter_id"):
             self._env["LITCO_MATTER_ID"] = str(self._extra["matter_id"])
+        from hermes_constants import get_hermes_home
+        from litco.config_guard import ENDPOINT_KEYS
+        self._home = get_hermes_home()
+        # Endpoint values for the config guard: the process env plus the profile's own .env.
+        self._endpoint_env = dict(os.environ)
+        self._endpoint_env.update({key: value for key in ENDPOINT_KEYS
+                                   if (value := str(get_scoped_secret(key) or ""))})
         self._server = None
 
     @property
@@ -50,6 +59,12 @@ class LitcoTurnAdapter(BasePlatformAdapter):
             host, port = listen_address(self._env, default_host=self._extra.get("host"), default_port=port)
         except ValueError as exc:
             self._set_fatal_error("config", str(exc), retryable=False)
+            return False
+        problem = product_model_problem(self._home, self._endpoint_env)
+        if problem:
+            # The supervisor and the app see a slot that never serves /health.
+            logger.error("litco_turn: refusing to start: %s", problem)
+            self._set_fatal_error("config", problem, retryable=False)
             return False
         server = TurnServer(HermesTurnRunner(), env=self._env)
         if not server.host_secret:
@@ -83,3 +98,33 @@ class LitcoTurnAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": f"litco:{chat_id}", "type": "channel", "chat_id": chat_id}
+
+
+def product_model_problem(home, env) -> Optional[str]:
+    """Why this profile's model route is not product-controlled (:mod:`litco.config_guard`), or None.
+
+    Reads ``<home>/config.yaml`` and ``auth.json`` as written; of ``env`` only the endpoint variables
+    are inspected, by value.
+    """
+    from litco.config_guard import ProductModelGuardError, assert_product_controlled
+    from utils import fast_safe_load
+
+    try:
+        text = (home / "config.yaml").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = ""
+    auth = None
+    try:
+        auth = json.loads((home / "auth.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        pass
+    except ValueError:
+        return "auth.json is not valid JSON"
+    try:
+        config = fast_safe_load(text) if text.strip() else {}
+        assert_product_controlled(config if isinstance(config, dict) else {}, text, env, auth)
+    except ProductModelGuardError as exc:
+        return str(exc)
+    except Exception as exc:  # an unreadable profile is not a product-controlled one
+        return f"config.yaml could not be read: {exc.__class__.__name__}"
+    return None

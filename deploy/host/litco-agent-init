@@ -14,11 +14,16 @@ and the supervisor's env file carries LITCO_SLOT_PORT. The slot port becomes
 the turn port, and HERMES_HOME and the matter home must sit inside the slot's
 home, /srv/litco/m/<slot>.
 
+The rendered profile must leave Ana's model to the product (LKP-1014): the
+release checkout's litco/config_guard.py refuses a proxy route or a profile
+fallback chain before anything is written.
+
 Standard library only, so it runs under the system python3.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
 import sys
@@ -167,6 +172,20 @@ def render(template: str, subst: dict) -> str:
     return _TOKEN.sub(lambda m: subst[m.group(1)], template)
 
 
+def check_product_controlled(app_dir: Path, config_text: str, values: dict) -> None:
+    """The release's own config guard, loaded by path (it imports nothing from the litco package)."""
+    path = app_dir / "litco" / "config_guard.py"
+    spec = importlib.util.spec_from_file_location("litco_config_guard", path)
+    if spec is None or not path.is_file():
+        raise InitError(f"cannot load the model-route guard {path}")
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+    # Only the values this script renders; secrets are never read, so never inspected.
+    found = guard.problems({}, config_text, {k: v for k, v in values.items() if k.endswith("_BASE_URL")})
+    if found:
+        raise InitError("the model route is not product-controlled: " + "; ".join(found))
+
+
 def write_atomic(path: Path, text: str, mode: int = 0o640) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
@@ -188,6 +207,7 @@ def main(environ=None, *, slot_root: Path = SLOT_ROOT) -> int:
         home = Path(values["HERMES_HOME"])
         config = render((profile / "config.yaml.tmpl").read_text(encoding="utf-8"), subst)
         soul = render((profile / "SOUL.md").read_text(encoding="utf-8"), subst)
+        check_product_controlled(Path(values["LITCO_APP_DIR"]).resolve(), config, values)
         home.mkdir(mode=0o700, parents=True, exist_ok=True)
         write_atomic(home / "config.yaml", config)
         write_atomic(home / "SOUL.md", soul)

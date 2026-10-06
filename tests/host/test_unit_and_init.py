@@ -149,6 +149,8 @@ def test_init_disables_tool_search_and_points_skills_at_the_checkout(tmp_path):
     app_dir = tmp_path / "opt" / "litco-agent" / "app"
     (app_dir / "hermes_cli").mkdir(parents=True)
     shutil.copy(REPO / "hermes_cli" / "config_defaults.py", app_dir / "hermes_cli" / "config_defaults.py")
+    (app_dir / "litco").mkdir()
+    shutil.copy(REPO / "litco" / "config_guard.py", app_dir / "litco" / "config_guard.py")
     env = env_for(tmp_path, LITCO_APP_DIR=str(app_dir), LITCO_PROFILE_DIR=str(HOST / "profile"))
     assert init.main(env) == 0
     config = rendered(tmp_path)[0]
@@ -220,6 +222,25 @@ def test_init_refuses_bad_settings_with_ex_config(tmp_path, extra, capsys):
     assert init.main(env_for(tmp_path, **extra)) == 78
     assert not (tmp_path / "hermes-home" / "config.yaml").exists()
     assert "litco-agent-init:" in capsys.readouterr().err
+
+
+def test_init_refuses_a_model_route_around_the_product(tmp_path, capsys):
+    """LKP-1014: a proxy on the owner's tailnet never becomes the matter's model endpoint."""
+    env = env_for(tmp_path, LITCO_MODEL_PROVIDER="custom", LITCO_MODEL_KEY_ENV="LITCO_MODEL_API_KEY",
+                  LITCO_MODEL_BASE_URL="https://santacruz.tail999258.ts.net:8317/v1")
+    assert init.main(env) == 78
+    assert not (tmp_path / "hermes-home" / "config.yaml").exists()
+    err = capsys.readouterr().err
+    assert "not product-controlled" in err and "LITCO_MODEL_BASE_URL" in err
+    assert not env.read & set(SECRETS)
+
+
+def test_init_fails_closed_without_the_release_guard(tmp_path, capsys):
+    app_dir = tmp_path / "app"
+    (app_dir / "hermes_cli").mkdir(parents=True)
+    shutil.copy(REPO / "hermes_cli" / "config_defaults.py", app_dir / "hermes_cli" / "config_defaults.py")
+    assert init.main(env_for(tmp_path, LITCO_APP_DIR=str(app_dir), LITCO_PROFILE_DIR=str(HOST / "profile"))) == 78
+    assert "model-route guard" in capsys.readouterr().err
 
 
 def test_template_with_unknown_placeholder_is_refused():

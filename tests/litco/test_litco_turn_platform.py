@@ -97,3 +97,31 @@ async def test_adapter_refuses_a_slot_without_a_matter(monkeypatch):
 
     adapter = LitcoTurnAdapter(PlatformConfig(enabled=True, extra={}))
     assert not await adapter.connect()
+
+
+@pytest.mark.asyncio
+async def test_adapter_refuses_a_profile_that_routes_around_the_product(monkeypatch, tmp_path, caplog):
+    """LKP-1014: the real connect() reads $HERMES_HOME; a proxy route means no /health at all."""
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text('model:\n  default: "moonshotai/kimi-k3"\n  provider: "openrouter"\n'
+                                      "fallback_providers:\n  - provider: custom\n    model: claude-max\n")
+    port = _free_port()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("LITCO_HOST_SECRET", "sek")
+    monkeypatch.setenv("LITCO_MATTER_ID", "m1")
+    monkeypatch.setenv("LITCO_MATTER_HOME", str(tmp_path / "matter"))
+    monkeypatch.setenv("LITCO_TURN_PORT", str(port))
+    from gateway.config import PlatformConfig
+    from plugins.platforms.litco_turn.adapter import LitcoTurnAdapter
+
+    adapter = LitcoTurnAdapter(PlatformConfig(enabled=True, extra={}))
+    assert not await adapter.connect()
+    assert "fallback chain" in caplog.text and "not product-controlled" in caplog.text
+    with socket.socket() as s:
+        assert s.connect_ex(("127.0.0.1", port)) != 0, "nothing listens"
+    # the same home made product-controlled starts
+    (home / "config.yaml").write_text('model:\n  default: "moonshotai/kimi-k3"\n  provider: "openrouter"\n')
+    adapter = LitcoTurnAdapter(PlatformConfig(enabled=True, extra={}))
+    assert await adapter.connect()
+    await adapter.disconnect()

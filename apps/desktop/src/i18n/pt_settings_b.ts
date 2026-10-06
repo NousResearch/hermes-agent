@@ -14,10 +14,10 @@ export const ptSettingsB = {
     refused: 'Recusado',
     failed: 'Falha na atualização',
     alreadyRunning: 'Já há uma atualização em andamento',
-    receipt: (id, outcome) => `Recibo ${id} \xB7 ${outcome}`,
-    receiptVersions: (pre, post) => `${pre} \u2192 ${post}`,
+    receipt: (id, outcome) => `Recibo ${id} · ${outcome}`,
+    receiptVersions: (pre, post) => `${pre} → ${post}`,
     scopesRestored: profiles => `Perfis restaurados: ${profiles}`,
-    scopeNotRestored: (profile, error) => `Perfil \u201C${profile}\u201D n\xE3o restaurado: ${error}`
+    scopeNotRestored: (profile, error) => `Perfil “${profile}” não restaurado: ${error}`
   },
   gateway: {
     loading: 'Carregando as configurações do gateway…',
@@ -49,7 +49,7 @@ export const ptSettingsB = {
     cloudOrgPickerTitle: 'Escolha uma organização',
     cloudOrgSelect: 'Selecionar',
     cloudOrgChange: 'Trocar organização',
-    cloudOrgRole: role => `Fun\xE7\xE3o: ${role}`,
+    cloudOrgRole: role => `Função: ${role}`,
     cloudLoadingAgents: 'Carregando seus agentes…',
     cloudNoAgents: {
       before: 'Nenhum agente encontrado nesta conta. Crie um no ',
@@ -122,7 +122,7 @@ export const ptSettingsB = {
     savedTitle: 'Configurações do gateway salvas',
     restartingMessage: 'O Hermes Desktop vai se reconectar com as configurações salvas; o shell continua aberto.',
     savedMessage: 'Salvo para a próxima reinicialização.',
-    connectedTo: (baseUrl, version) => `Conectado a ${baseUrl}${version ? ` \xB7 Hermes ${version}` : ''}`,
+    connectedTo: (baseUrl, version) => `Conectado a ${baseUrl}${version ? ` · Hermes ${version}` : ''}`,
     reachableTitle: 'Gateway remoto acessível',
     signedOutTitle: 'Sessão encerrada',
     signedOutMessage: 'A sessão do gateway remoto foi limpa.',
@@ -156,7 +156,7 @@ export const ptSettingsB = {
     sshTestConnection: 'Testar SSH',
     sshConnect: 'Conectar',
     sshButtonsHint: 'Salvar aplica na próxima inicialização. Conectar reconecta agora.',
-    sshReachable: (host, platform) => `Acess\xEDvel: ${host} (${platform}) \u2014 Hermes encontrado`,
+    sshReachable: (host, platform) => `Acessível: ${host} (${platform}) — Hermes encontrado`,
     sshIncompleteHost: 'Informe um host SSH antes de conectar.',
     sshErrUnreachable: 'Não foi possível alcançar esse host por SSH. Verifique o host, a porta e a sua rede.',
     sshErrAuth:
@@ -184,7 +184,7 @@ export const ptSettingsB = {
   },
   profileScope: {
     appliesTo: 'Aplica-se a',
-    editsProfile: profile => `As altera\xE7\xF5es desta p\xE1gina valem para o perfil \u201C${profile}\u201D.`
+    editsProfile: profile => `As alterações desta página valem para o perfil “${profile}”.`
   },
   mcp: {
     loading: 'Carregando servidores MCP…',
@@ -193,7 +193,7 @@ export const ptSettingsB = {
     removeFailed: 'Falha ao remover',
     reloadFailed: 'Falha ao recarregar o MCP',
     savedTitle: 'Servidor MCP salvo',
-    savedMessage: name => `${name} \xE9 aplicado depois de recarregar o MCP.`,
+    savedMessage: name => `${name} é aplicado depois de recarregar o MCP.`,
     disabled: 'desativado',
     name: 'Nome',
     serverJson: 'JSON do servidor',
@@ -222,7 +222,7 @@ export const ptSettingsB = {
       'Este servidor executa um processo local na sua máquina com o comando exibido abaixo. Só continue se confiar na origem.',
     deepLinkConfirm: 'Adicionar servidor',
     deepLinkNameInvalid: 'Os nomes usam de 1 a 64 letras, dígitos, pontos, hifens ou sublinhados.',
-    deepLinkNameConflict: name => `J\xE1 existe um servidor chamado ${name}: escolha outro nome ou cancele.`,
+    deepLinkNameConflict: name => `Já existe um servidor chamado ${name}: escolha outro nome ou cancele.`,
     deepLinkErrorTitle: 'Link de instalação de MCP rejeitado',
     deepLinkErrorName: 'O nome do servidor no link está ausente ou é inválido.',
     deepLinkErrorConfig: 'A configuração do link não é um JSON válido codificado em base64.',
@@ -245,8 +245,8 @@ export const ptSettingsB = {
     customModelPlaceholder: 'ID do modelo',
     chooseFromList: 'Escolher da lista',
     moaDefault: 'Padrão:',
-    moaReferenceToggle: (enabled, index) => `${enabled ? 'Desativar' : 'Ativar'} a refer\xEAncia ${index}`,
-    moaReferenceTitle: index => `Refer\xEAncia ${index}`,
+    moaReferenceToggle: (enabled, index) => `${enabled ? 'Desativar' : 'Ativar'} a referência ${index}`,
+    moaReferenceTitle: index => `Referência ${index}`,
     moaAddReference: 'Adicionar modelo de referência',
     loading: 'Carregando a configuração de modelos…',
     appliesDesc: 'Aplica-se a novas sessões. Use o seletor de modelo no chat para trocar o modelo atual.',
@@ -254,7 +254,7 @@ export const ptSettingsB = {
     model: 'Modelo',
     applying: 'Aplicando…',
     mainAppliedTitle: 'Modelo principal atualizado',
-    mainAppliedMessage: model => `As novas sess\xF5es usar\xE3o ${model}.`,
+    mainAppliedMessage: model => `As novas sessões usarão ${model}.`,
     defaultsLabel: 'Padrões',
     reasoning: 'Raciocínio',
     reasoningOff: 'Desativado',
@@ -340,11 +340,11 @@ export const ptSettingsB = {
     connectionChanged: 'A conexão dos modelos locais mudou',
     title: 'Modelos locais',
     runtimeTitle: 'Runtime local',
-    runtimeReady: backend => `Pronto \xB7 ${backend}`,
+    runtimeReady: backend => `Pronto · ${backend}`,
     serverRunning: 'Em execução',
     runtimeInstalled: 'Runtime llama.cpp instalado',
     runtimeInstalledDetail: (tag, backend) =>
-      `Build ${tag}, backend ${backend}. O Hermes inicia e gerencia o servidor para voc\xEA.`,
+      `Build ${tag}, backend ${backend}. O Hermes inicia e gerencia o servidor para você.`,
     installTitle: 'Instalar o runtime local',
     installDetail:
       'Baixa o mecanismo de inferência llama.cpp (algumas centenas de MB). Os modelos que você baixa rodam inteiramente nesta máquina: sem conta, e nada sai do seu computador.',
@@ -353,7 +353,7 @@ export const ptSettingsB = {
     installFailed: 'Falha na instalação do runtime',
     hardwareTitle: 'Esta máquina',
     hardwareLoading: 'Verificando o seu hardware…',
-    vram: label => `${label} de mem\xF3ria da GPU`,
+    vram: label => `${label} de memória da GPU`,
     ram: label => `${label} de RAM`,
     unifiedMemory: 'Memória unificada',
     modelsTitle: 'Modelos',
@@ -372,7 +372,7 @@ export const ptSettingsB = {
       'A configuração automática exige um modelo curado que caiba inteiramente na memória da GPU ou unificada. Você ainda pode escolher um modelo abaixo ou explorar mais modelos.',
     noRecommendationAction: 'Explorar modelos',
     downloaded: 'Baixado',
-    downloadAction: size => `Baixar \xB7 ${size}`,
+    downloadAction: size => `Baixar · ${size}`,
     downloadProgress: (done, total) => `${done} de ${total}`,
     downloadStatusRunning: 'Baixando',
     downloadSpeed: rate => `${rate}`,
@@ -383,16 +383,15 @@ export const ptSettingsB = {
     downloadPausedLabel: 'Pausado',
     downloadPauseAction: 'Pausar',
     downloadResumeAction: 'Retomar',
-    downloadDoneToast: model => `${model} est\xE1 pronto.`,
+    downloadDoneToast: model => `${model} está pronto.`,
     installDoneToast: 'Runtime local instalado e pronto.',
     quickstartTitle: 'Rode um modelo nesta máquina',
     quickstartDetail: (model, size) =>
-      `Um clique configura tudo: o mecanismo local, ${model} (download de ${size}) e o seu padr\xE3o para novos chats. Nada sai deste computador.`,
-    quickstartDetailReady: model =>
-      `Um clique torna ${model} o seu padr\xE3o para novos chats. Tudo roda nesta m\xE1quina.`,
+      `Um clique configura tudo: o mecanismo local, ${model} (download de ${size}) e o seu padrão para novos chats. Nada sai deste computador.`,
+    quickstartDetailReady: model => `Um clique torna ${model} o seu padrão para novos chats. Tudo roda nesta máquina.`,
     quickstartAction: 'Configurar para mim',
     quickstartConfigure: 'Configure…',
-    quickstartDoneToast: model => `${model} est\xE1 configurado: os novos chats rodam nesta m\xE1quina.`,
+    quickstartDoneToast: model => `${model} está configurado: os novos chats rodam nesta máquina.`,
     quickstartFailed: 'Falha na configuração do modelo local',
     quickstartStageEngine: 'Mecanismo',
     quickstartStageModel: 'Modelo',
@@ -401,11 +400,11 @@ export const ptSettingsB = {
     activePill: 'Padrão',
     updateTitle: 'Atualização do mecanismo disponível',
     updateDetail: (next, current) =>
-      `H\xE1 um build mais novo do llama.cpp (${next}) pronto para instalar; voc\xEA est\xE1 no ${current}. Os modelos continuam funcionando durante o download.`,
+      `Há um build mais novo do llama.cpp (${next}) pronto para instalar; você está no ${current}. Os modelos continuam funcionando durante o download.`,
     updateAction: 'Atualizar mecanismo',
     updating: 'Atualizando o mecanismo…',
     upToDateTitle: 'Mecanismo atualizado',
-    upToDateDetail: (tag, backend) => `Executando llama.cpp ${tag} (${backend}) \u2014 a build configurada.`,
+    upToDateDetail: (tag, backend) => `Executando llama.cpp ${tag} (${backend}) — a build configurada.`,
     activeDetail: 'Novos chats usam este modelo, que é carregado quando você envia a primeira mensagem',
     activeNotLoaded: 'Carrega na sua primeira mensagem',
     loadedPill: 'Na memória',
@@ -427,11 +426,11 @@ export const ptSettingsB = {
     serverStopFailed: 'Não foi possível parar o servidor local',
     serverStartFailed: 'Não foi possível iniciar o servidor local',
     activating: 'Iniciando…',
-    activateFailed: model => `N\xE3o foi poss\xEDvel trocar para ${model}`,
+    activateFailed: model => `Não foi possível trocar para ${model}`,
     activateDoneToast: model => `Os novos chats usam ${model}.`,
     downloadFailed: model => `Falha no download de ${model}`,
-    downloadPauseFailed: model => `N\xE3o foi poss\xEDvel pausar o download de ${model}`,
-    downloadResumeFailed: model => `N\xE3o foi poss\xEDvel retomar o download de ${model}`,
+    downloadPauseFailed: model => `Não foi possível pausar o download de ${model}`,
+    downloadResumeFailed: model => `Não foi possível retomar o download de ${model}`,
     pillFitsGpu: 'Cabe na sua GPU',
     pillUsesRam: 'Usa a RAM do sistema',
     pillTooBig: 'Grande demais para esta máquina',
@@ -458,17 +457,17 @@ export const ptSettingsB = {
     sideloadAlreadyPresent: 'Já está na sua biblioteca.',
     pillFullContext: max => `Contexto completo de ${max}`,
     pillFullContextTip: 'Roda com a janela de contexto completa do modelo desde o início',
-    pillUpTo: max => `Contexto de at\xE9 ${max}`,
+    pillUpTo: max => `Contexto de até ${max}`,
     pillGrowsTip: 'Cresce automaticamente conforme a conversa precisa de mais espaço',
     pillVision: 'Enxerga imagens',
     deleteAction: 'Excluir modelo',
     deleteConfirm: model => `Excluir ${model} do disco?`,
-    deleted: model => `${model} exclu\xEDdo.`,
+    deleted: model => `${model} excluído.`,
     deleteFailed: 'Falha ao excluir'
   },
   billing: {
-    perMonth: amount => `${amount}/m\xEAs`,
-    creditsPerMonth: amount => `${amount} cr\xE9ditos/m\xEAs`,
+    perMonth: amount => `${amount}/mês`,
+    creditsPerMonth: amount => `${amount} créditos/mês`,
     usageLabel: label => `Uso de ${label}`,
     freeTier: {
       signIn: 'Fazer login',
@@ -487,10 +486,10 @@ export const ptSettingsB = {
     amountValidation: {
       reloadTo: 'Recarregar até',
       greaterThanThreshold: 'O valor de recarga deve ser maior que o limite.',
-      decimal: label => `${label}: informe um valor em d\xF3lares com no m\xE1ximo 2 casas decimais.`,
+      decimal: label => `${label}: informe um valor em dólares com no máximo 2 casas decimais.`,
       positive: label => `${label}: o valor deve ser maior que US$ 0.`,
-      minimum: (label, amount) => `${label}: o m\xEDnimo \xE9 ${amount}.`,
-      maximum: (label, amount) => `${label}: o m\xE1ximo \xE9 ${amount}.`
+      minimum: (label, amount) => `${label}: o mínimo é ${amount}.`,
+      maximum: (label, amount) => `${label}: o máximo é ${amount}.`
     },
     stepUp: {
       openVerification: 'Abrir a página de verificação',
@@ -503,11 +502,11 @@ export const ptSettingsB = {
       successBody: 'Gastos Remotos estão permitidos para este terminal.'
     },
     charge: {
-      added: amount => (amount ? `US$ ${amount} adicionados.` : 'Cr\xE9ditos adicionados.'),
+      added: amount => (amount ? `US$ ${amount} adicionados.` : 'Créditos adicionados.'),
       failedTitle: 'Falha na cobrança',
       unconfirmedTitle: 'Resultado da cobrança não confirmado',
       unconfirmedBody: message =>
-        `${message} O resultado da sua \xFAltima cobran\xE7a n\xE3o foi confirmado: confira o saldo e o hist\xF3rico antes de tentar de novo.`,
+        `${message} O resultado da sua última cobrança não foi confirmado: confira o saldo e o histórico antes de tentar de novo.`,
       checkTitle: 'Não foi possível verificar a cobrança',
       checkBody: 'Não foi possível verificar a cobrança.',
       untrackedTitle: 'Não foi possível acompanhar a cobrança',
@@ -517,7 +516,7 @@ export const ptSettingsB = {
       authenticationRequired: 'O seu banco exige verificação (3DS). Conclua no portal para finalizar esta compra.',
       expired: 'O seu cartão expirou. Atualize-o no portal.',
       declined: 'O seu cartão foi recusado. Tente outro cartão no portal.',
-      failedBody: reason => `A cobran\xE7a n\xE3o foi conclu\xEDda (${reason}).`
+      failedBody: reason => `A cobrança não foi concluída (${reason}).`
     },
     title: 'Cobrança',
     preview: 'prévia',
@@ -540,7 +539,7 @@ export const ptSettingsB = {
       title: 'Comprar créditos agora',
       buyButton: 'Comprar',
       processing: 'Processando… verificando a liquidação',
-      added: amount => `${amount} adicionados. O saldo est\xE1 sendo atualizado.`,
+      added: amount => `${amount} adicionados. O saldo está sendo atualizado.`,
       retry: 'Tentar novamente',
       openPortal: 'Abrir portal'
     },
@@ -559,12 +558,12 @@ export const ptSettingsB = {
       tryAgain: 'Tentar novamente',
       checkingChange: 'Verificando esta alteração…',
       cannotChange: 'Essa alteração não pode ser feita aqui.',
-      alreadyOn: name => `Voc\xEA j\xE1 est\xE1 no plano ${name}: nada a alterar.`,
+      alreadyOn: name => `Você já está no plano ${name}: nada a alterar.`,
       notScheduleable: 'Esta alteração não pode ser agendada aqui.',
       scheduling: 'Agendando…',
       cancel: 'Cancelar',
       effectScheduled: (targetName, effectiveAt, creditsDelta) =>
-        `Mudan\xE7a para ${targetName}, com efeito em ${effectiveAt}. Sem cobran\xE7a agora; voc\xEA mant\xE9m o plano atual at\xE9 l\xE1.${creditsDelta ? ` Altera\xE7\xE3o dos cr\xE9ditos mensais: ${creditsDelta}.` : ''}`
+        `Mudança para ${targetName}, com efeito em ${effectiveAt}. Sem cobrança agora; você mantém o plano atual até lá.${creditsDelta ? ` Alteração dos créditos mensais: ${creditsDelta}.` : ''}`
     },
     autoReload: {
       threshold: 'Limite',
@@ -621,7 +620,7 @@ export const ptSettingsB = {
         turnOnCaption: 'Ative a recarga automática pelo portal',
         chargesDescription: (reloadTo, threshold) =>
           `Cobra ${reloadTo} automaticamente quando o saldo ficar abaixo de ${threshold}.`,
-        distinctCardCaption: cardLabel => `A recarga autom\xE1tica cobra ${cardLabel}: concilie no portal`,
+        distinctCardCaption: cardLabel => `A recarga automática cobra ${cardLabel}: concilie no portal`,
         distinctCardFallback: 'outro cartão',
         reconcileAction: 'Conciliar ↗'
       },
@@ -631,7 +630,7 @@ export const ptSettingsB = {
           barLabel: 'Créditos da assinatura restantes',
           captionResets: date => `Renova em ${date}`,
           valueOf: (remaining, monthly) => `${remaining} de ${monthly} restantes`,
-          valueOver: (remaining, monthly, over) => `${remaining} de ${monthly} restantes \xB7 ${over} excedentes`
+          valueOver: (remaining, monthly, over) => `${remaining} de ${monthly} restantes · ${over} excedentes`
         },
         topupCredits: {
           title: 'Créditos de recarga',
@@ -670,8 +669,7 @@ export const ptSettingsB = {
         messageByAdmin: 'Um administrador interrompeu os gastos remotos para este terminal.',
         messageBySelf: 'Você interrompeu os gastos remotos para este terminal.'
       },
-      remoteSpendingReconnect: who =>
-        `${who} Reconecte em Configura\xE7\xF5es \u2192 Gateway para reautorizar este dispositivo.`,
+      remoteSpendingReconnect: who => `${who} Reconecte em Configurações → Gateway para reautorizar este dispositivo.`,
       sessionRevoked: {
         title: 'Sessão encerrada',
         message: 'Sua sessão foi encerrada. Faça login novamente em Configurações → Gateway.'
@@ -708,15 +706,15 @@ export const ptSettingsB = {
         title: 'Cobranças demais no momento',
         message: mins =>
           mins > 0
-            ? `\u{1F7E1} Cobran\xE7as demais no momento (tente de novo em ~${mins} min). Isto n\xE3o \xE9 uma falha de pagamento.`
-            : '\u{1F7E1} Cobran\xE7as demais no momento. Isto n\xE3o \xE9 uma falha de pagamento.'
+            ? `\u{1F7E1} Cobranças demais no momento (tente de novo em ~${mins} min). Isto não é uma falha de pagamento.`
+            : '\u{1F7E1} Cobranças demais no momento. Isto não é uma falha de pagamento.'
       },
       stripeUnavailable: {
         title: 'A Stripe está com problemas',
         message: mins =>
           mins > 0
-            ? `A Stripe est\xE1 com problemas: tente de novo em ~${mins} min`
-            : 'A Stripe est\xE1 com problemas: tente de novo em instantes'
+            ? `A Stripe está com problemas: tente de novo em ~${mins} min`
+            : 'A Stripe está com problemas: tente de novo em instantes'
       },
       upgradeCapExceeded: {
         title: 'Limite diário de trocas de plano atingido',
@@ -753,14 +751,14 @@ export const ptSettingsB = {
     disconnect: 'Desconectar',
     disconnectInTerminal: 'Desconectar (executa o comando de remoção no terminal)',
     removeConfirm: provider => `Remover ${provider}?`,
-    removeExternalGeneric: provider => `${provider} \xE9 gerenciado pela pr\xF3pria CLI: remova-o por l\xE1.`,
-    removeKeyManaged: provider => `${provider} est\xE1 configurado por uma chave de API. Remova-o em Chaves de API.`,
+    removeExternalGeneric: provider => `${provider} é gerenciado pela própria CLI: remova-o por lá.`,
+    removeKeyManaged: provider => `${provider} está configurado por uma chave de API. Remova-o em Chaves de API.`,
     removeTerminalConfirm: (provider, command) =>
-      `Desconectar ${provider}? Isto executa \u201C${command}\u201D no terminal para limpar a credencial.`,
-    removeTerminalRunning: provider => `Executando a desconex\xE3o de ${provider} no terminal\u2026`,
+      `Desconectar ${provider}? Isto executa “${command}” no terminal para limpar a credencial.`,
+    removeTerminalRunning: provider => `Executando a desconexão de ${provider} no terminal…`,
     removedTitle: 'Conta removida',
     removedMessage: provider => `${provider} foi removido.`,
-    failedRemove: provider => `N\xE3o foi poss\xEDvel remover ${provider}`,
+    failedRemove: provider => `Não foi possível remover ${provider}`,
     noProviderKeys: 'Nenhuma chave de API de provedor disponível.',
     searchKeys: 'Buscar provedores…',
     noKeysMatch: 'Nenhum provedor corresponde à sua busca.',
@@ -782,7 +780,7 @@ export const ptSettingsB = {
     deletePermanently: 'Excluir permanentemente',
     messages: count => `${count} ${count === 1 ? 'mensagem' : 'mensagens'}`,
     restored: 'Restaurada',
-    deleteConfirm: title => `Excluir permanentemente "${title}"? Isso n\xE3o pode ser desfeito.`,
+    deleteConfirm: title => `Excluir permanentemente "${title}"? Isso não pode ser desfeito.`,
     autoArchiveTitle: 'Auto-arquivar chats inativos',
     autoArchiveDesc:
       'Arquiva automaticamente chats inativos. Chats fixados nunca são arquivados, e nada é excluído — eles apenas vêm para cá.',
@@ -793,7 +791,7 @@ export const ptSettingsB = {
     defaultDirDesc:
       'Novas sessões começam nesta pasta, exceto se você escolher outra. Deixe vazio para usar seu diretório raiz.',
     defaultDirUpdated: 'Diretório padrão do projeto atualizado — inicie um novo chat (Ctrl/⌘+N) para entrar em vigor',
-    defaultsTo: label => `Padr\xE3o: ${label}.`,
+    defaultsTo: label => `Padrão: ${label}.`,
     change: 'Alterar',
     choose: 'Escolher',
     clear: 'Limpar',
@@ -817,7 +815,7 @@ export const ptSettingsB = {
     set: 'Definida',
     notSet: 'Não definida',
     selectedTitle: 'Provedor selecionado',
-    selectedMessage: provider => `${provider} agora est\xE1 ativo.`,
+    selectedMessage: provider => `${provider} agora está ativo.`,
     failedSelect: provider => `Falha ao selecionar ${provider}`,
     failedLoad: 'Falha ao carregar a configuração de ferramentas',
     noProviderOptions: 'Este toolset não tem opções de provedor: ative-o e ele funciona com a sua configuração atual.',
@@ -831,7 +829,7 @@ export const ptSettingsB = {
     nousIncluded: 'Incluído em uma assinatura Nous — entre com sua conta Nous para ativar.',
     nousAuthNeededTitle: 'Entre com sua conta Nous',
     nousAuthNeededMessage: provider =>
-      `${provider} est\xE1 salvo, mas s\xF3 funcionar\xE1 depois que voc\xEA entrar com sua conta Nous.`,
+      `${provider} está salvo, mas só funcionará depois que você entrar com sua conta Nous.`,
     nousAuthSignIn: 'Entrar',
     nousAuthDoneTitle: 'Conta Nous conectada',
     nousAuthDoneMessage: 'Os backends da sua assinatura agora estão ativos.',
@@ -840,7 +838,7 @@ export const ptSettingsB = {
     nousAuthTryAgain: 'Tentar novamente',
     noApiKeyRequired: 'Nenhuma chave de API necessária.',
     postSetupHint: step =>
-      `Este backend precisa de uma instala\xE7\xE3o \xFAnica (${step}). Roda nesta m\xE1quina e pode levar alguns minutos.`,
+      `Este backend precisa de uma instalação única (${step}). Roda nesta máquina e pode levar alguns minutos.`,
     postSetupInstalledHint: 'Instalado. Execute a configuração de novo apenas se algo estiver quebrado.',
     postSetupRun: 'Executar configuração',
     postSetupRerun: 'Executar a configuração novamente',
@@ -853,9 +851,9 @@ export const ptSettingsB = {
     postSetupErrorMessage: step => `Verifique o log de ${step}.`,
     postSetupOpenLogs: 'Abrir logs',
     postSetupRunAgain: 'Executar novamente',
-    postSetupFailed: step => `Falha ao executar a configura\xE7\xE3o de ${step}`,
+    postSetupFailed: step => `Falha ao executar a configuração de ${step}`,
     webSearchActive: backend => `Busca: ${backend}`,
-    webExtractActive: backend => `Extra\xE7\xE3o: ${backend}`,
+    webExtractActive: backend => `Extração: ${backend}`,
     webCapabilityUnset: 'não definido',
     webUseForSearch: 'Usar para Busca',
     webUseForExtract: 'Usar para Extração',
@@ -870,7 +868,7 @@ export const ptSettingsB = {
     modelDefault: 'padrão',
     modelInactiveHint: 'Selecione este backend primeiro para alterar o modelo dele.',
     modelSelectedTitle: 'Modelo selecionado',
-    modelSelectedMessage: model => `${model} vale para as novas sess\xF5es.`,
+    modelSelectedMessage: model => `${model} vale para as novas sessões.`,
     failedSelectModel: model => `Falha ao selecionar ${model}`,
     terminalBackend: {
       sectionTitle: 'Backend de execução',
@@ -881,19 +879,19 @@ export const ptSettingsB = {
       unavailable: 'Indisponível',
       inUse: 'Em uso',
       selectedTitle: 'Backend selecionado',
-      selectedMessage: backend => `Os comandos de terminal agora rodam via ${backend}. Vale para as novas sess\xF5es.`,
+      selectedMessage: backend => `Os comandos de terminal agora rodam via ${backend}. Vale para as novas sessões.`,
       failedSelect: backend => `Falha ao selecionar ${backend}`,
       needsSetupHint:
         'Você pode selecionar esta opção agora — os comandos falharão até que a configuração seja concluída.',
       needsSetupConfirmTitle: backend => `Selecionar ${backend} mesmo assim?`,
       needsSetupConfirmDescription: detail =>
-        `${detail} As sess\xF5es iniciadas depois desta altera\xE7\xE3o ficar\xE3o sem as ferramentas de terminal e de arquivos at\xE9 a configura\xE7\xE3o ser conclu\xEDda.`,
+        `${detail} As sessões iniciadas depois desta alteração ficarão sem as ferramentas de terminal e de arquivos até a configuração ser concluída.`,
       needsSetupConfirmDescriptionGeneric:
         'Este backend ainda não foi configurado. As sessões iniciadas depois desta alteração ficarão sem ferramentas de terminal e de arquivos até a configuração ser concluída.',
       needsSetupConfirmAction: 'Selecionar mesmo assim',
       unavailableTitle: 'Os comandos de terminal estão indisponíveis',
       unavailableMessage: backend =>
-        `O Hermes n\xE3o consegue executar comandos de shell agora: ${backend} n\xE3o est\xE1 pronto. Volte para Local ou conclua a configura\xE7\xE3o de ${backend} e tente de novo.`,
+        `O Hermes não consegue executar comandos de shell agora: ${backend} não está pronto. Volte para Local ou conclua a configuração de ${backend} e tente de novo.`,
       openBackendSettings: 'Abrir configurações do terminal',
       useLocal: 'Usar o local',
       switchedToLocal: 'Os comandos de terminal agora rodam localmente. Vale para novas sessões.'

@@ -92,7 +92,7 @@ export const ptCommon = {
     set: 'Definir',
     skip: 'Pular',
     update: 'Atualizar',
-    tryHint: term => `Tente \u201C${term}\u201D`,
+    tryHint: term => `Tente “${term}”`,
     on: 'Ativado',
     off: 'Desativado'
   },
@@ -119,7 +119,7 @@ export const ptCommon = {
   },
   billingBlock: {
     titleNous: 'Sem créditos Nous',
-    titleProvider: provider => `Sem cr\xE9ditos \u2014 ${provider}`,
+    titleProvider: provider => `Sem créditos — ${provider}`,
     fallbackMessage: 'Sua conta está sem créditos. Adicione mais para continuar.',
     openBilling: 'Abrir faturamento',
     addCredits: 'Adicionar créditos',
@@ -177,7 +177,7 @@ export const ptCommon = {
     swapSidebarSides: 'Inverter lados da barra lateral',
     hideRightSidebar: 'Ocultar barra lateral direita',
     showRightSidebar: 'Mostrar barra lateral direita',
-    unreadSessions: count => (count === 1 ? '1 sess\xE3o n\xE3o lida' : `${count} sess\xF5es n\xE3o lidas`),
+    unreadSessions: count => (count === 1 ? '1 sessão não lida' : `${count} sessões não lidas`),
     muteHaptics: 'Silenciar hápticos',
     unmuteHaptics: 'Ativar hápticos',
     openSettings: 'Abrir configurações',
@@ -186,11 +186,11 @@ export const ptCommon = {
     exitHud: 'Sair do modo HUD',
     resetHudLayout: 'Redefinir tamanho e posição do HUD',
     layoutEditor: 'Editor de layout',
-    layoutEditorTitle: mod => `Editor de layout \u2014 clique com ${mod} para redefinir o layout`
+    layoutEditorTitle: mod => `Editor de layout — clique com ${mod} para redefinir o layout`
   },
   keybinds: {
     title: 'Atalhos de teclado',
-    subtitle: open => `Clique em um atalho para reatribuir \xB7 ${open} reabre este painel.`,
+    subtitle: open => `Clique em um atalho para reatribuir · ${open} reabre este painel.`,
     search: 'Pesquisar atalhos…',
     rebind: 'Reatribuir',
     reset: 'Redefinir para padrão',
@@ -198,7 +198,7 @@ export const ptCommon = {
     clear: 'Limpar',
     pressKey: 'Pressione uma tecla…',
     set: 'definir',
-    conflictWith: label => `Tamb\xE9m atribu\xEDdo a \u201C${label}\u201D`,
+    conflictWith: label => `Também atribuído a “${label}”`,
     categories: {
       composer: 'Compositor',
       profiles: 'Perfis',

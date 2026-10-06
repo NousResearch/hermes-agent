@@ -155,6 +155,67 @@ class TestEnvAssignments:
     @pytest.mark.parametrize(
         "text",
         [
+            # A bare status word on one line followed by a rule-of-equals line is two lines of
+            # output, not an assignment. ``\s*`` around the ``=`` let the env-assignment pass
+            # swallow the newline and mask ``PASS`` + newline + ``==`` into ``PASS=***``, which
+            # joined the two lines and destroyed the value the user read.
+            "VERIFY: PASS\n== done\n",
+            "FINAL_REVIEW_PASS\n== summary ==\nSUITES_EXIT: PASS\n",
+            "STRICT_FAIL_CLOSED = PASS\n====\n",
+            # Multi-line operational report block: PASS-suffixed verdict lines next to
+            # ``key = value`` fields.
+            "RELEASE_REVIEW_PASS\nCHANGESET_CLOSED\n\nP0 = 0\nP1 = 0\n",
+        ],
+    )
+    def test_assignment_never_spans_a_line_break(self, text):
+        assert redact_sensitive_text(text, force=True) == text
+
+    @pytest.mark.parametrize(
+        "text, cleartext",
+        [
+            ("PASSWORD=hunter2\n== done\n", "hunter2"),
+            ("export API_KEY = sk-" + "a" * 30 + "\n", "a" * 20),
+            ("openai_token=opaqueValue123456789\n", "opaqueValue123456789"),
+        ],
+    )
+    def test_same_line_assignment_still_redacts(self, text, cleartext):
+        """The horizontal-only separator must not weaken the real rule."""
+        assert cleartext not in redact_sensitive_text(text, force=True)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "STATUS=PASS\n",
+            "HEAD=099\n",
+            "SHA256=9f2c4e6a8b0d1f3a5c7e9b1d3f5a7c9e\n",
+            "FOO=bar\n",
+            "the flag reads \"a=b\" in the config\n",
+        ],
+    )
+    def test_ordinary_key_value_and_hashes_survive(self, text):
+        """Non-secret ``key=value``, status text, git-heads and hashes are not secret material:
+        they must reach the user byte-for-byte."""
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_mixed_payload_masks_only_the_secret(self):
+        """One notification carrying a secret AND ordinary report fields: the secret is masked,
+        every other field survives."""
+        text = (
+            "STATUS=PASS\nHEAD=099\nSHA256=abcdef0123456789\n"
+            "DATABASE_URL=postgres://app:hunter2@db.internal/prod\n"
+            "FOO=bar\n== end of report ==\n"
+        )
+        result = redact_sensitive_text(text, force=True)
+        assert "hunter2" not in result
+        assert "STATUS=PASS" in result
+        assert "HEAD=099" in result
+        assert "SHA256=abcdef0123456789" in result
+        assert "FOO=bar" in result
+        assert result.endswith("== end of report ==\n")
+
+    @pytest.mark.parametrize(
+        "text",
+        [
             'IDENTITY_TOKEN="bailu"',
             "--override-tensor per_layer_token_embd.weight=CPU",
             'runtime.token="local"',

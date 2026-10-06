@@ -150,7 +150,7 @@ void main() {
 export const PART_VS = `
 precision highp float;
 attribute vec2 aHome;
-attribute vec3 aCol;
+attribute vec4 aCol;              // rgb da foto · a: papel * 42/255 (0 miolo, 1 faixa, 2 lateral/nuca, 3 calota girando, 4 contorno do topo, 5 calota da foto)
 attribute vec4 aInfo;            // relevo, borda, aura (0/1), semente
 attribute vec3 aFrom;
 attribute vec3 aTo;
@@ -195,12 +195,29 @@ void main() {
   vec2 turned = base.xy;
   float lit = 1.0, zd;                              // luz da superfície (1 nas outras formas) · profundidade
   bool solid = aura < 0.5;                          // manequim e orelhas (a aura é da foto)
-  if (solid) {
+  float role = floor(aCol.a * ${(255 / 42).toFixed(4)} + 0.5);
+  if (solid && role > 3.5 && role < 4.5) {         // contorno do topo: colado à silhueta girada
+    float a = yawS * aP3.w, c = cos(a), sn = sin(a);
+    turned.x += (aP3.x + YAW_PIV) * sn + (aHome.x - AX) * (sqrt(aP3.y * aP3.y * c * c + aP3.z * aP3.z * sn * sn) / max(aP3.y, 1.0) - 1.0);
+    zd = 2000.0;
+  } else if (solid) {
     vec3 q = place3D(aHome, aP3, yawS);
     turned.x += q.x - aHome.x;
-    float fr = 1.0 - clamp(q.z, 0.0, 1.0);          // borda brilhante onde a superfície fica rasante
-    lit = 0.85 + 3.0 * pow(fr, 2.5);
-    zd = q.y + 16.0;                                // um pouco à frente da malha (as cavidades do rosto ficam abaixo dela)
+    // luz relativa ao repouso (giro 0 = brilho exato da foto): o que fica rasante ganha a luz de borda
+    float fr = 1.0 - clamp(q.z, 0.0, 1.0), fr0 = 1.0 - clamp(aP3.z, 0.0, 1.0);
+    lit = max(0.55, 1.0 + 2.5 * (pow(fr, 3.0) - pow(fr0, 3.0)));
+    // a faixa da borda (comprimida na foto, com o contorno claro) apaga quando gira; a lateral extra que fica no mesmo
+    // lugar aparece no mesmo passo. Parado: a faixa inteira e nenhuma extra na frente (a cena é a foto).
+    // As extras do verso (normal pra trás em repouso) não precisam disso: a malha as esconde enquanto estão atrás
+    // pros dois lados: do lado que se afasta a faixa ficaria entre a textura nova e a borda (a foto tem um anel escuro
+    // logo dentro do contorno, que viraria um vinco)
+    float open = smoothstep(0.04, 0.3, abs(q.z - aP3.z));
+    // o contorno claro da foto é silhueta, não superfície: girando pra qualquer lado ele sai da borda, então apaga
+    // (a luz de borda nasce na silhueta nova pelo fresnel acima)
+    lit *= 1.0 - smoothstep(0.35, 0.9, rim) * smoothstep(0.03, 0.2, abs(q.z - aP3.z));
+    float spin = smoothstep(0.04, 0.3, abs(yawS));
+    lit *= role < 0.5 ? 1.0 : role < 1.5 ? 1.0 - open : role < 2.5 ? (aP3.z > 0.0 ? open : 1.0) : role < 3.5 ? spin : 1.0 - spin;
+    zd = q.y + 6.0 * clamp(q.z * 3.0, 0.0, 1.0);    // um pouco à frente da malha, só o que encara a câmera (o verso não vaza)
   } else {
     // aura: um halo em volta da silhueta; acompanha o centro da cabeça e a largura dela girada, sempre atrás do busto
     float a = yawS * aP3.w, c = cos(a), sn = sin(a);
@@ -230,7 +247,9 @@ void main() {
   gl_Position = vec4(s.x / uRes.x * 2.0 - 1.0, 1.0 - s.y / uRes.y * 2.0, mix(-0.999, depthOf(zd), hd), 1.0);   // outras formas: na frente de tudo
   float pop = clamp(f.z / 25.0, 0.0, 1.5);
   float sz = uScale * (1.0 + pop * 0.5 + fly * 1.2 + (1.0 - hd) * 0.6) * (1.0 + uLean.z * 1.2 * hd);   // perto: pontos maiores
-  float s0 = solid ? max(1.5, sz * 1.7) : max(1.0, sz);         // manequim: pontos um pouco maiores e suaves
+  // girando, a partícula sai do centro do pixel: vira um ponto um pouco maior e redondo (sem buracos nem xadrez)
+  float mv = solid ? smoothstep(0.004, 0.05, abs(yawS)) : 0.0;
+  float s0 = max(1.0, sz * (1.0 + 0.5 * mv));
   vSpr = vec4(s0, s0, 0.5 * sz * wx, 0.5 * sz);
   if (vMv > 0.0) vSpr.x = ceil(2.0 * max(vSpr.z, vSpr.w)) + 1.0;   // cobre todo pixel que o retângulo toca
   gl_PointSize = vSpr.x;
@@ -244,8 +263,8 @@ void main() {
   b *= max(0.6, 1.0 + 0.35 * turnShade(base.xy) * hd);         // luz do microgiro
   b *= lit;
   if (uScale < 1.0) b *= mix(uScale * uScale, 1.0, vMv);   // tela menor que a foto: conserva o brilho (a cobertura já conserva)
-  vCol = aCol * b;
-  vRound = solid ? 1.0 : clamp(length(f.xy) / 6.0 + pop + fly + (1.0 - hd), 0.0, 1.0);   // manequim: pontos de luz redondos
+  vCol = aCol.rgb * b;
+  vRound = clamp(length(f.xy) / 6.0 + pop + fly + (1.0 - hd) + mv, 0.0, 1.0);
 }`;
 
 export const PART_FS = `

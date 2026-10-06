@@ -5,13 +5,14 @@ Avatar do Jarvis em WebGL: a imagem de referência é separada em camadas (fundo
 ondas, voz e estados (ouvindo / pensando / falando) deslocam partículas e corpo pela mesma
 função na GPU, então tudo se move junto.
 
-O busto é 3D (`src/model3d.js`), feito de sólidos de fatias elípticas medidas no desenho de
-partículas da foto: a **cabeça** é rígida, e a mandíbula afina e avança, então o queixo fica na
-frente do pescoço. O **pescoço e o tronco** formam outro sólido, atrás da cabeça, que torce e só
-acompanha um pouco o giro. As **orelhas** são placas. Uma malha escura dos mesmos sólidos grava a
-profundidade, e as partículas que ficam atrás dela (nuca, orelha do outro lado, pescoço atrás do
-queixo) somem. O rosto tem relevo de manequim (`HEAD3D.FACE` e `HEAD3D.NOSE`): o nariz aparece de
-perfil, as cavidades escurecem e as saliências clareiam. Da foto ficam o fundo e a aura.
+O busto é 3D (`src/model3d.js`), mas o visual é o da foto. As próprias partículas do desenho
+(`emissao.png` e `info.png`) são vestidas em sólidos de fatias elípticas medidas no contorno: a
+**cabeça** é rígida, e a mandíbula avança, então o queixo fica na frente do pescoço. O **pescoço e o
+tronco** formam outro sólido, que torce, e as **orelhas** são placas. Cada partícula vai pro ponto
+da superfície que a projeta exatamente onde ela está na foto, então de frente a cena é a foto,
+pixel a pixel. Girando, a faixa da borda (comprimida na foto) apaga e no lugar entra o mesmo desenho
+continuado em volta da cabeça (lateral e nuca). O contorno do alto vira silhueta, e uma malha
+escura com profundidade esconde o que fica atrás. Rosto liso, sem feições, como no original.
 
 ## Rodar
 
@@ -42,7 +43,7 @@ python3 build.py                 # gera dist/jarvis.html (~5,4 MB, tudo embutido
 | `src/shaders.js` | GLSL: campo do mouse/ondas, pose, giro 3D (`place3D`), fundo, malha e partículas |
 | `src/audio.js` | microfone, `<audio>` externo, voz do navegador → volume + 8 bandas |
 | `src/pose.js` | balanço, olhadas, seguir o mouse, reação aos estados (molas amortecidas) |
-| `src/model3d.js` | busto 3D: sólidos, partículas da superfície, relevo do rosto e malha de profundidade |
+| `src/model3d.js` | busto 3D: sólidos, partículas da foto vestidas neles, lateral/nuca e malha de profundidade |
 | `src/shapes.js` | formas: cabeça, esfera, galáxia, texto |
 | `src/main.js` | WebGL, buffers, render (malha + partículas com profundidade), entrada, API pública, loop |
 | `assets/img/` | camadas da foto (1672×941): `fundo`, `mascaras` e, pra aura em volta da figura, `emissao` e `info` |

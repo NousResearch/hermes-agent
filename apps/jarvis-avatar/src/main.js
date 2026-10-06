@@ -118,9 +118,9 @@ function start(imgs) {
   for (let i = 0; i < N; i++) {
     const o = i * STRIDE;
     homeT[i * 2] = pts[o]; homeT[i * 2 + 1] = pts[o + 1];
-    colT[i * 4] = pts[o + 2]; colT[i * 4 + 1] = pts[o + 3]; colT[i * 4 + 2] = pts[o + 4];
-    infoT[i * 4] = pts[o + 5]; infoT[i * 4 + 1] = pts[o + 6]; infoT[i * 4 + 2] = pts[o + 7]; infoT[i * 4 + 3] = (rnd() * 255) | 0;
-    for (let k = 0; k < 4; k++) p3T[i * 4 + k] = pts[o + 8 + k];
+    colT[i * 4] = pts[o + 2]; colT[i * 4 + 1] = pts[o + 3]; colT[i * 4 + 2] = pts[o + 4]; colT[i * 4 + 3] = pts[o + 5] * 42;
+    infoT[i * 4] = pts[o + 6]; infoT[i * 4 + 1] = pts[o + 7]; infoT[i * 4 + 2] = pts[o + 8]; infoT[i * 4 + 3] = (rnd() * 255) | 0;
+    for (let k = 0; k < 4; k++) p3T[i * 4 + k] = pts[o + 9 + k];
   }
   const gain = 1 / keep;
   const SHAPES = buildShapes(N, homeT);
@@ -328,7 +328,7 @@ function start(imgs) {
       gl.uniform2f(u.uMouth, IMG.mouth[0], IMG.mouth[1]);
       gl.uniform1fv(u.uBands, A.bands);
       attr(0, B.home, 2, gl.FLOAT, false, 0);
-      attr(1, B.col, 3, gl.UNSIGNED_BYTE, true, 4);
+      attr(1, B.col, 4, gl.UNSIGNED_BYTE, true, 4);
       attr(2, B.info, 4, gl.UNSIGNED_BYTE, true, 0);
       attr(3, B.shape[fromShape] || B.shape.head, 3, gl.FLOAT, false, 0);
       attr(4, B.shape[toShape] || B.shape.head, 3, gl.FLOAT, false, 0);

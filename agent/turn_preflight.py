@@ -180,8 +180,9 @@ def run_preflight_compression(
             task_id=effective_task_id, trigger="pre_api",
             # Provider-proven overflow (wire-aware): run one real attempt even while the
             # summary-failure cooldown is armed — an aborted compression must not give up
-            # for the rest of the run.
-            bypass_cooldown=(_wire_overflow is True),
+            # for the rest of the run. Passed only when set, so _compress_context
+            # overrides/doubles with the original signature keep working.
+            **({"bypass_cooldown": True} if _wire_overflow is True else {}),
         )
         if context_compression_timed_out(agent):
             # Progress-aware timeout: never reached the provider — refund the
@@ -357,7 +358,7 @@ def compress_after_tool_results(
         # no-usage fallback), so the overflow guard sees the true size.
         messages, active_system_prompt = agent._compress_context(
             messages, system_message, approx_tokens=_real_tokens, task_id=effective_task_id, trigger="post_tool",
-            bypass_cooldown=(_wire_overflow is True),
+            **({"bypass_cooldown": True} if _wire_overflow is True else {}),
         )
         if messages is _post_tool_input and compression_skipped_due_to_lock(agent):
             # Lock-skip no-op is a temporary defer, not evidence about compressibility:

@@ -981,22 +981,42 @@ def wire_request_tokens(
     return estimate_request_context_tokens({"messages": shaped, "tools": tools} if tools else shaped)
 
 
+# Minimum room to answer the send-time fit check always leaves, even with no max_tokens
+# configured. Without it a request using 130,902 of a 131,072 window "fit" (budget == window)
+# and the provider stopped at once with "Context window full ... leaving no room to answer"
+# (run_29371f18). 8K tokens is the same default output reservation MoA reference calls use
+# (moa_loop._REFERENCE_DEFAULT_OUTPUT_RESERVE) and the native-compaction safety margin: room
+# for a tool call or a short answer plus some thinking. Capped at 1/8 of tiny windows.
+_MIN_ANSWER_RESERVE_TOKENS = 8_192
+# The wire measure is a char/4 estimate; real tokenizers count dense code/JSON higher. Keep a
+# window-proportional margin for that error (run_29371f18: rough 24,427 vs provider 24,131,
+# i.e. char/4 within ~1-2% on that model; 5% leaves room for denser content).
+_WIRE_ESTIMATE_SAFETY_RATIO = 0.05
+
+
 def request_input_budget(agent: Any) -> Optional[int]:
-    """Usable input budget (window minus output reservation), ``None`` when the window is
-    unknown. The reservation is ``agent.max_tokens``, else the compressor's (which carries
-    adapter defaults such as native Gemini's), so it matches the compaction threshold's."""
+    """Usable input budget for the wire fit check, ``None`` when the window is unknown:
+    window minus the output reservation minus an estimate safety margin. The reservation is
+    ``agent.max_tokens``, else the compressor's (which carries adapter defaults such as native
+    Gemini's), but never less than ``_MIN_ANSWER_RESERVE_TOKENS`` (capped at 1/8 of the
+    window), so an unset max_tokens can no longer mean "the whole window may be prompt"."""
     compressor = getattr(agent, "context_compressor", None)
     window = getattr(compressor, "context_length", None)
     if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
         return None
-    from agent.context_compressor import ContextCompressor
-
     reserve = getattr(agent, "max_tokens", None)
     if reserve is None:
         reserve = getattr(compressor, "max_tokens", None)
-    if isinstance(reserve, bool) or not isinstance(reserve, int):
-        reserve = None
-    return ContextCompressor._effective_input_window(window, reserve)
+    if isinstance(reserve, bool) or not isinstance(reserve, int) or reserve < 0:
+        reserve = 0
+    reserve = max(reserve, min(_MIN_ANSWER_RESERVE_TOKENS, window // 8))
+    budget = window - reserve - int(window * _WIRE_ESTIMATE_SAFETY_RATIO)
+    # A reservation that swallows the window (max_tokens >= window) must not make every
+    # request "un-fittable": fall back to the minimum reserve, as _effective_input_window does.
+    if budget <= 0:
+        budget = window - min(_MIN_ANSWER_RESERVE_TOKENS, window // 8) - int(
+            window * _WIRE_ESTIMATE_SAFETY_RATIO)
+    return max(1, budget)
 
 
 def wire_request_cannot_fit(

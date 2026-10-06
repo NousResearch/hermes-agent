@@ -43,7 +43,9 @@ def _chunk(text: str):
 
 
 def test_summary_runaway_bound_is_generous_and_compression_only():
-    assert _summary_runaway_output_bound_chars("compression") == 4 * 10_000 * 4
+    # Hard bound ~100K tokens: the old 4 x _SUMMARY_TOKENS_CEILING (160K chars) aborted
+    # legitimate summaries (run_29371f18); loops are caught earlier by the tail check.
+    assert _summary_runaway_output_bound_chars("compression") == 100_000 * 4
     assert _summary_runaway_output_bound_chars(None) is None
     assert _summary_runaway_output_bound_chars("other_task") is None
 
@@ -291,3 +293,164 @@ def test_reasoning_heavy_session_truly_over_window_still_forces_compression():
         turn_exit_reason=None, current_turn_user_idx=0,
     )
     assert len(calls) == 1 and calls[0]["bypass_cooldown"] is True
+
+
+# ---------------------------------------------------------------------------
+# Regression run_29371f18: no max_tokens, 130,902-token request in a 131,072 window
+# ---------------------------------------------------------------------------
+
+
+def _near_full_window_request(target_tokens: int = 130_902):
+    """Assembled api_messages (system + user + many tool rows) whose wire estimate is
+    ``target_tokens`` — the request run_29371f18 sent into its 131,072 window."""
+    msgs = [{"role": "system", "content": "s" * 8000}, {"role": "user", "content": "review the app"}]
+    i = 0
+    while estimate_request_context_tokens(msgs) < target_tokens - 3000:
+        msgs.append({"role": "assistant", "content": "", "tool_calls": [
+            {"id": f"c{i}", "type": "function",
+             "function": {"name": "read_file", "arguments": '{"path": "a.swift"}'}}]})
+        msgs.append({"role": "tool", "tool_call_id": f"c{i}", "content": "k" * 12_000})
+        i += 1
+    while estimate_request_context_tokens(msgs) < target_tokens:
+        msgs[-1]["content"] += "k"
+    assert estimate_request_context_tokens(msgs) == target_tokens
+    return msgs
+
+
+def test_budget_leaves_room_to_answer_without_max_tokens():
+    from agent.conversation_compression import (
+        _MIN_ANSWER_RESERVE_TOKENS, request_input_budget)
+
+    agent = _mk_agent(131_072, None)
+    budget = request_input_budget(agent)
+    assert budget <= 131_072 - _MIN_ANSWER_RESERVE_TOKENS
+    assert budget > 100_000, "the margin must stay modest"
+    # A configured reservation larger than the minimum is honoured.
+    assert request_input_budget(_mk_agent(131_072, 32_768)) <= 131_072 - 32_768
+    # A reservation that swallows the window cannot make every request un-fittable.
+    assert request_input_budget(_mk_agent(131_072, 200_000)) > 100_000
+
+
+def test_no_max_tokens_near_full_window_request_is_never_sent_as_is():
+    """run_29371f18: two aborted compressions, then a 130,902-token request went into the
+    131,072 window with no max_tokens; the fit check said it fit (budget == window) and the
+    provider stopped with 'Context window full ... leaving no room to answer'."""
+    from agent.conversation_compression import request_input_budget, wire_request_cannot_fit
+
+    agent = _mk_agent(131_072, None)
+    msgs = _near_full_window_request()
+    assert wire_request_cannot_fit(agent, msgs, None) is True
+    tool_before = sum(1 for m in msgs if m["role"] == "tool")
+    out = _ensure_request_fits_window(agent, msgs, tools_for_api=None)
+    budget = request_input_budget(agent)
+    assert estimate_request_context_tokens(out) <= budget
+    assert 131_072 - estimate_request_context_tokens(out) >= 8_192, "room to answer"
+    assert out[0]["content"] == "s" * 8000 and out[1]["content"] == "review the app"
+    cleared = [m for m in out if m["role"] == "tool" and m["content"] == _PRUNED_TOOL_PLACEHOLDER]
+    assert 0 < len(cleared) < tool_before
+    assert out[2 + 1]["content"] == _PRUNED_TOOL_PLACEHOLDER, "oldest tool output first"
+
+
+def test_no_max_tokens_near_full_window_forces_compression_after_abort():
+    """Right after an aborted compression (cooldown armed, should_compress False) the same
+    request must re-enter compression with bypass_cooldown instead of being sent."""
+    calls: list = []
+    agent = _fake_agent_for_reentry(window=131_072, cooldown_blocked=True, calls=calls)
+    agent.max_tokens = None
+    agent.api_mode, agent.provider = "chat_completions", "custom"
+    msgs = _near_full_window_request()
+    system = msgs[0]["content"]
+    compress_after_tool_results(
+        agent, messages=msgs[1:], system_message=system, user_message="review the app",
+        active_system_prompt=system, conversation_history=[], compression_attempts=2,
+        max_compression_attempts=3, effective_task_id="t", final_response=None,
+        turn_exit_reason=None, current_turn_user_idx=0,
+    )
+    assert len(calls) == 1 and calls[0]["bypass_cooldown"] is True
+
+
+def test_send_time_fit_check_runs_on_every_send():
+    """The loop calls the fit check after the preflight gate falls through and before the
+    API call is announced/sent, on every iteration (incl. after an aborted compression)."""
+    import inspect
+
+    from agent import conversation_loop
+
+    src = inspect.getsource(conversation_loop._run_conversation_turn)
+    gate = src.index("_pg = _run_phase(run_preflight_gate")
+    fit = src.index("_ensure_request_fits_window(agent, s.api_messages, s.tools_for_api)")
+    send = src.index("_run_api_retry_loop(agent, s)")
+    assert gate < fit < send
+    assert src.count("_run_api_retry_loop(agent, s)") == 1
+
+
+# ---------------------------------------------------------------------------
+# Regression run_29371f18: a long legitimate summary must not be aborted
+# ---------------------------------------------------------------------------
+
+
+def _delta_chunk(content=None, reasoning=None):
+    delta = SimpleNamespace(content=content, reasoning=reasoning, tool_calls=None,
+                            model_extra=None, reasoning_details=None)
+    return SimpleNamespace(id="c", model="m", usage=None,
+                           choices=[SimpleNamespace(index=0, delta=delta, finish_reason=None)])
+
+
+def _varied_text(n_chars: int, seed: int) -> str:
+    """Non-repeating prose/code-review text: the shape of a real thinking summary."""
+    import random
+
+    rnd = random.Random(seed)
+    words = ("the scanner view model card trade session bluetooth peer state queue error "
+             "retry handler swift actor main thread race decode json cache image price "
+             "collection deck inventory sync conflict update test coverage missing guard "
+             "optional unwrap crash leak closure weak self delegate notification").split()
+    lines, size, i = [], 0, 0
+    while size < n_chars:
+        line = f"{i}. In File{rnd.randint(1, 400)}.swift:{rnd.randint(1, 900)} " + " ".join(
+            rnd.choice(words) for _ in range(rnd.randint(8, 20))) + "."
+        lines.append(line)
+        size += len(line) + 1
+        i += 1
+    return "\n".join(lines)[:n_chars]
+
+
+def _stream(acc, text, field, step=400):
+    for k in range(0, len(text), step):
+        piece = text[k:k + step]
+        acc.feed(_delta_chunk(**{field: piece}))
+
+
+def test_long_legitimate_summary_is_not_aborted():
+    """run_29371f18: both summaries of a ~100K conversation were aborted at exactly 160,000
+    chars (reasoning + content). A 240K-char reasoning stream plus a 40K-char summary with no
+    loop (~70K tokens, beyond the old bound) must complete."""
+    acc = _ChatStreamAccumulator(
+        model="m", output_bound_chars=_summary_runaway_output_bound_chars("compression"))
+    _stream(acc, _varied_text(240_000, 1), "reasoning")
+    _stream(acc, _varied_text(40_000, 2), "content")
+    resp = acc.finish()
+    assert len(resp.choices[0].message.content) == 40_000
+    assert len(resp.choices[0].message.reasoning) == 240_000
+
+
+def test_looping_summary_is_stopped_well_before_hard_bound():
+    """A stream that degenerates into a verbatim loop after a legitimate start is stopped
+    shortly after the soft size, long before the ~100K-token hard bound."""
+    acc = _ChatStreamAccumulator(
+        model="m", output_bound_chars=_summary_runaway_output_bound_chars("compression"))
+    _stream(acc, _varied_text(150_000, 3), "reasoning")
+    unit = "Wait, let me re-check the trade session state handling once more before writing.\n"
+    with pytest.raises(TimeoutError) as exc_info:
+        _stream(acc, unit * 5000, "reasoning")
+    assert "timed out" in str(exc_info.value) and "repetition loop" in str(exc_info.value)
+    assert acc._content_chars < 250_000
+
+
+def test_true_runaway_without_verbatim_loop_hits_hard_bound():
+    """Even a non-verbatim runaway (>100K tokens) is stopped by the hard bound."""
+    bound = _summary_runaway_output_bound_chars("compression")
+    acc = _ChatStreamAccumulator(model="m", output_bound_chars=bound)
+    with pytest.raises(TimeoutError) as exc_info:
+        _stream(acc, _varied_text(bound + 10_000, 4), "content", step=4000)
+    assert "hard" in str(exc_info.value) and "timed out" in str(exc_info.value)

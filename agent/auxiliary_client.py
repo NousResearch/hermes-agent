@@ -7149,22 +7149,52 @@ def _create_with_progress_once(
         output_bound_chars=_summary_runaway_output_bound_chars(task))
 
 
+# Runaway bounds for the compression summary stream (reasoning + content chars, ~4 chars/token).
+# The old single bound (4 x _SUMMARY_TOKENS_CEILING = 40K tokens) aborted legitimate summaries:
+# a thinking model's reasoning is counted too, and run_29371f18 (qwen3.8-flash, 131K window)
+# aborted two ~100K-conversation compressions at exactly 160,000 chars with no evidence of a
+# loop. So size alone only stops the stream at a hard bound well past any real summary, and
+# between the soft and hard bound the stream is stopped only when its tail is a verbatim
+# repetition loop (agent.repetition_guard.is_runaway_repetition, the detector the main loop uses).
+_SUMMARY_RUNAWAY_HARD_TOKENS = 100_000
+_SUMMARY_REPETITION_CHECK_EVERY_CHARS = 16_000
+_SUMMARY_REPETITION_TAIL_CHARS = 32_000
+
+
+def _summary_repetition_check_from_chars() -> int:
+    """Stream size (chars) from which the summary stream's tail is checked for a loop."""
+    from agent.context_compressor import _SUMMARY_TOKENS_CEILING
+
+    return 4 * _SUMMARY_TOKENS_CEILING * 4
+
+
 def _summary_runaway_output_bound_chars(task: Optional[str]) -> Optional[int]:
-    """Generous output bound (chars) for the compression summary stream; None for other tasks.
+    """HARD output bound (chars) for the compression summary stream; None for other tasks.
 
     The summary call deliberately carries NO max_tokens wire cap — Anthropic/NIM forwards it and a
     hard cap truncates summaries (thinking models burn it on reasoning); see the rule comment at
     context_compressor.py's _SUMMARY_INPUT_MAX_CHARS. A repetition-looped summary therefore streams
-    until the compression ceiling. Bound the STREAM instead (never the wire request): several times
-    _SUMMARY_TOKENS_CEILING tokens at ~4 chars/token. Exceeding it raises TimeoutError phrased
-    "timed out" so _is_timeout_error matches and the attempt routes through the existing
-    failed-attempt fallback + cooldown machinery (which then retries per the re-entry rules).
+    until the compression ceiling. Bound the STREAM instead (never the wire request): a loop is
+    stopped early by the tail repetition check past ``_summary_repetition_check_from_chars()``,
+    and anything at all is stopped at ``_SUMMARY_RUNAWAY_HARD_TOKENS`` (~4 chars/token). Exceeding
+    either raises TimeoutError phrased "timed out" so _is_timeout_error matches and the attempt
+    routes through the existing failed-attempt fallback + cooldown machinery.
     """
     if task != "compression":
         return None
-    from agent.context_compressor import _SUMMARY_TOKENS_CEILING
+    return _SUMMARY_RUNAWAY_HARD_TOKENS * 4
 
-    return 4 * _SUMMARY_TOKENS_CEILING * 4
+
+def _tail_text(parts: list[str], limit: int) -> str:
+    """The last ``limit`` chars of ``"".join(parts)`` without joining the whole stream."""
+    tail: list[str] = []
+    size = 0
+    for piece in reversed(parts):
+        tail.append(piece)
+        size += len(piece)
+        if size >= limit:
+            break
+    return "".join(reversed(tail))[-limit:]
 
 
 def _aggregate_chat_stream(
@@ -7212,6 +7242,10 @@ class _ChatStreamAccumulator:
         # a failed attempt (fallback + cooldown machinery, then retry per the re-entry rules).
         self._output_bound_chars = output_bound_chars
         self._content_chars = 0
+        # Loop detection runs only for a bounded (compression) stream, past the soft size.
+        self._repetition_from = (
+            _summary_repetition_check_from_chars() if output_bound_chars is not None else None)
+        self._next_repetition_check = self._repetition_from
         self.content_parts: list[str] = []
         self.reasoning_parts: list[str] = []
         self.reasoning_details: list[Any] = []
@@ -7319,15 +7353,34 @@ class _ChatStreamAccumulator:
         made_progress |= self._feed_tool_calls(delta)
         if made_progress:
             _notify_aux_progress()
-        if (self._output_bound_chars is not None and self._content_chars
-                > self._output_bound_chars):
+        self._check_runaway_output()
+        return made_progress
+
+    def _check_runaway_output(self) -> None:
+        """Compression summary stream only: stop a verbatim loop past the soft size, and any
+        stream past the hard bound. Both raise TimeoutError phrased "timed out"."""
+        if self._output_bound_chars is None:
+            return
+        if self._content_chars > self._output_bound_chars:
             raise TimeoutError(
                 "Auxiliary streamed call timed out on runaway output: the stream produced "
-                f"{self._content_chars:,} chars, past the {self._output_bound_chars:,}-char "
-                "runaway bound (the model is repeating itself; the summary call carries no "
-                "max_tokens wire cap by design, so the STREAM is bounded instead)"
+                f"{self._content_chars:,} chars, past the {self._output_bound_chars:,}-char hard "
+                "runaway bound (the summary call carries no max_tokens wire cap by design, so "
+                "the STREAM is bounded instead)"
             )
-        return made_progress
+        if self._next_repetition_check is None or self._content_chars < self._next_repetition_check:
+            return
+        self._next_repetition_check = self._content_chars + _SUMMARY_REPETITION_CHECK_EVERY_CHARS
+        from agent.repetition_guard import is_runaway_repetition
+
+        for label, parts in (("content", self.content_parts), ("reasoning", self.reasoning_parts)):
+            if parts and is_runaway_repetition(_tail_text(parts, _SUMMARY_REPETITION_TAIL_CHARS)):
+                raise TimeoutError(
+                    "Auxiliary streamed call timed out on runaway output: the summary "
+                    f"{label} stream is a repetition loop after {self._content_chars:,} chars "
+                    "(the summary call carries no max_tokens wire cap by design, so the "
+                    "STREAM is bounded instead)"
+                )
 
     def finish(self) -> Any:
         tool_calls = None

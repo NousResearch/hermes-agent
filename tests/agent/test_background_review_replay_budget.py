@@ -28,7 +28,10 @@ from tests.agent.test_background_review_compute_overlap import (  # noqa: F401 â
 )
 
 
-def test_default_replay_leaves_room_for_a_read_write_cycle(review_forks, monkeypatch):
+def test_default_replay_leaves_room_for_a_read_write_cycle(
+    review_forks,  # health: allow F811 -- pytest injects the imported fixture by parameter name
+    monkeypatch,
+):
     """A session past the replay ceiling on a 200k window (150k aggregate) with a gateway-sized
     system prompt and tools[]: the fork must get a read, a write and a closing response (the
     review prompt enforces read-before-write) before the aggregate is exhausted."""

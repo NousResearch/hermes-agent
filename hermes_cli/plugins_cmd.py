@@ -119,6 +119,43 @@ def _table(columns, **kwargs):
     return table
 
 
+RUNNING_GATEWAY_PLUGIN_MUTATION_ERROR = (
+    "the messaging gateway is running and its loaded plugin callbacks import from the "
+    "installed checkouts. Run `hermes gateway stop`, apply the change, then `hermes gateway "
+    "start`. To skip this check pass --allow-live-gateway (callbacks may fail until restart)."
+)
+
+
+def _gateway_is_running() -> bool:
+    """Is the active profile's gateway live? Same liveness read as the dashboard status
+    surfaces (``resolve_gateway_liveness``), never mutating the profile's identity files."""
+    from hermes_cli.profiles import _check_gateway_running
+
+    try:
+        return _check_gateway_running(get_hermes_home())
+    except Exception:
+        # A failed probe must not strand an uninstallable plugin (issue #70473's fix may not
+        # become its own lock-out); treat unknown liveness as not running.
+        logger.exception("gateway liveness probe failed; proceeding without the live-gateway guard")
+        return False
+
+
+def _refuse_live_gateway_mutation(action: str, *, allow_live_gateway: bool = False) -> None:
+    """Fail before any mutating git operation on an installed plugin (#70473).
+
+    Pulling, re-cloning or deleting a checkout under a running gateway breaks its
+    already-loaded plugin callbacks (a deferred relative import hits files the
+    operation just removed). *action* names the refusal ("update", "remove", ...).
+    """
+    if allow_live_gateway:
+        return
+    if _gateway_is_running():
+        raise PluginOperationError(
+            f"Cannot {action} plugin files while {RUNNING_GATEWAY_PLUGIN_MUTATION_ERROR}",
+            failure_class="already_installed",
+        )
+
+
 def _is_tty() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
@@ -1003,20 +1040,21 @@ _PLUGIN_ACTIONS = {
         ref=getattr(args, "ref", None),
         allow_removed=getattr(args, "allow_removed", False),
         no_deps=getattr(args, "no_deps", False),
-        yes_deps=getattr(args, "yes_deps", False)),
+        yes_deps=getattr(args, "yes_deps", False),
+        allow_live_gateway=getattr(args, "allow_live_gateway", False)),
     "search": lambda args: _catalog().cmd_search(
         getattr(args, "term", "") or "", json_output=getattr(args, "json", False)),
     "browse": lambda args: _catalog().cmd_search(""),
     "validate": lambda args: _catalog().cmd_validate(
         args.path, as_json=getattr(args, "json", False), install_deps=getattr(args, "install_deps", False)),
-    "update": lambda args: cmd_update(args.name),
+    "update": lambda args: cmd_update(args.name, allow_live_gateway=getattr(args, "allow_live_gateway", False)),
     "adopt": lambda args: cmd_adopt(args.name),
     "trust-update-url": lambda args: cmd_trust_update_url(args.name),
     "check-updates": lambda args: cmd_check_updates(args),
     "check": lambda args: cmd_check_updates(args),
-    "remove": lambda args: cmd_remove(args.name),
-    "rm": lambda args: cmd_remove(args.name),
-    "uninstall": lambda args: cmd_remove(args.name),
+    "remove": lambda args: cmd_remove(args.name, allow_live_gateway=getattr(args, "allow_live_gateway", False)),
+    "rm": lambda args: cmd_remove(args.name, allow_live_gateway=getattr(args, "allow_live_gateway", False)),
+    "uninstall": lambda args: cmd_remove(args.name, allow_live_gateway=getattr(args, "allow_live_gateway", False)),
     "enable": lambda args: cmd_enable(
         args.name,
         allow_tool_override=_tri_state_flag(args, "allow_tool_override", "no_allow_tool_override")),

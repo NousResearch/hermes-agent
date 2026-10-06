@@ -18,7 +18,7 @@ from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import _exc_str, _sanitize_error, mcp_field, _core
 from tools import mcp_tool_loop as _loop
 from tools.mcp_tool_content import (
-    _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block,
+    _MCP_HARD_RESULT_CAP_CHARS, _BlockFailureNotice, _cache_mcp_audio_block, _cache_mcp_image_block,
     _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
     _truncate_mcp_text_result)
 from tools.mcp_tool_errors import _is_auth_error, _is_session_expired_error
@@ -441,7 +441,8 @@ def _render_content_blocks(result, server_name: str) -> Tuple[str, int]:
     """Text passes through; image/audio blocks are cached (MEDIA: tags); resource blocks are
     materialized rather than silently dropped; unsupported blocks become an inline drop notice
     (kimi-code#3227). Returns ``(text, usable_parts)`` — the count of REAL rendered blocks
-    (whitespace-only text and drop notices excluded) that the structuredContent arbitration uses."""
+    (whitespace-only text, drop notices and block-failure notices excluded) that the
+    structuredContent arbitration uses."""
     parts: List[str] = []
     usable_parts = 0
     # MCP tool results can also include ImageContent blocks (screenshot / Blockbench / Playwright etc.);
@@ -459,7 +460,8 @@ def _render_content_blocks(result, server_name: str) -> Tuple[str, int]:
         rendered = _cache_mcp_image_block(block) or _cache_mcp_audio_block(block) or _render_mcp_resource_block(block, server_name)
         if rendered:
             parts.append(rendered)
-            usable_parts += 1
+            if not isinstance(rendered, _BlockFailureNotice):
+                usable_parts += 1
             continue
         block_type = getattr(block, "type", None) or type(block).__name__
         if block_type in {"text", "resource", "audio", "image"}:  # benign empty render

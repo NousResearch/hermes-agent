@@ -17,7 +17,10 @@ images natively.
 from __future__ import annotations
 
 import base64
+import json
 from types import SimpleNamespace
+
+import pytest
 
 
 def _png_bytes():
@@ -92,10 +95,10 @@ class TestCacheMcpImageBlock:
         assert _cache_mcp_image_block(block) == ""
 
 
-    def test_returns_empty_when_bytes_dont_look_like_an_image(self, tmp_path, monkeypatch):
+    def test_bytes_the_cache_rejects_become_an_inline_notice(self, tmp_path, monkeypatch):
         """``cache_image_from_bytes`` has a format sniff; if the claimed
         ``image/png`` is actually an HTML error page, the cache raises and
-        we log + drop rather than propagate."""
+        we log + report the block inline rather than propagate or drop it."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         from tools.mcp_tool_content import _cache_mcp_image_block
 
@@ -103,7 +106,54 @@ class TestCacheMcpImageBlock:
             data=base64.b64encode(b"<html>error</html>").decode("ascii"),
             mimeType="image/png",
         )
-        assert _cache_mcp_image_block(block) == ""
+        tag = _cache_mcp_image_block(block)
+        assert not tag.startswith("MEDIA:") and "image/png" in tag
+
+    @pytest.mark.parametrize(("kind", "mime", "data"), [
+        ("image", "image/svg+xml", base64.b64encode(b'<svg xmlns="http://www.w3.org/2000/svg"/>').decode()),
+        ("image", "image/png", "!!!notbase64"),
+        ("audio", "audio/wav", "!!!notbase64"),
+        # Only non-alphabet characters, or valid groups behind them: a lenient decoder yields b"" or
+        # garbage bytes, which the audio cache (no format sniff) would store as a MEDIA file.
+        ("audio", "audio/wav", "!!!!"),
+        ("audio", "audio/wav", "!!!!abcd"),
+    ])
+    def test_media_only_result_that_cannot_be_cached_is_visible_to_the_model(
+        self, tmp_path, monkeypatch, kind, mime, data,
+    ):
+        """A tool whose only output is a media block Hermes cannot turn into a MEDIA tag must
+        not read as a successful empty result: the model has to learn the block existed."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.mcp_tool_handlers import _render_call_tool_result
+
+        result = SimpleNamespace(content=[SimpleNamespace(type=kind, data=data, mimeType=mime)],
+                                 isError=False, structuredContent=None, meta=None)
+        rendered = json.loads(_render_call_tool_result(result, "diagrams"))["result"]
+        assert kind in rendered and mime in rendered
+
+    @pytest.mark.parametrize("block", [
+        SimpleNamespace(type="image", data=base64.b64encode(b"<svg/>").decode(), mimeType="image/svg+xml"),
+        SimpleNamespace(type="audio", data="!!!notbase64", mimeType="audio/wav"),
+        SimpleNamespace(type="resource", resource=SimpleNamespace(
+            uri="x://r.bin", mimeType="application/octet-stream", blob="!!!notbase64", text=None)),
+    ], ids=["image-cache-rejects", "audio-bad-base64", "resource-bad-base64"])
+    def test_failure_notice_does_not_displace_structured_content(self, tmp_path, monkeypatch, block):
+        """A failure notice says a block existed, not what it held. Like the unsupported-block
+        notice, it must not count as rendered content, or the over-cap structuredContent that an
+        otherwise-empty result carries is dropped in its favour."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.mcp_tool_content import _MCP_HARD_RESULT_CAP_CHARS
+        from tools.mcp_tool_handlers import _render_call_tool_result
+
+        def render(content):
+            return json.loads(_render_call_tool_result(SimpleNamespace(
+                content=content, isError=False, meta=None,
+                structuredContent={"rows": ["x" * 100] * (_MCP_HARD_RESULT_CAP_CHARS // 50)}), "srv"))
+
+        structured_alone = render([])["result"]
+        with_notice = render([block])
+        assert with_notice.get("structuredContent") == structured_alone
+        assert "[MCP " in with_notice["result"]
 
     def test_handles_jpeg(self, tmp_path, monkeypatch):
         """JPEG signature should also be accepted."""

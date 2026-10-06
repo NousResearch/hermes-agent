@@ -5,6 +5,7 @@ embedded resources."""
 import base64
 import logging
 import mimetypes
+import re
 from typing import Any, Dict, Optional, Tuple
 from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import mcp_field
@@ -69,20 +70,31 @@ def _mcp_image_extension_for_mime_type(mime_type: str) -> str:
     return mimetypes.guess_extension(normalized) or ".png"
 
 
+class _BlockFailureNotice(str):
+    """Inline marker for a media/resource block Hermes could not materialize (malformed base64,
+    over the size cap, cache rejected or unavailable). It tells the model the block existed but is
+    not the block's content, so like the unsupported-block notice it does not count as a rendered
+    block in the structuredContent arbitration (``_render_content_blocks``)."""
+
+
 def _decode_block_b64(data, what: str, label: str, *, cap_what: Optional[str] = None,
                       cap_suffix: str = "", decode_fail: str = "") -> Tuple[Optional[bytes], str]:
     """Base64-decode one block payload: ``(bytes, "")`` or ``(None, inline_marker)``. With
     ``cap_what`` the payload is rejected on b64 length BEFORE decoding and on decoded size
     after. Decode failures warn and return ``decode_fail`` ("" = drop the block)."""
     if cap_what and len(data) > _MCP_RESOURCE_MAX_B64_CHARS:
-        return None, f"[MCP {cap_what} too large to cache: ~{len(data) * 3 // 4} bytes{cap_suffix}]"
+        return None, _BlockFailureNotice(
+            f"[MCP {cap_what} too large to cache: ~{len(data) * 3 // 4} bytes{cap_suffix}]")
     try:
-        raw_bytes = base64.b64decode(data)
+        # Strict: the lenient decoder discards non-alphabet characters, so "!!!!" became b"" and
+        # was cached as media. Whitespace goes first because line-wrapped base64 is still valid.
+        raw_bytes = base64.b64decode(re.sub(r"\s+", "", data), validate=True)
     except (TypeError, ValueError) as exc:
         logger.warning("MCP %s decode failed (%s): %s", what, label, exc)
-        return None, decode_fail
+        return None, _BlockFailureNotice(decode_fail)
     if cap_what and len(raw_bytes) > _MCP_RESOURCE_MAX_BYTES:
-        return None, f"[MCP {cap_what} too large to cache: {len(raw_bytes)} bytes{cap_suffix}]"
+        return None, _BlockFailureNotice(
+            f"[MCP {cap_what} too large to cache: {len(raw_bytes)} bytes{cap_suffix}]")
     return raw_bytes, ""
 
 
@@ -96,37 +108,42 @@ def _write_block_cache(writer: str, what: str, skip_label: str, *args,
         return getattr(_base, writer)(*args, **kwargs), ""
     except ImportError:
         logger.debug("MCP %s caching skipped — gateway.platforms.base unavailable", skip_label)
-        return None, unavailable
+        return None, _BlockFailureNotice(unavailable)
     except Exception as exc:
         logger.warning("MCP %s cache failed: %s", what, exc)
-        return None, failed
+        return None, _BlockFailureNotice(failed)
 
 
 _WAV_MIME_EXT = {"audio/wav": ".wav", "audio/x-wav": ".wav", "audio/wave": ".wav"}
 
 
 def _cache_mcp_media_block(block, kind: str, writer: str, ext_for, *, cap_what: Optional[str] = None) -> str:
-    """Cache an image/audio block and return a ``MEDIA:<path>`` tag. "" (logging, not raising)
-    when the block isn't ``kind`` media, the base64 is malformed, or the cache rejects the
-    bytes: the caller falls through to any text blocks."""
+    """Cache an image/audio block and return a ``MEDIA:<path>`` tag. "" when the block isn't
+    ``kind`` media (the caller tries the next renderer). Malformed base64 or bytes the cache
+    rejects (SVG/AVIF/HEIC, an HTML error page) log, never raise, and return an inline notice
+    like the embedded-resource path: a silent drop tells the model the tool returned nothing."""
     data = getattr(block, "data", None)
     mime = _base_mime(mcp_field(block, "mime_type", "mimeType"))
     if data is None or not mime.startswith(f"{kind}/"):
         return ""
-    raw_bytes, err = _decode_block_b64(data, f"{kind} block", mime, cap_what=cap_what)
+    raw_bytes, err = _decode_block_b64(data, f"{kind} block", mime, cap_what=cap_what,
+                                       decode_fail=f"[MCP {kind} could not be decoded: {mime}]")
     if raw_bytes is None:
         return err
-    path, err = _write_block_cache(writer, f"{kind} block", kind, raw_bytes, ext=ext_for(mime))
+    path, err = _write_block_cache(
+        writer, f"{kind} block", kind, raw_bytes, ext=ext_for(mime),
+        unavailable=f"[MCP {kind} received ({len(raw_bytes)} bytes, {mime}) but media cache unavailable in this process]",
+        failed=f"[MCP {kind} could not be cached: {mime}, {len(raw_bytes)} bytes]")
     return err if path is None else f"MEDIA:{path}"
 
 
 def _cache_mcp_image_block(block) -> str:
-    """Cache an ``ImageContent`` block and return a ``MEDIA:<path>`` tag ("" on any failure)."""
+    """Cache an ``ImageContent`` block: ``MEDIA:<path>`` tag, or an inline failure notice."""
     return _cache_mcp_media_block(block, "image", "cache_image_from_bytes", _mcp_image_extension_for_mime_type)
 
 
 def _cache_mcp_audio_block(block) -> str:
-    """Cache an ``AudioContent`` block and return a ``MEDIA:<path>`` tag ("" on any failure)."""
+    """Cache an ``AudioContent`` block: ``MEDIA:<path>`` tag, or an inline failure notice."""
     return _cache_mcp_media_block(
         block, "audio", "cache_audio_from_bytes",
         lambda mime: _WAV_MIME_EXT.get(mime) or mimetypes.guess_extension(mime) or ".ogg",

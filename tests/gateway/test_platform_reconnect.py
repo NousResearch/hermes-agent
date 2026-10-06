@@ -1,6 +1,7 @@
 """Tests for the gateway platform reconnection watcher."""
 
 import asyncio
+import contextlib
 import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -513,11 +514,12 @@ class TestReconnectKeepsInboundDedup:
         assert old._held_inbound_events == failed._held_inbound_events == new._held_inbound_events == []
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("mode", ["not-installed", "cancel-after-install"])
+    @pytest.mark.parametrize("mode", ["not-installed", "connect-raises", "cancel-after-install"])
     async def test_failed_secondary_candidate_returns_held_inbound_to_predecessor(self, mode):
-        """A secondary reconnect candidate that is not installed must hand its held inbound back to the
-        retained predecessor instead of discarding it with the candidate (#133399); an INSTALLED one
-        cancelled mid-redeliver keeps its queue -- handing back would forward in a cycle forever."""
+        """A secondary reconnect candidate that is not installed (or whose connect raised inside the
+        attempt) must hand its held inbound back to the retained predecessor instead of discarding it
+        (#133399); an INSTALLED one cancelled mid-redeliver keeps its queue -- handing back would
+        forward in a cycle forever."""
         _Telegram = self._telegram_cls()
         runner = _make_runner()
         runner._profile_adapters, runner._profile_failed_platforms = {}, {}
@@ -525,7 +527,7 @@ class TestReconnectKeepsInboundDedup:
         in_connect, salvaged = self._event("candidate"), self._event("salvage")
         installed = mode == "cancel-after-install"
         predecessor = _Telegram(True)
-        failed = _Telegram(installed or False, hold=in_connect, salvage=salvaged)
+        failed = _Telegram(installed or (None if mode == "connect-raises" else False), hold=in_connect, salvage=salvaged)
         predecessor._set_fatal_error("telegram_network_error", "stall", retryable=True)
 
         async def attempt(*_args):
@@ -533,17 +535,26 @@ class TestReconnectKeepsInboundDedup:
             runner._running = installed  # stop after this one failed attempt
             return failed, success
 
-        runner._secondary_reconnect_attempt = attempt
         runner._redeliver_failed_obligations_for_platform = AsyncMock(side_effect=asyncio.CancelledError)
-        if not installed:
+        runner._create_adapter = MagicMock(return_value=failed)
+        runner._configure_profile_adapter = MagicMock(side_effect=lambda *_a: setattr(runner, "_running", False))
+        if mode != "connect-raises":  # stub the attempt; connect-raises runs the real one's own teardown
+            runner._secondary_reconnect_attempt = attempt
+        with patch("hermes_cli.profiles.get_profile_dir"), \
+             patch("hermes_cli.env_loader.hydrate_profile_secret_sources"), \
+             patch("gateway.run._profile_runtime_scope", MagicMock()), \
+             patch("gateway.run._platform_has_bot_credential", return_value=True), \
+             patch("gateway.config.load_gateway_config") as load, \
+             pytest.raises(asyncio.CancelledError) if installed else contextlib.nullcontext():
+            load.return_value.platforms = {Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}
             await runner._run_secondary_profile_reconnect("coder", Platform.TELEGRAM, predecessor)
-            assert failed._held_inbound_events == []
-            assert predecessor._held_inbound_events == [in_connect, salvaged]
-            assert in_connect.source._transport_adapter_ref() is predecessor
+
+        if installed:
+            assert (predecessor._held_inbound_events or []) + (failed._held_inbound_events or []) == [salvaged]
             return
-        with pytest.raises(asyncio.CancelledError):
-            await runner._run_secondary_profile_reconnect("coder", Platform.TELEGRAM, predecessor)
-        assert (predecessor._held_inbound_events or []) + (failed._held_inbound_events or []) == [salvaged]
+        assert failed._held_inbound_events == []
+        assert predecessor._held_inbound_events == [in_connect, salvaged]
+        assert in_connect.source._transport_adapter_ref() is predecessor
 
 
 # --- Pause / resume circuit breaker ---

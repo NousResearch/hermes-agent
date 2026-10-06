@@ -2063,10 +2063,11 @@ class GatewayTurnMixin:
 
         # The context prompt render is pinned per session, keyed by a hash of the renderer inputs, so
         # the system prompt cannot drift turn-over-turn; a miss (thread rename, /sethome) re-renders.
-        if event.internal and session_key:
+        if session_key and self._event_preserves_prompt_pins(event):
             await self._rehydrate_prompt_pins(session_key, session_entry.session_id)
         context_prompt = self._pinned_session_context_prompt(
-            context, _redact_pii, session_key, internal=event.internal,
+            context, _redact_pii, session_key,
+            preserve_pin=self._event_preserves_prompt_pins(event),
         )
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
@@ -2186,9 +2187,10 @@ class GatewayTurnMixin:
             # Admission/typing is not execution. All routing, authorization and
             # turn preparation gates have passed when the agent runner is entered.
             event._heartbeat_execution_started = True
-            # Internal events reuse the last human turn's channel inputs (see _pinned_channel_inputs).
+            # Internal wakes and synthetic continuations reuse established prompt-pin inputs.
             _turn_channel_prompt, _turn_source = self._pinned_channel_inputs(
-                session_key, event.channel_prompt, source, internal=event.internal,
+                session_key, event.channel_prompt, source,
+                preserve_pin=self._event_preserves_prompt_pins(event),
             )
             if not event.internal:
                 # Persist the coherent context+channel pair before execution: a crash during the
@@ -3890,7 +3892,8 @@ class GatewayTurnMixin:
             next_message_id = self._reply_anchor_for_event(pending_event)
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
             next_channel_prompt, next_source = self._pinned_channel_inputs(
-                next_session_key, pending_event.channel_prompt, next_source, internal=pending_event.internal,
+                next_session_key, pending_event.channel_prompt, next_source,
+                preserve_pin=self._event_preserves_prompt_pins(pending_event),
             )
             if not pending_event.internal:
                 # A drained human turn re-pins its channel inputs; make them durable like a first turn.

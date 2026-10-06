@@ -11,6 +11,7 @@ reaches ``_run_agent`` is byte-identical on all three turns.
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -320,6 +321,77 @@ async def test_event_backed_followup_overrides_inherited_channel_prompt(monkeypa
     assert len(calls) == 1
     assert calls[0]["channel_prompt"] == "Queued event prompt.", "event prompt must win over the inherited one"
 
+
+@pytest.mark.asyncio
+async def test_non_internal_synthetic_event_preserves_all_prompt_pins(monkeypatch):
+    """#126109: non-internal synthetic turns inherit both session-context and channel pins."""
+    config = GatewayConfig()
+    config.platforms[Platform.DISCORD] = PlatformConfig(
+        enabled=True,
+        channel_overrides={PARENT_ID: ChannelOverride(system_prompt="Parent persona.")},
+    )
+    runner = _make_runner(monkeypatch, config)
+    calls: list[dict] = []
+    _capture(runner, calls)
+
+    source = _human_thread_source()
+    await _drive(runner, ((False, source),), channel_prompt="Channel hint.")
+
+    synthetic = runner._synthetic_prompt_event(source, "[Continuing toward your standing goal]")
+    assert synthetic.internal is False
+    assert synthetic.channel_prompt is None
+    assert synthetic.source.message_id is None
+    assert synthetic.preserve_prompt_pins is True
+    # pre_gateway_dispatch rewrite hooks rebuild events with dataclasses.replace.
+    synthetic = dataclasses.replace(synthetic, text=synthetic.text + " (rewritten)")
+    assert synthetic.preserve_prompt_pins is True
+
+    await runner._handle_message_with_agent(synthetic, synthetic.source, KEY, 1)
+    await _drive(runner, ((False, source),), channel_prompt="Channel hint.")
+
+    assert [call["channel_prompt"] for call in calls] == ["Channel hint."] * 3
+    ephemeral = [_effective_ephemeral(runner, call) for call in calls]
+    assert "Triggering message: provided per-turn" in ephemeral[0]
+    assert ephemeral[0] == ephemeral[1] == ephemeral[2]
+    assert runner._peek_session_state(KEY).conversation.channel_pin == ("Channel hint.", PARENT_ID)
+
+
+@pytest.mark.asyncio
+async def test_queued_synthetic_event_preserves_channel_pin(monkeypatch):
+    """In-band FIFO continuations consume the same preservation marker."""
+    runner = _make_runner(monkeypatch)
+    calls: list[dict] = []
+    _capture(runner, calls)
+    runner._run_agent_deliver_first_response = AsyncMock()
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="continue")
+    runner._session_key_for_source = lambda source: KEY
+
+    source = _human_thread_source()
+    await _drive(runner, ((False, source),), channel_prompt="Channel hint.")
+    first = calls[0]
+    turn_ctx = TurnContext(
+        source=first["source"],
+        context_prompt=first["context_prompt"],
+        channel_prompt=first["channel_prompt"],
+        session_key=KEY,
+        session_id="sess-wiring",
+        run_generation=1,
+        history=[],
+    )
+    adapter = MagicMock()
+    adapter._active_sessions = {}
+    pending = runner._synthetic_prompt_event(source, "[goal] continue")
+
+    await runner._run_agent_queued_followup(
+        turn_ctx, adapter, pending.text, pending, "done",
+        {"final_response": "done", "messages": []}, None,
+    )
+
+    assert len(calls) == 2
+    assert calls[1]["channel_prompt"] == "Channel hint."
+    assert runner._peek_session_state(KEY).conversation.channel_pin == ("Channel hint.", PARENT_ID)
+
 @pytest.mark.asyncio
 async def test_first_internal_event_after_restart_rehydrates_durable_prompt_pins(monkeypatch):
     config = GatewayConfig()
@@ -360,6 +432,37 @@ async def test_first_internal_event_after_restart_rehydrates_durable_prompt_pins
         == next_human["source"].parent_chat_id
     )
     assert _effective_ephemeral(after, first_internal) == _effective_ephemeral(before, human)
+
+
+@pytest.mark.asyncio
+async def test_first_synthetic_event_after_restart_rehydrates_durable_prompt_pins(monkeypatch):
+    """#126109 across a restart: a goal/heartbeat continuation is usually the first turn a
+    restarted gateway runs for a session, and it is non-internal, so it must adopt the durable
+    pins on the same decision the in-process reuse makes (``preserve_prompt_pins``)."""
+    config = GatewayConfig()
+    config.platforms[Platform.DISCORD] = PlatformConfig(
+        enabled=True,
+        channel_overrides={PARENT_ID: ChannelOverride(system_prompt="Parent persona.")},
+    )
+    durable: dict = {}
+    before = _make_runner(monkeypatch, config, durable_prompt_pin=durable)
+    calls_before: list[dict] = []
+    _capture(before, calls_before)
+    await _drive(before, ((False, _human_thread_source()),), channel_prompt="Channel hint.")
+    assert durable["value"]["channel_prompt"] == "Channel hint."
+
+    after = _make_runner(monkeypatch, config, durable_prompt_pin=durable)
+    calls_after: list[dict] = []
+    _capture(after, calls_after)
+    synthetic = after._synthetic_prompt_event(_human_thread_source(), "[Continuing toward your standing goal]")
+    assert synthetic.internal is False and synthetic.preserve_prompt_pins is True
+    await after._handle_message_with_agent(synthetic, synthetic.source, KEY, 1)
+    await _drive(after, ((False, _human_thread_source()),), channel_prompt="Channel hint.")
+
+    human, first_synthetic, next_human = calls_before[0], calls_after[0], calls_after[1]
+    assert [human["channel_prompt"], first_synthetic["channel_prompt"], next_human["channel_prompt"]] == ["Channel hint."] * 3
+    assert _effective_ephemeral(after, first_synthetic) == _effective_ephemeral(before, human)
+    assert _effective_ephemeral(after, next_human) == _effective_ephemeral(before, human)
 
 
 @pytest.mark.asyncio

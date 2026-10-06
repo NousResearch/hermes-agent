@@ -248,6 +248,25 @@ class TestBusyInputModeQueueFifo:
         ]
         assert runner._queue_depth(session_key, adapter=adapter) == 5
 
+    def test_synthetic_and_human_photo_keep_separate_prompt_identity(self):
+        """A synthetic continuation must not absorb a real human photo into its prompt identity."""
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:synthetic-photo"
+
+        synthetic = self._text_event("[goal] continue")
+        synthetic.preserve_prompt_pins = True
+        photo = self._media_event("/tmp/user.jpg", "image/jpeg", MessageType.PHOTO, text="look")
+
+        runner._queue_or_replace_pending_event(session_key, synthetic)
+        runner._queue_or_replace_pending_event(session_key, photo)
+
+        head = adapter._pending_messages[session_key]
+        assert head is synthetic
+        assert head.media_urls == []
+        assert head.preserve_prompt_pins is True
+        assert runner._queued_events[session_key] == [photo]
+        assert photo.preserve_prompt_pins is False
+
     def test_photo_burst_still_merges_into_one_head_event(self):
         """Control: rapid photos (and a trailing caption text) still collapse into one album
         event so the next turn sees the whole burst."""

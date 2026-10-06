@@ -142,10 +142,7 @@ def test_dispatch_failure_after_receipt_never_leaves_it_claimed(cron_store, monk
     monkeypatch.setattr(scheduler, "run_one_job", lambda job, **k: True)
     monkeypatch.setattr(scheduler, "_should_yield_tick_to_fresh_gateway", lambda: None)
     monkeypatch.setattr(scheduler, site, boom)
-    try:
-        scheduler.tick(verbose=False, sync=True)
-    except RuntimeError:
-        pass  # a claim failure may still surface; the receipt is what must be terminal
+    scheduler.tick(verbose=False, sync=True)  # a worker failure is logged, never raised
     row = executions.latest_execution("due-job")
     assert row is not None and row["status"] == "failed"
     if site == "note_cron_execution":  # the receipt exists, so creation did not fail

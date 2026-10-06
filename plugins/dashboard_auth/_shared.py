@@ -45,8 +45,19 @@ def _request_limited_response(method: str, url: str, **kwargs: Any) -> httpx.Res
     Content-Length is prechecked when declared; the streamed body is capped
     chunk-by-chunk either way (a lying/absent header cannot bypass the bound).
     Returns a fully-read ``httpx.Response`` with the same status/headers.
+
+    ``Accept-Encoding: identity`` is requested by default (a caller-supplied
+    header wins, matched case-insensitively): these IdP endpoints return small
+    JSON documents that gain nothing from compression, while CDNs in front of
+    them have served bodies httpx cannot decompress — surfacing as
+    "token endpoint unreachable: Error -3 while decompressing data" (#134222).
     """
-    with httpx.stream(method, url, **kwargs) as response:
+    caller_headers = {
+        str(k).lower(): v for k, v in (kwargs.pop("headers", None) or {}).items()
+    }
+    with httpx.stream(
+        method, url, headers={"accept-encoding": "identity", **caller_headers}, **kwargs
+    ) as response:
         declared = response.headers.get("content-length")
         if declared:
             try:

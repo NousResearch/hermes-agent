@@ -4,6 +4,8 @@ These are behavior contracts, not snapshots — they assert WHERE trust comes
 from and that explicit per-provider settings still beat it.
 """
 
+from pathlib import Path
+
 import pytest
 
 from agent.ssl_verify import resolve_httpx_verify
@@ -47,7 +49,7 @@ def test_missing_bundle_under_a_cert_env_var_shares_the_platform_context(tmp_pat
     assert bundle_ctx is ssl_verify.platform_ssl_context()
     assert bundle_ctx is not platform
     assert type(bundle_ctx) is ssl.SSLContext  # truststore-injected: bundle + OS store
-    assert getattr(bundle_ctx, "_ctx", bundle_ctx).cert_store_stats()["x509_ca"] > 0
+    assert bundle_ctx is ssl_verify._CA_CONTEXTS[(str(Path(certifi.where()).resolve()), True)]
 
 
 @pytest.mark.parametrize("value", [False, "false", "0", "no", "off", "FALSE"])

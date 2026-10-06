@@ -35,9 +35,11 @@ import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
+import { resetSessionBackground } from '@/store/composer-status'
 import { $connectionRequests } from '@/store/connection-request'
 import {
   $gateway,
+  isActivePrimary,
   openGatewayForAgent,
   openGatewayForProfile,
   pendingSessionReplay,
@@ -45,9 +47,10 @@ import {
   retainGatewayForAgent
 } from '@/store/gateway'
 import { $gatewaySwitching } from '@/store/gateway-switch'
+import { clearSessionGoal } from '@/store/goals'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
-import { prunePreviewTabsForSession } from '@/store/preview'
+import { adoptDraftPreviewTabs, prunePreviewTabsForSession } from '@/store/preview'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
@@ -75,12 +78,12 @@ import {
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
+  $currentServiceTier,
   $messages,
   $newChatWorkspaceTarget,
   $sessions,
   $yoloActive,
   getCurrentModelSource,
-  getSessionOwnerHint,
   idsShareLineage,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
@@ -94,7 +97,6 @@ import {
   setCurrentCwd,
   setCurrentCwdExplicit,
   setCurrentCwdTransient,
-  setCurrentServiceTier,
   setCurrentUsage,
   setFreshDraftReady,
   setIntroSeed,
@@ -110,6 +112,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { clearSessionControl } from '@/store/session-control'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
 import {
   beginSessionMutation,
@@ -126,7 +129,6 @@ import {
   type SessionProfileRoute
 } from '@/store/session-request-router'
 import {
-  $focusedStoredSessionId,
   $sessionTiles,
   closeSessionTile,
   dropSessionState,
@@ -143,7 +145,8 @@ import {
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { $archivedSessions } from '@/store/sidebar-archive'
-import { restoreSessionTodosFromSnapshot } from '@/store/todos'
+import { clearSessionSubagents } from '@/store/subagents'
+import { clearSessionTodos, restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { dropTranscriptTail, dropTranscriptTailEverywhere, saveTranscriptTail } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
 import type {
@@ -164,6 +167,7 @@ import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this
 import { captureDisplayHydration } from './display-hydration'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
+import { rememberedOwnerForResume } from './remembered-owner'
 import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
 import { createGatewaySession } from './session-create-request'
@@ -355,6 +359,7 @@ async function desktopSessionCreateParams(
   const selection = {
     effort: $currentReasoningEffort.get().trim(),
     fast: $currentFastMode.get(),
+    serviceTier: $currentServiceTier.get().trim(),
     model: isManualSelection ? $currentModel.get().trim() : '',
     provider: isManualSelection ? $currentProvider.get().trim() : ''
   }
@@ -387,7 +392,10 @@ async function desktopSessionCreateParams(
             ? { model: selection.model, ...(selection.provider ? { provider: selection.provider } : {}) }
             : {}),
           ...(selection.effort ? { reasoning_effort: selection.effort } : {}),
-          fast: selection.fast
+          fast: selection.fast,
+          // Only Ultrafast needs the tier: `fast` already pins Priority/normal, and a
+          // pre-Ultrafast backend rejects the field (createGatewaySession drops it).
+          ...(selection.serviceTier === 'ultrafast' ? { service_tier: 'ultrafast' } : {})
         }
       : {})
   }
@@ -739,9 +747,8 @@ export function useSessionActions({
       // localStorage) — a new chat FOLLOWS your last pick instead of snapping
       // back to the profile default, so we deliberately don't reset it here. The
       // profile default still owns first-run seeding and profile switches (see
-      // refreshCurrentModel). Only $currentServiceTier (a live-session mirror)
-      // is cleared.
-      setCurrentServiceTier('')
+      // refreshCurrentModel). Keep the canonical service tier too: clearing
+      // it while retaining fast=true would silently downgrade Ultrafast.
       setYoloActive(false)
       setNewChatWorkspaceTarget(hasWorkspaceTarget ? workspaceTarget : undefined)
       // #52589 provenance: only a deliberate string workspace target is an explicit
@@ -920,6 +927,8 @@ export function useSessionActions({
           // Anything still parked under the pre-session draft bucket belongs
           // to this chat now (#114122); the composer moves it on scope swap.
           announceNewSessionDraftKey(stored)
+          // The draft's preview tabs follow it the same way (#73890).
+          adoptDraftPreviewTabs(stored)
           createOverrides?.onComposerScopeAssigned?.(stored)
           // Hold creatingSessionRef until the route lands on `stored` (release
           // effect above). setTimeout(0) raced use-route-resume back onto the
@@ -1422,7 +1431,15 @@ export function useSessionActions({
       // gateway call (no-op when it's already on that profile / single-profile).
       // resolveStoredSession finds the row by id (cheap), so an uncached pasted
       // id loads as fast as a sidebar click instead of hanging on a list scan.
-      const ownerRoute = capturedOwner || getSessionOwnerHint(storedSessionId)
+      //
+      // Only the REMEMBERED hint is validated (remembered-owner.ts); an explicitly captured owner
+      // (requestSessionResume with a row route, a plugin open) is authoritative as given.
+      const rememberedOwner = capturedOwner ? undefined : rememberedOwnerForResume(storedSessionId)
+
+      // An explicit capture outranks the remembered hint; the hint only
+      // fills in when the caller had no route to give.
+      const ownerRoute = capturedOwner || rememberedOwner
+
       // A connection switch clears/reloads the session rows before this path
       // runs, so an untagged row belongs to the connection that supplied the
       // current list. Capture that source before the async metadata lookup. If
@@ -1431,8 +1448,13 @@ export function useSessionActions({
       // wrong machine ("resume failed: session not found").
       const ambientConnection = $connection.get()
 
+      // Keep the legacy primary-local profile door: main may resolve a named
+      // profile to its own remote override (#94166). A registry secondary is
+      // already an explicit source, even when it is This device under Home.
       const ambientConnectionId =
-        ambientConnection?.mode === 'remote' ? ambientConnection.connectionId?.trim() || '' : ''
+        ambientConnection?.mode === 'remote' || (ambientConnection?.registryScoped && !isActivePrimary())
+          ? ambientConnection.connectionId?.trim() || ''
+          : ''
 
       const provisional = provisionalTranscriptPaint(
         storedSessionId,
@@ -1484,6 +1506,21 @@ export function useSessionActions({
               profile: sessionProfile || 'default'
             }
           : sessionProfile)
+
+      // Preserve this resolved source for later prompt/approval RPCs too;
+      // otherwise an untagged row falls back to its bare profile after resume.
+      // Only for a row the ambient source actually returned: an id that did not
+      // resolve (deep link, routed restore) proves nothing about its owner, and
+      // a persisted hint would pin it to whichever source was in front.
+      if (
+        !ownerRoute &&
+        storedForProfile &&
+        !storedForProfile.connection_id &&
+        sessionOwner &&
+        typeof sessionOwner === 'object'
+      ) {
+        setSessionOwnerHint(storedSessionId, sessionOwner)
+      }
 
       const sessionRestScope = transcriptRestScope(ownerRoute, storedForProfile, ambientConnectionId)
       provisional.paint(sessionRestScope)
@@ -3321,6 +3358,18 @@ export function useSessionActions({
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
           sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
           dropSessionState(tiledRuntimeId)
+        }
+
+        // Live per-session stores (the same four the stop paths clear) key on
+        // the gateway event's session_id, i.e. the runtime id. When the deleted
+        // row is selected, closingRuntimeId is the foreground runtime, which can
+        // differ from the stored→runtime mapping (cached/tiled runtime), so
+        // clear the stored id and both runtime ids — once per distinct id.
+        for (const sid of new Set([storedSessionId, closingRuntimeId, tiledRuntimeId].filter(Boolean) as string[])) {
+          clearSessionSubagents(sid)
+          clearSessionTodos(sid)
+          clearSessionGoal(sid)
+          resetSessionBackground(sid)
         }
       } catch (err) {
         if (listed?.session) {

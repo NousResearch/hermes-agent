@@ -931,7 +931,7 @@ def handle_function_call(
         if "manage_connections" not in _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode=True):
             return _emit(tool_error("Connectors are not available in this session."))
         if is_connector_name(function_name) and parse_connector_name(function_name) is None:
-            return _emit(tool_error("Malformed connector tool name; expected connectors__<connector>__<tool>."))
+            return _emit(tool_error("Malformed connector tool name; expected connectors__<connector>__{tool}."))
 
     original_args = dict(function_args)
     if not skip_tool_request_middleware:

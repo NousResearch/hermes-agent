@@ -8,7 +8,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 本页记录 Hermes 的内置工具，按工具集分组。可用性因平台、凭据和已启用的工具集而异。
 
-**当前注册表快速统计：** 约 71 个工具 —— 10 个浏览器工具（核心）+ 2 个 CDP 门控浏览器工具、4 个文件工具、4 个 Home Assistant 工具、2 个终端工具、2 个 Web 工具、5 个 Feishu 工具、7 个 Spotify 工具（由内置 `spotify` 插件注册）、5 个 Yuanbao 工具、9 个 kanban 工具（在 kanban 调度器生成 agent 时注册）、2 个 Discord 工具，以及若干独立工具（`memory`、`clarify`、`delegate_task`、`execute_code`、`cronjob`、`session_search`、`skill_view`/`skill_manage`/`skills_list`、`text_to_speech`、`image_generate`、`video_generate`、`vision_analyze`、`video_analyze`、`send_message`、`todo`、`computer_use`、`process`）。
+**当前注册表快速统计：** 约 71 个工具 —— 10 个浏览器工具（核心）+ 2 个 CDP 门控浏览器工具、4 个文件工具、2 个终端工具、2 个 Web 工具、5 个 Feishu 工具、7 个 Spotify 工具（由内置 `spotify` 插件注册）、5 个 Yuanbao 工具、9 个 kanban 工具（在 kanban 调度器生成 agent 时注册）、2 个 Discord 工具，以及若干独立工具（`memory`、`clarify`、`delegate_task`、`execute_code`、`cronjob`、`session_search`、`skill_view`/`skill_manage`/`skills_list`、`text_to_speech`、`image_generate`、`video_generate`、`vision_analyze`、`video_analyze`、`send_message`、`todo`、`computer_use`、`process`）。
 
 :::tip MCP 工具
 除内置工具外，Hermes 还可从 MCP 服务器动态加载工具。MCP 工具以 `mcp_<server>_` 为前缀（例如，`github` MCP 服务器的 `mcp_github_create_issue`）。配置方法见 [MCP 集成](../user-guide/features/mcp.md)。
@@ -90,15 +90,6 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 | `search_files` | 搜索文件内容或按名称查找文件。用于替代终端中的 `grep`/`rg`/`find`/`ls`。基于 Ripgrep，比 shell 等效命令更快。内容搜索（`target='content'`）：在文件内进行正则搜索。输出模式：带行号的完整匹配… | — |
 | `write_file` | 将内容写入文件，完全替换现有内容。用于替代终端中的 `echo`/`cat heredoc`。自动创建父目录。**覆盖整个文件** —— 精准编辑请使用 `patch`。 | — |
 
-## `homeassistant` 工具集
-
-| 工具 | 描述 | 所需环境 |
-|------|------|----------|
-| `ha_call_service` | 调用 Home Assistant 服务以控制设备。使用 `ha_list_services` 发现各域的可用服务及其参数。 | — |
-| `ha_get_state` | 获取单个 Home Assistant 实体的详细状态，包括所有属性（亮度、颜色、温度设定值、传感器读数等）。 | — |
-| `ha_list_entities` | 列出 Home Assistant 实体。可按域（light、switch、climate、sensor、binary_sensor、cover、fan 等）或区域名称（客厅、厨房、卧室等）过滤。 | — |
-| `ha_list_services` | 列出用于设备控制的可用 Home Assistant 服务（动作）。显示每种设备类型可执行的操作及其接受的参数。用于发现如何控制通过 `ha_list_entities` 找到的设备。 | — |
-
 ## `computer_use` 工具集
 
 | 工具 | 描述 | 所需环境 |
@@ -106,7 +97,9 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 | `computer_use` | 通过 cua-driver 在后台控制 macOS 桌面——截图（SOM / vision / AX）、点击 / 拖拽 / 滚动 / 输入 / 按键 / 等待、`list_apps`、`focus_app`。**不会**抢占用户的光标或键盘焦点。适用于任何支持工具的模型。仅限 macOS。 | `cua-driver` 在 `$PATH` 中（通过 `hermes tools` 安装）。 |
 
 :::note
-**Honcho 工具**（`honcho_profile`、`honcho_search`、`honcho_context`、`honcho_reasoning`、`honcho_conclude`）不再是内置工具。它们通过 `plugins/memory/honcho/` 的 Honcho 记忆提供者插件提供。安装和使用方法见 [Memory Providers](../user-guide/features/memory-providers.md)。
+**Honcho 工具**（`honcho_profile`、`honcho_search`、`honcho_context`、`honcho_reasoning`、`honcho_conclude`）不再是内置工具。它们由插件目录中的 Honcho 记忆提供者插件提供（`hermes plugins install honcho`）。安装和使用方法见 [Memory Providers](../user-guide/features/memory-providers.md)。
+
+**Home Assistant 工具**（`ha_list_entities`、`ha_get_state`、`ha_list_services`、`ha_call_service`，工具集 `homeassistant`）不再是内置工具。它们由插件目录中的 `homeassistant` 插件提供（`hermes plugins install homeassistant`）。详见 [Home Assistant](../user-guide/messaging/homeassistant.md)。
 :::
 
 ## `image_gen` 工具集

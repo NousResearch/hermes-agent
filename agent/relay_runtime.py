@@ -408,6 +408,10 @@ class RelayRuntime:
         self._subagent_parents: dict[str, str] = {}
         self._subagent_parent_handles: dict[str, Any] = {}
         self._execution_consumers: set[str] = set()
+        # Outputs of scopes that finished under a concurrent scope (pop_relay_scope_if_top said no),
+        # keyed by handle uuid: the drain that later reclaims the scope closes it with this output.
+        self._deferred_scope_outputs: dict[str, dict[str, Any]] = {}
+        self._deferred_scope_outputs_lock = threading.Lock()
         self._closing = self._shutdown_started = False
         self._shutdown_complete, self._operations_idle = threading.Event(), threading.Event()
         self._operations_idle.set()
@@ -421,6 +425,21 @@ class RelayRuntime:
 
     def _plugins_active(self) -> bool:
         return self._plugin_configuration_state is _RelayPluginConfigurationState.ACTIVE
+
+    def defer_scope_output(self, handle: Any, output: dict[str, Any]) -> None:
+        """Keep the real output of a finished scope that could not be popped yet because a
+        concurrent scope sits above it; the orphan drain closes it with this instead."""
+        key = getattr(handle, "uuid", None)
+        if key is not None:
+            with self._deferred_scope_outputs_lock:
+                self._deferred_scope_outputs[str(key)] = output
+
+    def _take_deferred_scope_output(self, handle: Any) -> dict[str, Any] | None:
+        key = getattr(handle, "uuid", None)
+        if key is None:
+            return None
+        with self._deferred_scope_outputs_lock:
+            return self._deferred_scope_outputs.pop(str(key), None)
 
     def retain_managed_execution(self, consumer: str) -> None:
         """Keep managed LLM and tool execution active for one consumer."""
@@ -709,7 +728,9 @@ class RelayRuntime:
             if session_root is not None and _same_handle(top, session_root) and handle is not session_root:
                 break
             try:
-                orphan_output = {"outcome": "cancelled", "hermes.orphan_drain": True}
+                orphan_output = self._take_deferred_scope_output(top) or {
+                    "outcome": "cancelled", "hermes.orphan_drain": True,
+                }
                 pop_relay_scope(self.relay, top, output=orphan_output, metadata=metadata)
                 drained += 1
             except Exception:

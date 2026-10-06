@@ -298,8 +298,30 @@ test.skipIf(process.platform === 'win32').each(variants)(
   async ({ launcher, owned }: SpawnVariant): Promise<void> => {
     const fixture: SpawnFixture = await spawnFixture(launcher, owned)
 
+    // A live delegate under a dead owner still guards the install (update_lock.judge_marker).
+    const exited: ChildProcess = spawn(process.execPath, ['-e', ''])
+    await new Promise(resolve => exited.once('exit', resolve))
+
+    const delegate: ChildProcess = spawn(
+      'python3',
+      ['-c', 'import time;print(time.time(),flush=True);time.sleep(30)'],
+      {
+        stdio: ['ignore', 'pipe', 'ignore']
+      }
+    )
+
     try {
-      for (const marker of [`${process.pid}\n0\n`, 'not-a-pid\n']) {
+      const delegateCt: string = await new Promise(resolve =>
+        delegate.stdout!.once('data', (chunk: Buffer) => resolve(String(chunk).trim()))
+      )
+
+      const now: number = Math.floor(Date.now() / 1000)
+
+      for (const marker of [
+        `${process.pid}\n${now}\n`,
+        'not-a-pid\n',
+        `${exited.pid}\n${now}\nct:1700000000.125\ndelegate:${delegate.pid} ct:${delegateCt}\n`
+      ]) {
         await writeFile(fixture.marker, marker, 'utf8')
         await assert.rejects(fixture.run(fixture.command), { code: 75, stdout: '' })
         assert.deepEqual(await reports(fixture), [])
@@ -307,6 +329,7 @@ test.skipIf(process.platform === 'win32').each(variants)(
         await assert.rejects(readFile(fixture.localPath(lockfilePath(ownershipId))), { code: 'ENOENT' })
       }
     } finally {
+      delegate.kill()
       await fixture.dispose()
     }
   },

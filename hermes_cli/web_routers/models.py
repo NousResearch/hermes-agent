@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
     _AUX_TASK_SLOTS, _UNSET, _apply_model_assignment_sync, _dashboard_code_skew_guard,
-    _prepare_main_assignment,
+    _plugin_aux_tasks, _prepare_main_assignment,
 )
 from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
@@ -220,24 +220,49 @@ def get_auxiliary_models(profile: Optional[str] = None):
     """Current auxiliary task assignments: ``{"tasks": [{task, provider, model,
     base_url}, ...], "main": {provider, model}}``. ``profile`` scopes the read —
     without it the Models page would show the dashboard profile's pins while
-    /api/model/set wrote the selected profile's."""
+    /api/model/set wrote the selected profile's.
+
+    Built-in slots come first; plugin-registered tasks follow, each carrying the
+    ``label``/``hint``/``plugin`` the plugin declared (built-ins are labelled client-side) and
+    ``inherit_from`` (base slot key or null). An inheriting row also carries ``effective``: the
+    route it resolves to right now, which is the base's while the row itself is unpinned.
+    ``provider``/``model``/``base_url`` stay the slot's own stored values on every row."""
+    from agent.auxiliary_client import _get_auxiliary_task_config
+
     with http_failure("GET /api/model/auxiliary failed", 500, detail="Failed to read auxiliary config"):
-        cfg = _load_config_scoped(profile)
+        with _profile_scope(profile):
+            cfg = load_config()
+            # Inside the scope on purpose: plugin discovery and the resolver key on the same
+            # context-local home, so profile B's rows come from B's plugins and B's config.
+            plugin_tasks = _plugin_aux_tasks()
+            effective = {entry["key"]: _get_auxiliary_task_config(entry["key"])
+                         for entry in plugin_tasks if entry.get("inherit_from")}
         aux_cfg = cfg.get("auxiliary", {})
         if not isinstance(aux_cfg, dict):
             aux_cfg = {}
 
-        tasks = []
-        for slot in _AUX_TASK_SLOTS:
+        def _row(slot: str) -> dict:
             slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
             base_url = str(slot_cfg.get("base_url", "") or "")
-            tasks.append({
+            return {
                 "task": slot, "provider": str(slot_cfg.get("provider", "auto") or "auto"),
                 "model": str(slot_cfg.get("model", "") or ""), "base_url": base_url,
                 "reasoning_effort": str(slot_cfg.get("reasoning_effort") or "") or None,
                 # Lets the UI tell a free local/LAN pin from a forgotten paid-provider pin.
                 "local_endpoint": is_local_endpoint(base_url),
-            })
+            }
+
+        tasks = [_row(slot) for slot in _AUX_TASK_SLOTS]
+        tasks.extend({
+            **_row(entry["key"]),
+            "label": str(entry.get("display_name") or entry["key"]),
+            "hint": str(entry.get("description") or ""),
+            "plugin": str(entry.get("plugin") or ""),
+            "inherit_from": entry.get("inherit_from") or None,
+            **({"effective": {field: str(effective[entry["key"]].get(field) or "")
+                              for field in ("provider", "model", "base_url")}}
+               if entry["key"] in effective else {}),
+        } for entry in plugin_tasks)
 
         model, provider = _main_model_fields(cfg.get("model", {}))
         return {"tasks": tasks, "main": {"provider": str(provider or ""), "model": str(model or "")}}

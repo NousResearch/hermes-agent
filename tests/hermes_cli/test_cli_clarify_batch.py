@@ -141,26 +141,23 @@ class TestClarifyBatchPanel:
             "answers": {"q0": "thorough", "q1": "narrow"}, "outcome": "submitted"
         }
 
-    def test_panel_waits_for_an_answer_past_the_messaging_clarify_timeout(self):
-        """The CLI is attended: a short ``agent.clarify_timeout`` (the messaging knob) must not time the
-        panel out — it stays up with locked answers intact until the last question is locked."""
+    def test_timeout_returns_partials_with_timed_out_outcome(self):
         cli = _make_cli_stub()
         questions = [
             _q(0, "Answered?", ["yes", "no"]),
-            _q(1, "Answered later?", ["x", "y"]),
+            _q(1, "Never answered?", ["x", "y"]),
         ]
-        with patch("cli.CLI_CONFIG", {"agent": {"clarify_timeout": 1}}):
+        with patch(
+            "tools.clarify_gateway.resolve_clarify_timeout", return_value=1
+        ):
             thread, result = _start_batch(cli, questions)
             state = cli._clarify_state
             cli._clarify_batch_enter(state)  # lock q0 only
-            thread.join(timeout=2.5)
-            assert thread.is_alive()
-            assert cli._clarify_state is state and cli._clarify_deadline is None
-            cli._clarify_batch_enter(state)  # lock q1
-            thread.join(timeout=2)
+            thread.join(timeout=5)
 
         assert not thread.is_alive()
-        assert result["value"] == {"answers": {"q0": "yes", "q1": "x"}, "outcome": "submitted"}
+        assert result["value"] == {"answers": {"q0": "yes"}, "outcome": "timed_out"}
+        assert cli._clarify_state is None
 
     def test_multi_select_lock_produces_json_array_string(self):
         cli = _make_cli_stub()
@@ -381,7 +378,9 @@ class TestClarifyBellOnPrompt:
         cli = _make_cli_stub()
         cli.bell_on_prompt = bell_on_prompt
         out = io.StringIO()
-        with patch("cli.sys.stdout", out):
+        with patch("cli.sys.stdout", out), patch(
+            "tools.clarify_gateway.resolve_clarify_timeout", return_value=60
+        ):
             thread = threading.Thread(
                 target=cli._clarify_callback, args=([_q(0, "Color?", ["red", "blue"])],), daemon=True
             )

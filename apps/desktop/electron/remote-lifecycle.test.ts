@@ -114,7 +114,7 @@ function fakeSsh(rules: any[] = []) {
         return !(mutexWrapped && matcher instanceof RegExp && /python3 -c/.test(matcher.source))
       })
 
-      if ((cmd.includes('os.kill(pid') && !cmd.includes('pidfd_open')) || cmd.includes('printf TERMINATED')) {
+      if ((cmd.includes('os.kill(pid') && !/pidfd_open|marker_clear/.test(cmd)) || cmd.includes('printf TERMINATED')) {
         return 'TERMINATED'
       }
 
@@ -188,7 +188,6 @@ test('POSIX relaunch gate permits absent/dead markers and normalizes named-profi
   assert.match(commands[0], /profiles/)
   assert.match(commands[0], /\.hermes-update-in-progress/)
   assert.match(commands[0], /marker\.unlink/)
-  assert.match(commands[0], /\/proc\/%d\/cmdline/)
 })
 
 test('POSIX relaunch gate rechecks after token upload immediately before process creation', async () => {
@@ -1141,8 +1140,11 @@ test('connect() spawns fresh when there is no lockfile, adopts the served token'
     [/python3 -c/, ''], // token file write
     [/printf '%s\\n'/, ''],
     [/setsid/, '777\n'],
-    [/kill -0 777/, 'ALIVE'],
-    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=51999\n']
+    // The wrapper may exit before the detached daemon writes READY; startup
+    // must rely on the bounded log wait rather than kill -0 on this pid.
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=51999\n'],
+    // The post-readiness served-token adoption still verifies the daemon.
+    [/kill -0 777/, 'ALIVE']
   ])
 
   const result = await connect(
@@ -1844,7 +1846,7 @@ test('connect removes the token file when a fresh backend fails after returning 
     [/kill -0 999/, 'DEAD']
   ])
 
-  await assert.rejects(() => connect(connectDeps(ssh)), /exited before announcing/i)
+  await assert.rejects(() => connect(connectDeps(ssh)), /Timed out waiting for the remote dashboard/i)
   assert.ok(ssh.calls.some(command => /rm -f .*\.token/.test(command)))
 })
 

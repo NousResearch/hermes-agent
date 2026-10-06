@@ -355,6 +355,11 @@ def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
 
 app = FastAPI(title="Hermes Agent", version=get_version_info().base_version, lifespan=_lifespan)
 
+from hermes_cli.dashboard_auth.body_limit import AuthBodyLimitMiddleware  # noqa: E402
+
+# Register first (innermost): auth gates run before this, JSON parsing after it.
+app.add_middleware(AuthBodyLimitMiddleware)
+
 
 # Memory-provider OAuth connect routes live in the memory layer, not here.
 from hermes_cli.memory_oauth import router as _memory_oauth_router  # noqa: E402
@@ -1262,6 +1267,40 @@ def _best_effort(what: str, fn) -> None:
         _log.debug("%s skipped: %s", what, exc)
 
 
+def _reclaim_host_from_orphaned_owner(role: str) -> bool:
+    """True when the conflicting host owner was reaped/cleared and the claim is worth retrying.
+
+    HELD_BY_OTHER helper for #121964. A stale record with no live owner is retracted via
+    ``discard_dead_record`` (which only removes provably-gone owners); a live owner is reaped
+    only when the spawn ledger proves it is a dead session's orphan. Anything else returns
+    False and the caller stays observe-only. Never raises.
+    """
+    from gateway import host_rendezvous as hr
+    from hermes_cli.process_identity import reap_orphaned_backend_owner
+
+    try:
+        owner = hr.read_record(role)
+    except Exception:
+        return False
+    if owner is None:
+        try:
+            return bool(hr.discard_dead_record(role))
+        except Exception:
+            return False
+    if owner.pid == os.getpid():
+        return False  # never reap our own incarnation on a re-entrant claim
+    try:
+        if reap_orphaned_backend_owner(owner.pid, owner.create_time) is None:
+            return False
+    except Exception:
+        return False
+    try:
+        hr.discard_dead_record(role)
+    except Exception:
+        pass
+    return True
+
+
 def _publish_host_rendezvous(host: str, port: int) -> None:
     """Publish this backend's host record: ``ROLE_SERVE`` for the machine-level owner,
     ``ROLE_DESKTOP_SERVE`` for a Desktop-owned child."""
@@ -1282,6 +1321,13 @@ def _publish_host_rendezvous(host: str, port: int) -> None:
             "Host backend lock could not be opened (%s); this backend is not discoverable. "
             "This is NOT another backend holding it.", error)
         return
+    if outcome is hr.HostLockOutcome.HELD_BY_OTHER and not desktop_child:
+        # A prior backend whose session died (dead spawner, PID re-parented to init) is still
+        # alive, so it still holds the flock and its record passes every staleness check: the
+        # pre-#121964 code returned observe-only here forever, and every attach retried against
+        # the same orphan. Reap exactly that corpse and re-claim instead.
+        if _reclaim_host_from_orphaned_owner(role):
+            outcome, error = hr.claim_host_lock(role)
     if outcome is hr.HostLockOutcome.HELD_BY_OTHER:
         owner = hr.read_record(role)
         if desktop_child:
@@ -1319,6 +1365,7 @@ def _on_server_started(
     open_browser: bool,
     initial_profile: str,
     start_mcp_discovery_after_bind: bool,
+    ssh_lock_path: Optional[Path] = None,
 ) -> None:
     """Post-bind arming on the serving loop right after ``server.startup()``.
 
@@ -1367,6 +1414,12 @@ def _on_server_started(
         from hermes_cli.web_server_skew_exit import start_code_skew_watchdog
 
         start_code_skew_watchdog(server)
+    if getattr(app.state, "ssh_isolated_clients", None) is not None and ssh_lock_path and _SSH_OWNER_NONCE:
+        # A reconnect that cannot prove this pid is its own drops the lock without signalling us
+        # and spawns a new nonce (#132034); retire (between turns) once the lock names that spawn.
+        from hermes_cli.web_server_owner_exit import start_owner_watchdog
+
+        start_owner_watchdog(server, lock_path=ssh_lock_path, nonce=_SSH_OWNER_NONCE)
 
     actual_port = _read_bound_port(server, fallback=port)
     app.state.bound_port = actual_port
@@ -1528,6 +1581,7 @@ def start_server(
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
+    ssh_lock_path: Optional[Path] = None,
 ):
     """Start the web UI server.
 
@@ -1537,7 +1591,8 @@ def start_server(
     ``isolated`` (``--isolated``) is recorded in the spawn ledger so attach-first
     discovery never adopts this process.
     ``ssh_session_token``/``ssh_owner_nonce`` are process-local Desktop SSH
-    bootstrap state, never persisted or exported to children.
+    bootstrap state, never persisted or exported to children; ``ssh_lock_path`` is the
+    Desktop's ``backend.lock.json`` for that ownership slot (supersession watchdog).
     ``start_mcp_discovery_after_bind`` (Desktop ``serve``) defers MCP discovery
     until the ready sentinel is written so its SDK import can't hold the GIL
     against the pre-bind path.
@@ -1625,6 +1680,7 @@ def start_server(
                 open_browser=open_browser,
                 initial_profile=initial_profile,
                 start_mcp_discovery_after_bind=start_mcp_discovery_after_bind,
+                ssh_lock_path=ssh_lock_path,
             )
             if headless:
                 from hermes_cli.observability.shared_metrics_startup import record_process_ready

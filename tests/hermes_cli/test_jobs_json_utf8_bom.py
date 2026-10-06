@@ -51,7 +51,7 @@ def test_status_scheduled_jobs_accepts_utf8_bom(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
 
-    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+    status_mod.show_status(SimpleNamespace(full=True, deep=False))
     out = capsys.readouterr().out
     assert "(error reading jobs file)" not in out
     assert "2 active, 2 total" in out

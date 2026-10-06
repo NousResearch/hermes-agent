@@ -182,6 +182,28 @@ class TestZaiGLM53ReasoningEffort:
         assert top_level == {"reasoning_effort": "high"}
 
 
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "glm-5.3",
+            "glm-5.3-flash",
+            "z-ai/glm-5.3",
+            "z-ai/glm-5.3-flash",
+            "glm-5-3",
+            "glm-5p3",
+        ],
+    )
+    def test_disabled_becomes_enabled_plus_low(self, zai_profile, model):
+        """#85890 / #96373 — 5.3 rejects thinking.type=disabled (HTTP 400 / 1210)."""
+        extra_body, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model=model,
+        )
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {"reasoning_effort": "low"}
+
+
+
 class TestZaiModelGating:
     """GLM 4.5+ get thinking; earlier GLM models are left untouched."""
 
@@ -222,3 +244,24 @@ class TestZaiFullKwargsIntegration:
         )
         assert kwargs["reasoning_effort"] == "max"
         assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+
+    @pytest.mark.parametrize("model,reasoning,thinking,effort", [
+        ("glm-5.3-flash", {"enabled": False}, "enabled", "low"),
+        ("glm-5.2", {"enabled": False}, "disabled", None),
+        ("glm-5.3", None, None, None),
+    ])
+    def test_glm_thinking_preference_reaches_transport(self, zai_profile, model, reasoning, thinking, effort):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=zai_profile,
+            reasoning_config=reasoning,
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            provider_name="zai",
+        )
+        assert kwargs.get("reasoning_effort") == effort
+        expected = {"type": thinking} if thinking is not None else None
+        assert kwargs.get("extra_body", {}).get("thinking") == expected

@@ -1249,6 +1249,26 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     return @{ Code = $code; Output = $all; TreeQuiesced = (-not $stalled -or $proc.HasExited); StartedAfterJobAssignment = $true }
 }
 
+# `hermes update` can COMPLETE (its output carries "✓ Update complete!") and
+# still be killed with the idle-watchdog sentinel 124: the post-update phase
+# (gateway restart hand-off) stayed alive and silent past the ceiling, so
+# Invoke-HermesStep terminated the tree (#96205). The install is done; failing
+# would keep the old Desktop and a legacy install would re-run the whole update.
+# Surface success so the hand-off verifies, restores the gateways and relaunches.
+# Only 124 is remapped, and never when anything after the banner reports a
+# failure: the restart/verify phase prints "✗ Update not complete", "Update
+# incomplete — …", "✗ <unit> failed to come back after restart" or
+# "verification incomplete" there. \u2717 (✗) stays an escape: Windows
+# PowerShell reads this BOM-less script as ANSI, never as UTF-8.
+function Resolve-HermesUpdateOutcome($StepResult) {
+    $banner = if ($StepResult.Output) { $StepResult.Output.LastIndexOf('Update complete!') } else { -1 }
+    if ($StepResult.Code -eq 124 -and $banner -ge 0 -and $StepResult.Output.Substring($banner) -notmatch 'incomplete|not complete|\u2717') {
+        Write-HandoffLog "update completed before the idle watchdog killed its finalizing step (exit 124); treating it as success, not retrying (#96205)"
+        $StepResult.Code = 0
+    }
+    return $StepResult
+}
+
 function Set-InstallRootCurrentDirectory([string]$Root) {
     $resolved = [System.IO.Path]::GetFullPath($Root)
     [Environment]::CurrentDirectory = $resolved
@@ -1638,6 +1658,7 @@ try {
     Publish-UiProgress "Updating code and dependencies"
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
+    $res = Resolve-HermesUpdateOutcome $res
 
     # Retry only the identified pre-PM update-boundary transition. Current
     # update/build failures propagate and must not trigger another owner.
@@ -1651,6 +1672,7 @@ try {
         # legacy one being converted until this run succeeds.
         $updateArgs = $runtimeArgs + @('update', '--yes') + $gatewayArg + $forceArg + $targetArgs
         $res = Invoke-HermesStep $pythonExe $updateArgs 'update'
+        $res = Resolve-HermesUpdateOutcome $res
     }
 
     # Pre-PM updates reported a successful exit with a failed build warning.
@@ -1707,6 +1729,27 @@ try {
             $manualMsg = "Update complete, but Hermes could not restart every messaging gateway. Run `hermes gateway start --all` in a terminal."
             Write-HandoffLog $manualMsg
         }
+    }
+
+    # Contract C3: a Desktop build that failed after the code committed is an owed follow-up
+    # (exit 0); the CLI prints one whole "Desktop app build owed:" line for it. The user is on
+    # the new Hermes but this app was not rebuilt: a manual outcome, never plain success.
+    if ($res.Code -eq 0 -and -not $desktopBuildFailed -and $res.Output -match '(?m)^\s*Desktop app build owed: ') {
+        $manualAction = $true
+        $manualMsg = ("Hermes was updated, but the Desktop app could not be rebuilt, so it still runs its old build. Run ``hermes desktop --force-build`` in a terminal to rebuild it; the update log has the build error. " + $manualMsg).Trim()
+        Write-HandoffLog $manualMsg
+    }
+
+    # Every other owed follow-up of the committed update (a gateway still on the old code, a
+    # Windows resume, a lost completion...) prints one whole "Update follow-up '<step>' did not
+    # finish:" line (hermes_cli/update_receipt.record_followup): never a plain success either.
+    $owedSteps = @([regex]::Matches(($res.Output -join "`n"), "Update follow-up '([A-Za-z0-9_]+)' did not finish: ") |
+        ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+    if ($res.Code -eq 0 -and -not $desktopBuildFailed -and $owedSteps.Count -gt 0) {
+        $manualAction = $true
+        $owedHint = if ($owedSteps -contains 'gateway_restart') { ' Run `hermes gateway restart` to move the messaging gateway onto the new code now.' } else { '' }
+        $manualMsg = ($manualMsg + " Hermes was updated, but some follow-up steps did not finish (" + ($owedSteps -join ', ') + "). The next launch or ``hermes update`` retries them; the update log has the details." + $owedHint).Trim()
+        Write-HandoffLog $manualMsg
     }
 
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {

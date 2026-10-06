@@ -15,7 +15,7 @@ from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_SCAFFOLD_SQL
 from utils import safe_json_loads
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_ids import new_session_id
-from hermes_state_common import SCHEMA_SQL, _PREVIEW_RAW_SUBQUERY_SQL, _shape_preview, _sql_session_last_active
+from hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
 from hermes_state_messages import _parse_tool_calls, _tool_calls_count
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -42,7 +42,7 @@ _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            cwd, git_branch, git_repo_root,
                            billing_provider, billing_base_url, billing_mode,
                            estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
-                           pricing_version, title, api_call_count, archived
+                           pricing_version, title, api_call_count, archived, auto_archived, pinned, hidden
                        )
                        VALUES (
                            :id, :source, :user_id, :model, :model_config,
@@ -53,7 +53,7 @@ _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            :billing_provider, :billing_base_url, :billing_mode,
                            :estimated_cost_usd, :actual_cost_usd, :cost_status,
                            :cost_source, :pricing_version, :title,
-                           :api_call_count, :archived
+                           :api_call_count, :archived, :auto_archived, :pinned, :hidden
                        )"""
 # Columns copied verbatim from the payload; typed columns are converted below.
 _IMPORT_PASSTHROUGH_COLS = (
@@ -64,6 +64,8 @@ _IMPORT_INT_COLS = (
     "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "api_call_count",
 )
 _IMPORT_FLOAT_COLS = ("ended_at", "estimated_cost_usd", "actual_cost_usd")
+# Flags a restore must keep: pinned/hidden/auto_archived drive the prune, listings and resume-unarchive.
+_IMPORT_FLAG_COLS = ("archived", "auto_archived", "pinned", "hidden")
 
 
 def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Optional[str] = "") -> str:
@@ -73,7 +75,7 @@ def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Op
     prompt_join = "" if prompt_select is None else "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash"
     return f"""
             SELECT {select_cols}{prompt_select or ""},
-                {_PREVIEW_RAW_SUBQUERY_SQL},
+                {_sql_preview_raw()},
                 {_sql_session_last_active("s")} AS last_active
             FROM sessions s
             {prompt_join}
@@ -541,11 +543,12 @@ class SessionPortabilityMixin:
             "id": session_id, "source": str(raw.get("source") or "import"),
             "system_prompt_hash": self._store_system_prompt(conn, raw.get("system_prompt")),
             "started_at": time.time() if started_at is None else started_at,
-            "archived": 1 if raw.get("archived") else 0,
+            **{col: 1 if self._coerce_or(raw.get(col), int, 0) else 0 for col in _IMPORT_FLAG_COLS},
             **{col: raw.get(col) for col in _IMPORT_PASSTHROUGH_COLS},
             **{col: self._coerce_or(raw.get(col), float, None) for col in _IMPORT_FLOAT_COLS},
             **{col: self._coerce_or(raw.get(col), int, 0) for col in _IMPORT_INT_COLS},
         }
+        params["auto_archived"] &= params["archived"]  # only the sweep sets it, and only on rows it archives
         conn.execute(_IMPORT_SESSION_INSERT_SQL, params)
         def _json_value(value: Any) -> Any:
             return safe_json_loads(value, default=value) if isinstance(value, str) else value

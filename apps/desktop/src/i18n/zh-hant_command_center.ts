@@ -213,6 +213,9 @@ export const zhHantCommandCenter = {
     replaceValue: '取代目前值',
     openDocs: '開啟文件',
     clearField: key => `清除 ${key}`,
+    addListEntry: '再新增一個',
+    removeListEntry: '移除',
+    listEntryPlaceholder: '輸入 ID',
     enableAria: name => `啟用 ${name}`,
     disableAria: name => `停用 ${name}`,
     platformEnabled: name => `${name} 已啟用`,
@@ -235,14 +238,14 @@ export const zhHantCommandCenter = {
       },
       TELEGRAM_ALLOWED_USERS: {
         label: '允許的 Telegram 使用者 ID',
-        help: '建議設定。來自 @userinfobot 的逗號分隔數字 ID。不設定則任何人都能私訊您的機器人。'
+        help: '建議設定。來自 @userinfobot 的數字 ID（每格一個）。不設定則任何人都能私訊您的機器人。'
       },
       TELEGRAM_PROXY: { label: '代理 URL', help: '僅在 Telegram 被封鎖的網路中需要。' },
       DISCORD_BOT_TOKEN: {
         label: 'Bot Token',
         help: '在 Discord 開發者入口網站建立應用程式，新增機器人，然後貼上其 Token。'
       },
-      DISCORD_ALLOWED_USERS: { label: '允許的 Discord 使用者 ID', help: '建議設定。逗號分隔的 Discord 使用者 ID。' },
+      DISCORD_ALLOWED_USERS: { label: '允許的 Discord 使用者 ID', help: '建議設定。Discord 使用者 ID（每格一個）。' },
       DISCORD_REPLY_TO_MODE: { label: '回覆方式', help: 'first、all 或 off。' },
       DISCORD_ALLOW_ALL_USERS: {
         label: '允許所有 Discord 使用者',
@@ -272,16 +275,16 @@ export const zhHantCommandCenter = {
         help: 'Socket Mode 需要 app 層級 Token。',
         placeholder: '貼上 Slack app Token'
       },
-      SLACK_ALLOWED_USERS: { label: '允許的 Slack 使用者 ID', help: '建議設定。逗號分隔的 Slack 使用者 ID。' },
+      SLACK_ALLOWED_USERS: { label: '允許的 Slack 使用者 ID', help: '建議設定。Slack 使用者 ID（每格一個）。' },
       MATTERMOST_URL: { label: '伺服器 URL', placeholder: 'https://mattermost.example.com' },
       MATTERMOST_TOKEN: { label: 'Bot Token' },
-      MATTERMOST_ALLOWED_USERS: { label: '允許的使用者 ID', help: '建議設定。逗號分隔的 Mattermost 使用者 ID。' },
+      MATTERMOST_ALLOWED_USERS: { label: '允許的使用者 ID', help: '建議設定。Mattermost 使用者 ID（每格一個）。' },
       MATRIX_HOMESERVER: { label: 'Homeserver URL', placeholder: 'https://matrix.org' },
       MATRIX_ACCESS_TOKEN: { label: '存取 Token' },
       MATRIX_USER_ID: { label: 'Bot 使用者 ID', placeholder: '@hermes:example.org' },
       MATRIX_ALLOWED_USERS: {
         label: '允許的 Matrix 使用者 ID',
-        help: '建議設定。@user:server 格式的逗號分隔使用者 ID。'
+        help: '建議設定。@user:server 格式的使用者 ID（每格一個）。'
       },
       SIGNAL_HTTP_URL: {
         label: 'Signal 橋接 URL',
@@ -289,7 +292,7 @@ export const zhHantCommandCenter = {
         help: '執行中的 signal-cli REST 橋接的 URL。'
       },
       SIGNAL_ACCOUNT: { label: '電話號碼', help: '在 signal-cli 橋接中註冊的號碼。' },
-      SIGNAL_ALLOWED_USERS: { label: '允許的 Signal 使用者', help: '建議設定。逗號分隔的 Signal 識別碼。' },
+      SIGNAL_ALLOWED_USERS: { label: '允許的 Signal 使用者', help: '建議設定。Signal 識別碼（每格一個）。' },
       WHATSAPP_ENABLED: {
         label: '啟用 WhatsApp 橋接',
         help: '由下方切換開關自動設定。除非確知需要，否則請勿變更。'
@@ -297,7 +300,7 @@ export const zhHantCommandCenter = {
       WHATSAPP_MODE: { label: '橋接模式' },
       WHATSAPP_ALLOWED_USERS: {
         label: '允許的 WhatsApp 使用者',
-        help: '建議設定。逗號分隔的電話號碼或 WhatsApp ID。'
+        help: '建議設定。電話號碼或 WhatsApp ID（每格一個）。'
       }
     },
     platformIntro: {}

@@ -100,7 +100,7 @@ export const arChat = {
       '/init': 'فحص المستودع لإنشاء تعليمات AGENTS.md أو تحديثها',
       '/suggestions': 'مراجعة عمليات الأتمتة المقترحة وقبولها أو رفضها',
       '/blueprint': 'إعداد أتمتة من قالب مخطط',
-      '/browser': 'إدارة اتصال المتصفح عبر CDP [connect|disconnect|status] (بوابة محلية فقط)',
+      '/browser': 'إدارة متصفح الوكيل [connect|disconnect|status|use]',
       '/palette': 'فتح لوحة الأوامر',
       '/usage': 'عرض استخدام الرموز وحدود الطلبات؛ reset يسترد إعادة ضبط محفوظة لحدود Codex',
       '/subscription': 'عرض خطة Nous وتغييرها في المتصفح',
@@ -391,9 +391,6 @@ export const arChat = {
     sessionUnavailable: 'الجلسة غير متاحة',
     createSessionFailed: 'فشل إنشاء الجلسة',
     promptFailed: 'فشل إرسال الرسالة',
-    staleSessionTitle: 'المحادثة غير محدّثة',
-    staleSessionBody:
-      'كانت هذه النافذة متأخرة عن عرض آخر لنفس المحادثة. تم تحميل أحدث الرسائل. أعد الإرسال إذا كنت لا تزال تريد ذلك.',
     providerCredentialRequired: 'مطلوب اعتماد المزود',
     emptySlashCommand: 'أمر slash فارغ',
     slashCommandIgnoredTitle: 'لم يتم إرسال الأمر',

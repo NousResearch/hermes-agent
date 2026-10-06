@@ -437,7 +437,7 @@ def test_pool_selection_keeps_probe_rotated_tokens_when_quota_restored(tmp_path,
     assert refresh_calls == ["rf-old"]
     assert [c["headers"]["Authorization"] for c in http_calls] == [f"Bearer {fresh}"]
     assert (selected.access_token, selected.refresh_token, selected.last_status) == (fresh, "rf-new", "ok")
-    assert pool._entries[0].refresh_token == "rf-new"  # the pool's own row, not just the returned copy
+    assert pool.entries()[0].refresh_token == "rf-new"  # the pool's own row, not just the returned copy
     disk = json.loads((hermes_home / "auth.json").read_text())
     assert disk["credential_pool"]["openai-codex"][0]["refresh_token"] == "rf-new"
 

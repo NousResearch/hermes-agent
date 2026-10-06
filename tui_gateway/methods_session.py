@@ -292,7 +292,7 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
             if db is None:
                 return
             _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
-                            source=source, cwd=record["cwd"],
+                            source=source, cwd=None if _is_remote_launch_cwd(record) else record["cwd"],
                             profile_name=profile_name_for_home(profile_home) or _current_profile_name(),
                             model=_session_default_model(record), compensate=True, title_source="derived", user_id=_session_auth_user_id(record))
             record["pending_title"] = None
@@ -328,24 +328,6 @@ def _seed_row(record: dict) -> None:
                     record["pending_title"] = None
     except Exception:
         logger.debug("seeded-session title write failed for %s; pending_title stays queued", key, exc_info=True)
-
-
-def _create_overrides(params: dict) -> tuple:
-    """PER-SESSION (model, reasoning, service_tier) overrides from the composer — never a global config
-    write. ``fast`` presence is the contract: omitted inherits, true pins priority, false pins normal ("")."""
-    create_model = _str_param(params, "model")
-    model_override = None
-    if create_model:
-        model_override = {"model": create_model, "provider": _str_param(params, "provider") or None}
-    reasoning_override = None
-    if effort := _str_param(params, "reasoning_effort"):
-        with contextlib.suppress(Exception):
-            from hermes_constants import parse_reasoning_effort
-            reasoning_override = parse_reasoning_effort(effort)
-    service_tier_override = None
-    if "fast" in params:
-        service_tier_override = "priority" if is_truthy_value(params.get("fast")) else ""
-    return model_override, reasoning_override, service_tier_override
 
 
 def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
@@ -425,7 +407,11 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     with contextlib.suppress(Exception):
         explicit_cwd = bool(raw_cwd) and (remote_cwd or os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd))))
     _enable_gateway_prompts()
-    session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
+    from .methods_session_model_guard import create_overrides
+    try:
+        session_model_override, create_reasoning_override, create_service_tier_override = create_overrides(params)
+    except ValueError as exc:
+        return _err(rid, 4002, str(exc))
     composer_override_profile = None
     if session_model_override and _flag(params, "follow_profile_config"):
         # Same provenance a mid-chat switch records (_apply_model_switch): without the OWNING profile's
@@ -706,8 +692,19 @@ class _Resume:
 
     def read_history(self) -> tuple:
         """One lineage SELECT, two projections: model-fed copy alternation-repaired (healed once
-        here instead of every turn's pre-request repair), display copy verbatim."""
-        self.db.reopen_session(self.target)
+        here instead of every turn's pre-request repair), display copy verbatim.
+
+        Read-only mount: an ended row stays ended — resume must not clear ``ended_at``/``end_reason``
+        with no new activity, or the DB-derived liveness paints a finalized session live the moment
+        it is opened (#85303). The first real turn (``prompt.submit``) reopens it. Still read-only
+        for the session row, but NOT for stale queue residue: the restart that made this resume
+        necessary also discarded the busy-queue, so retire never-drained accept rows (#125577)
+        here — with #128508 the reopen no longer runs on this path and the marked row would stay
+        active and visible until the next send. Best-effort like the resume guard: a handle
+        without the method (duck-typed doubles) skips the cleanup, a real error still fails."""
+        retire = getattr(self.db, "retire_undrained_queue_rows", None)
+        if callable(retire):
+            retire(self.target)
         if self.omit_messages:
             return self.child_history(repair=True), []
         return self.db.get_resume_conversations(self.target)
@@ -922,7 +919,13 @@ def _resume_lazy(ctx: _Resume) -> dict:
     inside the parent's turn, so the window needs stored history + a transport; prompt.submit upgrades it."""
     sid, source, cwd = ctx.mint(prompts=False)
     try:
-        ctx.db.reopen_session(ctx.target)
+        # Read-only mount (#85303): an ended row stays ended; the first real turn reopens it.
+        # But a restart discarded the busy-queue — retire never-drained accept rows (#125577)
+        # or the marked row stays active and visible until the next send. Best-effort like
+        # the resume guard: a handle without the method (duck-typed doubles) skips it.
+        retire = getattr(ctx.db, "retire_undrained_queue_rows", None)
+        if callable(retire):
+            retire(ctx.target)
         # repair_alternation heals a durable ``user;user`` once here.
         history = ctx.child_history(repair=True)
     except Exception as e:
@@ -1062,7 +1065,8 @@ def _(rid, params: dict) -> dict:
         _resume_follow_tip(ctx)
         if (resp := _resume_guard(ctx)) is not None:
             return resp
-        ctx.profile_resume_cwd = _str_param(ctx.found, "cwd") or _profile_workspace_cwd(ctx.profile_home)
+        ctx.profile_resume_cwd = (_resumable_stored_cwd(_str_param(ctx.found, "cwd"), ctx.profile_home)
+                                  or _profile_workspace_cwd(ctx.profile_home))
         # Fast path: reuse a session live IN THIS PROFILE (never another profile's runtime).
         with _session_resume_lock:
             live = _find_live_session_by_key(ctx.target, ctx.profile_home)
@@ -2015,7 +2019,7 @@ def _(rid, params: dict, session: dict) -> dict:
 @_session_method("session.undo", live=True)
 def _(rid, params: dict, session: dict) -> dict:
     # Under a running turn the post-run write would clobber the undo — stop the reply first.
-    busy = _err(rid, 4009, busy_message("undo"))
+    busy = _err(rid, 4009, busy_message("undo", bool(session.get("_manual_compress_active"))))
     if session.get("running"):
         return busy
     removed = 0
@@ -2035,20 +2039,13 @@ def _(rid, params: dict, session: dict) -> dict:
     return _ok(rid, {"removed": removed})
 
 
-def _compute_host_ack_error(rid, ack: dict, code: int, default: str):
-    """``_err`` for a ``control.error``/``error`` ack, else None."""
-    if ack.get("type") in {"control.error", "error"}:
-        return _err(rid, code, str(ack.get("message") or default))
-    return None
-
-
 def _save_via_compute_host(rid, params: dict) -> dict:
     """``session.save`` for a turn-isolated session: the host owns the transcript file."""
     try:
         ack = _send_compute_host_control(str(params.get("session_id") or ""), route_name="session.save", wait=True)
     except Exception as exc:
         return _err(rid, 5011, f"compute-host session save failed: {exc}")
-    if (resp := _compute_host_ack_error(rid, ack, 5011, "compute-host session save failed")) is not None:
+    if (resp := _compute_host_ack_error(rid, ack, ack.get("code") or 5011, "compute-host session save failed")) is not None:
         return resp
     if not isinstance(result := ack.get("result"), dict):
         return _err(rid, 5011, "compute-host session save returned an invalid response")
@@ -2148,11 +2145,12 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
-    if session.get("running"):
-        return _err(rid, 4009, busy_message("compress"))
     sid = params.get("session_id", "")
     try:
-        return _compress_live(rid, sid, session, _str_param(params, "focus_topic"))
+        with _manual_compress_turn(sid, session):
+            return _compress_live(rid, sid, session, _str_param(params, "focus_topic"))
+    except CompressionBusy as e:
+        return _err(rid, 4009, str(e))
     except CompressionLockHeld as e:
         _status_update(sid, "ready")
         from agent.manual_compression_feedback import describe_compression_lock_skip
@@ -2167,32 +2165,31 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict, session: dict) -> dict:
     if _session_uses_compute_host(session):
         return _save_via_compute_host(rid, params)
-    agent = session["agent"]
-    # Classic CLI /save: under the profile home, with the system prompt (dashboard parity). The SESSION's
-    # profile: this handler runs unscoped, so get_hermes_home() alone names the launch profile.
-    home = session.get("profile_home")
-    saved_dir = (Path(home) if home else get_hermes_home()) / "sessions" / "saved"
+    from hermes_cli.session_export import load_save_snapshot, render_session_for_save
+    from hermes_state import SessionExportTooLargeError
+    # As CLI/messaging /save json, under the SESSION's profile config + home (runs unscoped); a failed read falls back.
     try:
-        saved_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        return _err(rid, 5011, f"failed to create save directory {saved_dir}: {e}")
-    path = saved_dir / f"hermes_conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    with session["history_lock"]:
-        messages = list(session.get("history", []))
-    # Prefer the agent's session_start (classic CLI export); else the gateway created_at.
-    started = getattr(agent, "session_start", None)
-    if not isinstance(started, datetime):
-        created_at = session.get("created_at")
-        started = datetime.fromtimestamp(created_at) if isinstance(created_at, (int, float)) else None
+        with _session_profile_runtime_scope(session, hydrate_secrets=False), _session_db(session) as db:
+            data = db and load_save_snapshot(db, _submit_row_target_key(session), "json")
+    except SessionExportTooLargeError as e:
+        return _err(rid, 4131, str(e))
+    except Exception:
+        logger.warning("session.save: stored-session read failed; saving the in-memory history", exc_info=True)
+        data = None
+    path = Path(session.get("profile_home") or get_hermes_home()) / "sessions/saved" / f"hermes_conversation_{datetime.now():%Y%m%d_%H%M%S}.json"
+    if not data:  # No stored row: the in-memory history as an importable snapshot (CLI fallback shape).
+        started = getattr(agent := session["agent"], "session_start", None)
+        started = started.timestamp() if isinstance(started, datetime) else session.get("created_at")
+        with session["history_lock"]:
+            data = {"id": _submit_row_target_key(session), "model": getattr(agent, "model", ""),
+                    "started_at": started if isinstance(started, (int, float)) else None,
+                    "system_prompt": getattr(agent, "_cached_system_prompt", "") or "",
+                    "messages": list(session.get("history", []))}
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"model": getattr(agent, "model", ""),
-                       "session_id": getattr(agent, "session_id", None) or session.get("session_key") or "",
-                       "session_start": started.isoformat() if started else "",
-                       "system_prompt": getattr(agent, "_cached_system_prompt", "") or "",
-                       "messages": messages}, f, indent=2, ensure_ascii=False)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(render_session_for_save(data, "json"), encoding="utf-8")
     except Exception as e:
-        return _err(rid, 5011, str(e))
+        return _err(rid, 5011, f"failed to save {path}: {e}")
     return _ok(rid, {"file": str(path)})
 
 
@@ -2297,7 +2294,8 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
         try:
             title = params.get("name", "") or _branch_title(db, old_key)
             home = session.get("profile_home")
-            _persist_branch(db, new_key, old_key, title, history, source=source, cwd=_session_cwd(session),
+            _persist_branch(db, new_key, old_key, title, history, source=source,
+                            cwd=None if _is_remote_launch_cwd(session) else _session_cwd(session),
                             profile_name=profile_name_for_home(home) or _current_profile_name(),
                             model=_session_default_model(session), copy_fields=_BRANCH_COPY_FIELDS,
                             title_source="user" if params.get("name") else "derived",

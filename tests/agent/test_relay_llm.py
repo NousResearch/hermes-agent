@@ -377,6 +377,31 @@ def test_managed_stream_does_not_add_sdk_headers_to_strict_callback(relay_turn):
     assert observed == ["provider-native"]
 
 
+def test_managed_stream_delivers_each_chunk_before_the_provider_sends_the_next(relay_turn):
+    """Steering lost streamed text with Relay on: chunk N was withheld until chunk N+1 arrived."""
+    del relay_turn
+    release = threading.Event()
+
+    def paused_provider(_request):
+        yield {"delta": "first"}
+        assert release.wait(10), "first chunk never reached the consumer during the provider pause"
+        yield {"delta": "second"}
+
+    stream = relay_llm.stream(
+        {"payload": "paused"},
+        paused_provider,
+        session_id="session-1",
+        name="paused-native",
+        model_name="paused-model",
+        finalizer=lambda: {"content": "first second"},
+        metadata={"api_mode": "bedrock_converse", "api_request_id": "paused-stream"},
+    )
+
+    assert next(stream) == {"delta": "first"}
+    release.set()
+    assert list(stream) == [{"delta": "second"}]
+
+
 def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
     relay, turn = relay_turn
     captured_requests = []

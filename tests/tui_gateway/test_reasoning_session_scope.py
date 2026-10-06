@@ -27,14 +27,15 @@ import tui_gateway.server as server
 from tui_gateway.server import _session_info
 
 
-def _agent(reasoning_config):
-    return SimpleNamespace(
-        reasoning_config=reasoning_config,
-        service_tier=None,
-        model="glm-5",
-        provider="zai",
-        session_id="sess-key",
-    )
+def _agent(reasoning_config, **overrides):
+    return SimpleNamespace(**{
+        "reasoning_config": reasoning_config,
+        "service_tier": None,
+        "model": "glm-5",
+        "provider": "zai",
+        "session_id": "sess-key",
+        **overrides,
+    })
 
 
 class TestSessionInfoReasoningEffort:
@@ -62,6 +63,10 @@ class TestSessionInfoReasoningEffort:
         # Verbatim levels report themselves, so clients only annotate a real clamp.
         assert _session_info(_agent({"enabled": True, "effort": "high"}))["reasoning_effort_wire"] == "high"
         assert _session_info(_agent({"enabled": False}))["reasoning_effort_wire"] == ""
+        # On the Codex app-server ``ultra`` is codex's own harness mode, sent verbatim.
+        app_server = _agent({"enabled": True, "effort": "ultra"}, provider="openai-codex",
+                            model="gpt-5.6-sol", api_mode="codex_app_server")
+        assert _session_info(app_server)["reasoning_effort_wire"] == "ultra"
 
 
 class TestConfigSetReasoningSessionScope:

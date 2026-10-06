@@ -76,13 +76,10 @@ jobs:
       desktop_updater: ${{ steps.gate-lanes.outputs.desktop_updater }}
       rust: ${{ steps.gate-lanes.outputs.rust }}
       docker_meta: ${{ steps.gate-lanes.outputs.docker_meta }}
-      mcp_catalog: ${{ steps.gate-lanes.outputs.mcp_catalog }}
       e2e: ${{ steps.gate-lanes.outputs.e2e }}
       e2e_upgrade: ${{ steps.gate-lanes.outputs.e2e_upgrade }}
       e2e_desktop_core: ${{ steps.gate-lanes.outputs.e2e_desktop_core }}
       e2e_desktop_update: ${{ steps.gate-lanes.outputs.e2e_desktop_update }}
-      ci_review: ${{ steps.classify.outputs.ci_review }}
-      ci_review_files: ${{ steps.classify.outputs.ci_review_files }}
       event_name: ${{ github.event_name }}
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
@@ -93,7 +90,6 @@ jobs:
           github-token: ${{ github.token }}
       - name: Force all lanes on release
         # Overwrite the classifier outputs with 'true' when inputs.release.
-        # ci_review stays raw: it only ever feeds the PR review-label gate.
         id: gate-lanes
         env:
           RELEASE: ${{ inputs.release }}
@@ -152,10 +148,12 @@ jobs:
   lint:
     name: Python lints
     needs: detect
-    if: needs.detect.outputs.python == 'true'
+    # frontend too: the code-health ratchet in lint.yml also covers TypeScript.
+    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true'
     uses: ./.github/workflows/lint.yml
     with:
       event_name: ${{ needs.detect.outputs.event_name }}
+      python: ${{ needs.detect.outputs.python == 'true' }}
 
   js-tests:
     name: JS & TS checks
@@ -292,17 +290,6 @@ jobs:
       scan: ${{ needs.detect.outputs.scan == 'true' }}
       deps: ${{ needs.detect.outputs.deps == 'true' }}
 
-  review-labels:
-    name: Review label gate
-    needs: [detect, supply-chain]
-    if: always() && needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.ci_review == 'true' || needs.detect.outputs.mcp_catalog == 'true' || needs.supply-chain.outputs.critical_findings == 'true')
-    uses: ./.github/workflows/review-labels.yml
-    with:
-      ci_review: ${{ needs.detect.outputs.ci_review == 'true' }}
-      ci_review_files: ${{ needs.detect.outputs.ci_review_files }}
-      mcp_catalog: ${{ needs.detect.outputs.mcp_catalog == 'true' }}
-      supply_chain: ${{ needs.supply-chain.outputs.critical_findings == 'true' }}
-
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
   # status even when some deps were skipped.
@@ -310,17 +297,25 @@ jobs:
   #   Non-release (PR/push): failure fails, skipped counts as success.
   #   Release (inputs.release): strict — every required job must be
   #   `success`. A skipped required lane fails the gate; only the PR-only
-  #   jobs (history-check, lockfile-diff, supply-chain, review-labels) and
+  #   jobs (history-check, lockfile-diff, supply-chain) and
   #   the deferred Desktop E2E (e2e-desktop) may skip. The OSV scan's
   #   findings are advisory, but its execution is required.
   #
   # Branch protection should require ONLY this check.
   #
+  # The check name carries a version. The ruleset requires a check NAME, and a
+  # green check run recorded on a PR head stays valid forever, so a PR whose
+  # last CI predates a new required job still merges on that old green (32
+  # PRs merged without the code-health ratchet that way). When the required
+  # set gains a job every open PR must pass, bump the version here and in the
+  # protect-main ruleset in the same rollout: older greens then no longer
+  # count, and each PR needs one fresh CI run before it can merge.
+  #
   # Outputs ``needs-json`` — a compact ``{job_name: result}`` dict — so
   # the live comment poller can list failed jobs in the PR comment.
   # ─────────────────────────────────────────────────────────────────────
   all-checks-pass:
-    name: All required checks pass
+    name: All required checks pass (v2)
     needs:
       - detect
       - tests
@@ -344,7 +339,6 @@ jobs:
       - profile-artifact-check
       - icons-freshness-check
       - supply-chain
-      - review-labels
       # OSV runs weekly against main (osv-scanner.yml schedule), not per PR:
       # every PR was reporting the same repo-wide baseline of pinned-dep CVEs
       # in its review comment, and the SARIF upload tripped GitHub's

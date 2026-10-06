@@ -11,6 +11,7 @@ def record_unknown_worker_outcome(
     fire or duplicate a failure the worker already recorded.
     """
     from cron import scheduler
+    from cron.unreachable_retry import is_retry_run
 
     execution = scheduler.get_execution(str(job["execution_id"]))
     if not execution or execution.get("status") != "unknown":
@@ -38,6 +39,8 @@ def record_unknown_worker_outcome(
                 error,
                 delivery_error=delivery_error,
                 expected_fire_owner=owner,
+                # A ladder re-run's occurrence already counted toward repeat.
+                **({"ladder_rung": True} if is_retry_run(job) else {}),
             )
     return True
 

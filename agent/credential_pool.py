@@ -22,7 +22,7 @@ from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret, get_secret_str
 from agent.retry_utils import reset_delay_from_message
 from hermes_cli.auth_plugin_providers import plugin_refresh_hook
-from agent.credential_pool_plugin import apply_plugin_refresh_result, recover_failed_plugin_refresh
+from agent.credential_pool_plugin import apply_plugin_refresh_result, plugin_row_is_expiring, recover_failed_plugin_refresh
 from agent.credential_persistence import (
     fingerprint_secret_value,
     is_borrowed_credential_source,
@@ -1048,6 +1048,16 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             available, _pending = self._available_entries(model=model)
             return bool(available)
 
+    def lift_reopened_cooldowns(self, *, model: Optional[str] = None) -> bool:
+        """Clear cooldowns that have elapsed or (Codex) reopened early, then report availability.
+
+        The lift ``select()`` performs, without leasing an entry. ``has_available`` and
+        ``next_available_at`` never run the early-reopen probe.
+        """
+        with self._lock:
+            available, _pending = self._available_entries(clear_expired=True, model=model)
+            return bool(available)
+
     def next_available_at(self, *, model: Optional[str] = None) -> Optional[float]:
         """Earliest epoch time (seconds) any entry re-enters rotation.
 
@@ -1222,8 +1232,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         normalized_error = _normalize_error_context(error_context)
         # Permanent OAuth failures become STATUS_DEAD, not STATUS_EXHAUSTED:
         # otherwise a revoked credential re-enters rotation every hour and
-        # fails immediately until the user removes it (#32849).
-        terminal = self._is_terminal_auth_failure(status_code, normalized_error)
+        # fails immediately until the user removes it (#32849); a row whose
+        # refresh grant just went DEAD stays DEAD on the 401 that follows.
+        terminal = entry.last_status == STATUS_DEAD or self._is_terminal_auth_failure(status_code, normalized_error)
         # Carry the classifier's verdict so the cooldown is sized by what
         # actually failed (a billing 403 must not get the sole-credential
         # transient cooldown); absent a classification, clear a stale one.
@@ -1973,10 +1984,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
     def _entry_needs_refresh(self, entry: PooledCredential) -> bool:
         if entry.auth_type != AUTH_TYPE_OAUTH:
             return False
-        if self.provider == "anthropic":
-            if entry.expires_at_ms is None:
-                return False
-            return int(entry.expires_at_ms) <= int(time.time() * 1000) + 120_000
+        if self.provider == "anthropic" or plugin_refresh_hook(self.provider) is not None:
+            return plugin_row_is_expiring(entry)  # expiry-stamped rows: rotate 2 min ahead of expires_at_ms
         if self.provider == "openai-codex":
             return _codex_access_token_is_expiring(entry.access_token, CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)
         if self.provider == "xai-oauth":

@@ -176,7 +176,7 @@ def resolve_gateway_approval(session_key: str, choice: str,
 def withdraw_gateway_approval(session_key: str, request_id: str, cause: str) -> bool:
     """Withdraw one pending approval nobody can answer (the only attached client cannot render it).
     The waiter wakes at once with ``cancelled=cause`` — a withdrawal, never a user deny — instead of
-    idling on a prompt shown nowhere (#112548). False when it is no longer pending."""
+    idling for the whole approvals.timeout (#112548). False when it is no longer pending."""
     with _lock:
         queue = _gateway_queues.get(session_key, [])
         entry = next((e for e in queue if e.data.get("request_id") == request_id), None)

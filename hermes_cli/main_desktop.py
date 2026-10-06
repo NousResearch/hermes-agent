@@ -42,15 +42,17 @@ def _renderer_bundle_dir(desktop_dir: Path, *, source_mode: bool) -> Optional[Pa
     if source_mode:
         return desktop_dir / "dist"
 
+    resources = _packaged_resources_dir(desktop_dir)
+    return None if resources is None else resources / "app.asar.unpacked" / "dist"
+
+
+def _packaged_resources_dir(desktop_dir: Path) -> Optional[Path]:
+    """The packaged app's ``resources`` dir (renderer bundle, baked ``install-stamp.json``)."""
     executable = _desktop_packaged_executable(desktop_dir)
     if executable is None:
         return None
-
     # macOS: …/Hermes.app/Contents/MacOS/Hermes → …/Contents/Resources
-    resources = (
-        executable.parent.parent / "Resources" if sys.platform == "darwin" else executable.parent / "resources"
-    )
-    return resources / "app.asar.unpacked" / "dist"
+    return executable.parent.parent / "Resources" if sys.platform == "darwin" else executable.parent / "resources"
 
 
 # The module files the renderer fetches before any app code runs: Vite emits
@@ -123,6 +125,27 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     from hermes_cli.source_build import source_product_current
 
     return dist_dir is None or not source_product_current(project_root, "desktop", dist_dir)
+
+
+def _packaged_desktop_current_for_head(desktop_dir: Path, project_root: Path) -> bool:
+    """True when the packaged app was built from HEAD and none of its inputs changed since.
+
+    Freshness alone cannot answer this for an update: the baked ``install-stamp.json`` is a
+    desktop input that only the build itself rewrites, so after a pull that touched no other
+    desktop input the receipt still reads current while the app names the previous commit.
+    The commit the packaged app actually ships is the missing half; anything unreadable
+    means "build".
+    """
+    resources = _packaged_resources_dir(desktop_dir)
+    if resources is None:
+        return False
+    from hermes_cli.steward import read_install_stamp
+    from hermes_cli.version_info import _run_git
+
+    commit = read_install_stamp(resources).get("commit")
+    if not isinstance(commit, str) or commit != _run_git(project_root, "rev-parse", "HEAD"):
+        return False
+    return not _desktop_build_needed(desktop_dir, project_root, source_mode=False)
 
 
 def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
@@ -1543,7 +1566,7 @@ def _diagnose_esbuild_ignore_scripts(output: Optional[str]) -> None:
 def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, env: dict,
                            icons: Path | None = None) -> Optional[Path]:
     """Build prepared desktop sources, then publish the verified staged app."""
-    from pm.progress import run_contained
+    from hermes_cli.source_build import run_in_custody  # npm writes the checkout: update custody
 
     if not source_mode and sys.platform == "win32" and (ancestor := _desktop_ancestor_in(desktop_dir)):
         # The Desktop running this build holds the exe lock the promotion rename needs,
@@ -1577,11 +1600,11 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
         if stopped:
             print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
     try:
-        run_contained(build_cmd, f"Building desktop {build_label}", cwd=desktop_dir, env=build_env)
+        run_in_custody(desktop_dir.parents[1], build_cmd, f"Building desktop {build_label}", cwd=desktop_dir, env=build_env)
         if staging_dir is not None:
-            run_contained([npm, "run", "builder", "--", "--dir", "--publish", "never",
+            run_in_custody(desktop_dir.parents[1], [npm, "run", "builder", "--", "--dir", "--publish", "never",
                            f"-c.directories.output={staging_dir}"], "Packaging the desktop app",
-                          cwd=desktop_dir, env=build_env)
+                           cwd=desktop_dir, env=build_env)
         packaged_executable = (
             _promote_staged_desktop_app(desktop_dir, staging_dir) if staging_dir is not None else None
         )

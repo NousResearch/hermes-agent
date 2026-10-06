@@ -36,6 +36,7 @@ def cron_store(tmp_path, monkeypatch):
     """Redirect cron storage to a temp dir, pin the clock, start with no degraded store."""
     monkeypatch.setattr(store_health, "_degraded", {})
     monkeypatch.setattr(store_health, "_listener", None)
+    monkeypatch.setattr(store_health, "_recovered", {})
     monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
     monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
     monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
@@ -222,6 +223,31 @@ def test_unwritable_store_degrades_once_throttles_and_catches_up_once(cron_store
     assert store_health.degraded_record(cron_store / "cron") is None
     once_rows = executions.list_executions(job_id="once")
     assert [r["status"] for r in once_rows].count("failed") == 1
+
+
+def test_skipped_oneshot_survives_recovery_by_any_save(cron_store, monkeypatch):
+    """The outage window outlives the save that ends it: another job's save (a heartbeat, a
+    create) usually lands before the due scan, and the one-shot the outage skipped must still
+    fire once, not be retired as missed. A one-shot due after the store recovered and missed
+    later is retired as on main."""
+    clock = {"now": FIXED_NOW}
+    monkeypatch.setattr(cronjobs, "_hermes_now", lambda: clock["now"])
+    monkeypatch.setattr(store_health.time, "time", lambda: clock["now"].timestamp())
+    once = dict(_due_job("once"), schedule={"kind": "once", "run_at": FIXED_NOW.isoformat(), "display": "once"},
+                repeat={"times": 1, "completed": 0})
+    save_jobs([once])
+    enospc = OSError(errno.ENOSPC, "No space left on device")
+    cronjobs.warn_store_unwritable(enospc, "x", "claim", [once])
+    clock["now"] = FIXED_NOW + timedelta(minutes=10)
+    save_jobs(load_jobs() + [dict(_due_job("other"), next_run_at=(clock["now"] + timedelta(hours=1)).isoformat())])
+    assert store_health.degraded_record(cron_store / "cron") is None
+    assert [d["id"] for d in get_due_jobs()] == ["once"]
+
+    late = dict(once, id="late", next_run_at=(clock["now"] + timedelta(minutes=1)).isoformat())
+    save_jobs(load_jobs() + [late])
+    clock["now"] += timedelta(minutes=10)  # missed while the store was writable: retired
+    assert "late" not in [d["id"] for d in get_due_jobs()]
+    assert "late" not in [j["id"] for j in load_jobs()]
 
 
 @pytest.mark.platforms("posix")  # POSIX mode bits; root ignores them

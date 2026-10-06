@@ -43,6 +43,7 @@ class StoreDegraded:
     store: str
     since: float  # epoch seconds of the first failed write
     error: str
+    recovered_at: Optional[float] = None  # epoch seconds of the first write that landed again
     sites: set = field(default_factory=set)
     skipped: set = field(default_factory=set)  # distinct (job id, scheduled instant) not run
     # Monotonic time of the last failed dispatch write or re-probe. None until a dispatch write
@@ -61,6 +62,9 @@ class StoreDegraded:
 
 _DISPATCH_SITES = frozenset({"advance", "claim"})
 _degraded: dict[str, StoreDegraded] = {}
+# Each store's last ended outage (``outage_covers``): the save that ends an outage is often another
+# job's heartbeat, landing before the scan that fires the one-shots the outage skipped.
+_recovered: dict[str, StoreDegraded] = {}
 _lock = threading.Lock()
 # The gateway consumes transitions; ``fn(event, record)`` with event "unwritable" or "recovered".
 _listener: Optional[Callable[[str, StoreDegraded], None]] = None
@@ -123,6 +127,9 @@ def note_writable(cron_dir: Path) -> None:
         return
     with _lock:
         record = _degraded.pop(str(cron_dir), None)
+        if record is not None:
+            record.recovered_at = time.time()
+            _recovered[record.store] = record
     if record is None:
         return
     logger.warning("Cron store %s is writable again; %d skipped run(s), catching up once per job",
@@ -132,6 +139,12 @@ def note_writable(cron_dir: Path) -> None:
 
 def degraded_record(cron_dir: Optional[Path] = None) -> Optional[StoreDegraded]:
     return _degraded.get(str(cron_dir if cron_dir is not None else _active_cron_dir()))
+
+
+def outage_covers(cron_dir: Path, due_at: float, grace: float) -> bool:
+    """Whether a run due at ``due_at`` fell inside this store's current or last ended outage."""
+    return any(r is not None and r.since <= due_at + grace and (r.recovered_at is None or due_at <= r.recovered_at)
+               for r in (_degraded.get(str(cron_dir)), _recovered.get(str(cron_dir))))
 
 
 def degraded_records() -> list:

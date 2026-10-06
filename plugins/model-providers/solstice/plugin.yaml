@@ -1,5 +1,5 @@
 name: solstice-provider
 kind: model-provider
 version: 0.1.0
-description: Solstice (per-user-quota OAuth)
+description: Solstice (per-user-quota OAuth, pre-release)
 author: Nous Research

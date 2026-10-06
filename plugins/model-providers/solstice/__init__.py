@@ -1,99 +1,60 @@
-"""Solstice provider profile (pre-release — hidden by default).
+"""Solstice provider profile: a user's own per-user-quota Gemini subscription, signed in with OAuth.
 
-Solstice is a consumer subscription carried into Hermes. Inference goes to
-``generativelanguage.googleapis.com`` on the ``:generateContentPerUserQuota``
-endpoint, authenticated with the user's own OAuth token so usage maps to their
-Solstice quota.
-
-This profile is declarative metadata only — the transport lives in
-``agent/solstice_adapter.py`` (per-user-quota endpoint + Bearer auth over
-the native request builder) and the OAuth flow lives in
-``hermes_cli/solstice.py`` (PKCE loopback → NAS-brokered code
-exchange → direct inference).
-
-Secret-launch mechanics:
-- ``hidden=True`` keeps the provider out of the default discovery surfaces
-  (``/model`` picker, setup wizard, ``hermes auth`` lists, doctor) until it is
-  explicitly configured. With NAS owning the client config (discovered
-  at login via ``/api/oauth/gemini-auth/config``), the provider is enabled by
-  default and surfaced once a logged-in Nous user runs ``hermes auth add
-  solstice``. The visibility gate defers to
-  ``hermes_cli.solstice.solstice_enabled()`` (registered below).
-- The provider still resolves by name via ``get_provider_profile()`` so an
-  explicit ``model.provider: solstice`` in config.yaml works.
+Pre-release (``hidden=True``): no picker, setup list or accounts tab offers it until the user signs in
+by name (``hermes auth add solstice``); after that it lists like any signed-in provider. Login and
+token refresh go through the generic PKCE plugin flow with a Nous-portal broker as the token endpoint
+(``auth.py``); inference goes straight to Google on the per-user-quota methods (``transport.py``).
 """
 
+from __future__ import annotations
+
+from dataclasses import replace
 from typing import Any
 
-from providers import register_hidden_provider_gate, register_provider
+from hermes_cli.auth_oauth_pkce_plugin import OAuthPKCEConfig, pkce_auth_handler, pkce_refresh_credential
+from providers import register_provider
 from providers.base import ProviderProfile
 
+from .auth import broker_token_request, discover_client
+from .transport import INFERENCE_BASE_URL, SolsticeClient
 
-# Inference host — the per-user-quota backend behind Solstice.  The
-# standard request body (built by
-# agent/gemini_native_adapter.build_gemini_request) is sent to the
-# ``:generateContentPerUserQuota`` variant at this host.  Imported from
-# hermes_cli/solstice.py so the host has a single source of truth.
-from hermes_cli.solstice import (
-    SOLSTICE_INFERENCE_BASE_URL as SOLSTICE_BASE_URL,
+# Verified on the per-user-quota endpoint, which has no model listing a user token may read (its
+# /models answers 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT). Quota is per model, so lite stays last as the
+# reserve once the flash family is exhausted.
+FALLBACK_MODELS = ("gemini-3.5-flash", "gemini-flash-latest", "gemini-flash-lite-latest")
+
+# The broker owns client_id/scope (discovered per login); refresh needs neither, the broker adds them.
+_BASE_CFG = OAuthPKCEConfig(
+    client_id="", authorize_url="", token_url="", label="Solstice",
+    redirect_path="/gemini-auth/callback", token_request=broker_token_request,
+    # A refresh token is issued only for offline access, and Google omits it on a repeat consent.
+    extra_authorize_params={"access_type": "offline", "prompt": "consent"},
 )
 
-# Curated model list shown when live discovery is unavailable, verified
-# present on the per-user-quota endpoint (2026-09). The endpoint serves a
-# closed set, so the fallback lists only those confirmed to resolve.
-#
-# Order matters: the first entry is the default. lite is listed last as the
-# reserve — the per-user quota is enforced PER MODEL, so when the flash/pro
-# family is exhausted lite still answers.
-SOLSTICE_FALLBACK_MODELS = (
-    "gemini-3.5-flash",
-    "gemini-flash-latest",
-    "gemini-flash-lite-latest",
-)
+
+def _auth_handler(action: str, args: Any) -> bool:
+    cfg = _BASE_CFG
+    if action == "add":
+        client = discover_client()
+        cfg = replace(_BASE_CFG, client_id=client["client_id"], authorize_url=client["authorize_url"],
+                      scopes=tuple(client["scope"].split()))
+    return pkce_auth_handler(cfg)(action, args)
 
 
 class SolsticeProfile(ProviderProfile):
-    """Solstice — per-user-quota OAuth provider."""
-
-    def build_extra_body(
-        self, *, session_id: str | None = None, **context: Any
-    ) -> dict[str, Any]:
-        """No extra_body: the transport client builds the request envelope."""
-        return {}
+    def create_client(self, **client_kwargs: Any) -> Any:
+        allowed = {"api_key", "base_url", "default_headers", "timeout", "http_client"}
+        return SolsticeClient(**{k: v for k, v in client_kwargs.items() if k in allowed})
 
     def get_max_tokens(self, model: str | None) -> int | None:
-        # Solstice model output caps are enforced by the backend; do not
-        # impose a Hermes-side default cap.
-        return None
+        return None  # output caps are the backend's; a Hermes default would truncate long answers
 
 
-solstice_profile = SolsticeProfile(
-    name="solstice",
-    aliases=("solstice-oauth",),
-    display_name="Solstice",
-    description="Solstice (per-user-quota OAuth)",
-    api_mode="chat_completions",
-    auth_type="oauth_external",
-    base_url=SOLSTICE_BASE_URL,
-    env_vars=(),
-    hidden=True,
-    supports_health_check=False,
-    fallback_models=SOLSTICE_FALLBACK_MODELS,
-)
-
-register_provider(solstice_profile)
-
-
-def _solstice_gate() -> bool:
-    """Enable predicate — defers to the single auth-side gate.
-
-    Registered so ``list_providers()`` and ``solstice_enabled()`` read the
-    SAME credential resolver, keeping the provider's visibility and its
-    auth/runtime usability in lockstep (never surfaced-but-dead).
-    """
-    from hermes_cli.solstice import solstice_enabled
-
-    return solstice_enabled()
-
-
-register_hidden_provider_gate("solstice", _solstice_gate)
+register_provider(SolsticeProfile(
+    name="solstice", aliases=("solstice-oauth",), display_name="Solstice",
+    description="Solstice (your own per-user quota, OAuth sign-in)",
+    auth_type="oauth_external", base_url=INFERENCE_BASE_URL, hidden=True,
+    supports_health_check=False, supports_model_listing=False, supports_vision=True,
+    fallback_models=FALLBACK_MODELS, default_aux_model="gemini-flash-lite-latest",
+    auth_handler=_auth_handler, refresh_credential=pkce_refresh_credential(_BASE_CFG),
+))

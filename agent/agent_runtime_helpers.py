@@ -2012,33 +2012,6 @@ def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: s
     return client
 
 
-def _solstice_client(agent, client_kwargs: dict, httpx_verify, *, reason: str, shared: bool):
-    """Solstice (per-user-quota) transport client, else None.
-
-    Separate from ``_gemini_native_client``: same request body, but the OAuth bearer token
-    replaces the API key and the endpoint is the ``:generateContentPerUserQuota`` variant, so the
-    transport must be the Solstice-aware facade rather than the plain native client.
-    """
-    from agent.solstice_adapter import SOLSTICE_BASE_URL, SolsticeClient
-    if getattr(agent, "provider", "") != "solstice":
-        return None
-    base_url = str(client_kwargs.get("base_url", "") or "").rstrip("/") or SOLSTICE_BASE_URL
-    safe_kwargs = {
-        k: v for k, v in client_kwargs.items()
-        if k in {"api_key", "base_url", "default_headers", "timeout", "http_client", "project"}
-    }
-    safe_kwargs["base_url"] = base_url
-    if "http_client" not in safe_kwargs:
-        keepalive_http = agent._build_keepalive_http_client(base_url, verify=httpx_verify)
-        if keepalive_http is not None:
-            safe_kwargs["http_client"] = keepalive_http
-    client = SolsticeClient(**safe_kwargs)
-    _ra().logger.info(
-        "Solstice client created (%s, shared=%s) %s", reason, shared, agent._client_log_context()
-    )
-    return client
-
-
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
     from agent.auxiliary_client import (
         _to_openai_base_url,
@@ -2103,9 +2076,6 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
         if client is not None:
             return client
-    client = _solstice_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
-    if client is not None:
-        return client
     # TCP keepalives so dead provider connections are detected (~60s) instead of hanging in
     # CLOSE-WAIT. Injected into the local copy only, so each client gets its own httpx.Client;
     # pinned by tests/agent/test_create_openai_client_reuse.py. What IS shared across those per-client wrappers is the

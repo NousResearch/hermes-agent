@@ -480,36 +480,6 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
     _activate_provider_model(selected, "minimax-oauth", creds["base_url"], f"\u2713 Using MiniMax model: {selected}", no_change=None)
 
 
-def _model_flow_solstice(config, current_model="", args=None):
-    """Solstice provider: ensure logged in, then pick model."""
-    from hermes_cli.auth import AuthError, format_auth_error, _prompt_model_selection
-    from hermes_cli.solstice import (
-        SOLSTICE_INFERENCE_BASE_URL, _login_solstice, get_solstice_status,
-        resolve_solstice_runtime_credentials)
-
-    if not get_solstice_status().get("logged_in"):
-        _say("Not logged into Solstice. Starting OAuth login...", "")
-        mock_args = argparse.Namespace(
-            no_browser=bool(getattr(args, "no_browser", False)),
-            timeout=getattr(args, "timeout", None) or 30.0)
-        if not _run_login(_login_solstice, mock_args, None):
-            return
-
-    try:
-        creds = resolve_solstice_runtime_credentials()
-    except AuthError as exc:
-        print(format_auth_error(exc))
-        return
-
-    base_url = creds.get("base_url") or SOLSTICE_INFERENCE_BASE_URL
-    from hermes_cli.models import provider_model_ids
-    model_ids = provider_model_ids("solstice")
-    selected = _prompt_model_selection(model_ids, current_model, confirm_provider="solstice",
-                                       confirm_base_url=base_url)
-    _activate_provider_model(selected, "solstice", base_url,
-                             f"\u2713 Using Solstice model: {selected}")
-
-
 def _copilot_model_list(live_ids) -> list:
     """Live GitHub Copilot ids, or the curated fallback with a warning."""
     from hermes_cli.models import _PROVIDER_MODELS

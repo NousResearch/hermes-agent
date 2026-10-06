@@ -13,6 +13,7 @@ import type { BootTranslations } from './types_boot'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { NoticeTranslations } from './types_notices'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
+import type { UninstallSectionTranslations } from './types_uninstall_section'
 
 /** The locales compiled into the app (`TRANSLATIONS`). */
 export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
@@ -947,23 +948,7 @@ export interface Translations extends NoticeTranslations {
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
-    uninstallSection: {
-      dangerZone: string
-      checkingInstalled: string
-      uninstallHermes: string
-      chooseHowMuch: string
-      confirmUninstall: string
-      confirmBody: (what: string) => string
-      appLabel: string
-      couldNotStart: string
-      uninstalling: string
-      yesUninstall: string
-      options: {
-        gui: { title: string; description: string; consequence: string }
-        lite: { title: string; description: string; consequence: string }
-        full: { title: string; description: string; consequence: string }
-      }
-    }
+    uninstallSection: UninstallSectionTranslations
     poolLimits: {
       warmBotBackendsAria: string
       warmBotBackendsTitle: string

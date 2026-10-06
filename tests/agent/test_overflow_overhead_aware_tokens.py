@@ -123,23 +123,59 @@ def _make_long_context_tier_error():
     err.status_code = 429
     return err
 
+    def test_long_context_tier_refreshes_an_opted_in_engine_budget(self, agent):
+        """A 1M-to-200K tier downgrade re-hands the calibrated host budget."""
+        err = self._make_long_context_tier_error()
+        ok_resp = _mock_response(content="Recovered", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err, ok_resp]
+        budget_hook = MagicMock(return_value=True)
+        agent.context_compressor.set_compression_budget = budget_hook
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "compressed"}],
+                "compressed prompt",
+            )
+            agent.run_conversation("hello", conversation_history=_prefill())
+
+        # 200K is below the small-window cutoff, so the built-in 75% floor
+        # produces a 150K trigger when no output reservation is configured.
+        budget_hook.assert_called_once_with(
+            200_000, 150_000, reason="long_context_tier"
+        )
+
 
 @pytest.mark.parametrize("muted", [False, True])
 def test_long_context_retry_carrier_survives_failure_flush(agent, muted, monkeypatch):
     from gateway.warning_notifications import DiagnosticText
+
     agent._notification_config = {"display": {"suppress_warning_notifications": muted}}
     err = _make_long_context_tier_error()
     agent.client.chat.completions.create.side_effect = [err, _mock_response(content="Recovered")]
     captured = []
     original = agent._buffer_retry_message
+
     def capture(kind, text):
         captured.append((kind, text))
         original(kind, text)
+
     monkeypatch.setattr(agent, "_buffer_retry_message", capture)
-    with (patch("agent.model_metadata.estimate_request_tokens_rough", return_value=_SENTINEL_TOKENS),
-          patch.object(agent, "_compress_context", return_value=([{"role": "user", "content": "compressed"}], "compressed prompt")),
-          patch.object(agent, "_persist_session"), patch.object(agent, "_save_trajectory"),
-          patch.object(agent, "_cleanup_task_resources")):
+    with (
+        patch("agent.model_metadata.estimate_request_tokens_rough", return_value=_SENTINEL_TOKENS),
+        patch.object(
+            agent,
+            "_compress_context",
+            return_value=([{"role": "user", "content": "compressed"}], "compressed prompt"),
+        ),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
         result = agent.run_conversation("hello", conversation_history=_prefill())
     assert result["final_response"] == "Recovered"
     assert captured

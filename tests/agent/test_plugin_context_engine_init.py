@@ -37,6 +37,18 @@ class _ToolEngine(_StubEngine):
         ]
 
 
+class _BudgetAwareEngine(_StubEngine):
+    def __init__(self):
+        super().__init__()
+        self.compression_budgets = []
+
+    def set_compression_budget(
+        self, context_capacity, trigger_tokens, *, reason=""
+    ):
+        self.compression_budgets.append((context_capacity, trigger_tokens, reason))
+        return True
+
+
 def test_plugin_engine_gets_context_length_on_init():
     """Plugin context engine should have context_length set during AIAgent init."""
     engine = _StubEngine()
@@ -65,6 +77,34 @@ def test_plugin_engine_gets_context_length_on_init():
     assert agent.context_compressor is engine
     assert engine.context_length == 204_800
     assert engine.threshold_tokens == int(204_800 * engine.threshold_percent)
+
+
+def test_budget_aware_plugin_receives_host_budget_on_init():
+    """An opt-in plugin sees the host's reservation-aware initial budget."""
+    engine = _BudgetAwareEngine()
+    cfg = {"context": {"engine": "stub"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("plugins.context_engine.load_context_engine", return_value=engine),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.context_compressor is engine
+    # ContextCompressor applies its 75% floor below a 512K context window.
+    assert engine.compression_budgets == [(204_800, 153_600, "model_init")]
 
 
 def test_active_context_engine_tools_survive_explicit_platform_toolsets():

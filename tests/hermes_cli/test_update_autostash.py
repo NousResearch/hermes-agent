@@ -577,3 +577,99 @@ def test_keep_stash_park_records_parked_step_in_receipt(capsys):
     assert len(disposition) == 1
     assert disposition[0]["ok"] is False
     assert "parked" in disposition[0]["detail"]
+
+
+def _repo_with_stash(tmp_path, local_source):
+    """A repo whose autostash holds a tracked ``mod.py`` edit and an untracked ``notes.md``."""
+    import subprocess
+
+    def git(*args, check=True):
+        return subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True, check=check)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "mod.py").write_text("X = 1\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    (tmp_path / "mod.py").write_text(local_source, encoding="utf-8")
+    (tmp_path / "notes.md").write_text("my private notes\n", encoding="utf-8")
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+    assert stash_ref
+    return git, stash_ref
+
+
+@pytest.mark.parametrize("local_source", ["X = 2\n", "X = (\n"], ids=["healthy", "breaks-hermes"])
+def test_untracked_file_replaced_by_the_update_keeps_the_stash(tmp_path, local_source):
+    """#124641: the update adds a file where the user had an untracked file of the same name.
+    ``stash apply`` refuses it ("already exists, no checkout"); the stash is the only copy of the
+    user's version, so it is never dropped. The restored tree still gets the health check: a restore
+    that breaks Hermes resets the tree and exits 1."""
+    git, stash_ref = _repo_with_stash(tmp_path, local_source)
+    # The pull adds its own notes.md.
+    (tmp_path / "notes.md").write_text("upstream notes\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "upstream adds notes.md")
+
+    probe = _ReceiptProbe()
+    with _active_receipt(probe):
+        if local_source == "X = 2\n":
+            restored = hermes_main._restore_stashed_changes(["git"], tmp_path, stash_ref, prompt_user=False)
+            assert restored is False
+        else:
+            with pytest.raises(SystemExit) as exc:
+                hermes_main._restore_stashed_changes(["git"], tmp_path, stash_ref, prompt_user=False)
+            assert exc.value.code == 1
+
+    healthy = local_source == "X = 2\n"
+    assert (tmp_path / "mod.py").read_text(encoding="utf-8") == (local_source if healthy else "X = 1\n")
+    assert (tmp_path / "notes.md").read_text(encoding="utf-8") == "upstream notes\n"
+    assert git("show", f"{stash_ref}^3:notes.md").stdout == "my private notes\n"
+    assert git("stash", "list").stdout.strip(), "the stash is the only copy of the user's notes.md"
+    if healthy:
+        disposition = [s for s in probe.steps if s["name"] == "local_changes_stash"]
+        assert len(disposition) == 1 and disposition[0]["ok"] is False
+        assert "parked" in disposition[0]["detail"] and "notes.md" in disposition[0]["detail"]
+
+
+def test_untracked_file_the_update_does_not_track_is_never_reported_replaced(tmp_path, capsys):
+    """#70127: an untracked file still in the tree after the stash (it could not be deleted) and
+    changed since is not the update's file; HEAD does not track it, so the restore completes."""
+    git, stash_ref = _repo_with_stash(tmp_path, "X = 2\n")
+    # The occupant survived the stash and was edited during the update window.
+    (tmp_path / "notes.md").write_text("edited while locked\n", encoding="utf-8")
+
+    assert hermes_main._restore_stashed_changes(["git"], tmp_path, stash_ref, prompt_user=False) is True
+
+    assert (tmp_path / "mod.py").read_text(encoding="utf-8") == "X = 2\n"
+    assert "The update added" not in capsys.readouterr().out
+
+
+def test_unrequested_park_is_never_reported_as_update_complete(monkeypatch, tmp_path):
+    """A restore that conflicts leaves the patch parked: the completion line must say so (#122557);
+    a park the user asked for (--keep-stash) stays a normal completion."""
+    import hermes_cli.update_cmd_stash as stash_mod
+
+    monkeypatch.setattr(stash_mod, "_pending_autostash", None)
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    source = tmp_path / "notes.txt"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+    source.write_text("VALUE = 3\n", encoding="utf-8")
+    git("commit", "-qam", "pulled change")
+
+    assert hermes_main._restore_stashed_changes(["git"], tmp_path, stash_ref, prompt_user=False) is False
+    notice = stash_mod._unrestored_autostash_notice()
+    assert notice and not notice.startswith("\u2713") and stash_ref in notice
+
+    stash_mod._park_stashed_changes(stash_ref)
+    assert stash_mod._unrestored_autostash_notice() is None

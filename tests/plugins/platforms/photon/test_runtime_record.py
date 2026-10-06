@@ -36,6 +36,8 @@ def record_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
     monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
+    # Stand-in for PM's node; the user's PATH node is never picked up.
+    monkeypatch.setattr(photon_adapter, "find_node_executable", lambda _name: "/pm/node")
     monkeypatch.delenv("PHOTON_SIDECAR_TOKEN", raising=False)
     cfg = PlatformConfig(enabled=True, token="", extra={})
     return PhotonAdapter(cfg)

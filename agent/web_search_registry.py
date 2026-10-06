@@ -50,8 +50,12 @@ def _read_config_key(*path: str) -> Optional[str]:
 
 
 def _configured_backend(capability: str) -> Optional[str]:
-    """``web.<capability>_backend`` (preferred) or ``web.backend`` (shared fallback)."""
-    return _read_config_key("web", f"{capability}_backend") or _read_config_key("web", "backend")
+    """``web.<capability>_backend`` (preferred) or ``web.backend`` (shared fallback). The managed ``nous``
+    selection names no provider: it is served by Perplexity (search) and Firecrawl (extract)."""
+    configured = _read_config_key("web", f"{capability}_backend") or _read_config_key("web", "backend")
+    if configured and configured.lower() == "nous":
+        return "perplexity" if capability == "search" else "firecrawl"
+    return configured
 
 
 # Paid providers first so existing paid setups don't get downgraded to a free
@@ -198,28 +202,3 @@ def get_active_search_provider() -> Optional[WebSearchProvider]:
 def get_active_extract_provider() -> Optional[WebSearchProvider]:
     """Resolve the currently-active web extract provider."""
     return _resolve(_configured_backend("extract"), capability="extract")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Dict  # noqa: F401,E402
-from typing import List  # noqa: F401,E402
-import threading  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'hermes_home_key': ('hermes_constants', 'hermes_home_key'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

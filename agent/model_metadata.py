@@ -22,7 +22,7 @@ from agent import model_metadata_http
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
-from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
+from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, without_persistence_fields
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +298,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # its own branch). 5.4-nano/-mini are 400k, not 1.05M; gpt-5.3-codex-spark is
     # Codex-OAuth-only and listed so "gpt-5" (400k) doesn't win.
     "gpt-6-astra": 1050000,  # also matches -pro (verified live on OpenRouter)
+    "gpt-6.1-sol": 1050000,  # -pro too (OpenAI model page + OpenRouter live 2026-09-29)
     "gpt-6-sol": 1050000, "gpt-6-luna": 1050000,  # -pro too (OpenRouter live 2026-09-22)
     "gpt-5.6-luna": 1050000, "gpt-5.6-terra": 1050000, "gpt-5.6-sol": 1050000, "gpt-5.5": 1050000,
     "gpt-5.4-nano": 400000, "gpt-5.4-mini": 400000, "gpt-5.4": 1050000,
@@ -1639,7 +1640,12 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
         resp = client.post(f"{server_url}/api/show", json={"name": model})
         return _ollama_show_context(resp.json(), gguf_first=False) if resp.status_code == 200 else None
     def _model_detail_ctx(client) -> Optional[int]:
-        # LM Studio / vLLM / llama.cpp / Anthropic-compat proxies: /v1/models/{model}
+        # LM Studio / vLLM / llama.cpp / Anthropic-compat proxies: /v1/models/{model}.
+        # Skipped for unrecognised servers (server_type None, e.g. LiteLLM proxies): they commonly
+        # gate this endpoint behind admin auth (#25848) and log an ERROR per probe even though the
+        # 401 falls through to the /v1/models list below, which works universally.
+        if server_type is None:
+            return None
         resp = client.get(f"{server_url}/v1/models/{model}")
         return _context_length_from_model_payload(resp.json()) if resp.status_code == 200 else None
     typed = {
@@ -1687,7 +1693,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> 
 # Codex OAuth `context_window` values (what Codex enforces — lower than the direct API for the same
 # slugs). Fallback when the live probe fails; longest-key-first. gpt-5.3-codex-spark is listed so "gpt-5.3-codex" doesn't win.
 _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
-    "gpt-6-astra": 272_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
+    "gpt-6-astra": 272_000, "gpt-6.1-sol": 272_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
     "gpt-5.1-codex-max": 272_000, "gpt-5.1-codex-mini": 272_000, "gpt-5.3-codex": 272_000,
     "gpt-5.3-codex-spark": 128_000, "gpt-5.2-codex": 272_000, "gpt-5.4-mini": 272_000,
     "gpt-5.6-sol": 272_000, "gpt-5.6-terra": 272_000, "gpt-5.6-luna": 272_000, "gpt-daybreak-blue-latest": 272_000,
@@ -1707,13 +1713,17 @@ _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: Dict[str, int] = {
 _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
     "gpt-5.4": 900_000, "gpt-daybreak-blue-latest": 900_000,
     "gpt-6-astra": 900_000,  # advertised 272K; 920,043 input OK, 1,000,043 rejected (live 2026-09-04)
+    # advertised 272K; 918,137 input OK, ~931K rejected (live 2026-09-29), consistent with the 922K left by
+    # the model page's 1.05M context minus 128K max output (derived, not a published input cap).
+    # EXACT, not a prefix: the dotted slug is its own line and ``-pro`` is not routable.
+    "gpt-6.1-sol": 900_000,
 }
 _CODEX_OAUTH_STALE_ADVERTISED_CTX = 272_000  # the only advertised value the bump may override
 CODEX_CONTEXT_VARIANT_SUFFIX = "-900k"  # picker-only opt-in suffix; never sent on the wire
 # The ONLY bases eligible for ``-900k``: routable, live-verified. No family prefixing (it would synthesize
 # dead ``-pro`` variants); dated snapshots of the 5.6 / gpt-6 tier bases are allowed. gpt-daybreak-blue-latest is a verified Sol alias.
 _CODEX_900K_SNAPSHOT_BASES = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna")
-_CODEX_900K_ELIGIBLE_BASES = frozenset({*_CODEX_900K_SNAPSHOT_BASES, "gpt-5.4", "gpt-daybreak-blue-latest", "gpt-6-astra"})
+_CODEX_900K_ELIGIBLE_BASES = frozenset({*_CODEX_900K_SNAPSHOT_BASES, "gpt-5.4", "gpt-daybreak-blue-latest", "gpt-6-astra", "gpt-6.1-sol"})
 _CODEX_900K_SNAPSHOT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -1777,6 +1787,7 @@ _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
 # opted-in ``-900k`` bump reads it (#105443); a catalog without the field leaves the entry empty.
 _codex_oauth_max_context_cache: Dict[str, Dict[str, int]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
+_CODEX_OAUTH_CONTEXT_NEGATIVE_TTL = 300  # a probe that found no catalog is retried after 5 minutes; must stay < TTL
 # The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
 # hides models whose ``minimal_client_version`` is newer. "0.0.0" used to be the ungated sentinel
 # returning the whole account catalog, but since the GPT-6 Sol/Luna rollout it returns a FROZEN
@@ -1845,6 +1856,19 @@ def _codex_oauth_token_fingerprint(access_token: str, base_url: str = "") -> str
     return hashlib.sha256(f"{access_token}\n{(base_url or '').strip().rstrip('/')}".encode("utf-8")).hexdigest()[:16]
 
 
+def _remember_no_codex_catalog(cache_key: str) -> None:
+    """A probe that found no catalog (down, non-200, not Codex-shaped) is remembered briefly: context
+    resolution runs on init, /status, aux and @-reference turns, and each miss can block ~30s. The entry is
+    stamped as if cached ``TTL - NEGATIVE_TTL`` ago, so the shared freshness check expires it after
+    ``_CODEX_OAUTH_CONTEXT_NEGATIVE_TTL``. A fresh catalog a concurrent probe just stored is kept, and the
+    max cache is left alone so an observed cap survives."""
+    now = time.time()
+    current = _codex_oauth_context_cache.get(cache_key)
+    if current is not None and current[0] and now - current[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
+        return
+    _codex_oauth_context_cache[cache_key] = ({}, now - _CODEX_OAUTH_CONTEXT_CACHE_TTL + _CODEX_OAUTH_CONTEXT_NEGATIVE_TTL)
+
+
 def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: str = "") -> Tuple[Dict[str, int], bool]:
     """Codex catalogue ``{slug: context_window}`` plus whether it came from HTTP. Cached per token
     fingerprint (windows vary by entitlement); ``max_context_window`` lands in
@@ -1868,9 +1892,11 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
         )
         if status != 200:
             logger.debug("Codex /models probe returned HTTP %s; falling back to hardcoded defaults", status)
+            _remember_no_codex_catalog(cache_key)
             return {}, False
     except Exception as exc:
         logger.debug("Codex /models probe failed: %s", exc)
+        _remember_no_codex_catalog(cache_key)
         return {}, False
     result: Dict[str, int] = {}
     max_result: Dict[str, int] = {}
@@ -1880,10 +1906,24 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
             result[slug.strip()] = ctx
             if isinstance(max_ctx, int) and max_ctx > 0:
                 max_result[slug.strip()] = max_ctx
-    if result:
-        _codex_oauth_context_cache[cache_key] = (result, now)
-        _codex_oauth_max_context_cache[cache_key] = max_result
+    if not result:
+        _remember_no_codex_catalog(cache_key)
+        return {}, False
+    # Max first: a reader that sees the fresh context entry must also see its cap.
+    _codex_oauth_max_context_cache[cache_key] = max_result
+    _codex_oauth_context_cache[cache_key] = (result, now)
     return result, True
+
+
+def _codex_catalog_key(keys, slug: str) -> Optional[str]:
+    """The catalog key for ``slug``: exact, then case-insensitive in case casing drifts."""
+    return slug if slug in keys else next((k for k in keys if k.lower() == slug.lower()), None)
+
+
+def _cached_codex_catalog_max(access_token: str, base_url: str, slug: str) -> Optional[int]:
+    """``max_context_window`` the catalog behind ``(access_token, base_url)`` last published for ``slug``."""
+    published = _codex_oauth_max_context_cache.get(_codex_oauth_token_fingerprint(access_token, base_url), {})
+    return published.get(_codex_catalog_key(published, slug))
 
 
 def _resolve_codex_oauth_context_length_with_source(model: str, access_token: str = "", base_url: str = "") -> Tuple[Optional[int], str]:
@@ -1908,15 +1948,16 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     # main-agent path normalizes it away before reaching here, but display/auxiliary callers pass it through
     # (#92797 review).
     lookup_bare = _bare_codex_slug(strip_codex_context_variant_suffix(model_bare))
+    catalog_max = None
     if access_token:
         live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token, base_url=base_url)
-        live_max = _codex_oauth_max_context_cache.get(_codex_oauth_token_fingerprint(access_token, base_url), {})
-        # Exact slug, then case-insensitive in case casing drifts.
-        slug = lookup_bare if lookup_bare in live else next((s for s in live if s.lower() == lookup_bare.lower()), None)
+        # Read after the fetch; a failed refresh past the TTL keeps the cap already observed.
+        catalog_max = _cached_codex_catalog_max(access_token, base_url, lookup_bare)
+        slug = _codex_catalog_key(live, lookup_bare)
         if slug is not None:
-            return _apply_verified_bump(live[slug], "live" if fresh_probe else "memory", live_max.get(slug))
+            return _apply_verified_bump(live[slug], "live" if fresh_probe else "memory", catalog_max)
     hit = _longest_key_match(_CODEX_OAUTH_CONTEXT_FALLBACK, lookup_bare.lower())
-    return _apply_verified_bump(hit[1], "fallback") if hit else (None, "")
+    return _apply_verified_bump(hit[1], "fallback", catalog_max) if hit else (None, "")
 
 
 def _resolve_nous_context_length(model: str, base_url: str = "", api_key: str = "") -> Tuple[Optional[int], str]:
@@ -2076,9 +2117,18 @@ def _resolve_custom_codex_route_context_length(model: str, base_url: str, api_ke
     """Step 2 for a custom ``api_mode: codex_responses`` route — a Codex proxy on a generic URL.
     The Codex OAuth table (with the opted-in ``-900k`` bump) answers first: the proxy's own /models
     and the direct-API catalog both advertise the 1.05M direct window that Codex does not honour.
-    No live catalog probe — the route's key is the proxy's, not a ChatGPT token. Slugs the table
-    does not know take the ordinary endpoint probes."""
+    The proxy's context_window is never trusted; only an opted-in ``-900k`` variant asks the route's own
+    catalog (with the route's own key), and only for its max_context_window cap. Slugs the table does
+    not know take the ordinary endpoint probes."""
     ctx, _source = _resolve_codex_oauth_context_length_with_source(model)
+    if ctx and api_key and is_codex_context_variant(model):
+        # The -900k bump is an account-level assumption; a gateway whose own catalog publishes a
+        # Codex-shaped max_context_window caps it, as the native provider's live catalog does.
+        _fetch_codex_oauth_context_lengths_with_source(api_key, base_url)
+        cap = _cached_codex_catalog_max(api_key, base_url, _bare_codex_slug(strip_codex_context_variant_suffix(model)))
+        if cap and cap < ctx:
+            logger.info("Route catalog at %s caps %r at max_context_window %s", base_url, model, f"{cap:,}")
+            ctx = cap
     if ctx:
         logger.info("Using Codex OAuth context length %s for model %r (codex_responses route at %s)", f"{ctx:,}", model, base_url)
         return ctx
@@ -2365,6 +2415,29 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]], *, charge_sta
     return sum(_estimate_message_tokens_cached(msg, image_cost) for msg in messages)
 
 
+def estimate_native_anthropic_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
+    """Estimate native Anthropic messages with replayed readable thinking charged exactly once."""
+    from agent.message_sanitization import native_anthropic_accounting_projection
+
+    projected, replayed_thinking = native_anthropic_accounting_projection(messages)
+    return estimate_messages_tokens_rough(projected) + sum(
+        estimate_tokens_rough(text) for text in replayed_thinking
+    )
+
+
+def estimate_native_anthropic_request_tokens_rough(
+    messages: List[Dict[str, Any]], *, system_prompt: str = "",
+    tools: Optional[List[Dict[str, Any]]] = None,
+) -> int:
+    """Request estimate for native Anthropic; opaque replay bytes never enter text accounting."""
+    from agent.message_sanitization import native_anthropic_accounting_projection
+
+    projected, replayed_thinking = native_anthropic_accounting_projection(messages)
+    return estimate_request_tokens_rough(
+        projected, system_prompt=system_prompt, tools=tools
+    ) + sum(estimate_tokens_rough(text) for text in replayed_thinking)
+
+
 # Thinking-text keys replayed for at most the newest assistant turn on non-echo routes — must stay
 # in lockstep with ``context_compressor._NEWEST_TURN_ONLY_BUDGET_KEYS``.
 _STALE_THINKING_ESTIMATE_KEYS = ("reasoning", "reasoning_content")
@@ -2424,7 +2497,10 @@ def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
         return _estimate_message_tokens_without_images(msg), _count_image_tokens(msg, 1)
     try:
         pins: list = []
-        key = _msg_fingerprint(msg, pins)
+        # Persistence-only fields (identity, timestamps, display metadata) never reach the estimate: keep them
+        # out of the key so stamping them neither costs a walk nor misses the memo.
+        key = _msg_fingerprint(
+            without_persistence_fields(msg) if type(msg) is dict else msg, pins)
         hash(key)
     except Exception:
         text, images = _compute()

@@ -23,7 +23,7 @@ from hermes_cli.auth_constants import (
     _decode_jwt_claims, AUTH_LOCK_TIMEOUT_SECONDS, AuthError,
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL,
     CODEX_OAUTH_USER_AGENT, CODEX_RATE_LIMITED_CODE, DEFAULT_CODEX_BASE_URL, _codex_err, httpx)
-from utils import env_float
+from utils import env_float, normalize_proxy_env_vars
 
 if TYPE_CHECKING:  # annotation-only; the runtime import would be a cycle
     from hermes_cli.auth import ProviderConfig
@@ -421,6 +421,8 @@ def _codex_http_client(**kwargs: Any) -> "httpx.Client":
     token refresh / device login / usage probes time out where the official Codex CLI (which races families
     per RFC 8305) works.
     """
+    normalize_proxy_env_vars()  # a bracketed-IPv6 NO_PROXY entry ([::1], Clash Verge/mihomo) makes the bare
+    # trust_env client below raise InvalidURL at construction (#118159) — sanitize before building it.
     client = httpx.Client(event_hooks={"response": [_cap_codex_response_body]}, **kwargs)
     with suppress(Exception):
         from agent.process_bootstrap import enable_happy_eyeballs_on_client
@@ -503,6 +505,8 @@ def refresh_codex_oauth_pure(
     refresh_payload, refreshed_access = _refresh_payload_access_token(
         response, provider="openai-codex", invalid_response=None,
         invalid_json=("Codex token refresh returned invalid JSON.", "codex_refresh_invalid_json"),
+        # A 200 with a non-JSON body is an edge/proxy misfire, not a revoked grant: never relogin.
+        invalid_json_relogin=False,
         missing_access=(
             "Codex token refresh response was missing access_token.",
             "codex_refresh_missing_access_token"))

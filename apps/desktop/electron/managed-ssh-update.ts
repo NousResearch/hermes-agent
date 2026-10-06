@@ -15,6 +15,7 @@
  */
 
 import { expandRemotePath, shq } from './remote-lifecycle'
+import { REMOTE_MARKER_JUDGE_PY } from './remote-update-marker-programs'
 import { encodedPowerShell, powerShellCommand, psLiteral } from './windows-remote-lifecycle'
 
 const UPDATE_EXIT_INDEPENDENT_HANDOFF = 75
@@ -22,9 +23,17 @@ const DEFAULT_REMOTE_UPDATE_TIMEOUT_MS = 60 * 60 * 1000
 const DEFAULT_REMOTE_CLEARANCE_TIMEOUT_MS = 5 * 60 * 1000
 const DEFAULT_REMOTE_UPDATE_POLL_MS = 1_000
 const RECEIPT_GRACE_MS = 15_000
+// Durable recovery retries a scope that failed to restore on each launch, but
+// only this many times: after that the journal stops fencing the connection.
+const MAX_MANAGED_SSH_RECOVERY_ATTEMPTS = 3
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 type ManagedUpdateOutcome = 'updated' | 'update-failed' | 'restore-failed' | 'update-and-restore-failed' | 'refused'
+
+interface ManagedUpdateOwedStep {
+  step: string
+  reason: string
+}
 
 interface ManagedUpdateReceiptSummary {
   correlationId: string
@@ -36,6 +45,9 @@ interface ManagedUpdateReceiptSummary {
   preVersion?: string
   postVersion?: string
   stopReason?: string
+  // Post-commit steps a successful update still owes (contract C3).
+  followups?: ManagedUpdateOwedStep[]
+  userAction?: ManagedUpdateOwedStep | null
 }
 
 interface ManagedUpdateScopeResult {
@@ -54,8 +66,13 @@ interface ManagedConnectionUpdateResult {
   exitCode: null | number
   receipt: ManagedUpdateReceiptSummary | null
   scopes: ManagedUpdateScopeResult[]
+  // Every step a committed update still owes; set only when non-empty.
+  owed?: ManagedUpdateOwedStep[]
   error?: string
   message?: string
+  // Set when the connection was deliberately not attempted (a known safety
+  // limit, not a failure). Batch callers report it as a per-row skip.
+  skipReason?: string
 }
 
 interface ManagedSshScope {
@@ -96,7 +113,7 @@ interface ManagedUpdateDeps<TScope extends ManagedSshScope = ManagedSshScope> {
   preflightRemote: () => Promise<void>
   drainScope: (scope: TScope) => Promise<void>
   updateRemote: () => Promise<RemoteUpdateProof>
-  awaitRestoreClearance: () => Promise<void>
+  awaitRestoreClearance: () => Promise<unknown>
   closeTransports: () => Promise<void>
   restoreScope: (scope: TScope) => Promise<unknown>
   releaseGate: () => void
@@ -230,13 +247,15 @@ function buildPosixManagedUpdateLaunch(target: RemoteUpdateTarget, correlationId
     `${launcherWord} update --yes`
 
   const inner =
-    `set +e; if [ -r "/proc/$$/stat" ]; then ` +
+    `set +e; echo "managed-update start pid=$$ $(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2; ` +
+    `if [ -r "/proc/$$/stat" ]; then ` +
     `intent_creation="linux:$(awk '{print $22}' "/proc/$$/stat")"; ` +
     `else intent_creation="darwin:$(ps -o lstart= -p "$$" | sed 's/^ *//')"; fi; ` +
     `intent_tmp=${intentWord}."$$".tmp; ` +
     `printf '{"correlation":"%s","pid":%s,"creation":"%s"}' ${shq(correlation)} "$$" "$intent_creation" > "$intent_tmp" && ` +
     `mv -f "$intent_tmp" ${intentWord} || exit 70; ` +
     `${updateCommand}; rc=$?; ` +
+    `echo "managed-update exit rc=$rc $(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2; ` +
     `if [ "$rc" -ne ${UPDATE_EXIT_INDEPENDENT_HANDOFF} ] && [ ! -e ${statusWord} ]; then ` +
     `tmp=${statusWord}."$$".tmp; umask 077; ` +
     `printf "%s" "$rc" > "$tmp" && mv -f "$tmp" ${statusWord}; fi; ` +
@@ -313,12 +332,14 @@ function buildWindowsManagedUpdateLaunch(target: RemoteUpdateTarget, correlation
 const OBSERVATION_SCRIPT = String.raw`
 import ctypes,json,os,re,sys
 from pathlib import Path
+${REMOTE_MARKER_JUDGE_PY}
 
 home=Path(os.path.expanduser(sys.argv[1]))
 correlation=sys.argv[2]
-# The update marker is install-wide even when the launcher was invoked with a
-# named profile home (<root>/profiles/<name>). Correlated status/intent/receipt
-# remain under the launch home, matching the CLI writer.
+# The update marker and the receipt store are install-wide even when the launcher
+# was invoked with a named profile home (<root>/profiles/<name>): the CLI writes
+# receipts under the root home. Correlated status/ready/intent stay under the
+# launch home, matching their writers.
 profile_parent=home.parent.name
 is_profile_home=(profile_parent.lower()=='profiles') if os.name=='nt' else (profile_parent=='profiles')
 install_root=home.parent.parent if is_profile_home else home
@@ -326,7 +347,6 @@ marker_path=install_root/'.hermes-update-in-progress'
 status_path=home/('.update_exit_code.'+correlation)
 ready_path=home/('.update_coordinator_ready.'+correlation)
 intent_path=home/('.update_launch_intent.'+correlation)
-marker_re=re.compile(rb'([1-9][0-9]*)\r?\n([0-9]+)(?:\r?\n)?\Z')
 
 def pid_alive(pid):
     if os.name!='nt':
@@ -389,15 +409,11 @@ def marker_state():
     try:raw=marker_path.read_bytes()
     except FileNotFoundError:return {'state':'absent'}
     except OSError:return {'state':'unavailable'}
-    match=marker_re.fullmatch(raw)
-    if not match:return {'state':'malformed'}
-    try:
-        pid=int(match.group(1));lease=int(match.group(2))
-        if pid<1 or pid>4294967295 or lease>9007199254740991:raise ValueError()
-    except ValueError:return {'state':'malformed'}
-    live=pid_alive(pid)
-    if live is None:return {'state':'unavailable','pid':pid}
-    return {'state':'live' if live else 'dead','pid':pid}
+    # update_lock.judge_marker's parser and identity rule (owner or delegate, pid + creation time).
+    verdict=marker_verdict(raw)
+    if verdict=='UNCERTAIN':return {'state':'malformed'}
+    if verdict=='CLEAR':return {'state':'dead'}
+    return {'state':'live','pid':int(verdict[5:])}
 
 def terminal_code():
     try:raw=status_path.read_bytes()
@@ -408,7 +424,7 @@ def terminal_code():
     except ValueError:return 'malformed'
 
 def receipt():
-    directory=home/'logs'/'update_receipts'
+    directory=install_root/'logs'/'update_receipts'
     try:paths=sorted(directory.glob('update_*.json'),key=lambda p:p.stat().st_mtime_ns,reverse=True)
     except OSError:return None
     for path in paths:
@@ -418,12 +434,15 @@ def receipt():
         if payload.get('outcome')=='running' or not payload.get('finished_at'):continue
         pre=payload.get('pre_update') if isinstance(payload.get('pre_update'),dict) else {}
         post=payload.get('post_update') if isinstance(payload.get('post_update'),dict) else {}
+        action=payload.get('user_action')
         return {
             'correlationId':correlation,'outcome':str(payload.get('outcome') or 'unknown'),
             'startedAt':payload.get('started_at'),'finishedAt':payload.get('finished_at'),
             'preSha':pre.get('sha'),'postSha':post.get('sha'),
             'preVersion':pre.get('version'),'postVersion':post.get('version'),
             'stopReason':payload.get('stop_reason'),
+            'followups':[{'step':str(f.get('step')),'reason':str(f.get('reason') or '')} for f in payload.get('followups') or [] if isinstance(f,dict)],
+            'userAction':{'step':str(action.get('step')),'reason':str(action.get('reason') or '')} if isinstance(action,dict) else None,
         }
     return None
 
@@ -472,6 +491,59 @@ function buildRemoteUpdateObservationCommand(target: RemoteUpdateTarget, correla
   return `python3 -c ${shq(OBSERVATION_SCRIPT)} ${shq(home)} ${shq(correlation)}`
 }
 
+function owedStep(value: any): ManagedUpdateOwedStep | null {
+  return value && typeof value === 'object' ? { step: String(value.step), reason: String(value.reason ?? '') } : null
+}
+
+// An older remote observer omits the debt fields: read them as none.
+function withReceiptDebt(receipt: any): ManagedUpdateReceiptSummary {
+  const followups = Array.isArray(receipt.followups) ? receipt.followups.map(owedStep).filter(Boolean) : []
+
+  return { ...receipt, followups, userAction: owedStep(receipt.userAction) }
+}
+
+// C3: a committed update is a success even when post-commit steps are owed;
+// name each one and its remedy instead of claiming everything is ready. The
+// debt rides on every terminal receipt, so it is composed with the update and
+// restoration verdicts, never only on success: a committed run whose profile
+// restore failed, and a partial run that parked local changes, still owe it.
+function managedUpdateMessage(
+  outcome: ManagedUpdateOutcome,
+  restoreOk: boolean,
+  receipt: ManagedUpdateReceiptSummary | undefined
+): { owed?: ManagedUpdateOwedStep[]; message: string } {
+  const followups = receipt?.followups ?? []
+  const userAction = receipt?.userAction
+  const owed = [...followups, ...(userAction ? [userAction] : [])]
+
+  const status =
+    outcome === 'updated'
+      ? 'Remote Hermes updated'
+      : restoreOk
+        ? 'The remote update failed, but every managed SSH profile was restored.'
+        : 'The remote update transaction could not restore every managed SSH profile.'
+
+  if (!owed.length) {
+    return { message: outcome === 'updated' ? `${status} and every managed SSH profile is ready.` : status }
+  }
+
+  const message =
+    (outcome === 'updated' ? `${status}, but these steps are still owed: ` : `${status} These steps are still owed: `) +
+    [
+      ...followups.map(step => (step.reason ? `${step.step} (${step.reason})` : step.step)),
+      ...(userAction ? [userAction.step] : [])
+    ].join('; ') +
+    '.' +
+    // Only follow-ups are finished by a rerun; a user action (e.g. a parked
+    // stash) is the producer's exact manual instruction, shown verbatim.
+    (followups.length
+      ? ` Re-run \`hermes update\` on the remote to finish ${followups.map(step => step.step).join(', ')}.`
+      : '') +
+    (userAction?.reason ? ` ${userAction.reason}` : '')
+
+  return { owed, message }
+}
+
 function parseRemoteUpdateObservation(raw: string, correlationId: string): RemoteUpdateObservation {
   const correlation = validateCorrelationId(correlationId)
   let parsed: any
@@ -517,7 +589,7 @@ function parseRemoteUpdateObservation(raw: string, correlationId: string): Remot
       throw new Error('Remote update receipt did not match this transaction.')
     }
 
-    receipt = parsed.receipt as ManagedUpdateReceiptSummary
+    receipt = withReceiptDebt(parsed.receipt)
   }
 
   let coordinatorReady: RemoteUpdateObservation['coordinatorReady'] = null
@@ -716,7 +788,7 @@ async function waitForManagedRemoteClearance(
     sleep?: (ms: number) => Promise<void>
     requireTerminal?: boolean
   } = {}
-): Promise<void> {
+): Promise<RemoteUpdateObservation> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_REMOTE_CLEARANCE_TIMEOUT_MS
   const pollMs = options.pollMs ?? DEFAULT_REMOTE_UPDATE_POLL_MS
   const now = options.now || Date.now
@@ -741,7 +813,7 @@ async function waitForManagedRemoteClearance(
           observation.exitCode !== null ||
           observation.receipt !== null
         ) {
-          return
+          return observation
         }
       }
     } catch {
@@ -759,6 +831,40 @@ async function waitForManagedRemoteClearance(
 
     await sleep(pollMs)
   }
+}
+
+type ManagedSshRecoveryDisposition = 'abandon' | 'complete' | 'retry'
+
+// Only meaningful once the remote install marker is positively clear: the
+// mutator is gone, so the durable fence protects nothing except the retry of
+// scopes that failed to restore. Bound that retry instead of fencing forever
+// (#107827). A correlated exit 0 ends it at once; otherwise stop
+// after MAX_MANAGED_SSH_RECOVERY_ATTEMPTS failed attempts. An abandoned scope
+// is just a stopped service: the next ordinary dial starts it again.
+function managedSshRecoveryDisposition(input: {
+  attempts: number
+  maxAttempts?: number
+  restoreFailures: number
+  updateSucceeded: boolean
+}): ManagedSshRecoveryDisposition {
+  if (input.restoreFailures === 0) {
+    return 'complete'
+  }
+
+  if (input.updateSucceeded || input.attempts >= (input.maxAttempts ?? MAX_MANAGED_SSH_RECOVERY_ATTEMPTS)) {
+    return 'abandon'
+  }
+
+  return 'retry'
+}
+
+// The correlated terminal exit code is proof on its own: some backends exit 0
+// without writing a receipt (#101516). A receipt that reports a non-success
+// outcome still vetoes it.
+function remoteUpdateSucceeded(observation: null | Pick<RemoteUpdateObservation, 'exitCode' | 'receipt'> | void) {
+  return Boolean(
+    observation && observation.exitCode === 0 && (!observation.receipt || observation.receipt.outcome === 'success')
+  )
 }
 
 function errorMessage(error: unknown): string {
@@ -858,7 +964,16 @@ async function runManagedSshUpdate<TScope extends ManagedSshScope>(
     }
 
     try {
-      if (recoveryPrepared && !restorationBlocked && restoreResults.every(result => result.restored)) {
+      const disposition = managedSshRecoveryDisposition({
+        attempts: 0,
+        restoreFailures: restoreResults.filter(result => !result.restored).length,
+        updateSucceeded: remoteUpdateSucceeded(proof)
+      })
+
+      // A scope that fails to restore after a proven-successful update must not
+      // leave the connection fenced until relaunch; its failure is reported in
+      // `scopes` and the next dial starts it again.
+      if (recoveryPrepared && !restorationBlocked && disposition !== 'retry') {
         await deps.completeRecovery?.()
       }
     } catch (error) {
@@ -886,16 +1001,11 @@ async function runManagedSshUpdate<TScope extends ManagedSshScope>(
     receipt: proof?.receipt ?? null,
     scopes: restoreResults,
     ...(error ? { error } : {}),
-    message:
-      outcome === 'updated'
-        ? 'Remote Hermes updated and every managed SSH profile is ready.'
-        : restoreOk
-          ? 'The remote update failed, but every managed SSH profile was restored.'
-          : 'The remote update transaction could not restore every managed SSH profile.'
+    ...managedUpdateMessage(outcome, restoreOk, proof?.receipt)
   }
 }
 
-function refusedManagedSshUpdate(connectionId: string, correlationId: string, error: string) {
+function refusedManagedSshUpdate(connectionId: string, correlationId: string, error: string, skipReason?: string) {
   const message = String(error || 'This connection is not managed by Desktop SSH.')
 
   return {
@@ -909,7 +1019,50 @@ function refusedManagedSshUpdate(connectionId: string, correlationId: string, er
     receipt: null,
     scopes: [],
     error: message,
-    message
+    message,
+    ...(skipReason ? { skipReason } : {})
+  }
+}
+
+const DARWIN_DRAIN_UNSUPPORTED = 'darwin-drain-unsupported'
+
+// The POSIX drain signals the owned serve only through a pidfd, which binds the
+// signal to the verified process. Darwin has no equivalent, so
+// terminateOwnedDashboardForUpdate deliberately refuses there rather than
+// accept a PID-reuse window. Detect that before touching any scope: cycling
+// forwards only to hit the refusal would disrupt healthy sessions for nothing.
+// A macOS remote with no live Desktop-owned serve needs no drain and updates.
+function managedSshDrainBlocker(
+  scopes: Array<{ profile: string; state?: { remotePlatform?: string } | null }>
+): null | { reason: string; message: string } {
+  const blocked = scopes.filter(scope => scope.state?.remotePlatform === 'Darwin').map(scope => scope.profile)
+
+  if (blocked.length === 0) {
+    return null
+  }
+
+  return {
+    reason: DARWIN_DRAIN_UNSUPPORTED,
+    message:
+      `Skipped: Desktop cannot safely stop its running Hermes serve on this macOS remote (${blocked.join(', ')}). ` +
+      'Disconnect it, or run `hermes update` on the remote, then retry.'
+  }
+}
+
+// One "Update all instances" row for a managed SSH connection. A deliberate
+// refusal with a skip reason is a skip, not a failure, so it is reported
+// per-row without reading as a broken batch.
+function managedSshUpdateAllRow<TBase extends object>(base: TBase, result: ManagedConnectionUpdateResult) {
+  if (result.skipReason) {
+    return { ...base, ok: false, skipped: true, reason: result.skipReason, detail: result.message, managed: result }
+  }
+
+  return {
+    ...base,
+    ok: result.ok,
+    detail: result.message,
+    managed: result,
+    ...(result.ok ? {} : { error: result.error || result.outcome })
   }
 }
 
@@ -930,23 +1083,42 @@ async function waitForManagedUpdateOperations(getOperations: () => Iterable<Prom
 
 async function recoverManagedSshScopes<TScope>(deps: {
   afterClearance?: () => Promise<void>
-  awaitClearance: () => Promise<void>
+  // Failed attempts already recorded in the journal, not counting this one.
+  attempts?: number
+  awaitClearance: () => Promise<null | Pick<RemoteUpdateObservation, 'exitCode' | 'receipt'> | void>
   completeRecovery: () => Promise<void>
+  maxAttempts?: number
+  recordFailedAttempt?: (attempts: number) => Promise<void>
   restoreScope: (scope: TScope) => Promise<unknown>
   scopes: TScope[]
-}): Promise<PromiseSettledResult<unknown>[]> {
-  await deps.awaitClearance()
+}): Promise<{
+  attempts: number
+  disposition: ManagedSshRecoveryDisposition
+  results: PromiseSettledResult<unknown>[]
+}> {
+  const clearance = await deps.awaitClearance()
   await deps.afterClearance?.()
   const results = await Promise.allSettled(deps.scopes.map(scope => deps.restoreScope(scope)))
+  const restoreFailures = results.filter(result => result.status === 'rejected').length
+  const attempts = (deps.attempts ?? 0) + (restoreFailures > 0 ? 1 : 0)
 
-  if (results.every(result => result.status === 'fulfilled')) {
+  const disposition = managedSshRecoveryDisposition({
+    attempts,
+    maxAttempts: deps.maxAttempts,
+    restoreFailures,
+    updateSucceeded: remoteUpdateSucceeded(clearance)
+  })
+
+  if (disposition === 'retry') {
+    await deps.recordFailedAttempt?.(attempts)
+  } else {
     // This intentionally runs for an empty scope list. An inactive connection
     // still journals the detached mutator so a crash/relaunch remains fenced;
     // positive marker clearance is what authorizes removing that durable gate.
     await deps.completeRecovery()
   }
 
-  return results
+  return { attempts, disposition, results }
 }
 
 async function fenceManagedSshBootstrapPublication<T>(deps: {
@@ -1056,16 +1228,21 @@ export {
   launchManagedRemoteUpdate,
   ManagedConnectionUpdateGate,
   type ManagedConnectionUpdateResult,
+  managedSshDrainBlocker,
+  managedSshRecoveryDisposition,
   type ManagedSshRecoveryScope,
   managedSshRecoveryScopes,
   type ManagedSshScope,
   managedSshScopeRole,
   managedSshTokenPersistencePlan,
+  managedSshUpdateAllRow,
   type ManagedUpdateDeps,
   type ManagedUpdateOutcome,
+  type ManagedUpdateOwedStep,
   type ManagedUpdateReceiptSummary,
   type ManagedUpdateScopeResult,
   markerIsClear,
+  MAX_MANAGED_SSH_RECOVERY_ATTEMPTS,
   observeManagedRemoteUpdate,
   parseRemoteUpdateObservation,
   RECEIPT_GRACE_MS,

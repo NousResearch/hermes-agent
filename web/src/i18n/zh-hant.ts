@@ -95,6 +95,7 @@ export const zhHant: Translations = {
   status: {
     actionFailed: "動作失敗",
     actionFinished: "已完成",
+    actionFinishedOwed: "已更新，但仍有待完成的步驟（重新執行 `hermes update` 以完成）",
     actions: "動作",
     agent: "代理",
     activeSessions: "使用中工作階段",
@@ -162,6 +163,7 @@ export const zhHant: Translations = {
     deleteSelectedConfirmMessage:
       "此操作將永久刪除所選的 {count} 個工作階段及其所有訊息。無法復原。",
     selectedSessionsDeleted: "已刪除 {count} 個工作階段",
+    selectedSessionsSkippedActive: "已刪除 {deleted} 個；{count} 個因仍有回合執行中而保留",
     failedToDeleteSelected: "刪除所選工作階段失敗",
     resumeInChat: "在對話中繼續",
     newChat: "新對話",

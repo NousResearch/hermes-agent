@@ -4,7 +4,6 @@
 import asyncio
 import base64
 import io
-import itertools
 import logging
 import shlex
 import tarfile
@@ -82,9 +81,10 @@ def _resolve_modal_image(image_spec: Any) -> Any:
 
 
 async def _stream_stdin(proc, payload: str, chunk_size: int) -> None:
-    """Write ``payload`` to ``proc.stdin`` in ``chunk_size`` pieces, draining after each, then EOF."""
-    for offset in range(0, len(payload), chunk_size):
-        proc.stdin.write(payload[offset:offset + chunk_size])
+    """Write byte-exact UTF-8 payload chunks to ``proc.stdin``, then EOF."""
+    data = payload.encode("utf-8", "surrogateescape")
+    for offset in range(0, len(data), chunk_size):
+        proc.stdin.write(data[offset:offset + chunk_size])
         await proc.stdin.drain.aio()
     proc.stdin.write_eof()
     await proc.stdin.drain.aio()
@@ -131,7 +131,7 @@ class ModalEnvironment(BaseEnvironment):
     """Modal cloud execution via native Modal sandboxes: spawn-per-call via _ThreadedProcessHandle
     wrapping async SDK calls, cancel_fn wired to sandbox.terminate for interrupt support."""
 
-    _stdin_mode = "heredoc"
+    _stdin_mode = "payload"
     _snapshot_timeout = 60  # Modal cold starts can be slow
     # Modal SDK stdin buffer limit: the command-router path allows 16 MB but the legacy server
     # path caps at 2 MB, so chunks stay under 2 MB and each is flushed individually via drain().
@@ -151,24 +151,12 @@ class ModalEnvironment(BaseEnvironment):
             logger.info("Modal: restoring from snapshot %s", restored_snapshot_id[:20])
         ensure_lazy_dep("modal")
         import modal as _modal
-        cred_mounts = []
-        try:
-            from tools.credential_files import get_credential_file_mounts, iter_skills_files, iter_cache_files
-            # from_iterable keeps each source lazy so a failure mid-way leaves the earlier mounts in place
-            for entry in itertools.chain.from_iterable(
-                    fn() for fn in (get_credential_file_mounts, iter_skills_files, iter_cache_files)):
-                cred_mounts.append(
-                    _modal.Mount.from_local_file(entry["host_path"], remote_path=entry["container_path"]))
-        except Exception as e:
-            logger.debug("Modal: could not load credential file mounts: %s", e)
         self._worker.start()
 
         def _create(image_spec: Any) -> None:
             async def _create_sandbox():
                 app = await _modal.App.lookup.aio("hermes-agent", create_if_missing=True)
                 create_kwargs = dict(modal_sandbox_kwargs or {})
-                if cred_mounts:
-                    create_kwargs["mounts"] = list(create_kwargs.pop("mounts", [])) + cred_mounts
                 sandbox = await _modal.Sandbox.create.aio(
                     "sleep", "infinity", image=image_spec, app=app,
                     timeout=int(create_kwargs.pop("timeout", 3600)), **create_kwargs)
@@ -253,6 +241,8 @@ class ModalEnvironment(BaseEnvironment):
         def exec_fn() -> tuple[str, int]:
             async def _do():
                 process = await sandbox.exec.aio(*bash_argv(cmd_string, login), timeout=timeout)
+                if stdin_data is not None:
+                    await _stream_stdin(process, stdin_data, self._STDIN_CHUNK_SIZE)
                 stdout = _as_text(await process.stdout.read.aio())
                 stderr = _as_text(await process.stderr.read.aio())
                 exit_code = await process.wait.aio()
@@ -269,7 +259,9 @@ class ModalEnvironment(BaseEnvironment):
             self._sync_manager.sync_back()
         if self._persistent:
             async def _snapshot():
-                return (await self._sandbox.snapshot_filesystem.aio()).object_id
+                # ttl=None: the SDK default (30 days) would silently expire an idle
+                # persistent sandbox's snapshot; Hermes owns its lifetime.
+                return (await self._sandbox.snapshot_filesystem.aio(ttl=None)).object_id
             try:
                 snapshot_id = self._worker.run_coroutine(_snapshot(), timeout=60)
             except Exception:

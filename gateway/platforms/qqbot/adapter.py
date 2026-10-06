@@ -1672,13 +1672,3 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             with contextlib.suppress(ValueError, TypeError):
                 return datetime.fromtimestamp(int(raw) / 1000, tz=timezone.utc)
         return datetime.now(tz=timezone.utc)
-    
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import base64  # noqa: F401,E402
-import mimetypes  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

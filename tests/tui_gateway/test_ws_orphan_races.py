@@ -188,7 +188,8 @@ def test_reconnect_cannot_cross_orphan_interrupt_claim(monkeypatch, path, claim)
                           defer_history=False, target="stored", profile=None,
                           profile_home=None, profile_resume_cwd=None, found={},
                           messages=lambda history: [], mint=lambda: ("unused", "tui", "."),
-                          restore=lambda: ([], [], []), display_prefix=lambda: [])
+                          restore=lambda: ([], [], []), display_prefix=lambda: [],
+                          inline_images=True)
     if path == "eager":
         monkeypatch.setattr(server, "_profile_build_scope", lambda *a: nullcontext())
         monkeypatch.setattr(server, "_make_agent_in_context", lambda *a, **kw: Mock())
@@ -252,7 +253,8 @@ def test_late_rpc_from_closed_socket_keeps_orphan_reap_armed(monkeypatch, path, 
                           defer_history=False, target="stored", profile=None,
                           profile_home=None, profile_resume_cwd=None, found={},
                           messages=lambda history: [], mint=lambda: ("unused", "tui", "."),
-                          restore=lambda: ([], [], []), display_prefix=lambda: [])
+                          restore=lambda: ([], [], []), display_prefix=lambda: [],
+                          inline_images=True)
     if path == "unpersisted":
         response = server._resume_live_unpersisted(ctx, sid, session)
     elif path == "reuse":

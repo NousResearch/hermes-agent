@@ -371,6 +371,28 @@ class GoalGate:
         )
 
 
+def _gate_workspace() -> Tuple[Optional[str], Optional[str]]:
+    """``(cwd, refusal)`` for this check's gates. A multi-session backend's process directory is not
+    the session's project, so gates run in the scoped session workspace (#125369). A declared
+    workspace that is not a directory on this host (deleted, remote, container) is a refusal: a
+    relative gate run anywhere else would check a different project and could pass a failing goal,
+    and no agent turn can fix it, so the caller pauses instead of retrying.
+    No declared workspace keeps the classic resolution (TERMINAL_CWD, else the launch directory)."""
+    from agent.runtime_cwd import resolve_agent_cwd, scoped_session_cwd
+
+    declared = scoped_session_cwd()
+    if declared:
+        path = Path(declared).expanduser()
+        if path.is_dir():
+            return str(path), None
+        return None, (f"the session workspace {declared} is not a directory on this host, "
+                      "and running gates anywhere else would check a different project")
+    try:
+        return str(resolve_agent_cwd()), None
+    except OSError:
+        return None, None  # deleted launch directory: subprocess reports it per gate
+
+
 def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> Tuple[bool, int, str]:
     """Run one gate through the shell. Returns ``(passed, exit_code, output_tail)``; a timeout kills
     the process and counts as exit code -1."""
@@ -1289,8 +1311,15 @@ class GoalManager:
         if state is None or not state.gates:
             return None
 
+        gate_cwd, refusal = _gate_workspace()
+        if refusal:
+            return self._pause_decision(
+                f"quality gates not run: {refusal}", "gate_failed", f"gates not run: {refusal}",
+                f"⏸ Goal paused — quality gates not run: {refusal}. Fix the workspace or "
+                f"/goal gate remove the gates, then /goal resume.",
+            )
         for gate in state.gates:
-            passed, exit_code, tail = run_gate(gate)
+            passed, exit_code, tail = run_gate(gate, cwd=gate_cwd)
             gate.last_exit_code = exit_code
             gate.last_output_tail = tail
             if passed:
@@ -1653,8 +1682,6 @@ def run_kanban_goal_loop(
             _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
             return _result("stopped", f"status={status}")
 
-        # The between-turns judge runs outside any agent turn: bind the per-task relay-affinity
-        # scope (same shape as the handoff gates) so the relay does not reject the call (#113669).
         from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
         affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
         try:
@@ -1662,6 +1689,9 @@ def run_kanban_goal_loop(
         finally:
             if affinity_token is not None:
                 reset_affinity_scope(affinity_token)
+        if _transport_failed:
+            _log(f"kanban goal loop: judge transport failed on turn {turns_used}; stopping")
+            return _result("stopped", "judge transport failure")
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
@@ -1699,10 +1729,22 @@ def run_kanban_goal_loop(
             return _result("blocked_budget", "turn budget exhausted")
 
         try:
-            last_response = run_turn(prompt) or ""
+            result = run_turn(prompt)
+            if isinstance(result, dict):
+                last_response = result.get("response", "") or ""
+                failed = bool(result.get("failed", False))
+                failure_reason = result.get("failure_reason") or "unknown"
+            else:
+                # backward compatibility: assume it's a string
+                last_response = result or ""
+                failed = False
+                failure_reason = None
         except Exception as exc:
             _log(f"kanban goal loop: run_turn failed ({exc}); stopping")
             return _result("stopped", f"run_turn error: {type(exc).__name__}")
+        if failed:
+            _log(f"kanban goal loop: worker failed on turn {turns_used} (reason={failure_reason}); stopping")
+            return _result("stopped", f"worker failed: {failure_reason}")
         turns_used += 1
 
 

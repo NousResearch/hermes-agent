@@ -64,13 +64,12 @@ def test_invalid_execution_cannot_launch_a_command(monkeypatch, mode):
     execution = executions.create_execution(job["id"], source="builtin")
     context = {"job_id": job["id"], "execution_id": execution["id"],
                "task_id": "owner", "continuation": False}
-    if mode == "missing_id":
-        context["execution_id"] = None
-    elif mode == "unknown_id":
-        context["execution_id"] = "missing"
-    elif mode == "wrong_job":
-        context["job_id"] = "someone-else"
-    elif mode == "finished":
+    context.update({
+        "missing_id": {"execution_id": None},
+        "unknown_id": {"execution_id": "missing"},
+        "wrong_job": {"job_id": "someone-else"},
+    }.get(mode, {}))
+    if mode == "finished":
         executions.finish_execution(execution["id"], success=True)
     token = cont.run_context.set(context)
     launches = []

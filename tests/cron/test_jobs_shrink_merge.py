@@ -8,7 +8,9 @@ unexpected on-disk ids back unless the caller passes ``removed_ids``.
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 
 import pytest
 
@@ -167,16 +169,22 @@ def test_merge_does_not_mutate_caller_list(hermes_env):
     assert my_payload == [], "caller's list was mutated in place by the merge"
 
 
-def test_corrupt_disk_file_does_not_break_save(hermes_env):
-    """A corrupt jobs.json under a save must not recurse or crash: the
-    non-repairing peek returns None and the save overwrites cleanly."""
+def test_save_over_corrupt_store_fails_closed(hermes_env):
+    """A merging save over an unreadable jobs.json must refuse (the jobs in it
+    are unknown, so overwriting would drop them) and leave the bytes intact;
+    ``replace=True`` stays available as the explicit recovery rewrite."""
     import cron.jobs as jobs
     from cron.jobs import load_jobs, save_jobs
 
     jobs.ensure_dirs()
     jobs_file = jobs._current_cron_store().jobs_file
-    jobs_file.write_text('{"jobs": [{"id": "ccc', encoding="utf-8")
-    save_jobs([{"id": "aaaaaaaaaaaa", "name": "a"}])
+    corrupt = b'{"jobs": [{"id": "ccc'
+    jobs_file.write_bytes(corrupt)
+    with pytest.raises(RuntimeError, match="refusing to overwrite"):
+        save_jobs([{"id": "aaaaaaaaaaaa", "name": "a"}])
+    assert jobs_file.read_bytes() == corrupt
+
+    save_jobs([{"id": "aaaaaaaaaaaa", "name": "a"}], replace=True)
     assert [j["id"] for j in load_jobs()] == ["aaaaaaaaaaaa"]
 
 
@@ -201,3 +209,34 @@ def test_nested_create_survives_outer_stale_save(hermes_env):
     ids = {j["id"] for j in load_jobs()}
     assert created["id"] in ids, "nested create was clobbered by outer stale save"
     assert seed["id"] in ids
+
+
+def test_symlinked_store_saves_by_rename_not_in_place_copy(hermes_env, tmp_path, monkeypatch):
+    """jobs.json symlinked into another dir (treated as another filesystem) must still be
+    published by an atomic rename — never the EXDEV in-place copy fallback, which tears the
+    store on a crash mid-copy."""
+    from cron.jobs import load_jobs, save_jobs
+
+    real_dir = tmp_path / "elsewhere"
+    real_dir.mkdir()
+    (real_dir / "jobs.json").write_text('{"jobs": []}')
+    link = hermes_env / "cron" / "jobs.json"
+    link.symlink_to(real_dir / "jobs.json")
+
+    real_replace = os.replace
+
+    def replace_same_dir_only(src, dst):
+        if os.path.dirname(os.path.realpath(src)) != os.path.dirname(os.path.realpath(dst)):
+            raise OSError(errno.EXDEV, os.strerror(errno.EXDEV))
+        return real_replace(src, dst)
+
+    def no_copy(*a, **k):
+        raise AssertionError("in-place copy fallback used")
+
+    monkeypatch.setattr("utils.os.replace", replace_same_dir_only)
+    monkeypatch.setattr("utils._copy_fallback", no_copy)
+
+    save_jobs([{"id": "a", "prompt": "x"}], replace=True)
+
+    assert link.is_symlink()
+    assert [j["id"] for j in load_jobs()] == ["a"]

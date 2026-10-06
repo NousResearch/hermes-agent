@@ -11,9 +11,13 @@ import re
 import sqlite3
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
+
+if TYPE_CHECKING:
+    from tools.process_registry import ProcessSession
 
 logger = logging.getLogger("tools.process_registry")
 
@@ -24,6 +28,14 @@ _RESULT_FIELDS = (
     "parent_session_id", "started_at", "exit_code", "completion_reason",
     "termination_source", "notify_on_complete",
 )
+
+
+def exit_fields(session: "ProcessSession") -> dict:
+    return {
+        "exit_code": session.exit_code,
+        "completion_reason": session.completion_reason,
+        "termination_source": session.termination_source,
+    }
 
 
 def _result_paths(directory=None):

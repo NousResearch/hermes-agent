@@ -8,21 +8,27 @@ import {
 import {
   fetchStoredTranscriptAcrossBackends,
   getLatestSessionMessages,
+  getSession,
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
 } from '@/hermes'
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
-import { profileScopeForSessionOwner, refreshIfTranscriptStale } from '@/lib/stale-transcript-guard'
+import { noteMessageSent } from '@/store/desktop-metrics'
 import { notify } from '@/store/notifications'
 import {
   isReadOnlyRuntimeId,
+  isStoredTranscriptReadOnly,
   readOnlyRuntimeIdFor,
   resumeWithStoredTranscriptFallback
 } from '@/store/read-only-transcript'
 import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
-import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
+import {
+  profileScopeForSessionOwner,
+  requestForSessionProfile,
+  type SessionOwnerScope
+} from '@/store/session-request-router'
 import {
   $sessionTiles,
   publishSessionState,
@@ -31,9 +37,11 @@ import {
 } from '@/store/session-states'
 import type { SessionResumeResult } from '@/types/hermes'
 
+import { refreshCronRunWriteGate } from '../../cron/open-cron-run'
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
+import type { useSessionActions } from '../../session/hooks/use-session-actions'
 import {
   chatMessageArraysEquivalent,
   preserveLocalPendingTurnMessages,
@@ -118,6 +126,7 @@ function mergeTileTranscript(
 
 interface SessionTileDelegateParams {
   archiveSession: (storedSessionId: string) => Promise<unknown>
+  branchLoadedSession: ReturnType<typeof useSessionActions>['branchLoadedSession']
   branchStoredSession: (storedSessionId: string) => Promise<unknown>
   executeSlashCommand: ReturnType<typeof usePromptActions>['executeSlashCommand']
   removeSession: (storedSessionId: string) => Promise<unknown>
@@ -136,6 +145,7 @@ interface SessionTileDelegateParams {
  */
 export function useSessionTileDelegate({
   archiveSession,
+  branchLoadedSession,
   branchStoredSession,
   executeSlashCommand,
   removeSession,
@@ -204,11 +214,30 @@ export function useSessionTileDelegate({
       branchSession: async storedSessionId => {
         await branchStoredSession(storedSessionId)
       },
+      branchSessionAtMessage: async (storedSessionId, runtimeId, messageId) => {
+        const state = sessionStateByRuntimeIdRef.current.get(runtimeId)
+
+        // The tile can disappear between render and click. Without its live
+        // state we cannot prove the busy flag or the transcript boundary, so
+        // do not manufacture an empty, apparently-idle branch.
+        if (!state) {
+          return false
+        }
+
+        return await branchLoadedSession({
+          busy: state.busy,
+          cwd: state.cwd,
+          messageId,
+          messages: state.messages,
+          runtimeId,
+          storedSessionId
+        })
+      },
       deleteSession: async storedSessionId => {
         await removeSession(storedSessionId)
       },
-      executeSlash: async (rawCommand, sessionId) => {
-        await executeSlashCommand(rawCommand, { sessionId })
+      executeSlash: async (rawCommand, sessionId, options) => {
+        await executeSlashCommand(rawCommand, { sessionId, ...options })
       },
       // Gateway reconnect (sleep/wake, backend respawn): every stored→runtime
       // binding recorded pre-reconnect points at a runtime id the respawned
@@ -238,7 +267,22 @@ export function useSessionTileDelegate({
           return false
         }
 
-        updateSessionState(runtimeId, state => ({ ...state, awaitingResponse: false, busy: false }))
+        updateSessionState(runtimeId, state => ({
+          ...state,
+          awaitingResponse: false,
+          busy: false,
+          turnLive: false,
+          turnStartedAt: null
+        }))
+
+        return true
+      },
+      updateHeldSession: (runtimeId, updater) => {
+        if (!sessionStateByRuntimeIdRef.current.has(runtimeId)) {
+          return false
+        }
+
+        updateSessionState(runtimeId, updater)
 
         return true
       },
@@ -442,45 +486,25 @@ export function useSessionTileDelegate({
         return runtimeId
       },
       submitToSession: async (runtimeId, text) => {
-        // A read-only stored-transcript tile has no live runtime to submit
-        // into (#94724). Refuse with the explanation instead of minting a
-        // misrouted prompt on a backend that never owned the session.
-        if (isReadOnlyRuntimeId(runtimeId)) {
-          notify({ kind: 'info', message: translateNow('desktop.readOnlyTranscriptSendBlocked') })
-
-          return
-        }
-
         const storedSessionId = storedSessionIdForRuntime(runtimeId)
 
-        if (storedSessionId) {
-          const cached = sessionStateByRuntimeIdRef.current.get(runtimeId)
-          const owner = await ownerForStoredSession(storedSessionId)
+        // A cron run's write gate is re-evaluated against its authoritative
+        // row before the send (#88443) — the same gate as the primary chat's
+        // `submit`, so a verdict never latches and a restored tile is gated.
+        if (storedSessionId && !isReadOnlyRuntimeId(runtimeId)) {
+          await refreshCronRunWriteGate(storedSessionId, id =>
+            ownerForStoredSession(id).then(owner => getSession(id, profileScopeForSessionOwner(owner)))
+          )
+        }
 
-          const refreshed = await refreshIfTranscriptStale(storedSessionId, cached?.messages ?? [], {
-            profile: profileScopeForSessionOwner(owner)
-          })
+        // A read-only stored-transcript tile has no live runtime to submit
+        // into (#94724), and a never-closed cron run the scheduler no longer
+        // owns (#88443) stays closed to writes when it is opened as a tile.
+        // Refuse with the explanation instead of minting a misrouted prompt.
+        if (isReadOnlyRuntimeId(runtimeId) || isStoredTranscriptReadOnly(storedSessionId)) {
+          notify({ kind: 'info', message: translateNow('desktop.readOnlyTranscriptSendBlocked') })
 
-          if (refreshed) {
-            updateSessionState(
-              runtimeId,
-              state => ({
-                ...state,
-                awaitingResponse: false,
-                busy: false,
-                messages: refreshed,
-                pendingBranchGroup: null
-              }),
-              storedSessionId
-            )
-            notify({
-              kind: 'warning',
-              message: translateNow('desktop.staleSessionBody'),
-              title: translateNow('desktop.staleSessionTitle')
-            })
-
-            return
-          }
+          return { runtimeSessionId: runtimeId, storedSessionId: null }
         }
 
         const routedRequest = storedSessionId
@@ -488,17 +512,34 @@ export function useSessionTileDelegate({
               requestForStoredSession<T>(storedSessionId, method, params ?? {}, timeoutMs)
           : requestGateway
 
+        noteMessageSent($sessionTiles.get().find(tile => tile.runtimeId === runtimeId)?.workspaceMode ?? 'sessions')
+        let acceptedRuntimeId = runtimeId
+
         await withSessionNotFoundResume(
           runtimeId,
           storedSessionId,
           liveId => routedRequest('prompt.submit', { session_id: liveId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS),
-          { requestGateway: routedRequest, onRecovered: rebindTileRuntime(runtimeId) }
+          {
+            requestGateway: routedRequest,
+            onRecovered: recoveredId => {
+              acceptedRuntimeId = recoveredId
+              rebindTileRuntime(runtimeId)(recoveredId)
+            }
+          }
         )
+
+        return {
+          runtimeSessionId: acceptedRuntimeId,
+          // The durable binding for the accepted runtime — the only proof the
+          // requested stored session is what actually took the prompt.
+          storedSessionId: storedSessionIdForRuntime(acceptedRuntimeId) ?? null
+        }
       },
       updateSession: (runtimeId, updater) => updateSessionState(runtimeId, updater)
     })
   }, [
     archiveSession,
+    branchLoadedSession,
     branchStoredSession,
     executeSlashCommand,
     removeSession,

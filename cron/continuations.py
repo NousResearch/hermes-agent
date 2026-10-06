@@ -54,6 +54,13 @@ def retain_completion(identity: dict, result: dict) -> None:
             conn.execute("""INSERT OR IGNORE INTO process_continuations
                 (job_id, execution_id, process_id, result) VALUES (?, ?, ?, ?)""",
                 (identity["job_id"], identity["execution_id"], result["id"], json.dumps(result)))
+            # A reader may persist an exit while kill_process is still signalling.
+            # Its corrected kill receipt revokes unclaimed work, never claim tombstones.
+            if result.get("completion_reason") == "killed":
+                conn.execute("""UPDATE process_continuations
+                    SET state='skipped', reason='process cancelled', result='{}'
+                    WHERE job_id=? AND execution_id=? AND process_id=? AND state='ready'""",
+                    (identity["job_id"], identity["execution_id"], result["id"]))
     finally:
         if token is not None:
             reset_hermes_home_override(token)

@@ -308,7 +308,9 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
         # Served by the multiplexer: its record is this profile's runtime, with the profile's own
         # adapters under ``<profile>:<platform>`` re-keyed to the standalone shape. Unscoped, the
         # profile is the process's own home (a pooled ``hermes --profile X serve``).
-        served_name = profile_dir.name if profile_dir is not None else profile_name_for_home(get_process_hermes_home())
+        # Fold on the profile NAME, never ``profile_dir.name``: ``?profile=default`` resolves the
+        # root itself, whose basename (``.hermes``) matched nothing and read as a named id (#123088).
+        served_name = profile_name_for_home(profile_dir or get_process_hermes_home())
         runtime = {**liveness.runtime,
                    "platforms": profile_platforms_from_multiplexer(liveness.runtime, served_name or "")}
 
@@ -677,6 +679,8 @@ async def get_learning_graph(profile: Optional[str] = None):
         # _profile_scope takes _SKILLS_PROFILE_LOCK and the graph build reads skills/memories
         # from disk — keep it off the event loop.
         return await scoped_to_thread(profile, _run)
+    except HTTPException:
+        raise  # an unknown ?profile= is the scope's 404, not a graph failure
     except Exception:
         _log.exception("GET /api/learning/graph failed")
         raise HTTPException(status_code=500, detail="Failed to build learning graph")
@@ -699,19 +703,22 @@ async def get_learning_node(id: str, profile: Optional[str] = None):
 
 
 @router.delete("/api/learning/node")
-async def delete_learning_node(body: LearningNodeRef):
-    """Delete a journey node — skills are archived (restorable), memories removed."""
+async def delete_learning_node(body: LearningNodeRef, profile: Optional[str] = None):
+    """Delete a journey node — skills are archived (restorable), memories removed.
+
+    ``?profile=`` is honoured too: a shared-backend Desktop scopes this call by query only, and
+    ignoring it archived the same-named skill of the launch profile instead."""
     from agent.learning_mutations import delete_node
     return await _learning_mutation(
-        body.profile, lambda: delete_node(body.id), 400, "delete failed")
+        body.profile or profile, lambda: delete_node(body.id), 400, "delete failed")
 
 
 @router.put("/api/learning/node")
-async def update_learning_node(body: LearningNodeEdit):
-    """Rewrite a journey node's content (SKILL.md or memory chunk)."""
+async def update_learning_node(body: LearningNodeEdit, profile: Optional[str] = None):
+    """Rewrite a journey node's content (SKILL.md or memory chunk); profile as for DELETE."""
     from agent.learning_mutations import edit_node
     return await _learning_mutation(
-        body.profile, lambda: edit_node(body.id, body.content), 400, "edit failed")
+        body.profile or profile, lambda: edit_node(body.id, body.content), 400, "edit failed")
 
 
 # Portal — Nous Portal auth + Tool Gateway routing status (read-only).
@@ -789,16 +796,21 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None,
     unlike the other diagnostics actions: the point is the shareable URLs, returned as a
     structured payload the dashboard renders as copyable links."""
     from hermes_cli.debug import build_debug_share
+    from hermes_cli.debug_redaction import redact_debug_support_text
     req = body or DebugShareRequest()
     try:
         result = await config_scoped_to_thread(profile, lambda: build_debug_share(
             log_lines=max(1, min(int(req.lines), 5000)), redact=bool(req.redact)))
+    except HTTPException:
+        raise  # an unknown ?profile= is the scope's 404, not a failed share
     except RuntimeError as exc:
         # Required summary-report upload failed (offline / paste service down).
-        raise HTTPException(status_code=502, detail=f"Upload failed: {exc}")
+        error = redact_debug_support_text(exc)
+        raise HTTPException(status_code=502, detail=f"Upload failed: {error}")
     except Exception as exc:
         _log.exception("debug share failed")
-        raise HTTPException(status_code=500, detail=f"Failed: {exc}")
+        error = redact_debug_support_text(exc)
+        raise HTTPException(status_code=500, detail=f"Failed: {error}")
 
     return {"ok": True, "urls": result.urls, "failures": result.failures,
             "redacted": result.redacted, "auto_delete_seconds": result.auto_delete_seconds}

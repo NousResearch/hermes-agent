@@ -189,6 +189,7 @@ export const Thread = memo(function Thread({
           scrollProfile={scrollProfile}
           sessionId={sessionId}
           sessionKey={sessionKey}
+          sessionLoading={loading === 'session'}
         />
         {loading === 'session' && <CenteredThreadSpinner />}
         <ThreadTimeline />

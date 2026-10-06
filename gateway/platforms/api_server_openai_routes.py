@@ -15,6 +15,8 @@ import uuid
 from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
+from agent.i18n import t
+
 try:
     from aiohttp import web
 except ImportError:  # pragma: no cover - mirrors api_server's optional import
@@ -80,6 +82,23 @@ def _hermes_extras(completed, is_partial, is_failed, err_msg, finish_reason: str
     return {
         "completed": completed, "partial": is_partial, "failed": is_failed, "error": err_msg,
         "error_code": "output_truncated" if finish_reason == "length" else "agent_error"}
+
+
+def _transformed_notice() -> str:
+    return t("platform.api_server.transformed_notice")
+
+
+def _post_stream_transform(result: Any) -> tuple:
+    """``(text, appended)`` a stream still owes after ``transform_llm_output`` rewrote the final
+    (the deltas already carried the raw reply): the appended suffix, or the whole rewrite with
+    ``appended=False`` when it is not a pure append. ``("", False)`` when nothing was transformed."""
+    if not isinstance(result, dict) or not result.get("response_transformed"):
+        return "", False
+    final = result.get("final_response") or ""
+    original = result.get("pre_transform_response") or ""
+    if original and final.startswith(original):
+        return final[len(original):], True
+    return final, False
 
 
 def _message_item(text: Any) -> Dict[str, Any]:
@@ -219,6 +238,7 @@ class _ResponsesStream:
         self.message_opened = False
         self.reasoning_item: Optional[Dict[str, Any]] = None  # open ``reasoning`` output item
         self.final_response_text = ""
+        self.transformed_final = ""  # non-append transform_llm_output rewrite; replaces the deltas
         self.agent_error: Optional[str] = None
         self.usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         self.terminal_snapshot_persisted = False
@@ -456,6 +476,12 @@ class _ResponsesStream:
             self.result = result
             self.usage = agent_usage or self.usage
             agent_final = result.get("final_response", "") if isinstance(result, dict) else ""
+            tail, appended = _post_stream_transform(result)
+            if tail and self.final_text_parts:
+                if appended:
+                    await self.emit_text_delta(tail)
+                else:
+                    self.transformed_final = agent_final
             if agent_final and not self.final_text_parts:
                 await self.emit_text_delta(agent_final)
             if agent_final and not self.final_response_text:
@@ -468,7 +494,8 @@ class _ResponsesStream:
 
     async def close_message_item(self) -> None:
         await self.close_reasoning_item()
-        self.final_response_text = "".join(self.final_text_parts) or self.final_response_text
+        self.final_response_text = (
+            self.transformed_final or "".join(self.final_text_parts) or self.final_response_text)
         if not self.message_opened:
             return
         await self.write_event("response.output_text.done", {
@@ -609,7 +636,7 @@ class OpenAICompatRoutesMixin:
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         from gateway.platforms.api_server import (
-            ThreadSafeAsyncQueue, _chat_usage_payload, _coerce_request_bool,
+            ThreadSafeAsyncQueue, _api_request_profile, _chat_usage_payload, _coerce_request_bool,
             _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
             _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content,
             _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
@@ -688,10 +715,10 @@ class OpenAICompatRoutesMixin:
                 history = []
         else:
             # Stable id from the conversation fingerprint so Open WebUI-style clients map onto
-            # one Hermes session.
+            # one Hermes session; namespaced by the routed profile (#123989).
             first_user = next(
                 (cm.get("content", "") for cm in conversation_messages if cm.get("role") == "user"), "")
-            session_id = _derive_chat_session_id(system_prompt, first_user)
+            session_id = _derive_chat_session_id(system_prompt, first_user, _api_request_profile.get())
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
         created = int(time.time())
@@ -921,6 +948,11 @@ class OpenAICompatRoutesMixin:
                 fallback_text = _resolve_media_to_data_urls(result.get("final_response") or "")
                 if fallback_text:
                     await response.write(_sse_frame(_chunk({"content": fallback_text})))
+            elif not presentation_muted:
+                # Chat chunks can only append: a non-append rewrite follows the streamed text (as in the CLI).
+                tail, appended = _post_stream_transform(result)
+                if tail:
+                    await response.write(_sse_frame(_chunk({"content": tail if appended else _transformed_notice() + tail})))
             if finish_reason != "stop":
                 if err_msg and not presentation_muted:
                     finish_chunk["error"] = {

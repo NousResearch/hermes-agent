@@ -20,6 +20,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.i18n import t
+
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 # Platform uses _missing_() for dynamic members, so "google_chat" is
@@ -815,7 +817,7 @@ class TestSend:
         assert buttons[0]["text"] == "Simple"
         assert buttons[0]["onClick"]["action"]["function"] == "hermes_clarify"
         assert {"key": "choice", "value": "Simple"} in buttons[0]["onClick"]["action"]["parameters"]
-        assert buttons[-1]["text"] == "Other / type answer"
+        assert buttons[-1]["text"] == t("platform.google_chat.clarify.other_button")
         assert adapter._clarify_state["clarify123"] == "session-key"
 
 

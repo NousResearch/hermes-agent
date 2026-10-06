@@ -83,7 +83,7 @@ mcp_servers:
       GITHUB_PERSONAL_ACCESS_TOKEN: "${env:GITHUB_TOKEN}"   # same as "${GITHUB_TOKEN}"
 ```
 
-Values resolve from the active profile's secret scope (falling back to the process environment), so put the secret in `~/.hermes/.env`. An unset variable keeps its literal placeholder.
+Values resolve from the active profile's secret scope (falling back to the process environment), so put the secret in `~/.hermes/.env`. An unset variable keeps its literal placeholder — except in a remote server's `url` or `headers`: sending a literal `${VAR}` there is a guaranteed 401 that reads as a bad credential, so the connect fails closed instead, with the variable named in the server's status (`MCP server 'name': ${VAR} in url/headers is not set in this profile's .env or secret source`). Fix the profile's `.env` (or its secret source); the next connect attempt renders the reference afresh.
 
 ### Context variables
 

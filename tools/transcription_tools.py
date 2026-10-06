@@ -9,6 +9,7 @@ the dispatcher and the cached local model + idle-unload state; backends live in
 ``transcription_{common,audio,local,cloud,command}``.
 """
 
+import contextvars
 import logging
 import os
 import shutil
@@ -74,6 +75,9 @@ _last_transcription_time: float = 0.0
 _idle_unload_thread: Optional[threading.Thread] = None
 _idle_unload_stop = threading.Event()
 _idle_unload_mgmt_lock = threading.Lock()
+# (context, fallback timeout) of the last caller that loaded or used the model: whose profile's
+# stt.local.unload_after_idle_seconds the watcher applies. Guarded by _idle_unload_mgmt_lock.
+_idle_unload_policy: tuple[contextvars.Context, int] = (contextvars.copy_context(), 0)
 _IDLE_UNLOAD_CHECK_INTERVAL = 30  # seconds between idle checks
 
 
@@ -282,22 +286,37 @@ def _unload_local_model() -> None:
             _local_model_name = None
 
 
+def _configured_idle_unload_seconds() -> int:
+    return _get_idle_unload_seconds(_load_stt_config().get("local") or {})
+
+
 def _start_idle_unload_watcher(timeout_seconds: int) -> None:
-    """Ensure the single idle-unload watcher thread is running. The loop re-reads
-    ``stt.local.unload_after_idle_seconds`` every cycle so config edits apply within one interval;
-    ``timeout_seconds`` seeds the first cycle so a just-written config is honored even if a
-    concurrent read races. Exits after unloading, when the timeout becomes 0, or when the model is gone."""
-    global _idle_unload_thread
+    """Ensure the single idle-unload watcher thread is running, governed by the caller's profile.
+
+    One process can serve several profiles, each with its own
+    ``stt.local.unload_after_idle_seconds``, and they share the one cached model. The policy that
+    governs it is the one of whoever last loaded or used it: every call records the caller's
+    context (profile scope included) and the loop re-reads the setting inside that context each
+    cycle, so config edits still apply within one interval and a watcher started under profile A
+    stops applying A's policy once profile B warms or transcribes. ``timeout_seconds`` is the
+    fallback when that read fails. Exits after unloading, when the timeout becomes 0, or when the
+    model is gone."""
+    global _idle_unload_thread, _idle_unload_policy
     with _idle_unload_mgmt_lock:
+        _idle_unload_policy = (contextvars.copy_context(), timeout_seconds)
         if _idle_unload_thread is not None and _idle_unload_thread.is_alive():
             return
 
-        def _watch(initial_timeout=timeout_seconds):
+        def _watch():
             while not _idle_unload_stop.wait(_IDLE_UNLOAD_CHECK_INTERVAL) and _local_model is not None:
+                with _idle_unload_mgmt_lock:
+                    owner_context, fallback = _idle_unload_policy
                 try:
-                    timeout = _get_idle_unload_seconds(_load_stt_config().get("local") or {})
-                except Exception:  # noqa: BLE001 - keep the seed value
-                    timeout = initial_timeout
+                    # A copy: a Context can't be entered twice at once, and the owner's own
+                    # request may still be running in the original.
+                    timeout = owner_context.copy().run(_configured_idle_unload_seconds)
+                except Exception:  # noqa: BLE001 - keep the owner's last known value
+                    timeout = fallback
                 if timeout <= 0:
                     break  # unload disabled mid-flight — stand down
                 if time.monotonic() - _last_transcription_time >= timeout:
@@ -552,51 +571,3 @@ def transcribe_audio_local_fallback(file_path: str, model: Optional[str] = None)
     if _has_local_command():
         return _transcribe_local_command(file_path, _normalize_local_model(local_model))
     return _error_result("No installed local STT backend is available.", provider="local")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import platform  # noqa: F401,E402
-import queue  # noqa: F401,E402
-import re  # noqa: F401,E402
-import shlex  # noqa: F401,E402
-import subprocess  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-from urllib.parse import urljoin  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'COMMAND_STT_OUTPUT_FORMATS': ('tools.transcription_command', 'COMMAND_STT_OUTPUT_FORMATS'),
-    'COMMON_LOCAL_BIN_DIRS': ('tools.transcription_common', 'COMMON_LOCAL_BIN_DIRS'),
-    'DEFAULT_COMMAND_STT_LANGUAGE': ('tools.transcription_command', 'DEFAULT_COMMAND_STT_LANGUAGE'),
-    'DEFAULT_COMMAND_STT_OUTPUT_FORMAT': ('tools.transcription_command', 'DEFAULT_COMMAND_STT_OUTPUT_FORMAT'),
-    'DEFAULT_COMMAND_STT_TIMEOUT_SECONDS': ('tools.transcription_command', 'DEFAULT_COMMAND_STT_TIMEOUT_SECONDS'),
-    'DEFAULT_LOCAL_STT_LANGUAGE': ('tools.transcription_common', 'DEFAULT_LOCAL_STT_LANGUAGE'),
-    'ELEVENLABS_STT_BASE_URL': ('tools.transcription_common', 'ELEVENLABS_STT_BASE_URL'),
-    'GROQ_BASE_URL': ('tools.transcription_common', 'GROQ_BASE_URL'),
-    'GROQ_MODELS': ('tools.transcription_common', 'GROQ_MODELS'),
-    'LOCAL_NATIVE_AUDIO_FORMATS': ('tools.transcription_common', 'LOCAL_NATIVE_AUDIO_FORMATS'),
-    'MAX_FILE_SIZE': ('tools.transcription_common', 'MAX_FILE_SIZE'),
-    'OPENAI_BASE_URL': ('tools.transcription_common', 'OPENAI_BASE_URL'),
-    'OPENAI_MODELS': ('tools.transcription_common', 'OPENAI_MODELS'),
-    'SUPPORTED_FORMATS': ('tools.transcription_common', 'SUPPORTED_FORMATS'),
-    'XAI_STT_BASE_URL': ('tools.transcription_common', 'XAI_STT_BASE_URL'),
-    'managed_nous_tools_enabled': ('tools.tool_backend_helpers', 'managed_nous_tools_enabled'),
-    'nous_tool_gateway_unavailable_message': ('tools.tool_backend_helpers', 'nous_tool_gateway_unavailable_message'),
-    'resolve_managed_tool_gateway': ('tools.managed_tool_gateway', 'resolve_managed_tool_gateway'),
-    'resolve_openai_audio_api_key': ('tools.tool_backend_helpers', 'resolve_openai_audio_api_key'),
-    'windows_hide_flags': ('hermes_cli._subprocess_compat', 'windows_hide_flags'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

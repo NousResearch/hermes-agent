@@ -115,6 +115,25 @@ def test_local_launch_failure_does_not_create_a_completion(launch_context, monke
         assert conn.execute("SELECT count(*) FROM process_continuations").fetchone()[0] == 0
 
 
+def test_kill_revokes_a_completion_persisted_during_signalling(launch_context, monkeypatch):
+    registry, scope, identity, cwd = launch_context
+    session = processes.ProcessSession(id="proc_signal_race", command="build", cron_continuation=identity)
+    registry._running[session.id] = session
+
+    def finish_during_signal(session, session_id, consume_output):
+        registry._finish_exited(session, 0)
+        return None
+
+    monkeypatch.setattr(registry, "_signal_kill", finish_during_signal)
+    result = registry.kill_process(session.id)
+    assert result["status"] == "killed"
+    executions.finish_execution(identity["execution_id"], success=True)
+    assert continuations.pending_jobs() == []
+    with executions._transaction() as conn:
+        receipt = conn.execute("SELECT * FROM process_continuations").fetchone()
+        assert receipt["state"] == "skipped"
+
+
 def test_reader_and_kill_race_persist_only_one_cancelled_result(launch_context):
     registry, scope, identity, cwd = launch_context
     # Real registry transition under contention, without timing a live shell.

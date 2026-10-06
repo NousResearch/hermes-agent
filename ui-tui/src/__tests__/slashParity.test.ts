@@ -112,6 +112,14 @@ describe('slash parity matrix', () => {
     expect(cmd, '/q must resolve to a command').toBeDefined()
     expect(cmd!.name).toBe('queue')
   })
+
+  it('/s alias resolves to steer, not sessions or a TUI-local command (#119176)', () => {
+    // Same one-letter pattern as /q: the TUI-local registry must not shadow
+    // the backend alias with a prefix command (/sessions) or its own binding.
+    const cmd = findSlashCommand('s')
+    expect(cmd, '/s must resolve to a command').toBeDefined()
+    expect(cmd!.name).toBe('steer')
+  })
 })
 
 describe('parseSlashCommand argument fidelity', () => {

@@ -3,6 +3,7 @@
  * surfaces it as an ambient pill, and orchestrates the apply flow.
  */
 
+import { updateDebt } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { connectionScoped, profileScoped } from '@/api/client'
@@ -22,7 +23,7 @@ import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connec
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $connection } from '@/store/session'
-import type { BackendUpdateCheckResponse } from '@/types/hermes'
+import type { BackendUpdateCheckResponse, UpdateReceiptSummary } from '@/types/hermes'
 
 /** Keyed per retired-channel revision: a new retirement (or a revision bump on
  *  the same channel) re-shows the notice, a plain re-check never does. */
@@ -488,14 +489,32 @@ function isRemoteMode(): boolean {
   return $connection.get()?.mode === 'remote'
 }
 
-function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
-  const behind = res.behind ?? 0
+export function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
+  // The producer's contract (web_routers/actions.py): behind is 0 = up to
+  // date, -1 = update available but the count is unknown (shallow clone
+  // without a merge-base, unusable GitHub compare), null = the check could
+  // not run at all. DesktopUpdateStatus types "unknown count" as null —
+  // "never render it as a literal number" — so pass that through instead of
+  // clamping the sentinel to a byte-identical copy of "up to date".
+  const behind = res.behind === undefined ? 0 : res.behind
+
+  // `behind: null` from a supported (git) backend is the endpoint's "the check
+  // could not run" answer (GitHub unreachable, rate limited, offline) and
+  // carries the explanation in `message`. Folding it to 0 made the overlay
+  // report "the backend is on the latest version" whenever the check failed,
+  // and hid that message. Surface the failure state the local check path
+  // already uses so the overlay shows the reason and a retry; only a check
+  // that actually ran may claim there is nothing to update. Backends that
+  // cannot self-update also answer `behind: null`, but `can_apply: false`
+  // renders the unsupported copy first — those must not become failures.
+  const checkFailed = res.can_apply && res.behind === null
 
   return {
     supported: res.can_apply,
+    error: checkFailed ? 'check-failed' : undefined,
     message: res.message ?? undefined,
     updateAvailable: res.update_available,
-    behind: behind > 0 ? behind : 0,
+    behind: behind === null || behind < 0 ? null : behind,
     currentVersion: res.current_version,
     targetSha: res.update_available ? `backend:${res.current_version}` : undefined,
     commits: res.commits,
@@ -729,7 +748,49 @@ const BACKEND_ACTION_POLL_MS = 1500
 const BACKEND_ACTION_MAX_MS = 6 * 60 * 1000
 const BACKEND_RETURN_MAX_MS = 4 * 60 * 1000
 
-function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
+// C3: a committed update succeeds even when post-commit steps are still owed,
+// and a partial one (committed, but the user must act) still owes them. Name
+// every owed step of THIS action's committed run whatever the exit: follow-ups
+// with the rerun remedy, a user action with the producer's own instruction,
+// verbatim (a rerun does not restore a parked stash).
+function owedMessage(receipt: UpdateReceiptSummary | undefined, actionId: string | undefined): string | null {
+  const debt = updateDebt(receipt, actionId)
+
+  if (!debt) {
+    return null
+  }
+
+  return [debt.followups && translateNow('updates.applyStatus.owed', debt.followups), debt.userAction]
+    .filter(Boolean)
+    .join(' ')
+}
+
+// A failed apply whose receipt still proves a committed partial run (exit 1)
+// names what that run owes instead of only "failed" / "did not come back".
+function failBackendApply(
+  fallback: { shown: string; result: string },
+  status: { receipt?: UpdateReceiptSummary } | null,
+  actionId: string | undefined
+): DesktopUpdateApplyResult {
+  const owed = owedMessage(status?.receipt, actionId)
+  const message = owed ? `${translateNow('updates.applyStatus.failed')} ${owed}` : fallback.shown
+
+  $backendUpdateApply.set({
+    ...$backendUpdateApply.get(),
+    applying: false,
+    stage: 'error',
+    error: 'apply-failed',
+    message
+  })
+
+  return { ok: false, error: 'apply-failed', message: owed ? message : fallback.result }
+}
+
+function finishBackendApply(
+  returned: boolean,
+  receipt?: UpdateReceiptSummary,
+  actionId?: string
+): DesktopUpdateApplyResult {
   if (returned) {
     $backendUpdateApply.set(IDLE)
     setUpdateOverlayOpen(false)
@@ -747,19 +808,22 @@ function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
     // affordance in remote mode targets the backend, so nothing ever told
     // them the app itself was stale). Nudge with a one-click client update.
     void maybeNudgeClientAfterBackendUpdate()
+    const owed = owedMessage(receipt, actionId)
+
+    if (owed) {
+      notify({ durationMs: 0, kind: 'warning', message: owed })
+
+      return { ok: true, message: owed }
+    }
 
     return { ok: true, message: 'Backend update applied.' }
   }
 
-  $backendUpdateApply.set({
-    ...$backendUpdateApply.get(),
-    applying: false,
-    stage: 'error',
-    error: 'apply-failed',
-    message: translateNow('updates.applyStatus.noReturn')
-  })
-
-  return { ok: false, error: 'apply-failed', message: 'Backend did not come back online.' }
+  return failBackendApply(
+    { shown: translateNow('updates.applyStatus.noReturn'), result: 'Backend did not come back online.' },
+    { receipt },
+    actionId
+  )
 }
 
 function ingestBackendActionStatus(status: Awaited<ReturnType<typeof getActionStatus>>): void {
@@ -795,7 +859,11 @@ function completedAfterRestart(
  *  run started at-or-after we kicked the update off counts — an older
  *  receipt describes a previous update, and a still-running one proves
  *  nothing yet. The 60s slack absorbs client/backend clock skew. */
-function receiptProvesOutcome(status: Awaited<ReturnType<typeof getActionStatus>>, applyStartedAtMs: number): boolean {
+function receiptProvesOutcome(
+  status: Awaited<ReturnType<typeof getActionStatus>>,
+  applyStartedAtMs: number,
+  actionId: string | undefined
+): boolean {
   const receipt = status.receipt
 
   if (!receipt || !receipt.finished_at || !receipt.started_at) {
@@ -804,6 +872,12 @@ function receiptProvesOutcome(status: Awaited<ReturnType<typeof getActionStatus>
 
   if (receipt.outcome !== 'success' && receipt.outcome !== 'partial' && receipt.outcome !== 'failed') {
     return false
+  }
+
+  // A backend that records the writing action (null for a CLI run) proves
+  // identity directly: another action's success cannot certify this one.
+  if (actionId && receipt.action_id !== undefined) {
+    return receipt.action_id === actionId
   }
 
   const startedMs = Date.parse(receipt.started_at)
@@ -911,15 +985,15 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       }
 
       if (last.exit_code === 0 || (last.exit_code === null && completedAfterRestart(last, started.action_id))) {
-        return finishBackendApply(true)
+        return finishBackendApply(true, last.receipt, started.action_id)
       }
 
       // #91277 bullet 3: the backend now attaches the durable update
       // receipt to the status. A receipt whose run STARTED after we kicked
       // this update off is authoritative — read its outcome instead of
       // inferring from log markers or timing out across the restart gap.
-      if (last.exit_code === null && receiptProvesOutcome(last, applyStartedAtMs)) {
-        return finishBackendApply(last.receipt!.outcome === 'success')
+      if (last.exit_code === null && receiptProvesOutcome(last, applyStartedAtMs, started.action_id)) {
+        return finishBackendApply(last.receipt!.outcome === 'success', last.receipt, started.action_id)
       }
 
       if (!started.action_id && last.exit_code === null) {
@@ -939,15 +1013,11 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       }
     }
 
-    $backendUpdateApply.set({
-      ...$backendUpdateApply.get(),
-      applying: false,
-      stage: 'error',
-      error: 'apply-failed',
-      message: translateNow('updates.applyStatus.failed')
-    })
-
-    return { ok: false, error: 'apply-failed', message: 'Backend update failed.' }
+    return failBackendApply(
+      { shown: translateNow('updates.applyStatus.failed'), result: 'Backend update failed.' },
+      last,
+      started.action_id
+    )
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     $backendUpdateApply.set({

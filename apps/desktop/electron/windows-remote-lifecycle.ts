@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 
+import { resolveReadyTimeoutMs } from './remote-lifecycle'
 import { assertBootstrapNotSuperseded, redactSecrets, SSH_ERROR } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -19,10 +20,29 @@ function powerShellCommand(script) {
   return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedPowerShell(script)}`
 }
 
+// Windows OpenSSH may serialize PowerShell's progress stream as
+// "#< CLIXML <Objs ...>...</Objs>" blocks into the captured stdout of ANY
+// PowerShell exec on the connection (module auto-load / Add-Type cold-start
+// racing the read) — not just the platform probe. Every stdout-parsing call
+// shares this normalizer: strip a leading BOM, drop every CLIXML block
+// (before, after, or on the same line as the payload), and keep only the
+// meaningful lines.
+function stripPowerShellNoise(stdout) {
+  return String(stdout || '')
+    .replace(/^\uFEFF/, '')
+    .replace(/#< CLIXML[\s\S]*?<\/Objs>/g, '')
+    .split(/\r?\n/)
+    .filter(line => line.trim() && !line.trimStart().startsWith('#< CLIXML'))
+}
+
 async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   const explicit = psLiteral(explicitHermesPath)
 
   const script = [
+    // Module auto-load / cold-start progress records get serialized by Windows
+    // OpenSSH as "#< CLIXML <Objs S=\"progress\">..." into the same stdout the
+    // probe parses; silence the progress stream before anything can emit it.
+    '$ProgressPreference="SilentlyContinue"',
     '$ErrorActionPreference="Stop"',
     'function Assert-NoReparse([string]$candidate,[bool]$allowMissing=$false){',
     'if([string]::IsNullOrWhiteSpace($candidate)){return}',
@@ -35,8 +55,11 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '}',
     `$explicit=${explicit}`,
     'if($explicit){Assert-NoReparse $explicit $false;$explicitPython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($explicit), "python.exe");Assert-NoReparse $explicitPython $false}',
+    // HERMES_HOME is only trusted when it names a directory on the REMOTE: a stale User-scope
+    // value (older install.ps1 persisted one) or a client path leaked over SSH otherwise fails
+    // assertSafeRemoteHome as "Unsafe remote Hermes home" (#118988).
     '$hermesHome=$env:HERMES_HOME',
-    'if(-not $hermesHome){$hermesHome=Join-Path $env:LOCALAPPDATA "hermes"}',
+    'if(-not $hermesHome -or -not (Test-Path -LiteralPath $hermesHome -PathType Container)){$hermesHome=Join-Path $env:LOCALAPPDATA "hermes"}',
     'Assert-NoReparse $hermesHome $true',
     '$candidate=[IO.Path]::Combine($hermesHome, "hermes-agent\\venv\\Scripts\\hermes.exe")',
     '$candidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($candidate), "python.exe")',
@@ -64,11 +87,27 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
   ].join(';')
 
-  return JSON.parse((await ssh.exec(powerShellCommand(script))).trim())
+  // Windows OpenSSH may serialize PowerShell's progress stream as
+  // "#< CLIXML <Objs ...>...</Objs>" blocks into the same stdout the
+  // probe parses, ahead of, after, or on the same line as the probe JSON
+  // (module auto-load racing the exec read). stripPowerShellNoise drops every
+  // block; the JSON is the last meaningful line.
+  const lines = stripPowerShellNoise(await ssh.exec(powerShellCommand(script)))
+
+  const parsed = JSON.parse(lines[lines.length - 1] || 'null')
+
+  if (!parsed?.os || !parsed?.arch) {
+    throw new Error(
+      `Windows probe did not return the expected platform JSON: ${String(lines[lines.length - 1] ?? '').slice(0, 200)}`
+    )
+  }
+
+  return parsed
 }
 
 function windowsUpdateMarkerProbeCommand(hermesHome) {
   const script = [
+    '$ProgressPreference="SilentlyContinue"',
     '$ErrorActionPreference="Stop"',
     `Add-Type -TypeDefinition @'
 using System;
@@ -139,12 +178,10 @@ async function assertWindowsRemoteInstallUpdateClear(ssh, hermesHome) {
   let observation = ''
 
   try {
-    observation =
-      String(await ssh.exec(windowsUpdateMarkerProbeCommand(hermesHome)))
-        .replace(/^\uFEFF/, '')
-        .trim()
-        .split(/\r?\n/)
-        .pop() || ''
+    // Same stdout channel as the probe: a CLIXML progress block after the
+    // final `Write-Output $result` would otherwise win the .pop() and turn a
+    // CLEAR gate into a fail-closed 'update-in-progress' verdict.
+    observation = stripPowerShellNoise(await ssh.exec(windowsUpdateMarkerProbeCommand(hermesHome))).pop() || ''
   } catch (cause) {
     const error: any = new Error('Could not prove that the remote Hermes install is clear for SSH startup.')
     error.kind = 'update-in-progress'
@@ -198,6 +235,8 @@ async function detectRemotePlatform(ssh, explicitHermesPath = '') {
       throw cause
     }
 
+    const kind = cause?.kind
+
     // detail is remote-controlled output headed for the UI: redact + strip control chars.
     const detail = redactSecrets(String(cause?.message || cause || ''))
       // eslint-disable-next-line no-control-regex -- deliberately strip control chars from remote output
@@ -205,10 +244,10 @@ async function detectRemotePlatform(ssh, explicitHermesPath = '') {
       .trim()
 
     const error: any = new Error(
-      `The remote operating system is not supported by Desktop SSH.${detail ? ` (probe: ${detail.slice(0, 300)})` : ''}`
+      `${kind ? 'The Windows remote probe failed.' : 'The remote operating system is not supported by Desktop SSH.'}${detail ? ` (probe: ${detail.slice(0, 300)})` : ''}`
     )
 
-    error.kind = 'unsupported-platform'
+    error.kind = kind || 'unsupported-platform'
     error.cause = cause
     throw error
   }
@@ -218,6 +257,7 @@ function helperCommand(runtime, operation, args = []) {
   const argv = [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', operation, ...args]
 
   const script = [
+    '$ProgressPreference="SilentlyContinue"',
     '$ErrorActionPreference="Stop"',
     `& ${argv.map(psLiteral).join(' ')}`,
     'if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}'
@@ -229,11 +269,7 @@ function helperCommand(runtime, operation, args = []) {
 async function helper(ssh, runtime, operation, args = [], stdinData?) {
   const output = await ssh.exec(helperCommand(runtime, operation, args), stdinData == null ? {} : { stdinData })
 
-  const lines = String(output || '')
-    .replace(/^\uFEFF/, '')
-    .trim()
-    .split(/\r?\n/)
-    .filter(Boolean)
+  const lines = stripPowerShellNoise(output)
 
   const parsed = JSON.parse(lines[lines.length - 1] || 'null')
 
@@ -249,6 +285,7 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
   const helper = operation => [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', operation]
 
   const script = [
+    '$ProgressPreference="SilentlyContinue"',
     '$ErrorActionPreference="Stop"',
     `$hermesHome=${psLiteral(runtime.hermesHome)}`,
     '$installRoot=$hermesHome',
@@ -275,7 +312,7 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
       : '  if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}',
     reservation.ownershipId
       ? `  $spawned=$spawnLines[-1]|ConvertFrom-Json; $lock=[ordered]@{schemaVersion=2;protocolVersion=1;ownershipId=${psLiteral(reservation.ownershipId)};spawnNonce=${psLiteral(reservation.spawnNonce)};pid=[int]$spawned.pid;creationTimeNs=[string]$spawned.creationTimeNs;port=0;profile=${psLiteral(reservation.profile)};hermesPath=${psLiteral(reservation.hermesPath)};hermesHome=${psLiteral(reservation.hermesHome)};tokenFingerprint=${psLiteral(reservation.tokenFingerprint)};startedAt=${psLiteral(reservation.startedAt)}}|ConvertTo-Json -Compress; ` +
-        `  & ${helper('write-lock').map(psLiteral).join(' ')} ${psLiteral(reservation.ownershipId)} $lock|Out-Null; if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}; $spawnLines|Write-Output`
+        `  $lock | & ${helper('write-lock').map(psLiteral).join(' ')} ${psLiteral(reservation.ownershipId)} | Out-Null; if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}; $spawnLines|Write-Output`
       : '',
     '  if([IO.File]::Exists($marker)){throw "remote update marker claimed during backend spawn"}',
     '}finally{try{$mutex.Unlock(0,1)}catch{};$mutex.Dispose()}'
@@ -289,11 +326,7 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
 async function atomicWindowsSpawn(ssh, runtime, stdinData, reservation: any = {}) {
   const output = await ssh.exec(atomicWindowsSpawnCommand(runtime, reservation), { stdinData })
 
-  const lines = String(output || '')
-    .replace(/^\uFEFF/, '')
-    .trim()
-    .split(/\r?\n/)
-    .filter(Boolean)
+  const lines = stripPowerShellNoise(output)
 
   const parsed = JSON.parse(lines[lines.length - 1] || 'null')
 
@@ -557,7 +590,7 @@ async function connectWindowsRemote(deps) {
     waitForHermes,
     probeReuseProof,
     rememberLog = () => {},
-    readyTimeoutMs = 45_000
+    readyTimeoutMs = resolveReadyTimeoutMs()
   } = deps
 
   assertBootstrapNotSuperseded(signal)
@@ -776,6 +809,7 @@ export {
   probeWindowsRemote,
   psLiteral,
   reusableWindowsLock,
+  stripPowerShellNoise,
   terminateOwnedWindowsDashboardForUpdate,
   validLock
 }

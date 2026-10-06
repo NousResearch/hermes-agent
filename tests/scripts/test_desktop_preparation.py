@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -63,6 +64,15 @@ def test_stable_build_accepts_the_admitted_commit_before_the_final_tag_exists(tm
             source, tag="v1.2.4", commit=None, release_commit=commit, variant="bundled",
             work=tmp_path / "wrong-work", cache=tmp_path / "wrong-cache", bundle_env={},
         )
+
+
+def test_native_version_capture_uses_admitted_build_environment(tmp_path, monkeypatch):
+    from scripts.bundles.desktop import capture
+
+    monkeypatch.delenv("HERMES_RELEASE_EPOCH", raising=False)
+    env = {**os.environ, "HERMES_RELEASE_EPOCH": "1787965323"}
+    script = "import os; print(os.environ['HERMES_RELEASE_EPOCH'])"
+    assert capture([sys.executable, "-c", script], tmp_path, env) == env["HERMES_RELEASE_EPOCH"]
 
 
 def test_stable_build_rejects_a_claim_tag_for_another_version(tmp_path, monkeypatch):
@@ -222,3 +232,44 @@ def test_checkout_lock_excludes_a_second_build_process(tmp_path):
     released = subprocess.run(command, capture_output=True, text=True, timeout=30)
     assert released.returncode == 0, released.stderr
     assert released.stdout.strip() == "acquired"
+
+
+def test_flavored_icon_staging_hands_the_admitted_checkout_back(tmp_path):
+    from scripts.bundles.desktop import flavored_assets
+    from scripts.bundles.desktop_prepare import require_source
+
+    source, commit = _project(tmp_path)
+    assets = source / "apps/desktop/assets"
+    (assets / "appx").mkdir(parents=True)
+    (assets / "icon.png").write_bytes(b"admitted icon")
+    (assets / "appx/Square150x150Logo.png").write_bytes(b"admitted tile")
+    subprocess.run(["git", "add", "."], cwd=source, check=True)
+    subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+                    "commit", "-m", "icons"], cwd=source, check=True, capture_output=True)
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+
+    rendered = tmp_path / "products/icons"
+    (rendered / "appx").mkdir(parents=True)
+    (rendered / "icon.png").write_bytes(b"canary icon")
+    (rendered / "icon-mac.png").write_bytes(b"canary dock icon")
+    (rendered / "appx/Square150x150Logo.png").write_bytes(b"canary tile")
+
+    # Packaging reads artwork from the workspace path, so the render is live
+    # there — and the custody check rightly refuses the checkout in that window.
+    with flavored_assets(rendered, assets):
+        assert (assets / "icon.png").read_bytes() == b"canary icon"
+        assert (assets / "icon-mac.png").read_bytes() == b"canary dock icon"
+        with pytest.raises(ValueError, match="clean source checkout"):
+            require_source(source, commit)
+
+    # A finished or failed package leaves the admitted files back in place, with
+    # render-only additions removed; a dirty tree breaks the next build.
+    assert (assets / "icon.png").read_bytes() == b"admitted icon"
+    assert (assets / "appx/Square150x150Logo.png").read_bytes() == b"admitted tile"
+    assert not (assets / "icon-mac.png").exists()
+    require_source(source, commit)
+
+    with pytest.raises(RuntimeError, match="packaging failed"):
+        with flavored_assets(rendered, assets):
+            raise RuntimeError("packaging failed")
+    require_source(source, commit)

@@ -138,7 +138,11 @@ class TestPhotonSidecarStartupClassification:
     def _make_adapter(self, monkeypatch):
         monkeypatch.setenv("PHOTON_PROJECT_ID", "pid")
         monkeypatch.setenv("PHOTON_PROJECT_SECRET", "psecret")
+        from plugins.platforms.photon import adapter as photon_adapter
         from plugins.platforms.photon.adapter import PhotonAdapter
+
+        # Stand-in for PM's node; the user's PATH node is never picked up.
+        monkeypatch.setattr(photon_adapter, "find_node_executable", lambda _name: "/pm/node")
 
         return PhotonAdapter(PlatformConfig(enabled=True, token="", extra={}))
 

@@ -2,6 +2,8 @@ import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { onComposerAttachImagesRequest } from '@/app/chat/composer/focus'
+import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
+import { setTreePaneParked } from '@/components/pane-shell/tree/parked-panes'
 import { $previewTabs, closeRightRail, openPreview, previewTabId } from '@/store/preview'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
 
@@ -230,6 +232,107 @@ describe('PreviewPane console state', () => {
     // forward, so the load lands a microtask later.
     await waitFor(() => expect(loadURL).toHaveBeenCalledWith('http://localhost:4000/app'))
     expect(webview.getAttribute('src')).toBe('http://localhost:5174')
+  })
+
+  it('Escape goes back only when the webview has history', async () => {
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5174', url: 'http://localhost:5174' }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    const goBack = vi.fn()
+
+    Object.assign(webview, { canGoBack: () => false, goBack, loadURL: vi.fn(async () => undefined) })
+
+    // No history yet: Escape is not claimed (the pane does not fake a back).
+    const pane = rendered.container.querySelector('aside') as HTMLElement
+
+    fireEvent.keyDown(pane, { key: 'Escape' })
+    expect(goBack).not.toHaveBeenCalled()
+
+    // After an in-page navigation there is history: Escape drives it.
+    Object.assign(webview, { canGoBack: () => true })
+
+    fireEvent.keyDown(pane, { key: 'Escape' })
+    expect(goBack).toHaveBeenCalledOnce()
+  })
+
+  it('Escape keeps its native meaning for editable surfaces inside the pane', async () => {
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5174', url: 'http://localhost:5174' }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    const goBack = vi.fn()
+
+    Object.assign(webview, { canGoBack: () => true, goBack })
+
+    // The browser bar's address input: Escape resets the draft (its own
+    // handler), and must not ALSO navigate the webview back.
+    const address = rendered.getByRole('textbox', { name: 'Address' }) as HTMLInputElement
+
+    fireEvent.focus(address)
+    fireEvent.keyDown(address, { key: 'Escape' })
+    expect(goBack).not.toHaveBeenCalled()
+  })
+
+  // #120265: an external target.url change must steer the LIVE guest with
+  // loadURL(), not destroy the webview and rebuild it (which dropped JS
+  // state, cookies, form data, scroll, refs, and detached console/annotate).
+  it('reuses the live webview guest when target.url changes instead of rebuilding it', async () => {
+    const tabId = 'reuse-guest-tab'
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          tabId={tabId}
+          target={{
+            kind: 'url',
+            label: 'Preview',
+            source: 'http://localhost:5174/one',
+            url: 'http://localhost:5174/one'
+          }}
+        />
+      )
+    })
+
+    const first = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    expect(first).toBeInstanceOf(HTMLElement)
+    const loadURL = vi.fn(async () => undefined)
+    Object.assign(first, { loadURL })
+
+    await act(async () => {
+      rendered.rerender(
+        <PreviewPane
+          tabId={tabId}
+          target={{
+            kind: 'url',
+            label: 'Preview',
+            source: 'http://localhost:5174/two',
+            url: 'http://localhost:5174/two'
+          }}
+        />
+      )
+    })
+
+    // Same guest node: JS state, cookies, form data, scroll, and refs survive.
+    expect(rendered.container.querySelector('webview')).toBe(first)
+    // Steered with loadURL, not a src swap or a rebuild.
+    expect(loadURL).toHaveBeenCalledWith('http://localhost:5174/two')
+    expect(rendered.container.querySelector('webview')?.getAttribute('src')).toBe('http://localhost:5174/one')
+    expect((rendered.getByRole('textbox', { name: 'Address' }) as HTMLInputElement).value).toBe(
+      'http://localhost:5174/two'
+    )
   })
 
   it('continues comment numbering in one conversation and resets it when the conversation changes', async () => {
@@ -698,6 +801,31 @@ describe('PreviewPane console state', () => {
       profile: 'macmini'
     })
   })
+
+  // #101880: guest window.print() segfaults the macOS native print panel —
+  // the pane stubs print in every guest document so the panel is never built.
+  it('stubs window.print in the guest on dom-ready', async () => {
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5174', url: 'http://localhost:5174' }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    const executeJavaScript = vi.fn(async (_code: string) => undefined)
+
+    Object.assign(webview, { executeJavaScript })
+
+    act(() => {
+      webview.dispatchEvent(new Event('dom-ready'))
+    })
+
+    expect(executeJavaScript).toHaveBeenCalledOnce()
+    expect(String(executeJavaScript.mock.calls[0]?.[0])).toContain('window.print')
+  })
 })
 
 describe('PreviewPane guest external handoff', () => {
@@ -759,6 +887,135 @@ describe('PreviewPane guest external handoff', () => {
     guestMessage(webview, 'https://example.com', 'something-else')
 
     expect(openExternal).not.toHaveBeenCalled()
+  })
+})
+
+describe('PreviewPane off-screen guest', () => {
+  const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+  const initialHermesDesktop = desktopWindow.hermesDesktop
+
+  const target = {
+    kind: 'url',
+    label: 'Preview',
+    source: 'http://localhost:8502',
+    url: 'http://localhost:8502'
+  } as const
+
+  afterEach(() => {
+    cleanup()
+
+    if (initialHermesDesktop) {
+      desktopWindow.hermesDesktop = initialHermesDesktop
+    } else {
+      delete desktopWindow.hermesDesktop
+    }
+  })
+
+  // Chromium keeps a hidden guest as the focused webContents, so main's
+  // mouse back / ⌘R would act on a page the user cannot see unless the pane
+  // tells main the guest left the screen — and that it came back.
+  it('tells main when its guest leaves the screen and when it returns', async () => {
+    const setPreviewGuestHidden = vi.fn()
+    desktopWindow.hermesDesktop = { setPreviewGuestHidden } as unknown as Window['hermesDesktop']
+
+    const pane = (visible: boolean) => (
+      <PaneVisibleContext value={visible}>
+        <PreviewPane tabId="url:offscreen" target={target} />
+      </PaneVisibleContext>
+    )
+
+    let rendered!: ReturnType<typeof render>
+
+    await act(async () => {
+      rendered = render(pane(true))
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & { getWebContentsId?: () => number }
+    webview.getWebContentsId = () => 41
+    setPreviewGuestHidden.mockClear()
+
+    await act(async () => {
+      rendered.rerender(pane(false))
+    })
+    expect(setPreviewGuestHidden).toHaveBeenLastCalledWith(41, true)
+
+    await act(async () => {
+      rendered.rerender(pane(true))
+    })
+    expect(setPreviewGuestHidden).toHaveBeenLastCalledWith(41, false)
+  })
+
+  // A guest has no id until it attaches; one that attaches after its session
+  // was already parked must still be reported to main and muted.
+  it('reports and mutes a guest that attaches while its session is already hidden', async () => {
+    const setPreviewGuestHidden = vi.fn()
+    desktopWindow.hermesDesktop = { setPreviewGuestHidden } as unknown as Window['hermesDesktop']
+    act(() => setTreePaneParked('preview-tile:url:late', true))
+
+    let rendered!: ReturnType<typeof render>
+
+    await act(async () => {
+      rendered = render(
+        <PaneVisibleContext value={false}>
+          <PreviewPane tabId="url:late" target={target} />
+        </PaneVisibleContext>
+      )
+    })
+
+    let muted = false
+    const webview = rendered.container.querySelector('webview')!
+    Object.assign(webview, {
+      getWebContentsId: () => 52,
+      isAudioMuted: () => muted,
+      setAudioMuted: (next: boolean) => (muted = next)
+    })
+
+    await act(async () => {
+      webview.dispatchEvent(new Event('dom-ready'))
+    })
+
+    expect(setPreviewGuestHidden).toHaveBeenLastCalledWith(52, true)
+    expect(muted).toBe(true)
+    act(() => setTreePaneParked('preview-tile:url:late', false))
+  })
+
+  // A hidden session's kept page keeps running, but is not heard from the chat
+  // the user switched to; it comes back with the sound it had.
+  async function renderAudibleGuest(tabId: string, mutedBefore: boolean) {
+    desktopWindow.hermesDesktop = {} as unknown as Window['hermesDesktop']
+    let rendered!: ReturnType<typeof render>
+
+    await act(async () => {
+      rendered = render(<PreviewPane tabId={tabId} target={target} />)
+    })
+
+    let muted = mutedBefore
+    const setAudioMuted = vi.fn((next: boolean) => (muted = next))
+
+    Object.assign(rendered.container.querySelector('webview')!, { isAudioMuted: () => muted, setAudioMuted })
+
+    return { isMuted: () => muted, setAudioMuted }
+  }
+
+  it("mutes a hidden session's page and restores its sound on return", async () => {
+    const { isMuted, setAudioMuted } = await renderAudibleGuest('url:audible', false)
+
+    act(() => setTreePaneParked('preview-tile:url:audible', true))
+    expect(isMuted()).toBe(true)
+
+    act(() => setTreePaneParked('preview-tile:url:audible', false))
+    expect(isMuted()).toBe(false)
+    expect(setAudioMuted.mock.calls).toEqual([[true], [false]])
+  })
+
+  it('never unmutes a page that was already muted before its session left', async () => {
+    const { isMuted, setAudioMuted } = await renderAudibleGuest('url:muted', true)
+
+    act(() => setTreePaneParked('preview-tile:url:muted', true))
+    act(() => setTreePaneParked('preview-tile:url:muted', false))
+
+    expect(isMuted()).toBe(true)
+    expect(setAudioMuted).not.toHaveBeenCalled()
   })
 })
 

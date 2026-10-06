@@ -59,6 +59,7 @@ class SessionRewindMixin:
             _DB_PERSISTED_MARKER, history_before_user_originated_turn, retryable_user_text,
             split_user_originated_turn, user_originated_turn_view)
         from agent.message_content import flatten_message_text
+        from agent.message_metadata import MESSAGE_UID, message_uid_or_none
         from agent.session_persistence import _is_ephemeral_scaffolding
 
         expected_active_ids = self.get_active_message_ids(session_id)
@@ -111,7 +112,10 @@ class SessionRewindMixin:
             replacement_id = result.get("replacement_message_id")
             if not isinstance(replacement_id, int) or not durable_prefix:
                 raise RuntimeError("rewind did not retain its compaction handoff")
+            # The installed scaffold IS the replacement row: carry its identity, not just its row id.
             durable_prefix[-1].update({"_row_id": replacement_id, _DB_PERSISTED_MARKER: True})
+            if replacement_uid := result.get("replacement_message_uid"):
+                durable_prefix[-1][MESSAGE_UID] = replacement_uid
             prefix[-1] = durable_prefix[-1]
         if adopt_row_ids and prefix is not durable_prefix and len(prefix) == len(durable_prefix) and all(
             warm.get("role") == durable_message.get("role")
@@ -123,6 +127,8 @@ class SessionRewindMixin:
             for warm, durable_message in zip(prefix, durable_prefix):
                 if isinstance(row_id := durable_message.get("_row_id"), int):
                     warm["_row_id"] = row_id
+                if uid := message_uid_or_none(durable_message):
+                    warm[MESSAGE_UID] = uid
         return RewindOutcome(
             prefix=prefix, live_view=live_view,
             live_text=live_text if live_text is not None else flatten_message_text(live_view.get("content")),

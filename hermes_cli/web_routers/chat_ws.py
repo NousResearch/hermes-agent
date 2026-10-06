@@ -508,7 +508,8 @@ async def pty_ws(ws: WebSocket) -> None:
         await _pty_fail(ws, exc)
         return
 
-    attach_token = ws.query_params.get("attach") or None
+    raw_attach_token = ws.query_params.get("attach") or None
+    attach_token = raw_attach_token
     registry_resume = raw_resume
     if raw_resume and env:
         registry_resume = env.get("HERMES_TUI_RESUME") or raw_resume
@@ -534,6 +535,7 @@ async def pty_ws(ws: WebSocket) -> None:
 
     # Keep-alive path: the PTY outlives this socket; reattach by token.
     try:
+        await PTY_REGISTRY.close_other_sessions(raw_attach_token, keep_key=attach_token)
         session, _created = await PTY_REGISTRY.attach_or_spawn(attach_token, spawn=_spawn)
     except (PtyUnavailableError, FileNotFoundError, OSError, RegistryFull) as exc:
         await _pty_fail(ws, exc)

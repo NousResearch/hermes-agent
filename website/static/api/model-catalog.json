@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-23T07:20:37Z",
+  "updated_at": "2026-10-02T16:15:09Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -41,6 +41,10 @@
           "description": "2x price, higher output speed"
         },
         {
+          "id": "anthropic/claude-sonnet-5.5",
+          "description": ""
+        },
+        {
           "id": "anthropic/claude-sonnet-5",
           "description": ""
         },
@@ -71,6 +75,14 @@
         {
           "id": "openai/gpt-6-astra-pro-flex",
           "description": "0.5x price, flex tier"
+        },
+        {
+          "id": "openai/gpt-6.1-sol",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-6.1-sol-pro",
+          "description": ""
         },
         {
           "id": "openai/gpt-6-sol",
@@ -222,6 +234,14 @@
           "description": ""
         },
         {
+          "id": "upstage/solar-pro4",
+          "description": ""
+        },
+        {
+          "id": "upstage/solar-mini4",
+          "description": ""
+        },
+        {
           "id": "openrouter/pareto-code",
           "description": "auto-routes to cheapest coder meeting openrouter.min_coding_score"
         },
@@ -264,6 +284,10 @@
         {
           "id": "stealth/union-alpha",
           "description": "free, stealth model"
+        },
+        {
+          "id": "stealth/space-bunny-alpha",
+          "description": "free, stealth model"
         }
       ]
     },
@@ -289,6 +313,9 @@
           "id": "anthropic/claude-opus-4.8"
         },
         {
+          "id": "anthropic/claude-sonnet-5.5"
+        },
+        {
           "id": "anthropic/claude-sonnet-5"
         },
         {
@@ -311,6 +338,12 @@
         },
         {
           "id": "openai/gpt-6-astra-pro-flex"
+        },
+        {
+          "id": "openai/gpt-6.1-sol"
+        },
+        {
+          "id": "openai/gpt-6.1-sol-pro"
         },
         {
           "id": "openai/gpt-6-sol"
@@ -411,6 +444,15 @@
         },
         {
           "id": "sakana/fugu-ultra"
+        },
+        {
+          "id": "upstage/solar-pro4"
+        },
+        {
+          "id": "upstage/solar-mini4"
+        },
+        {
+          "id": "stealth/space-bunny-alpha"
         }
       ]
     }

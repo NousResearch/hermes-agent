@@ -437,22 +437,13 @@ def _print_lightpanda_engine_status() -> None:
 
 def _browser_use(cli, arg: str) -> None:
     """/browser use [off] — toggle Browser Use mode (browser.backend); resets the session."""
-    from hermes_cli.config import load_config, save_config
-    from tools.registry import invalidate_check_fn_cache
+    from tools.browser_use_cli import set_browser_use_mode
     if arg not in {"on", "off"}:
         return _say_block(
             _t("browser.use_usage"),
             f"   {_t('browser.use_on_hint')}", f"   {_t('browser.use_off_hint')}")
-    config = load_config()
-    if arg == "on":
-        config.setdefault("browser", {})["backend"] = "browser-use"
-        headline = _t("browser.use_enabled")
-    else:
-        from tools.browser_use_cli import BACKEND_DISABLED
-        config.setdefault("browser", {})["backend"] = BACKEND_DISABLED
-        headline = _t("browser.use_disabled")
-    save_config(config)
-    invalidate_check_fn_cache()
+    set_browser_use_mode(arg == "on")
+    headline = _t("browser.use_enabled" if arg == "on" else "browser.use_disabled")
     cli.new_session()
     _say_block(headline, f"   {_t('browser.session_reset')}")
 
@@ -865,6 +856,9 @@ class CLICommandsMixin:
         if restore_quick_snapshot(snap_id):
             _pr(f"  {_t('snapshot.restored', snapshot_id=snap_id)}",
                 f"  {_t('snapshot.restart_recommended')}")
+        elif snap_id in {s.get("id") for s in list_quick_snapshots(limit=10**6)}:
+            # False also means the auth.json merge was refused; don't call an existing snapshot missing.
+            print(f"  {_t('snapshot.restore_incomplete', snapshot_id=snap_id)}")
         else:
             print(f"  {_t('snapshot.not_found', snapshot_id=snap_id)}")
 
@@ -872,10 +866,11 @@ class CLICommandsMixin:
         from hermes_cli.backup import prune_quick_snapshots
         keep = 20
         if len(parts) > 2:
-            try:
-                keep = int(parts[2])
-            except ValueError:
+            # isdecimal() also rejects "-1": a negative keep would slice away the
+            # newest snapshots instead of the oldest.
+            if not parts[2].isdecimal():
                 return print(f"  {_t('snapshot.usage_prune')}")
+            keep = int(parts[2])
         deleted = prune_quick_snapshots(keep=keep)
         print(f"  {_t('snapshot.pruned', deleted=deleted, keep=keep)}")
 
@@ -1928,7 +1923,9 @@ class CLICommandsMixin:
         """Handle /init — generate or update AGENTS.md from a project scan performed by the
         live agent with its own read-only tools."""
         from hermes_cli.init_command import build_init_prompt_for_cwd
-        msg = build_init_prompt_for_cwd(extra=_command_arg(cmd))  # optional user emphasis
+        # session_key="" targets the single-session CLI's "default" cwd record, which tracks
+        # `cd` and workspace switches, so /init follows the directory the user works in.
+        msg = build_init_prompt_for_cwd(extra=_command_arg(cmd), session_key="")  # optional user emphasis
         print("\n" + _t("init.updating" if "UPDATE the existing AGENTS.md" in msg else "init.generating"))
         self._queue_prompt_turn(msg, "/init")
 
@@ -2563,7 +2560,10 @@ class CLICommandsMixin:
         from cli import CLI_CONFIG, _parse_reasoning_config
         from agent.reasoning_effort import effort_display_label
         raw = _command_arg(cmd)
-        _route = (getattr(self, "provider", None), getattr(self, "model", None))
+        from hermes_cli.codex_runtime_switch import get_current_runtime
+        # The live agent's api_mode, else the configured runtime: ``ultra`` is verbatim on the Codex app-server.
+        _route = (getattr(self, "provider", None), getattr(self, "model", None),
+                  getattr(getattr(self, "agent", None), "api_mode", None) or get_current_runtime(CLI_CONFIG))
         if not raw:  # show current state
             rc = self.reasoning_config
             level = (_gt("reasoning.level_default") if rc is None else _gt("reasoning.level_disabled")

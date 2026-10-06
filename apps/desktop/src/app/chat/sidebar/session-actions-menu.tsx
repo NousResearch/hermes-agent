@@ -118,6 +118,7 @@ export async function renameSessionPreferringRpc(
     (profile ?? '').trim() ||
     $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))?.profile ||
     undefined
+
   const runtimeId = resolveRuntimeIdForStored(storedSessionId)
   const gateway = activeGateway()
 
@@ -742,9 +743,8 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
 
     try {
       const targetProfile =
-        (profile ?? '').trim() ||
-        $sessions.get().find(s => sessionMatchesStoredId(s, sessionId))?.profile ||
-        undefined
+        (profile ?? '').trim() || $sessions.get().find(s => sessionMatchesStoredId(s, sessionId))?.profile || undefined
+
       const result = await renameSessionPreferringRpc(sessionId, next, targetProfile)
       const finalTitle = result.title || next || ''
       // One write, every list: patch the main store AND the project surfaces.

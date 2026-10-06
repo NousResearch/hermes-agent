@@ -48,10 +48,8 @@ export function createQuickEntrySubmitRelay(options: {
   onSuccess: () => void
   timeoutMs?: number
 }): QuickEntrySubmitRelay {
-  const pending = new Map<
-    string,
-    { resolve: (result: QuickEntrySubmitRelayResult) => void; timer: NodeJS.Timeout }
-  >()
+  const pending = new Map<string, { resolve: (result: QuickEntrySubmitRelayResult) => void; timer: NodeJS.Timeout }>()
+
   // Timed-out correlations. Delivery is UNCONFIRMED, so a late ack must
   // reconcile; a correlation is never resolved twice.
   const reconcilable = new Set<string>()
@@ -75,6 +73,7 @@ export function createQuickEntrySubmitRelay(options: {
       clearTimeout(request.timer)
       pending.delete(correlationId)
       request.resolve(result)
+
       if (result.ok === true) {
         options.onSuccess()
       }
@@ -95,6 +94,7 @@ export function createQuickEntrySubmitRelay(options: {
             retryable: false
           })
         }, options.timeoutMs ?? 15_000)
+
         pending.set(correlationId, { resolve, timer })
         forward(correlationId)
       })

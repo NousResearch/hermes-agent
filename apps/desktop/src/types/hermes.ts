@@ -323,6 +323,8 @@ export interface CustomEndpointValidationResponse {
 export interface MessagingEnvVarInfo {
   advanced: boolean
   description: string
+  /** Comma-separated allowlist rendered one entry per ID (absent on older backends). */
+  is_list?: boolean
   is_password: boolean
   is_set: boolean
   key: string
@@ -330,6 +332,8 @@ export interface MessagingEnvVarInfo {
   redacted_value: null | string
   required: boolean
   url: null | string
+  /** Plain saved value, sent only for allowlists (they are IDs, not secrets). */
+  value?: null | string
 }
 
 export interface MessagingHomeChannel {
@@ -583,6 +587,12 @@ export interface SessionInfo {
   actual_cost_usd?: null | number
   estimated_cost_usd?: null | number
   is_active: boolean
+  /** Cron run rows only (`source === 'cron'`): the scheduler still OWNS this
+   *  never-closed run — its in-flight execution is held by a live process.
+   *  Unlike {@link is_active} (a 300s activity window) it stays true through a
+   *  long tool call and is false for a zombie whose process died (#88443).
+   *  Undefined against older backends and for non-cron rows. */
+  scheduler_owned?: boolean
   last_active: number
   message_count: number
   model: null | string
@@ -596,6 +606,10 @@ export interface SessionInfo {
   _reset_from?: null | string
   /** Parent of a genuine /branch fork. The sidebar nests only these. */
   _branched_from?: null | string
+  /** True for an internal delegate_task child. Exact-id endpoints return these
+   *  rows for direct watch/resume, but ordinary session lists must not surface
+   *  them. Undefined against backends predating the projection. */
+  is_internal_child?: boolean
   /** Durable server-side pin flag (`sessions.pinned`). The list endpoints
    *  back-fill pinned conversations past their LIMIT, so a pinned row is
    *  always present in a page — which makes this authoritative for the
@@ -654,6 +668,7 @@ export type TimelineDisplayMetadata =
   | { display_text: string }
   | { reactions: MessageReaction[] }
   | { tool_result_metadata: ToolResultMetadata }
+  | { error?: string; error_surface?: unknown }
 
 /** One emoji reaction on a message. One per author, iOS-Tapback style. */
 export interface MessageReaction {
@@ -1081,6 +1096,10 @@ export interface AutomationBlueprint {
   fields: AutomationBlueprintField[]
   command: string
   appUrl: string
+  /** Where it comes from; absent on backends that predate plugin blueprints. */
+  source?: 'builtin' | 'plugin'
+  /** The registering plugin's name when source is 'plugin' (key is `<plugin>:<key>`). */
+  plugin?: null | string
 }
 
 export interface ProfileCreatePayload {
@@ -1570,10 +1589,21 @@ export interface BackendUpdateCheckResponse {
 
 export interface AuxiliaryTaskAssignment {
   base_url: string
+  /** Plugin tasks with `inherit_from` only: the route the task resolves to right now
+   *  (the base slot's while this slot is unpinned). Absent on older backends. */
+  effective?: { base_url: string; model: string; provider: string }
+  /** Set only on plugin-registered tasks (PluginContext.register_auxiliary_task):
+   *  the plugin's display name / description / owning plugin id. Built-in tasks
+   *  are labelled client-side via i18n. Absent on older backends. */
+  hint?: string
+  /** Plugin tasks only: the slot this one follows until it is pinned itself. */
+  inherit_from?: null | string
+  label?: string
   /** Backend verdict (`agent/model_metadata.py::is_local_endpoint`) that `base_url`
    *  is a loopback/LAN/mDNS endpoint. Absent on older backends. */
   local_endpoint?: boolean
   model: string
+  plugin?: string
   provider: string
   /** Task-level effort override (`auxiliary.<task>.reasoning_effort`); null/absent
    *  means the task inherits the main agent's effort. */

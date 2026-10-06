@@ -7,6 +7,7 @@ import type * as HermesModule from '@/hermes'
 import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $notifications } from '@/store/notifications'
+import { $cronRunReadOnlyVerdicts, recordCronRunVerdict } from '@/store/read-only-transcript'
 import { setSessionOwnerHint, setSessions } from '@/store/session'
 import { $sessionTiles, sessionTileDelegate } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
@@ -15,7 +16,8 @@ import { useSessionTileDelegate } from './use-session-tile-delegate'
 
 vi.mock('@/hermes', async importActual => ({
   ...(await importActual<typeof HermesModule>()),
-  getLatestSessionMessages: vi.fn(async () => ({ messages: [], session_id: '' }))
+  getLatestSessionMessages: vi.fn(async () => ({ messages: [], session_id: '' })),
+  getSession: vi.fn()
 }))
 vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
@@ -23,7 +25,7 @@ vi.mock('@/store/gateway', async importActual => ({
   requestGatewayForProfile: vi.fn()
 }))
 
-const { getLatestSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } = await import('@/hermes')
+const { getLatestSessionMessages, getSession, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } = await import('@/hermes')
 const { requestGatewayForAgent, requestGatewayForProfile } = await import('@/store/gateway')
 
 const row = (over: Partial<SessionInfo>): SessionInfo =>
@@ -46,22 +48,24 @@ const row = (over: Partial<SessionInfo>): SessionInfo =>
 
 function renderTile(
   requestGateway: ReturnType<typeof vi.fn>,
-  refs?: {
+  options: {
+    branchLoadedSession?: ReturnType<typeof vi.fn>
     runtimeIdByStoredSessionIdRef?: { current: Map<string, string> }
     sessionStateByRuntimeIdRef?: { current: Map<string, unknown> }
     updateSessionState?: ReturnType<typeof vi.fn>
-  }
+  } = {}
 ) {
   renderHook(() =>
     useSessionTileDelegate({
       archiveSession: vi.fn(async () => undefined),
+      branchLoadedSession: (options.branchLoadedSession ?? vi.fn(async () => false)) as never,
       branchStoredSession: vi.fn(async () => undefined),
       executeSlashCommand: vi.fn(async () => undefined) as never,
       removeSession: vi.fn(async () => undefined),
       requestGateway: requestGateway as never,
-      runtimeIdByStoredSessionIdRef: (refs?.runtimeIdByStoredSessionIdRef ?? { current: new Map() }) as never,
-      sessionStateByRuntimeIdRef: (refs?.sessionStateByRuntimeIdRef ?? { current: new Map() }) as never,
-      updateSessionState: (refs?.updateSessionState ?? vi.fn()) as never
+      runtimeIdByStoredSessionIdRef: (options.runtimeIdByStoredSessionIdRef ?? { current: new Map() }) as never,
+      sessionStateByRuntimeIdRef: (options.sessionStateByRuntimeIdRef ?? { current: new Map() }) as never,
+      updateSessionState: (options.updateSessionState ?? vi.fn()) as never
     })
   )
 }
@@ -575,6 +579,41 @@ describe('useSessionTileDelegate resumeTile', () => {
     const runtimeId = await sessionTileDelegate()!.resumeTile('stored-c')
     expect(runtimeId).toBe('runtime-fresh')
   })
+
+  it('branches a tile from the live message array that rendered the clicked action', async () => {
+    const messages = [
+      { id: 'q1', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question one' }] },
+      { id: 'a1', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer one' }] },
+      { id: 'q2', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question two' }] }
+    ]
+
+    const state = { ...createClientSessionState('stored-x', messages), cwd: '/repo' }
+    const branchLoadedSession = vi.fn(async () => true)
+
+    renderTile(vi.fn(), {
+      branchLoadedSession,
+      sessionStateByRuntimeIdRef: { current: new Map([['runtime-x', state]]) }
+    })
+
+    await expect(sessionTileDelegate()!.branchSessionAtMessage('stored-x', 'runtime-x', 'a1')).resolves.toBe(true)
+    expect(branchLoadedSession).toHaveBeenCalledWith({
+      busy: false,
+      cwd: '/repo',
+      messageId: 'a1',
+      messages,
+      runtimeId: 'runtime-x',
+      storedSessionId: 'stored-x'
+    })
+  })
+
+  it('does not branch when the clicked tile no longer has live state', async () => {
+    const branchLoadedSession = vi.fn(async () => true)
+
+    renderTile(vi.fn(), { branchLoadedSession })
+
+    await expect(sessionTileDelegate()!.branchSessionAtMessage('stored-x', 'runtime-gone', 'a1')).resolves.toBe(false)
+    expect(branchLoadedSession).not.toHaveBeenCalled()
+  })
 })
 
 describe('useSessionTileDelegate retireBusyClaim', () => {
@@ -657,7 +696,7 @@ describe('useSessionTileDelegate interruptSession', () => {
   })
 })
 
-describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
+describe('useSessionTileDelegate send from a tile behind the stored transcript', () => {
   const storedId = 'stored-tile-peer'
   const runtimeId = 'rt-tile-peer'
 
@@ -673,7 +712,7 @@ describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
     $notifications.set([])
   })
 
-  it('refuses submitToSession when a peer window advanced the transcript', async () => {
+  it('submits without a pre-send transcript read or a warning when a peer window advanced the chat (#65047)', async () => {
     setSessions([row({ id: storedId, profile: 'work-vps' })])
     vi.mocked(getLatestSessionMessages).mockResolvedValue({
       session_id: storedId,
@@ -685,56 +724,7 @@ describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
       ]
     })
 
-    const stale = createClientSessionState(storedId, [
-      { id: 'u1', role: 'user', parts: [textPart('a')] },
-      { id: 'a1', role: 'assistant', parts: [textPart('b')] }
-    ])
-
-    const sessionStateByRuntimeIdRef = { current: new Map([[runtimeId, stale]]) }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([[storedId, runtimeId]]) }
-    const seeds: unknown[] = []
-    const requestGateway = vi.fn(async () => ({}) as never)
-
-    renderTile(requestGateway, {
-      runtimeIdByStoredSessionIdRef,
-      sessionStateByRuntimeIdRef,
-      updateSessionState: vi.fn((id, updater, stored) => {
-        const prev = sessionStateByRuntimeIdRef.current.get(id) ?? createClientSessionState(stored)
-        const next = updater(prev)
-        sessionStateByRuntimeIdRef.current.set(id, next)
-        seeds.push(next)
-
-        return next
-      })
-    })
-
-    await sessionTileDelegate()!.submitToSession(runtimeId, 'stale tile send')
-
-    expect(getLatestSessionMessages).toHaveBeenCalledWith(storedId, 'work-vps')
-    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
-    expect(requestGatewayForProfile).not.toHaveBeenCalledWith(
-      'work-vps',
-      'prompt.submit',
-      expect.anything(),
-      expect.anything(),
-      expect.anything()
-    )
-    expect(seeds.at(-1)).toEqual(expect.objectContaining({ busy: false, messages: expect.any(Array) }))
-    expect((seeds.at(-1) as { messages: unknown[] }).messages).toHaveLength(4)
-    expect($notifications.get().some(note => note.kind === 'warning')).toBe(true)
-  })
-
-  it('allows submitToSession when the authoritative transcript is not ahead', async () => {
-    setSessions([row({ id: storedId, profile: 'work-vps' })])
-    vi.mocked(getLatestSessionMessages).mockResolvedValue({
-      session_id: storedId,
-      messages: [
-        { content: 'a', role: 'user', timestamp: 1 },
-        { content: 'b', role: 'assistant', timestamp: 2 }
-      ]
-    })
-
-    const fresh = createClientSessionState(storedId, [
+    const behind = createClientSessionState(storedId, [
       { id: 'u1', role: 'user', parts: [textPart('a')] },
       { id: 'a1', role: 'assistant', parts: [textPart('b')] }
     ])
@@ -743,18 +733,19 @@ describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
 
     renderTile(requestGateway, {
       runtimeIdByStoredSessionIdRef: { current: new Map([[storedId, runtimeId]]) },
-      sessionStateByRuntimeIdRef: { current: new Map([[runtimeId, fresh]]) }
+      sessionStateByRuntimeIdRef: { current: new Map([[runtimeId, behind]]) }
     })
 
-    await sessionTileDelegate()!.submitToSession(runtimeId, 'fresh tile send')
+    await sessionTileDelegate()!.submitToSession(runtimeId, 'tile send from behind')
 
     expect(requestGatewayForProfile).toHaveBeenCalledWith(
       'work-vps',
       'prompt.submit',
-      { session_id: runtimeId, text: 'fresh tile send' },
+      { session_id: runtimeId, text: 'tile send from behind' },
       1_800_000,
       undefined
     )
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
     expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
   })
 })
@@ -856,5 +847,77 @@ describe('useSessionTileDelegate submitToSession', () => {
       PROMPT_SUBMIT_REQUEST_TIMEOUT_MS,
       undefined
     )
+  })
+})
+
+describe('useSessionTileDelegate read-only cron run (#88443)', () => {
+  const storedId = 'cron_job-1_20260929_120000'
+  const runtimeId = 'rt-cron-run'
+
+  beforeEach(() => {
+    setSessions([])
+    $notifications.set([])
+    $cronRunReadOnlyVerdicts.set(new Map())
+    vi.mocked(requestGatewayForProfile).mockClear()
+    vi.mocked(getLatestSessionMessages).mockReset()
+    vi.mocked(getLatestSessionMessages).mockImplementation(async () => ({ messages: [], session_id: storedId }))
+    vi.mocked(getSession).mockReset()
+  })
+
+  afterEach(() => {
+    setSessions([])
+    $notifications.set([])
+    $cronRunReadOnlyVerdicts.set(new Map())
+  })
+
+  const submitIntoRun = async (text: string) => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    renderTile(requestGateway, {
+      runtimeIdByStoredSessionIdRef: { current: new Map([[storedId, runtimeId]]) },
+      sessionStateByRuntimeIdRef: { current: new Map([[runtimeId, createClientSessionState(storedId, [])]]) }
+    })
+
+    await sessionTileDelegate()!.submitToSession(runtimeId, text)
+
+    return requestGateway
+  }
+
+  const promptSubmitted = (text: string) =>
+    vi
+      .mocked(requestGatewayForProfile)
+      .mock.calls.some(call => call[1] === 'prompt.submit' && (call[2] as { text?: string })?.text === text)
+
+  // A tile holding a run the scheduler no longer owns (never closed) must
+  // honour the same gate as the primary chat's `submit` — including a tile
+  // restored after a restart, which no Cron surface ever evaluated.
+  it('refuses a send into a never-closed run the scheduler does not own', async () => {
+    setSessions([row({ id: storedId, profile: 'work-vps', source: 'cron' })])
+    vi.mocked(getSession).mockResolvedValue(
+      row({ ended_at: null, id: storedId, scheduler_owned: false, source: 'cron' })
+    )
+
+    const requestGateway = await submitIntoRun('into the dead cron session')
+
+    expect(getSession).toHaveBeenCalledWith(storedId, expect.anything())
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+    expect(promptSubmitted('into the dead cron session')).toBe(false)
+    expect($notifications.get().some(note => note.kind === 'info')).toBe(true)
+  })
+
+  // The review's blocker: a run marked read-only while it looked idle (a long
+  // tool call) must not stay locked once the authoritative row says the
+  // scheduler still owns it.
+  it('re-evaluates a stale read-only verdict and sends once the run is owned', async () => {
+    setSessions([row({ id: storedId, profile: 'work-vps', source: 'cron' })])
+    recordCronRunVerdict(storedId, true)
+    vi.mocked(getSession).mockResolvedValue(
+      row({ ended_at: null, id: storedId, scheduler_owned: true, source: 'cron' })
+    )
+
+    await submitIntoRun('still running, send it')
+
+    expect(promptSubmitted('still running, send it')).toBe(true)
+    expect($notifications.get().some(note => note.kind === 'info')).toBe(false)
   })
 })

@@ -22,11 +22,11 @@ import {
   setSessionOwnerHint,
   setSessions
 } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import type { SessionTile } from '@/store/session-states'
 import type * as SessionStatesModule from '@/store/session-states'
 import {
-  $focusedStoredSessionId,
   $focusedWorkspaceCwd,
   $sessionStates,
   $sessionTiles,
@@ -276,6 +276,7 @@ function runtimeBindingDelegate(
   return {
     archiveSession: vi.fn(),
     branchSession: vi.fn(),
+    branchSessionAtMessage: vi.fn(async () => true),
     deleteSession: vi.fn(),
     executeSlash: vi.fn(),
     interruptSession: vi.fn(),
@@ -1244,9 +1245,7 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
   it('computes $focusedWorkspaceCwd from the focused tile session state or sessions list', () => {
     $selectedStoredSessionId.set('primary-1')
     setSessions([{ cwd: '/repo-stacked', id: 'stacked' } as any])
-    $sessionTiles.set([
-      { storedSessionId: 'stacked', runtimeId: 'rt-stacked', workspaceMode: 'sessions' } as any
-    ])
+    $sessionTiles.set([{ storedSessionId: 'stacked', runtimeId: 'rt-stacked', workspaceMode: 'sessions' } as any])
     $sessionStates.set({
       'rt-stacked': { cwd: '/repo-stacked' } as any
     })
@@ -1269,11 +1268,7 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
     setSessions([{ cwd: '/repo-primary-project', id: 'primary-1' } as any])
     $sessionTiles.set([])
     $sessionStates.set({})
-    $layoutTree.set(
-      split('row', [
-        group(['workspace'], { active: 'workspace', id: 'grp-main' })
-      ])
-    )
+    $layoutTree.set(split('row', [group(['workspace'], { active: 'workspace', id: 'grp-main' })]))
     noteActiveTreeGroup('grp-main')
 
     expect($focusedStoredSessionId.get()).toBe('primary-1')
@@ -1355,6 +1350,7 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
     const { registry } = await import('@/contrib/registry')
     const session = await import('@/store/session')
     const states = await import('@/store/session-states')
+    const { $focusedStoredSessionId } = await import('@/store/session-focus')
 
     registry.register({
       area: 'panes',
@@ -1386,11 +1382,11 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
     tree.noteActiveTreeGroup('grp-main')
     expect(findGroupOfPane(tree.$layoutTree.get()!, tilePane('closed'))?.active).toBe(tilePane('closed'))
 
-    return { states, tree }
+    return { $focusedStoredSessionId, states, tree }
   }
 
   it('restores the live strip slot after reordering and retains the exact owner', async () => {
-    const { states, tree } = await setup()
+    const { $focusedStoredSessionId, states, tree } = await setup()
     states.openSessionTile('after', 'center', 'workspace')
     tree.moveTreePane(tilePane('closed'), { groupId: 'grp-main', pos: 'center', before: 'workspace' })
     const order = findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.panes
@@ -1400,17 +1396,17 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
     tree.noteActiveTreeGroup(null)
     states.reopenLastClosedTile()
     expect(findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.panes).toEqual(order)
-    expect(states.$focusedStoredSessionId.get()).toBe('closed')
+    expect($focusedStoredSessionId.get()).toBe('closed')
     expect(states.sessionTileOwnerRoute('closed')).toEqual(ownerRoute)
   })
 
   it('fronts a palette-opened tab from sidebar focus without replacing main', async () => {
-    const { states, tree } = await setup()
+    const { $focusedStoredSessionId, tree } = await setup()
     const { openSession } = await import('@/app/open-session')
     const navigate = vi.fn()
     tree.noteActiveTreeGroup('sidebar')
     openSession('palette-result', navigate, 'stack')
-    expect(states.$focusedStoredSessionId.get()).toBe('palette-result')
+    expect($focusedStoredSessionId.get()).toBe('palette-result')
     expect(findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.active).toBe(tilePane('palette-result'))
     expect(navigate).not.toHaveBeenCalled()
   })

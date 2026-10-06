@@ -66,22 +66,28 @@ class MessageDeduplicator:
         self._seen.update({k: v for k, v in other._seen.items() if v > cutoff and k not in self._seen})
 
 
-def inbound_dedup_caches(adapter: Any) -> dict[str, MessageDeduplicator]:
-    """The adapter's ``MessageDeduplicator`` attributes, by name (held by reference, so IDs the old
-    adapter admits after this call still reach its replacement)."""
-    return {name: v for name, v in vars(adapter).items() if isinstance(v, MessageDeduplicator)}
-
-
-def carry_inbound_dedup(caches: Optional[dict], adapter: Any) -> None:
-    """Seed a rebuilt adapter's dedup caches from the instance it replaces.
+def carry_inbound_dedup(predecessor: Any, adapter: Any) -> None:
+    """Seed a rebuilt adapter's dedup caches from the instance it replaces (call before connect).
 
     The runner's reconnect path builds a NEW adapter; without this a platform replaying a recent
     inbound ID after the reconnect (websocket resume, webhook retry, unacked poll batch) is
     admitted and answered a second time."""
-    for name, previous in (caches or {}).items():
+    if predecessor is None:
+        return
+    for name, previous in vars(predecessor).items():
         current = getattr(adapter, name, None)
-        if isinstance(current, MessageDeduplicator) and current is not previous:
+        if isinstance(previous, MessageDeduplicator) and isinstance(current, MessageDeduplicator) and current is not previous:
             current.absorb(previous)
+
+
+def hand_over_held_inbound(predecessor: Any, adapter: Any) -> None:
+    """Move inbound the retired instance is holding to its now-published replacement (#132829).
+
+    Runs at publish time, not before connect: a candidate that fails to connect never owns the
+    queue, and the predecessor keeps holding until a replacement is registered."""
+    adopt = getattr(adapter, "adopt_held_inbound", None)
+    if predecessor is not None and callable(adopt):
+        adopt(predecessor)
 
 
 # Worker-thread handoff used by the off-loop persist paths.  A module attribute
@@ -240,6 +246,26 @@ class ThreadParticipationTracker:
     def clear(self) -> None:
         with self._lock:
             self._threads.clear()
+
+
+async def send_chunks(chunks: list, send_one) -> Any:
+    """Send ``chunks`` in order through ``send_one(chunk) -> SendResult``, stopping at the first failure.
+
+    A failure after earlier chunks landed carries the ``partial_overflow`` contract that
+    ``BasePlatformAdapter._is_partial_delivery`` reads, so no caller (send retry, plain-text
+    fallback, cron standalone fallback) re-sends the head the recipient already has.
+    """
+    from gateway.platforms.base import SendResult
+    result = SendResult(success=False, error="nothing to send")
+    for delivered, chunk in enumerate(chunks):
+        result = await send_one(chunk)
+        if not result.success:
+            if delivered:
+                raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
+                raw.update(partial_overflow=True, delivered_chunks=delivered, total_chunks=len(chunks))
+                result.raw_response = raw
+            break
+    return result
 
 
 def redact_phone(phone: str) -> str:

@@ -136,7 +136,10 @@ describe('useQuickEntryBridge', () => {
       }
     } as unknown as typeof window.hermesDesktop
 
-    const { container, submit } = await renderBridge(vi.fn(async () => true), submitTextToNewSession)
+    const { container, submit } = await renderBridge(
+      vi.fn(async () => true),
+      submitTextToNewSession
+    )
 
     await act(async () => {
       await submit({ correlationId, target: 'new', text: 'Send to a new chat' })

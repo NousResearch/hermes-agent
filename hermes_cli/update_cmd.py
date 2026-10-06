@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
 
+# Old updaters load _no_prompt_git_kwargs from here after the checkout swap (frozen surface).
+from hermes_cli._subprocess_compat import no_prompt_git_kwargs as _no_prompt_git_kwargs
 from hermes_cli.config import get_hermes_home  # noqa: F401  (re-exported; patched via update_cmd)
 from hermes_cli import update_handoff as _update_handoff
 from hermes_cli.update_cmd_common import _best_effort
@@ -191,25 +193,6 @@ def _map_ssl_cert_file_for_git(git_cmd) -> None:
     if configured.returncode == 0 and configured.stdout.strip():
         return
     os.environ["GIT_SSL_CAINFO"] = bundle
-
-
-def _no_prompt_git_kwargs() -> dict:
-    """``subprocess.run`` kwargs for the updater's network git calls.
-
-    GitHub answers anonymous fetches with HTTP 401 during outages (and for
-    unreachable repos); git then prompts ``Username for 'https://github.com':``
-    on the inherited terminal and the update sits there forever. Disable the
-    prompt so the fetch fails fast into ``_classify_fetch_failure``. Only the
-    *prompt* is disabled — a configured credential helper / askpass still
-    runs, so a private-fork origin keeps authenticating non-interactively.
-    """
-    env = dict(os.environ)
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    env["GCM_INTERACTIVE"] = "Never"
-    # Every network git spawn (fetch/pull/shallow heal) runs under a console-less
-    # desktop backend on Windows; hide the per-spawn console (#117781).
-    from hermes_cli._subprocess_compat import windows_hide_flags
-    return {"stdin": subprocess.DEVNULL, "env": env, "creationflags": windows_hide_flags()}
 
 
 _UPDATE_CRITICAL_FILES = (
@@ -1541,6 +1524,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
         if swept:
             print("  (removed %d aborted-fetch pack temp file(s))" % len(swept))
+        # A partial clone must never write a commit-graph (#127711); keep its keys in place.
+        from hermes_cli.gitlock import settle_partial_clone_maintenance
+        settle_partial_clone_maintenance(_m().PROJECT_ROOT)
+        _check.report_pack_tidy(_m().PROJECT_ROOT)
         # Shallow installer checkouts collect one `.git/shallow` graft per past depth-1 fetch
         # (#105951); stale grafts break merge-base and push this run into the divergence path.
         from hermes_cli.gitlock import repair_broken_shallow_boundaries, prune_stale_shallow_grafts

@@ -255,6 +255,7 @@ export const arChrome = {
       reveal: 'إظهار في المجلد',
       copyPath: 'نسخ المسار',
       removeFromSidebar: 'إخفاء من الشريط الجانبي',
+      createdInPreviousContext: 'أُنشئ المشروع على الاتصال أو الملف الشخصي السابق. عُد إليه؛ لم يُكتب ملف IDEA.md.',
       createFailed: 'تعذّر إنشاء المشروع',
       deleteConfirm: 'هذا يزيل المشروع المحفوظ من Hermes. تبقى الملفات ومستودعات git وأشجار العمل دون تغيير.',
       startWork: 'شجرة عمل جديدة',
@@ -359,13 +360,33 @@ export const arChrome = {
       free: 'مجاني',
       cacheRead: 'قراءة من الذاكرة المؤقتة',
       priceTitle: (input: string, output: string, cache: string) =>
-        `الإدخال ${input}/Mtok · الإخراج ${output}/Mtok` + (cache ? ` · قراءة من الذاكرة المؤقتة ${cache}/Mtok` : '')
+        `الإدخال ${input}/Mtok · الإخراج ${output}/Mtok` + (cache ? ` · قراءة من الذاكرة المؤقتة ${cache}/Mtok` : ''),
+      limited: 'محدود',
+      limitedUntil: (time: string) => `محدود حتى ${time}`,
+      limitedTip: (provider: string, time: null | string) =>
+        time
+          ? `بلغ ${provider} حد الاستخدام. يُعاد ضبطه في ${time}، ويمكنك اختيار نموذج لما بعد ذلك من الآن.`
+          : `بلغ ${provider} حد الاستخدام. يمكنك اختيار نموذج لما بعد إعادة الضبط من الآن.`,
+      modelResets: (time: string) => `يعود ${time}`,
+      modelLimitedTip: (time: string) => `بلغ هذا النموذج حده الخاص ويعود في ${time}. النماذج الأخرى هنا ما زالت تعمل.`,
+      usageLeft: (percent: number, time: null | string) =>
+        time ? `متبقٍ ${percent}% · يُعاد الضبط ${time}` : `متبقٍ ${percent}%`,
+      poolAccounts: (count: number) => `عدد الحسابات: ${count}`,
+      poolLimited: (limited: number, total: number) => `${limited}/${total} من الحسابات محدودة`,
+      poolAccount: (number: number) => `الحساب ${number}`,
+      poolUnknown: 'بيانات الاستخدام غير متاحة',
+      poolUnavailable: 'سجّل الدخول مجددًا',
+      usageTip: (provider: string) => `${provider} يقترب من حد الاستخدام.`,
+      usageWindow: (label: string, percent: number, time: null | string) =>
+        time ? `${label}: متبقٍ ${percent}%، يُعاد الضبط ${time}` : `${label}: متبقٍ ${percent}%`
     },
     modelOptions: {
       noOptions: 'لا توجد خيارات لهذا النموذج',
       options: 'الخيارات',
       thinking: 'التفكير',
       fast: 'سريع',
+      ultrafast: 'فائق السرعة',
+      useStandardSpeed: 'استخدام السرعة القياسية',
       effort: 'الجهد',
       minimal: 'أدنى',
       low: 'منخفض',
@@ -410,7 +431,10 @@ export const arChrome = {
       showTerminal: 'إظهار الطرفية',
       hideTerminal: 'إخفاء الطرفية',
       gateway: 'البوابة',
-      gatewayReady: 'البوابة جاهزة',
+      backend: 'الخلفية',
+      messagingStopped: 'الرسائل متوقفة',
+      messagingDegraded: name => `${name} متوقف`,
+      gatewayReady: 'جاهز',
       gatewayNeedsSetup: 'البوابة تحتاج إعدادا',
       gatewayUnavailable: 'الاستدلال غير متاح',
       gatewayChecking: 'جار فحص البوابة',
@@ -555,5 +579,16 @@ export const arChrome = {
       copyPageUrl: 'نسخ رابط الصفحة',
       inspectElement: 'فحص العنصر'
     }
-  },
-} satisfies Pick<TranslationOverrides, 'externalOpenFailed' | 'fileMenu' | 'titlebar' | 'keybinds' | 'sidebar' | 'shell' | 'rightSidebar' | 'zones' | 'contextMenu'>
+  }
+} satisfies Pick<
+  TranslationOverrides,
+  | 'externalOpenFailed'
+  | 'fileMenu'
+  | 'titlebar'
+  | 'keybinds'
+  | 'sidebar'
+  | 'shell'
+  | 'rightSidebar'
+  | 'zones'
+  | 'contextMenu'
+>

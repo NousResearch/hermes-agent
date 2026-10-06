@@ -1,5 +1,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { deAuxTasks } from './de_aux_tasks'
+import { deModelMenu } from './de_model_menu'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
@@ -868,6 +870,14 @@ export const deOverrides = {
     resetConfirm: 'Alle Einstellungen auf Hermes-Standard zurücksetzen?',
     exportFailed: 'Export fehlgeschlagen',
     resetFailed: 'Zurücksetzen fehlgeschlagen',
+    pluginPages: {
+      blurb: 'Optionen installierter Plugins. Jedes Plugin hat eine eigene Seite, manche mit Unterseiten.',
+      empty: 'Noch kein Plugin hat Einstellungen.',
+      manage: 'Plugins verwalten',
+      agentSettings: 'Agent-Einstellungen',
+      pageCount: (n: number) => (n === 1 ? '1 Seite' : `${n} Seiten`),
+      missing: 'Dieses Plugin hat keine Einstellungsseite. Es ist eventuell deaktiviert oder deinstalliert.'
+    },
     nav: {
       providers: 'Anbieter',
       providerAccounts: 'Konten',
@@ -889,23 +899,15 @@ export const deOverrides = {
     },
     plugins: {
       title: 'Desktop-Plugins',
-      blurb: 'Gebündelt oder im Ordner „Desktop-Plugins“ abgelegt. Deaktivieren, um live zu entladen.',
-      count: n => `${n} installiert`,
       openFolder: 'Ordner für Desktop-Plugins öffnen',
       rescan: 'Erneut scannen',
       reveal: 'Im Dateimanager anzeigen',
-      enable: 'Aktivieren',
-      disable: 'Deaktivieren',
       failed: 'fehlgeschlagen',
-      empty: 'Noch keine Desktop-Plugins installiert.',
       kinds: {
         bundled: 'gebündelt',
         disk: 'auf Datenträger',
         runtime: 'Laufzeit'
       },
-      agentHalfMissing: 'Agent-Hälfte fehlt hier',
-      agentHalfMissingTip:
-        'Das ist die Desktop-Hälfte eines gebündelten Plugins, aber seine Agent-Hälfte ist auf dem aktuell verbundenen Backend/Profil nicht installiert. Installieren Sie sie unter Fähigkeiten → Plugins.',
       installModal: {
         installFromGit: 'Von Git installieren',
         reviewRepository: 'Repository prüfen',
@@ -1693,7 +1695,10 @@ export const deOverrides = {
         'Alle aktivierten Toolsets entfernen? Das deaktiviert Speicher, Terminal, Websuche, Delegation und die meisten anderen Tools, bis Sie sie wieder aktivieren.',
       keepAwakeTitle: 'Computer wach halten',
       keepAwakeDesc:
-        'Verhindert, dass dieser Rechner in den Ruhezustand wechselt, damit Läufe über Nacht oder länger weiterlaufen. Der Bildschirm kann trotzdem abdunkeln.',
+        'Verhindert, dass dieser Rechner in den Ruhezustand wechselt. „Während der Arbeit“ gilt nur, solange ein Durchlauf läuft: Läufe über Nacht laufen weiter, ohne den Laptop die ganze Woche wach zu halten. Der Bildschirm kann trotzdem abdunkeln.',
+      keepAwakeOff: 'Aus',
+      keepAwakeWhileWorking: 'Während der Arbeit',
+      keepAwakeAlways: 'Immer',
       disableF12Title: 'F12-DevTools deaktivieren',
       disableF12Desc:
         'Verhindert, dass F12 die Entwicklertools öffnet. Strg+Umschalt+I (bzw. Cmd+Opt+I auf dem Mac) funktioniert weiterhin.',
@@ -2012,6 +2017,8 @@ export const deOverrides = {
         'Nicht unterstützte Remote-Plattform. Der Desktop-SSH-Modus von Hermes unterstützt Linux-, macOS- und Windows-Remote-Hosts.',
       sshErrTimeout: 'SSH-Verbindung ist ausgelaufen. Der Host ist möglicherweise nicht erreichbar oder schläft.',
       sshErrUpdateRequired: 'Aktualisieren Sie Hermes auf dem Remote-Host, bevor Sie sich mit Desktop-SSH verbinden.',
+      sshErrInteractiveAuth:
+        'Tailscale SSH erfordert eine interaktive Browser-Prüfung. Führen Sie im Terminal `ssh <host> true` aus, schließen Sie die Prüfung ab und versuchen Sie es erneut – Hermes führt SSH nicht interaktiv aus.',
       sshErrUnknown: 'SSH-Verbindung fehlgeschlagen.'
     },
     keys: {
@@ -2101,6 +2108,8 @@ export const deOverrides = {
       defaultsLabel: 'Voreinstellungen',
       reasoning: 'Denken',
       reasoningOff: 'Aus',
+      speed: 'Geschwindigkeit',
+      speedStandard: 'Standard',
       defaultsFailed: 'Voreinstellungen des Modells konnten nicht gespeichert werden',
       loadFailed: 'Modelle konnten nicht geladen werden',
       restartRequired:
@@ -2117,6 +2126,8 @@ export const deOverrides = {
       change: 'Ändern',
       autoUseMain: 'automatisch · Hauptmodell verwenden',
       inheritMainEffort: 'übernehmen · Aufwand des Hauptmodells',
+      inheritsFrom: task => `erbt von ${task}`,
+      followTask: task => `${task} folgen`,
       providerDefault: '(Anbietervorgabe)',
       fallbackAdd: 'Fallback hinzufügen',
       fallbackEmpty: 'Keine Fallback-Modelle — es wird das Standardmodell verwendet, außer es schlägt fehl.',
@@ -2129,52 +2140,7 @@ export const deOverrides = {
       moaAggregator: 'Aggregator',
       moaAggregatorBilled: 'handelndes Modell · wird für den Lauf berechnet',
       moaReferenceHint: 'berät standardmäßig einmal pro Turn',
-      tasks: {
-        vision: {
-          label: 'Sehen',
-          hint: 'Bildanalyse'
-        },
-        compression: {
-          label: 'Kompression',
-          hint: 'Kontext-Verdichtung'
-        },
-        skills_hub: {
-          label: 'Skills-Hub',
-          hint: 'Skill-Suche'
-        },
-        approval: {
-          label: 'Freigabe',
-          hint: 'Intelligente Auto-Freigabe'
-        },
-        mcp: {
-          label: 'MCP',
-          hint: 'MCP-Tool-Routing'
-        },
-        title_generation: {
-          label: 'Titel-Generierung',
-          hint: 'Session-Titel'
-        },
-        review: {
-          label: 'Review',
-          hint: '/review Bewertungs-Subagent'
-        },
-        triage_specifier: {
-          label: 'Triage-Spezifizierer',
-          hint: 'Kanban-Spezifikation ausarbeiten'
-        },
-        kanban_decomposer: {
-          label: 'Kanban-Zerleger',
-          hint: 'Aufgaben zerlegen'
-        },
-        profile_describer: {
-          label: 'Profil-Beschreiber',
-          hint: 'Automatische Profilbeschreibungen'
-        },
-        curator: {
-          label: 'Kurator',
-          hint: 'Skill-Nutzungs-Review'
-        }
-      }
+      tasks: deAuxTasks
     },
     localModels: {
       connectionChanged: 'Verbindung für lokale Modelle geändert',
@@ -2861,6 +2827,7 @@ export const deOverrides = {
         no_interactive_session: 'keine interaktive Session',
         version_too_old: 'Version zu alt',
         missing_app: 'App fehlt',
+        unsupported_gpu: 'GPU nicht unterstützt',
         unknown: 'Status unbekannt'
       },
       catalogTitle: 'Plugin-Katalog',
@@ -2905,7 +2872,7 @@ export const deOverrides = {
         save: 'Einstellungen speichern',
         saved: (name: string) => `Einstellungen von ${name} gespeichert.`,
         saveFailed: (name: string) => `Einstellungen von ${name} konnten nicht gespeichert werden`,
-        optional: '(optional)',
+        required: 'Erforderlich',
         secretSet: '•••••••• (gesetzt)',
         secretStoredAs: (env: string) =>
           `Wird in der .env des Profils als ${env} gespeichert, nie in config.yaml; leer lassen, um den aktuellen Wert zu behalten.`
@@ -3305,6 +3272,9 @@ export const deOverrides = {
     replaceValue: 'Aktuellen Wert ersetzen',
     openDocs: 'Dokumentation öffnen',
     clearField: key => `${key} löschen`,
+    addListEntry: 'Weitere hinzufügen',
+    removeListEntry: 'Entfernen',
+    listEntryPlaceholder: 'ID eingeben',
     enableAria: name => `${name} aktivieren`,
     disableAria: name => `${name} deaktivieren`,
     platformEnabled: name => `${name} aktiviert`,
@@ -3386,7 +3356,7 @@ export const deOverrides = {
       },
       TELEGRAM_ALLOWED_USERS: {
         label: 'Erlaubte Telegram-Benutzer-IDs',
-        help: 'Empfohlen. Numerische IDs von @userinfobot, durch Kommas getrennt. Ohne diese können Ihnen beliebige Benutzer Direktnachrichten senden.'
+        help: 'Empfohlen. Numerische IDs von @userinfobot, eine pro Feld. Ohne diese können Ihnen beliebige Benutzer Direktnachrichten senden.'
       },
       TELEGRAM_PROXY: {
         label: 'Proxy-URL',
@@ -3398,7 +3368,7 @@ export const deOverrides = {
       },
       DISCORD_ALLOWED_USERS: {
         label: 'Erlaubte Discord-Benutzer-IDs',
-        help: 'Empfohlen. Discord-Benutzer-IDs, durch Kommas getrennt.'
+        help: 'Empfohlen. Discord-Benutzer-IDs, eine pro Feld.'
       },
       DISCORD_REPLY_TO_MODE: {
         label: 'Antwortstil',
@@ -3448,7 +3418,7 @@ export const deOverrides = {
       },
       SLACK_ALLOWED_USERS: {
         label: 'Erlaubte Slack-Benutzer-IDs',
-        help: 'Empfohlen. Slack-Benutzer-IDs, durch Kommas getrennt.'
+        help: 'Empfohlen. Slack-Benutzer-IDs, eine pro Feld.'
       },
       MATTERMOST_URL: {
         label: 'Server-URL',
@@ -3459,7 +3429,7 @@ export const deOverrides = {
       },
       MATTERMOST_ALLOWED_USERS: {
         label: 'Erlaubte Benutzer-IDs',
-        help: 'Empfohlen. Mattermost-Benutzer-IDs, durch Kommas getrennt.'
+        help: 'Empfohlen. Mattermost-Benutzer-IDs, eine pro Feld.'
       },
       MATRIX_HOMESERVER: {
         label: 'Homeserver-URL',
@@ -3474,7 +3444,7 @@ export const deOverrides = {
       },
       MATRIX_ALLOWED_USERS: {
         label: 'Erlaubte Matrix-Benutzer-IDs',
-        help: 'Empfohlen. Benutzer-IDs im Format @benutzer:server, durch Kommas getrennt.'
+        help: 'Empfohlen. Benutzer-IDs im Format @benutzer:server, eine pro Feld.'
       },
       SIGNAL_HTTP_URL: {
         label: 'Signal-Bridge-URL',
@@ -3487,7 +3457,7 @@ export const deOverrides = {
       },
       SIGNAL_ALLOWED_USERS: {
         label: 'Erlaubte Signal-Benutzer',
-        help: 'Empfohlen. Signal-Kennungen, durch Kommas getrennt.'
+        help: 'Empfohlen. Signal-Kennungen, eine pro Feld.'
       },
       WHATSAPP_ENABLED: {
         label: 'WhatsApp-Bridge aktivieren',
@@ -3498,7 +3468,7 @@ export const deOverrides = {
       },
       WHATSAPP_ALLOWED_USERS: {
         label: 'Erlaubte WhatsApp-Benutzer',
-        help: 'Empfohlen. Telefonnummern oder WhatsApp-IDs, durch Kommas getrennt.'
+        help: 'Empfohlen. Telefonnummern oder WhatsApp-IDs, eine pro Feld.'
       }
     },
     platformIntro: {}
@@ -4053,6 +4023,8 @@ export const deOverrides = {
       reveal: 'Im Ordner anzeigen',
       copyPath: 'Pfad kopieren',
       removeFromSidebar: 'Aus der Sidebar ausblenden',
+      createdInPreviousContext:
+        'Das Projekt wurde auf der vorherigen Verbindung oder im vorherigen Profil erstellt. Wechsle zurück; IDEA.md wurde nicht geschrieben.',
       createFailed: 'Projekt konnte nicht erstellt werden',
       staleBackend:
         'Aktualisieren Sie das Hermes-Backend, um Projekte zu erstellen – Ihr Backend ist älter als diese Desktop-App (Einstellungen → Updates → Backend).',
@@ -4292,7 +4264,7 @@ export const deOverrides = {
       '/init': 'AGENTS.md-Projektanweisungen aus einem Repo-Scan erzeugen oder aktualisieren',
       '/suggestions': 'Vorgeschlagene Automatisierungen prüfen (annehmen/verwerfen)',
       '/blueprint': 'Eine Automatisierung aus einer Blueprint-Vorlage einrichten',
-      '/browser': 'Browser-CDP-Verbindung verwalten [connect|disconnect|status] (nur lokales Gateway)',
+      '/browser': 'Browser des Agenten verwalten [connect|disconnect|status|use]',
       '/palette': 'Die unscharfe Befehlspalette öffnen (auch Strg+P)',
       '/usage': 'Token-Nutzung und Ratenlimits anzeigen; `reset` löst ein angespartes Codex-Limit-Reset ein',
       '/subscription': 'Ihren Nous-Tarif ansehen und im Browser ändern',
@@ -5038,27 +5010,14 @@ export const deOverrides = {
     windowControls: 'Fenster-Bedienelemente',
     paneControls: 'Panele-Bedienelemente',
     appControls: 'App-Bedienelemente',
-    modelMenu: {
-      search: 'Modelle durchsuchen',
-      noModels: 'Keine Modelle gefunden',
-      editModels: 'Modelle bearbeiten…',
-      followDefault: 'Standard aus den Einstellungen verwenden',
-      refreshModels: 'Modelle aktualisieren',
-      favorites: 'Favoriten',
-      addFavorite: 'Zu Favoriten hinzufügen',
-      removeFavorite: 'Aus Favoriten entfernen',
-      favoriteShortcut: '⇧ Klick',
-      fast: 'Schnell',
-      free: 'kostenlos',
-      cacheRead: 'Cache-Lesung',
-      priceTitle: (input: string, output: string, cache: string) =>
-        `Eingabe ${input}/Mtok · Ausgabe ${output}/Mtok` + (cache ? ` · Cache-Lesung ${cache}/Mtok` : '')
-    },
+    modelMenu: deModelMenu,
     modelOptions: {
       noOptions: 'Keine Optionen für dieses Modell',
       options: 'Optionen',
       thinking: 'Denken',
       fast: 'Schnell',
+      ultrafast: 'Ultrafast',
+      useStandardSpeed: 'Standardgeschwindigkeit verwenden',
       effort: 'Aufwand',
       minimal: 'Minimal',
       low: 'Niedrig',
@@ -5245,6 +5204,8 @@ export const deOverrides = {
   },
   preview: {
     tab: 'Vorschau',
+    pin: 'An Arbeitsbereich anheften',
+    unpin: 'Vom Arbeitsbereich lösen',
     closePane: 'Vorschau-Fenster schließen',
     loading: 'Vorschau wird geladen',
     unavailable: 'Vorschau nicht verfügbar',
@@ -5273,6 +5234,8 @@ export const deOverrides = {
     editing: 'Wird bearbeitet',
     unsavedChanges: 'Nicht gespeicherte Änderungen',
     saveFailed: message => `Speichern fehlgeschlagen: ${message}`,
+    saveScopeChanged:
+      'Wechsle zur ursprünglichen Verbindung und zum ursprünglichen Profil zurück, um diesen Entwurf zu speichern.',
     diskChangedTitle: 'Datei auf der Festplatte geändert',
     diskChangedBody:
       'Diese Datei wurde geändert, seit Sie sie geöffnet haben. Mit Ihrer Version überschreiben oder Ihre Änderungen verwerfen und neu laden?',
@@ -5464,6 +5427,7 @@ export const deOverrides = {
       branchNewChat: 'In neuem Chat abzweigen',
       react: 'Reagieren',
       dismissError: 'Fehler schließen',
+      responseStopped: 'Antwort gestoppt',
       errorLayers: {
         auth: 'Authentifizierungsfehler',
         billing: 'Keine Credits mehr',
@@ -5722,6 +5686,8 @@ export const deOverrides = {
       skipped: 'Übersprungen',
       noAnswer: 'Keine Antwort',
       confirmAndContinueLabel: 'Bestätigen und fortfahren',
+      singleSelectHint: 'Eines auswählen',
+      multiSelectHint: 'Alle Treffer auswählen',
       questionProgress: (answered, total) => `${answered} von ${total} beantwortet`,
       notDelivered:
         'Diese Frage hat die App nicht erreicht und kann hier nicht beantwortet werden. Klicken Sie auf Stopp, um den Durchgang zu beenden, und antworten Sie dann im Chat.'
@@ -6007,9 +5973,6 @@ export const deOverrides = {
     sessionUnavailable: 'Session nicht verfügbar',
     createSessionFailed: 'Neue Session konnte nicht erstellt werden',
     promptFailed: 'Prompt fehlgeschlagen',
-    staleSessionTitle: 'Chat veraltet',
-    staleSessionBody:
-      'Dieses Fenster war hinter einer anderen Ansicht desselben Chats. Die neuesten Nachrichten wurden geladen. Senden Sie erneut, wenn Sie noch möchten.',
     providerCredentialRequired:
       'Fügen Sie Anmeldedaten für einen Anbieter hinzu, bevor Sie Ihre erste Nachricht senden.',
     emptySlashCommand: 'leerer Slash-Befehl',

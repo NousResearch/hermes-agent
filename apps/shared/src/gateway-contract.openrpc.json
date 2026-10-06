@@ -38545,6 +38545,21 @@
         "title": "VerificationStatusResult",
         "type": "object"
       },
+      "VoicePartialPayload": {
+        "additionalProperties": false,
+        "description": "``methods_voice`` voice.record ``on_partial`` \u2014 live STT text so far (``stt.streaming``).",
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "VoicePartialPayload",
+        "type": "object"
+      },
       "VoiceRecordAction": {
         "enum": [
           "start",
@@ -40739,6 +40754,18 @@
           "schema": {
             "type": "object",
             "additionalProperties": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "voice.partial",
+      "summary": "Live STT text so far while the user is still speaking.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/VoicePartialPayload"
           }
         }
       ]

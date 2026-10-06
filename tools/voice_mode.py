@@ -523,12 +523,55 @@ def _new_recording_path(ext: str) -> str:
     return os.path.join(_TEMP_DIR, f"recording_{time.strftime('%Y%m%d_%H%M%S')}.{ext}")
 
 
+# WAV path -> live STT session that heard the same take (``stt.streaming``). transcribe_recording
+# pops it, so every consumer of a recorder's WAV gets the live transcript with no call-site change.
+_LIVE_SESSIONS: Dict[str, Any] = {}
+_LIVE_SESSIONS_MAX = 8
+_LIVE_LOCK = threading.Lock()
+
+
+def _park_live_session(wav_path: Optional[str], session: Any) -> None:
+    if session is None:
+        return
+    if not wav_path:
+        session.cancel()
+        return
+    session.end_audio()  # the provider flushes while the caller is still handling the WAV
+    with _LIVE_LOCK:
+        _LIVE_SESSIONS[wav_path] = session
+        while len(_LIVE_SESSIONS) > _LIVE_SESSIONS_MAX:
+            _LIVE_SESSIONS.pop(next(iter(_LIVE_SESSIONS))).cancel()
+
+
+def _take_live_session(wav_path: str) -> Any:
+    with _LIVE_LOCK:
+        return _LIVE_SESSIONS.pop(wav_path, None)
+
+
 class _RecorderBase:
     """Lock, recording flag, start time and live RMS shared by both recorder backends."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._recording, self._start_time, self._current_rms = False, 0.0, 0
+        # Live STT (``stt.streaming``): hosts set ``on_live_partial`` to render partial text.
+        self.on_live_partial: Optional[Callable[[str], None]] = None
+        self._live: Any = None
+
+    def _open_live_session(self, sample_rate: int) -> None:
+        from tools.transcription_streaming import open_streaming_session
+        try:
+            self._live = open_streaming_session(on_partial=self.on_live_partial)
+        except Exception:  # noqa: BLE001 — live STT is an accelerator; the WAV path still runs
+            logger.debug("Live STT session did not open", exc_info=True)
+            self._live = None
+        if self._live is not None:
+            self._live.set_input_rate(sample_rate)
+            logger.info("Live STT streaming (%s)", self._live.provider)
+
+    def _detach_live(self) -> Any:
+        live, self._live = self._live, None
+        return live
 
     @property
     def is_recording(self) -> bool:
@@ -723,6 +766,9 @@ class AudioRecorder(_RecorderBase):
 
     def _on_audio_block(self, np, indata) -> None:
         self._frames.append(indata.copy())
+        live = self._live
+        if live is not None:
+            live.push_audio(indata.tobytes())
         rms = int(_rms(np, indata))
         self._current_rms = rms
         self._peak_rms = max(self._peak_rms, rms)
@@ -802,6 +848,7 @@ class AudioRecorder(_RecorderBase):
             self._on_silence_stop = on_silence_stop
         self._sample_rate = _default_input_samplerate(sd)
         self._ensure_stream()
+        self._open_live_session(self._sample_rate)
         with self._lock:
             self._recording = True
         logger.info("Voice recording started (rate=%d, channels=%d)", self._sample_rate, CHANNELS)
@@ -829,6 +876,11 @@ class AudioRecorder(_RecorderBase):
 
     def stop(self) -> Optional[str]:
         """Stop recording (stream stays alive) and return the WAV path, or None if unusable."""
+        wav_path = self._stop_capture()
+        _park_live_session(wav_path, self._detach_live())
+        return wav_path
+
+    def _stop_capture(self) -> Optional[str]:
         with self._lock:
             if not self._recording:
                 return None
@@ -856,6 +908,9 @@ class AudioRecorder(_RecorderBase):
     def _discard(self) -> None:
         with self._lock:
             self._recording, self._frames, self._on_silence_stop, self._current_rms = False, [], None, 0
+        live = self._detach_live()
+        if live is not None:
+            live.cancel()
 
     def cancel(self) -> None:
         """Stop recording and discard all captured audio (stream stays alive)."""
@@ -883,13 +938,31 @@ def create_audio_recorder() -> AudioRecorder | TermuxAudioRecorder:
 
 
 # ── STT dispatch ──
+def _live_result(wav_path: str) -> Optional[Dict[str, Any]]:
+    """The live session's transcript for this take, or None to transcribe the WAV instead.
+
+    A failed or empty live result falls back to the file: an empty live transcript over a take the
+    recorder accepted as speech is more likely a dropped socket than silence."""
+    session = _take_live_session(wav_path)
+    if session is None:
+        return None
+    result = session.finalize()
+    if result.get("success") and (result.get("transcript") or "").strip():
+        return result
+    logger.info("Live STT gave no transcript (%s); transcribing the recording",
+                result.get("error") or "empty")
+    return None
+
+
 def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str, Any]:
     """Transcribe a WAV via ``transcribe_audio()``, filtering Whisper hallucinations;
     returns ``{success, transcript[, error]}``."""
     from tools.transcription_tools import transcribe_audio
 
-    # transcribe_audio fits oversized recordings under the provider's upload cap itself.
-    result = transcribe_audio(wav_path, model=model, source="voice_mode")
+    result = _live_result(wav_path)
+    if result is None:
+        # transcribe_audio fits oversized recordings under the provider's upload cap itself.
+        result = transcribe_audio(wav_path, model=model, source="voice_mode")
     # A configured stop phrase always survives: "bye"/"okay" overlap the
     # hallucination blocklist, and swallowing them would make "bye" fail to end the chat.
     if result.get("success"):

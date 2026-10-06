@@ -361,6 +361,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   ],
   // STT model lists mirror STT_MODEL_CATALOG in tools/transcription_common.py.
   'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'gpt-transcribe'],
+  'stt.openai.streaming_model': ['gpt-live-transcribe', 'gpt-transcribe', 'gpt-4o-transcribe', 'gpt-4o-mini-transcribe'],
   'stt.groq.model': ['whisper-large-v3-turbo', 'whisper-large-v3'],
   'stt.mistral.model': ['voxtral-mini-latest', 'voxtral-mini-2602'],
   'stt.xai.model': ['grok-voice-transcribe-2.0', 'grok-voice-transcribe-1.0'],
@@ -485,12 +486,14 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     enabled: 'Speech To Text',
     echoTranscripts: 'Echo Transcripts',
     provider: 'Speech-To-Text Provider',
+    streaming: 'Live Transcription',
     local: {
       model: 'Local Transcription Model',
       language: 'Transcription Language'
     },
     openai: {
-      model: 'OpenAI STT Model'
+      model: 'OpenAI STT Model',
+      streamingModel: 'OpenAI Live Transcription Model'
     },
     groq: {
       model: 'Groq STT Model'
@@ -686,6 +689,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   stt: {
     enabled: 'Enable local or provider-backed speech transcription.',
     echoTranscripts: 'Post the raw 🎙️ transcript of voice messages back to the chat.',
+    streaming: 'Show text while you speak (OpenAI, xAI, ElevenLabs). Falls back to the recording on any failure.',
     elevenlabs: {
       languageCode: 'Optional ISO-639-3 language code. Blank lets ElevenLabs auto-detect.'
     }
@@ -782,6 +786,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.enabled',
       'stt.echo_transcripts',
       'stt.provider',
+      'stt.streaming',
       'voice.auto_tts',
       'tts.edge.voice',
       'tts.openai.model',
@@ -811,6 +816,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.local.model',
       'stt.local.language',
       'stt.openai.model',
+      'stt.openai.streaming_model',
       'stt.groq.model',
       'stt.mistral.model',
       'stt.xai.model',

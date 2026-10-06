@@ -174,6 +174,27 @@ Say **"stop"** — and nothing else — to end the voice conversation hands-free
 
 **Typing** a bare stop phrase while a voice chat is active works the same way on every surface (CLI, TUI, desktop): the message ends the voice chat instead of being sent to the agent. Outside a voice chat, typed "stop" is an ordinary message.
 
+### Live transcription (streaming STT)
+
+Set `stt.streaming: true` to transcribe while you speak instead of after you stop. Partial text appears as you talk (in the classic CLI and TUI input placeholder, and in the Desktop dictation pill), and the transcript is ready when you stop speaking instead of after a full upload.
+
+```yaml
+stt:
+  provider: openai        # or xai, elevenlabs
+  streaming: true
+  openai:
+    streaming_model: gpt-live-transcribe   # the default; the one OpenAI model that streams text mid-utterance
+```
+
+| Provider | Live endpoint | Notes |
+|---|---|---|
+| `openai` | Realtime transcription session | Needs your own `OPENAI_API_KEY`; the Nous-managed audio gateway serves file transcription only |
+| `xai` | `wss://api.x.ai/v1/stt` | Needs `XAI_API_KEY` (the Grok OAuth login is not used for live STT) |
+| `elevenlabs` | Scribe v2 realtime | `ELEVENLABS_API_KEY` |
+| plugin | `TranscriptionProvider.streaming_capable` | Plugins opt in with `open_stream_session()` |
+
+Live transcription covers CLI and TUI voice mode and Desktop dictation. Local whisper, Groq, Mistral and DeepInfra keep using the file path. If a live session can't open, or fails mid-recording, Hermes transcribes the recording as usual, so turning this on never loses a take.
+
 ### Streaming TTS
 
 When TTS is enabled, the agent speaks its reply **sentence-by-sentence** as it generates text — you don't wait for the full response. This works with **every TTS provider**:

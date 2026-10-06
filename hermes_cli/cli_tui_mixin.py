@@ -796,10 +796,10 @@ class CLITuiMixin:
         return []
 
     def _tui_placeholder_text(self):
-        if self._voice_recording:
-            return t("cli.tui.placeholder_recording", shortcut=self._voice_record_key_label())
+        if self._voice_recording:  # live STT partial text (stt.streaming) replaces the hint
+            return self._voice_live_text or t("cli.tui.placeholder_recording", shortcut=self._voice_record_key_label())
         if self._voice_processing:
-            return t("cli.tui.placeholder_transcribing")
+            return self._voice_live_text or t("cli.tui.placeholder_transcribing")
         if self._sudo_state:
             if (self._sudo_state.get("vault_save") or {}).get("step") == "identifier":
                 return t("cli.tui.placeholder_vault_username")
@@ -1898,7 +1898,7 @@ class CLITuiMixin:
         self._voice_tts = False
         self._voice_recorder = None     # AudioRecorder (lazy init)
         self._voice_recording = False
-        self._voice_processing = False  # STT in progress
+        self._voice_processing, self._voice_live_text = False, ""  # STT in progress; live partial text
         self._voice_continuous = False  # auto-restart after the agent responds
         self._voice_tts_done = threading.Event()  # TTS playback finished
         self._voice_tts_done.set()  # initially "done" (no TTS pending)

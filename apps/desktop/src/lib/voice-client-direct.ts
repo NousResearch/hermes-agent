@@ -55,7 +55,8 @@ interface RelayConfig {
 }
 
 export interface VoiceClientConfig {
-  stt: DirectSttConfig | RelayConfig
+  /** `streaming`: the host serves live dictation over /api/audio/transcribe-stream (stt.streaming). */
+  stt: (DirectSttConfig | RelayConfig) & { streaming?: boolean }
   tts: DirectTtsConfig | RelayConfig
 }
 

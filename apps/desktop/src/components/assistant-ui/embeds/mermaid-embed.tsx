@@ -36,9 +36,10 @@ const renderCache = createMermaidRenderCache({
     const id = `mmd-${Math.random().toString(36).slice(2)}`
     const result = await mermaid.render(id, code)
 
-    // Mermaid's markup targets inline HTML, so a `<br/>` in a label reaches us
-    // as an open `<br>`; close void tags before the size pass and before the
-    // data: URI below, or the diagram decodes to a broken image (#133089).
+    // Mermaid's markup targets inline HTML, so a label's `<br/>` reaches us as
+    // an open `<br>` and a non-breaking space as `&nbsp;`; make it XML before
+    // the size pass and the data: URI below, or the diagram decodes to a
+    // broken image (#133089).
     return normalizeSvgSize(xmlWellFormedSvg(result.svg))
   },
   // Defer until the source fallback has had a frame to paint, so the mermaid

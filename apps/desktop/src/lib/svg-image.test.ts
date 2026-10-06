@@ -65,40 +65,27 @@ describe('normalizeSvgSize', () => {
   })
 })
 
-// A mermaid label keeps HTML void tags open: `<br/>` in the source comes back
-// from `mermaid.render()` as `<br>`. That makes the string malformed XML, so
-// every strict `image/svg+xml` parse below degrades — and Blink fails the same
-// way when the string is handed to an <img> as a data: URI, which is how a
-// diagram silently stops rendering (broken image, no error anywhere).
+// Real mermaid 11.16 label island for `A["a<br/>b&nbsp;c"]` (verified against
+// the installed package): the HTML serialisation leaves `<br>` open and writes
+// the non-breaking space as `&nbsp;`, and neither is well-formed XML. Every
+// strict `image/svg+xml` parse degrades on it — and Blink fails the same way
+// when the string is handed to an <img> as a data: URI, which is how a diagram
+// silently stops rendering (broken image, no error anywhere).
+const MERMAID_LABEL_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 260.34375 70"><g class="label"><foreignObject width="19.109375" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>a<br>b&nbsp;c</p></span></div></foreignObject></g></svg>`
+
 describe('xmlWellFormedSvg', () => {
-  const rootOf = (svg: string) => new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement.tagName
+  const parseXml = (svg: string) => new DOMParser().parseFromString(svg, 'image/svg+xml')
 
-  it('closes a void tag mermaid left open inside a label', () => {
-    expect(xmlWellFormedSvg('<text><tspan><br>x</tspan></text>')).toBe('<text><tspan><br/>x</tspan></text>')
+  it('makes a mermaid label with <br> and &nbsp; parse as an <svg> instead of a parsererror page', () => {
+    expect(parseXml(MERMAID_LABEL_SVG).documentElement.tagName).not.toBe('svg')
+    expect(parseXml(xmlWellFormedSvg(MERMAID_LABEL_SVG)).documentElement.tagName).toBe('svg')
+    expect(normalizeSvgSize(xmlWellFormedSvg(MERMAID_LABEL_SVG))).toContain('width="260.34375"')
   })
 
-  it('closes an open void tag that carries attributes', () => {
-    expect(xmlWellFormedSvg('<br class="label">')).toBe('<br class="label"/>')
-  })
+  it('keeps the label content: the line break and the non-breaking space', () => {
+    const label = parseXml(xmlWellFormedSvg(MERMAID_LABEL_SVG)).querySelector('p')
 
-  it('leaves already-closed void tags untouched', () => {
-    const svg = '<text><br/><hr /></text>'
-
-    expect(xmlWellFormedSvg(svg)).toBe(svg)
-  })
-
-  it('leaves non-void tags and void-tag lookalikes untouched', () => {
-    const svg = '<blockquote><break>x</break><bring>y</bring><image href="a"/></blockquote>'
-
-    expect(xmlWellFormedSvg(svg)).toBe(svg)
-  })
-
-  it('makes a label with <br> parse as an <svg> instead of a parsererror page', () => {
-    const svg =
-      '<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 260.34375 70"><text><tspan><br>x</tspan></text></svg>'
-
-    expect(rootOf(svg)).not.toBe('svg')
-    expect(rootOf(xmlWellFormedSvg(svg))).toBe('svg')
-    expect(normalizeSvgSize(xmlWellFormedSvg(svg))).toContain('width="260.34375"')
+    expect(label?.querySelectorAll('br')).toHaveLength(1)
+    expect(label?.textContent).toBe('ab c')
   })
 })

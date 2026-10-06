@@ -47,21 +47,23 @@ describe('MermaidRenderer', () => {
     expect(decodeURIComponent(images[0]?.src.split(',')[1] ?? '')).toContain('marker-end="url(#arrow)"')
   })
 
-  it('repairs a label mermaid returned with an open <br>, so the image stays loadable', async () => {
-    // `A[x<br/>y]` comes back from mermaid as `<br>` — malformed XML, so the
-    // data: URI fails to decode and the message shows a broken image with the
-    // alt text instead of the diagram (#133089).
+  it('repairs a label mermaid returned as HTML, so the image stays loadable', async () => {
+    // `A["a<br/>b&nbsp;c"]` comes back from mermaid with an open `<br>` and an
+    // `&nbsp;` entity — malformed XML, so the data: URI fails to decode and the
+    // message shows a broken image with the alt text instead of the diagram
+    // (#133089).
     renderMermaid.mockResolvedValueOnce({
-      svg: '<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 260.34375 70"><text><tspan><br>x</tspan></text></svg>'
+      svg: '<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 260.34375 70"><foreignObject width="19.109375" height="48"><div xmlns="http://www.w3.org/1999/xhtml"><span class="nodeLabel"><p>a<br>b&nbsp;c</p></span></div></foreignObject></svg>'
     })
 
-    const { container } = render(<MermaidRenderer code="graph TD; A[x<br/>y] --> B" />)
+    const { container } = render(<MermaidRenderer code='graph TD; A["a<br/>b&nbsp;c"]' />)
 
     await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(1))
 
     const src = decodeURIComponent([...container.querySelectorAll('img')][0]?.src.split(',')[1] ?? '')
+    const doc = new DOMParser().parseFromString(src, 'image/svg+xml')
 
-    expect(src).toContain('<br/>')
-    expect(new DOMParser().parseFromString(src, 'image/svg+xml').documentElement.tagName).toBe('svg')
+    expect(doc.documentElement.tagName).toBe('svg')
+    expect(doc.querySelector('p')?.textContent).toBe('ab c')
   })
 })

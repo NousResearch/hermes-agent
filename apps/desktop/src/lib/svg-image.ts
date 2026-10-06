@@ -16,22 +16,31 @@ function viewBoxSize(el: Element): { height: number; width: number } | null {
   return vbW > 0 && vbH > 0 ? { height: vbH, width: vbW } : null
 }
 
-// Mermaid emits SVG aimed at inline HTML: its labels keep HTML void tags
-// unclosed, so a `<br/>` in the source comes back from `mermaid.render()` as
-// `<br>`. Everything below parses that string as strict XML
-// (`image/svg+xml`) — and so does Blink when the same string reaches an <img>
-// as a data: URI — where an open void tag is a malformed document: the parse
-// yields a parsererror page rather than an <svg> and the diagram silently stops
-// rendering. Close void tags before anything XML-parses the markup. Already
-// closed tags, and names that merely start with a void tag (`<break>`), pass
-// through untouched.
-const VOID_TAGS = 'area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr'
-const VOID_TAG_RE = new RegExp(`<(${VOID_TAGS})((?:\\s[^<>]*?)?)(/?)>`, 'gi')
-
+// `mermaid.render()` returns the HTML serialisation of the diagram, aimed at
+// inline HTML. Its label islands (XHTML inside <foreignObject>) therefore carry
+// HTML-only syntax: a `<br/>` in the source comes back as an open `<br>`, and a
+// non-breaking space (`&nbsp;`, mermaid's `#nbsp;`, or a literal U+00A0) comes
+// back as the `&nbsp;` entity, which XML does not define. Everything below
+// parses that string as strict XML (`image/svg+xml`) — and so does Blink when
+// the same string reaches an <img> as a data: URI — so either one turns the
+// document into a parsererror page and the diagram silently stops rendering.
+// Parse it with the HTML parser it was serialised for and re-serialise as XML,
+// which fixes every such construct at once rather than one tag at a time.
 export function xmlWellFormedSvg(svg: string): string {
-  return svg.replace(VOID_TAG_RE, (match, tag: string, attrs: string, slash: string) =>
-    slash ? match : `<${tag}${attrs}/>`
-  )
+  const el = new DOMParser().parseFromString(svg, 'text/html').querySelector('svg')
+
+  if (!el) {
+    return svg
+  }
+
+  // The HTML parser keeps a label's `xmlns="…/xhtml"` as a plain attribute. The
+  // serializer declares that namespace itself, and a spec-conformant one (jsdom)
+  // also writes the plain attribute — a duplicate `xmlns`, malformed again.
+  for (const node of el.querySelectorAll('[xmlns]')) {
+    node.removeAttribute('xmlns')
+  }
+
+  return new XMLSerializer().serializeToString(el)
 }
 
 export function normalizeSvgSize(svg: string): string {

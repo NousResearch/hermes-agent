@@ -293,13 +293,20 @@ def _fmt_wait(reset_at: Optional[float], now: float) -> str:
 
 
 def build_message(rows: list[RouteRow], *, profile: str = "default", now: Optional[float] = None,
-                  created_at: Optional[float] = None, expires_at: Optional[float] = None) -> str:
+                  created_at: Optional[float] = None, expires_at: Optional[float] = None,
+                  relative: bool = True) -> str:
     """The operator notice: a header, one line per problem route, scope and remedy.
 
     Timing is PER ROUTE (each row carries its own ``since`` and reset), never one card-wide
     "Started / Expected reset" pair: routes wall at different moments and clear at different
     moments, so a single pair misreports every route but one.  ``created_at``/``expires_at`` are
     still accepted because the marker and its rebuild paths pass them, but they no longer render.
+
+    ``relative=False`` renders a STABLE, presentation-free form: a cooling route's "available
+    again in ~29m" countdown is replaced by its absolute instant, so the text is a pure function
+    of the routes.  ``record_provider_wall`` compares that form when deciding whether an incident
+    is new, because a text that moves with the clock would make every re-record look like a
+    different incident and re-page the operator once a minute.
     """
     now = time.time() if now is None else now
     down = [row for row in rows if row.status in {WALLED, COOLING}]
@@ -311,14 +318,14 @@ def build_message(rows: list[RouteRow], *, profile: str = "default", now: Option
     )
     lines = [header, ""]
     for row in rows:
-        lines.append(_row_line(row, now))
+        lines.append(_row_line(row, now, relative=relative))
     cmd = "hermes model" if profile in {"", "default"} else f"hermes -p {profile} model"
     lines.append(_t("provider_wall.scope", profile=profile or "default"))
     lines.append(_t("provider_wall.remedy", cmd=cmd))
     return "\n".join(lines)
 
 
-def _row_line(row: RouteRow, now: float) -> str:
+def _row_line(row: RouteRow, now: float, *, relative: bool = True) -> str:
     """One route's line, carrying that route's own start and clear time."""
     parts: list[str] = []
     if row.since and row.status in {WALLED, COOLING, UNKNOWN}:
@@ -328,7 +335,10 @@ def _row_line(row: RouteRow, now: float) -> str:
     if row.status == WALLED and row.reset_at:
         parts.append(_t("provider_wall.until_reset", when=_fmt_reset(row.reset_at)))
     elif row.status == COOLING and row.reset_at:
-        parts.append(_t("provider_wall.until_cooling", wait=_fmt_wait(row.reset_at, now)))
+        if relative:
+            parts.append(_t("provider_wall.until_cooling", wait=_fmt_wait(row.reset_at, now)))
+        else:
+            parts.append(_t("provider_wall.until_cooling_stable", when=_fmt_reset(row.reset_at)))
     return _t(
         f"provider_wall.row_{row.status}",
         emoji=row.emoji, provider=row.provider, model=row.model, detail=row.detail,
@@ -437,6 +447,13 @@ def clear_route(provider: str, model: str, home: Optional[Path] = None) -> None:
             created_at=payload.get("created_at"),
             expires_at=payload.get("expires_at"),
         )
+        payload["canonical_text"] = build_message(
+            walled_rows,
+            profile=payload.get("profile", "default"),
+            created_at=payload.get("created_at"),
+            expires_at=payload.get("expires_at"),
+            relative=False,
+        )
         payload["updated_at"] = time.time()
         _write(payload, home)
         logger.info(
@@ -513,11 +530,19 @@ def record_provider_wall(
         created_ts = _as_float((previous or {}).get("created_at")) or now
         expires_ts = max(resets) if resets else created_ts + MARKER_TTL_S
         text = build_message(rows, profile=profile, created_at=created_ts, expires_at=expires_ts)
+        # Identity, not presentation: the delivered text carries a cooling countdown that moves
+        # with the clock, so comparing it made every re-record of a cooling incident look new.
+        canonical = build_message(rows, profile=profile, created_at=created_ts, expires_at=expires_ts,
+                                  relative=False)
         delivered: list = []
         delivered_at: Optional[float] = None
         merge = False
         if previous:
-            if previous.get("signature") == sig and previous.get("text") == text:
+            recorded = previous.get("canonical_text")
+            if recorded is None:
+                # Markers written before canonical_text existed only have the delivered text.
+                recorded = previous.get("text")
+            if previous.get("signature") == sig and recorded == canonical:
                 return None  # the same wall, already recorded — nothing new to say
             if (_as_float(previous.get("delivered_at")) or 0.0) > now - QUIET_WINDOW_S:
                 # Merged incident: keep the delivered ledger (one outage pages once) but refresh the
@@ -530,6 +555,7 @@ def record_provider_wall(
             "signature": sig,
             "profile": profile,
             "text": text,
+            "canonical_text": canonical,
             "routes": [
                 {
                     "provider": row.provider,

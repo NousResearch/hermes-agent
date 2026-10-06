@@ -998,6 +998,7 @@ provider_wall:
   since: " · since {when}"
   until_reset: " · resets {when}"
   until_cooling: " · available again in ~{wait}"
+  until_cooling_stable: " · available again ~{when}"
   scope: "Scope: profile {profile}."
   remedy: "Remedy: top up the walled account, or run `{cmd}` to pick a usable route."
 

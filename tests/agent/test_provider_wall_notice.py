@@ -249,6 +249,36 @@ def test_a_route_keeps_its_own_start_when_a_sibling_walls_later(isolated_marker,
     assert routes["deepseek"]["since"] > started
 
 
+def test_the_dedupe_text_ignores_the_cooling_countdown():
+    now = time.time()
+    row = wall.RouteRow(provider="custom", model="deepseek-v4-flash", status=wall.COOLING,
+                        detail="rate limited", reset_at=now + 1800, since=now - 60)
+
+    fresh = wall.build_message([row], profile="default", now=now)
+    later = wall.build_message([row], profile="default", now=now + 600)
+
+    assert fresh != later  # the operator-facing countdown does move with the clock
+    assert wall.build_message([row], profile="default", now=now, relative=False) == \
+        wall.build_message([row], profile="default", now=now + 600, relative=False)
+
+
+def test_a_cooling_incident_re_recorded_later_is_still_the_same_incident(isolated_marker, monkeypatch):
+    _patch_pool(monkeypatch, {"custom": _Pool([_Entry(
+        last_status="exhausted", last_error_code=429, last_error_message="Requests are too frequent",
+        last_error_reset_at=time.time() + 1800,
+    )])})
+    agent = _Agent()
+    clock = [time.time()]
+    monkeypatch.setattr(wall.time, "time", lambda: clock[0])
+
+    first = wall.record_provider_wall(agent)
+    clock[0] += 600  # ten minutes pass: the countdown has moved, the incident has not
+    second = wall.record_provider_wall(agent)
+
+    assert first and second is None
+    assert json.loads(isolated_marker.read_text())["canonical_text"]
+
+
 def test_record_never_raises_when_the_pool_layer_is_broken(isolated_marker, monkeypatch):
     def _boom(provider):
         raise RuntimeError("no pool store")

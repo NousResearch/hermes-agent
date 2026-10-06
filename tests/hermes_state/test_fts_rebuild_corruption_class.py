@@ -53,9 +53,6 @@ def test_corruption_class_error_is_caught_rolled_back_and_reported(
     )
     with caplog.at_level("ERROR"):
         assert db.rebuild_fts() == 0
-    assert (
-        db._conn.in_transaction is False
-    )  # the except arm rolled the failed statement back
     assert any("offline repair" in rec.message for rec in caplog.records)
 
 

@@ -4031,13 +4031,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             from cron.scheduler_provider import provider_supports_split_fire, resolve_cron_scheduler
             provider = resolve_cron_scheduler()
             loop = asyncio.get_running_loop()
-            # Live adapters (parity with the built-in ticker): E2EE / relay-fronted platforms
-            # have no native credential, so without them delivery fails.
             runner = self.gateway_runner or request.app.get("gateway_runner")
             if runner is None:
                 with suppress(Exception):
                     from gateway.run import _gateway_runner_ref
                     runner = _gateway_runner_ref()
+            from gateway.platforms.api_server_fire_startup import refuse_until_started  # a mid-boot fire waits for adapters
+            if (refusal := await refuse_until_started(runner, job_id)) is not None: return refusal
             adapters = getattr(runner, "adapters", None) or None
 
             def _detach_fire(fire_fn, *fire_args) -> "web.Response":

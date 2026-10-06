@@ -7548,6 +7548,7 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
                     "truncate_before_user_ordinal": 0,
                     "confirm_truncate": True,
                     "confirm_empty_truncate": True,
+                    "confirm_deep_truncate": True,  # drops both user turns (#133716)
                 },
             }
         )

@@ -969,7 +969,8 @@ export function usePromptActions({
       interruptFirst: boolean,
       truncateRowId?: number,
       sourceText?: string,
-      rebindRowIds?: readonly number[]
+      rebindRowIds?: readonly number[],
+      confirmDeepTruncate?: boolean
     ) =>
       runRewindSubmit(
         requestGateway,
@@ -987,7 +988,8 @@ export function usePromptActions({
         },
         truncateRowId,
         sourceText,
-        rebindRowIds
+        rebindRowIds,
+        confirmDeepTruncate
       ),
     [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
   )
@@ -1026,7 +1028,8 @@ export function usePromptActions({
           false,
           plan.truncateRowId,
           plan.sourceText,
-          durableRowIdsForRebind(messages)
+          durableRowIdsForRebind(messages),
+          plan.confirmDeepTruncate ?? false
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)

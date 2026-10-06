@@ -164,12 +164,15 @@ export function isSyntheticRendererId(messageId: string | undefined): boolean {
  * a submit that says so, so a leftover ordinal riding along on an ordinary send
  * cannot delete the transcript. Ordinal 0 additionally truncates to an empty
  * transcript (restore/regenerate the first user turn), which the gateway gates
- * behind `confirm_empty_truncate` on top of that.
+ * behind `confirm_empty_truncate` on top of that. A cut that archives later
+ * user turns (restore/edit an older turn, confirmed deep regenerate) also
+ * needs `confirm_deep_truncate` (#133716).
  */
 export function truncateSubmitParams(
   truncateOrdinal: number | undefined,
   truncateMessageId?: string,
-  truncateRowId?: number
+  truncateRowId?: number,
+  confirmDeepTruncate = false
 ): Record<string, unknown> {
   const hasOrdinal = typeof truncateOrdinal === 'number' && Number.isInteger(truncateOrdinal) && truncateOrdinal >= 0
   const hasRowId = typeof truncateRowId === 'number' && Number.isInteger(truncateRowId)
@@ -186,7 +189,8 @@ export function truncateSubmitParams(
     ...(hasOrdinal ? { truncate_before_user_ordinal: truncateOrdinal } : {}),
     ...(hasMessageId ? { truncate_before_message_id: truncateMessageId } : {}),
     ...(hasRowId ? { truncate_before_row_id: truncateRowId } : {}),
-    ...(truncateOrdinal === 0 ? { confirm_empty_truncate: true } : {})
+    ...(truncateOrdinal === 0 ? { confirm_empty_truncate: true } : {}),
+    ...(confirmDeepTruncate ? { confirm_deep_truncate: true } : {})
   }
 }
 
@@ -275,7 +279,10 @@ export async function runRewindSubmit(
   recovery?: { storedSessionId?: null | string; onSessionRecovered?: (sessionId: string) => void },
   truncateRowId?: number,
   sourceText?: string,
-  rebindRowIds?: readonly number[]
+  rebindRowIds?: readonly number[],
+  // Restore/edit name their target explicitly; only regenerate (implicit
+  // target) passes false unless the user confirmed a deep cut (#133716).
+  confirmDeepTruncate = true
 ): Promise<SurvivorUserRowIds | undefined> {
   // Recovery may rebind the live id mid-flight; interrupt/submit must both
   // follow it rather than pinning the dead one.
@@ -340,7 +347,7 @@ export async function runRewindSubmit(
       {
         session_id: targetId,
         text,
-        ...truncateSubmitParams(resolvedOrdinal, resolvedMessageId, resolvedRowId),
+        ...truncateSubmitParams(resolvedOrdinal, resolvedMessageId, resolvedRowId, confirmDeepTruncate),
         // A first-turn rewind resolves to an empty transcript, which the
         // gateway additionally gates behind confirm_empty_truncate. In
         // resolved-row-id mode the tail-local ordinal was dropped (see
@@ -484,6 +491,8 @@ export function appendMidTurnUserMessage<
 
 export interface ReloadPlan {
   branchGroupId: string
+  /** Set only after the user confirmed a reload that archives later user turns. */
+  confirmDeepTruncate?: boolean
   /** Original persisted text of the turn — the durable-row-id content key. */
   sourceText: string
   text: string
@@ -566,7 +575,7 @@ export async function planConfirmedReload(
     return plan
   }
 
-  return (await confirmDeep()) ? plan : null
+  return (await confirmDeep()) ? { ...plan, confirmDeepTruncate: true } : null
 }
 
 /** Optimistic reload state: keep the user turn, hide the branch's assistants. */

@@ -26648,6 +26648,18 @@
             "default": null,
             "title": "Confirm Empty Truncate"
           },
+          "confirm_deep_truncate": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Confirm Deep Truncate"
+          },
           "rebind_survivor_row_ids": {
             "anyOf": [
               {

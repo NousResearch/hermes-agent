@@ -43,6 +43,7 @@ class PromptSubmitParams(SessionParams):
     truncate_before_message_id: str | None = None
     confirm_truncate: bool | None = None
     confirm_empty_truncate: bool | None = None
+    confirm_deep_truncate: bool | None = None  # required when the cut archives >1 user turn
     rebind_survivor_row_ids: list[int] | None = None
     # In-process only: injected by the hosted-room / bot-relay handlers, never accepted from a
     # client (a client dict for ``_turn_author`` answers 4124). Excluded from the rendered wire.

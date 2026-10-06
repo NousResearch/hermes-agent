@@ -17,6 +17,7 @@ import errno
 import json
 import logging
 import sqlite3
+from datetime import timedelta
 
 import pytest
 from datetime import datetime, timezone
@@ -167,3 +168,54 @@ def test_dispatch_failure_after_receipt_never_leaves_it_claimed(
     if site == "note_cron_execution":  # the receipt exists, so creation did not fail
         assert "dispatch preparation failed" in caplog.text
 
+
+def test_unwritable_store_degrades_once_throttles_and_catches_up_once(cron_store, monkeypatch):
+    """One degraded state per outage: entered once, advance/claim skipped between minute-throttled
+    re-probes, cleared by the first save that lands; then the recurring job and the one-shot that
+    stayed due across 5 ticks each fire ONCE, and the one-shot keeps a single ``failed`` row."""
+    from cron import executions, scheduler
+
+    clock = {"now": FIXED_NOW, "mono": 0.0}
+    monkeypatch.setattr(cronjobs, "_hermes_now", lambda: clock["now"])
+    monkeypatch.setattr(store_health.time, "time", lambda: clock["now"].timestamp())
+    monkeypatch.setattr(store_health.time, "monotonic", lambda: clock["mono"])
+    once = dict(_due_job("once"), schedule={"kind": "once", "run_at": FIXED_NOW.isoformat(), "display": "once"},
+                repeat={"times": 1, "completed": 0})
+    save_jobs([_due_job(), _half_paused_job(), once])
+    ran, events, probes, writes = [], [], [], []
+    monkeypatch.setattr(executions, "EXECUTIONS_FILE", cron_store / "cron" / "executions.db")
+    monkeypatch.setattr(scheduler, "run_one_job", lambda job, **k: ran.append(job["id"]) or True)
+    monkeypatch.setattr(scheduler, "_should_yield_tick_to_fresh_gateway", lambda: None)
+    monkeypatch.setattr(scheduler, "_sweep_mcp_orphans", lambda: None)
+    store_health.set_transition_listener(lambda event, record: events.append((event, record.skipped_runs)))
+    real_stage = cronjobs._stage_jobs_payload
+
+    def stage(*a, **k):
+        writes.append(1)
+        return _enospc() if outage else real_stage(*a, **k)
+
+    def probe(_cron_dir):
+        probes.append(1)
+        return OSError(errno.ENOSPC, "No space left on device") if outage else None
+
+    monkeypatch.setattr(cronjobs, "_stage_jobs_payload", stage)
+    monkeypatch.setattr(store_health, "probe_store", probe)
+    outage = True
+    per_tick = []
+    for minute, mono in enumerate((0, 30, 60, 90, 120)):  # 5 due ticks, re-probe at most every 60s
+        clock["now"], clock["mono"] = FIXED_NOW + timedelta(minutes=minute), float(mono)
+        before = len(writes)
+        assert scheduler.tick(verbose=False, sync=True) == 0
+        per_tick.append(len(writes) - before)
+    assert ran == [] and len(probes) == 2
+    assert per_tick[0] == 3 and per_tick[1:] == [1, 1, 1, 1]  # only the scan's save after entry
+    assert events == [("unwritable", 0)]
+    # Distinct (job, due instant): the unpersisted fast-forward keeps both on one instant each.
+    assert store_health.degraded_record(cron_store / "cron").skipped_runs == 2
+    outage = False
+    clock["now"], clock["mono"] = FIXED_NOW + timedelta(minutes=5), 180.0
+    assert scheduler.tick(verbose=False, sync=True) == 2
+    assert sorted(ran) == ["due-job", "once"] and events[-1][0] == "recovered" and len(events) == 2
+    assert store_health.degraded_record(cron_store / "cron") is None
+    once_rows = executions.list_executions(job_id="once")
+    assert [r["status"] for r in once_rows].count("failed") == 1

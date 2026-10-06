@@ -3161,6 +3161,11 @@ def _retire_expired_oneshot(d: _DueJob) -> bool:
     still in flight elsewhere — skip but keep the record so its mark_job_run can land."""
     if _elapsed_seconds(d.scan.now, d.next_run_dt) <= ONESHOT_GRACE_SECONDS:
         return False
+    # Due before/while the store went unwritable: it was skipped, not missed; fire it once on recovery.
+    from cron.store_health import degraded_since
+    since = degraded_since(_current_cron_store().cron_dir)
+    if since is not None and since <= d.next_run_dt.timestamp() + ONESHOT_GRACE_SECONDS:
+        return False
     if not (d.job.get("run_claim") or d.job.get("fire_claim")):
         _write_missed_oneshot_diagnostic(d.job, d.next_run)
         d.scan.retire(d.job["id"])

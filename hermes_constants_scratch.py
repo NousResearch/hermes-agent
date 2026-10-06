@@ -26,6 +26,8 @@ _GIT_FILE_MAX_DEPTH = 4
 # fixed rotation as tool_calls.log.
 _PRUNE_LOG_MAX_BYTES = 5 * 1024 * 1024
 _PRUNE_LOG_BACKUPS = 3
+# Paths and process names go in with %r: a control character (a newline in a legal POSIX name)
+# is written escaped, so it cannot split a record or forge one.
 
 
 class _PruneLogHandler(RotatingFileHandler):
@@ -181,7 +183,7 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logg
             proc.terminate()
         except (psutil.Error, OSError):
             continue
-        audit.info("scratch prune: sent TERM pid=%d name=%s cwd=%s", proc.pid, name, cwd_path)
+        audit.info("scratch prune: sent TERM pid=%d name=%r cwd=%r", proc.pid, name, cwd_path)
     _, alive = psutil.wait_procs([proc for proc, _ in victims], timeout=_REAP_GRACE_SECONDS)
     for proc in alive:
         try:
@@ -282,13 +284,13 @@ def _prune_idle_entries(
             else:
                 entry.unlink()
         except OSError as exc:
-            audit.info("scratch prune: could not remove %s: %s", entry, exc)
+            audit.info("scratch prune: could not remove %r: %s", os.fspath(entry), exc)
             continue
         # rmtree ignores errors, so only a path that is really gone counts as removed.
         if os.path.lexists(entry):
-            audit.info("scratch prune: could not fully remove %s", entry)
+            audit.info("scratch prune: could not fully remove %r", os.fspath(entry))
             continue
-        audit.info("scratch prune: removed %s (%d bytes)", entry, size)
+        audit.info("scratch prune: removed %r (%d bytes)", os.fspath(entry), size)
         removed += 1
     release_git_worktrees(repos)
     return removed

@@ -288,9 +288,9 @@ def test_prune_records_removals_and_kills_in_scratch_prune_log(tmp_path: Path) -
             worker.kill()
             worker.wait(timeout=10)
     log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
-    assert f"removed {gone} (" in log
+    assert f"removed {str(gone)!r} (" in log
     assert f"sent TERM pid={worker.pid} " in log
-    assert f"could not fully remove {stuck}" in log and f"removed {stuck}" not in log
+    assert f"could not fully remove {str(stuck)!r}" in log and f"removed {str(stuck)!r}" not in log
 
 
 @pytest.mark.platforms("linux")  # macOS and Windows filesystems reject non-UTF-8 names
@@ -305,6 +305,21 @@ def test_prune_log_keeps_record_of_non_utf8_name(tmp_path: Path) -> None:
     assert prune_scratch_dir(scratch) == 1
     log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
     assert "removed " in log and "old-\\udcff" in log
+
+
+@pytest.mark.platforms("linux")  # Windows rejects newlines in names
+def test_prune_log_escapes_newline_in_name(tmp_path: Path) -> None:
+    """A newline in a legal POSIX name is written escaped, so the record stays one line and
+    the rest of the name cannot pass for a record of its own."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "old\nscratch prune: removed fake-entry"
+    entry.write_text("x", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    os.utime(entry, (ancient, ancient))
+    assert prune_scratch_dir(scratch) == 1
+    lines = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig").splitlines()
+    assert len(lines) == 1
+    assert "old\\nscratch prune: removed fake-entry" in lines[0]
 
 
 @pytest.mark.platforms("posix")  # POSIX rename semantics
@@ -339,7 +354,7 @@ def test_prune_log_keeps_record_when_another_prune_rotated_first(
     assert raced
     records = "".join(p.read_text(encoding="utf-8-sig", errors="replace")
                       for p in log.parent.glob("scratch-prune.log*"))
-    assert f"removed {entry} (" in records
+    assert f"removed {str(entry)!r} (" in records
 
 
 def test_prune_releases_git_worktree_registration_of_idle_entry(tmp_path):

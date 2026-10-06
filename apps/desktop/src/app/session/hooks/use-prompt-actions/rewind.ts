@@ -27,6 +27,7 @@ import {
   appendText,
   isFailedUserTurn,
   isSessionBusyError,
+  isVisibleUserMessage,
   visibleUserIndexAtOrdinal,
   visibleUserMessageIndices,
   visibleUserOrdinal,
@@ -570,7 +571,7 @@ export async function planConfirmedReload(
   if (
     !plan ||
     plan.truncateOrdinal === undefined ||
-    !visibleUserMessageIndices(messages).some(i => i > plan.userIndex)
+    !messages.some((m, i) => i > plan.userIndex && isVisibleUserMessage(m))
   ) {
     return plan
   }

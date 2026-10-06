@@ -767,5 +767,11 @@ describe('planConfirmedReload (#133716)', () => {
     expect(asked).toBe(1)
     expect(tail).toMatchObject({ confirm_truncate: true, truncate_before_row_id: 13 })
     expect(tail?.confirm_deep_truncate).toBeUndefined()
+
+    // A failed later turn is still a persisted user row the gateway counts.
+    const failedLater = [...transcript.slice(0, 3), { ...transcript[3], error: 'provider down' }]
+
+    expect(await submitPlan(await planConfirmedReload(failedLater, 'a1', askAndDecline))).toBeUndefined()
+    expect(asked).toBe(2)
   })
 })

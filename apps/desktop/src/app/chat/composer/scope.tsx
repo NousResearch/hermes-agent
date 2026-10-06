@@ -7,6 +7,8 @@ import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { $messages } from '@/store/session'
 
 import type { ComposerTarget } from './focus'
+import type { ReplyCommentScope } from './reply-comment-scope'
+import { mainReplyCommentScope } from './reply-comment-scope'
 
 /**
  * COMPOSER SCOPE — which live composer a ChatBar instance IS. The main chat's
@@ -23,6 +25,8 @@ export interface ComposerScope {
   /** This scope's "turn parked on user input" edge — gates Esc-to-stop. */
   $awaitingInput: ReadableAtom<boolean>
   attachments: ComposerAttachmentScope
+  /** This scope's pinned reply comments (multi-comment chips, sent as one turn). */
+  replyComments: ReplyCommentScope
   /** This scope's transcript. Read it imperatively (input-history browse) to
    *  keep streaming out of the composer's renders; subscribe only off-render
    *  (auto-speak) where the reply edge is the whole point. */
@@ -42,6 +46,7 @@ export const MAIN_COMPOSER_SCOPE: ComposerScope = {
   $awaitingInput: $activeSessionAwaitingInput,
   $messages,
   attachments: mainComposerScope,
+  replyComments: mainReplyCommentScope,
   target: 'main'
 }
 

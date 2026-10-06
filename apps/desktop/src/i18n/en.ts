@@ -3901,6 +3901,15 @@ export const en: Translations = {
     themeTryPre: 'Try ',
     themeTryPost: '.',
     attachLabel: 'Attach',
+    replyComments: {
+      comment: 'Comment',
+      notePlaceholder: 'Add a comment…',
+      attach: 'Attach',
+      save: 'Save',
+      editComment: 'Edit comment',
+      removeComment: 'Remove comment',
+      limitReached: (max: number) => `Comment limit reached (${max})`
+    },
     files: 'Files…',
     folder: 'Folder…',
     images: 'Images…',

@@ -4293,6 +4293,15 @@ export const deOverrides = {
     themeTryPre: 'Versuchen Sie ',
     themeTryPost: '.',
     attachLabel: 'Anhängen',
+    replyComments: {
+      comment: 'Kommentieren',
+      notePlaceholder: 'Kommentar hinzufügen…',
+      attach: 'Anhängen',
+      save: 'Speichern',
+      editComment: 'Kommentar bearbeiten',
+      removeComment: 'Kommentar entfernen',
+      limitReached: (max: number) => `Kommentarlimit erreicht (${max})`
+    },
     files: 'Dateien…',
     folder: 'Ordner…',
     images: 'Bilder…',

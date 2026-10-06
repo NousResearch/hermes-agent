@@ -29,6 +29,7 @@ import { notify } from '@/store/notifications'
 import { $sessionsLoading } from '@/store/session'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
+import { mergeReplyCommentsIntoDraft } from '../reply-comments'
 import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
@@ -258,7 +259,10 @@ export function useComposerQueue({
   }
 
   const queueCurrentDraft = useCallback(() => {
-    const text = draftRef.current
+    // Pinned reply comments ride the queued turn (peek for the guards; the
+    // scope drains only once the entry is accepted below, same rule as submit).
+    const pendingReplyComments = scope.replyComments.list()
+    const text = mergeReplyCommentsIntoDraft(draftRef.current, pendingReplyComments)
 
     if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
       return false
@@ -301,10 +305,13 @@ export function useComposerQueue({
     // Queue entry retains blob: previews; revoke when the entry is discarded
     // or drained into a submit that takes ownership (see composer-queue).
     scope.attachments.clear({ retainPreviewUrls: true })
+    // The frozen blocks above already carry the comments — drop the chips so
+    // the next turn doesn't resend them.
+    scope.replyComments.take()
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments, t.composer])
+  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments, scope.replyComments, t.composer])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited, from the

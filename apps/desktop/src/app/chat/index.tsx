@@ -63,6 +63,7 @@ import { ChatBar, ChatBarFallback } from './composer'
 import { FloatingComposerSurface } from './composer/floating-surface'
 import { requestComposerInsert } from './composer/focus'
 import { droppedFileInlineRefs } from './composer/inline-refs'
+import { ReplyCommentPillHost } from './composer/reply-comment-pill-host'
 import {
   ComposerScopeProvider,
   ComposerSurfaceProvider,
@@ -857,6 +858,8 @@ const ChatViewContent = memo(function ChatViewContent({
               sessionKey={threadKey}
             />
           )}
+          {/* Pinned reply comments: floating Comment pill for transcript selections. */}
+          <ReplyCommentPillHost />
           {resumeExhausted && routedSessionId && (
             <ResumeExhaustedOverlay onRetryResume={onRetryResume} sessionId={routedSessionId} />
           )}

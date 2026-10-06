@@ -458,3 +458,81 @@ def test_git_branch_decodes_utf8_under_a_gbk_default_codec(tmp_path, monkeypatch
     monkeypatch.setattr(subprocess, "_text_encoding", lambda: "gbk")
 
     assert _rt_files._fs_git_branch(str(tmp_path)) == branch
+
+
+def test_listing_runs_directory_io_off_the_event_loop(forced_files_client, monkeypatch):
+    # One stat() per entry on a slow or network filesystem must not stall every
+    # other dashboard request, so the listing's directory I/O belongs on a worker
+    # thread like the other managed-file routes.
+    client, root = forced_files_client
+    (root / "nested").mkdir(parents=True)
+    (root / "a.txt").write_text("a")
+
+    import asyncio
+
+    real_entry = _rt_files._managed_file_entry
+    entry_on_loop = []
+
+    def _recording_entry(policy, path):
+        try:
+            asyncio.get_running_loop()
+            entry_on_loop.append(True)
+        except RuntimeError:
+            entry_on_loop.append(False)
+        return real_entry(policy, path)
+
+    monkeypatch.setattr(_rt_files, "_managed_file_entry", _recording_entry)
+
+    listed = client.get("/api/files", params={"path": str(root)})
+
+    assert listed.status_code == 200
+    assert {entry["name"] for entry in listed.json()["entries"]} == {"nested", "a.txt"}
+    assert entry_on_loop == [False, False]
+
+
+def test_listing_keeps_error_statuses_when_run_off_the_loop(forced_files_client):
+    client, root = forced_files_client
+    root.mkdir(parents=True)
+    (root / "a.txt").write_text("a")
+
+    assert client.get("/api/files", params={"path": str(root / "missing")}).status_code == 404
+    assert client.get("/api/files", params={"path": str(root / "a.txt")}).status_code == 400
+
+
+@pytest.mark.parametrize("client_fixture", ["local_files_client", "forced_files_client"])
+def test_fs_list_runs_directory_io_off_the_event_loop(client_fixture, request, monkeypatch):
+    # The desktop picker's /api/fs/list is the other directory listing; without an
+    # SSH backend its local scandir branch must also stay off the event loop.
+    client, home = request.getfixturevalue(client_fixture)
+    root = home / "browse"
+    (root / "nested").mkdir(parents=True)
+    (root / "a.txt").write_text("a")
+
+    import asyncio
+
+    real_sensitive = _rt_files._is_sensitive_path
+    check_on_loop = []
+
+    def _recording_sensitive(path):
+        try:
+            asyncio.get_running_loop()
+            check_on_loop.append(True)
+        except RuntimeError:
+            check_on_loop.append(False)
+        return real_sensitive(path)
+
+    monkeypatch.setattr(_rt_files, "_is_sensitive_path", _recording_sensitive)
+
+    listed = client.get("/api/fs/list", params={"path": str(root)}).json()
+
+    assert {entry["name"] for entry in listed["entries"]} == {"nested", "a.txt"}
+    assert check_on_loop == [False, False]
+
+
+def test_fs_list_keeps_error_codes_when_run_off_the_loop(local_files_client):
+    client, root = local_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "a.txt").write_text("a")
+
+    assert client.get("/api/fs/list", params={"path": str(root / "missing")}).json() == {"entries": [], "error": "ENOENT"}
+    assert client.get("/api/fs/list", params={"path": str(root / "a.txt")}).json() == {"entries": [], "error": "ENOTDIR"}

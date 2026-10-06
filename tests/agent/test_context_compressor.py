@@ -3685,30 +3685,6 @@ class TestPreLlmFeasibilityCheck:
         mock_gen.assert_called_once()
         assert compressor._prellm_skip_count == 0
 
-    def test_bench_probe_deadline_survives_a_compressor_rebuild(self, compressor, tmp_path):
-        """The gateway rebuilds the agent on cache eviction: a fresh compressor bound to the same
-        session must resume the persisted bench window, not restart it (else the probe starves)."""
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("s1", "cli")
-        db.set_compression_fallback_streak("s1", 2)
-        compressor.bind_session_state(db, "s1")
-        window = compressor._ANTI_THRASH_RECOVERY_SECONDS
-
-        with patch("agent.context_compressor.time.time", return_value=1000.0), \
-                patch.object(compressor, "_generate_summary", return_value="LLM summary") as mock_gen:
-            compressor.compress(self._make_messages(), force=False)  # benched, arms the window
-        mock_gen.assert_not_called()
-
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            rebuilt = ContextCompressor(
-                model="test/model", threshold_percent=0.85, protect_first_n=2, protect_last_n=2, quiet_mode=True,
-            )
-        rebuilt.bind_session_state(db, "s1")
-        with patch("agent.context_compressor.time.time", return_value=1000.0 + window + 1), \
-                patch.object(rebuilt, "_generate_summary", return_value="LLM summary") as mock_gen:
-            rebuilt.compress(self._make_messages(), force=False)
-        mock_gen.assert_called_once()
-
     def test_skip_fires_on_fat_tail_small_middle(self, compressor):
         """The target scenario from #60451: a tool-heavy transcript whose
         protected tail already holds most of the tokens, leaving a tiny

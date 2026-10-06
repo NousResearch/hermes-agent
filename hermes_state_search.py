@@ -130,6 +130,12 @@ def _strip_cjk_wildcards(raw_query: str) -> str:
     return " ".join(stripped) or raw_query
 
 
+def _like_order_by(sort: Optional[str]) -> str:
+    """LIKE scans have no rank: newest first unless the caller asked for ``oldest``."""
+    order = "ASC" if isinstance(sort, str) and sort.strip().lower() == "oldest" else "DESC"
+    return f"ORDER BY m.timestamp {order}, m.id {order}"
+
+
 def _flatten_text(decoded: Any) -> str:
     """Multimodal part list -> joined text (or the placeholder); str passes through; else ''."""
     if isinstance(decoded, list):
@@ -1012,9 +1018,8 @@ class SessionSearchMixin:
             return []
         where = [f"({predicate})"]
         _search_filter_clauses(where, params, **filters)
-        order = "ASC" if isinstance(sort, str) and sort.strip().lower() == "oldest" else "DESC"
         return self._like_rows(where, [snippet_term, *params, limit, offset],
-                               order_by=f"ORDER BY m.timestamp {order}, m.id {order}", limit_sql="LIMIT ? OFFSET ?")
+                               order_by=_like_order_by(sort), limit_sql="LIMIT ? OFFSET ?")
 
     def _refresh_fts_stale_state(self) -> None:
         """Observe fail-open initiated by another process sharing state.db."""
@@ -1124,7 +1129,7 @@ class SessionSearchMixin:
             bool(source_filter) and any(src in FTS_TRIGRAM_EXCLUDED_SOURCES for src in source_filter))
         is_cjk = self._contains_cjk(query)
         if is_cjk:
-            matches = self._search_cjk(query, wants_unindexed_rows, route)
+            matches = self._search_cjk(query, wants_unindexed_rows, route, sort=sort)
         else:
             sql, params = self._fts_match_sql("messages_fts", query, **route)
             try:
@@ -1188,7 +1193,8 @@ class SessionSearchMixin:
                                            **route) or matches
         return self._finalize_search_matches(matches, result_fields=result_fields)
 
-    def _search_cjk(self, query: str, wants_unindexed_rows: bool, route: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _search_cjk(self, query: str, wants_unindexed_rows: bool, route: Dict[str, Any],
+                    sort: Optional[str] = None) -> List[Dict[str, Any]]:
         """CJK routing: the unicode61 table splits CJK into single characters (false positives,
         missed phrases). cjk-bigram serves every shape except queries wanting rows the
         substring indexes exclude (role='tool', cron/subagent sources) and LONE
@@ -1215,7 +1221,7 @@ class SessionSearchMixin:
         _search_filter_clauses(like_where, like_params, **filters)
         # instr() for the snippet uses the first search token.
         return self._like_rows(like_where, [non_op_tokens[0], *like_params, route["limit"], route["offset"]],
-                               order_by="ORDER BY m.timestamp DESC", limit_sql="LIMIT ? OFFSET ?")
+                               order_by=_like_order_by(sort), limit_sql="LIMIT ? OFFSET ?")
 
     def _search_unindexed_gap(self, fts_query: str, limit: int, **filters) -> List[Dict[str, Any]]:
         """LIKE-scan ids in (fts_rebuild_progress, fts_rebuild_high_water] — rows the deferred

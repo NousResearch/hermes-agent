@@ -32,6 +32,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
 
 from agent.retry_utils import parse_retry_after_seconds
+from hermes_cli import anon_challenge
+from hermes_cli.anon_challenge import ANON_CHALLENGE_REQUIRED, ANON_SIGNIN_REQUIRED
 from hermes_cli.auth_constants import (
     AuthError, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_WELCOME_URL, _decode_jwt_claims, httpx)
 
@@ -83,6 +85,8 @@ def _anon_err(message: str, code: str, *, retry_after: Optional[float] = None) -
 #   503 ``temporarily_disabled``  the ops breaker is tripped (transient, no hint)
 #   429 ``temporarily_unavailable`` + Retry-After   per-address / per-credential limits
 #   428 ``pow_required`` / ``pow_invalid`` / ``pow_replayed``   proof-of-work enforced (not implemented here)
+#   428 ``challenge_required`` + ``challenges[]``   a browser challenge first (``anon_challenge``)
+#   403 ``signin_required`` / ``access_denied``     this client is refused without an account
 #   404 ``unknown_token``         the credential was reaped or claimed (re-mint)
 #   403 ``account_locked``        the account is locked (dead; never re-mint from it)
 #   401                           an outstanding JWT whose account is gone (re-mint)
@@ -94,8 +98,12 @@ ANON_ACCOUNT_LOCKED = "anon_account_locked"    # dead, and no replacement is min
 ANON_CREDENTIAL_DEAD = "anon_credential_dead"  # reaped or claimed: replaced silently, once
 ANON_UNREACHABLE = "anon_unreachable"          # timeout, DNS, refused connection
 ANON_SERVER_ERROR = "anon_server_error"        # 5xx, non-JSON, malformed success body
+# ANON_CHALLENGE_REQUIRED / ANON_SIGNIN_REQUIRED live in ``anon_challenge`` (imported above): a
+# browser challenge is still pending (retryable), or the service refuses this client without an
+# account, which includes any 428 this version does not understand.
 # Codes a later attempt cannot fix (for this process / this version).
-ANON_TERMINAL_CODES = frozenset({ANON_GATE_CLOSED, ANON_POW_REQUIRED, ANON_ACCOUNT_LOCKED})
+ANON_TERMINAL_CODES = frozenset({
+    ANON_GATE_CLOSED, ANON_POW_REQUIRED, ANON_ACCOUNT_LOCKED, ANON_SIGNIN_REQUIRED})
 # Codes that mean the account service itself is not answering: a sign-in (which goes through the
 # same service) cannot help either, so surfaces offer "try again" / "another provider" only.
 ANON_UNREACHABLE_CODES = frozenset({ANON_UNREACHABLE, ANON_SERVER_ERROR})
@@ -110,6 +118,8 @@ ANON_FAILURE_COPY = {
                        "Signing in is free and skips the wait.",
     ANON_POW_REQUIRED: "The Nous server asked for a proof of work, but that isn't implemented in your "
                        "Agent yet. Sign in with a Nous account to continue.",
+    ANON_CHALLENGE_REQUIRED: anon_challenge.CHALLENGE_PENDING_COPY,
+    ANON_SIGNIN_REQUIRED: anon_challenge.SIGNIN_REQUIRED_COPY,
     ANON_ACCOUNT_LOCKED: f"This session can't continue without signing in. {_SIGNIN_IS_FREE}",
     ANON_CREDENTIAL_DEAD: "Your session ended. A new one starts on its own.",
     ANON_UNREACHABLE: "The Nous service couldn't be reached. Check your internet connection and try again.",
@@ -260,7 +270,7 @@ def anon_secret() -> str:
 
 
 def _anon_headers() -> Dict[str, str]:
-    headers = {"content-type": "application/json"}
+    headers = {"content-type": "application/json", "user-agent": anon_challenge.user_agent()}
     if secret := anon_secret():
         headers[ANON_SECRET_HEADER] = secret
     return headers
@@ -282,7 +292,9 @@ _NAS_REFUSALS: Dict[tuple, tuple] = {
 }
 
 
-def _raise_for_anon_status(response: httpx.Response, *, action: str) -> Dict[str, Any]:
+def _raise_for_anon_status(
+    response: httpx.Response, *, action: str, portal_base_url: str = "",
+) -> Dict[str, Any]:
     try:
         payload = response.json()
     except ValueError:
@@ -295,8 +307,18 @@ def _raise_for_anon_status(response: httpx.Response, *, action: str) -> Dict[str
         return payload
     if error.startswith("pow_"):
         error = "pow_"  # pow_required / pow_invalid / pow_replayed are one verdict
+    # The challenge gate sits on the token exchange only (``portal_base_url`` is passed by it and
+    # nothing else); every other endpoint keeps the table below, unchanged.
+    if portal_base_url:
+        if status == 428 and error == "challenge_required":
+            raise anon_challenge.challenge_error(payload, portal_base_url)
+        if (status == 403 and error in ("signin_required", "access_denied")) or (
+                status == 428 and error != "pow_"):
+            # Refused without an account, or a 428 this version has no primitive for: either way
+            # the honest way forward is a sign-in, in the service's own words when it sent some.
+            raise anon_challenge.signin_required_error(payload.get("message"))
     cls, code = (_NAS_REFUSALS.get((status, error)) or _NAS_REFUSALS.get((status, None))
-                 or ((AuthError, ANON_POW_REQUIRED) if error == "pow_" else (AuthError, ANON_SERVER_ERROR)))
+                 or (AuthError, ANON_SERVER_ERROR))
     if code == ANON_SERVER_ERROR:
         logger.info("Nous free tier %s failed (%s%s)", action, status, f": {error}" if error else "")
     retry_after = parse_retry_after_seconds(response.headers)
@@ -321,11 +343,18 @@ def exchange_anon_jwt(client: httpx.Client, portal_base_url: str, anon_token: st
     Raises :class:`AnonCredentialDead` on 404 ``unknown_token`` / 401 (reaped or claimed).
     """
     response = client.post(
-        f"{portal_base_url.rstrip('/')}/api/anonymous/token", headers=_anon_headers(), json={"token": anon_token})
-    payload = _raise_for_anon_status(response, action="token exchange")
+        f"{portal_base_url.rstrip('/')}/api/anonymous/token", headers=_anon_headers(),
+        json={"token": anon_token, "client": anon_challenge.client_info()})
+    try:
+        payload = _raise_for_anon_status(response, action="token exchange", portal_base_url=portal_base_url)
+    except anon_challenge.AnonChallengeRequired as challenge:
+        # What ``run_with_challenge`` polls with, once the caller's locks have unwound.
+        challenge.portal_base_url, challenge.anon_token = portal_base_url, anon_token
+        raise
     if not isinstance(payload.get("access_token"), str) or not payload["access_token"]:
         logger.info("Nous free tier token exchange returned no token")
         raise _anon_err(ANON_FAILURE_COPY[ANON_SERVER_ERROR], ANON_SERVER_ERROR)
+    anon_challenge.note_optional_challenges(payload, portal_base_url)
     return payload
 
 
@@ -581,7 +610,12 @@ def refresh_guest_state(state: Dict[str, Any], client: httpx.Client) -> None:
     if not isinstance(anon_token, str) or not anon_token:
         raise AnonCredentialDead(ANON_FAILURE_COPY[ANON_CREDENTIAL_DEAD], code=ANON_CREDENTIAL_DEAD)
     from hermes_cli.auth import _nous_portal_base_url
-    apply_exchange_to_state(state, exchange_anon_jwt(client, _nous_portal_base_url(state), anon_token))
+    try:
+        payload = exchange_anon_jwt(client, _nous_portal_base_url(state), anon_token)
+    except anon_challenge.AnonChallengeRequired as challenge:
+        challenge.auth_state = state  # the ``tls`` block the status poll inherits
+        raise
+    apply_exchange_to_state(state, payload)
 
 
 def clear_dead_guest(reason: str, *, dead_token: Optional[str] = None) -> None:

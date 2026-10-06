@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pytest
 
+import hermes_network
+
 
 # Import the module under test via an import-time side-effect check path.
 # We need to be able to reset its state between tests, so we import it
@@ -479,7 +481,7 @@ class TestHappyEyeballsSocketConnect:
         import urllib3.util.connection as urllib3_connection
 
         hb = _fresh_import()
-        assert socket.create_connection.__module__ == hb.__name__
+        assert socket.create_connection.__module__ == hermes_network.__name__
         # urllib3 keeps its own serial connect walker; it is patched once imported (lazily).
         assert getattr(urllib3_connection.create_connection, "_hermes_happy_eyeballs", False)
         # Re-importing the bootstrap (or importing it after urllib3) never wraps the racer twice.
@@ -552,20 +554,20 @@ class TestHappyEyeballsSocketConnect:
             def close(self):
                 pass
 
-        monkeypatch.setattr(hb.socket, "getaddrinfo", lambda *_a, **_k: [
+        monkeypatch.setattr(hermes_network.socket, "getaddrinfo", lambda *_a, **_k: [
             (socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("2001:db8::1", 443, 0, 0)),
             (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("192.0.2.1", 443)),
         ])
-        monkeypatch.setattr(hb.socket, "socket", FakeSocket)
-        monkeypatch.setattr(hb.selectors, "DefaultSelector", FakeSelector)
-        monkeypatch.setattr(hb.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(hermes_network.socket, "socket", FakeSocket)
+        monkeypatch.setattr(hermes_network.selectors, "DefaultSelector", FakeSelector)
+        monkeypatch.setattr(hermes_network.time, "monotonic", lambda: clock[0])
 
         # http.client passes the module timeout sentinel through positionally.
         winner = socket.create_connection(("example.com", 443), socket._GLOBAL_DEFAULT_TIMEOUT, None)
 
         assert winner.family == socket.AF_INET
         assert winner.timeout is None  # sentinel resolves to the process default, like stock
-        assert clock[0] == hb._HAPPY_EYEBALLS_DELAY_SECONDS
+        assert clock[0] == hermes_network._HAPPY_EYEBALLS_DELAY_SECONDS
         assert sockets[0].closed is True and sockets[1] is winner
 
     def test_racer_bug_raises_instead_of_falling_back_to_the_serial_walk(self, monkeypatch):

@@ -23,6 +23,10 @@ from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource
+from gateway.run_notifications_lineage import (
+    ASYNC_DELEGATION_REPIN_END_REASON, is_subagent_row, _resolve_compression_lineage_target,
+    resolve_subagent_owner,
+)
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 
 # Log-record parity with the origin module.
@@ -207,55 +211,6 @@ class GatewayNotificationsMixin:
                     return
         await adapter.send(source.chat_id, content, metadata=metadata)
 
-    async def _resolve_compression_lineage_target(
-        self, session_db: Any, session_entry: SessionEntry, pinned_session_id: str,
-    ) -> Optional[str]:
-        """Return the live compression tip of ``pinned_session_id`` if the route owns that lineage, else None."""
-        try:
-            target_session_id = await session_db.get_compression_tip(pinned_session_id)
-        except Exception:
-            logger.debug("Async-delegation compression-tip lookup failed for %s", pinned_session_id, exc_info=True)
-            target_session_id = None
-        if not target_session_id or target_session_id == pinned_session_id:
-            logger.warning(
-                "Async-delegation completion pinned to compressed session %s "
-                "without a continuation; dropping injection.", pinned_session_id,
-            )
-            return None
-        try:
-            tip_row = await session_db.get_session(target_session_id)
-        except Exception:
-            tip_row = None
-        if tip_row is None or tip_row.get("ended_at"):
-            logger.warning(
-                "Async-delegation compression continuation %s is %s; dropping injection.",
-                target_session_id, "unknown" if tip_row is None else "ended",
-            )
-            return None
-        route_owns_lineage = session_entry.session_id in {pinned_session_id, target_session_id}
-        if not route_owns_lineage:
-            # Across several rotations, accept a stale route only when its own tip is the same live target.
-            try:
-                route_row = await session_db.get_session(session_entry.session_id)
-                route_tip = (
-                    await session_db.get_compression_tip(session_entry.session_id)
-                    if route_row is not None
-                    and route_row.get("ended_at")
-                    and route_row.get("end_reason") == "compression"
-                    else None
-                )
-            except Exception:
-                route_tip = None
-            route_owns_lineage = route_tip == target_session_id
-        if not route_owns_lineage:
-            logger.warning(
-                "Async-delegation completion for compression lineage %s -> %s "
-                "does not own current route %s; dropping injection.",
-                pinned_session_id, target_session_id, session_entry.session_id,
-            )
-            return None
-        return target_session_id
-
     async def _resolve_async_delegation_session(
         self, session_entry: SessionEntry, pinned_session_id: str,
     ) -> Optional[SessionEntry]:
@@ -287,6 +242,12 @@ class GatewayNotificationsMixin:
                 "dropping injection (#55578 fail-closed).", pinned_session_id,
             )
             return None
+        if is_subagent_row(pinned_row):
+            # A running child's own notices carry the child id: route to the chat that owns it.
+            owner = await resolve_subagent_owner(session_db, pinned_session_id, pinned_row)
+            if owner is None:
+                return None
+            pinned_session_id, pinned_row = owner
         target_session_id = pinned_session_id
         follows_compression = False
         if pinned_row.get("ended_at"):
@@ -308,7 +269,7 @@ class GatewayNotificationsMixin:
                 )
                 return session_entry
             follows_compression = True
-            target_session_id = await self._resolve_compression_lineage_target(
+            target_session_id = await _resolve_compression_lineage_target(
                 session_db, session_entry, pinned_session_id,
             )
             if target_session_id is None:
@@ -332,6 +293,7 @@ class GatewayNotificationsMixin:
             # (/new, /resume) wins over the stale completion.
             switched = await self.async_session_store.switch_session(
                 session_entry.session_key, target_session_id, expected_session_id=prior_session_id,
+                end_reason=ASYNC_DELEGATION_REPIN_END_REASON,
             )
         if switched is None:
             logger.warning(
@@ -1419,6 +1381,12 @@ class GatewayNotificationsMixin:
             return "retry"
         if parent is None:
             return "terminal"
+        if is_subagent_row(parent):
+            # Same owner mapping as the resolver, so the two never disagree.
+            owner = await resolve_subagent_owner(session_db, parent_session_id, parent)
+            if owner is None:
+                return "terminal"
+            parent_session_id, parent = owner
         if not parent.get("ended_at"):
             return "deliver"
         end_reason = str(parent.get("end_reason") or "")

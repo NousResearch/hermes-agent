@@ -175,7 +175,10 @@ _COMPRESSION_CHILD_SQL = ("EXISTS (SELECT 1 FROM sessions p        WHERE p.id = 
 
 # 'session_switch' creates no child row today, but pre-marker DBs hold legacy reset children whose parent
 # ended that way.  Must stay identical to the recovery fence in find_latest_gateway_session_for_peer.
-_RESET_END_REASONS = ("session_reset", "session_switch", "idle", "daily", "suspended", "resume_pending_expired")
+# 'async_delegation_repin' (gateway/run_notifications_lineage.py) ends a route the same way as
+# 'session_switch', so recovery and compression treat it alike; only the gateway's user-boundary set differs.
+_RESET_END_REASONS = ("session_reset", "session_switch", "idle", "daily", "suspended", "resume_pending_expired",
+                      "async_delegation_repin")
 _RESET_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RESET_END_REASONS)
 # Deliberate conversation boundaries: the reset set plus CLI /new, which ends the predecessor as
 # 'new_session' (hermes_cli/cli_session_mixin.py) without a reset child row.  A compression rotation must

@@ -177,6 +177,14 @@ class TestNativeImageAttach:
 
     def test_text_mode_an_undecodable_or_an_unshrinkable_image_keeps_the_string_result(self, tmp_path, monkeypatch):
         assert "MEDIA:" in self._call(monkeypatch, tmp_path, {"agent": {"image_input_mode": "text"}})
+        # vision.max_calls_per_image counts pixels, not cache paths: a polled screenshot re-cached under a new
+        # name is refused once the cap is spent.
+        from tools import vision_tools_history_budget as budget
+        monkeypatch.setattr(budget, "_repeat_counts", {})
+        capped = {"vision": {"max_calls_per_image": 1}}
+        assert isinstance(self._call(monkeypatch, tmp_path, capped), dict)
+        repeat = self._call(monkeypatch, tmp_path, capped)
+        assert isinstance(repeat, str) and "already in context" in repeat and "MEDIA:" in repeat
         import io
         from PIL import Image
         # A valid JPEG header over a truncated pixel stream passes the cache's and the sniff's header checks.

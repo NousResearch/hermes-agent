@@ -178,19 +178,34 @@ def _mcp_result_with_native_images(text: str, image_paths: List[str]) -> Any:
     if not image_paths:
         return text
     try:
-        from tools.vision_tools import _should_use_native_vision_fast_path
+        from tools.vision_tools import _should_use_native_vision_fast_path, _vision_cpu_executor
+        from tools.vision_tools_history_budget import repeat_refusal
         if not _should_use_native_vision_fast_path():
             return text
-        attached = [(p, r) for p, r in ((p, _mcp_native_image_part(p)) for p in image_paths[:_MCP_NATIVE_IMAGE_MAX]) if r]
+        # Decode/resize on the bounded vision pool: a parallel tool batch of image-heavy MCP calls must not
+        # decode dozens of large images at once on tool threads.
+        jobs = [(p, _vision_cpu_executor.submit(_mcp_native_image_part, p)) for p in image_paths[:_MCP_NATIVE_IMAGE_MAX]]
+        prepared = [(p, f.result()) for p, f in jobs]
     except Exception:  # deliberate boundary: the MEDIA: paths already carry the images, so any failure keeps the text
         logger.debug("MCP native image attach failed, keeping MEDIA: paths", exc_info=True)
         return text
+    attached, notes = [], ""
+    for path, ready in prepared:
+        if not ready:
+            continue
+        part, note = ready
+        # vision.max_calls_per_image: a polled screenshot tool re-sends the same pixels under a fresh cache path
+        # each call, so the reservation keys on the resized data URL (identical pixels, identical key).
+        if repeat_refusal(part["image_url"]["url"]):
+            notes += f"\n- MEDIA:{path}: not attached; this image is already in context (vision.max_calls_per_image)."
+            continue
+        attached.append(part)
+        if note:
+            notes += f"\n- MEDIA:{path}: {note}"
     if not attached:
-        return text
-    notes = "".join(f"\n- MEDIA:{p}: {note}" for p, (_part, note) in attached if note)
+        return text + notes
     header = "\n\nThe image(s) from this call are attached — inspect them with your native vision."
-    return {"_multimodal": True,
-            "content": [{"type": "text", "text": text + header + notes}, *(part for _p, (part, _n) in attached)],
+    return {"_multimodal": True, "content": [{"type": "text", "text": text + header + notes}, *attached],
             "text_summary": text}
 
 

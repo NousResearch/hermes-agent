@@ -601,7 +601,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
             server_name, server, op, _call, tool_timeout,
             (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
             _on_failure, record_outcome=True)
-        # Off the MCP loop on purpose: the image resize is CPU work that must not stall other servers' I/O.
+        # Off the MCP loop on purpose: image prep is CPU work (bounded vision pool) that must not stall other servers' I/O.
         return _mcp_result_with_native_images(text, image_paths) if native_images and not _result_is_error(text) else text
     return _handler
 

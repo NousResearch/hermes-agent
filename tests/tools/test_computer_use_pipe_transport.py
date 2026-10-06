@@ -61,9 +61,6 @@ def test_decode_message_frame_fragmented_and_multiple():
 
 
 def test_get_computer_use_pipe_path_env(monkeypatch):
-    if sys.platform != "win32":
-        monkeypatch.setattr(sys, "platform", "win32")
-
     monkeypatch.setenv("SKY_CUA_NATIVE_PIPE_DIRECTORY", r"\\.\pipe\custom-zcode-pipe")
     assert get_computer_use_pipe_path() == r"\\.\pipe\custom-zcode-pipe"
 
@@ -80,19 +77,12 @@ def test_get_computer_use_pipe_path_env(monkeypatch):
 
 
 def test_get_computer_use_pipe_path_embedded_daemon(monkeypatch):
-    if sys.platform != "win32":
-        monkeypatch.setattr(sys, "platform", "win32")
-
     daemon = MagicMock(socket_path=r"\\.\pipe\daemon-pipe-123")
     assert get_computer_use_pipe_path(embedded_daemon=daemon) == r"\\.\pipe\daemon-pipe-123"
 
 
+@pytest.mark.platforms("windows")
 def test_is_named_pipe_available_win32(monkeypatch):
-    if sys.platform != "win32":
-        # On non-win32 it returns False immediately
-        assert is_named_pipe_available() is False
-        return
-
     # Mock kernel32.WaitNamedPipeW returning 1 (pipe listening)
     with patch("ctypes.windll.kernel32.WaitNamedPipeW", return_value=1):
         assert is_named_pipe_available(r"\\.\pipe\test") is True
@@ -147,11 +137,9 @@ def test_normalize_response_error(monkeypatch):
     assert norm["structuredContent"]["exit_code"] == 2
 
 
+@pytest.mark.platforms("windows")
 def test_session_cli_fallback_uses_pipe_when_available(monkeypatch):
     """When on Windows with unpatched subprocess.run and pipe available, _call_tool_via_cli uses pipe."""
-    if sys.platform != "win32":
-        pytest.skip("Windows pipe test")
-
     session = _CuaDriverSession(_AsyncBridge())
     mock_pipe = MagicMock()
     mock_pipe.call_tool.return_value = {"data": "from-pipe", "images": [], "structuredContent": {}, "isError": False}
@@ -209,6 +197,7 @@ def test_normalize_response_jsonrpc_error(monkeypatch):
     assert norm["structuredContent"]["ok"] is False
 
 
+@pytest.mark.platforms("windows")
 def test_session_id_none_omits_session_id_in_payload(monkeypatch):
     """When session_id is None, call_tool must not inject a stale 'hermes' session id."""
     if sys.platform != "win32":
@@ -235,6 +224,7 @@ def test_session_id_none_omits_session_id_in_payload(monkeypatch):
     assert "session_id" not in sent_json
 
 
+@pytest.mark.platforms("windows")
 def test_read_all_line_times_out(monkeypatch):
     """Ensure _read_all_line raises TimeoutError if deadline expires."""
     if sys.platform != "win32":
@@ -254,11 +244,9 @@ def test_read_all_line_times_out(monkeypatch):
             transport._read_all_line(MagicMock(), deadline=0.0)
 
 
+@pytest.mark.platforms("windows")
 def test_call_tool_healthy_windows_chooses_pipe_directly(monkeypatch):
     """(a) On Windows, healthy requests in call_tool() take the direct named pipe transport fast path."""
-    if sys.platform != "win32":
-        pytest.skip("Windows pipe test")
-
     session = _CuaDriverSession(_AsyncBridge())
     session._started = True
 
@@ -280,11 +268,9 @@ def test_call_tool_healthy_windows_chooses_pipe_directly(monkeypatch):
     mock_mcp.assert_not_called()
 
 
+@pytest.mark.platforms("windows")
 def test_call_tool_unavailable_or_pre_send_pipe_falls_back_to_mcp(monkeypatch):
     """(b) When pipe is unavailable or fails before sending bytes (or for replay-safe tools), next transport (MCP) is chosen."""
-    if sys.platform != "win32":
-        pytest.skip("Windows pipe test")
-
     from tools.computer_use.cua_backend_pipe import PipePreDispatchError
 
     # Sub-case 1: Pipe is unavailable (_get_pipe_transport returns None)
@@ -327,11 +313,9 @@ def test_call_tool_unavailable_or_pre_send_pipe_falls_back_to_mcp(monkeypatch):
     mock_mcp3.assert_called_once()
 
 
+@pytest.mark.platforms("windows")
 def test_call_tool_post_dispatch_failure_on_mutation_fails_closed_without_replay(monkeypatch):
     """(c) Post-dispatch timeout or broken response on a mutation yields *_outcome_unknown and is NOT replayed."""
-    if sys.platform != "win32":
-        pytest.skip("Windows pipe test")
-
     from tools.computer_use.cua_backend_pipe import PipePostDispatchError, PipePostDispatchTimeoutError
 
     # Sub-case 1: Post-dispatch timeout yields timeout_outcome_unknown and does NOT call MCP
@@ -381,11 +365,9 @@ def test_call_tool_post_dispatch_failure_on_mutation_fails_closed_without_replay
     mock_mcp3.assert_not_called()
 
 
+@pytest.mark.platforms("windows")
 def test_lifecycle_start_and_end_session_routes_over_pipe(monkeypatch):
     """start_session and end_session route over named pipe on Windows when pipe is available."""
-    if sys.platform != "win32":
-        pytest.skip("Windows pipe test")
-
     session = _CuaDriverSession(_AsyncBridge())
     session._started = True
 
@@ -425,11 +407,9 @@ def test_lifecycle_start_and_end_session_routes_over_pipe(monkeypatch):
     assert mock_pipe.session_id is None
 
 
+@pytest.mark.platforms("windows")
 def test_session_not_available_pipe_error_falls_back_to_mcp_for_replay_safe_tools(monkeypatch):
     """'session is not available to this transport' resets pipe transport and falls back to MCP for replay-safe tools."""
-    if sys.platform != "win32":
-        pytest.skip("Windows pipe test")
-
     from tools.computer_use.cua_backend_pipe import PipePostDispatchError
 
     # Sub-case 1: Pipe response carries isError: True with 'session is not available to this transport' on list_windows

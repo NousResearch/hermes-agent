@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frAuxTasks } from './fr_aux_tasks'
+import { frBoot } from './fr_boot'
 import { frModelMenu } from './fr_model_menu'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { introFr } from './intro-fr'
@@ -406,83 +407,7 @@ export const frOverrides = {
     revealUnavailable:
       "Ce chemin n'est pas sur cet ordinateur : il se trouve sur la machine du backend. Utilisez « Afficher dans l'arborescence »."
   },
-  boot: {
-    ready: 'Hermes Desktop est prêt',
-    desktopBootFailedWithMessage: message => `Échec du démarrage : ${message}`,
-    steps: {
-      connectingGateway: 'Connexion au gateway desktop',
-      loadingSettings: 'Chargement des paramètres Hermes',
-      loadingSessions: 'Chargement des sessions récentes',
-      retryingRemoteBackend: 'Reconnexion au backend Hermes distant…',
-      startingDesktopConnection: 'Démarrage de la connexion desktop',
-      startingHermesDesktop: 'Démarrage de Hermes Desktop…'
-    },
-    errors: {
-      backgroundExited: "Le processus en arrière-plan de Hermes s'est arrêté.",
-      backgroundExitedDuringStartup: "Le processus en arrière-plan de Hermes s'est arrêté pendant le démarrage.",
-      backendStopped: 'Backend arrêté',
-      restartHermes: 'Redémarrer Hermes',
-      openLogs: 'Ouvrir les journaux',
-      desktopBootFailed: 'Échec du démarrage',
-      gatewayConnectionLost: 'Connexion au gateway perdue',
-      gatewayConnectionLostDetail:
-        'Nouvelle tentative en arrière-plan. Vous pouvez continuer à lire et rédiger — ouvrez les paramètres du gateway si le problème persiste.',
-      reconnectNow: 'Se reconnecter maintenant',
-      connectionSettings: 'Paramètres de connexion',
-      gatewaySignInRequired: 'Connexion au gateway requise',
-      gatewaySignInRequiredDetail:
-        'Reconnectez-vous pour rétablir la connexion. Vos conversations et paramètres sont en sécurité.',
-      signInAgain: 'Se reconnecter',
-      ipcBridgeUnavailable: 'Le pont IPC du desktop est indisponible.'
-    },
-    causes: {
-      exitedEarly: "Le service en arrière-plan de Hermes s'est arrêté juste après son démarrage.",
-      timedOut: "Le service en arrière-plan de Hermes n'a pas répondu à temps.",
-      permission: "Hermes n'a pas pu écrire dans son dossier de données (problème d'autorisation).",
-      diskFull: "Le disque est plein ; Hermes n'a donc pas pu démarrer.",
-      portInUse: 'Un autre programme utilise le port réseau nécessaire à Hermes.',
-      installMissing:
-        "Une partie de l'installation de Hermes est manquante. Choisissez Réparer l'installation pour la restaurer."
-    },
-    failure: {
-      title: "Hermes n'a pas pu démarrer",
-      description:
-        "Le gateway en arrière-plan n'a pas pu se lancer. Essayez l'une des étapes de récupération ci-dessous. Rien ici ne supprime vos conversations ou paramètres.",
-      details: 'Détails',
-      remoteTitle: 'Connexion au gateway distante requise',
-      remoteDescription:
-        'Votre session de gateway distante a expiré. Connectez-vous à nouveau pour vous reconnecter. Rien ici ne supprime vos conversations ou paramètres.',
-      retry: 'Réessayer',
-      repairInstall: "Réparer l'installation",
-      useLocalGateway: 'Utiliser le gateway local',
-      gatewaySettings: 'Paramètres du gateway',
-      back: 'Retour',
-      openLogs: 'Ouvrir les journaux',
-      repairHint: "La réparation relance l'installateur et peut prendre quelques minutes sur une machine neuve.",
-      remoteSignInHint: signInLabel =>
-        `Déconnecte la session navigateur distante enregistrée, puis ouvre ${signInLabel}. Utilisez le gateway local pour passer au backend intégré.`,
-      signOutAndSignIn: 'Se déconnecter et se reconnecter',
-      remoteFailureHint:
-        "Vérifiez l'URL du gateway et la connexion dans les paramètres du gateway, ou passez au gateway local.",
-      cloudDownTitle: "L'agent Nous Cloud est indisponible",
-      cloudDownDescription:
-        "L'agent cloud géré par Nous auquel ce gateway se connecte renvoie une erreur serveur. Il ne peut pas être redémarré depuis ici — vérifiez son état, passez au gateway local ou contactez l'assistance.",
-      cloudDownHint:
-        "Les boutons ci-dessous ouvrent le portail Nous, pour consulter et contrôler l'instance, ainsi que notre Discord pour obtenir de l'aide.",
-      cloudDownCheckPortal: "Vérifier l'état sur le portail",
-      cloudDownDiscord: "Obtenir de l'aide sur Discord",
-      hideRecentLogs: 'Masquer les journaux récents',
-      showRecentLogs: 'Afficher les journaux récents',
-      signedInTitle: 'Connecté',
-      signedInMessage: 'Reconnexion au gateway distante…',
-      signInIncompleteTitle: 'Connexion incomplète',
-      signInIncompleteMessage: "La fenêtre de connexion s'est fermée avant la fin de l'authentification.",
-      signInFailed: 'Échec de la connexion',
-      signInToRemoteGateway: 'Se connecter au gateway distante',
-      signInWithProvider: provider => `Se connecter avec ${provider}`,
-      identityProvider: "votre fournisseur d'identité"
-    }
-  },
+  boot: frBoot.boot,
   notifications: {
     region: 'Notifications',
     hide: 'Masquer',

@@ -3674,7 +3674,7 @@ tips:
   t197: "トラジェクトリ保存（--save-trajectories）は、モデル学習用にツール使用の完全なトレースを記録します。"
   t198: "プラグインには 3 種類あります。汎用（ツール/フック）、メモリプロバイダー、コンテキストエンジンです。"
   t199: "hermes plugins install owner/repo で GitHub から直接プラグインをインストールできます。"
-  t200: "外部メモリプロバイダーとして OpenViking、Mem0 が同梱されており、Honcho、Hindsight などは hermes plugins install で追加できます。"
+  t200: "外部メモリプロバイダーとして OpenViking が同梱されており、Honcho、Hindsight、Mem0 などは hermes plugins install で追加できます。"
   t201: "プラグインフックには pre/post_tool_call、pre/post_llm_call、出力の正規化用の transform_terminal_output などがあります。"
   t202: "プロンプトキャッシュ（Anthropic）は、キャッシュ済みのシステムプロンプトのプレフィックスを再利用してコストを削減します。"
   t203: "エージェントはセッションタイトルをバックグラウンドスレッドで自動生成するため、レイテンシへの影響はゼロです。"

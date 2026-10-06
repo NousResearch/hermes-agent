@@ -100,21 +100,24 @@ function fakeSsh(rules: any[] = []) {
       // Existing lifecycle fixtures predate the install-wide relaunch gate.
       // Their default remote has no update marker; focused marker tests below
       // use explicit SSH doubles to exercise live/uncertain transitions.
-      if (cmd.includes('.hermes-update-in-progress') && !cmd.includes('marker_clear()') && !/setsid|nohup/.test(cmd)) {
+      const mutexWrapped = /setsid|nohup/.test(cmd) // spawn payloads run under the relaunch probe's marker gate
+
+      if (cmd.includes('.hermes-update-in-progress') && !mutexWrapped) {
         return 'CLEAR'
       }
 
-      const mutexWrapped = cmd.includes('fcntl.flock(fd,fcntl.LOCK_EX)')
-
       const applicableRules = rules.filter(([matcher]) => {
-        if (cmd.includes('marker_clear()') && matcher instanceof RegExp && /kill -0/.test(matcher.source)) {
+        if (mutexWrapped && matcher instanceof RegExp && /kill -0/.test(matcher.source)) {
           return false
         }
 
         return !(mutexWrapped && matcher instanceof RegExp && /python3 -c/.test(matcher.source))
       })
 
-      if ((cmd.includes('os.kill(pid') && !/pidfd_open|marker_clear/.test(cmd)) || cmd.includes('printf TERMINATED')) {
+      if (
+        (cmd.includes('os.kill(pid') && !cmd.includes('pidfd_open') && !mutexWrapped) ||
+        cmd.includes('printf TERMINATED')
+      ) {
         return 'TERMINATED'
       }
 
@@ -184,10 +187,7 @@ test('POSIX relaunch gate permits absent/dead markers and normalizes named-profi
   }
 
   await assertRemoteInstallUpdateClear(ssh, '/home/alice/.hermes/profiles/research')
-  assert.match(commands[0], /home\.parent\.name/)
-  assert.match(commands[0], /profiles/)
-  assert.match(commands[0], /\.hermes-update-in-progress/)
-  assert.match(commands[0], /marker\.unlink/)
+  assert.ok(commands[0].endsWith(" '/home/alice/.hermes/.hermes-update-in-progress'"), commands[0].slice(-80))
 })
 
 test('POSIX relaunch gate rechecks after token upload immediately before process creation', async () => {
@@ -998,7 +998,7 @@ report=${expandRemotePath(reportPath)}
 for fd in /proc/$$/fd/*; do
   target=$(readlink "$fd" 2>/dev/null || true)
   case "$target" in
-    *hermes-update-in-progress.mutex) printf '%s\\n' "$target" >> "$report.tmp" ;;
+    *hermes-update-in-progress.lock) printf '%s\\n' "$target" >> "$report.tmp" ;;
   esac
 done
 mv "$report.tmp" "$report"
@@ -2090,11 +2090,11 @@ test.skipIf(process.platform === 'win32')(
       })
       const argv = (await readFile(argvFile, 'utf8')).split('\0')
 
-      // argv: ['-c', <mutex script>, <mutex path>, <payload>]
+      // argv: ['-c', <marker gate>, <marker path>, <payload>]
       assert.equal(
         argv[2],
-        `${fakeHome}/.hermes/.hermes-update-in-progress.mutex`,
-        'mutex path must reach python fully expanded, with no quote characters'
+        `${fakeHome}/.hermes/.hermes-update-in-progress`,
+        'marker path must reach python fully expanded, with no quote characters'
       )
 
       // The payload assigns reservation/lock/owner_file before its mkdir loop.

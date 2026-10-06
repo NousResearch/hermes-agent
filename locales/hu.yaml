@@ -3691,7 +3691,7 @@ tips:
   t197: "A trajektóriamentés (--save-trajectories) rögzíti a teljes eszközhasználati nyomokat a modelltanításhoz."
   t198: "Három plugintípus van: általános (eszközök/hookok), memóriaszolgáltatók és kontextusmotorok."
   t199: "A hermes plugins install owner/repo közvetlenül a GitHubról telepít plugint."
-  t200: "Külső memóriaszolgáltatók: az OpenViking és a Mem0 beépített; a Honcho, a Hindsight és mások a hermes plugins install parancson keresztül."
+  t200: "Külső memóriaszolgáltatók: az OpenViking beépített; a Honcho, a Hindsight, a Mem0 és mások a hermes plugins install parancson keresztül."
   t201: "A plugin hookok közé tartozik a pre/post_tool_call, a pre/post_llm_call és a transform_terminal_output a kimenet egységesítésére."
   t202: "A prompt-gyorsítótárazás (Anthropic) a rendszerprompt gyorsítótárazott előtagjainak újrahasznosításával csökkenti a költségeket."
   t203: "Az ügynök háttérszálon generálja a munkamenetek címét – nincs hatása a késleltetésre."

@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict'
+import { exec as execCallback, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { promisify } from 'node:util'
 
 import { test } from 'vitest'
 
@@ -31,8 +36,10 @@ test('Windows spawn holds the update mutex across marker check and helper spawn'
   const encoded = command.match(/-EncodedCommand\s+([^\s]+)$/)?.[1]
   const script = encoded ? Buffer.from(encoded, 'base64').toString('utf16le') : ''
   assert.match(script, /\.hermes-update-in-progress/)
-  assert.match(script, /\$mutexPath=\$marker\+"\.mutex"/)
-  assert.match(script, /\.Lock\(0,1\)/)
+  assert.match(
+    script,
+    /\$marker\+"\.lock",\[IO\.FileMode\]::OpenOrCreate,\[IO\.FileAccess\]::ReadWrite,\[IO\.FileShare\]::None/
+  )
   assert.match(script, /windows_ssh_runtime.*spawn/)
 })
 
@@ -60,8 +67,64 @@ test('Windows spawn publishes the initial ownership record before releasing the 
   assert.match(script, /write-lock/)
   assert.match(script, /\$lock\s*\|\s*&.*write-lock/)
   assert.doesNotMatch(script, /write-lock[^;]*\$lock\|Out-Null/)
-  assert.ok(script.indexOf('write-lock') < script.indexOf('Unlock'))
+  assert.ok(script.indexOf('write-lock') < script.lastIndexOf('$mutex.Dispose()'))
 })
+
+test.runIf(process.platform === 'win32')(
+  'Windows spawn waits on <marker>.lock and judges v2 claims: live refuses, dead is deleted under the lock',
+  async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-win-marker-'))
+    const marker = path.join(root, '.hermes-update-in-progress')
+    const run = (command: string) => promisify(execCallback)(command, { timeout: 30_000 })
+    const command = atomicWindowsSpawnCommand({ hermesHome: root, python: path.join(root, 'missing-python.exe') })
+
+    // An updater: hold <marker>.lock sharing nothing (marker.ps1 Open-MarkerLock),
+    // write its v2 claim, release, and stay alive as the live owner.
+    const updater = spawn(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-EncodedCommand',
+        encodedPowerShell(
+          [
+            `$m=${psLiteral(marker)}`,
+            "$f=[IO.File]::Open($m+'.lock','OpenOrCreate','ReadWrite','None')",
+            "'held'",
+            'Start-Sleep -Milliseconds 500',
+            '$ct=([DateTimeOffset](Get-Process -Id $PID).StartTime).ToUnixTimeMilliseconds()/1000.0',
+            '[IO.File]::WriteAllText($m,"$PID`n$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())`nct:$ct`n")',
+            'Start-Sleep -Milliseconds 500',
+            '$f.Dispose()',
+            'Start-Sleep -Seconds 30'
+          ].join(';')
+        )
+      ],
+      { stdio: ['ignore', 'pipe', 'inherit'] }
+    )
+
+    try {
+      await new Promise(resolve => updater.stdout.once('data', resolve))
+      await assert.rejects(run(command), (error: any) =>
+        String(error.stderr).includes(`remote update marker is LIVE:${updater.pid}`)
+      )
+
+      updater.kill()
+      await new Promise(resolve => updater.once('exit', resolve))
+      await assertWindowsRemoteInstallUpdateClear(
+        sshWith(async (probe: string) => (await run(probe)).stdout),
+        root
+      )
+      // The dead claim is deleted inside the hold; the missing python then fails the spawn itself.
+      await assert.rejects(run(command))
+      await assert.rejects(readFile(marker), { code: 'ENOENT' })
+    } finally {
+      updater.kill()
+      await rm(root, { recursive: true, force: true })
+    }
+  },
+  60_000
+)
 
 function sshWith(exec) {
   return { exec }
@@ -162,6 +225,41 @@ test('Windows relaunch gate refuses live and uncertain markers before executing 
   }
 })
 
+test('Windows gates keep a dead marker while the checkout lock or a lease byte is held', async () => {
+  // Review G1: a dead claim is deleted (spawn) or reported CLEAR (probe) only
+  // after the update_lock byte range -- owner byte + 16 R5b lease bytes at
+  // 1048576 -- of the installer checkout and the runtime python's checkout is free.
+  const decode = (command: string) => Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  const runtime = { hermesHome: 'C:\\Users\\alice\\.hermes', python: 'C:\\src\\hermes\\venv\\Scripts\\python.exe' }
+  const spawnScript = decode(atomicWindowsSpawnCommand(runtime))
+  let probeScript = ''
+
+  const observed = await assertWindowsRemoteInstallUpdateClear(
+    sshWith(async command => {
+      probeScript = decode(command)
+
+      return 'HELD'
+    }),
+    runtime.hermesHome,
+    runtime.python
+  ).catch(error => error)
+
+  assert.equal(observed.kind, 'update-in-progress')
+  assert.match(observed.message, /still holds the install/)
+
+  for (const script of [spawnScript, probeScript]) {
+    assert.match(script, /\$lockFile\.Lock\(1048576,17\)/)
+    assert.match(script, /Combine\(\$gitdir,"hermes-update\.lock"\)/)
+    assert.match(script, /\$checkoutRoots=@\(\[IO\.Path\]::Combine\(\$installRoot,"hermes-agent"\),/)
+    assert.ok(script.includes("GetDirectoryName('C:\\src\\hermes\\venv\\Scripts\\python.exe')"))
+  }
+
+  const deleteAt = spawnScript.indexOf('[IO.File]::Delete($marker)')
+  const guardAt = spawnScript.indexOf('if($verdict -eq "CLEAR" -and (Test-CheckoutLockHeld $checkoutRoots)){$verdict="HELD"}')
+  assert.ok(guardAt > 0 && guardAt < deleteAt, 'the checkout probe must precede the dead-marker delete')
+  assert.match(probeScript, /if\(\$result -eq "CLEAR" -and \(Test-CheckoutLockHeld \$checkoutRoots\)\)\{\$result="HELD"\}/)
+})
+
 test('Windows relaunch gate uses strict install-wide marker parsing and fail-closed PID probing', async () => {
   let script = ''
 
@@ -175,7 +273,7 @@ test('Windows relaunch gate uses strict install-wide marker parsing and fail-clo
   assert.match(script, /\.hermes-update-in-progress/)
   assert.match(script, /Split-Path -Leaf \$parent.*profiles/)
   assert.match(script, /UTF8Encoding.*true/)
-  assert.match(script, /\\A\(\[1-9\]/)
+  assert.match(script, /\$result=Get-MarkerVerdict \$text/)
   assert.match(script, /GetProcessById/)
   assert.doesNotMatch(script, /ErrorAction SilentlyContinue/)
 })

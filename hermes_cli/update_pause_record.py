@@ -895,6 +895,8 @@ def _resume_fenced(claim_path: Path, body: dict) -> None:
         body = read(claim_path) or body
         token = drop_never_stopped(dict(body["token"]))
         draining = split_draining(token)
+    _hold_backing_off(token, draining)
+    attempted = _relaunch_keys(token)
     token.update(resume_needed=True, recovery=True)
     try:
         if _has_work(token):
@@ -907,13 +909,56 @@ def _resume_fenced(claim_path: Path, body: dict) -> None:
         print(f"  ⚠ Could not restart every paused gateway: {exc}. Run `hermes update` or "
               "`hermes gateway start`.", file=sys.stderr)
     finally:
+        _back_off_unready(token, attempted, draining)
         _hand_back(claim_path, body, token, draining)
 
 
+# A recovering launch runs before every command (chat, doctor, a Desktop-spawned serve) and waits
+# for each relaunched gateway to become ready. One that does not is re-launched only after this
+# backoff (``relaunch_retry``), so an interactive command pays that wait at most once per window;
+# the debt itself stays owed, and ``hermes update`` (which drops the backoff) retries at once.
+_RELAUNCH_RETRY_BASE_S = 60.0
+_RELAUNCH_RETRY_MAX_S = 3600.0
+
+
+def _relaunch_keys(token: dict) -> set[str]:
+    return ({f"profile:{name}" for name in token.get("profiles") or {}}
+            | {f"unmapped:{u.get('pid')}" for u in token.get("unmapped") or [] if u.get("argv")})
+
+
+def _hold_backing_off(token: dict, held: dict) -> None:
+    """Move the profile/unmapped entries still inside their relaunch backoff from *token* into *held*
+    (beside the draining ones): owed, not relaunched by this launch."""
+    now = time.time()
+    waiting = {key for key, state in (token.get("relaunch_retry") or {}).items() if now < float(state.get("next_at") or 0)}
+    held["profiles"].update({n: p for n, p in token["profiles"].items() if f"profile:{n}" in waiting})
+    held["unmapped"].extend(u for u in token["unmapped"] if u.get("argv") and f"unmapped:{u.get('pid')}" in waiting)
+    token["profiles"] = {n: p for n, p in token["profiles"].items() if f"profile:{n}" not in waiting}
+    token["unmapped"] = [u for u in token["unmapped"] if u not in held["unmapped"]]
+
+
+def _back_off_unready(token: dict, attempted: set[str], held: dict) -> None:
+    """Start or extend the backoff of each attempted entry the resume left owed (not ready, not
+    launched); forget it for one that came back. A tree-gate deferral attempted nothing."""
+    retry = dict(token.get("relaunch_retry") or {})
+    if not token.get("resume_deferred"):
+        unready = _relaunch_keys(token)
+        for key in attempted:
+            if key not in unready:
+                retry.pop(key, None)
+                continue
+            attempts = int((retry.get(key) or {}).get("attempts") or 0) + 1
+            retry[key] = {"attempts": attempts, "next_at": time.time() + min(
+                _RELAUNCH_RETRY_BASE_S * 2 ** min(attempts - 1, 6), _RELAUNCH_RETRY_MAX_S)}
+    owed = _relaunch_keys(token) | _relaunch_keys(held)
+    token["relaunch_retry"] = {key: state for key, state in retry.items() if key in owed}
+
+
 def _hand_back(claim_path: Path, body: dict, token: dict, draining: dict) -> None:
-    """Retire the claim when nothing is owed; else hand it back unowned so the next launch retries
-    at once — this launch may live for hours (a chat). A draining process stays owed until it has
-    exited and been restarted. A failed rewrite leaves our claimer line, dead once we exit."""
+    """Retire the claim when nothing is owed; else hand it back unowned for the next launch — this
+    launch may live for hours (a chat) — which retries at once, except a relaunch that did not
+    become ready (its backoff, :func:`_back_off_unready`). A draining process stays owed until it
+    has exited and been restarted. A failed rewrite leaves our claimer line, dead once we exit."""
     token["profiles"] = {**(token.get("profiles") or {}), **draining["profiles"]}
     token["unmapped"] = [*(token.get("unmapped") or []), *draining["unmapped"]]
     owed = bool(token.get("resume_needed") or token.get("resume_deferred") or draining["profiles"] or draining["unmapped"])

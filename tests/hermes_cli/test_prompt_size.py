@@ -64,6 +64,18 @@ def test_runs_offline_without_credentials(isolated_home, monkeypatch):
 
 
 
+@pytest.fixture(autouse=True)
+def _legacy_flat_skills_index(monkeypatch):
+    """This module measures the LEGACY flat skills index.
+
+    The index is RETIRED by default (card t_cc3c6951, operator ruling 2026-09-30); the curated
+    hierarchical surface is the routing surface now. These tests exercise the renderer that still
+    exists behind the explicit escape hatch, so it is pinned ON here. The DARK default is guarded by
+    tests/agent/test_skills_index_deprecated.py.
+    """
+    monkeypatch.setenv("HERMES_SKILLS_INDEX", "flat")
+
+
 def test_skills_breakdown_shape_sorted_and_attributed(isolated_home):
     """Per-skill breakdown reports index-line + on-disk SKILL.md bytes.
 

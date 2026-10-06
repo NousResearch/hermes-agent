@@ -199,7 +199,7 @@ def test_submit_during_manual_compress_is_queued_and_reply_persists(monkeypatch)
     monkeypatch.setattr(server, "_run_prompt_submit", fake_turn)
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
     for name in ("_status_update", "_emit", "_sync_session_key_after_compress", "_persist_queued_user_row",
-                 "_replace_queued_user_row_for_turn"):
+                 "_replace_queued_user_row_for_turn", "_clear_pending", "_announce_cancelled_gateway_approvals"):
         monkeypatch.setattr(server, name, lambda *a, **k: None)
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda _s: False)
     monkeypatch.setattr(server, "_session_info", lambda *a, **k: {})
@@ -214,6 +214,8 @@ def test_submit_during_manual_compress_is_queued_and_reply_persists(monkeypatch)
     rpc = threading.Thread(target=server._methods["session.compress"], args=("r1", {"session_id": "sid"}))
     rpc.start()
     assert entered.wait(5)
+    server._interrupt_session_turn("sid", session)  # Stop mid-compaction must not release the busy claim
+    assert session["running"] is True
     resp = server._handle_busy_submit("r2", "sid", session, "question", "ws-1")
     gate.set()
     rpc.join(5)

@@ -21,6 +21,7 @@ import {
   finalizeInterruptedMessages,
   textPart
 } from '@/lib/chat-messages'
+import type { ConfirmRequest } from '@/store/confirm'
 
 import {
   appendText,
@@ -529,6 +530,43 @@ export function planReload(messages: ChatMessage[], parentId: null | string): nu
     truncateRowId: isFailedTurn ? undefined : userMessage.rowId,
     userIndex
   }
+}
+
+/** Regenerate reuses the restore checkpoint confirm copy for a deep cut. */
+export const deepReloadConfirmRequest = (copy: {
+  restoreBody: string
+  restoreConfirm: string
+  restoreTitle: string
+}): ConfirmRequest => ({
+  confirmLabel: copy.restoreConfirm,
+  description: copy.restoreBody,
+  destructive: true,
+  title: copy.restoreTitle
+})
+
+/**
+ * Regenerate's target comes from the bound message scope, which can go stale
+ * and name a turn hours back — the planner trusted it and the submit silently
+ * archived every later turn (#133716). A reload that would drop later user
+ * turns goes through the same confirm restore uses; null when declined. The
+ * tail regenerate (nothing after the target) is returned unchanged.
+ */
+export async function planConfirmedReload(
+  messages: ChatMessage[],
+  parentId: null | string,
+  confirmDeep: () => Promise<boolean>
+): Promise<null | ReloadPlan> {
+  const plan = planReload(messages, parentId)
+
+  if (
+    !plan ||
+    plan.truncateOrdinal === undefined ||
+    !visibleUserMessageIndices(messages).some(i => i > plan.userIndex)
+  ) {
+    return plan
+  }
+
+  return (await confirmDeep()) ? plan : null
 }
 
 /** Optimistic reload state: keep the user turn, hide the branch's assistants. */

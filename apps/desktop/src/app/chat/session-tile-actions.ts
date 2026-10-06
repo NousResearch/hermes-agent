@@ -20,6 +20,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
@@ -51,10 +52,11 @@ import {
   applyBranchVisibility,
   applyReloadOptimistic,
   applyRewindOptimistic,
+  deepReloadConfirmRequest,
   durableRowIdsForRebind,
   finalizeStoppedMessages,
+  planConfirmedReload,
   planEdit,
-  planReload,
   planRestore,
   rebindSurvivorRowIds,
   runRewindSubmit,
@@ -552,7 +554,9 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         return
       }
 
-      const plan = planReload(state.messages, parentId)
+      const plan = await planConfirmedReload(state.messages, parentId, () =>
+        confirm(deepReloadConfirmRequest(t.assistant.thread))
+      )
 
       if (!plan) {
         return
@@ -591,7 +595,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         notifyError(err, copy.regenerateFailed)
       }
     },
-    [applySurvivorRowIds, copy.regenerateFailed, readState, submitRewind, update]
+    [applySurvivorRowIds, copy.regenerateFailed, readState, submitRewind, t, update]
   )
 
   const restoreToMessage = useCallback(

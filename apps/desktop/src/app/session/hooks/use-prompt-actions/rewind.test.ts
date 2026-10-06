@@ -9,6 +9,7 @@ import {
   applyRewindOptimistic,
   finalizeStoppedMessages,
   finalizeUserInterruptedMessages,
+  planConfirmedReload,
   planEdit,
   planReload,
   planRestore,
@@ -703,5 +704,59 @@ describe('optimistic rewind/reload turn-clock seeding (#86795)', () => {
     expect(next.busy).toBe(true)
     expect(next.turnLive).toBe(false)
     expect(next.turnStartedAt).toBeGreaterThanOrEqual(before)
+  })
+})
+
+describe('planConfirmedReload (#133716)', () => {
+  const transcript = [
+    row('u1', 'user', 'old prompt', { rowId: 11 }),
+    row('a1', 'assistant', 'old reply'),
+    row('u2', 'user', 'latest prompt', { rowId: 13 }),
+    row('a2', 'assistant', 'latest reply')
+  ]
+
+  const submitPlan = async (plan: Awaited<ReturnType<typeof planConfirmedReload>>) => {
+    const submits: Record<string, unknown>[] = []
+
+    const gateway = (async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submits.push(params ?? {})
+      }
+
+      return { status: 'streaming' }
+    }) as <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+
+    if (plan) {
+      await runRewindSubmit(
+        gateway,
+        'sid',
+        plan.text,
+        plan.truncateOrdinal,
+        plan.truncateMessageId,
+        false,
+        undefined,
+        plan.truncateRowId,
+        plan.sourceText
+      )
+    }
+
+    return submits[0]
+  }
+
+  it('confirms a stale/deep regenerate before archiving later user turns; tail regenerate is unchanged', async () => {
+    let asked = 0
+    const askAndDecline = async () => (asked += 1) < 0
+
+    expect(await submitPlan(await planConfirmedReload(transcript, 'a1', askAndDecline))).toBeUndefined()
+    expect(asked).toBe(1)
+
+    expect(await submitPlan(await planConfirmedReload(transcript, 'a1', async () => true))).toMatchObject({
+      truncate_before_row_id: 11
+    })
+
+    const tail = await submitPlan(await planConfirmedReload(transcript, 'a2', askAndDecline))
+
+    expect(asked).toBe(1)
+    expect(tail).toMatchObject({ confirm_truncate: true, truncate_before_row_id: 13 })
   })
 })

@@ -265,6 +265,7 @@ class TestRealProfileCdpLaunch:
              patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
              patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
              patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt_real_profile, "_cdp_http_ready", return_value=True), \
              patch.object(bt_real_profile, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:41000"]), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
@@ -284,6 +285,59 @@ class TestRealProfileCdpLaunch:
         assert socket_dir == str(tmp_path / f"agent-browser-{bt._REAL_PROFILE_SESSION}")
         assert (tmp_path / f"agent-browser-{bt._REAL_PROFILE_SESSION}" / f"{bt._REAL_PROFILE_SESSION}.owner_pid").read_text() == str(os.getpid())
         assert "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in captured["env"]
+        self._reset()
+
+    def test_launch_holds_until_the_cdp_listener_accepts(self, tmp_path):
+        """DevToolsActivePort can be written before the CDP listener accepts (#133659): the
+        launch must keep probing the discovery root instead of returning the bare port, or
+        the attach races a not-yet-accepting port and dies with an opaque connect error."""
+        import tools.browser_tool_real_profile as bt_real_profile
+
+        self._reset()
+        probes = []
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+            return FakeChrome()
+
+        with patch.object(bt_real_profile.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt_real_profile, "_cdp_http_ready",
+                          side_effect=lambda url: probes.append(url) or len(probes) >= 3):
+            port, err = bt_real_profile._launch_real_profile_chrome("/usr/bin/edge", str(tmp_path))
+        assert (port, err) == (41000, None)
+        assert len(probes) == 3 and probes[0] == "http://127.0.0.1:41000"
+        self._reset()
+
+    def test_launch_fails_closed_when_the_listener_never_accepts(
+        self, tmp_path, monkeypatch
+    ):
+        """A written DevToolsActivePort whose listener never accepts must fail closed with an
+        actionable message — not hand the attach a dead port (the every-retry-times-out state)."""
+        import tools.browser_tool as bt
+        import tools.browser_tool_real_profile as bt_real_profile
+
+        self._reset()
+        monkeypatch.setattr(bt_real_profile, "_REAL_PROFILE_LAUNCH_WINDOW_S", 0.5)
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+            return FakeChrome()
+
+        with patch.object(bt_real_profile.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt_real_profile, "_cdp_http_ready", return_value=False):
+            port, err = bt_real_profile._launch_real_profile_chrome("/usr/bin/edge", str(tmp_path))
+        assert port is None
+        assert "not accepting connections" in err
+        # the half-started Chrome was torn down, not leaked
+        assert not bt._real_profile_chrome_procs
         self._reset()
 
     def test_reuses_only_session_on_our_copy_dir(self, tmp_path):

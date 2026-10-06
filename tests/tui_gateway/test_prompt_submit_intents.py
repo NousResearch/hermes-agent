@@ -1,5 +1,6 @@
 """Durable prompt intent regressions for #62203: retries, route assertions and queue transport."""
 
+import contextlib
 import threading
 import types
 
@@ -42,7 +43,8 @@ def _defer_prompt_submit_thread(monkeypatch):
     class _DeferredThread:
         def __init__(self, target=None, daemon=None):
             self.target = target
-            threads.append(self)
+            if target is not None:
+                threads.append(self)
 
         def start(self):
             return None
@@ -51,6 +53,10 @@ def _defer_prompt_submit_thread(monkeypatch):
     monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
     monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
     monkeypatch.setattr(server, "_start_agent_build", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_args: None)
+    monkeypatch.setattr(server, "_persist_session_row_for_submit", lambda *_args: None)
+    monkeypatch.setattr("hermes_state_dbfile._iter_darwin_sidecar_holders", lambda _path: [])
     return threads
 
 
@@ -78,7 +84,7 @@ def test_prompt_submit_expected_stored_session_id_matches_session_key(monkeypatc
             }
         )
 
-        assert response["result"] == {"status": "streaming"}
+        assert response["result"]["status"] == "streaming"
         assert session["running"] is True
         assert len(threads) == 1
     finally:
@@ -156,7 +162,7 @@ def test_prompt_submit_omitted_expected_stored_session_id_remains_compatible(mon
             }
         )
 
-        assert response["result"] == {"status": "streaming"}
+        assert response["result"]["status"] == "streaming"
         assert len(threads) == 1
     finally:
         server._sessions.pop("runtime-a", None)
@@ -190,7 +196,7 @@ def test_prompt_submit_expected_stored_session_id_accepts_compression_parent(mon
             }
         )
 
-        assert response["result"] == {"status": "streaming"}
+        assert response["result"]["status"] == "streaming"
         assert len(threads) == 1
     finally:
         server._sessions.pop("runtime-tip", None)
@@ -323,7 +329,7 @@ def test_prompt_submit_expected_stored_session_id_uses_profile_database(monkeypa
             }
         )
 
-        assert response["result"] == {"status": "streaming"}
+        assert response["result"]["status"] == "streaming"
         assert len(threads) == 1
     finally:
         server._sessions.pop("runtime-profile", None)
@@ -391,7 +397,8 @@ def test_prompt_submit_deduplicates_lost_ack_retry_within_stored_session(
 
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(server, "_get_db", lambda: db)
-    monkeypatch.setattr(server, "_wait_agent", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_wait_agent_for_prompt", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
     monkeypatch.setattr(server, "_run_prompt_submit", _run_once)
     monkeypatch.setattr(
         server,
@@ -493,7 +500,7 @@ def test_prompt_submit_deduplicates_lost_ack_retry_within_stored_session(
             }
         )
 
-        assert first["result"] == {"status": "streaming"}
+        assert first["result"]["status"] == "streaming"
         assert retry["result"] == {
             "duplicate": True,
             "messages": [],
@@ -503,8 +510,10 @@ def test_prompt_submit_deduplicates_lost_ack_retry_within_stored_session(
         assert changed_route_reuse["error"]["code"] == 4020
         assert wrong_destination["error"]["code"] == 4019
         assert oversized_id["error"]["code"] == 4021
-        assert unrelated_intent["result"] == {"status": "streaming"}
+        assert unrelated_intent["result"]["status"] == "streaming"
         assert counts == {"build": 2, "execute": 2, "inflight": 2, "persist": 2, "seed": 2}
+        assert len(db.get_messages("stored-a")) == 1
+        assert len(db.get_messages("stored-b")) == 1
         assert len(ledger) == 2
     finally:
         server._sessions.pop("runtime-a", None)
@@ -522,6 +531,7 @@ def test_prompt_submit_releases_intent_when_agent_setup_fails(monkeypatch):
     monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
     monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
     monkeypatch.setattr(server, "_start_agent_build", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_session_db", lambda _session: contextlib.nullcontext(None))
     # The deferred prompt path waits via _wait_agent_for_prompt, not the flat
     # _wait_agent ceiling it replaced (#63078).
     monkeypatch.setattr(
@@ -538,7 +548,7 @@ def test_prompt_submit_releases_intent_when_agent_setup_fails(monkeypatch):
     session = _session(session_key="stored-a")
     server._sessions["runtime-a"] = session
     inflight = []
-    monkeypatch.setattr(server, "_start_inflight_turn", lambda *_args: inflight.append(True))
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *_args, **_kwargs: inflight.append(True))
     params = {
         "session_id": "runtime-a",
         "expected_stored_session_id": "stored-a",
@@ -550,8 +560,8 @@ def test_prompt_submit_releases_intent_when_agent_setup_fails(monkeypatch):
         first = server.handle_request({"id": "setup-1", "method": "prompt.submit", "params": params})
         retry = server.handle_request({"id": "setup-2", "method": "prompt.submit", "params": params})
 
-        assert first["result"] == {"status": "streaming"}
-        assert retry["result"] == {"status": "streaming"}
+        assert first["result"]["status"] == "streaming"
+        assert retry["result"]["status"] == "streaming"
         assert inflight == [True, True]
         assert len(ledger) == 0
         assert session["running"] is False
@@ -614,5 +624,3 @@ def test_busy_rewind_is_retried_instead_of_queued_without_truncation(monkeypatch
         assert len(ledger) == 0
     finally:
         server._sessions.pop("runtime-rewind", None)
-
-

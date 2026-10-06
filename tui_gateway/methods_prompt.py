@@ -702,7 +702,7 @@ def _(rid, params: dict) -> dict:
     )
     if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
         return stopped
-    session, err = _sess_nowait(params, rid)
+    session, err = _prompt_submit_session(params, rid)
     if err:
         return err
     from tools.bot_relay import DeliveryAuthor
@@ -712,8 +712,6 @@ def _(rid, params: dict) -> dict:
     if raw_author is not None and not isinstance(raw_author, DeliveryAuthor):
         return _err(rid, 4124, "turn author is stamped by the gateway, never by a client")
     turn_author = raw_author.author if raw_author is not None else None
-    if (err := _prompt_submit_session_contract(params, rid, session)) is not None:
-        return err
     intent_checked = False
 
     def _accept_intent():

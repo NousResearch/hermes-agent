@@ -2,7 +2,20 @@
 
 from __future__ import annotations
 
+import threading
+
 from .method_ctx import bind_module
+from .prompt_intents import PromptIntentLedger
+
+_prompt_intents: PromptIntentLedger | None = None
+_prompt_intents_lock = threading.Lock()
+
+
+def _prompt_submit_session(params: dict, rid):
+    session, err = _sess_nowait(params, rid)
+    if err is None:
+        err = _prompt_submit_session_contract(params, rid, session)
+    return session, err
 
 
 def _prompt_submit_session_contract(
@@ -101,6 +114,7 @@ def _claim_prompt_submit_intent(
 ) -> dict | None:
     """Atomically reserve a client prompt intent, or return its retry result."""
     global _prompt_intents
+    import sqlite3
 
     client_request_id = str(params.get("client_request_id") or "").strip()
     if not client_request_id:

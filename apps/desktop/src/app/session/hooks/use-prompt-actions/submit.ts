@@ -1,4 +1,3 @@
-import type { PromptSubmitResult } from '@hermes/shared'
 import { type MutableRefObject, useCallback } from 'react'
 
 import { getSession, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
@@ -46,6 +45,7 @@ import type { CreateBackendSessionForSend } from '../use-session-actions/create-
 import { resolveSessionOwner, resolveSessionProfile } from '../use-session-actions/utils'
 
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
+import { createPromptSubmitIntent, requestPromptSubmit } from './submit-idempotency'
 import {
   acquireSubmitInFlight,
   type GatewayRequest,
@@ -212,8 +212,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // Refs are recomputed after sync (file.attach rewrites @file: refs to
       // workspace-relative paths the remote gateway can resolve). Seed the
       // optimistic message with the pre-sync refs, then rewrite once synced.
-      // Images use their bounded base64 thumbnail so the optimistic bubble
-      // renders inline without embedding the full source — see optimisticAttachmentRef.
+      // Images use bounded thumbnails through optimisticAttachmentRef.
       let attachmentRefs = attachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
 
       const buildContextText = (atts: ComposerAttachment[]): string => {
@@ -885,16 +884,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         rewriteOptimistic(liveSessionId, syncedAttachments)
         const text = buildContextText(syncedAttachments)
 
-        // One id for this logical send, reused by every retry below. The
-        // gateway ledger collapses retries onto the original turn, which is
-        // what makes the ambiguous-timeout retry safe instead of a way to
-        // send the same message twice.
-        const clientRequestId = crypto.randomUUID()
+        const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
+        const submitIntent = createPromptSubmitIntent(recoverStoredSessionId)
 
         const submitParams = (targetId: string) => ({
           session_id: targetId,
           text,
-          client_request_id: clientRequestId,
+          ...submitIntent,
           ...(interrupted && { interrupted }),
           // Off-screen widget intent: the gateway types the persisted user
           // row display_kind=hidden so no client renders it as a bubble.
@@ -925,10 +921,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // The identity the backend actually accepted: the live runtime id,
         // replaced below when a stale binding was recovered.
         let acceptedRuntimeSessionId = liveSessionId
-        // Hoisted out of the recovery call so the acceptance report can name
-        // the durable session even when no recovery was needed.
-        const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
-
         try {
           // A bot's chat is a tile scoped to the `bots` workspace; the primary chat is Sessions mode.
           noteMessageSent($sessionTiles.get().find(tile => tile.runtimeId === sessionId)?.workspaceMode ?? 'sessions')
@@ -938,11 +930,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             recoverStoredSessionId,
             liveId =>
               withSessionBusyRetry(() =>
-                requestGateway<PromptSubmitResult>(
-                  'prompt.submit',
-                  submitParams(liveId),
-                  PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
-                )
+                requestPromptSubmit(requestGateway, submitParams(liveId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
               ),
             {
               requestGateway,
@@ -969,11 +957,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // A starved backend loop (#55578 symptom d) rejects the submit even
             // though the stored session is fine — recover it like a dead id
             // instead of erroring out and losing the session binding.
-            //
-            // The timeout is ambiguous — the submit may already have been
-            // accepted — which is exactly what client_request_id above makes
-            // safe: a contract-v9 backend recognizes the id and collapses this
-            // retry onto the original turn instead of running it twice.
             { alsoTimeout: true }
           )
 

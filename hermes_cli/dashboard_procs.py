@@ -393,7 +393,10 @@ def _caller_ancestor_pids() -> set[int]:
 
 
 def _argv_head_command(pid: int) -> str | None:
-    """Basename of *pid*'s first argv token, best-effort; ``None`` when unreadable."""
+    """Basename of *pid*'s first argv token via psutil then /proc; ``None`` when unreadable.
+    The ``ps -A`` scan feeds this pid, so the head stays name-only: ``ps -o command=`` cannot
+    be re-parsed into an argv here without the structural read ``_dashboard_cmdline_for_pid``
+    does for respawn, which this best-effort lookup must not pay."""
     try:
         import psutil
 
@@ -637,6 +640,10 @@ def _kill_stale_dashboard_processes(
     # is left unsupervised. Snapshot the loaded jobs once, before the kill; ``--stop`` reads them
     # too, so it can say that a KeepAlive job will undo the stop.
     launchd_jobs = _dash._loaded_launchd_backend_jobs() if sys.platform != "win32" else []
+    # PIDs we can kill but not bring back: their argv cannot be reconstructed (unreadable
+    # kernel record, or a flattened ps line holding an inline ``-c`` payload). Respawning a
+    # guessed argv shatters the bootstrap and dies on exec — refuse and say manual start.
+    manual_starts: list[int] = []
 
     def _launchd_owner(pid: int, cmdline: list[str] | None):
         return _dash._launchd_job_owning_backend(pid, cmdline, launchd_jobs, ancestors=_process_ancestors(pid))
@@ -657,6 +664,8 @@ def _kill_stale_dashboard_processes(
                 # after the process is gone (#78821).
                 pid_cmdline[pid] = cmdline
                 pid_home[pid] = _hermes_home_for_pid(pid)
+            else:
+                manual_starts.append(pid)
         if already_restarted_units:
             pids = [pid for pid in pids if (pid_service.get(pid) or "").removesuffix(".service")
                     not in already_restarted_units]
@@ -674,6 +683,10 @@ def _kill_stale_dashboard_processes(
         print(f"    ✓ stopped PID {pid}")
     for pid, err_msg in failed:
         print(f"    ✗ failed to stop PID {pid}: {err_msg}")
+    for pid in killed:
+        if pid in manual_starts:
+            print(f"    ⚠ PID {pid}: manual start; cannot reconstruct argv —"
+                  " restart it yourself with: hermes dashboard --port <port>")
     if killed and restart_managed:
         unrecovered = _restart_killed_backends(
             killed, pid_service, pid_cgroup, pid_cmdline, pid_home, pid_launchd=pid_launchd)

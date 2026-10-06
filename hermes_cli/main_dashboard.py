@@ -351,8 +351,10 @@ def _restart_launchd_job(domain: str, label: str, old_pid: int | None, *, timeou
 
 
 def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
-    """Exact argv of a running process: ``/proc/<pid>/cmdline`` (Linux), ``ps -o command=`` + shlex
-    (macOS), None on Windows (no graceful taskkill window; Desktop manages its backend)."""
+    """Exact argv of a running process: ``/proc/<pid>/cmdline`` (Linux), ``ps -o command=`` +
+    structural argv recovery (macOS), None on Windows (no graceful taskkill window; Desktop
+    manages its backend). ``None`` also means "cannot reconstruct" — e.g. a ``-c`` launcher
+    whose kernel argv is unreadable — and callers must report a manual start, not guess."""
     if sys.platform == "win32":
         return None
     try:
@@ -368,11 +370,11 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
         command = (result.stdout or "").strip()
         if not command:
             return None
-        try:
-            argv = shlex.split(command)
-        except ValueError:
-            argv = command.split()
-        return argv or None
+        # `ps -o command=` flattens argv into one string; re-tokenizing a line that holds
+        # an inline `-c <bootstrap>` payload shatters the bootstrap (respawn SyntaxError).
+        # Structural read or refusal — see hermes_cli/cmdline_capture.py.
+        from hermes_cli.cmdline_capture import reconstruct_argv
+        return reconstruct_argv(pid, command)
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
 

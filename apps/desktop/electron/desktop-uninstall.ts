@@ -190,7 +190,8 @@ function allowedUninstallModes(kind: InstallKind): string[] {
  * through Apps & Features, macOS through the Trash, a Linux AppImage is a
  * single file the user placed somewhere, and a Nix install belongs to the
  * flake / profile that made it. `appPath` is the resolveRemovableAppPath()
- * result (the AppImage path on Linux), used only to name the exact file.
+ * result (the .app bundle on macOS, the AppImage path on Linux), used only to
+ * name the exact bundle or file.
  */
 function nativeRemovalInstructions(kind, platform, appPath = null) {
   if (kind === 'nix') {
@@ -205,7 +206,11 @@ function nativeRemovalInstructions(kind, platform, appPath = null) {
   }
 
   if (platform === 'darwin') {
-    return 'Quit the app and drag Hermes.app from Applications to the Trash.'
+    // Name the running bundle: channel builds ship under different .app names.
+    const bundle = appPath ? path.posix.basename(String(appPath)) : 'the Hermes app'
+    const folder = appPath ? path.posix.dirname(String(appPath)) : 'Applications'
+
+    return `Quit the app and drag ${bundle} from ${folder} to the Trash.`
   }
 
   if (appPath && /\.appimage$/i.test(String(appPath))) {

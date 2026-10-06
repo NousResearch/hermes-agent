@@ -151,7 +151,8 @@ def _payload_manifest(root: Path) -> dict | None:
     """The manifest of the sealed payload whose tree is the resolved *root*, or ``None``.
 
     Every install asks, so a ``manifest.json`` that some other tool left beside a
-    checkout must read as "not a payload", never as an error.
+    checkout, or one with a mistyped field, must read as "not a payload", never as an
+    error. Readers then take each field with ``.get`` and treat an absent one as unset.
     """
     try:
         manifest = json.loads((root.parent / "manifest.json").read_text(encoding="utf-8-sig"))
@@ -159,7 +160,12 @@ def _payload_manifest(root: Path) -> dict | None:
         return None
     if not isinstance(manifest, dict) or not isinstance(manifest.get("repo"), str):
         return None
-    return manifest if (root.parent / manifest["repo"]).resolve() == root else None
+    runtime = manifest.get("runtime", {})
+    commands = runtime.get("commands", {}) if isinstance(runtime, dict) else None
+    well_formed = (isinstance(commands, dict)
+                   and isinstance(commands.get("hermes", ""), str)
+                   and all(isinstance(manifest.get(key, ""), str) for key in ("venv", "store")))
+    return manifest if well_formed and (root.parent / manifest["repo"]).resolve() == root else None
 
 
 def _payload_path(root: Path, relative: str, what: str) -> Path:
@@ -173,13 +179,12 @@ def _payload_path(root: Path, relative: str, what: str) -> Path:
 def payload_venv(project_root: Path) -> Path | None:
     """The environment a sealed payload ships beside its tree, or ``None``."""
     root = Path(project_root).resolve()
-    manifest = _payload_manifest(root)
-    return _payload_path(root, manifest["venv"], "environment") if manifest else None
+    venv = (_payload_manifest(root) or {}).get("venv")
+    return _payload_path(root, venv, "environment") if venv else None
 
 
 def _payload_hermes_command(root: Path) -> Path | None:
-    manifest = _payload_manifest(root)
-    command = manifest.get("runtime", {}).get("commands", {}).get("hermes") if manifest else None
+    command = (_payload_manifest(root) or {}).get("runtime", {}).get("commands", {}).get("hermes")
     return _payload_path(root, command, "launcher") if command else None
 
 
@@ -217,9 +222,9 @@ def store_root(project_root: Path, *, honor_runtime_override: bool = True) -> Pa
         if override:
             return Path(override).resolve()
     root = Path(project_root).resolve()
-    manifest = _payload_manifest(root)
-    if manifest is not None:
-        return _payload_path(root, manifest["store"], "store")
+    store = (_payload_manifest(root) or {}).get("store")
+    if store:
+        return _payload_path(root, store, "store")
     from pm.paths import install_stamp_path
 
     for directory in (root, *root.parents):

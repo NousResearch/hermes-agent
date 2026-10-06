@@ -222,6 +222,7 @@ def test_submit_during_manual_compress_is_queued_and_reply_persists(monkeypatch)
     assert session["running"] is True
     second = server._methods["session.compress"]("r3", {"session_id": "sid"})  # the locked claim maps to busy
     assert second["error"]["code"] == 4009
+    assert "/compress" in second["error"]["message"] and "Stop" not in second["error"]["message"]  # double-click
     # tools.configure rebuilds the agent (history_version bump): refused before it reads the action
     refused = server._methods["tools.configure"]("r4", {"session_id": "sid"})["error"]
     assert refused["code"] == 4009

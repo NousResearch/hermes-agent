@@ -231,7 +231,7 @@ def _manual_compress_turn(sid: str, session: dict):
     about to bump, which dropped the turn's reply (#133504). The queued prompt drains on release."""
     with session["history_lock"]:
         if session.get("running"):
-            raise CompressionBusy(busy_message("compress"))
+            raise CompressionBusy(busy_message("compress", bool(session.get("_manual_compress_active"))))
         session["running"] = session["_manual_compress_active"] = True
     try:
         yield

@@ -9,7 +9,6 @@ send path the state.db warning uses.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import contextlib
 import logging
 from pathlib import Path
@@ -66,7 +65,7 @@ def install_cron_store_notices(runner, loop: asyncio.AbstractEventLoop) -> None:
 def _log_notice_failure(done, event: str, store: str) -> None:
     try:
         done.result()
-    except (asyncio.CancelledError, concurrent.futures.CancelledError):
+    except asyncio.CancelledError:
         return
     except Exception:  # the ticker thread already moved on: log, never raise
         logger.warning("Cron store %s notice for %s failed", event, store, exc_info=True)

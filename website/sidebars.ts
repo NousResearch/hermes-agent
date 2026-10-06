@@ -806,6 +806,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/session-storage',
             'developer-guide/state-db-recovery',
             'developer-guide/provider-runtime',
+            'developer-guide/config-backend',
             'developer-guide/programmatic-integration',
           ],
         },

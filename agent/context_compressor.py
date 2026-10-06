@@ -31,6 +31,7 @@ from agent.auxiliary_client import (
     extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
+from agent.context_compressor_attribution import AuxRouteAttributionMixin
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
@@ -2167,7 +2168,8 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
 
 
 class ContextCompressor(
-    SummaryDispatchMixin, PreLlmSkipMixin, CompressionTelemetryMixin, MicroCompactionMixin, ContextEngine,
+    SummaryDispatchMixin, PreLlmSkipMixin, CompressionTelemetryMixin, MicroCompactionMixin,
+    AuxRouteAttributionMixin, ContextEngine,
 ):
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
@@ -2305,32 +2307,9 @@ class ContextCompressor(
         # may differ from ``summary_model``/``model``). Recorded so a failed auto-resolved model is
         # named in the user-visible warning and falls back to the main model (#116472).
         self._last_aux_resolved_model = None
-        # The auxiliary identity actually used on the wire for the most
-        # recent summary call — resolved from auxiliary.compression config
-        # by _resolve_task_provider_model, distinct from the main-model
-        # identity on self.provider / self.summary_model / self.base_url.
-        # Read by the compression-abort diagnostic (#72636).
-        self._last_aux_call_provider: str = ""
-        self._last_aux_call_model: str = ""
-        self._last_aux_call_base_url: str = ""
-        # The CONFIG-layer auxiliary identity (provider/model/base_url as
-        # declared under auxiliary.compression), captured per attempt. Used
-        # only when no physical request was dispatched (e.g. an explicit
-        # provider whose API key is missing fails before the client is
-        # built) to distinguish "configured but pre-dispatch failure" from
-        # "auxiliary.compression not set at all" — the latter is the only
-        # case where the diagnostic may fall back to the main-model
-        # identity (#72636).
-        self._last_aux_config_provider: str = ""
-        self._last_aux_config_model: str = ""
-        self._last_aux_config_base_url: str = ""
-        # Per-attempt failure classification ("auth" | "network" | "other" |
-        # None). Unlike _last_summary_auth_failure / _last_summary_network_failure,
-        # which are intentionally sticky across compress() calls to preserve
-        # the cooldown guard (see compress()), this field is reset at the top
-        # of every summary attempt so the abort diagnostic reflects the
-        # CURRENT attempt's failure mode, not a stale prior one (#72636).
-        self._last_attempt_failure_class: Optional[str] = None
+        # Aux wire/config identity + per-attempt failure class for the abort
+        # diagnostic (#72636) — see AuxRouteAttributionMixin.
+        self._init_aux_route_attribution()
         self._consecutive_timeout_failures = self._consecutive_truncation_failures = 0
         # Sustained-overload escalation bookkeeping (#123167): per-session, reset by success.
         self._consecutive_overload_aborts = 0
@@ -3937,12 +3916,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         """Issue the single aux summary call; return validated content text.
         Raises RuntimeError for empty content or a length-truncated (PARTIAL) summary so the failure
         routes through main-model fallback + cooldown instead of wiping the compacted turns."""
-        # Per-attempt reset: this attempt's failure classification must
-        # reflect THIS attempt's outcome, not a sticky prior one (#72636).
-        # _last_summary_auth_failure / _last_summary_network_failure stay
-        # sticky for the cooldown guard (see compress()); this field is the
-        # authoritative "what went wrong this attempt" for the abort path.
-        self._last_attempt_failure_class = None
+        # Per-attempt attribution reset + config-layer identity capture, BEFORE
+        # dispatch (#72636) — see AuxRouteAttributionMixin.
+        self._prepare_aux_route_attribution()
         # call_llm writes the route it actually selected; never pre-resolve a second, stale pair.
         _aux_route: dict[str, str] = {}
         call_kwargs: dict[str, Any] = {
@@ -3957,86 +3933,6 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         }
         # Pinned route (stall fallback) replaces task routing so the retry leaves the stalled backend.
         self._apply_summary_route(call_kwargs, _pinned_summary_call_kwargs())
-        # Failure attribution (#72636): resolve the auxiliary identity
-        # BEFORE dispatch and persist it on the instance. Auth errors that
-        # abort the call pre-dispatch never populate ``_aux_route``, so
-        # callers attributing the failure need the resolved provider/
-        # model/base_url rather than the main-model identity stored on
-        # self.provider / self.summary_model / self.base_url. These differ
-        # whenever auxiliary.compression.{provider,model,base_url} is
-        # configured separately from the main runtime.
-        # Attribution-only: never fed back into ``call_kwargs`` — the wire
-        # route stays whatever ``call_llm`` selects and records in
-        # ``_aux_route``.
-        _aux_provider = ""
-        _aux_model = self.summary_model or ""
-        _aux_context = None
-        _resolved_base = None
-        try:
-            from agent.auxiliary_client import _resolve_task_provider_model
-
-            _resolved_provider, _resolved_model, _resolved_base, _, _ = (
-                _resolve_task_provider_model(
-                    "compression",
-                    model=(self.summary_model or ""),
-                )
-            )
-            _aux_provider = _resolved_provider or ""
-            _aux_model = _resolved_model or _aux_model or self.model or ""
-            if _aux_model == self.model:
-                _aux_context = self.context_length
-        except Exception:
-            pass
-        # Reset the wire-route snapshot at the start of each attempt; the
-        # authoritative version is written by call_llm's route_callback
-        # before each physical request (auto-detection, retries, fallback
-        # chains, client.base_url). _resolve_task_provider_model above
-        # returns a config-layer guess that call_llm may override, so we do
-        # NOT persist it as the wire identity (#72636).
-        self._last_aux_call_provider = ""
-        self._last_aux_call_model = ""
-        self._last_aux_call_base_url = ""
-        # Config-layer identity: what auxiliary.compression is DECLARED to
-        # use, captured before dispatch. Populated only when an explicit
-        # provider is configured — when the task is unset the resolution
-        # returns "auto" and the summary call inherits the main-model
-        # identity. Used when no physical request was dispatched (e.g. the
-        # explicit provider's API key is missing) so the abort diagnostic
-        # reports the configured auxiliary identity as a pre-dispatch
-        # failure instead of substituting the main endpoint (#72636).
-        self._last_aux_config_provider = ""
-        self._last_aux_config_model = ""
-        self._last_aux_config_base_url = ""
-        if _aux_provider not in ("", "auto", None):
-            _cfg_base = str(_resolved_base or "")
-            if _cfg_base:
-                try:
-                    from agent.auxiliary_client import _extract_url_query_params
-                    _cfg_base, _ = _extract_url_query_params(_cfg_base)
-                except Exception:
-                    _cfg_base = _cfg_base.split("?", 1)[0]
-            self._last_aux_config_provider = str(_aux_provider)
-            self._last_aux_config_model = str(_aux_model or "")
-            self._last_aux_config_base_url = _cfg_base
-
-        def _record_aux_route(provider, model, base_url):
-            # Invoked before every call_llm physical request; the final
-            # callback is therefore the route that terminated the call,
-            # after auto-detection / fallback. Strip any query string
-            # defensively — some proxies carry credentials as ?key=... and
-            # this value is surfaced in user-facing diagnostics on
-            # Telegram/Discord/Slack/CLI (#72636).
-            _safe_base = ""
-            if base_url:
-                try:
-                    from agent.auxiliary_client import _extract_url_query_params
-                    _safe_base, _ = _extract_url_query_params(str(base_url))
-                except Exception:
-                    _safe_base = str(base_url).split("?", 1)[0]
-            self._last_aux_call_provider = provider or ""
-            self._last_aux_call_model = model or ""
-            self._last_aux_call_base_url = _safe_base or ""
-
         # Compression is atomic: protect the in-flight summary call from a mid-turn gateway interrupt.
         # Without this, an incoming user message aborts the summary and compression falls back to a degraded
         # static marker, losing the real handoff (#23975). Re-entrant: a main-model retry (_generate_summary
@@ -4053,7 +3949,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         try:
             # Compression is atomic: shield the summary call from gateway interrupts. Re-entrant.
             with aux_interrupt_protection():
-                response = call_llm(route_callback=_record_aux_route, **call_kwargs)
+                response = call_llm(route_callback=self._record_aux_route, **call_kwargs)
         finally:
             route_known = bool(_aux_route.get("provider") and _aux_route.get("model"))
             _aux_model = _aux_route.get("model") or self.summary_model or self.model or ""
@@ -4074,14 +3970,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             raise AuxiliaryExplicitCancellation()
         # Reasoning-field fallback (DeepSeek/Qwen/Kimi put the summary in reasoning_content); capped.
         content = extract_content_or_reasoning(response, max_reasoning_chars=8000)
-        # ``summary_model`` is empty in every production construction (the only in-tree call
-        # passes summary_model_override=None), so naming it here unconditionally reported the
-        # MAIN model — the misattribution quoted in #113582. ``_aux_route`` already carries the
-        # route call_llm actually selected; keep the static expression only as the pre-dispatch
-        # fallback (#72636 review).
-        _where_provider = _aux_route.get("provider") or self.provider or "auto"
-        _where_model = _aux_route.get("model") or self.summary_model or self.model
-        where = f"(provider={_where_provider} model={_where_model})"
+        where = self._aux_route_label(_aux_route)
         # Some OpenAI-compatible proxies (e.g. cmkey.cn, one-api channels) return a well-formed HTTP 200
         # with an empty or whitespace-only ``content`` instead of an error or empty ``choices``. That
         # payload passes ``_validate_llm_response`` (a ``message`` exists), so it reaches here and would
@@ -4351,23 +4240,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._last_summary_auth_failure = True
             self._last_attempt_failure_class = "auth"
         if kind.json_decode and not kind.model_not_found and not kind.timeout:
-            # ``summary_model`` is permanently empty in production, so the old values logged
-            # the MAIN identity ("(main)" / the main provider) for an auxiliary failure. Name
-            # the route the aux lane actually used — the wire identity first, the config-layer
-            # identity when the call died pre-dispatch — with the static fields as the final
-            # fallback for an unset auxiliary.compression (#72636 review / #113582).
-            _ident_provider = (
-                self._last_aux_call_provider or self._last_aux_config_provider
-                or self.provider or "auto"
-            )
-            _ident_model = (
-                self._last_aux_call_model or self._last_aux_config_model
-                or self.summary_model or "(main)"
-            )
-            _ident_base_url = (
-                self._last_aux_call_base_url or self._last_aux_config_base_url
-                or self.base_url or "default"
-            )
+            _ident_provider, _ident_model, _ident_base_url = self._summary_failure_identity()
             logger.error(
                 "Context compression failed: auxiliary LLM returned a non-JSON response. provider=%s "
                 "summary_model=%s main_model=%s base_url=%s err=%s",
@@ -4410,12 +4283,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._last_attempt_failure_class = "network"
         elif kind.truncated:
             self._last_summary_truncated_failure = True
-            if self._last_attempt_failure_class is None:
-                self._last_attempt_failure_class = "other"
+            self._classify_attempt_failure("other")
         elif kind.empty_content:
             self._last_summary_empty_content_failure = True
-            if self._last_attempt_failure_class is None:
-                self._last_attempt_failure_class = "other"
+            self._classify_attempt_failure("other")
         elif kind.overloaded and not access_error:
             # A 403/402 that also says "overloaded" is an auth/quota abort (#29559), not an
             # overload strike: counting it would let the next real 503 skip its grace (#115906).
@@ -4429,14 +4300,9 @@ Write only the summary body. Do not include any preamble or prefix."""
                 # The latest failure class decides: a stale network/empty/truncated/auth flag from
                 # an earlier failure (only a success clears those) must not keep aborting forever.
                 self._clear_terminal_summary_failures()
-            if self._last_attempt_failure_class is None:
-                self._last_attempt_failure_class = "other"
+            self._classify_attempt_failure("other")
         elif self._last_attempt_failure_class is None:
-            # Any other transient failure (timeout, JSON decode, 5xx, ...)
-            # that reached this branch — not auth, not a network stream
-            # close. Classified so the abort diagnostic does not inherit a
-            # stale "auth" verdict from a prior attempt (#72636).
-            self._last_attempt_failure_class = "other"
+            self._classify_attempt_failure("other")
         logger.warning(
             "Failed to generate context summary: %s. Further summary attempts paused for %d seconds.", e,
             _transient_cooldown,

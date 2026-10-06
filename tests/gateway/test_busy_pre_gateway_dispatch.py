@@ -15,7 +15,11 @@ real runner entry points:
 * an inline diversion (``/approve``) reaches the runner's handler without a second hook call;
 * under multiplex, a secondary profile's busy arrival runs the hook inside that
   profile's runtime scope, and the drain through the same profile's cold
-  handler does not run it again.
+  handler does not run it again;
+* with a real plugin loaded by the plugin manager (no hook-seam patch): the rewrite survives
+  queue -> drain with one call, ``/stop`` and ``/approve`` that the plugin allows are still routed
+  as commands through the real runner handler, and a plugin installed only in a secondary
+  profile fires for that profile's busy arrival.
 """
 
 import asyncio
@@ -292,3 +296,153 @@ async def test_secondary_profile_busy_arrival_runs_hook_once_in_its_own_scope(mu
 
     assert len(reached_cold_path) == 1 and reached_cold_path[0] is not None
     assert len(calls) == 1, "crossing back into the profile's cold path must not re-run the hook"
+
+
+# --- control traffic and a real plugin, through the real runner ------------------------------
+#
+# The busy path applies the hook in the same order as the idle path (``_hm_admit_event``): before
+# auth and before any slash-command routing. ``allow``/``None`` must therefore leave ``/stop`` and
+# ``/approve`` intact so they are still routed as bypass commands; ``skip``/``rewrite`` of control
+# traffic is the plugin's explicit choice, exactly as it is when the session is idle.
+
+_REAL_PLUGIN = '''
+SEEN = []
+
+
+def _gate(event, gateway, **kwargs):
+    SEEN.append(event.text)
+    gateway._busy_hook_seen.append(event.text)
+    if event.text.startswith("/"):
+        return None  # control traffic passes through untouched
+    return {"action": "rewrite", "text": "[plugin] " + event.text}
+
+
+def register(ctx):
+    ctx.register_hook("pre_gateway_dispatch", _gate)
+'''
+
+
+def _install_real_plugin(home: Path) -> None:
+    """Install and enable a ``pre_gateway_dispatch`` plugin the plugin manager discovers itself."""
+    plugin_dir = home / "plugins" / "busy_gate"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "plugin.yaml").write_text("name: busy_gate\nversion: 0.1.0\n")
+    (plugin_dir / "__init__.py").write_text(_REAL_PLUGIN)
+    (home / "config.yaml").write_text("plugins:\n  enabled:\n  - busy_gate\n")
+
+
+@pytest.fixture
+def real_plugin_runner(tmp_path, monkeypatch):
+    """A runner whose hook seam is the real plugin manager, loading ``busy_gate`` from disk."""
+    from hermes_cli import plugins
+
+    home = tmp_path / "home"
+    home.mkdir()
+    _install_real_plugin(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+    plugins._reset_plugin_managers_for_tests()
+    runner = _primary_runner()
+    runner._busy_hook_seen = []
+    yield runner
+    plugins._reset_plugin_managers_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_real_plugin_rewrites_busy_arrival_once_through_queue_and_drain(real_plugin_runner):
+    runner = real_plugin_runner
+    delivered = []
+
+    async def _agent(event, source, _quick_key, _run_generation):
+        delivered.append(event.text)
+        return "ok"
+
+    runner._handle_message_with_agent = _agent  # noqa: SLF001
+    adapter = _busy_adapter(Platform.WHATSAPP, runner, runner._primary_pre_gateway_dispatch_handler())
+    adapter.set_message_handler(runner._handle_message)
+
+    session_key = await _arrive_while_busy(adapter, _whatsapp_event("sent mid-turn"))
+
+    queued = adapter._pending_messages.pop(session_key)
+    assert queued.text == "[plugin] sent mid-turn"
+    await runner._handle_message(queued)  # the turn ends; the queue drains through the cold path
+
+    assert runner._busy_hook_seen == ["sent mid-turn"], "the real plugin must run exactly once"
+    assert delivered == ["[plugin] sent mid-turn"]
+
+
+@pytest.mark.asyncio
+async def test_stop_mid_turn_survives_the_hook_and_reaches_the_stop_handler(real_plugin_runner):
+    runner = real_plugin_runner
+    stopped = []
+
+    async def _stop_handler(event):
+        stopped.append(event.text)
+        return "Stopped."
+
+    runner._handle_stop_command = _stop_handler  # noqa: SLF001
+    adapter = _busy_adapter(Platform.WHATSAPP, runner, runner._primary_pre_gateway_dispatch_handler())
+    adapter.set_message_handler(runner._handle_message)
+
+    session_key = await _arrive_while_busy(adapter, _whatsapp_event("/stop"))
+
+    assert runner._busy_hook_seen == ["/stop"]
+    assert stopped == ["/stop"], "/stop must still be routed as a command, not rewritten or swallowed"
+    assert session_key not in adapter._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_approve_mid_turn_survives_the_hook_and_unblocks_the_waiting_agent(real_plugin_runner):
+    from tools import approval
+    from tools.approval_gateway_wait import _ApprovalEntry
+
+    runner = real_plugin_runner
+    adapter = _busy_adapter(Platform.WHATSAPP, runner, runner._primary_pre_gateway_dispatch_handler())
+    adapter.set_message_handler(runner._handle_message)
+    event = _whatsapp_event("/approve")
+    session_key = runner._session_key_for_source(event.source)
+    entry = _ApprovalEntry({"command": "rm -rf build"})
+    approval._gateway_queues[session_key] = [entry]
+    try:
+        await _arrive_while_busy(adapter, event)
+    finally:
+        approval._gateway_queues.pop(session_key, None)
+
+    assert runner._busy_hook_seen == ["/approve"], "the hook runs once, not again in _handle_message"
+    assert entry.event.is_set() and entry.result == "once", "/approve must reach the real handler"
+    assert session_key not in adapter._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_real_plugin_installed_only_in_secondary_profile_runs_once_for_its_busy_arrival(
+        mux_home):
+    """The plugin manager is resolved per profile home: a plugin installed only in the secondary
+    profile must fire for that profile's busy arrival, once across queue and drain."""
+    from hermes_cli import plugins
+
+    _install_real_plugin(mux_home / "profiles" / "secondary")
+    plugins._reset_plugin_managers_for_tests()
+    try:
+        runner = _mux_runner()
+        runner._busy_hook_seen = []
+        drained = []
+
+        async def _cold_path(event):
+            drained.append(await runner._hm_pre_gateway_dispatch_once(event, event.source))
+            return "ok"
+
+        runner._handle_message = _cold_path  # noqa: SLF001
+        adapter = _busy_adapter(
+            Platform.FEISHU, runner, runner._make_profile_pre_gateway_dispatch_handler("secondary"))
+        adapter._owner_profile = "secondary"
+        session_key = await _arrive_while_busy(adapter, _feishu_event("follow-up while busy"))
+
+        queued = adapter._pending_messages.pop(session_key)
+        assert queued.text == "[plugin] follow-up while busy"
+        await runner._make_profile_message_handler("secondary")(queued)
+
+        assert runner._busy_hook_seen == ["follow-up while busy"]
+        assert len(drained) == 1 and drained[0].text == "[plugin] follow-up while busy"
+    finally:
+        plugins._reset_plugin_managers_for_tests()

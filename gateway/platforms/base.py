@@ -4039,8 +4039,10 @@ class BasePlatformAdapter(ABC):
         """Route a message that arrived while ``session_key`` is busy: bypass
         commands / clarify replies dispatch inline, everything else is queued."""
         # Busy arrivals divert before the normal runner handler. Apply its pre-dispatch contract
-        # here, before commands, approvals, steering, interrupts, or fallback queueing. The runner
-        # marks accepted events so a later cold-path drain cannot dispatch the hook twice.
+        # here, before commands, approvals, steering, interrupts, or fallback queueing (the idle
+        # path's order too: the hook precedes slash-command routing, so allow/None keeps /stop and
+        # /approve working, skip/rewrite apply to them by design). The runner marks accepted events
+        # so a later cold-path drain cannot dispatch the hook twice.
         # ``getattr``: lightweight adapter doubles in upstream tests skip ``__init__``.
         _pre_dispatch = getattr(self, "_pre_gateway_dispatch_handler", None)
         if not event.internal and _pre_dispatch is not None:

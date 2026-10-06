@@ -89,7 +89,11 @@ const STILL_RUNNING_VERDICTS = new Set(['held', 'busy', 'live'])
  */
 const WITHDRAW_SETTLED_VERDICTS = new Set(['withdrawn', 'absent', 'foreign'])
 
-/** Withdraw attempts before an unsettled answer stands (a busy lock is usually brief). */
+/**
+ * Withdraw attempts while the sidecar lock is `busy` (usually brief). Any
+ * other unsettled answer stands at once: an `error` re-asked would cost up to
+ * MARKER_HELPER_TIMEOUT_MS per try with the user waiting.
+ */
 const WITHDRAW_ATTEMPTS = 3
 const WITHDRAW_RETRY_MS = 250
 
@@ -137,7 +141,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     })
   }
 
-  /** `withdraw`, re-asked while the answer leaves the bridge in place; `taken` ends it at once. */
+  /** `withdraw`, re-asked only while the lock is `busy`; every other answer ends it at once. */
   async function withdrawBridge(runId: string): Promise<MarkerHelperVerdict> {
     let verdict: MarkerHelperVerdict = { kind: 'error' }
 
@@ -148,7 +152,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
 
       verdict = await markerHelper('withdraw', runId)
 
-      if (verdict.kind === 'taken' || WITHDRAW_SETTLED_VERDICTS.has(verdict.kind)) {
+      if (verdict.kind !== 'busy') {
         break
       }
     }

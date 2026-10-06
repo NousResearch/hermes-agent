@@ -390,8 +390,9 @@ describe.skipIf(IS_WINDOWS)('protocol 2 hand-off', () => {
         expect(deps.startHermes).not.toHaveBeenCalled()
         expect(kill).not.toHaveBeenCalled()
         expect(deps.markQuittingForHandoff).toHaveBeenCalled()
-        // Asked again while unsettled, and Electron left the bytes alone.
-        expect(helperCalls(deps.hermesHome)).toHaveLength(3)
+        // Re-asked only while the lock is busy (an error re-asked could cost
+        // 3 x 20 s, review K132354 P3), and Electron left the bytes alone.
+        expect(helperCalls(deps.hermesHome)).toHaveLength(answer === 'busy' ? 3 : 1)
         expect(fs.readFileSync(markerPath(deps.hermesHome), 'utf8')).toBe(runs[0]!.bridgeAtSpawn)
       } finally {
         fs.rmSync(root, { recursive: true, force: true })

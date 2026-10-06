@@ -71,7 +71,7 @@ def handle_outer_loop_error(
     if sys.is_finalizing() or _is_interpreter_shutdown_error(e):
         error_msg = f"Interpreter is shutting down — cannot continue (API call #{api_call_count}): {e}"
         try:
-            agent._safe_print(f"❌ {error_msg}")
+            agent._safe_print(f"❌ {error_msg}", diagnostic=True)
         except (OSError, ValueError):
             pass
         logger.warning(error_msg)
@@ -110,7 +110,7 @@ def handle_outer_loop_error(
         logger.error(error_msg)
     else:
         try:
-            print(f"❌ {error_msg}")
+            agent._safe_print(f"❌ {error_msg}", diagnostic=True)
         except (OSError, ValueError):
             logger.error(error_msg)
 

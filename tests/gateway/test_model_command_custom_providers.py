@@ -1,7 +1,9 @@
 """Regression tests for gateway /model support of config.yaml custom_providers."""
 
-import yaml
+import threading
+
 import pytest
+import hermes_yaml as yaml
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
@@ -26,21 +28,63 @@ def _make_event(text="/model"):
 
 
 @pytest.mark.asyncio
-async def test_direct_model_switch_offloads_to_thread(tmp_path, monkeypatch):
-    """A direct `/model <name>` switch must route switch_model() through
-    ``asyncio.to_thread`` — never run it on the event loop."""
-    import asyncio
-
-    import gateway.slash_commands_model as scm
+async def test_direct_model_switch_runs_off_the_event_loop(tmp_path, monkeypatch):
+    """A direct `/model <name>` switch must run switch_model() on a worker thread so the
+    blocking models.dev HTTP fetch can't freeze the gateway event loop (#20525)."""
     from hermes_cli.model_switch import ModelSwitchResult
 
-    runner = _make_runner()
-    ctx = scm._ModelSwitchContext(
-        session_key="s1", source=None, persist_global=False,
-        config_path=tmp_path / "config.yaml",
-        current_provider="custom", current_base_url="http://127.0.0.1:8317/v1",
-        current_api_key="test-custom-key",
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump({"model": {"default": "gpt-5.4", "provider": "openrouter"}}),
+        encoding="utf-8",
     )
+
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+    switch_threads: list[int] = []
+
+    # Fail the switch so the handler returns before _finish_switch (which needs
+    # full runner state) — only where the switch ran matters here.
+    def _fake_switch(**kwargs):
+        switch_threads.append(threading.get_ident())
+        return ModelSwitchResult(success=False, error_message="nope")
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _fake_switch)
+
+    result = await _make_runner()._handle_model_command(_make_event("/model gpt-5.4"))
+
+    assert switch_threads, "switch_model never ran"
+    assert threading.get_ident() not in switch_threads, "switch_model ran inline on the event-loop thread"
+    assert result is not None and "nope" in result
+
+
+@pytest.mark.asyncio
+async def test_direct_custom_model_switch_uses_configured_api_key(tmp_path, monkeypatch):
+    """Gateway /model must authenticate the custom /models probe: read_config()
+    lifts model.api_key into the switch context so switch_model() receives it
+    (#83837)."""
+    from hermes_cli.model_switch import ModelSwitchResult
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump({
+            "model": {
+                "default": "gpt-5.6-sol",
+                "provider": "custom",
+                "base_url": "http://127.0.0.1:8317/v1",
+                "api_key": "test-custom-key",
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
 
     captured = {}
 
@@ -50,50 +94,7 @@ async def test_direct_model_switch_offloads_to_thread(tmp_path, monkeypatch):
 
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", _fake_switch)
 
-    loop = asyncio.get_running_loop()
-    orig = loop.run_in_executor
+    result = await _make_runner()._handle_model_command(_make_event("/model Kimi-K3"))
 
-    async def fake_to_thread(func, *args, **kwargs):
-        # record that the switch ran OFF the event loop thread
-        captured["thread"] = "worker"
-        return func(*args, **kwargs)
-
-    monkeypatch.setattr(scm.asyncio, "to_thread", fake_to_thread)
-
-    result, error = await GatewayRunner._perform_model_switch(
-        runner, ctx, "Kimi-K3", None, "test",
-    )
-
-    assert error is None or "stop after capture" in str(error)
+    assert result is not None and "stop after capture" in result
     assert captured["current_api_key"] == "test-custom-key"
-
-
-@pytest.mark.asyncio
-async def test_read_config_populates_current_api_key(tmp_path):
-    """read_config() must lift model.api_key into the switch context so the
-    bare custom endpoint's /models probe authenticates (#83837 family)."""
-    import gateway.slash_commands_model as scm
-
-    (tmp_path / "config.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "model": {
-                    "default": "gpt-5.6-sol",
-                    "provider": "custom",
-                    "base_url": "http://127.0.0.1:8317/v1",
-                    "api_key": "test-custom-key",
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    ctx = scm._ModelSwitchContext(
-        session_key="s1", source=None, persist_global=False,
-        config_path=tmp_path / "config.yaml",
-    )
-    ctx.read_config()
-
-    assert ctx.current_provider == "custom"
-    assert ctx.current_base_url == "http://127.0.0.1:8317/v1"
-    assert ctx.current_api_key == "test-custom-key"

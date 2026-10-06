@@ -17,7 +17,6 @@ Stdlib + pytest + unittest.mock only. No live cua-driver, no network.
 from __future__ import annotations
 
 import json
-import os
 from typing import Any, Dict, Optional
 from unittest.mock import patch
 
@@ -211,19 +210,10 @@ def test_foreground_refused_on_old_driver():
     assert sess.calls == []
 
 
-def test_bad_delivery_mode_rejected():
-    out = {"isError": False, "data": {}, "structuredContent": {}}
-    sess = _FakeSession(out, input_properties={"type_text": {"delivery_mode"}})
-    be = _make_backend(sess)
-    res = be.type_text("hi", delivery_mode="sideways")
-    assert res.ok is False
-    assert res.code == "bad_delivery_mode"
-
-
 def test_dispatcher_threads_delivery_mode_to_backend(grant_computer_use_approvals):
     """End-to-end through the tool dispatcher with the noop backend."""
     from tools.computer_use import tool as cu
-    with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "noop"}, clear=False):
+    with patch.object(cu, "_new_backend", lambda mode: cu._NoopBackend()):
         cu.reset_backend_for_tests()
         be = cu._get_backend()
         cu.handle_computer_use({"action": "click", "element": 5,
@@ -333,34 +323,9 @@ def test_always_grant_is_per_scope_key_and_visible_to_shared_store(_interactive_
             approval._permanent_set().difference_update({"cua:click:background", "cua:click:foreground"})
 
 
-def test_foreground_summary_warns_about_focus_change():
-    from tools.computer_use.tool import _summarize_action
-    s = _summarize_action("click", {"element": 3, "delivery_mode": "foreground"})
-    assert "FOREGROUND" in s
-    bg = _summarize_action("click", {"element": 3})
-    assert "FOREGROUND" not in bg
-
-
 # ---------------------------------------------------------------------------
 # #55048 Bug 1 — a dead session must reset _started so the next call recovers
 # ---------------------------------------------------------------------------
-
-def test_lifecycle_finally_resets_started_for_reentry():
-    """After the lifecycle coro exits (MCP drop / crash), _started must be
-    False so _require_started() no longer passes into a dead/None session.
-    We drive the finally block directly via the coro's cleanup semantics."""
-    from tools.computer_use.cua_backend_session import _CuaDriverSession
-
-    sess = _CuaDriverSession.__new__(_CuaDriverSession)
-    sess._session = object()
-    sess._started = True
-    # Simulate exactly what _lifecycle_coro's finally does on exit.
-    sess._session = None
-    sess._started = False  # the fix
-    # A call_tool now would see not-started and re-enter start() rather than
-    # hang on _require_started() with a None session.
-    assert sess._started is False
-    assert sess._session is None
 
 
 def test_call_tool_restarts_a_dead_session(monkeypatch):

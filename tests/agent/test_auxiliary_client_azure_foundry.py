@@ -299,6 +299,43 @@ class TestResolveProviderClientAzureFoundry:
         # → OpenAI(api_key=...).
         assert callable(received["api_key"])
 
+    def test_auto_route_forwards_main_runtime_entra_callable_intact(
+        self, monkeypatch, fake_azure_identity, patch_load_config,
+    ):
+        """#72421: ``provider: auto`` aux tasks (title generation, compression, smart approval)
+        re-resolve the main azure-foundry runtime with its api_key forwarded as
+        ``explicit_api_key``. That api_key is the Entra token-provider callable — it must reach
+        ``OpenAI(api_key=...)`` as the same object, never stringified into a function repr that
+        Azure rejects with 401."""
+        from agent import auxiliary_client as _aux
+
+        received = {}
+
+        class _FakeOpenAI:
+            def __init__(self, **kwargs):
+                received.update(kwargs)
+                self.api_key = kwargs.get("api_key", "")
+                self.base_url = kwargs.get("base_url", "")
+
+        monkeypatch.setattr(_aux, "OpenAI", _FakeOpenAI)
+        monkeypatch.setattr(_aux, "_is_provider_unhealthy", lambda *a, **k: False)
+        patch_load_config({
+            "provider": "azure-foundry",
+            "base_url": "https://r.openai.azure.com/openai/v1",
+            "api_mode": "chat_completions",
+            "auth_mode": "entra_id",
+            "default": "gpt-4o",
+        })
+        main_token_provider = lambda: "main-session-jwt"  # noqa: E731
+        client, resolved, effective = _aux._resolve_auto_route(main_runtime={
+            "provider": "azure-foundry", "model": "gpt-4o", "api_mode": "chat_completions",
+            "base_url": "https://r.openai.azure.com/openai/v1", "api_key": main_token_provider,
+        })
+        assert client is not None
+        assert (resolved, effective) == ("gpt-4o", "azure-foundry")
+        assert received["api_key"] is main_token_provider
+        assert received["api_key"]() == "main-session-jwt"
+
     def test_warns_and_returns_none_on_failure(
         self, monkeypatch, patch_load_config, caplog,
     ):
@@ -323,3 +360,44 @@ class TestResolveProviderClientAzureFoundry:
             "azure-foundry" in rec.message and "hermes doctor" in rec.message
             for rec in caplog.records
         )
+
+
+# ---------------------------------------------------------------------------
+# api_mode aliases — ``responses`` (user-facing spelling) must select the
+# Responses adapter exactly like ``codex_responses`` (#39750)
+# ---------------------------------------------------------------------------
+
+
+class TestAzureFoundryResponsesAlias:
+    _AUX_VISION = {
+        "provider": "azure-foundry", "model": "gpt-5.4-nano",
+        "base_url": "https://r.services.ai.azure.com/openai/v1", "api_mode": "responses",
+    }
+
+    def test_task_level_responses_alias_routes_vision_through_responses_adapter(self, monkeypatch):
+        """``auxiliary.vision.api_mode: responses`` on an azure-foundry route used to yield a
+        plain chat-completions client (401 from /chat/completions on a Responses-only
+        deployment, #39750); the alias must reach the Codex/Responses adapter and keep the
+        first-class provider identity."""
+        from agent import auxiliary_client as _aux
+
+        cfg = {"model": {"provider": "openrouter", "default": "x"}, "auxiliary": {"vision": dict(self._AUX_VISION)}}
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "k")
+
+        provider, client, model = _aux.resolve_vision_provider_client()
+        assert provider == "azure-foundry"
+        assert model == "gpt-5.4-nano"
+        assert isinstance(client, _aux.CodexAuxiliaryClient)
+
+    def test_explicit_responses_alias_kwarg_wraps_in_codex_adapter(self, monkeypatch, patch_load_config):
+        """A caller-supplied ``api_mode="responses"`` is canonicalized at the resolver chokepoint."""
+        from agent import auxiliary_client as _aux
+
+        patch_load_config({"provider": "azure-foundry", "base_url": "https://r.services.ai.azure.com/openai/v1"})
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "k")
+
+        client, model = _aux.resolve_provider_client("azure-foundry", "gpt-5.4-nano", api_mode="responses")
+        assert model == "gpt-5.4-nano"
+        assert isinstance(client, _aux.CodexAuxiliaryClient)

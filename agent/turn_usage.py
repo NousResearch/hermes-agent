@@ -17,7 +17,7 @@ from typing import Any, Dict, List
 
 from agent.image_token_cost import calibrate_from_usage
 from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
-from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -98,7 +98,8 @@ def record_response_usage(
         )
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
 
-    canonical_usage = normalize_usage(response.usage, provider=agent.provider, api_mode=agent.api_mode)
+    canonical_usage = with_served_service_tier(
+        normalize_usage(response.usage, provider=agent.provider, api_mode=agent.api_mode), response)
     # Aggregator-only usage kept for pricing: advisor tokens are priced at each advisor's
     # OWN model rate and added as dollars below.
     aggregator_usage = canonical_usage
@@ -163,9 +164,9 @@ def record_response_usage(
     if getattr(compressor, "_context_probed", False):
         ctx = compressor.context_length
         if getattr(compressor, "_context_probe_persistable", False):
-            from agent.model_metadata import save_context_length
+            from agent.model_metadata import save_provider_context_length
 
-            save_context_length(agent.model, agent.base_url, ctx)
+            save_provider_context_length(agent.model, agent.base_url, ctx, agent.provider)
             agent._safe_print(f"{agent.log_prefix}💾 Cached context length: {ctx:,} tokens for {agent.model}")
         compressor._context_probed = False
         compressor._context_probe_persistable = False

@@ -55,6 +55,12 @@ def _linux_x11_active_window_id() -> Optional[int]:
         return None
     return _parse_xprop_net_active_window(proc.stdout or "") if proc.returncode == 0 else None
 
+def _is_cua_driver_self_window(w: Dict[str, Any]) -> bool:
+    """True for the authorization daemon's own native window (normalized app name)."""
+    app_name = str(w.get("app_name", "")).strip().lower()
+    return re.sub(r"[\s_-]+", "", app_name) == "cuadriver"
+
+
 def _select_capture_target(windows: List[Dict[str, Any]], *, app_requested: bool,
                            exact_target: bool = False) -> Dict[str, Any]:
     """Best window from z-sorted (frontmost-first) list_windows output. Unqualified default captures on
@@ -66,6 +72,14 @@ def _select_capture_target(windows: List[Dict[str, Any]], *, app_requested: bool
     informative, keep that frontmost contract. See #58026.
     """
     pool = [w for w in windows if not w["off_screen"]]
+    # Implicit captures skip the authorization daemon's own windows: the driver refuses to
+    # operate on itself, so a frontmost self-window would fail the capture instead of falling
+    # through to the next real window (#94527). Keep the old target when only self-windows
+    # exist, so the driver still reports its normal refusal. Exact targets stay untouched.
+    if not exact_target:
+        external = [w for w in pool if not _is_cua_driver_self_window(w)]
+        if external:
+            pool = external
     if not exact_target and not app_requested and sys.platform == "linux":
         pool = [w for w in pool if _is_real_app_window(w)] or pool
         if pool and _z_index_uninformative(pool):
@@ -228,7 +242,20 @@ class _CaptureMixin:
         return self._match_windows_for_app(windows, app) or self._failed_capture(mode, _NO_APP_MATCH_MSG.format(app=app))
 
     def _gws_args(self) -> Dict[str, Any]:
-        return {"pid": self._active_pid, "window_id": self._active_window_id, "session": self._session_id}
+        """``get_window_state`` args.
+
+        ``max_elements`` bounds the DRIVER's accessibility walk, not just its response: tool.py caps the
+        surfaced element window at ``_DEFAULT_MAX_ELEMENTS`` (100) and spills the rest to a cache file, so
+        walking a 1,444-node Electron tree — or Finder's, whose AX surface is pathologically slow — buys
+        latency and nothing else. The bounded tree is a prefix of the unbounded one, so the elements the
+        model sees are unchanged. ``computer_use.ax_max_elements`` tunes it; 0 disables.
+        """
+        args: Dict[str, Any] = {"pid": self._active_pid, "window_id": self._active_window_id,
+                                "session": self._session_id}
+        from tools.computer_use import cua_backend as _cb  # lazy: cua_backend imports this module at import time
+        if capped := _cb._cua_configured_ax_max_elements():
+            args["max_elements"] = capped
+        return args
 
     def _capture_vision(self) -> Tuple[Optional[str], Optional[str], List[UIElement], str]:
         """Pixels only, ``elements`` always empty: ``(png_b64, mime, [], window_title)``. Drivers advertising the
@@ -300,7 +327,8 @@ class _CaptureMixin:
             self._capture_vision() if mode == "vision" else self._capture_window_state())
         png_bytes_len, width, height = _png_metrics(png_b64, 0, 0) if png_b64 else (0, 0, 0)
         return CaptureResult(mode=mode, width=width, height=height, png_b64=png_b64, elements=elements, app=app_name,
-                             window_title=window_title, png_bytes_len=png_bytes_len, image_mime_type=image_mime_type)
+                             window_title=window_title, png_bytes_len=png_bytes_len, image_mime_type=image_mime_type,
+                             ax_max_elements=0 if mode == "vision" else self._gws_args().get("max_elements", 0))
 
     def _capture_full_screen(self, mode: str) -> CaptureResult:
         """Composited PrtScn-style grab via `get_desktop_state` (the shell window would only show wallpaper + icons).

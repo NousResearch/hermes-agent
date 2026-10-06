@@ -12,7 +12,7 @@ SUBSCRIPTION_URL = "https://portal.nousresearch.com/manage-subscription"
 DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-gateway"
 # Static `portal tools` catalog — the partners Tool Gateway routes to today: (key, label, partner).
 _CATALOG = [
-    ("web", "Web search & extract", "Firecrawl"),
+    ("web", "Web search & extract", "Nous-managed"),
     ("image_gen", "Image generation", "FAL"),
     ("tts", "Text-to-speech", "OpenAI TTS"),
     ("browser", "Browser automation", "Browser Use"),
@@ -104,7 +104,7 @@ def _cmd_open(args) -> int:
 
 def _cmd_tools(args) -> int:
     """List the Tool Gateway catalog + current routing."""
-    from hermes_cli.nous_subscription import get_nous_subscription_features
+    from hermes_cli.nous_subscription import get_nous_subscription_features, managed_image_partner
 
     config = load_config() or {}
     try:
@@ -120,6 +120,8 @@ def _cmd_tools(args) -> int:
 
     label_width = max(len(label) for _, label, _ in _CATALOG)
     for key, label, partner in _CATALOG:
+        if key == "image_gen":
+            partner = managed_image_partner(config) or partner
         feat = features.features.get(key)
         state = color("unknown", Colors.DIM) if feat is None else _feature_state(feat, via_nous="✓ via Nous Portal")
         print(f"  {label:<{label_width}}  partner: {partner:<14} {state}")

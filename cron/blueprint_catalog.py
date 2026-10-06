@@ -16,6 +16,7 @@ __all__ = [
     "AutomationBlueprint",
     "CATALOG",
     "get_blueprint",
+    "list_blueprints",
     "blueprint_form_schema",
     "blueprint_slash_command",
     "blueprint_deeplink",
@@ -80,6 +81,9 @@ class AutomationBlueprint:
     deliver_default: str = "origin"
     skills: tuple = ()        # skills the job loads before running
     tags: tuple = ()
+    # Registering plugin for a ``ctx.register_automation_blueprint`` entry (key ``<plugin>:<key>``);
+    # empty for the in-repo catalog.
+    plugin: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -549,8 +553,23 @@ CATALOG: List[AutomationBlueprint] = [
 _CATALOG_BY_KEY = {r.key: r for r in CATALOG}
 
 
+def list_blueprints() -> List[AutomationBlueprint]:
+    """The catalog every surface lists: built-ins, then the active profile's plugin blueprints.
+    Resolved per call — plugins load per profile, so one process serving several profiles must not
+    cache this."""
+    from cron.blueprint_plugins import plugin_blueprints
+
+    return [*CATALOG, *plugin_blueprints()]
+
+
 def get_blueprint(key: str) -> Optional[AutomationBlueprint]:
-    return _CATALOG_BY_KEY.get(key)
+    """Look up a built-in or (``<plugin>:<key>``) one of the active profile's plugin blueprints."""
+    blueprint = _CATALOG_BY_KEY.get(key)
+    if blueprint is None and ":" in (key or ""):
+        from cron.blueprint_plugins import plugin_blueprints
+
+        blueprint = next((b for b in plugin_blueprints() if b.key == key), None)
+    return blueprint
 
 
 def _slot(
@@ -650,6 +669,8 @@ def blueprint_catalog_entry(blueprint: AutomationBlueprint) -> Dict[str, Any]:
     slash command + deep-link URL + human-readable schedule."""
     return {
         **blueprint_form_schema(blueprint),
+        "source": "plugin" if blueprint.plugin else "builtin",
+        "plugin": blueprint.plugin or None,
         "schedule": blueprint.schedule_template,
         "scheduleHuman": _humanize_schedule(blueprint),
         "command": blueprint_slash_command(blueprint),

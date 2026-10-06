@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 from contextlib import redirect_stderr, redirect_stdout
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -126,17 +127,15 @@ def _build_preloaded_skills_prompt(skills: object = None) -> str | None:
     if not parsed_skills:
         return None
 
-    from agent.skill_commands import build_preloaded_skills_prompt
+    from agent.skill_commands import build_preloaded_skills_prompt, format_missing_skills
 
     skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(parsed_skills)
     if missing_skills:
-        missing_display = ", ".join(missing_skills)
         if not loaded_skills:
-            raise ValueError(f"Unknown skill(s): {missing_display}")
+            raise ValueError(format_missing_skills(missing_skills))
         logging.warning(
-            "Unknown skill(s) requested, skipping: %s. Continuing with: %s. "
-            "List available skills with `hermes skills list`.",
-            missing_display,
+            "Skipping %s. Continuing with: %s. List available skills with `hermes skills list`.",
+            format_missing_skills(missing_skills),
             ", ".join(loaded_skills),
         )
     return skills_prompt or None
@@ -146,7 +145,7 @@ def _configured_mcp_servers() -> tuple[set[str], set[str]]:
     """``(enabled, disabled)`` MCP server names from config; both empty on any error."""
     try:
         from hermes_cli.config import read_raw_config
-        from hermes_cli.tools_config import _parse_enabled_flag
+        from tools.mcp_tool_common import mcp_server_enabled
 
         cfg = read_raw_config()
         mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
@@ -155,7 +154,7 @@ def _configured_mcp_servers() -> tuple[set[str], set[str]]:
         for name, server_cfg in mcp_servers.items():
             if not isinstance(server_cfg, dict):
                 continue
-            target = enabled if _parse_enabled_flag(server_cfg.get("enabled", True), default=True) else disabled
+            target = enabled if mcp_server_enabled(server_cfg) else disabled
             target.add(str(name))
         return enabled, disabled
     except Exception:
@@ -395,8 +394,8 @@ def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optio
 
     # DIRECT_ALIASES (config.yaml ``model_aliases:``) map a user alias to (model, provider,
     # base_url) for endpoints outside any catalog (local servers, custom proxies, ...).
+    from hermes_cli import model_switch as _ms
     try:
-        from hermes_cli import model_switch as _ms
         _ms._ensure_direct_aliases()
         direct = _ms.DIRECT_ALIASES.get(explicit_model.strip().lower())
     except Exception:
@@ -406,6 +405,15 @@ def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optio
         if isinstance(model_cfg, dict):
             cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         current_provider = cfg_provider or os.getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto"
+        # Same owner as HermesCLI startup: a provider-qualified string (``custom:<name>:<model>``,
+        # ``<provider>/<model>``) selects that provider before auto-detection can hand the unsplit
+        # string to the configured default (#73943).
+        route = _ms.resolve_startup_model_route(
+            explicit_model, current_provider=current_provider,
+            user_providers=cfg.get("providers"), custom_providers=cfg.get("custom_providers"))
+        if route is not None:
+            choice.provider, choice.model = route.provider, route.model
+            return choice
         detected = detect_provider_for_model(explicit_model, current_provider)
         if detected:
             choice.provider, choice.model = detected
@@ -502,7 +510,7 @@ def _run_agent(
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap. *ledger* (set when
     ``--usage-file`` is requested) attaches this run's auxiliary usage to the result."""
     from hermes_cli.config import load_config
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.runtime_provider import resolve_runtime_with_fallback
     from hermes_cli.tools_config import _get_platform_tools
     from run_agent import AIAgent
 
@@ -514,12 +522,19 @@ def _run_agent(
     session_db = _create_session_db_for_oneshot()
     resume_sid, conversation_history, resume_meta = _load_resume_target(session_db, resume)
     choice = _apply_stored_session_runtime(choice, resume_meta, explicit_model=bool((model or "").strip()))
-    runtime = resolve_runtime_provider(
+    # Resolution-time fallback (#81209): a quota-exhausted/expired primary raises AuthError here, before
+    # AIAgent (and its mid-session ``fallback_model`` wiring) exists, so walk the chain like the gateway.
+    runtime, fallback_entry = resolve_runtime_with_fallback(
+        cfg,
         requested=choice.provider,
         target_model=choice.model or None,
         explicit_base_url=choice.base_url,
         explicit_api_key=choice.api_key,
     )
+    if fallback_entry is not None:
+        # The chosen entry names the model that will be sent; the primary's stored api_mode no longer applies.
+        choice = dataclasses.replace(choice, model=fallback_entry["model"], provider=runtime.get("provider"),
+                                     api_mode=None)
     if choice.api_mode:
         runtime["api_mode"] = choice.api_mode
 
@@ -552,7 +567,7 @@ def _run_agent(
 
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
     # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
-    agent = None
+    agent = relay_session_id = None
     try:
         agent = AIAgent(
             api_key=runtime.get("api_key"),
@@ -568,6 +583,8 @@ def _run_agent(
             session_id=resume_sid,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=get_fallback_chain(cfg) or None,
+            # The resolved provider's request body (a custom entry's extra_body), as `hermes chat` passes it.
+            request_overrides=runtime.get("request_overrides"),
             ephemeral_system_prompt=skills_prompt,
             reasoning_config=reasoning_config,
             # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on
@@ -581,13 +598,16 @@ def _run_agent(
         agent.tool_gen_callback = None
 
         aux_before = _auxiliary_usage(session_db, resume_sid) if ledger else {}
+        # Relay keys the root conversation to the id at turn entry; compression may rotate
+        # agent.session_id mid-turn without opening a second root, so keep the entry id.
+        relay_session_id = getattr(agent, "session_id", None)
         result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
         if ledger:
             _attach_auxiliary_usage(result, session_db, aux_before,
                                     fallback_session_id=agent.session_id or resume_sid)
         return (result.get("final_response") or "", result)
     finally:
-        _close_agent(agent, session_db)
+        _close_agent(agent, session_db, relay_session_id)
 
 
 def _quietly(what: str, fn) -> None:
@@ -608,7 +628,7 @@ def _linger_for_background_completions() -> None:
     process_registry.wait_for_pending_completions(None)
 
 
-def _close_agent(agent, session_db) -> None:
+def _close_agent(agent, session_db, relay_session_id=None) -> None:
     """Teardown mirroring gateway/run.py:_cleanup_agent_resources (NOT cli.py:_run_cleanup):
     oneshot has no _active_agent_ref and the hard-exit path skips finalizers."""
     if agent is not None:
@@ -616,6 +636,14 @@ def _close_agent(agent, session_db) -> None:
         # close() kill_all()s the task and the dying parent owns the children's stdout pipes, so
         # exiting now destroys in-flight deliveries (e.g. Bot Mode handoff replies).
         _quietly("background completion wait", _linger_for_background_completions)
+        if relay_session_id:
+            # run_conversation ends the turn but keeps the Relay root resumable; one-shot has no
+            # next turn and os._exit skips atexit, so close the root (and fire on_session_finalize).
+            from hermes_cli.lifecycle import finalize_session
+
+            _quietly("session finalize", lambda: finalize_session(
+                session_id=relay_session_id, platform=getattr(agent, "platform", None) or "cli",
+                reason="shutdown"))
         session_messages = getattr(agent, "_session_messages", None)
         memory_args = (session_messages,) if isinstance(session_messages, list) else ()
         _quietly("memory/context cleanup", lambda: agent.shutdown_memory_provider(*memory_args))
@@ -625,12 +653,8 @@ def _close_agent(agent, session_db) -> None:
         _quietly("session store cleanup", lambda: session_db.close())
 
 
-def _oneshot_clarify_callback(question: str, choices=None, multi_select=False) -> str:
+def _oneshot_clarify_callback(questions: list) -> dict:
     """Clarify is disabled in oneshot mode — tell the agent to pick a default and proceed."""
-    if choices:
-        what = "subset" if multi_select else "option"
-        return (
-            f"[oneshot mode: no user available. Pick the best {what} from "
-            f"{choices} using your own judgment and continue.]"
-        )
-    return "[oneshot mode: no user available. Make the most reasonable assumption you can and continue.]"
+    return {"answers": {}, "outcome": "undelivered", "notice": (
+        "oneshot mode: no user available. Pick the best choices using your own judgment, "
+        "or make the most reasonable assumption you can, and continue.")}

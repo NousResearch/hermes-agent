@@ -1,6 +1,7 @@
 """Locked credential-pool administration and target resolution."""
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from typing import Any, Optional, Tuple, TYPE_CHECKING
 
@@ -11,7 +12,9 @@ if TYPE_CHECKING:
 def _cleared_status_copy(entry: PooledCredential) -> PooledCredential:
     from agent.credential_pool import _CLEAR_STATUS
 
-    return replace(entry, **_CLEAR_STATUS, model_cooldowns=None,
+    # The reset marker lets a live pool in another process tell "reset after my cooldown" from
+    # "never had a status" — both read as bare None on disk (#89415).
+    return replace(entry, **_CLEAR_STATUS, model_cooldowns=None, status_cleared_at=time.time(),
                    extra={k: v for k, v in entry.extra.items() if k != "failure_reason"})
 
 
@@ -105,10 +108,26 @@ class CredentialPoolAdminMixin:
             return None, None, f'No credential matching "{raw}".'
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
-        from agent.credential_pool import _next_priority
+        from agent.credential_pool import _next_priority, write_credential_pool
+        from hermes_cli import auth as auth_mod
 
         with self._lock:
             entry = replace(entry, priority=_next_priority(self._entries))
             self._entries.append(entry)
-            self._persist()
+            borrowed_ids = getattr(self, "_borrowed_root_ids", None)
+            if borrowed_ids:
+                # ``hermes -p <profile> auth add <single-use provider>``: the
+                # profile claims its OWN credential. Persist only profile-owned
+                # rows — copying the borrowed root grant alongside would fork
+                # its single-use refresh token (#100339). Once the profile owns
+                # rows, the root fallback for this provider is shadowed.
+                self._entries = [e for e in self._entries if e.id not in borrowed_ids]
+                written = write_credential_pool(
+                    self.provider, [e.to_dict() for e in self._entries],
+                    token_bases=self._persisted_token_pairs,
+                )
+                self._persisted_token_pairs = auth_mod._token_pairs_by_id(written)
+                self._borrowed_root_ids = set()
+            else:
+                self._persist()
             return entry

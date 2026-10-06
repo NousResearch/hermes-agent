@@ -20,7 +20,6 @@ from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 DEFAULT_ENV = {
     "MATRIX_HOMESERVER": "https://default.matrix.example", "MATRIX_USER_ID": "@default:example",
     "MATRIX_DEVICE_ID": "DEFAULTDEV", "MATRIX_ACCESS_TOKEN": "default-matrix-token",
-    "HASS_URL": "http://default-ha.example:8123", "HASS_TOKEN": "default-ha-token",
     "TEAMS_CLIENT_ID": "default-client-id", "TEAMS_TENANT_ID": "default-tenant",
     "TEAMS_CLIENT_SECRET": "default-teams-secret", "TEAMS_HOME_CHANNEL": "default-conv",
     "DINGTALK_CLIENT_ID": "default-ding-id", "DINGTALK_CLIENT_SECRET": "default-ding-secret",
@@ -30,7 +29,6 @@ DEFAULT_ENV = {
 SECONDARY = {
     "MATRIX_HOMESERVER": "https://bot2.matrix.example", "MATRIX_USER_ID": "@bot2:example",
     "MATRIX_DEVICE_ID": "BOT2DEV", "MATRIX_ACCESS_TOKEN": "bot2-matrix-token",
-    "HASS_URL": "http://bot2-ha.example:8123", "HASS_TOKEN": "bot2-ha-token",
     "TEAMS_CLIENT_ID": "bot2-client-id", "TEAMS_TENANT_ID": "bot2-tenant",
     "TEAMS_CLIENT_SECRET": "bot2-teams-secret", "TEAMS_HOME_CHANNEL": "bot2-conv",
     "DINGTALK_CLIENT_ID": "bot2-ding-id", "DINGTALK_CLIENT_SECRET": "bot2-ding-secret",
@@ -84,37 +82,6 @@ async def test_matrix_standalone_send_posts_scoped_token_to_scoped_homeserver(se
     await mx._standalone_send(PlatformConfig(enabled=True), "!room:example", "hi")
     assert seen["url"].startswith(SECONDARY["MATRIX_HOMESERVER"] + "/")
     assert DEFAULT_ENV["MATRIX_HOMESERVER"] not in seen["url"]
-
-
-def test_homeassistant_url_follows_the_scoped_token(secondary_scope):
-    from plugins.platforms.homeassistant.adapter import HomeAssistantAdapter
-
-    adapter = HomeAssistantAdapter(PlatformConfig(enabled=True))
-    assert (adapter._hass_url, adapter._hass_token) == (SECONDARY["HASS_URL"], SECONDARY["HASS_TOKEN"])
-
-
-@pytest.mark.asyncio
-async def test_homeassistant_standalone_send_targets_scoped_url(secondary_scope, monkeypatch):
-    import aiohttp
-    from plugins.platforms.homeassistant import adapter as ha
-
-    seen = {}
-
-    class _Resp:
-        status = 200
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def text(self): return ""
-
-    class _Sess:
-        def __init__(self, *a, **k): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        def post(self, url, **kw): seen["url"] = url; return _Resp()
-
-    monkeypatch.setattr(aiohttp, "ClientSession", _Sess)
-    await ha._standalone_send(PlatformConfig(enabled=True), "x", "hi")
-    assert seen["url"].startswith(SECONDARY["HASS_URL"] + "/")
 
 
 def test_teams_credentials_pair_scoped_secret_with_scoped_app_identity(secondary_scope):

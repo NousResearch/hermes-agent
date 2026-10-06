@@ -1,5 +1,6 @@
 import { type RefObject, useCallback, useLayoutEffect, useState } from 'react'
 
+import { TITLEBAR_CHROME_CHANGED_EVENT } from '@/app/shell/titlebar'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { $connection } from '@/store/session'
 
@@ -54,14 +55,28 @@ export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: bo
       return
     }
 
-    measure()
     const observer = new ResizeObserver(measure)
 
-    for (const element of document.querySelectorAll('[data-titlebar-cluster], [data-tree-group]')) {
-      observer.observe(element)
+    const observe = () => {
+      // Re-query on every chrome change: route switches mount a different
+      // cluster set (app clusters vs a page-owned band), and observing the
+      // unmounted set would measure nothing.
+      observer.disconnect()
+
+      for (const element of document.querySelectorAll('[data-titlebar-cluster], [data-tree-group]')) {
+        observer.observe(element)
+      }
     }
 
+    const onChromeChanged = () => {
+      observe()
+      measure()
+    }
+
+    observe()
+    measure()
     window.addEventListener('resize', measure)
+    window.addEventListener(TITLEBAR_CHROME_CHANGED_EVENT, onChromeChanged)
 
     // A fullscreen transition first fires `resize` (measured against the
     // pre-transition cluster) and only then lands the window-state IPC that
@@ -70,6 +85,7 @@ export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: bo
     // repaints the clusters from the new chrome vars.
     let lastChrome = chromeKey()
     let frame = 0
+
     const unsubscribeChrome = $connection.subscribe(() => {
       const nextChrome = chromeKey()
 
@@ -87,6 +103,7 @@ export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: bo
     return () => {
       observer.disconnect()
       window.removeEventListener('resize', measure)
+      window.removeEventListener(TITLEBAR_CHROME_CHANGED_EVENT, onChromeChanged)
       unsubscribeChrome()
       cancelAnimationFrame(frame)
     }

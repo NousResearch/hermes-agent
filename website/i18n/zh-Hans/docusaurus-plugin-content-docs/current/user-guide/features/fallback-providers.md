@@ -158,7 +158,7 @@ fallback_model:
 ```yaml
 fallback_model:
   provider: openai-codex
-  model: gpt-5.3-codex
+  model: gpt-5.4
 ```
 
 ### 备用适用范围
@@ -262,7 +262,7 @@ fallback_model:
 
 ### 辅助任务的提供商选项
 
-以下选项仅适用于 `auxiliary:`、`compression:` 和 `fallback_model:` 配置——`"main"` **不是**顶层 `model.provider` 的有效值。对于自定义端点，请在 `model:` 部分使用 `provider: custom`（参见 [AI 提供商](/integrations/providers)）。
+以下选项仅适用于 `auxiliary:`、`compression:` 和 `fallback_model:` 配置——`"main"` **不是**顶层 `model.provider` 的有效值。对于自定义端点，请在 `model:` 部分使用 `provider: custom`（参见 [AI 提供商](../../integrations/providers.md)）。
 
 | 提供商 | 说明 | 要求 |
 |----------|-------------|-------------|
@@ -369,7 +369,7 @@ delegation:
   # api_key: "local-key"
 ```
 
-完整配置详情参见[子 Agent 委派](/user-guide/features/delegation)。
+完整配置详情参见[子 Agent 委派](./delegation.md)。
 
 ---
 
@@ -387,7 +387,7 @@ cronjob(
 )
 ```
 
-完整配置详情参见[定时任务（Cron）](/user-guide/features/cron)。
+完整配置详情参见[定时任务（Cron）](./cron.md)。
 
 ---
 

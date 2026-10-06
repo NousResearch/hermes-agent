@@ -9,6 +9,7 @@ send path the state.db warning uses.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import logging
 import threading
@@ -45,11 +46,21 @@ def install_cron_store_notices(runner, loop: asyncio.AbstractEventLoop) -> None:
             else:
                 return  # its outage was never announced: no lone "recovered"
             last_sent[store] = now
-        asyncio.run_coroutine_threadsafe(send_cron_store_notice(runner, event, record), loop)
+        future = asyncio.run_coroutine_threadsafe(send_cron_store_notice(runner, event, record), loop)
+        future.add_done_callback(lambda done: _log_notice_failure(done, event, store))
 
     set_transition_listener(on_transition)
     for record in degraded_records():
         on_transition("unwritable", record)
+
+
+def _log_notice_failure(done, event: str, store: str) -> None:
+    try:
+        done.result()
+    except (asyncio.CancelledError, concurrent.futures.CancelledError):
+        return
+    except Exception:  # the ticker thread already moved on: log, never raise
+        logger.warning("Cron store %s notice for %s failed", event, store, exc_info=True)
 
 
 def _profile_home(profile):

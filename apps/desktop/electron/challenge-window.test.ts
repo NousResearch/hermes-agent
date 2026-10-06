@@ -356,3 +356,30 @@ test('a fresh foreground attempt can reopen a closed window while status replay 
   phase(windows[1], 'done')
   assert.equal(await retry, 'done')
 })
+
+test('a required ask neither joins nor inherits an optional run of the same ticket', async () => {
+  const { challenges, windows, phase } = makeHarness()
+  const optional = challenges.run({ url: URL_OK, required: false })
+  const required = challenges.run({ url: URL_OK, required: true })
+
+  assert.equal(windows.length, 2)
+  phase(windows[1], 'interactive')
+  assert.equal(windows[1].shown, true)
+  phase(windows[0], 'done')
+  phase(windows[1], 'done')
+  assert.equal(await optional, 'done')
+  assert.equal(await required, 'done')
+})
+
+test('an optional run that failed does not answer a later required ask for the same ticket', async () => {
+  const { challenges, windows, phase } = makeHarness()
+  const optional = challenges.run({ url: URL_OK, required: false })
+
+  phase(windows[0], 'interactive')
+  assert.equal(await optional, 'failed')
+  const required = challenges.run({ url: URL_OK, required: true })
+
+  assert.equal(windows.length, 2)
+  phase(windows[1], 'done')
+  assert.equal(await required, 'done')
+})

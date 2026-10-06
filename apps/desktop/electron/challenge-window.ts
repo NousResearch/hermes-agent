@@ -305,13 +305,16 @@ export function createChallengeWindows({
       return Promise.resolve('refused')
     }
 
-    const existing = running.get(request.url)
+    // A required ask for a ticket that ran (or is running) as optional, never revealed, must not
+    // join that run or inherit its verdict: both keys carry whether the window may be shown.
+    const runningKey = `${request.url}:${request.required}`
+    const existing = running.get(runningKey)
 
     if (existing) {
       return existing
     }
 
-    const attemptKey = `${request.url}:${request.attempt ?? 0}`
+    const attemptKey = `${runningKey}:${request.attempt ?? 0}`
     const before = settledAt.get(attemptKey)
 
     if (before && clock() - before.at < SETTLED_MEMORY_MS && !RETRYABLE_OUTCOMES.includes(before.outcome)) {
@@ -330,9 +333,9 @@ export function createChallengeWindows({
 
         return result
       })
-      .finally(() => running.delete(request.url))
+      .finally(() => running.delete(runningKey))
 
-    running.set(request.url, outcome)
+    running.set(runningKey, outcome)
 
     return outcome
   }

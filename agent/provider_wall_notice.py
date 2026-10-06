@@ -381,6 +381,69 @@ def clear_pending(home: Optional[Path] = None) -> None:
         logger.debug("provider wall notice: could not clear marker", exc_info=True)
 
 
+def clear_route(provider: str, model: str, home: Optional[Path] = None) -> None:
+    """Mark one provider:model pair as recovered in a pending wall notice.
+
+    When the marker exists and lists *provider*:*model* as walled or cooling,
+    that route is set to AVAILABLE.  If *every* route is now available the
+    marker is removed entirely; otherwise the marker is re-written with the
+    updated route list and a fresh signature, so the gateway stops paging
+    the operator about a route that recovered.
+
+    A successful call on a route that was never walled leaves the marker
+    untouched — a working model must not silence the alarm for a different
+    model that is still down.
+    """
+    try:
+        payload = read_pending(home)
+        if not payload:
+            return
+        routes: list[dict] = payload.get("routes") or []
+        changed = False
+        remaining_walled = False
+        for route in routes:
+            if route.get("provider") == provider and route.get("model") == model:
+                if route.get("status") in {WALLED, COOLING, UNKNOWN}:
+                    route["status"] = AVAILABLE
+                    route["detail"] = ""
+                    changed = True
+            if route.get("status") in {WALLED, COOLING, UNKNOWN}:
+                remaining_walled = True
+        if not changed:
+            return
+        if not remaining_walled:
+            clear_pending(home)
+            return
+        # Rebuild signature from remaining walled routes
+        walled_rows = [
+            RouteRow(
+                provider=r["provider"],
+                model=r["model"],
+                status=r.get("status", AVAILABLE),
+                detail=r.get("detail", ""),
+                reset_at=r.get("reset_at"),
+            )
+            for r in routes
+        ]
+        payload["signature"] = signature(walled_rows)
+        payload["text"] = build_message(
+            walled_rows,
+            profile=payload.get("profile", "default"),
+            created_at=payload.get("created_at"),
+            expires_at=payload.get("expires_at"),
+        )
+        payload["updated_at"] = time.time()
+        _write(payload, home)
+        logger.info(
+            "Provider wall notice: route %s/%s recovered — %d route(s) still walled",
+            provider, model, sum(
+                1 for r in routes if r.get("status") in {WALLED, COOLING, UNKNOWN}
+            ),
+        )
+    except Exception:
+        logger.debug("provider wall notice: clear_route failed", exc_info=True)
+
+
 def mark_delivered(targets: Iterable[Iterable[str]], home: Optional[Path] = None) -> None:
     """Record which home channels already received the notice (the gateway's owed-set ledger)."""
     payload = read_pending(home)

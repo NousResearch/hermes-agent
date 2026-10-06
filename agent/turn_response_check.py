@@ -215,12 +215,12 @@ def check_api_response(
 
     relay_llm.complete_logical_call(api_request_id, outcome="success")
     agent._touch_activity(f"API call #{api_call_count} completed")
-    # A successful API call means the provider is working — clear any pending wall notice
+    # A successful API call means the provider is working — clear the route from any pending wall notice
     try:
-        from agent.provider_wall_notice import read_pending, clear_pending
+        from agent.provider_wall_notice import read_pending, clear_route
         if read_pending():
-            clear_pending()
-            logger.info("Provider wall notice cleared: successful API call on %s via %s", agent.model, agent.provider)
+            clear_route(agent.provider, agent.model)
+            logger.info("Provider wall notice: route %s/%s recovered (successful API call)", agent.provider, agent.model)
     except Exception:
         pass
     return _verdict("break")

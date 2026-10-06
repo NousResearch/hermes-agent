@@ -5,6 +5,7 @@ Extracted from ``hermes_cli.web_server``; app state and helpers are late-bound t
 """
 
 import asyncio
+import sqlite3
 import time
 from typing import Any, Dict, List, Optional
 
@@ -334,7 +335,7 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
                 ORDER BY SUM(u.input_tokens) + SUM(u.output_tokens) DESC
             """, (cutoff,))
             raw_rows = [dict(r) for r in cur.fetchall()]
-        except Exception:
+        except sqlite3.OperationalError:
             raw_rows = []  # pre-v17 DB without session_model_usage
         if not raw_rows:
             # No per-call rows in the window (pre-table DB): fall back to the

@@ -82,6 +82,68 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+_LONG_CARD_NOTES = [f"long-card note {i:02d}" for i in range(40)]
+
+
+@pytest.fixture
+def long_card(worker_env):
+    """More comments than worker_context's comment cap."""
+    from tools import kanban_tools as kt
+    with kt._board(None) as (kb, conn):
+        for note in _LONG_CARD_NOTES:
+            kb.add_comment(conn, worker_env, author="operator", body=note)
+    return worker_env
+
+
+def test_show_lists_worker_context_comments_without_bodies(long_card):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    from tools.kanban_tools_schemas import KANBAN_SHOW_SCHEMA
+    out = json.loads(kt._handle_show({}))
+    assert len(out["comments"]) == kb._CTX_MAX_COMMENTS
+    assert out["comments_omitted"] == len(_LONG_CARD_NOTES) - kb._CTX_MAX_COMMENTS
+    assert all(set(c) == {"id", "author", "created_at"} for c in out["comments"])
+    full = json.loads(kt._handle_show({"include_all_comments": True}))
+    assert [c["body"] for c in full["comments"]] == _LONG_CARD_NOTES
+    assert full["comments_omitted"] == 0
+    assert KANBAN_SHOW_SCHEMA["parameters"]["properties"]["include_all_comments"]["type"] == "boolean"
+
+
+def test_show_caps_a_long_comment_body_unless_all_comments(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    long_body = "x" * (kb._CTX_MAX_COMMENT_BYTES + 100)
+    with kt._board(None) as (kbm, conn):
+        kbm.add_comment(conn, worker_env, author="operator", body=long_body)
+    raw = kt._handle_show({})
+    assert long_body not in raw
+    capped = "x" * kb._CTX_MAX_COMMENT_BYTES + "… [truncated, 100 chars omitted]"
+    assert capped in json.loads(raw)["worker_context"]
+    full = json.loads(kt._handle_show({"include_all_comments": True}))
+    assert full["comments"][0]["body"] == long_body
+
+
+def test_show_and_worker_context_share_one_comment_cap(long_card, monkeypatch):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    monkeypatch.setattr(kb, "_CTX_MAX_COMMENTS", 5)
+    out = json.loads(kt._handle_show({}))
+    with kt._board(None) as (kbm, conn):
+        newest_ids = [c.id for c in kbm.list_comments(conn, long_card)[-5:]]
+    assert [c["id"] for c in out["comments"]] == newest_ids
+    assert out["comments_omitted"] == len(_LONG_CARD_NOTES) - 5
+    assert [n for n in _LONG_CARD_NOTES if n in out["worker_context"]] == _LONG_CARD_NOTES[-5:]
+    assert "_(35 earlier comments omitted; showing most recent 5)_" in out["worker_context"]
+
+
+def test_show_returns_each_comment_body_once(long_card):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    raw = kt._handle_show({})
+    omitted = len(_LONG_CARD_NOTES) - kb._CTX_MAX_COMMENTS
+    assert [raw.count(n) for n in _LONG_CARD_NOTES] == [0] * omitted + [1] * kb._CTX_MAX_COMMENTS
+
+
 def test_show_bare_call_outside_worker_returns_orientation_not_error(monkeypatch, worker_env):
     """#91431: chat profiles with the kanban toolset call kanban_show bare to orient
     themselves; with no dispatcher task in scope there is nothing to show, so the

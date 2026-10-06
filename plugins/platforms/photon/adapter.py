@@ -98,6 +98,22 @@ async def _aiter_ndjson_lines(response: Any) -> AsyncIterator[str]:
         yield pending
 
 
+class _PollClarify:
+    """A clarify rendered as a native poll; ``poll_id`` lands when ``/send-poll`` returns."""
+    __slots__ = ("clarify_id", "chat_id", "question", "choices", "poll_id")
+
+    def __init__(self, clarify_id: str, chat_id: str, question: str, choices: List[str]) -> None:
+        self.clarify_id, self.chat_id, self.question = clarify_id, chat_id, question
+        self.choices = [str(choice).strip() for choice in choices]
+        self.poll_id: Optional[str] = None
+
+    def is_open(self) -> bool:
+        from tools import clarify_gateway as cg
+        with cg._lock:
+            entry = cg._entries.get(self.clarify_id)
+            return entry is not None and not entry.event.is_set()
+
+
 # -- Sidecar runtime record ----------------------------------------------------
 
 def _runtime_record_path() -> Path:
@@ -601,7 +617,9 @@ class PhotonAdapter(BasePlatformAdapter):
         self._recent_richlinks_by_chat: Dict[str, float] = {}  # coalesce preview-art attachments
         self._typing_last_sent: Dict[str, float] = {}
         self._pending_fffc: Dict[str, tuple[float, Any]] = {}  # chat_key → (timestamp, asyncio.Task)
-        self._clarify_polls: Dict[str, tuple[str, str, str]] = {}  # poll id → (clarify id, chat id, question)
+        self._clarify_polls: Dict[str, _PollClarify] = {}  # poll id → clarify (bounded; answers stale votes)
+        self._open_poll_clarifies: Dict[str, _PollClarify] = {}  # clarify id → still-open poll clarify
+        self._early_poll_votes: Dict[str, List[Tuple[str, str]]] = {}  # poll id → [(chat id, choice)] before binding
         # Group-chat mention gating (parity with BlueBubbles); DMs are never gated.
         require_mention = extra.get("require_mention")
         if require_mention is None:
@@ -889,34 +907,84 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def _dispatch_poll_vote(self, content: Dict[str, Any], chat_id: str, chat_type: str,
                                   make_event: Callable[..., MessageEvent]) -> None:
+        """Resolve the vote's own poll clarify, else forward it as gated, non-control info."""
         choice = (content.get("title") or "").strip()
         if not choice:
             logger.debug("[photon] ignoring poll vote with empty title")
             return
         selected = content.get("selected") is not False
-        binding = self._clarify_polls.get(content.get("pollId"))
-        if binding and binding[1] != chat_id:
-            binding = None
+        poll_id = content.get("pollId") or None
         vote_event = make_event("", allow_gateway_control=False)
         source = vote_event.source
-        resolved = False
-        if (binding and selected and not getattr(source, "profile_route_rejected", False)
-                and self._is_sender_authorized(source.user_id, chat_type, chat_id) is True):
+        authorized = (not getattr(source, "profile_route_rejected", False)
+                      and self._is_sender_authorized(source.user_id, chat_type, chat_id) is True)
+        binding = self._clarify_polls.get(poll_id) if poll_id else None
+        if binding is not None and binding.chat_id != chat_id:
+            binding = None
+        elif binding is None and poll_id not in self._clarify_polls:
+            binding = self._match_unbound_poll_vote(poll_id, chat_id, choice, selected and authorized)
+            if binding is self._BUFFERED:
+                return
+        if binding is not None and selected and authorized:
             from tools.clarify_gateway import resolve_gateway_clarify
-            resolved = resolve_gateway_clarify(binding[0], choice)
-        if chat_type != "group" and (resolved or not selected):
+            if resolve_gateway_clarify(binding.clarify_id, choice):
+                # The clarify result carries the answer; forwarding it too would be a second turn.
+                logger.info("[photon] poll vote answered clarify %s", binding.clarify_id)
+                return
+        if chat_type == "group" and self.require_mention:
+            logger.debug("[photon] ignoring group poll vote (require_mention=true; votes carry no mention)")
             return
-        question = binding[2] if binding else content.get("pollTitle") or content.get("pollId") or "unknown"
+        if chat_type != "group" and not selected:
+            return
+        # No gateway hook queues a user event without interrupting, so a busy session drops it.
+        if self._event_session_key(vote_event) in self._active_sessions:
+            logger.info("[photon] dropping poll vote while the agent is busy (poll %s)", poll_id or "unknown")
+            return
+        vote_event.text = self._poll_vote_text(content, choice, selected, binding, chat_type)
+        await self.handle_message(vote_event)
+
+    _BUFFERED: Any = object()
+
+    def _match_unbound_poll_vote(self, poll_id: Optional[str], chat_id: str, choice: str,
+                                 can_answer: bool) -> Any:
+        """A vote whose poll id no clarify claims: answer the chat's only open poll clarify
+        when the choice fits, or hold it until an in-flight ``/send-poll`` binds its id."""
+        self._prune_poll_clarifies()
+        open_here = [pending for pending in self._open_poll_clarifies.values() if pending.chat_id == chat_id]
+        if not open_here:
+            return None
+        if all(pending.poll_id for pending in open_here):
+            logger.warning("[photon] poll vote for unmatched poll %s while %d poll clarify(s) open in chat %s",
+                           poll_id or "unknown", len(open_here), chat_id)
+        else:
+            logger.info("[photon] poll vote for %s arrived before /send-poll returned", poll_id or "unknown poll")
+        if len(open_here) == 1 and choice in open_here[0].choices:
+            return open_here[0]
+        if can_answer and poll_id and any(pending.poll_id is None for pending in open_here):
+            bounded_put(self._early_poll_votes, poll_id, [
+                *self._early_poll_votes.get(poll_id, []), (chat_id, choice)], 50)
+            return self._BUFFERED
+        return None
+
+    def _prune_poll_clarifies(self) -> None:
+        for clarify_id, pending in list(self._open_poll_clarifies.items()):
+            if not pending.is_open():
+                self._open_poll_clarifies.pop(clarify_id, None)
+
+    @staticmethod
+    def _poll_vote_text(content: Dict[str, Any], choice: str, selected: bool,
+                        binding: Optional[_PollClarify], chat_type: str) -> str:
+        poll_title = (content.get("pollTitle") or "").strip()
+        # The SDK patch substitutes "Poll" for Photon's empty titles; it names nothing.
+        question = binding.question if binding else poll_title if poll_title != "Poll" else ""
         action = "poll vote" if selected else "poll vote removed"
-        text = f"[{action}] {choice} (poll: {question})"
+        text = f"[{action}] {choice}" + (f" (poll: {question})" if question else "")
         tally = content.get("tally")
         if chat_type == "group" and isinstance(tally, dict) and tally:
             totals = ", ".join(f"{title}: {count}" for title, count in tally.items())
-            text += f"\nTotals: {totals} ({content.get('voters', 0)} voters)"
-        # Informational votes remain useful after a prompt ends. Disable gateway control
-        # so stale/unknown polls and vote changes cannot answer a newer clarify.
-        vote_event.text = text
-        await self.handle_message(vote_event)
+            since = " (since restart)" if content.get("partial") else ""
+            text += f"\nTotals{since}: {totals} ({content.get('voters', 0)} voters)"
+        return text
 
     # -- Sidecar lifecycle ---------------------------------------------------------
 
@@ -1263,25 +1331,36 @@ class PhotonAdapter(BasePlatformAdapter):
         """Send the visible question before a native poll and bind votes to this clarify."""
         if not choices:  # open-ended: base plain-text behaviour is right
             return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
-        from tools.clarify_gateway import mark_awaiting_text
-        mark_awaiting_text(clarify_id)
+        from tools import clarify_gateway as cg
+        with cg._lock:
+            multi_select = bool(getattr(cg._entries.get(clarify_id), "multi_select", False))
+        if multi_select:
+            # A poll tap resolves on the first selection; the numbered list takes several.
+            return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
+        cg.mark_awaiting_text(clarify_id)
         question_result = await self.send(chat_id, question, metadata=metadata)
         if not question_result.success:
             return question_result
+        # Registered before the send: a vote can stream in before /send-poll returns its id.
+        self._prune_poll_clarifies()
+        pending = _PollClarify(clarify_id, chat_id, question, list(choices))
+        self._open_poll_clarifies[clarify_id] = pending
         result = await self._sidecar_send_poll(chat_id, question, list(choices))
         if not result.success:
+            self._open_poll_clarifies.pop(clarify_id, None)
             # The question bubble already arrived; reuse the numbered fallback without it.
             logger.warning("[photon] poll clarify failed (%s); falling back to text list", result.error)
             from agent.i18n import t
-            from tools import clarify_gateway as cg
-            with cg._lock:
-                multi_select = bool(getattr(cg._entries.get(clarify_id), "multi_select", False))
             numbered = [t("gateway.clarify.option_line", index=i, choice=choice)
                         for i, choice in enumerate(choices, start=1)]
-            hint = t("gateway.clarify.hint_multi" if multi_select else "gateway.clarify.hint_single")
+            hint = t("gateway.clarify.hint_single")
             return await self.send(chat_id, "\n".join([*numbered, "", hint]), metadata=metadata)
         if result.message_id:
-            bounded_put(self._clarify_polls, result.message_id, (clarify_id, chat_id, question), 200)
+            pending.poll_id = result.message_id
+            bounded_put(self._clarify_polls, result.message_id, pending, 200)
+            for vote_chat, choice in self._early_poll_votes.pop(result.message_id, []):
+                if vote_chat == chat_id and cg.resolve_gateway_clarify(clarify_id, choice):
+                    logger.info("[photon] early poll vote answered clarify %s", clarify_id)
         return result
 
     # -- Outbound media (parity with BlueBubbles): URL-based helpers cache to a local path

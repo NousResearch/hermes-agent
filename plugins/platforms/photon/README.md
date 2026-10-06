@@ -171,8 +171,11 @@ All env vars are documented in `plugin.yaml`. The most important:
 - **Native polls are supported.** Hermes posts poll content through
   `spectrum-ts`' `poll(...)` builder via the sidecar's `/send-poll` endpoint.
   Clarify sends the question in a text bubble first because Photon drops native
-  poll titles. Votes answer only their matching prompt; group messages include
-  observed totals. Tallies cover up to 200 recent polls and reset on sidecar restart.
+  poll titles. A vote answers only its matching prompt and is not forwarded again.
+  Other votes reach the agent as notes, except in mention-gated groups or while the
+  agent is busy; group notes include totals. Tallies cover up to 200 recent polls and
+  restart empty ("since restart"). Send-time option IDs persist in
+  `<hermes-home>/photon/poll-seeds.json`. Multi-select prompts use a numbered list.
 - **Message effects are supported.** Text can be sent with native iMessage
   bubble/screen effects through `spectrum-ts`' iMessage `effect(...)` builder
   via the sidecar's `/send-effect` endpoint.

@@ -210,8 +210,11 @@ Common issues:
 - **Native polls are supported.** Hermes sends poll content through
   spectrum-ts' `poll()` builder via the sidecar's `/send-poll` endpoint.
   Clarify sends a separate question bubble because Photon drops poll titles.
-  Votes answer only their matching prompt. Group messages include observed
-  totals for up to 200 recent polls; tallies reset on sidecar restart.
+  A vote answers only its matching prompt and is not forwarded again. Other
+  votes reach the agent as notes, except in mention-gated groups or while the
+  agent is busy. Group notes include totals for up to 200 recent polls; totals
+  that began after a sidecar restart say "since restart". Multi-select prompts
+  use a numbered list because a poll tap would end them on the first choice.
 - **Read receipts are supported.** The sidecar marks an inbound iMessage
   read after forwarding it to Hermes, so the sender sees `Read` without
   waiting for a model/tool turn. Inbound receipts for Hermes-sent messages

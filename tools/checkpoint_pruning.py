@@ -5,7 +5,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import os
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional, Set
+
+# The take path shares the store with the prune timer and every other session:
+# two writers racing for one project's index lost a snapshot outright because
+# the lock was taken non-blocking and the refusal was swallowed. Bound the wait
+# so a concurrent holder delays the take instead of dropping it; the prune path
+# keeps ``wait=False`` (it can simply run again on its next tick).
+STORE_LOCK_TAKE_TIMEOUT_SECONDS = 5.0
 
 
 class PruneError(RuntimeError):
@@ -21,15 +28,20 @@ def store_lock_path(base: Path) -> Path:
 
 
 @contextmanager
-def store_lock(base: Path):
-    """Serialize whole operations, including GC and clear, across processes."""
+def store_lock(base: Path, *, wait: bool = False, timeout: Optional[float] = None):
+    """Serialize whole operations, including GC and clear, across processes.
+
+    ``wait=False`` (the default) refuses immediately when the store is busy;
+    the take path passes ``wait=True`` with a bounded ``timeout`` so a
+    concurrent writer delays a snapshot instead of dropping it.
+    """
     from hermes_cli.runtime_state import _lock
 
     base.parent.mkdir(parents=True, exist_ok=True)
     # Outside base so clear_all and legacy migration cannot replace its inode.
     fd = os.open(store_lock_path(base), os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        if not _lock(fd, wait=False):
+        if not _lock(fd, wait=wait, timeout=timeout):
             raise PruneError(f"checkpoint store is busy: {base}")
         yield
     finally:

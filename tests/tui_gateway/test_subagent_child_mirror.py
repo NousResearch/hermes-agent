@@ -205,6 +205,46 @@ def test_active_child_runs_registry_tracks_liveness(server, emits):
     assert (None, "child-1") not in server._active_child_runs
 
 
+def test_watch_status_stays_working_until_child_completion(server, emits, monkeypatch):
+    """The silence watchdog polls active_list, not the resume-only overlay."""
+    import threading
+
+    watch = {
+        "session_key": "child-1", "agent": None, "lazy": True,
+        "running": False, "history": [], "history_lock": threading.Lock(),
+    }
+    server._sessions["live-1"] = watch
+    monkeypatch.setattr(server, "_session_live_title", lambda *_: "Child")
+    monkeypatch.setattr(server, "_session_cwd", lambda *_: "/tmp")
+    monkeypatch.setattr(server, "_session_default_model", lambda *_: "test-model")
+    monkeypatch.setattr(server, "_project_info_for_cwd", lambda *_: None)
+    monkeypatch.setattr(server.git_probe, "branch", lambda *_: "")
+
+    _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")
+    assert any(e == "message.start" and sid == "live-1" for e, sid, _ in emits)
+    rows = server._methods["session.active_list"]("probe", {})["result"]["sessions"]
+    assert next(row for row in rows if row["id"] == "live-1")["status"] == "working"
+    payload = server._live_session_payload("live-1", watch, omit_messages=True)
+    assert payload["running"] is True
+    assert payload["info"]["running"] is True
+    assert payload["status"] == "working"
+    assert watch["running"] is False  # the watch does not own a second run
+
+    _relay(server, "subagent.complete", child_session_id="child-1", status="completed", summary="")
+    rows = server._methods["session.active_list"]("probe", {})["result"]["sessions"]
+    assert next(row for row in rows if row["id"] == "live-1")["status"] == "idle"
+    assert server._live_session_payload("live-1", watch, omit_messages=True)["running"] is False
+
+
+def test_watch_liveness_does_not_cross_profile_or_upgraded_agent(server, emits):
+    _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")
+    watch = {"session_key": "child-1", "agent": None, "lazy": True, "running": False}
+    assert server._session_reply_running(watch) is True
+    assert server._session_reply_running({**watch, "profile_home": "/tmp/other-profile"}) is False
+    assert server._session_reply_running({**watch, "agent": object()}) is False
+    assert server._session_reply_running({**watch, "lazy": False}) is False
+
+
 def test_start_mirrors_as_immediate_header_line(server, emits):
     server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
 
@@ -237,5 +277,4 @@ def test_text_mirrors_as_message_delta(server, emits):
         ("message.delta", {"text": "Here is "}),
         ("message.delta", {"text": "the answer."}),
     ]
-
 

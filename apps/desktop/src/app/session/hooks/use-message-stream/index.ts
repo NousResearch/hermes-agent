@@ -162,6 +162,7 @@ export function useMessageStream({
       seed: () => ChatMessagePart[],
       opts: {
         pending?: (message: ChatMessage) => boolean
+        replyArrived?: boolean
         // Resolve the message an event should mutate by payload identity
         // rather than by the current stream position. A late `tool.complete`
         // that crosses an interim/settle boundary must attach to the bubble
@@ -208,6 +209,9 @@ export function useMessageStream({
               m.id === streamId
                 ? {
                     ...m,
+                    ...(opts.replyArrived && m.errorSurface?.code === 'no_reply'
+                      ? { error: undefined, errorSurface: undefined }
+                      : {}),
                     parts: transform(m.parts, m),
                     pending: patchesSealedBubble ? (m.pending ?? false) : opts.pending ? opts.pending(m) : true
                   }
@@ -316,7 +320,20 @@ export function useMessageStream({
             parts
           )
 
-        mutateStream(id, applyQueued, () => applyQueued([]), {}, queued[0]?.occurredAt)
+        const replyArrived = queued.some(delta => delta.type === 'assistant' && delta.text.trim())
+
+        mutateStream(
+          id,
+          applyQueued,
+          () => applyQueued([]),
+          {
+            replyArrived,
+            // Only the just-settled turn may reclaim its retry card. message.start
+            // clears this identity, so output in a newer turn cannot erase an old failure.
+            eventTarget: state => (replyArrived && !state.streamId ? (state.heartbeatSettledStreamId ?? null) : null)
+          },
+          queued[0]?.occurredAt
+        )
       }
     },
     [mutateStream]
@@ -817,6 +834,9 @@ export function useMessageStream({
         const completeMessage = (message: ChatMessage): ChatMessage => {
           const settled = {
             ...message,
+            ...(!completionError && finalText && message.errorSurface?.code === 'no_reply'
+              ? { error: undefined, errorSurface: undefined }
+              : {}),
             completedAt: occurredAt,
             parts: completeOpenTimelineParts(message.parts, occurredAt),
             pending: false,

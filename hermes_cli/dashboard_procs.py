@@ -919,6 +919,22 @@ def read_valid_backend_lock(lock_path: Path) -> dict | None:
     return parsed if _valid_lockfile_payload(parsed, ownership_id) else None
 
 
+def scan_for_ssh_slot_backends(ownership_id: str) -> list[int]:
+    """PIDs of live ``serve --ssh-session-token-file …/desktop-ssh/<ownership_id>/…`` backends —
+    every backend of one Desktop SSH ownership slot, any spawn. The slot path is machine-local and
+    per-connection, so an argv match identifies the slot without guessing on port or age."""
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+
+    needle = f"desktop-ssh/{ownership_id}/"
+    found: list[int] = []
+    for pid, cmd in _scan_dashboard_processes():
+        tokens = cmd.lower().split()
+        if _hermes_holder_subcommand(cmd) == "serve" and _flag_value(tokens, "--ssh-session-token-file") \
+                and needle in cmd.lower():
+            found.append(pid)
+    return found
+
+
 # Covers the gap between process start and the Desktop client writing backend.lock.json.
 _REAP_MIN_AGE_SECONDS = 180.0
 

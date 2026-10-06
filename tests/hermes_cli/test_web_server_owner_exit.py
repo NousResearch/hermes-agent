@@ -7,6 +7,7 @@ and any lock it cannot validate keeps it up."""
 from __future__ import annotations
 
 import json
+import signal
 from pathlib import Path
 
 from hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS, read_valid_backend_lock
@@ -80,3 +81,66 @@ def test_superseded_backend_retires_through_the_fence_only_when_idle():
     busy = _Fence(idle=False)
     assert _run(busy, [NEW, NEW, NEW]).should_exit is False  # an in-flight turn keeps it up
     assert busy.committed is False
+
+
+# ── Leftover same-slot sibling retirement (#132133) ──────────────────────────
+# A gateway restart strands the slot's pre-owner-exit backend: the Desktop's reconnect drops the
+# old lock and writes a new one naming the FRESH spawn, and the leftover — its token rotated — is
+# unreachable, holding the desktop session. The successor must retire it once the lock names itself.
+
+import os as _os
+from unittest.mock import patch as _patch
+
+
+def test_stale_slot_sibling_pids_targets_unnamed_backends_of_the_slot():
+    from hermes_cli.web_server_owner_exit import stale_slot_sibling_pids
+
+    lock = _lock(ME)
+    lock["pid"] = 4242
+    scanned = [
+        (4242, f"hermes serve --isolated --host 127.0.0.1 --port 0 --ssh-session-token-file ~/.hermes/desktop-ssh/{OID}/dead.token --ssh-owner-nonce {ME}"),  # the lock's spawn
+        (5555, f"hermes serve --isolated --host 127.0.0.1 --port 0 --ssh-session-token-file ~/.hermes/desktop-ssh/{OID}/old.token --ssh-owner-nonce {'c' * 16}"),  # #132133 leftover
+        (6666, f"hermes serve --isolated --host 127.0.0.1 --port 0 --ssh-session-token-file ~/.hermes/desktop-ssh/{'e' * 32}/x.token --ssh-owner-nonce {'d' * 16}"),  # another slot
+        (7777, "hermes serve --host 0.0.0.0 --port 9119"),  # operator's remote serve
+    ]
+    with _patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=scanned), \
+            _patch.dict(_os.environ, {}, clear=False):
+        pids = stale_slot_sibling_pids(lock, my_pid=_os.getpid())
+    assert pids == [5555]
+
+
+def test_owner_watchdog_sigterms_leftover_slot_sibling_once_lock_names_this_spawn():
+    terms: list[int] = []
+    orphan_argv = (f"hermes serve --isolated --host 127.0.0.1 --port 0 "
+                   f"--ssh-session-token-file ~/.hermes/desktop-ssh/{OID}/old.token --ssh-owner-nonce {'c' * 16}")
+    lock = _lock(ME)
+    lock["pid"] = 4242
+
+    with (
+        _patch("hermes_cli.dashboard_procs._scan_dashboard_processes",
+               return_value=[(5555, orphan_argv), (4242, "hermes serve --isolated --ssh-owner-nonce " + ME)]),
+        _patch("os.kill", side_effect=lambda pid, sig: terms.append((pid, sig))),
+    ):
+        _run(_Fence(idle=True), [ME, ME, ME, ME])
+
+    assert terms == [(5555, signal.SIGTERM)]
+
+
+def test_owner_watchdog_spares_sibling_while_lock_settles_or_names_another():
+    terms: list[int] = []
+    orphan_argv = (f"hermes serve --isolated --host 127.0.0.1 --port 0 "
+                   f"--ssh-session-token-file ~/.hermes/desktop-ssh/{OID}/old.token --ssh-owner-nonce {'c' * 16}")
+
+    with (
+        _patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[(5555, orphan_argv)]),
+        _patch("os.kill", side_effect=lambda pid, sig: terms.append((pid, sig))),
+    ):
+        # Lock never settles on this spawn: missing / another spawn's / fresh-young polls kill nothing.
+        _run(_Fence(idle=True), [None, None, None, None])
+        _run(_Fence(idle=True), [NEW, NEW, NEW, NEW])
+        young_clock = iter([0.0, 10.0, 20.0, 30.0])  # never past _REAP_MIN_AGE_SECONDS
+        start_owner_watchdog(
+            _Server(), lock_path=Path("backend.lock.json"), nonce=ME, fence=_Fence(idle=True),
+            poll_s=0.01, now=lambda: float(next(young_clock)), max_polls=4).join(timeout=5)
+
+    assert terms == []

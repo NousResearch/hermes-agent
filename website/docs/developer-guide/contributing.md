@@ -22,8 +22,7 @@ We value contributions in this order:
 
 ## Contribution rubric
 
-The project's intent layer, summarised in the root `AGENTS.md`; this is the long form with the
-examples. Hermes ships a lot: most merges are bug fixes and the product surface (platforms,
+The project's intent layer, summarised in [`AGENTS.md`](https://github.com/NousResearch/hermes-agent/blob/main/AGENTS.md) and [`CODING_STANDARDS.md`](https://github.com/NousResearch/hermes-agent/blob/main/CODING_STANDARDS.md#work-worth-accepting); this page supplies the long-form examples, while `CODING_STANDARDS.md` owns the short normative policy. Hermes ships a lot: most merges are bug fixes and the product surface (platforms,
 providers, models, desktop/TUI features) expands on purpose. The restraint targets the core agent
 and the model tool schema, where every addition is paid for on every API call: expansive at the
 edges, conservative at the waist.
@@ -268,7 +267,7 @@ See [Package management](../reference/package-management.md) for PM commands and
 - **Comments**: Only when explaining non-obvious intent, trade-offs, or API quirks
 - **Error handling**: Catch specific exceptions. Use `logger.warning()`/`logger.error()` with `exc_info=True` for unexpected errors
 - **Cross-platform**: Never assume Unix (see below)
-- **Profile-safe paths**: Never hardcode `~/.hermes` — use `get_hermes_home()` from `hermes_constants` for code paths and `display_hermes_home()` for user-facing messages. See [AGENTS.md](https://github.com/NousResearch/hermes-agent/blob/main/AGENTS.md#profiles-multi-instance-support) for full rules.
+- **Profile-safe paths**: Never hardcode `~/.hermes` — use `get_hermes_home()` from `hermes_constants` for code paths and `display_hermes_home()` for user-facing messages. See [AGENTS.md](https://github.com/NousResearch/hermes-agent/blob/main/AGENTS.md#profile-and-execution-scope) for full rules.
 
 ## Cross-Platform Compatibility
 

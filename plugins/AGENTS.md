@@ -12,7 +12,7 @@ If it needs a capability the framework lacks, widen the **generic** plugin surfa
 ctx method) and have the plugin use it — never hardcode plugin-specific logic into core (PR #5295
 removed 95 lines of hardcoded honcho argparse from `main.py`). Plugin setup goes through
 `hermes memory setup` → `provider.post_setup(hermes_home, config)`, never a parallel top-level
-command. A hook with no concrete consumer is speculative infrastructure and is rejected (root).
+command. A hook with no concrete consumer is speculative infrastructure and is rejected ([`../CODING_STANDARDS.md#accepted-and-rejected-shapes`](../CODING_STANDARDS.md#accepted-and-rejected-shapes)).
 
 ## What may live in this tree (policy)
 

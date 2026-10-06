@@ -29,6 +29,6 @@ Hermes is a large repository, and most contributions touch exactly one subsystem
 
 A few conventions that fall out of this map:
 
-- **Changes should stay inside their subsystem.** A plugin that needs to edit core files is a design smell — widen the generic plugin surface instead (see the contribution rubric in the repository's `AGENTS.md`).
+- **Changes should stay inside their subsystem.** A plugin that needs to edit core files is a design smell — widen the generic plugin surface instead (see the [contribution rubric](https://github.com/NousResearch/hermes-agent/blob/main/CODING_STANDARDS.md#work-worth-accepting) and [footprint ladder](https://github.com/NousResearch/hermes-agent/blob/main/CODING_STANDARDS.md#footprint-ladder) in `CODING_STANDARDS.md`).
 - **Run the mirror test directory for every source directory you touch.** A change to `plugins/platforms/telegram/` needs `tests/plugins/platforms/` green, not just the test file you happened to think of.
 - **When two subsystems are involved, the narrower one owns the change.** Prefer a fix in an adapter or plugin over a branch in the agent core; the core is a narrow waist, and every addition there is paid for on every API call.

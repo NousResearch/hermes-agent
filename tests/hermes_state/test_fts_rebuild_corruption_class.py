@@ -27,14 +27,17 @@ def db(tmp_path):
     d.close()
 
 
-def _corrupting_execute(match, command="rebuild"):
-    """Wrap ``execute`` so FTS *command* statements whose SQL satisfies *match* raise the
-    corruption-class error; every other statement passes through."""
+_MALFORMED = sqlite3.DatabaseError("database disk image is malformed")
+
+
+def _corrupting_execute(match, command="rebuild", error=_MALFORMED):
+    """Wrap ``execute`` so FTS *command* statements whose SQL satisfies *match* raise *error*
+    (default: the corruption-class error); every other statement passes through."""
 
     def wrap(real_execute):
         def execute(sql, *args, **kwargs):
             if f"VALUES('{command}')" in sql and match(sql):
-                raise sqlite3.DatabaseError("database disk image is malformed")
+                raise error
             return real_execute(sql, *args, **kwargs)
 
         return execute
@@ -42,18 +45,22 @@ def _corrupting_execute(match, command="rebuild"):
     return wrap
 
 
+@pytest.mark.parametrize(
+    "error,repair_hint",
+    [(_MALFORMED, True), (sqlite3.IntegrityError("UNIQUE constraint failed"), False)],
+)
 def test_corruption_class_error_is_caught_rolled_back_and_reported(
-    db, monkeypatch, caplog
+    db, monkeypatch, caplog, error, repair_hint
 ):
     """The exact production failure (#133375): every index rebuild raises DatabaseError.
-    The call must return 0 (no progress), roll the connection back, and say the offline
-    repair path is needed — not propagate the error out of the loop."""
+    The call must return 0 (no progress) rather than propagate, and only a malformed-image
+    error earns the offline-repair hint — an IntegrityError is not corruption."""
     monkeypatch.setattr(
-        db._conn, "execute", _corrupting_execute(lambda sql: True)(db._conn.execute)
+        db._conn, "execute", _corrupting_execute(lambda sql: True, error=error)(db._conn.execute)
     )
-    with caplog.at_level("ERROR"):
+    with caplog.at_level("WARNING"):
         assert db.rebuild_fts() == 0
-    assert any("offline repair" in rec.message for rec in caplog.records)
+    assert any("offline repair" in rec.message for rec in caplog.records) is repair_hint
 
 
 @pytest.mark.parametrize("method,command", [("rebuild_fts", "rebuild"), ("optimize_fts", "optimize")])

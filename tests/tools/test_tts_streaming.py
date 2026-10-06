@@ -8,6 +8,7 @@ availability, the chunked-streamer playback path, and the universal per-sentence
 sync fallback.
 """
 
+import io
 import os
 import json
 import queue
@@ -1121,6 +1122,103 @@ def test_openai_pcm_sample_rate_resolution(config, headers, expected):
         assert ts._sample_rate_from_headers(headers) == expected
     else:
         assert ts.OpenAIStreamer({}, {"api_key": "sk-x", **config}).sample_rate == expected
+
+
+def test_chatterbox_available_gates_on_config(monkeypatch):
+    """Zero-config for ``tts.provider: chatterbox`` users (the command-provider server);
+    others opt in with a ``tts.chatterbox`` section; unrelated providers stay off."""
+    monkeypatch.setattr(ts, "_load_tts_config", lambda: {
+        "provider": "chatterbox", "providers": {"chatterbox": {"type": "command"}}})
+    assert ts.ChatterboxStreamer.available() is True
+    monkeypatch.setattr(ts, "_load_tts_config", lambda: {"provider": "edge"})
+    assert ts.ChatterboxStreamer.available() is False
+    monkeypatch.setattr(ts, "_load_tts_config", lambda: {"chatterbox": {"base_url": "http://x"}})
+    assert ts.ChatterboxStreamer.available() is True
+
+
+def test_chatterbox_streamer_posts_pcm_and_yields_chunks(monkeypatch):
+    """The OpenAI-compatible pcm request carries the pinned model/voice, and the raw
+    int16 mono chunks pass through unchanged."""
+    captured = {}
+
+    class _Resp(io.BytesIO):
+        headers = {"content-type": "audio/pcm"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    body = b"\x01\x00\x02\x00"
+
+    def _fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["body"] = json.loads(req.data.decode())
+        return _Resp(body)
+
+    monkeypatch.setattr("tools.tts_streaming.urlopen", _fake_urlopen)
+    section = {"model": "chatterbox-turbo", "voice": "DeeLong.wav",
+               "base_url": "http://127.0.0.1:8004/v1/audio/speech"}
+    chunks = list(ts.ChatterboxStreamer({"chatterbox": section}, section).stream("Hi."))
+    assert chunks == [body]
+    assert captured["body"] == {"model": "chatterbox-turbo", "input": "Hi.",
+                                "voice": "DeeLong.wav", "response_format": "pcm"}
+
+
+def test_chatterbox_streamer_honors_advertised_rate(monkeypatch):
+    """An endpoint advertising a non-default rate in headers wins before the first chunk
+    is yielded (the provider contract consumers rely on to open playback)."""
+    captured = {}
+
+    class _Resp(io.BytesIO):
+        headers = {"x-audio-sample-rate": "44100"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def _fake_urlopen(req, timeout):
+        return _Resp(b"\x01\x00\x02\x00")
+
+    monkeypatch.setattr("tools.tts_streaming.urlopen", _fake_urlopen)
+    section = {"api_key_placeholder": "x"}
+    streamer = ts.ChatterboxStreamer({"chatterbox": section}, section)
+    list(streamer.stream("Hi."))
+    assert streamer.sample_rate == 44100
+
+
+def test_chatterbox_streamer_defaults(monkeypatch):
+    """No section overrides: the model/voice defaults match the production bridge and the
+    URL falls back config -> env -> the local server constant."""
+    captured = {}
+
+    class _Resp(io.BytesIO):
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def _fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["body"] = json.loads(req.data.decode())
+        return _Resp(b"")
+
+    monkeypatch.setattr("tools.tts_streaming.urlopen", _fake_urlopen)
+    monkeypatch.delenv("CHATTERBOX_GPU_URL", raising=False)
+    list(ts.ChatterboxStreamer({}, {}).stream("Hi."))
+    assert captured["body"]["model"] == "chatterbox-turbo"
+    assert captured["body"]["voice"] == "DeeLong.wav"
+    assert captured["body"]["response_format"] == "pcm"
+    assert captured["url"] == "http://127.0.0.1:8004/v1/audio/speech"
+    monkeypatch.setenv("CHATTERBOX_GPU_URL", "http://192.168.7.2:8004/v1/audio/speech")
+    list(ts.ChatterboxStreamer({}, {}).stream("Hi."))
+    assert captured["url"] == "http://192.168.7.2:8004/v1/audio/speech"
 
 
 @pytest.mark.skipif(

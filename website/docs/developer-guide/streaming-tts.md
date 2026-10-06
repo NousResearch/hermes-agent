@@ -63,6 +63,7 @@ tts:
 | openai      | chunked HTTP (`with_streaming_response`, `pcm`) | yes | `tts.openai.api_key` → env → managed gateway |
 | gemini      | SSE (`streamGenerateContent?alt=sse`) | yes         | `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
 | xai         | WebSocket (`wss://api.x.ai/v1/tts`)   | yes         | `XAI_API_KEY` preferred, else xAI OAuth (the subscription bearer 403s on metered TTS) |
+| chatterbox  | chunked HTTP (`response_format: pcm`) | yes         | no credentials - `tts.chatterbox.base_url` / `CHATTERBOX_GPU_URL` / default `127.0.0.1:8004` |
 | edge, piper, kitten, neutts, mistral, minimax, deepinfra, … | — | no (per-sentence sync fallback) | as usual |
 | plugin `TTSProvider` with `streams_pcm` | the plugin's `stream(format="pcm")` | yes, at its `stream_sample_rate` | the plugin's own |
 

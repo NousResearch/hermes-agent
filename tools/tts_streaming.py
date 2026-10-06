@@ -11,11 +11,14 @@ Plugin ``TTSProvider``s join by declaring ``streams_pcm`` + ``stream_sample_rate
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Iterator, List, Optional
+from urllib.request import Request, urlopen
 
 from agent.think_scrubber import THINK_TAG_NAMES
 from tools.tool_backend_helpers import resolve_openai_audio_api_key
@@ -554,3 +557,54 @@ class XAIStreamer(StreamingTTSProvider):
                         envelope.get("message") or envelope.get("error") or envelope
                     )
                     raise RuntimeError(f"xAI streaming TTS error: {detail}")
+
+
+_DEFAULT_CHATTERBOX_URL = "http://127.0.0.1:8004/v1/audio/speech"
+_DEFAULT_CHATTERBOX_VOICE = "DeeLong.wav"
+
+
+@register("chatterbox")
+class ChatterboxStreamer(StreamingTTSProvider):
+    """Chatterbox server chunked HTTP -> raw PCM (24 kHz mono int16, no header).
+
+    OpenAI-compatible ``/v1/audio/speech`` with ``response_format: pcm``. The
+    server generates sentence groups progressively and flushes each as plain
+    int16 LE mono bytes (verified live: no WAV header, no rate header).
+    """
+
+    sample_rate = 24000
+
+    @staticmethod
+    def available() -> bool:
+        # No credentials; usable whenever a Chatterbox server is configured. Zero-config
+        # for ``tts.provider: chatterbox`` users (the command provider's server), else an
+        # explicit ``tts.chatterbox`` section opts a different provider's install in.
+        try:
+            cfg = _load_tts_config()
+            if cfg.get("chatterbox"):
+                return True
+            return (str(cfg.get("provider") or "").strip().lower() == "chatterbox"
+                    and bool(cfg.get("providers", {}).get("chatterbox")))
+        except Exception:
+            return False
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        body = json.dumps({
+            "model": self.section.get("model", "chatterbox-turbo"),
+            "input": text,
+            "voice": self.section.get("voice", _DEFAULT_CHATTERBOX_VOICE),
+            "response_format": "pcm",
+        }).encode()
+        url = self.section.get("base_url") or os.environ.get("CHATTERBOX_GPU_URL") \
+            or _DEFAULT_CHATTERBOX_URL
+        timeout_s = float(self.section.get("timeout", 300))
+        req = Request(url, data=body, headers={"Content-Type": "application/json"})
+        with urlopen(req, timeout=timeout_s) as resp:
+            # Rate override per the provider contract: honor an advertised rate on
+            # the first chunk pull, before any consumer opens its output device.
+            rate = _sample_rate_from_headers(getattr(resp, "headers", None))
+            if rate is not None and rate != self.sample_rate:
+                logger.info("Chatterbox streaming TTS reports %d Hz PCM (expected %d Hz); honoring it",
+                            rate, self.sample_rate)
+                self.sample_rate = rate
+            yield from _capped(resp, "Chatterbox streaming TTS")

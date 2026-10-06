@@ -759,6 +759,17 @@ pass capped at 300 s), so a slow fleet finishes later rather than timing out.
 
 A server with `lazy: true` is registered from the on-disk schema cache instead: its tools appear in the registry immediately, and the process is spawned (or the HTTP endpoint connected) on the first tool call. The cache is written on every live connect, so the first run of a new or changed server is always eager. The banner and the TUI session panel show such a server as **lazy** with its cached tool count (`3 tool(s) (lazy, starts on first use)`) — it is a working server, not a failed one — and the startup discovery summary counts it as `N lazy, not spawned yet`.
 
+### Kanban worker-only servers
+
+Set `worker_only: true` on a server that requires the dispatcher's task context. Gateway startup and other sessions skip it; an owned Kanban worker connects it with its task environment. This controls availability, not authorization: the MCP server must validate its own task binding and claim.
+
+```yaml
+mcp_servers:
+  council-tools:
+    command: /path/to/server
+    worker_only: true
+```
+
 ### Dynamic Tool Discovery
 
 MCP servers can notify Hermes when their available tools change at runtime by sending a `notifications/tools/list_changed` notification. When Hermes receives this notification, it automatically re-fetches the server's tool list and updates the registry — no manual `/reload-mcp` required.

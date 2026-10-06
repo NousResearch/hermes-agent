@@ -542,6 +542,7 @@ def _load_mcp_config() -> Dict[str, dict]:
     """``mcp_servers`` from config.yaml as ``{name: config}`` (empty on error / safe mode), ``${VAR}`` interpolated."""
     try:
         from hermes_cli.config import load_config
+        from agent.delegation_context import owned_kanban_task
         from utils import env_var_enabled as _env_enabled
         if _env_enabled("HERMES_SAFE_MODE"):
             return {}
@@ -558,6 +559,9 @@ def _load_mcp_config() -> Dict[str, dict]:
                 _warn_hidden_whitespace(name, interpolated)
                 safe_servers[name] = interpolated
         _portable_mcp_servers(safe_servers)
+        if not owned_kanban_task():
+            safe_servers = {name: cfg for name, cfg in safe_servers.items()
+                            if cfg.get("worker_only", False) is False}
         return safe_servers
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)

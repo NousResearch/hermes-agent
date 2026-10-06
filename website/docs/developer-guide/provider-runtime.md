@@ -136,6 +136,10 @@ That distinction is especially important for:
 - switching providers without re-running setup
 - config-saved custom endpoints that should keep working even when `OPENAI_BASE_URL` is not exported in the current shell
 
+## Gemini generation policy
+
+`agent/gemini_generation.py` validates explicit settings and finalizes Gemini kwargs in both `ChatCompletionsTransport` and `_build_call_kwargs`. Native sync, async and streaming adapters share the same request builder. Standalone trajectory compression validates its YAML before initializing clients; portable optional scripts omit Gemini sampling at their direct SDK calls. The [Gemini guide](../guides/google-gemini.md#generation-settings) is the policy and migration reference. No model, API version, authentication path or message prefix changes with this policy.
+
 ## Native Anthropic path
 
 Anthropic is not just "via OpenRouter" anymore.

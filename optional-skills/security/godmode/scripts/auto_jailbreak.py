@@ -363,7 +363,7 @@ def _test_query(client, model, messages, timeout=45):
             model=model,
             messages=messages,
             max_tokens=2048,
-            temperature=0.7,
+            **({} if model.lower().rsplit("/", 1)[-1].startswith("gemini-") else {"temperature": 0.7}),
             timeout=timeout,
         )
         latency = time.time() - start

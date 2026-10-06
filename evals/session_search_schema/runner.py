@@ -142,7 +142,8 @@ def run_one(client, model, arm_name, arm_mod, task_id, prompt, oracle,
     for _ in range(max_iters):
         resp = client.chat.completions.create(
             model=model, messages=messages, tools=tools,
-            temperature=0.2, max_tokens=2000,
+            max_tokens=2000,
+            **({} if model.lower().rsplit("/", 1)[-1].startswith("gemini-") else {"temperature": 0.2}),
         )
         u = getattr(resp, "usage", None)
         if u:

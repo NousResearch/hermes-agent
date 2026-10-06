@@ -60,6 +60,10 @@ def _effective_temperature_for_model(model: str, requested_temperature: Optional
     callers must omit the ``temperature`` kwarg entirely in that case.
     Shared with ``mini_swe_runner`` (which passes ``requested_temperature=None``).
     """
+    from agent.gemini_generation import is_gemini_model, validate_parameter_overrides
+    if is_gemini_model(model):
+        validate_parameter_overrides(model, {} if requested_temperature is None else {"temperature": requested_temperature})
+        return None
     try:
         from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
     except Exception:
@@ -119,7 +123,7 @@ class CompressionConfig:
     summarization_model: str = "google/gemini-3-flash-preview"
     base_url: str = OPENROUTER_BASE_URL
     api_key_env: str = "OPENROUTER_API_KEY"
-    temperature: float = 0.3
+    temperature: Optional[float] = None  # Gemini defaults; other summarizers retain 0.3 unless overridden.
     max_retries: int = 3
     retry_delay: int = 2
     add_summary_notice: bool = True
@@ -148,7 +152,12 @@ class CompressionConfig:
                 if attr == "base_url":
                     value = value or config.base_url  # ``base_url: null`` keeps the default
                 setattr(config, attr, value)
+        config.validate_sampling()
         return config
+
+    def validate_sampling(self) -> None:
+        from agent.gemini_generation import validate_parameter_overrides
+        validate_parameter_overrides(self.summarization_model, {} if self.temperature is None else {"temperature": self.temperature})
 
 
 @dataclass
@@ -288,6 +297,7 @@ class TrajectoryCompressor:
     """
 
     def __init__(self, config: CompressionConfig):
+        config.validate_sampling()
         self.config = config
         self.aggregate_metrics = AggregateMetrics()
         self._init_tokenizer()
@@ -427,7 +437,9 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
     def _summary_request(self, prompt: str) -> Tuple[Optional[float], Dict[str, Any]]:
         """Return ``(temperature, create-kwargs)``; temperature None means omit it."""
         cfg = self.config
-        temperature = _effective_temperature_for_model(cfg.summarization_model, cfg.temperature, cfg.base_url)
+        from agent.gemini_generation import is_gemini_model
+        requested = cfg.temperature if cfg.temperature is not None or is_gemini_model(cfg.summarization_model) else 0.3
+        temperature = _effective_temperature_for_model(cfg.summarization_model, requested, cfg.base_url)
         kwargs = {"model": cfg.summarization_model, "messages": [{"role": "user", "content": prompt}],
                   "max_tokens": cfg.summary_target_tokens * 2}
         if not getattr(self, '_use_call_llm', False) and temperature is not None:

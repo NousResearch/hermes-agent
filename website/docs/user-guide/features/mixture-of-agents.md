@@ -89,7 +89,8 @@ moa:
       aggregator:
         provider: openrouter
         model: anthropic/claude-opus-4.8
-      # Optional: pin sampling temperatures. When omitted (the default),
+      # Optional for models other than Gemini: pin sampling temperatures.
+      # See Gemini generation settings for mixed-model presets. When omitted,
       # temperature is NOT sent and each model uses its provider default —
       # the same behavior as a single-model Hermes agent.
       # reference_temperature: 0.6

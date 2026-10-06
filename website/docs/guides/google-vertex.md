@@ -40,6 +40,8 @@ hermes model
 hermes chat
 ```
 
+Gemini generation parameters follow the shared [generation settings policy](./google-gemini.md#generation-settings). Vertex routes use thinking defaults.
+
 ## Configuration
 
 Vertex splits its settings by sensitivity:

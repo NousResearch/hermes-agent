@@ -1484,7 +1484,7 @@ Every model slot in Hermes — auxiliary tasks, compression, fallback — uses t
 | `model` | Which model to request | provider's default |
 | `base_url` | Custom OpenAI-compatible endpoint (overrides provider) | not set |
 
-Auxiliary task blocks additionally accept a `reasoning_effort` knob:
+Auxiliary task blocks additionally accept a `reasoning_effort` knob. Gemini follows the [generation settings and configuration migration](../guides/google-gemini.md#generation-settings), including the minimum-effort meaning of `none`:
 
 | Key | What it does | Default |
 |-----|-------------|---------|
@@ -1505,7 +1505,7 @@ auxiliary:
   compression:
     reasoning_effort: "low"    # summaries don't need deep thinking
   vision:
-    reasoning_effort: "none"   # disable thinking for image description
+    reasoning_effort: "none"   # lowest effort; Gemini may still reason
 ```
 
 When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
@@ -1845,7 +1845,7 @@ agent:
   reasoning_effort: ""   # empty = medium. Options: none, minimal, low, medium, high, xhigh, max, ultra
 ```
 
-When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
+When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency. Gemini follows its [transport and model-specific generation policy](../guides/google-gemini.md#generation-settings).
 
 ### Answer length (`text_verbosity`)
 
@@ -1869,7 +1869,7 @@ native Anthropic provider already controls effort directly and is unaffected.
 :::
 
 :::note OpenRouter models and supported effort levels
-For other models routed through OpenRouter, Hermes reads the live model
+Gemini uses the verified model IDs and defaults described in [Gemini generation settings](../guides/google-gemini.md#generation-settings). For other models routed through OpenRouter, Hermes reads the live model
 catalog's reasoning metadata (`supported_parameters` + per-model
 `reasoning.supported_efforts`) to decide whether to send reasoning controls at
 all and to clamp your requested effort to the nearest level the route actually

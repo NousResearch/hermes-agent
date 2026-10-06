@@ -22,7 +22,7 @@ class GeminiProfile(ProviderProfile):
             _snake_case_gemini_thinking_config,
         )
 
-        raw = _build_gemini_thinking_config(context.get("model") or "", context.get("reasoning_config"))
+        raw = _build_gemini_thinking_config(context.get("model") or "", context.get("reasoning_config"), context.get("base_url") or self.base_url)
         if not raw:
             return {}
         if self.name == "gemini" and _is_gemini_openai_compat_base_url(context.get("base_url") or self.base_url):

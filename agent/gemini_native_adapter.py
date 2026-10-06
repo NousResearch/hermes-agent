@@ -459,31 +459,9 @@ def _translate_tool_choice_to_gemini(tool_choice: Any) -> Optional[Dict[str, Any
     return {"functionCallingConfig": {"mode": "ANY", "allowedFunctionNames": [name]}} if isinstance(name, str) and name else None
 
 
-# (camelCase key, snake_case alias, accepted types, normalizer)
-_THINKING_KEYS = (
-    ("thinkingBudget", "thinking_budget", (int, float), int),
-    ("includeThoughts", "include_thoughts", bool, lambda v: v),
-    ("thinkingLevel", "thinking_level", str, lambda v: v.strip().lower()),
-)
-
-
-def _normalize_thinking_config(config: Any) -> Optional[Dict[str, Any]]:
-    if not isinstance(config, dict):
-        return None
-    values = {key: config.get(key, config.get(alias)) for key, alias, _, _ in _THINKING_KEYS}
-    normalized = {key: norm(values[key]) for key, _, types, norm in _THINKING_KEYS
-                  if isinstance(values[key], types) and (values[key].strip() if isinstance(values[key], str) else True)}
-    return normalized or None
-
-
 def _thinking_requests_output_headroom(thinking_config: Any) -> bool:
-    """True when Gemini will spend output tokens on thinking: thought tokens bill against ``maxOutputTokens``,
-    so a global 4096/16384 cap can be consumed entirely by high thinking (``finishReason=MAX_TOKENS``, no answer)."""
-    normalized = _normalize_thinking_config(thinking_config) or {}
-    budget, has_level = normalized.get("thinkingBudget"), "thinkingLevel" in normalized
-    if normalized.get("includeThoughts") is False:
-        return has_level or bool(budget)
-    return bool(normalized) and not (isinstance(budget, int) and budget <= 0 and not has_level)
+    """Reasoning can consume output tokens even when thought summaries are hidden."""
+    return isinstance(thinking_config, dict) and bool(thinking_config)
 
 
 def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_config: Any) -> int:
@@ -530,11 +508,13 @@ def build_gemini_request(
     tool_config = _translate_tool_choice_to_gemini(tool_choice)
     optional = (("systemInstruction", system_instruction), ("tools", gemini_tools), ("toolConfig", tool_config))
     request: Dict[str, Any] = {"contents": contents, **{k: v for k, v in optional if v}}
-    # Key order is part of the wire format (prompt-cache parity): temperature, maxOutputTokens, topP, stop, thinking.
+    from agent.gemini_generation import normalize_thinking_config, validate_native_sampling
+    validate_native_sampling(model, temperature, top_p)
+    # Preserve generation key order for prompt-cache parity.
     generation = (
         ("temperature", temperature), ("maxOutputTokens", _effective_gemini_max_output_tokens(max_tokens, thinking_config)),
         ("topP", top_p), ("stopSequences", (stop if isinstance(stop, list) else [str(stop)]) if stop else None),
-        ("thinkingConfig", _normalize_thinking_config(thinking_config)),
+        ("thinkingConfig", normalize_thinking_config(model, thinking_config)),
     )
     json_output = _translate_response_format(response_format, json_schema=tools_as_json_schema)
     # Gemini 400s when forced function calling (mode ANY, from ``tool_choice="required"`` or a named
@@ -862,9 +842,13 @@ class GeminiNativeClient:
         self, *, model: str = "gemini-3.7-flash", messages: Optional[List[Dict[str, Any]]] = None, stream: bool = False,
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
         top_p: Optional[float] = None, stop: Any = None, response_format: Any = None, extra_body: Optional[Dict[str, Any]] = None,
-        timeout: Any = None, **_: Any,
+        timeout: Any = None, **kwargs: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
+        from agent.gemini_generation import validate_parameter_overrides, validate_thinking_transport
+        validate_parameter_overrides(model, extra)
+        validate_parameter_overrides(model, kwargs)
+        validate_thinking_transport(model, extra, self.base_url)
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
             top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"),

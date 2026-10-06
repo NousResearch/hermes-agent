@@ -162,48 +162,16 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
     return clamp_reasoning_config(reasoning_config, OPENAI_COMPAT_WIRE_EFFORTS)
 
 
-def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
-    """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
-    if not isinstance(reasoning_config, dict):
+def _build_gemini_thinking_config(model: str, reasoning_config: dict | None, base_url: str | None = None) -> dict | None:
+    """Translate effort to verified model levels; unverified models use defaults."""
+    from agent.gemini_generation import thinking_level_for_reasoning, is_verified_google_route
+    if not is_verified_google_route(base_url or "https://generativelanguage.googleapis.com/v1beta"):
         return None
-    normalized_model = (model or "").strip().lower().removeprefix("google/")
-    # Gemini-only; Gemma/PaLM on the same provider 400 on the field even as ``{"includeThoughts": False}``.
-    # ``thinking_config`` is a Gemini-only request parameter. The same ``gemini`` provider also serves Gemma
-    # (and historically PaLM/Bard); those reject the field with HTTP 400 "Unknown name 'thinking_config':
-    # Cannot find field" — including the polite ``{"includeThoughts": False}`` form. Omit the field entirely
-    # on non-Gemini models. (#17426)
-    if not normalized_model.startswith("gemini"):
+    level = thinking_level_for_reasoning(model, reasoning_config)
+    if level is None:
         return None
-    effort = str(reasoning_config.get("effort", "medium") or "medium").strip().lower()
-    if reasoning_config.get("enabled") is False or effort == "none":
-        # ``includeThoughts: False`` only omits thought parts from the returned
-        # response; the model may still reason internally and bill thought
-        # tokens against maxOutputTokens, starving small budgets (title
-        # generation's 64 tokens). Set thinkingBudget to 0 to actually disable
-        # thinking on families that document it: Gemini 2.5 and 3+ (plus the
-        # ``gemini-flash-latest`` alias); future majors are added only when the
-        # API documents thinkingBudget for them. (#91927)
-        config: dict[str, Any] = {"includeThoughts": False}
-        if normalized_model == "gemini-flash-latest" or normalized_model.startswith(("gemini-2.5-", "gemini-3")):
-            config["thinkingBudget"] = 0
-        return config
-    thinking_config: dict[str, Any] = {"includeThoughts": True}
-    # Gemini 2.5 takes thinkingBudget; don't guess one from coarse effort levels.
-    if normalized_model.startswith("gemini-2.5-"):
-        return thinking_config
-    if effort not in {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
-        effort = "medium"
-    # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
-    # is stricter (low/high). Clamp Hermes' wider effort set to what each
-    # family accepts so we never forward an undocumented level verbatim.
-    if normalized_model.startswith("gemini-3"):
-        if "flash" in normalized_model:
-            thinking_config["thinkingLevel"] = (
-                "low" if effort in {"minimal", "low"} else "high" if effort in _HIGH_EFFORTS else "medium"
-            )
-        elif "pro" in normalized_model:
-            thinking_config["thinkingLevel"] = "high" if effort in _HIGH_EFFORTS else "low"
-    return thinking_config
+    off = reasoning_config.get("enabled") is False or str(reasoning_config.get("effort") or "").strip().lower() == "none"
+    return {"includeThoughts": not off, "thinkingLevel": level}
 
 
 def _snake_case_gemini_thinking_config(config: dict | None) -> dict | None:
@@ -211,13 +179,11 @@ def _snake_case_gemini_thinking_config(config: dict | None) -> dict | None:
     if not isinstance(config, dict) or not config:
         return None
     translated: dict[str, Any] = {}
-    include, level, budget = config.get("includeThoughts"), config.get("thinkingLevel"), config.get("thinkingBudget")
+    include, level = config.get("includeThoughts"), config.get("thinkingLevel")
     if isinstance(include, bool):
         translated["include_thoughts"] = include
     if isinstance(level, str) and level.strip():
         translated["thinking_level"] = level.strip().lower()
-    if isinstance(budget, (int, float)):
-        translated["thinking_budget"] = int(budget)
     return translated or None
 
 
@@ -376,7 +342,10 @@ def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *,
         api_kwargs, messages=sanitized, tools=api_kwargs.get("tools"), supports_prompt_cache_key=supports_prompt_cache_key,
         session_id=params.get("session_id"), cache_scope_id=params.get("cache_scope_id"),
     )
-    return api_kwargs
+    from agent.gemini_generation import finalize_kwargs
+    profile = params.get("provider_profile")
+    provider = profile.name if profile else params.get("provider_name") or ("openrouter" if params.get("is_openrouter") else None)
+    return finalize_kwargs(api_kwargs, provider, params.get("base_url") or getattr(profile, "base_url", None))
 
 
 def _sanitize_message(
@@ -478,6 +447,10 @@ class ChatCompletionsTransport(ProviderTransport):
         With ``provider_profile`` every quirk comes from the profile; the legacy flag
         path below (is_kimi, is_openrouter, ...) is only reached for unregistered providers.
         """
+        from agent.gemini_generation import validate_parameter_overrides
+        validate_parameter_overrides(model, {"reasoning": params.get("reasoning_config")})
+        validate_parameter_overrides(model, params.get("extra_body_additions"))
+        validate_parameter_overrides(model, params.get("request_overrides"))
         _profile = params.get("provider_profile")
         sanitized = self.convert_messages(messages, model=model, base_url=params.get("base_url"), provider_profile=_profile)
         if _profile:
@@ -535,7 +508,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 extra_body["reasoning"] = {"enabled": not off, "effort": "none" if off else _effort}
 
         if str(params.get("provider_name") or "").strip().lower() == "gemini":
-            raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)
+            raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config, base_url)
             if _is_gemini_openai_compat_base_url(base_url):
                 thinking_config = _snake_case_gemini_thinking_config(raw_thinking_config)
                 if thinking_config:

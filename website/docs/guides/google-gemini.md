@@ -60,6 +60,16 @@ And in `~/.hermes/.env`:
 GOOGLE_API_KEY=...
 ```
 
+### Generation settings
+
+Hermes sends no `temperature`, `top_p`/`topP`, or `top_k`/`topK` for Gemini models, including models selected through OpenRouter, Nous, auxiliary tasks, MoA, and standalone trajectory compression. Gemini uses its sampling defaults. Google recommends keeping the Gemini 3 temperature default at 1; [the Gemini 3 guide](https://ai.google.dev/gemini-api/docs/generate-content/gemini-3) explains why.
+
+Reasoning uses documented **thinking levels**, never `thinkingBudget`/`thinking_budget` or OpenRouter `reasoning.max_tokens`. On AI Studio’s `v1beta` native and OpenAI-compatible transports, and on OpenRouter, Hermes maps its effort control only for explicitly verified model IDs. Flash models that support `minimal` use that minimum for `none`; Pro and other models whose minimum is `low` use `low`. `none` does not guarantee that Gemini stops reasoning. Hiding thought summaries only changes response visibility. Legacy Gemini 2.5 models, moving aliases, unknown model IDs, Nous, Vertex routes, other API versions and unverified routers use model-default thinking. See [Google's model-level support](https://ai.google.dev/gemini-api/docs/generate-content/thinking), [Google's OpenAI transport](https://ai.google.dev/gemini-api/docs/openai), and [OpenRouter's Gemini mapping](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens).
+
+For an existing installation, remove Gemini sampling and thinking-budget settings from `auxiliary.<task>` blocks, provider/task `extra_body`, and request overrides in each active profile's `config.yaml`. Remove `reference_temperature` when a MoA reference uses Gemini and `aggregator_temperature` when its aggregator uses Gemini. In standalone trajectory-compression YAML, omit `summarization.temperature` for Gemini; other summarizers retain their 0.3 default and configurable temperature. Obsolete explicit settings raise a configuration error instead of being silently accepted. Other providers retain their sampling controls. Tool and response JSON schemas can still contain a property named `temperature`.
+
+Restart existing Hermes processes after upgrading and editing configuration. Queued cron jobs store routing and prompts, not serialized generation requests, and build their requests with the upgraded code when they run. Session history, trajectories, MoA traces and generated summaries remain historical records; upgrading does not rewrite them. A code revert cannot undo completed model calls, charges, or saved outputs. To recover, revert the code, restore the previous profile/compressor configuration if needed, restart, and regenerate only affected results deliberately. Prompt-cache identity and stored message prefixes are unchanged; in-memory MoA result caches disappear on restart.
+
 ### Native Gemini API
 
 The recommended endpoint is:

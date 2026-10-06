@@ -6750,9 +6750,11 @@ def _build_call_kwargs(
     if no_progress_timeout is not None:
         kwargs["no_progress_timeout"] = no_progress_timeout
     effective_base = base_url or (_current_custom_base_url() if provider == "custom" else "")
+    from agent.gemini_generation import validate_parameter_overrides, validate_auxiliary_config
+    validate_auxiliary_config(model, task, temperature, _get_auxiliary_task_config)
+    validate_parameter_overrides(model, extra_body)
+    validate_parameter_overrides(model, {"reasoning": reasoning_config})
     extra_body = _with_custom_endpoint_extra_body(extra_body, provider, model, effective_base)
-    # Per-model fixed/omitted temperature, then Opus 4.7+ sampling bans: it rejects any
-    # non-default temperature/top_p/top_k, so drop silently rather than 400 when the aux model flips.
     fixed_temperature = _fixed_temperature_for_model(model, effective_base, provider)
     if fixed_temperature is OMIT_TEMPERATURE:
         temperature = None  # strip — let server choose
@@ -6767,11 +6769,7 @@ def _build_call_kwargs(
         kwargs.update(auxiliary_max_tokens_param(max_tokens, model=model))  # picks max_completion_tokens where needed
     if tools:
         kwargs["tools"] = _dedupe_tool_names(tools, provider, model)
-    # Provider profiles are the source of truth for reasoning wire shapes (top-level, nested body,
-    # or extra_body.reasoning); providers without a reasoning-aware profile keep the generic
-    # ``extra_body.reasoning`` fallback. Clamp Hermes-internal levels (``ultra``) to the
-    # OpenAI-compat wire ONCE here, before either path sees the config — the same entry clamp the
-    # main transport applies (#89503); MoA aggregator/reference and aux calls 400'd without it (#112010).
+    # Profiles own reasoning wire shapes; clamp Hermes-internal levels once before projection.
     from agent.reasoning_effort import clamp_reasoning_config
     from agent.auxiliary_reasoning_floor import known_reasoning_floor
     if isinstance(extra_body, dict):
@@ -6804,10 +6802,9 @@ def _build_call_kwargs(
             or _endpoint_speaks_anthropic_messages(raw_base) or _is_anthropic_compat_endpoint(provider_norm, raw_base)
         ):
             kwargs["_reasoning_config"] = dict(reasoning_config)
-    # Conversation affinity (OpenCode relay, opt-in custom-provider header) — same key as the main
-    # turn so compression/title/vision calls stay on the conversation's warm backend.
     from agent.opencode_affinity import merge_session_affinity_headers
-    return merge_session_affinity_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
+    from agent.gemini_generation import finalize_kwargs
+    return finalize_kwargs(merge_session_affinity_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None), provider_norm, effective_base or None)
 
 
 def _validate_llm_response(

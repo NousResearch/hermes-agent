@@ -343,7 +343,10 @@ def apply_anthropic_cache_control(
     marker = _build_marker(cache_ttl)
 
     for i, msg in enumerate(messages):
-        if isinstance(msg, dict) and ("cache_control" in msg or _has_part_marker(msg.get("content"))):
+        # Same gate as build_prompt_cache_plan: an UNMARKED skill split (outside the marker
+        # window on the previous request) carries no marker, and left as two parts the new
+        # breakpoint would land on its volatile tail instead of the scaffold.
+        if isinstance(msg, dict) and ("cache_control" in msg or isinstance(msg.get("content"), list)):
             messages[i] = strip_anthropic_cache_control([dict(msg)])[0]
 
     breakpoints_used = 0

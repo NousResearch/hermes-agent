@@ -23,6 +23,7 @@ from agent.prompt_cache_boundary import (
     register_stable_prefix,
 )
 from agent.prompt_caching import (
+    _has_part_marker,
     apply_anthropic_cache_control,
     build_prompt_cache_plan,
     strip_anthropic_cache_control,
@@ -213,6 +214,23 @@ class TestRequestLocalSplit:
 
         assert stripped == original
         assert apply_anthropic_cache_control(copy.deepcopy(stripped)) == first_wire
+
+    def test_unmarked_split_re_entering_the_window_marks_the_scaffold(self):
+        """Re-applying the planner to its own output (MoA reference trim, re-decoration) must
+        treat an unmarked [scaffold, tail] split like the canonical string: the breakpoint goes
+        on the scaffold, never on the volatile tail."""
+        scaffold = "stable scaffold\n\n" + _SINGLE_SKILL_INSTRUCTION
+        register_stable_prefix(scaffold)
+        original = [{"role": "user", "content": scaffold + "ticket=one"}]
+        original += [{"role": role, "content": f"turn {i}"} for i in range(4) for role in ("assistant", "user")]
+
+        unmarked = apply_anthropic_cache_control(copy.deepcopy(original))
+        assert not _has_part_marker(unmarked[0]["content"])
+
+        again = apply_anthropic_cache_control(copy.deepcopy(unmarked[:3]))
+        assert again == apply_anthropic_cache_control(copy.deepcopy(original[:3]))
+        assert again[0]["content"][0]["cache_control"] == MARKER
+        assert "cache_control" not in again[0]["content"][1]
 
     def test_strip_flattens_even_after_the_prefix_was_evicted(self):
         """Mid-turn failover re-decorates a request built many messages ago

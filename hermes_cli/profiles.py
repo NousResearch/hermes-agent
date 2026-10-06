@@ -18,6 +18,9 @@ from typing import Dict, List, Optional, Tuple
 
 from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
+from hermes_cli import config_backend as _config_backend
+from hermes_cli.config_backend import config_exists, config_version, require_file_tooling
+from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
 from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
 from hermes_constants import (
@@ -584,28 +587,6 @@ def remove_wrapper_script(name: str) -> bool:
     return False
 
 
-def _migrate_profile_config_if_outdated(profile_dir: Path) -> None:
-    """Migrate a copied config.yaml to the current schema (non-interactive, scoped to the new
-    profile); otherwise the first desktop/doctor view shows a scary ``v0 -> latest`` warning."""
-    from hermes_cli.config_backend import config_exists, supports_file_tooling
-    if not supports_file_tooling():
-        return  # no local config.yaml to migrate: a remote backend migrates in memory on read (D12)
-    if not config_exists(profile_dir / "config.yaml"):
-        return
-    # Creation must not fail over an unmigratable old config; `hermes doctor --fix` surfaces
-    # the detailed error in the target profile.
-    with contextlib.suppress(Exception):
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        from hermes_cli.config import check_config_version, migrate_config
-        token = set_hermes_home_override(str(profile_dir))
-        try:
-            current_ver, latest_ver = check_config_version()
-            if current_ver < latest_ver:
-                migrate_config(interactive=False, quiet=True)
-        finally:
-            reset_hermes_home_override(token)
-
-
 def find_alias_for_profile(profile_name: str) -> Optional[str]:
     """Alias name of the wrapper activating *profile_name*, or None. For listing ALL profiles
     prefer :func:`build_alias_map`: per-profile calls re-read every wrapper N times (O(N*M)),
@@ -1131,6 +1112,7 @@ def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
 
 def _resolve_clone_source(clone_from: Optional[str]) -> Path:
     """Directory to clone from: the named profile, or the active profile when ``None``."""
+    require_file_tooling("Profile clone")
     if clone_from is None:
         from hermes_constants import get_hermes_home
         source_dir = get_hermes_home()
@@ -2286,8 +2268,7 @@ def _refuse_rename_without_file_tooling(old_canon: str) -> None:
     """A remote config backend keys each profile's settings by its canonical name, and the plane
     has no rename: renaming the local home would leave the settings under the old name and read
     another (possibly populated) level under the new one. Refused before any side effect."""
-    from hermes_cli.config_backend import get_config_backend
-    backend = get_config_backend()
+    backend = _config_backend.get_config_backend()
     if not backend.supports_file_tooling():
         raise ValueError(
             f"Cannot rename profile '{old_canon}': its config lives in the {backend.name!r} config "

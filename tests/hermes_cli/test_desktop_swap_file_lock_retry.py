@@ -59,6 +59,29 @@ def test_swap_retries_transient_permission_error_then_promotes(tmp_path, monkeyp
     assert not staging.exists()
 
 
+def test_swap_waits_out_scanner_lock_that_outlives_the_old_retry_budget(tmp_path, monkeypatch):
+    """A scanner holding the live tree for more than 3.5s must not turn a healthy build into a failed update."""
+    desktop_dir, staging, live_exe, slept = _staged_over_live(tmp_path, monkeypatch)
+    real_rename = os.rename
+    attempts = {"n": 0}
+
+    def slowly_released_rename(src, dst):
+        if Path(src) == live_exe.parent:
+            attempts["n"] += 1
+            if attempts["n"] <= 5:
+                raise PermissionError(5, "Access is denied")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(main_desktop.os, "rename", slowly_released_rename)
+
+    promoted = main_desktop._swap_staged_desktop_app(desktop_dir, staging)
+
+    assert promoted == live_exe
+    assert attempts["n"] == 6
+    assert slept == [0.5, 1.0, 2.0, 4.0, 8.0]
+    assert live_exe.read_text(encoding="utf-8") == "new"
+
+
 def test_swap_gives_up_after_bounded_retries_and_keeps_live_app(tmp_path, monkeypatch, caplog):
     """A lock that never clears: bounded attempts, real OSError surfaced in the log, live app untouched."""
     desktop_dir, staging, live_exe, slept = _staged_over_live(tmp_path, monkeypatch)

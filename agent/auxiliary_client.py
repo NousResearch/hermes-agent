@@ -1128,38 +1128,6 @@ def _scoped_key_env(name: str) -> str:
         return (os.getenv(name) or "").strip()
 
 
-# Codex Responses → chat.completions adapter, so aux consumers need no changes.
-def _parse_codex_final_response(final: Any) -> Tuple[List[str], List[Any], Any]:
-    """Split a completed Responses object into (text_parts, tool_calls, usage) in chat.completions shape."""
-    text_parts: List[str] = []
-    tool_calls_raw: List[Any] = []
-    for item in (getattr(final, "output", None) or []):
-        item_type = _field(item, "type")
-        if item_type == "message":
-            for part in (_field(item, "content") or []):
-                part_type = _field(part, "type")
-                if part_type in {"output_text", "text"}:
-                    text_parts.append(_field(part, "text", ""))
-                elif part_type == "refusal":
-                    # A refusal part carries the model's explanation; dropping it turns a
-                    # refusal-only turn into an empty response that gets retried.
-                    text_parts.append(_field(part, "refusal", ""))
-        elif item_type == "function_call":
-            tool_calls_raw.append(SimpleNamespace(
-                id=_field(item, "call_id", ""), type="function",
-                function=SimpleNamespace(
-                    name=_field(item, "name", ""), arguments=_field(item, "arguments", "{}"))))
-    usage = None
-    resp_usage = getattr(final, "usage", None)
-    if resp_usage:
-        def _u(key: str) -> int:
-            return getattr(resp_usage, key, 0) or (resp_usage.get(key, 0) if isinstance(resp_usage, dict) else 0)
-        usage = SimpleNamespace(
-            prompt_tokens=_u("input_tokens"), completion_tokens=_u("output_tokens"),
-            total_tokens=_u("total_tokens"))
-    return text_parts, tool_calls_raw, usage
-
-
 def _attempt_stream_socket(stream: Any) -> Any:
     """The raw socket under an SDK event stream (``stream.response`` is the ``httpx.Response``;
     httpcore publishes its connection as the ``network_stream`` extension), or None."""
@@ -1502,9 +1470,10 @@ class _CodexCompletionsAdapter:
         # instead of agent/transports/codex.py's build_kwargs, so they need the same guard applied
         # independently. See #32716.
         # Aux requests run their own model; stamp/filter reasoning provenance against it, not the main agent's.
+        issuer_kind = _classify_responses_issuer(base_url=host, **route._asdict())
         input_items = _chat_messages_to_responses_input(
             replay_messages, is_github_responses=is_copilot,
-            current_issuer_kind=_classify_responses_issuer(base_url=host, **route._asdict()),
+            current_issuer_kind=issuer_kind,
             current_issuer_model=wire_model, native_compaction_eligible=False,
         )
         resp_kwargs: Dict[str, Any] = {
@@ -1548,6 +1517,8 @@ class _CodexCompletionsAdapter:
             resp_kwargs["tools"] = wire_tools
         if wire_aliases:
             resp_kwargs["_wire_aliases"] = wire_aliases
+        # Response normalization is route-sensitive too (popped in ``create()``, never sent).
+        resp_kwargs["_issuer_kind"] = issuer_kind
         # Stable prompt-cache routing: key is content-addressed from the static prefix
         # (instructions + tool schemas) so it survives across turns, scoped by the owning
         # conversation (rotation-stable logical scope, else the physical session id). Skip the
@@ -1591,6 +1562,8 @@ class _CodexCompletionsAdapter:
         # ``response.completed.response.output``, which Codex returns as ``null`` (SDK crash).
         resp_kwargs, model, timeout = self._build_responses_kwargs(kwargs)
         wire_aliases = resp_kwargs.pop("_wire_aliases", None) or {}
+        issuer_kind = resp_kwargs.pop("_issuer_kind", None)
+        issuer_model = str(resp_kwargs.get("model") or model)
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
         guard = _CodexStreamGuard(self._client, total_timeout, no_progress_timeout=kwargs.get("no_progress_timeout"))
         try:
@@ -1612,13 +1585,17 @@ class _CodexCompletionsAdapter:
                     final = event_stream
                 else:
                     final = _consume_codex_event_stream(
-                        event_stream, model=str(resp_kwargs.get("model") or model), on_event=guard.on_event
+                        event_stream, model=issuer_model, on_event=guard.on_event
                     )
             finally:
                 guard.release_stream(event_stream)
             if final is None:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
-            text_parts, tool_calls_raw, usage = _parse_codex_final_response(final)
+            from agent.auxiliary_codex_response import _parse_codex_final_response
+
+            text_parts, tool_calls_raw, usage, finish_reason = _parse_codex_final_response(
+                final, issuer_kind=issuer_kind, issuer_model=issuer_model,
+            )
             # Undo only the aliases THIS request emitted, before the call reaches Hermes dispatch.
             for tc in tool_calls_raw or ():
                 if tc.function.name in wire_aliases:
@@ -1635,9 +1612,7 @@ class _CodexCompletionsAdapter:
             role="assistant", content="".join(text_parts).strip() or None,
             tool_calls=tool_calls_raw or None,
         )
-        choice = SimpleNamespace(
-            index=0, message=message, finish_reason="stop" if not tool_calls_raw else "tool_calls"
-        )
+        choice = SimpleNamespace(index=0, message=message, finish_reason=finish_reason)
         return SimpleNamespace(choices=[choice], model=model, usage=usage)
 
 
@@ -2656,7 +2631,12 @@ def _relay_sync_completion(
     kwargs = prepare_chat_messages(client, kwargs)
     # The progress hook is installed per TASK, so every attempt (retries, recovery rungs, fallbacks)
     # must stream through _create_with_progress or the compression watchdog sees silence (#98466).
-    callback = create or (lambda request: _create_with_progress(client, request))
+    # Recovery rungs / credential retries keep the task's ``no_progress_timeout`` window; the
+    # first-token window uses this attempt's provider (fallbacks name theirs) for its stale timeout.
+    relay_context = _RELAY_AUX_CALL_CONTEXT.get() or {}
+    task = relay_context.get("task")
+    relay_context["stream_provider"] = provider or relay_context.get("provider")
+    callback = create or (lambda request: _create_with_progress(client, request, task))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
@@ -4825,12 +4805,12 @@ def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_ba
 
 
 def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: bool) -> Tuple[Optional[Any], Optional[str]]:
-    """AWS Bedrock: Claude → Anthropic Bedrock SDK (prompt caching, thinking); OpenAI models
-    (GPT-5.5/5.6) → Bedrock Mantle's OpenAI Responses endpoint; everything else → Converse API."""
+    """AWS Bedrock: Claude → Anthropic Bedrock SDK (prompt caching, thinking); bare in-Region OpenAI IDs
+    → Mantle Responses; everything else, incl. OpenAI ``us.``/``global.`` profiles, → Converse API."""
     try:
         from agent.bedrock_adapter import (
             has_aws_credentials, is_anthropic_bedrock_model, resolve_bedrock_runtime_region,
-            is_openai_bedrock_model, bedrock_openai_base_url, resolve_bedrock_bearer_token,
+            bedrock_openai_uses_mantle, bedrock_openai_base_url, resolve_bedrock_bearer_token,
             configure_bedrock_openai_client_kwargs,
         )
         from agent.anthropic_adapter import build_anthropic_bedrock_client
@@ -4846,7 +4826,7 @@ def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: boo
     region = resolve_bedrock_runtime_region()
     default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
     final_model = _normalize_resolved_model(model or default_model, provider) or default_model
-    if is_openai_bedrock_model(final_model):
+    if bedrock_openai_uses_mantle(final_model):
         # Module-level lazy ``OpenAI`` proxy on purpose so tests can patch("agent.auxiliary_client.OpenAI").
         client_kwargs: Dict[str, Any] = {
             "api_key": resolve_bedrock_bearer_token() or "aws-sdk",
@@ -5417,23 +5397,15 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
         return _resolve_api_key_branch(req, pconfig, resolve_api_key_provider_credentials)
     if auth_type == "external_process":
         return _resolve_external_process_branch(req, resolve_external_process_provider_credentials(provider))
-    if auth_type == "vertex":
-        client, final_model = _build_vertex_client(provider, req.model)
-    elif auth_type == "aws_sdk":
-        client, final_model = _build_bedrock_client(provider, req.model, raw_codex=req.raw_codex)
-    elif auth_type in {"oauth_device_code", "oauth_external"}:
-        # nous / openai-codex / xai-oauth already returned from their explicit branches.
-        _log_once_debug(_LOGGED_UNSUPPORTED_OAUTH_KEYS, provider,
-                        "resolve_provider_client: OAuth provider %s not "
-                        "directly supported, try 'auto'", provider)
-        return None, None
-    else:
-        # The first occurrence surfaces a real schema-drift bug; per-call retries stay silent.
-        _log_once_debug(_LOGGED_UNHANDLED_AUTHTYPE_KEYS, (auth_type, provider),
-                        "resolve_provider_client: unhandled auth_type %s for %s",
-                        auth_type, provider)
-        return None, None
-    return _route_client(req, client, final_model) if client is not None else (None, None)
+    from agent.auxiliary_client_registry import REGISTRY_AUTHTYPE_ARMS
+    arm = REGISTRY_AUTHTYPE_ARMS.get(auth_type)
+    if arm is not None:
+        return arm(req)
+    # The first occurrence surfaces a real schema-drift bug; per-call retries stay silent.
+    _log_once_debug(_LOGGED_UNHANDLED_AUTHTYPE_KEYS, (auth_type, provider),
+                    "resolve_provider_client: unhandled auth_type %s for %s",
+                    auth_type, provider)
+    return None, None
 
 
 # Explicit providers with a dedicated branch; anything else falls through to named custom
@@ -6289,31 +6261,9 @@ _DEFAULT_AUX_TIMEOUT = 30.0
 _COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
 
 
-def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
-    """Config dict for auxiliary.<task>, or {} when unavailable. Plugin-registered tasks get their
-    declared defaults layered under user config (user wins); built-in defaults live in DEFAULT_CONFIG."""
-    if not task:
-        return {}
-    try:
-        from hermes_cli.config import load_config_readonly
-        config = load_config_readonly()
-    except ImportError:
-        return {}
-    aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
-    task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
-    if not isinstance(task_config, dict):
-        task_config = {}
-    try:
-        from hermes_cli.plugins import get_plugin_auxiliary_tasks
-        for _entry in get_plugin_auxiliary_tasks():
-            if _entry.get("key") == task:
-                _defaults = _entry.get("defaults") or {}
-                if isinstance(_defaults, dict):
-                    return {**_defaults, **task_config}
-                break
-    except Exception:
-        pass  # plugin discovery failure must not break aux task config reads
-    return task_config
+# Read-time resolution of auxiliary.<task> (plugin defaults, inherit_from) lives in its own module;
+# re-exported here because callers and tests reach it as agent.auxiliary_client._get_auxiliary_task_config.
+from agent.auxiliary_task_config import _get_auxiliary_task_config  # noqa: E402,F401
 
 
 class CompressionFastLane(NamedTuple):
@@ -6379,7 +6329,7 @@ def _compression_fast_lane_controls(
 
 def _get_task_no_progress_timeout(task: str) -> Optional[float]:
     """``auxiliary.<task>.no_progress_timeout`` from config, or None when unset/invalid
-    (the Codex stream guard then keeps its built-in ``_AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS``
+    (the Codex and chat-stream watchdogs then keep the built-in ``_AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS``
     default). Lets an operator widen the substantive-progress window independently of the
     overall request timeout — see #108104."""
     if not task:
@@ -6874,7 +6824,10 @@ def _validate_llm_response(
     an empty route. See #23270.
     """
     if response is None:
-        raise RuntimeError(f"Auxiliary {task or 'call'}: LLM returned None response")
+        raise RuntimeError(
+            f"Auxiliary {task or 'call'}: LLM returned None response"
+        )
+    response = _unwrap_data_envelope(response, task)
     from agent.aux_accounting import record_aux_usage
     record_aux_usage(response, task, provider=provider, base_url=base_url)
     # Adapter SimpleNamespace responses are fine — they have .choices[0].message.
@@ -6952,6 +6905,55 @@ def _fail_relay_auxiliary_call(exc: BaseException) -> None:
         _complete_relay_auxiliary_call(outcome="failed")
     except Exception:
         logger.warning("Relay auxiliary failure finalization failed", exc_info=True)
+
+
+def _unwrap_data_envelope(response: Any, task: str = None) -> Any:
+    """Unwrap gateway envelopes like {"data": {<chat completion>}, "success": true}.
+
+    Some OpenAI-compatible gateways (e.g. api.cline.bot) wrap non-streaming
+    JSON bodies in a data/success envelope.  The SDK leniently parses this
+    into a ChatCompletion with choices=None and keeps the envelope keys as
+    extra fields, so the real completion is reachable at ``response.data``.
+    Error envelopes ({"success": false, "data": {"error": ...}}) raise the
+    provider's actual error instead of a generic invalid-response error.
+    """
+    if _field(response, "choices"):
+        return response
+    data = _field(response, "data")
+    if not isinstance(data, dict):
+        return response
+    if _field(response, "success") is False:
+        err = data.get("error") or data
+        msg = err.get("message") if isinstance(err, dict) else None
+        raise RuntimeError(
+            f"Auxiliary {task or 'call'}: provider returned error envelope: "
+            f"{msg or err}"
+        )
+    if not data.get("choices"):
+        return response
+    try:
+        return type(response).model_validate(data)
+    except (AttributeError, TypeError, ValueError):
+        # No model_validate (SimpleNamespace) or the inner payload fails
+        # strict validation (pydantic ValidationError is a ValueError).
+        pass
+    choices = []
+    for ch in data["choices"]:
+        msg = ch.get("message") if isinstance(ch, dict) else None
+        if isinstance(msg, dict):
+            choices.append(SimpleNamespace(
+                message=SimpleNamespace(**msg),
+                finish_reason=ch.get("finish_reason") or "stop",
+            ))
+    if not choices:
+        return response
+    return SimpleNamespace(
+        id=data.get("id", ""),
+        model=data.get("model", ""),
+        object=data.get("object", "chat.completion"),
+        choices=choices,
+        usage=data.get("usage"),
+    )
 
 
 def _recover_aux_response_message(response: Any) -> Optional[Any]:
@@ -7184,32 +7186,22 @@ def _create_with_progress_once(
     if hasattr(chunks, "choices"):
         _notify_aux_provider_response()
         return chunks
-    return _aggregate_chat_stream(chunks, model=model, total_ceiling=total_ceiling)
-
-
-def _close_chunk_stream(chunks: Any, *, allow_aclose: bool = False) -> Any:
-    """Best-effort ``close()`` (or ``aclose()``); returns a pending awaitable or None."""
-    close_fn = getattr(chunks, "close", None) or (
-        getattr(chunks, "aclose", None) if allow_aclose else None)
-    if not callable(close_fn):
-        return None
-    try:
-        result = close_fn()
-    except Exception:
-        return None
-    return result if inspect.isawaitable(result) else None
+    from agent.auxiliary_stream_watchdog import chat_stream_windows
+    return _aggregate_chat_stream(
+        chunks, model=model, total_ceiling=total_ceiling, no_progress=chat_stream_windows(client, kwargs, task))
 
 
 def _aggregate_chat_stream(
-    chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None
+    chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None,
+    no_progress: "Optional[Tuple[float, Optional[float]]]" = None,
 ) -> Any:
     """Consume a chunk stream into a complete response; TimeoutError (phrased "timed out" so
-    ``_is_timeout_error`` matches) when *total_ceiling* elapses."""
+    ``_is_timeout_error`` matches) past *total_ceiling* or the *no_progress* windows (#100501)."""
+    from agent.auxiliary_stream_watchdog import _close_chunk_stream, consume_chat_stream
     acc = _ChatStreamAccumulator(
         model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline())
     try:
-        for chunk in chunks:
-            acc.feed(chunk)
+        consume_chat_stream(chunks, acc, no_progress)
     finally:
         _close_chunk_stream(chunks)
     return acc.finish()
@@ -7289,9 +7281,9 @@ class _ChatStreamAccumulator:
                     made_progress = True
         return made_progress
 
-    def feed(self, chunk: Any) -> None:
+    def feed(self, chunk: Any) -> bool:
         # Every frame records transport timing (TTFP); only a substantive payload ticks the
-        # forward-progress hook that keeps compression alive.
+        # forward-progress hook that keeps compression alive (and is reported as True).
         _notify_aux_timing_response()
         self._check_deadlines()
         self.resp_id = getattr(chunk, "id", None) or self.resp_id
@@ -7301,12 +7293,12 @@ class _ChatStreamAccumulator:
             self.usage = chunk_usage
         choices = getattr(chunk, "choices", None) or []
         if not choices:
-            return
+            return False
         choice = choices[0]
         self.finish_reason = getattr(choice, "finish_reason", None) or self.finish_reason
         delta = getattr(choice, "delta", None)
         if delta is None:
-            return
+            return False
         made_progress = False
         from agent.message_content import flatten_message_text
 
@@ -7326,6 +7318,7 @@ class _ChatStreamAccumulator:
         made_progress |= self._feed_tool_calls(delta)
         if made_progress:
             _notify_aux_progress()
+        return made_progress
 
     def finish(self) -> Any:
         tool_calls = None
@@ -7354,6 +7347,7 @@ async def _aggregate_chat_stream_async(
         async for chunk in chunks:
             acc.feed(chunk)
     finally:
+        from agent.auxiliary_stream_watchdog import _close_chunk_stream
         pending = _close_chunk_stream(chunks, allow_aclose=True)
         if pending is not None:
             with contextlib.suppress(Exception):
@@ -7881,10 +7875,11 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     if reason == "request timed out":
         # WARNING, naming the endpoint, the budget and the knob: the only other trace of a slow
         # local model is the fallback provider's complaint about a model it never had (#89445).
-        logger.warning("Auxiliary %s%s: request to %s timed out after %ss (raise auxiliary.%s.timeout "
-                       "for slow or reasoning models) on %s, trying fallback",
-                       task or "call", tag, route.base_info or resolved_provider, route.timeout,
-                       task or "call", resolved_provider)
+        stalled = "Auxiliary chat stream" in str(first_err)
+        logger.warning("Auxiliary %s%s: request to %s %s (raise auxiliary.%s.%s for slow or reasoning "
+                       "models) on %s, trying fallback", task or "call", tag, route.base_info or resolved_provider,
+                       first_err if stalled else f"timed out after {route.timeout}s", task or "call",
+                       "no_progress_timeout" if stalled else "timeout", resolved_provider)
     else:
         logger.info("Auxiliary %s%s: %s on %s (%s), trying fallback",
                     task or "call", tag, reason, resolved_provider, first_err)

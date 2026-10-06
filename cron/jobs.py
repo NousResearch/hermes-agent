@@ -31,6 +31,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
+from cron.scheduler_ownership import _claim_owner_is_dead
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
@@ -2261,7 +2262,6 @@ def _claim_is_live(claim: Any, now: datetime, ttl_seconds: float) -> bool:
     claimed_at = _parse_aware(claim["at"])
     if claimed_at is None or not (0 <= _elapsed_seconds(now, claimed_at) < ttl_seconds):
         return False
-    from cron.scheduler_ownership import _claim_owner_is_dead
     return not _claim_owner_is_dead(claim)
 
 

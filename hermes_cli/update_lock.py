@@ -1280,14 +1280,22 @@ def checkout_lock_held(install_root: Path | str | None = None) -> bool:
 
     A probe takes the lock for the microseconds of one try and drops it (closing the fd), the
     way ``marker.sh::checkout_lock_held`` does; an updater acquiring at that instant waits
-    :data:`CHECKOUT_CONTENTION_WAIT_SECONDS` instead of failing (R6/D17)."""
+    :data:`CHECKOUT_CONTENTION_WAIT_SECONDS` instead of failing (R6/D17).
+
+    Only a missing lock file is free. One that exists but cannot be opened answers held, the same
+    verdict ``marker.sh`` / ``marker.ps1`` and the Desktop probes give, so no reader admits a
+    launch the others would park. A lock call that fails outright (ENOLCK on NFS without lockd,
+    EOPNOTSUPP on some SMB shares) means nothing can hold it: free, so the interrupted-pull repair
+    runs unguarded there as designed."""
     path = checkout_lock_path(install_root)
     if _HELD is not None and _HELD["path"] == str(path):
         return True
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError:
+        return True
     try:
         if not _try_lock(fd):
             return True

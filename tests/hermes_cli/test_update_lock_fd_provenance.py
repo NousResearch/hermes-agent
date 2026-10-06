@@ -114,3 +114,23 @@ def test_exec_child_reenters_the_lock_it_explicitly_inherited(tmp_path):
         child.wait()
         contender.release()
         owner.release()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root opens a mode-000 file")
+def test_an_unopenable_checkout_lock_reads_held_and_only_a_missing_one_reads_free(tmp_path):
+    root = tmp_path / "checkout"
+    root.mkdir()
+    lock_path = update_lock.checkout_lock_path(root)
+    assert update_lock.checkout_lock_held(root) is False, "no lock file: nothing can hold it"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.touch()
+    assert update_lock.checkout_lock_held(root) is False, "an openable, unlocked file is free"
+    lock_path.chmod(0)
+    try:
+        assert update_lock.checkout_lock_held(root) is True, (
+            "a lock file that exists but cannot be opened answers held, as marker.sh/marker.ps1 "
+            "and the Desktop probes do"
+        )
+    finally:
+        lock_path.chmod(0o600)

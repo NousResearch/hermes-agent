@@ -79,7 +79,10 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   activates it before the first third-party import. A failed activation is fatal: the worker
   exits before its ownership ack (a reported dispatch failure) rather than run on an unleased
   generation the collector may delete. The gateway never re-runs the boot — `hermes_bootstrap`
-  already did at its own launch (#122222).
+  already did at its own launch (#122222). The worker's `__main__` imports `hermes_bootstrap`
+  (`finish_worker_boot`) before it reads the payload, and only then drops the marker: a
+  source-update relaunch (`-I`, no `PYTHONPATH`) must replay the whole worker, never land after
+  the ack with the payload gone and no dependency boot.
 - Cron sessions pass `skip_memory=True`; memory providers intentionally do not run during cron.
 - Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
   reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,

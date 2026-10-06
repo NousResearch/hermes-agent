@@ -35,7 +35,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 # `hermes update`) otherwise fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cron.worker_bootstrap import WORKER_MARKER
+from cron.worker_bootstrap import WORKER_MARKER, finish_worker_boot
 from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_cli.observability.shared_metrics_gateway import note_cron_execution, note_cron_skipped
 from cron.env_settings import cron_env_setting
@@ -4435,16 +4435,16 @@ from cron.scheduler_preflight import (  # noqa: E402
 # tick paths see every name they need.
 if __name__ == "__main__":
     if "--external-worker-file" in sys.argv:
+        finish_worker_boot()  # may relaunch: before the payload is read and the ack published
         import argparse
 
         parser = argparse.ArgumentParser(add_help=False)
         parser.add_argument("--external-worker-file", type=Path, required=True)
         parser.add_argument("--ack-file", type=Path, required=True)
         args = parser.parse_args()
-        # The gateway spawns this worker with stdout on DEVNULL and stderr on a
-        # capture file it only reads back if we die before the ack; without a
-        # log handler every adoption/ack failure below would otherwise be
-        # invisible to the persistent log.
+        # The gateway spawns this worker with stdout on DEVNULL and stderr on a capture file it
+        # only reads back if we die before the ack; without a log handler every adoption/ack
+        # failure below would otherwise be invisible to the persistent log.
         try:
             from hermes_logging import setup_logging
 

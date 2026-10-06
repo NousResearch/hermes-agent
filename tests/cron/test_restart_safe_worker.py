@@ -757,9 +757,9 @@ print(json.dumps({"boots": boots, "marker": os.environ.get(sys.argv[1])}))
 def test_marked_worker_boots_dependencies_before_cron_jobs(marked):
     """#122222: ``-m cron.scheduler`` executes ``cron/__init__.py`` first, whose first import
     (``cron.jobs`` -> ``hermes_yaml`` -> ``ruamel``) is already a dependency, so the marked
-    worker must boot before it -- exactly once, consuming the marker so the worker's own
-    children do not inherit it. An unmarked importer (the gateway already booted through
-    ``hermes_bootstrap``) is never re-booted."""
+    worker must boot before it -- exactly once. The marker survives the package import so a
+    relaunched worker boots again (``finish_worker_boot`` consumes it). An unmarked importer
+    (the gateway already booted through ``hermes_bootstrap``) is never re-booted."""
     import cron.worker_bootstrap as worker_bootstrap
 
     repo_root = Path(worker_bootstrap.__file__).resolve().parent.parent
@@ -773,7 +773,63 @@ def test_marked_worker_boots_dependencies_before_cron_jobs(marked):
     )
     assert child.returncode == 0, child.stderr
     result = json.loads(child.stdout.strip().splitlines()[-1])
-    assert result == {"boots": [False] if marked else [], "marker": None}
+    assert result == {"boots": [False] if marked else [], "marker": "1" if marked else None}
+
+
+_RELAUNCH_PROBE = """
+import json, os, runpy, subprocess, sys
+from pathlib import Path
+
+import pm.environments
+pm.environments.activate_dependencies = lambda root: None
+import hermes_cli.venv_sync as venv_sync
+
+payload, ack, record, marker = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
+venv_sync.prepare_launch = lambda root, argv: Path(sys.executable)
+
+
+def relaunch(*args):
+    record.write_text(json.dumps({
+        "payload": payload.exists(), "ack": ack.exists(),
+        "marker": os.environ.get(marker), "command": args[-1],
+    }))
+    raise SystemExit(0)
+
+
+os.execv = relaunch
+subprocess.call = relaunch
+sys.argv = ["cron.scheduler", "--external-worker-file", str(payload), "--ack-file", str(ack)]
+runpy.run_module("cron.scheduler", run_name="__main__", alter_sys=True)
+"""
+
+
+def test_source_update_relaunch_replays_the_worker_before_its_ack(tmp_path):
+    """A worker whose ``hermes_bootstrap`` finishes a source update relaunches into an ``-I``
+    interpreter that ignores the pinned PYTHONPATH. Reached through ``run_agent`` inside
+    ``run_one_job``, that relaunch came after the ack: the payload was deleted, the marker
+    consumed, and the new process died on ``ruamel`` with the adopted run left ``unknown``.
+    The relaunch must instead replay the whole worker: payload unread, no ack, marker set,
+    re-running ``cron.scheduler`` as ``__main__``."""
+    import cron.worker_bootstrap as worker_bootstrap
+
+    repo_root = Path(worker_bootstrap.__file__).resolve().parent.parent
+    payload = tmp_path / "exec-1.json"
+    payload.write_text(json.dumps({
+        "job": {"id": "job-1", "execution_id": "exec-1"},
+        "profile_home": str(tmp_path / "profile"),
+    }), encoding="utf-8")
+    ack, record = tmp_path / "exec-1.ready", tmp_path / "relaunch.json"
+    env = dict(os.environ, PYTHONPATH=str(repo_root))
+    env[worker_bootstrap.WORKER_MARKER] = "1"
+    child = subprocess.run(
+        [sys.executable, "-c", _RELAUNCH_PROBE, str(payload), str(ack), str(record),
+         worker_bootstrap.WORKER_MARKER],
+        cwd=repo_root, env=env, capture_output=True, text=True, timeout=120,
+    )
+    assert record.exists(), f"worker never relaunched (exit {child.returncode}): {child.stderr}"
+    seen = json.loads(record.read_text())
+    assert (seen["payload"], seen["ack"], seen["marker"]) == (True, False, "1")
+    assert "runpy.run_module('cron.scheduler', run_name='__main__'" in seen["command"][-1]
 
 
 _REAL_BOOT_PROBE = """

@@ -32,11 +32,13 @@ import { useNavigate, useSearchParams } from "react-router";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
+import { PtyEndedOverlay } from "@/components/PtyEndedOverlay";
+import { ResumeTranscriptPanel, useResumeTranscript } from "@/components/ResumeTranscriptPanel";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
-import { readStoredWorkspace, writeStoredWorkspace } from "@/lib/chat-workspaces";
 import { latchChatActivation } from "@/lib/chat-activation";
+import { readStoredWorkspace, writeStoredWorkspace } from "@/lib/chat-workspaces";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { createPtyCompositionForwarder } from "@/lib/pty-composition";
@@ -85,9 +87,7 @@ import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload
 import {
   PTY_GAVE_UP_BANNER,
   PTY_RECONNECTING_BANNER,
-  PTY_SESSION_ENDED_MESSAGE,
   PTY_SESSION_ENDED_TERMINAL_LINE,
-  PTY_START_FAILED_MESSAGE,
   PTY_TOKEN_MISSING_BANNER,
   ptyReconnectExhausted,
   ptyRejectionBanner,
@@ -103,6 +103,14 @@ import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { errorMessage } from "@/lib/api-error";
+import {
+  DEFAULT_TERMINAL_BACKGROUND,
+  DEFAULT_TERMINAL_FOREGROUND,
+  buildTerminalTheme,
+  terminalFontSizeForWidth,
+  terminalLineHeightForWidth,
+  terminalTierWidthPx,
+} from "@/lib/chat-terminal";
 
 // Per-tab keep-alive identity (`?attach=`): lives in pty-attach-token.ts so a
 // second tab — including a Chrome "Duplicate tab" — gets its own PTY instead of
@@ -120,57 +128,6 @@ function generateChannelId(scope?: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2)}-${Date.now().toString(
     36,
   )}`;
-}
-
-// Colors for the terminal body.  Matches the dashboard's dark teal canvas
-// with cream foreground — we intentionally don't pick monokai or a loud
-// theme, because the TUI's skin engine already paints the content; the
-// terminal chrome just needs to sit quietly inside the dashboard.
-const DEFAULT_TERMINAL_BACKGROUND = "#000000";
-const DEFAULT_TERMINAL_FOREGROUND = "#f0e6d2";
-
-function buildTerminalTheme(background: string, foreground: string) {
-  return {
-    background,
-    foreground,
-    cursor: foreground,
-    cursorAccent: background,
-    selectionBackground:
-      foreground.length === 7 ? `${foreground}44` : foreground,
-  };
-}
-
-/**
- * CSS width for xterm font tiers.
- *
- * Prefer the terminal host's `clientWidth` — Chrome DevTools device mode often
- * keeps `window.innerWidth` at the full desktop value while the *drawn* layout
- * is phone-sized, which made us pick desktop font sizes (~14px) and look huge.
- */
-function terminalTierWidthPx(host: HTMLElement | null): number {
-  if (typeof window === "undefined") return 1280;
-  const fromHost = host?.clientWidth ?? 0;
-  if (fromHost > 2) return Math.round(fromHost);
-  const doc = document.documentElement?.clientWidth ?? 0;
-  const vv = window.visualViewport;
-  const inner = window.innerWidth;
-  const vvw = vv?.width ?? inner;
-  const layout = Math.min(inner, vvw, doc > 0 ? doc : inner);
-  return Math.max(1, Math.round(layout));
-}
-
-function terminalFontSizeForWidth(layoutWidthPx: number): number {
-  if (layoutWidthPx < 300) return 7;
-  if (layoutWidthPx < 360) return 8;
-  if (layoutWidthPx < 420) return 9;
-  if (layoutWidthPx < 520) return 10;
-  if (layoutWidthPx < 720) return 11;
-  if (layoutWidthPx < 1024) return 12;
-  return 14;
-}
-
-function terminalLineHeightForWidth(layoutWidthPx: number): number {
-  return layoutWidthPx < 1024 ? 1.02 : 1.15;
 }
 
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
@@ -388,6 +345,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // management profile. Changing it remounts the terminal (key below /
   // effect dep) so the user explicitly starts a fresh scoped session.
   const { profile: scopedProfile } = useProfileScope();
+  // Transcript hydration for a resumed session (#60868): fetch the stored
+  // messages while the PTY attaches, so the conversation area is never blank.
+  const resumeTranscript = useResumeTranscript(resumeParam, scopedProfile);
   // Workspace a FRESH chat starts in (`/api/pty?cwd=`), persisted per
   // management profile (a phone remembers the repo it drives). The connect
   // effect reads storage directly, so changing the picker never respawns the
@@ -1949,6 +1909,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
+          <ResumeTranscriptPanel
+            transcript={resumeTranscript}
+            sessionId={resumeParam}
+            profile={scopedProfile}
+          />
+
           <div
             ref={hostRef}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
@@ -2002,35 +1968,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             </div>
           )}
 
-          {/* NS-504: the agent process exited (e.g. `/exit` or a new session).
-              Offer an in-place restart so the user never has to refresh the
-              whole page to get a working chat back. */}
           {ptyState === "ended" && (
-            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/60">
-              <div className="max-w-[min(32rem,calc(100vw-3rem))] text-center text-sm tracking-wide text-white/80">
-                {endedReason === "start-failed"
-                  ? PTY_START_FAILED_MESSAGE
-                  : PTY_SESSION_ENDED_MESSAGE}
-              </div>
-              <div className="flex flex-wrap justify-center gap-2">
-                <Button
-                  onClick={startFreshPty}
-                  prefix={<RotateCcw className="h-4 w-4" />}
-                  aria-label="Start a new chat session"
-                >
-                  Start new session
-                </Button>
-                {endedReason === "exited" && (
-                  <Button
-                    outlined
-                    onClick={() => navigate("/logs")}
-                    aria-label="Open logs"
-                  >
-                    Open logs
-                  </Button>
-                )}
-              </div>
-            </div>
+            <PtyEndedOverlay
+              endedReason={endedReason}
+              startFreshPty={startFreshPty}
+            />
           )}
 
           <Button

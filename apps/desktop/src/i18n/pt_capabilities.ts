@@ -20,7 +20,7 @@ export const ptCapabilities = {
     timeout: 'Ainda aguardando a autorização.',
     refresh: 'Atualizar status',
     connectError: 'Não foi possível iniciar a autorização. Tente novamente.',
-    connectErrorFor: app => `N\xE3o foi poss\xEDvel iniciar a autoriza\xE7\xE3o de ${app}.`,
+    connectErrorFor: app => `Não foi possível iniciar a autorização de ${app}.`,
     unavailable: 'Os conectores não estão disponíveis nesta sessão.',
     ownerMissing: 'Reabra esta conversa para gerenciar as conexões dela.',
     search: 'Buscar um app',
@@ -57,7 +57,7 @@ export const ptCapabilities = {
       kindManaged: 'Gerenciado',
       kindCatalog: 'MCP · Catálogo',
       kindCustom: 'MCP · Personalizado',
-      kindPlugin: plugin => `MCP \xB7 Plugin ${plugin}`,
+      kindPlugin: plugin => `MCP · Plugin ${plugin}`,
       inCatalog: 'No catálogo do Hermes',
       hostedTwin: 'Versão gerenciada disponível',
       alsoLocal: 'Também roda neste dispositivo',
@@ -114,10 +114,9 @@ export const ptCapabilities = {
         'Os servidores deste computador não foram afetados e continuam em execução. Nada foi desativado.',
       retry: 'Tentar novamente',
       matchesElsewhere: count =>
-        `${count} outra${count === 1 ? '' : 's'} correspond\xEAncia${count === 1 ? '' : 's'} em outros grupos.`,
+        `${count} outra${count === 1 ? '' : 's'} correspondência${count === 1 ? '' : 's'} em outros grupos.`,
       showAllMatches: 'Mostrar todas as correspondências',
-      segmentNoMatch: segment =>
-        `Nenhuma correspond\xEAncia em ${segment}, ent\xE3o todas as correspond\xEAncias s\xE3o exibidas.`,
+      segmentNoMatch: segment => `Nenhuma correspondência em ${segment}, então todas as correspondências são exibidas.`,
       freeTierNote: 'As conexões ficam neste computador até você fazer login.',
       signInLine: 'Faça login na Nous para usar os apps gerenciados.',
       signIn: 'Fazer login',
@@ -170,10 +169,10 @@ export const ptCapabilities = {
       removeServerTitle: name => `Remover ${name}?`,
       removeServerBody: 'A entrada sai do mcp.json deste computador. Nada mais é excluído.',
       appSwitch: name => `O Hermes pode usar ${name}`,
-      waysTitle: name => `Onde ${name} \xE9 executado`,
-      wayNotConnected: name => `Ainda n\xE3o conectado. Fa\xE7a login em ${name} no navegador.`,
+      waysTitle: name => `Onde ${name} é executado`,
+      wayNotConnected: name => `Ainda não conectado. Faça login em ${name} no navegador.`,
       wayHosted: 'Gerenciado',
-      bothOn: name => `Os dois est\xE3o ativados, ent\xE3o o Hermes v\xEA cada ferramenta de ${name} em dobro.`,
+      bothOn: name => `Os dois estão ativados, então o Hermes vê cada ferramenta de ${name} em dobro.`,
       turnOffLocal: 'Desativar o servidor local',
       providedByPlugin: plugin => `Fornecido pelo plugin ${plugin}`,
       openPlugins: 'Abrir a aba Plugins',
@@ -181,7 +180,7 @@ export const ptCapabilities = {
       rulesReadOnly: 'As regras não podem ser alteradas agora.',
       rulesAppOff: name => `Ative ${name} para alterar as ferramentas dele.`,
       rulesSignIn: 'Faça login para alterar o que o Hermes pode fazer aqui.',
-      orgNote: count => `A sua organiza\xE7\xE3o desativou ${count} ferramenta${count === 1 ? '' : 's'}.`,
+      orgNote: count => `A sua organização desativou ${count} ferramenta${count === 1 ? '' : 's'}.`,
       orgLink: 'Abrir a administração de conectores',
       connectEnded: 'O login não foi concluído.',
       connectOpenAgain: 'Abrir o link novamente',
@@ -194,7 +193,7 @@ export const ptCapabilities = {
       title: 'Ferramentas',
       notInstalledBody: 'Instale-o neste dispositivo para ver as ferramentas que ele traz.',
       summaryTitle: name => `O que o Hermes pode fazer com ${name}`,
-      summaryPreviewTitle: name => `O que o Hermes poderia fazer com ${name} depois que voc\xEA conectar`,
+      summaryPreviewTitle: name => `O que o Hermes poderia fazer com ${name} depois que você conectar`,
       summaryCount: count => `${count} ferramenta${count === 1 ? '' : 's'}`,
       summaryAllTools: 'Todas as ferramentas',
       summaryOther: 'Outras',
@@ -223,14 +222,14 @@ export const ptCapabilities = {
       noMatch: 'Nenhuma ferramenta corresponde a esses filtros.',
       loading: 'Lendo a lista de ferramentas',
       unavailableLine: 'Lista de ferramentas indisponível.',
-      needsAuthTitle: name => `Fa\xE7a login em ${name} para ler as ferramentas dele.`,
+      needsAuthTitle: name => `Faça login em ${name} para ler as ferramentas dele.`,
       needsAuthBody: 'O login permanece neste computador. Nada sai dele.',
       retry: 'Tentar novamente',
-      goneTitle: name => `${name} saiu do cat\xE1logo.`,
+      goneTitle: name => `${name} saiu do catálogo.`,
       goneBody:
         'O Hermes não consegue mais chamá-la. A linha permanece até você removê-la, para que nada desapareça sozinho.',
       remove: 'Remover',
-      offTitle: name => `${name} est\xE1 desativado.`,
+      offTitle: name => `${name} está desativado.`,
       offBody: 'Ative-o pela chave acima para ler as ferramentas que ele traz.',
       signedOutTitle: 'Faça login na Nous para ler a lista de ferramentas.',
       signedOutBody: 'Seus servidores neste computador não foram afetados.',
@@ -238,13 +237,14 @@ export const ptCapabilities = {
       conflictBody: (theyOff, theyOn) => {
         const they = [
           theyOff > 0
-            ? `desativou ${theyOff} ferramenta${theyOff === 1 ? '' : 's'} que voc\xEA mantinha ativada${theyOff === 1 ? '' : 's'}`
+            ? `desativou ${theyOff} ferramenta${theyOff === 1 ? '' : 's'} que você mantinha ativada${theyOff === 1 ? '' : 's'}`
             : '',
           theyOn > 0
-            ? `deixou ativada${theyOn === 1 ? '' : 's'} ${theyOn} ferramenta${theyOn === 1 ? '' : 's'} que voc\xEA tinha desativado`
+            ? `deixou ativada${theyOn === 1 ? '' : 's'} ${theyOn} ferramenta${theyOn === 1 ? '' : 's'} que você tinha desativado`
             : ''
         ].filter(Boolean)
-        return `${they.length > 0 ? `Eles ${they.join(' e ')}. ` : ''}As suas edi\xE7\xF5es continuam na tela; nada foi gravado.`
+
+        return `${they.length > 0 ? `Eles ${they.join(' e ')}. ` : ''}As suas edições continuam na tela; nada foi gravado.`
       },
       conflictReload: 'Recarregar a versão dela',
       conflictSave: 'Salvar sobre a versão dela',
@@ -338,12 +338,12 @@ export const ptCapabilities = {
     importError: 'Não foi possível importar esta conversa.'
   },
   skillDeepLink: {
-    installTitle: name => `Instalar \u201C${name}\u201D?`,
+    installTitle: name => `Instalar “${name}”?`,
     installDescription: 'Esta skill ficará disponível em novas sessões. Instale apenas fontes em que você confia.',
     installTo: 'Instalar em',
     thisComputer: 'Este computador',
     installing: 'Instalando…',
-    installComplete: name => `\u201C${name}\u201D instalado`,
+    installComplete: name => `“${name}” instalado`,
     destinationChanged: 'O destino mudou. Feche esta janela e abra o link de instalação novamente.',
     installed: 'Instalada',
     source: 'Fonte'
@@ -377,7 +377,7 @@ export const ptCapabilities = {
     skillDisabled: 'Skill desativada',
     toolsetEnabled: 'Toolset ativado',
     toolsetDisabled: 'Toolset desativado',
-    appliesToNewSessions: name => `${name} se aplica a novas sess\xF5es.`,
+    appliesToNewSessions: name => `${name} se aplica a novas sessões.`,
     failedToUpdate: name => `Falha ao atualizar ${name}`,
     sortMostUsed: 'Mais usados',
     sortAlpha: 'A–Z',
@@ -386,17 +386,17 @@ export const ptCapabilities = {
     enableAll: 'Ativar todas',
     disableAll: 'Desativar todas',
     disableUnused: 'Desativar as não usadas',
-    bulkUpdated: count => `${count} ${count === 1 ? 'item atualizado' : 'itens atualizados'} para as novas sess\xF5es.`,
+    bulkUpdated: count => `${count} ${count === 1 ? 'item atualizado' : 'itens atualizados'} para as novas sessões.`,
     bulkNoChange: 'Nada a alterar.',
-    usageCount: count => `usada ${count}\xD7`,
+    usageCount: count => `usada ${count}×`,
     provenance: {
       agent: 'Aprendida',
       bundled: 'Integrada',
       hub: 'Central'
     },
     emptyNoneFound: noun => `Nenhum ${noun} encontrado`,
-    emptyNothingMatches: query => `Nada corresponde a \u201C${query}\u201D.`,
-    emptyNoneAvailable: noun => `Nenhum ${noun} dispon\xEDvel ainda.`,
+    emptyNothingMatches: query => `Nada corresponde a “${query}”.`,
+    emptyNoneAvailable: noun => `Nenhum ${noun} disponível ainda.`,
     changesApplyNewSessions: 'Mudanças se aplicam a novas sessões.',
     skillUpdated: 'Skill atualizada',
     edit: 'Editar',
@@ -419,7 +419,7 @@ export const ptCapabilities = {
       kindBoth: 'Agente + Desktop',
       installAgentHere: 'Instalar aqui',
       installAgentHereTip: profile =>
-        `A parte desktop est\xE1 carregada neste app, mas a parte do agente n\xE3o est\xE1 instalada em ${profile}. Instale-a por l\xE1.`,
+        `A parte desktop está carregada neste app, mas a parte do agente não está instalada em ${profile}. Instale-a por lá.`,
       installAgentHereNoOrigin:
         'A metade do agente não está instalada neste perfil, e este pacote foi copiado manualmente (sem entrada de catálogo nem remoto git), então não pode ser instalado daqui. Copie a pasta dele para o perfil ou reinstale a partir do Git.',
       desktopHalfPending: 'copiando…',
@@ -432,11 +432,11 @@ export const ptCapabilities = {
       empty: 'Nenhum plugin de agente instalado para este perfil.',
       emptyHint: 'Explore o catálogo abaixo e instale um plugin revisado com um clique.',
       loadFailed: 'Não foi possível carregar os plugins do agente',
-      toggleFailed: name => `N\xE3o foi poss\xEDvel alternar ${name}`,
+      toggleFailed: name => `Não foi possível alternar ${name}`,
       toolsetOn: (name, profile) => `Ferramentas do agente de ${name} ativadas para ${profile}`,
       toolsetOff: (name, profile) => `Ferramentas do agente de ${name} desativadas para ${profile}`,
       toolsetToggleFailed: name =>
-        `N\xE3o foi poss\xEDvel alternar as ferramentas do agente de ${name}; o painel do Desktop n\xE3o foi alterado`,
+        `Não foi possível alternar as ferramentas do agente de ${name}; o painel do Desktop não foi alterado`,
       legacyBackend:
         'Este backend é anterior à ativação de plugins por chave: atualize o Hermes para gerenciá-lo aqui.',
       portableBadge: 'portátil',
@@ -456,42 +456,41 @@ export const ptCapabilities = {
       catalogHide: 'Ocultar o navegador do catálogo',
       catalogHint:
         'Clique em “+ Adicionar a este agente” em qualquer plugin: as entradas revisadas são instaladas no commit fixado, no perfil selecionado. Plugins embutidos de agente + desktop oferecem as duas metades.',
-      alreadyInstalled: name => `${name} j\xE1 est\xE1 instalado neste perfil.`,
-      catalogProvenance: sha => `Instalado pelo cat\xE1logo do Hermes${sha ? ` no pin ${sha}` : ''}.`,
+      alreadyInstalled: name => `${name} já está instalado neste perfil.`,
+      catalogProvenance: sha => `Instalado pelo catálogo do Hermes${sha ? ` no pin ${sha}` : ''}.`,
       pinnedProvenance: sha =>
-        `Fixado no commit ${sha}. As atualiza\xE7\xF5es s\xE3o recusadas at\xE9 que seja reinstalado com um novo pin.`,
+        `Fixado no commit ${sha}. As atualizações são recusadas até que seja reinstalado com um novo pin.`,
       pinnedBadge: sha => `fixado em ${sha}`,
       tierOfficial: 'oficial',
       tierCommunity: 'comunidade',
       updateToPin: sha => `Atualizar para ${sha}`,
-      updateFailed: name => `N\xE3o foi poss\xEDvel atualizar ${name}`,
-      updated: name => `${name} atualizado para o pin atual do cat\xE1logo. Reinicie o gateway para aplicar.`,
-      updateConsentTitle: name => `${name} pede mais permiss\xF5es`,
+      updateFailed: name => `Não foi possível atualizar ${name}`,
+      updated: name => `${name} atualizado para o pin atual do catálogo. Reinicie o gateway para aplicar.`,
+      updateConsentTitle: name => `${name} pede mais permissões`,
       updateConsentBody: (name, sha) =>
-        `O novo pin de ${name} no cat\xE1logo (${sha}) adiciona superf\xEDcies que a vers\xE3o instalada n\xE3o tem. Aplique-o s\xF3 se confiar nelas:`,
+        `O novo pin de ${name} no catálogo (${sha}) adiciona superfícies que a versão instalada não tem. Aplique-o só se confiar nelas:`,
       updateConsentConfirm: 'Aplicar atualização',
       uninstall: 'Desinstalar',
       uninstallTip: (name, profile) => `Desinstalar ${name} de ${profile}`,
       uninstallConfirmTitle: name => `Desinstalar ${name}?`,
       uninstallConfirmBody: (name, profile) =>
-        `Isto exclui os arquivos do plugin do perfil ${profile}. A parte desktop que ele trouxe \xE9 removida junto. Reinstale-o pelo cat\xE1logo ou pelo Git quando quiser.`,
-      uninstallFailed: name => `N\xE3o foi poss\xEDvel desinstalar ${name}`,
-      uninstalled: name => `${name} desinstalado. Reinicie o gateway para descarreg\xE1-lo.`,
+        `Isto exclui os arquivos do plugin do perfil ${profile}. A parte desktop que ele trouxe é removida junto. Reinstale-o pelo catálogo ou pelo Git quando quiser.`,
+      uninstallFailed: name => `Não foi possível desinstalar ${name}`,
+      uninstalled: name => `${name} desinstalado. Reinicie o gateway para descarregá-lo.`,
       uninstallDesktopTip: name => `Desinstalar ${name} deste app`,
       uninstallDesktopConfirmBody: name =>
         `Isto exclui ${name} da pasta de plugins do desktop neste computador e o descarrega agora. Reinstale-o pelo Git ou recoloque a pasta quando quiser.`,
       uninstalledDesktop: name => `${name} desinstalado.`,
       deepLinkErrorTitle: 'Link de instalação de plugin rejeitado',
       deepLinkCatalogInvalidName: 'O nome do catálogo no link está ausente ou é inválido.',
-      deepLinkCatalogUnknown: name =>
-        `\u201C${name}\u201D n\xE3o est\xE1 no cat\xE1logo de plugins do Hermes. Nada foi instalado.`,
+      deepLinkCatalogUnknown: name => `“${name}” não está no catálogo de plugins do Hermes. Nada foi instalado.`,
       deepLinkCatalogUnavailable:
         'Não foi possível carregar o catálogo de plugins do Hermes. Verifique sua conexão e abra o link novamente.',
-      settingsToggle: name => `Configura\xE7\xF5es: ${name}`,
+      settingsToggle: name => `Configurações: ${name}`,
       settingsForm: {
         save: 'Salvar configurações',
-        saved: name => `Configura\xE7\xF5es de ${name} salvas.`,
-        saveFailed: name => `N\xE3o foi poss\xEDvel salvar as configura\xE7\xF5es de ${name}`,
+        saved: name => `Configurações de ${name} salvas.`,
+        saveFailed: name => `Não foi possível salvar as configurações de ${name}`,
         required: 'Obrigatório',
         secretSet: '•••••••• (definido)',
         secretStoredAs: env =>
@@ -542,13 +541,13 @@ export const ptCapabilities = {
       uninstallStarted: name => `Desinstalando ${name}...`,
       updateStarted: 'Atualizando as skills instaladas…',
       actionFailed: 'Falha na ação da skill',
-      installBlockedTitle: name => `N\xE3o foi poss\xEDvel instalar ${name}`,
+      installBlockedTitle: name => `Não foi possível instalar ${name}`,
       installBlockedMessage: (findings, unverified) =>
-        `A varredura de seguran\xE7a sinalizou ${findings > 0 ? `${findings} ${findings === 1 ? 'item' : 'itens'}` : 'padr\xF5es de risco'} para revisar${unverified ? ' e a skill vem de uma fonte n\xE3o verificada' : ''}. Leia a varredura antes de decidir se confia no autor.`,
+        `A varredura de segurança sinalizou ${findings > 0 ? `${findings} ${findings === 1 ? 'item' : 'itens'}` : 'padrões de risco'} para revisar${unverified ? ' e a skill vem de uma fonte não verificada' : ''}. Leia a varredura antes de decidir se confia no autor.`,
       viewScan: 'Ver verificação',
       openLog: 'Abrir log',
       actionLog: 'Log de ações',
-      alreadyInstalled: name => `\u201C${name}\u201D j\xE1 est\xE1 instalada`,
+      alreadyInstalled: name => `“${name}” já está instalada`,
       pickerTitle: 'Central de skills',
       pickerBrowse: 'Explorar a central completa',
       pickerHide: 'Ocultar o navegador da central',
@@ -583,7 +582,7 @@ export const ptCapabilities = {
     importMap: 'Importar um mapa',
     importBtn: 'Carregar',
     importEmpty: 'Cole um código de mapa para carregá-lo.',
-    importSuccess: nodes => `Mapa carregado com ${nodes} ${nodes === 1 ? 'n\xF3' : 'n\xF3s'}.`,
+    importSuccess: nodes => `Mapa carregado com ${nodes} ${nodes === 1 ? 'nó' : 'nós'}.`,
     importedBadge: 'mapa importado',
     resetToMine: 'Voltar ao meu mapa'
   },
@@ -610,7 +609,7 @@ export const ptCapabilities = {
     steerQueued: 'Na fila para o próximo ponto de verificação',
     stopRequested: 'Parada solicitada',
     requestRejected: 'O subagente não aceitou a solicitação',
-    delegation: index => `Delega\xE7\xE3o ${index}`,
+    delegation: index => `Delegação ${index}`,
     workers: count => `${count} workers`,
     workersActive: count => `${count} ativo${count === 1 ? '' : 's'}`,
     agentsCount: count => `${count} ${count === 1 ? 'agente' : 'agentes'}`,
@@ -620,10 +619,10 @@ export const ptCapabilities = {
     filesCount: count => `${count} arquivos`,
     updatedAgo: age => `atualizado ${age}`,
     ageNow: 'agora',
-    ageSeconds: seconds => `h\xE1 ${seconds} s`,
-    ageMinutes: minutes => `h\xE1 ${minutes} min`,
-    ageHours: hours => `h\xE1 ${hours} h`,
-    ageDays: days => `h\xE1 ${days} d`,
+    ageSeconds: seconds => `há ${seconds} s`,
+    ageMinutes: minutes => `há ${minutes} min`,
+    ageHours: hours => `há ${hours} h`,
+    ageDays: days => `há ${days} d`,
     durationSeconds: seconds => `${seconds} s`,
     durationMinutes: (minutes, seconds) => `${minutes} min ${seconds} s`,
     tokens: value => `${value} tokens`

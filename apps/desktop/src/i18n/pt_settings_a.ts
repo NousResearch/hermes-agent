@@ -66,7 +66,7 @@ export const ptSettingsA = {
     empty: 'Nenhum plugin tem configurações ainda.',
     manage: 'Gerenciar plugins',
     agentSettings: 'Configurações do agente',
-    pageCount: n => (n === 1 ? '1 p\xE1gina' : `${n} p\xE1ginas`),
+    pageCount: n => (n === 1 ? '1 página' : `${n} páginas`),
     missing: 'Esse plugin não tem página de configurações. Ele pode estar desativado ou desinstalado.'
   },
   nav: {
@@ -114,7 +114,7 @@ export const ptSettingsA = {
       agentTargetLocal: profile => `Instala no backend ${profile} (~/.hermes/plugins/)`,
       agentTargetRemote: profile => `Instala no backend ${profile} conectado`,
       catalogPinned: (name, sha) =>
-        `Entrada \u201C${name}\u201D do cat\xE1logo do Hermes \u2014 o componente do agente \xE9 instalado no pin revisado${sha ? ` ${sha}` : ''}, n\xE3o na ponta da branch.`,
+        `Entrada “${name}” do catálogo do Hermes — o componente do agente é instalado no pin revisado${sha ? ` ${sha}` : ''}, não na ponta da branch.`,
       reviewedHeading: 'Entrada de catálogo revisada',
       reviewedIntro:
         'Esta entrada foi revisada por uma pessoa no commit fixado. Você ainda pode inspecionar o código exato abaixo.',
@@ -122,9 +122,9 @@ export const ptSettingsA = {
       skillsReady: names => (names.length === 1 ? `skill ${names[0]} pronta` : `${names.length} skills prontas`),
       nextChat: 'mais ferramentas disponíveis no seu próximo chat',
       serverNotConnected: (server, reason) =>
-        `O servidor MCP ${server} n\xE3o est\xE1 conectado${reason ? `: ${reason}` : '.'}`,
+        `O servidor MCP ${server} não está conectado${reason ? `: ${reason}` : '.'}`,
       missingEnvAction: 'Configurar',
-      alreadyInstalled: name => `${name} j\xE1 est\xE1 instalado.`,
+      alreadyInstalled: name => `${name} já está instalado.`,
       desktopTarget: 'Instala na pasta local desktop-plugins deste aplicativo',
       desktopTargetFromPackage: 'Carregado neste app a partir do pacote acima, igual para todos os perfis',
       desktopOnlyNote: 'Pacotes apenas para desktop não instalam um plugin de agente no backend.',
@@ -156,8 +156,7 @@ export const ptSettingsA = {
       installUncertain:
         'O Hermes parou de esperar pelo resultado da instalação, mas o plugin ainda pode estar sendo instalado. Feche esta janela e use Verificar novamente em Plugins antes de tentar Instalar de novo.',
       desktopFailed: 'Falha ao instalar o plugin do desktop',
-      missingEnv: vars =>
-        `Vari\xE1veis de ambiente ausentes: ${vars}. Adicione-as em Configura\xE7\xF5es \u2192 Chaves.`
+      missingEnv: vars => `Variáveis de ambiente ausentes: ${vars}. Adicione-as em Configurações → Chaves.`
     }
   },
   vault: {
@@ -218,7 +217,7 @@ export const ptSettingsA = {
       'A “chave de configuração” que o site mostra ao ativar a verificação em duas etapas. Com ela salva, o Hermes gera os códigos sozinho.',
     twoFactorBadge: '2FA automático',
     deleteTitle: 'Excluir este item?',
-    deleteDescription: label => `\u201C${label}\u201D ser\xE1 removido. Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
+    deleteDescription: label => `“${label}” será removido. Esta ação não pode ser desfeita.`,
     deleteConfirm: 'Excluir',
     sources: {
       title: 'Gerenciadores de senhas',
@@ -226,7 +225,7 @@ export const ptSettingsA = {
         'Os gerenciadores de senhas instalados são detectados automaticamente. O agente pede para você desbloquear um deles na primeira vez que precisar de um login dele (uma vez por sessão); só um token de sessão fica na memória, e o agente nunca vê sua senha mestra nem nenhum login.',
       toggleFailed: 'Não foi possível atualizar o gerenciador de senhas',
       notInstalled: name =>
-        `N\xE3o detectado. Instale a ferramenta de linha de comando ${name} e fa\xE7a login nela; o Hermes a reconhece automaticamente.`,
+        `Não detectado. Instale a ferramenta de linha de comando ${name} e faça login nela; o Hermes a reconhece automaticamente.`,
       disabledDesc: 'Detectado, mas desativado para o Hermes.',
       lockedDesc:
         'Detectado. O agente pedirá para você desbloqueá-lo quando precisar de um login, ou você pode desbloqueá-lo agora.',
@@ -239,7 +238,7 @@ export const ptSettingsA = {
       unlock: 'Desbloquear',
       unlocking: 'Desbloqueando…',
       lock: 'Bloquear',
-      unlocked: name => `${name} desbloqueado para esta sess\xE3o.`,
+      unlocked: name => `${name} desbloqueado para esta sessão.`,
       unlockTitle: name => `Desbloquear ${name}`,
       unlockDescription:
         'Digite sua senha mestra. Ela é entregue ao gerenciador de senhas nesta máquina e descartada: nunca é armazenada, registrada em log nem mostrada ao agente.',
@@ -433,7 +432,7 @@ export const ptSettingsA = {
     embedsAsk: 'Perguntar',
     embedsAlways: 'Sempre',
     embedsOff: 'Desativado',
-    embedsReset: count => `Redefinir ${count} servi\xE7o${count === 1 ? ' permitido' : 's permitidos'}`,
+    embedsReset: count => `Redefinir ${count} serviço${count === 1 ? ' permitido' : 's permitidos'}`,
     resumeLastSessionTitle: 'Reabrir o último chat ao iniciar',
     resumeLastSessionDesc:
       'Quando ativado, o app reabre o seu chat mais recente na inicialização a frio. Desative para sempre começar com um chat novo.',
@@ -444,7 +443,7 @@ export const ptSettingsA = {
     themeTitle: 'Tema',
     themeDesc: 'Apenas paletas do desktop. O modo selecionado é aplicado por cima.',
     themeSearchPlaceholder: 'Pesquise seus temas ou o VS Code Marketplace…',
-    themeProfileNote: profile => `Salvo para o perfil ${profile} \u2014 cada perfil mant\xE9m seu pr\xF3prio tema.`,
+    themeProfileNote: profile => `Salvo para o perfil ${profile} — cada perfil mantém seu próprio tema.`,
     installTitle: 'Instalar do VS Code',
     installDesc:
       'Cole o ID de uma extensão do Marketplace (ex. dracula-theme.theme-dracula) para converter seu tema de cores em uma paleta de desktop.',
@@ -452,7 +451,7 @@ export const ptSettingsA = {
     installButton: 'Instalar',
     installing: 'Instalando…',
     installError: 'Não foi possível instalar esse tema.',
-    installed: name => `Instalado \u201C${name}\u201D.`,
+    installed: name => `Instalado “${name}”.`,
     removeTheme: 'Remover tema',
     importedBadge: 'Importado',
     pet: {
@@ -469,7 +468,7 @@ export const ptSettingsA = {
       chooseDesc: 'Escolher um instala-o (se necessário) e o torna ativo.',
       searchPlaceholder: 'Buscar mascotes…',
       unreachable: 'Não foi possível acessar a galeria do petdex. Verifique sua conexão e reabra esta página.',
-      noMatch: query => `Nenhum mascote corresponde a \u201C${query}\u201D.`,
+      noMatch: query => `Nenhum mascote corresponde a “${query}”.`,
       installedTag: 'instalado',
       generatedTag: 'Gerado',
       countCapped: (cap, total) => `Mostrando ${cap} de ${total}: digite para refinar.`,
@@ -484,10 +483,10 @@ export const ptSettingsA = {
       renamePlaceholder: 'Dê um nome ao seu mascote',
       renameSave: 'Salvar',
       exportPet: name => `Exportar ${name}`,
-      adoptFailed: slug => `N\xE3o foi poss\xEDvel adotar ${slug}`,
-      uninstallFailed: slug => `N\xE3o foi poss\xEDvel desinstalar ${slug}`,
-      renameFailed: slug => `N\xE3o foi poss\xEDvel renomear ${slug}`,
-      exportFailed: slug => `N\xE3o foi poss\xEDvel exportar ${slug}`,
+      adoptFailed: slug => `Não foi possível adotar ${slug}`,
+      uninstallFailed: slug => `Não foi possível desinstalar ${slug}`,
+      renameFailed: slug => `Não foi possível renomear ${slug}`,
+      exportFailed: slug => `Não foi possível exportar ${slug}`,
       noneAvailable: 'Nenhum mascote disponível para ativar agora.',
       turnOnFailed: 'Não foi possível ativar o mascote.',
       turnOffFailed: 'Não foi possível desativar o mascote.'
@@ -667,12 +666,12 @@ export const ptSettingsA = {
     checkingInstalled: 'Verificando o que está instalado…',
     uninstallHermes: 'Desinstalar o Hermes',
     managedBody: 'Esta instalação é gerenciada pelo seu sistema, então o Hermes não consegue se remover sozinho.',
-    dataKept: path => `Suas configura\xE7\xF5es, chats e segredos ficam em ${path}. Remover o app n\xE3o os exclui.`,
+    dataKept: path => `Suas configurações, chats e segredos ficam em ${path}. Remover o app não os exclui.`,
     openAppsSettings: 'Abrir as configurações de Apps',
     chooseHowMuch:
       'Escolha quanto remover. O app fecha para concluir o trabalho; reabra o instalador a qualquer momento para voltar.',
     confirmUninstall: 'Confirmar desinstalação',
-    confirmBody: what => `Isto remove ${what}. Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
+    confirmBody: what => `Isto remove ${what}. Esta ação não pode ser desfeita.`,
     appLabel: 'App:',
     couldNotStart: 'Não foi possível iniciar a desinstalação.',
     uninstalling: 'Desinstalando…',
@@ -730,7 +729,7 @@ export const ptSettingsA = {
     endpointSaved: 'Endpoint personalizado salvo.',
     saveFailed: 'Falha ao salvar',
     endpointReachable: 'O endpoint está acessível.',
-    endpointReachableTransport: transport => `O endpoint est\xE1 acess\xEDvel (rota ${transport} atendida).`,
+    endpointReachableTransport: transport => `O endpoint está acessível (rota ${transport} atendida).`,
     endpointReachableModels: (reachable, count) =>
       `${reachable} ${count} modelo${count === 1 ? '' : 's'} encontrado${count === 1 ? '' : 's'}.`,
     endpointValidationFailed: 'A validação do endpoint falhou.',
@@ -884,7 +883,7 @@ export const ptSettingsA = {
     removeConnection: 'Remover',
     removeConfirmTitle: 'Remover esta conexão?',
     removeConfirmDesc: label =>
-      `\u201C${label}\u201D ser\xE1 removido deste app. A inst\xE2ncia em si n\xE3o \xE9 afetada: voc\xEA pode adicion\xE1-la de novo quando quiser.`,
+      `“${label}” será removido deste app. A instância em si não é afetada: você pode adicioná-la de novo quando quiser.`,
     makePrimary: 'Tornar principal',
     testConnection: 'Testar',
     testOk: 'Acessível',
@@ -918,9 +917,9 @@ export const ptSettingsA = {
     headerAdd: 'Adicionar cabeçalho',
     headerRemove: 'Remover',
     duplicateLocal: 'Este app já gerencia uma conexão local; só pode haver uma.',
-    duplicateUrl: label => `J\xE1 existe uma conex\xE3o com esta URL de gateway (\u201C${label}\u201D).`,
-    duplicateSsh: label => `J\xE1 existe uma conex\xE3o com este host SSH (\u201C${label}\u201D).`,
-    sameBackendHint: label => `Mesmo backend de \u201C${label}\u201D`,
+    duplicateUrl: label => `Já existe uma conexão com esta URL de gateway (“${label}”).`,
+    duplicateSsh: label => `Já existe uma conexão com este host SSH (“${label}”).`,
+    sameBackendHint: label => `Mesmo backend de “${label}”`,
     localAddHint: 'Local indisponível: a conexão local gerenciada já existe (só existe uma).',
     cloudAddHint:
       'Dica: entrar no Hermes Cloud acima descobre seus agentes automaticamente. Use este formulário apenas para registrar manualmente a URL de uma instância conhecida.',

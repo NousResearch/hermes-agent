@@ -98,8 +98,11 @@ def offer_consent(config: dict | None = None) -> bool:
     """Ask once, with the Desktop strip's three answers; "No thanks" is the default so Enter never
     opts anyone in. Esc leaves the question open (asked again next time). True when answered."""
     from hermes_cli.cli_output import print_info, print_success
-    from hermes_cli.curses_ui import curses_radiolist
+    from hermes_cli.curses_ui import curses_radiolist, flush_stdin
 
+    # The offer appears seconds into startup; an Enter typed while Hermes booted would otherwise
+    # answer it ("No thanks") before it was ever on screen, so the user was never really asked.
+    flush_stdin()
     idx = curses_radiolist(
         "Help improve Hermes?", [label for label, _, _ in OFFER_CHOICES], selected=_NO_THANKS, cancel_returns=-1,
         description=_OFFER_DESCRIPTION,

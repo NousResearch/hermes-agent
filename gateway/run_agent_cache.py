@@ -676,7 +676,9 @@ class GatewayAgentCacheMixin:
         it reuses an existing pin verbatim (restored by ``_rehydrate_prompt_pins`` after a restart); with
         no pin yet it renders and pins as usual. The pin records the ``privacy.redact_pii`` it was
         rendered under: bytes from another privacy policy are never reused, even by an internal
-        event."""
+        event. Callers pass ``event.internal or event.inherit_channel_pin`` (synthetic goal/heartbeat/resume
+        turns strip ``message_id``, which is also a ``_ephemeral_change_key`` input) so this pin
+        and ``_pinned_channel_inputs`` reuse on the same decision."""
         _pin_state = self._peek_session_state(session_key) if session_key else None
         _eph_pin = _pin_state.conversation.ephemeral_pin if _pin_state else None
         if _eph_pin is not None and _eph_pin[2] != redact_pii:
@@ -692,18 +694,20 @@ class GatewayAgentCacheMixin:
         return text
 
     def _pinned_channel_inputs(
-        self, session_key: Optional[str], channel_prompt: Optional[str], source: SessionSource, *, internal: bool,
+        self, session_key: Optional[str], channel_prompt: Optional[str], source: SessionSource, *, reuse_pin: bool,
     ):
         """``(channel_prompt, source)`` for this turn's agent run.
 
         The ephemeral system prompt also appends ``channel_prompt`` and the ``channel_overrides``
-        prompt (looked up by chat/thread/``parent_chat_id``). Internal events carry
-        ``channel_prompt=None`` and a source without ``parent_chat_id``, so they dropped both and
-        toggled the system prompt like the context pin did. Human turns record their inputs;
-        internal turns reuse them (``_rehydrate_prompt_pins`` restores both after a restart)."""
+        prompt (looked up by chat/thread/``parent_chat_id``). Events with no channel inputs of
+        their own (internal events, and synthetic goal/heartbeat/resume turns — see
+        ``MessageEvent.inherit_channel_pin``) carry ``channel_prompt=None`` and a source without
+        ``parent_chat_id``, so they dropped both and toggled the system prompt like the context pin
+        did. Human turns record their inputs; turns that ask to reuse the pin get them back
+        (``_rehydrate_prompt_pins`` restores both after a restart)."""
         if not session_key:
             return channel_prompt, source
-        if not internal:
+        if not reuse_pin:
             self._session_state(session_key).conversation.channel_pin = (channel_prompt, source.parent_chat_id)
             return channel_prompt, source
         state = self._peek_session_state(session_key)

@@ -536,6 +536,12 @@ def _park_live_session(wav_path: Optional[str], session: Any) -> None:
     if not wav_path:
         session.cancel()
         return
+    if getattr(session, "preview_only", False):
+        # Live partial previews (local re-decode) never supply the take's transcript: the full
+        # recording is transcribed as usual. Retire the worker instead of parking a session that
+        # _live_result would only discard.
+        session.end_audio()
+        return
     session.end_audio()  # the provider flushes while the caller is still handling the WAV
     with _LIVE_LOCK:
         _LIVE_SESSIONS[wav_path] = session
@@ -562,6 +568,12 @@ class _RecorderBase:
         from tools.transcription_streaming import open_streaming_session
         try:
             self._live = open_streaming_session(on_partial=self.on_live_partial)
+            if self._live is None:
+                # No live wire for this provider (local whisper, groq, mistral, deepinfra): the
+                # local engine re-decodes the capture tail so stt.streaming means something
+                # offline too. Preview-only — the take is still transcribed in full.
+                from tools.voice_partial import open_local_partial_session
+                self._live = open_local_partial_session(self, self.on_live_partial)
         except Exception:  # noqa: BLE001 — live STT is an accelerator; the WAV path still runs
             logger.debug("Live STT session did not open", exc_info=True)
             self._live = None
@@ -694,6 +706,56 @@ class AudioRecorder(_RecorderBase):
         """``voice.max_recording_seconds`` cap elapsed (<= 0 / unset disables it)."""
         cap = self._max_recording_seconds
         return bool(cap and cap > 0 and elapsed >= cap)
+
+    def tail_wav_path(self, max_seconds: float) -> "Optional[str]":
+        """Snapshot the last *max_seconds* of capture as a temp 16-bit WAV (16 kHz mono).
+
+        Returns the path, or None when there isn't enough audio yet (caller re-arms next tick).
+        Thread-safe: it reads a copy of the frame list under ``self._lock`` (the same guard the
+        audio callback uses when appending), so it never races the live stream. Used by the
+        partial-transcription worker (``tools.voice_partial``) to re-transcribe the running tail.
+        """
+        with self._lock:
+            frames = list(self._frames)
+        if not frames:
+            return None
+        rate = self._sample_rate
+        keep_bytes = int(max(1.0, float(max_seconds)) * rate) * 2  # int16 = 2 bytes per sample
+        # Walk newest-first, accumulating whole frames until we have >= keep_bytes, so a mid-frame
+        # boundary can't be cut (frames are small — ~10 ms blocks). Frames arrive as numpy arrays
+        # from the audio callback; slice on raw bytes so this path needs no numeric library.
+        collected: "List[bytes]" = []
+        collected_n = 0
+        for frame in reversed(frames):
+            raw = frame.tobytes() if hasattr(frame, "tobytes") else bytes(frame)
+            if not raw:
+                continue
+            collected.append(raw)
+            collected_n += len(raw)
+            if collected_n >= keep_bytes:
+                break
+        if not collected:
+            return None
+        data = b"".join(reversed(collected))
+        if len(data) > keep_bytes:  # never hand back more than max_seconds
+            data = data[-keep_bytes:]
+        if len(data) < 1600 * 2:  # <100 ms: not enough to transcribe meaningfully
+            return None
+        os.makedirs(_TEMP_DIR, exist_ok=True)
+        with tempfile.NamedTemporaryFile(prefix="voice_partial_", suffix=".wav",
+                                         dir=_TEMP_DIR, delete=False) as temp:
+            path = temp.name
+        try:
+            with wave.open(path, "wb") as out:
+                out.setnchannels(CHANNELS)
+                out.setsampwidth(2)
+                out.setframerate(rate)
+                out.writeframes(data)
+            return path
+        except Exception:
+            with suppress(Exception):
+                os.unlink(path)
+            raise
 
     def _track_speech(self, rms: int, now: float) -> None:
         """Advance the speech/dip trackers for one block. Speech is confirmed after

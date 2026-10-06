@@ -165,17 +165,17 @@ def _background_review_write_guard(
     name: str, skill_dir: Path, action: str) -> Optional[Dict[str, Any]]:
     """Refuse autonomous curator writes to anything but curator-owned sediment. The review fork
     has no user in the loop, so it is also blocked on pinned/external/bundled/hub skills."""
-    if not _is_background_review():
-        return None
-    refuse = f"Refusing background curator {action} for"
-    if _is_pinned(name, "pinned skill guard"):
+    background_review = _is_background_review()
+    refuse = (f"Refusing background curator {action} for"
+              if background_review else f"Refusing {action} for")
+    if background_review and _is_pinned(name, "pinned skill guard"):
         return _refusal(
             f"{refuse} pinned skill '{name}': pinned skills "
             f"are off-limits to autonomous maintenance. Ask the user to run `hermes curator "
             f"unpin {name}` if they want it changed.")
     try:
         from agent.skill_utils import is_external_skill_path
-        if is_external_skill_path(skill_dir):
+        if background_review and is_external_skill_path(skill_dir):
             return _refusal(
                 f"{refuse} skill '{name}': the skill lives in skills.external_dirs, which are "
                 f"externally owned and read-only to autonomous curation.")
@@ -189,6 +189,8 @@ def _background_review_write_guard(
             (skill_usage.is_bundled, "bundled")):
             if predicate(name):
                 return _refusal(f"{refuse} {label} skill '{name}'.")
+        if not background_review:
+            return None
         # Not curator-managed (no `created_by: "agent"`) => user-owned. A MISSING
         # record and an explicit `created_by: null` must resolve IDENTICALLY (keying
         # on presence made the policy depend on the guard's own side effect: the

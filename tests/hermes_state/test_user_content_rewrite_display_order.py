@@ -144,6 +144,33 @@ def test_display_kind_stamp_rebuilds_the_display_slot(tmp_path):
     assert slots[assistant_id]["ident_null"] == 0
 
 
+def test_blank_row_fill_rebuilds_the_display_slot(tmp_path):
+    """A mid-turn flush persists the streaming assistant row while it is still blank; the
+    end-of-turn batch then fills that row in place (``resolve_and_repair_transcript_batch``
+    UPDATEs ``content``), which re-keys the identity exactly like the prologue rewrite. The
+    assistant rows at ``display_order = NULL`` measured in #128468 (a store whose user-row
+    NULLs the write-path fix already covers) are this arm."""
+    db = SessionDB(tmp_path / "state.db")
+    ts = 1727000000.0
+    db.create_session("s1", source="desktop")
+    db.append_message("s1", "user", "check my config", timestamp=ts)
+    blank_id = db.append_message("s1", "assistant", "", timestamp=ts + 1)
+    assert _display_slots(db, "s1")[-1]["display_order"] is not None, "insert trigger stamps a slot"
+
+    inserted = db.append_messages_batch("s1", [
+        {"role": "assistant", "content": "all good", "_row_id": blank_id, "timestamp": ts + 1},
+        {"role": "tool", "content": "ok", "tool_call_id": "1", "timestamp": ts + 2},
+    ])
+
+    # Only the tool row landed; the assistant row was filled in place, not duplicated.
+    assert inserted == 1
+    slots = {r["id"]: r for r in _display_slots(db, "s1")}
+    assert slots[blank_id]["display_order"] is not None
+    assert slots[blank_id]["ident_null"] == 0
+    assert all(slot["display_order"] is not None for slot in slots.values())
+    assert all(slot["ident_null"] == 0 for slot in slots.values())
+
+
 def test_marker_purge_rebuilds_the_display_slot(tmp_path):
     """``purge_stale_tool_call_markers`` blanks ``content`` — the identity trigger's
     biggest-hammer column — across sessions; every touched session needs its slots

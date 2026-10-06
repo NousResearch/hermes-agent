@@ -478,6 +478,15 @@ class SessionMessagesMixin:
                 decode_row_fn=self._decoded_repair_row,
             )
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
+            if len(inserted_rows) < len(messages) and {"display_order", "display_identity"} <= set(
+                    self._message_column_names(conn)):
+                # Blank-row repair fills a streaming placeholder assistant row in place — an
+                # UPDATE of ``content``, the identity trigger's re-keying column — so the filled
+                # row (and any identity twin) sits outside the indexed display projections until
+                # a reader backfills. Repair removes a message from the batch exactly when it
+                # wrote or adopted one, so a shrunken batch is the signal; the fold is idempotent
+                # and writes nothing when adoption alone shrank the batch (#128468).
+                self._reconcile_display_orders(conn, session_id)
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
             return inserted
         return self._execute_transcript_write(_do, messages, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)

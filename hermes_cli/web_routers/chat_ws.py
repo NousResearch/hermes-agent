@@ -435,6 +435,61 @@ async def _pty_fail(ws: WebSocket, exc: BaseException) -> None:
     await ws.close(code=1011)
 
 
+async def _same_session_chain(a: str, b: str, profile: Optional[str]) -> bool:
+    """True when sessions ``a`` and ``b`` sit on one parent→child chain.
+
+    Fails closed: an unreadable session store or unknown ids means "not the
+    same chain", leaving the caller on its default key.
+    """
+    if a == b:
+        return True
+    from hermes_cli.web_routers.sessions import _with_db
+    from hermes_cli.web_server_sessions import _session_latest_descendant
+
+    def _linked(db) -> bool:
+        a_leaf, _ = _session_latest_descendant(a, db)
+        if a_leaf == b:
+            return True
+        b_leaf, _ = _session_latest_descendant(b, db)
+        return b_leaf == a or (a_leaf is not None and a_leaf == b_leaf)
+
+    try:
+        return await asyncio.to_thread(_with_db, profile, _linked, read_only=True)
+    except Exception:
+        return False
+
+
+async def _same_chain_attach_key(
+    registry,
+    raw_token: str,
+    wanted_key: str,
+    profile: Optional[str],
+    resume: Optional[str],
+) -> str:
+    """Reuse a live sibling key when ``wanted_key`` drifted along the same session chain.
+
+    A mid-flight turn advances its session (compaction handoffs, /model child
+    sessions); the SPA follows it via latest-descendant and rebuilds the socket
+    with the new ``?resume=``. The rebuilt key then differs from the running
+    PTY's key only in that resume component, and ``close_other_sessions``
+    would close that PTY — killing the in-flight turn as a bogus
+    "explicit stop requested" (#133052). A live sibling of the same profile
+    whose resume sits on the same session chain IS that PTY: return its key so
+    the reconnect reattaches it instead of closing and respawning.
+    """
+    if not resume:
+        return wanted_key
+    for key in registry.live_sibling_keys(raw_token, keep_key=wanted_key):
+        parts = key.split("\0")
+        if len(parts) != 3:
+            continue  # a bare key carries no resume to compare
+        sibling_profile, sibling_resume = parts[1], parts[2]
+        if sibling_resume and sibling_profile == (profile or ""):
+            if await _same_session_chain(sibling_resume, resume, profile):
+                return key
+    return wanted_key
+
+
 @router.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
     from hermes_cli.web_server_chat import PTY_REGISTRY, PtyBridge, PtyUnavailableError, _PTY_BRIDGE_AVAILABLE, _RESIZE_RE
@@ -516,6 +571,12 @@ async def pty_ws(ws: WebSocket) -> None:
     if attach_token is not None and (registry_resume or profile):
         # Key explicit resumes on their canonical target, never the active-session fallback.
         attach_token = f"{attach_token}\0{profile or ''}\0{registry_resume or ''}"
+        # A resume that advanced along the same session chain is the SAME chat:
+        # reattach its live PTY instead of letting close_other_sessions kill
+        # the mid-flight turn (#133052).
+        attach_token = await _same_chain_attach_key(
+            PTY_REGISTRY, raw_attach_token, attach_token, profile, registry_resume
+        )
 
     def _spawn():
         return PtyBridge.spawn(argv, cwd=cwd, env=env)

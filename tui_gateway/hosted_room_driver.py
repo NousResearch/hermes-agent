@@ -212,7 +212,8 @@ class HostedRoomRuntime:
             if before["status"] in state.TERMINAL_STATUSES:
                 raise state.InvalidTaskTransitionError(
                     f"cannot cancel task in state '{before['status']}'")
-            direct = before["status"] in {"queued", "deferred"}
+            # Deferral releases the room's queue, not ownership of the original run.
+            direct = before["status"] == "queued"
             try:
                 result = (state.cancel_task if direct else state.begin_task_cancel)(
                     self.db_path, identity, cancel_id=cancel_id,

@@ -42,3 +42,45 @@ def test_hidden_excluded_by_default_included_on_request(db):
     assert db.get_session("secret")["hidden"] == 0
     unhidden_ids = {s["id"] for s in db.list_sessions_rich(min_message_count=1)}
     assert unhidden_ids == {"visible", "secret"}
+
+
+def test_session_count_matches_paged_listing_with_hidden(db):
+    """Regression for #123612: session_count() must mirror list_sessions_rich's hidden
+    filter, so a paired pagination 'total' equals the distinct rows the pages serve."""
+    ids = [f"sess_{i}" for i in range(5)]
+    for sid in ids:
+        db.create_session(sid, source="cli")
+        db._conn.execute("UPDATE sessions SET message_count = 1 WHERE id = ?", (sid,))
+    db._conn.commit()
+    for sid in ids[:2]:
+        assert db.set_session_hidden(sid, True) is True
+
+    # Page the default listing and collect every distinct row served.
+    served: list = []
+    offset = 0
+    while True:
+        rows = db.list_sessions_rich(limit=2, offset=offset)
+        served += [r["id"] for r in rows]
+        if len(rows) < 2:
+            break
+        offset += 2
+    distinct_served = set(served)
+
+    assert len(served) == len(distinct_served) == 3
+    assert db.session_count(min_message_count=1) == len(distinct_served)
+
+    # Opt-in parity with include_hidden listings.
+    assert db.session_count(min_message_count=1, include_hidden=True) == 5
+
+
+def test_session_count_archived_only_keeps_hidden_rows(db):
+    """The archived-only view is the recovery surface for rows dropped from every default
+    list (#90946): a session that is archived AND hidden must still be counted there."""
+    db.create_session("gone", source="cli")
+    db._conn.execute("UPDATE sessions SET message_count = 1, archived = 1 WHERE id = ?", ("gone",))
+    db._conn.commit()
+    assert db.set_session_hidden("gone", True) is True
+
+    assert db.session_count() == 0
+    assert db.session_count(archived_only=True) == 1
+    assert db.list_sessions_rich(archived_only=True) != []

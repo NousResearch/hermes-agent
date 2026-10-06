@@ -610,14 +610,14 @@ def _sessions_stats(_engine: HermesConsoleEngine, args: list[str]) -> str:
     _expect_no_args(args, "sessions stats")
     from hermes_state_sessions import INTERNAL_LISTING_SOURCES
     with _session_db() as db:
-        total = db.session_count()
+        total = db.session_count(include_hidden=True)
         listable = db.session_count(exclude_children=True, exclude_sources=list(INTERNAL_LISTING_SOURCES))
         lines = [
             f"Total sessions: {total}",
             f"Listable sessions: {listable}",
             f"Total messages: {db.message_count()}"]
         for source in ["cli", "tui", "telegram", "discord", "slack", "cron"]:
-            count = db.session_count(source=source)
+            count = db.session_count(source=source, include_hidden=True)
             if count:
                 lines.append(f"  {source}: {count}")
         return "\n".join(lines)

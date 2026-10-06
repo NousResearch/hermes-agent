@@ -779,7 +779,10 @@ def _error_object(body_text: str) -> Dict[str, Any]:
 
 def gemini_http_error(
     response: httpx.Response, *, body_text: Optional[str] = None, api_key: str = "", base_url: str = "",
+    key_guidance: bool = True,
 ) -> GeminiAPIError:
+    """``key_guidance=False`` for OAuth-bearer callers: the API-key fixes (free tier, Standard key, wrong
+    key surface) are wrong advice when the credential is a user's OAuth access token."""
     status = response.status_code
     body_text = (_response_text(response) if body_text is None else body_text) or ""
     err_obj = _error_object(body_text)
@@ -793,11 +796,11 @@ def gemini_http_error(
     # Users who bypassed the setup wizard (raw GOOGLE_API_KEY in .env) still need to learn the free
     # tier cannot sustain an agent session; a legacy "Standard" key gets the real fix (Google's raw
     # 401 asks for OAuth; after Sept 2026 the same AIza key is often a 400 API_KEY_INVALID).
-    if status == 429 and is_free_tier_quota_error(err_message or body_text):
+    if key_guidance and status == 429 and is_free_tier_quota_error(err_message or body_text):
         message += _FREE_TIER_GUIDANCE
-    if is_standard_key_auth_error(status, err_message or body_text, reason, api_key=api_key):
+    if key_guidance and is_standard_key_auth_error(status, err_message or body_text, reason, api_key=api_key):
         message += _STANDARD_KEY_GUIDANCE
-    if status == 403:
+    if key_guidance and status == 403:
         message += wrong_gemini_surface_guidance(base_url, api_key, err_status)
     return GeminiAPIError(
         message, code=_HTTP_ERROR_CODES.get(status, f"gemini_http_{status}"), status_code=status, response=response,
@@ -811,13 +814,17 @@ class GeminiNativeClient:
     # For agent/auxiliary_client.py: a complete client, never re-dispatched through a wire adapter.
     # (No HERMES_SKIP_ASYNC_WRAP — the async path has a real conversion, AsyncGeminiNativeClient.)
     HERMES_SKIP_TRANSPORT_WRAP = True
+    # Seams for a subclass that speaks the same wire under another credential (an OAuth bearer on the
+    # per-user-quota methods): RPC method names, the missing-credential text, and ``_auth_headers``.
+    GENERATE_METHOD, STREAM_METHOD = "generateContent", "streamGenerateContent"
+    MISSING_KEY_ERROR = _MISSING_KEY_ERROR
 
     def __init__(
         self, *, api_key: str, base_url: Optional[str] = None, default_headers: Optional[Dict[str, str]] = None,
         timeout: Any = None, http_client: Optional[httpx.Client] = None, **_: Any,
     ) -> None:
         if not (api_key or "").strip():
-            raise RuntimeError(_MISSING_KEY_ERROR)
+            raise RuntimeError(self.MISSING_KEY_ERROR)
         self.api_key, self.is_closed = api_key, False
         self.base_url = normalize_gemini_base_url(base_url)
         self._default_headers = dict(default_headers or {})
@@ -836,9 +843,15 @@ class GeminiNativeClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    def _auth_headers(self) -> Dict[str, str]:
+        return {"x-goog-api-key": self.api_key}
+
     def _headers(self) -> Dict[str, str]:
-        return {"Content-Type": "application/json", "Accept": "application/json", "x-goog-api-key": self.api_key,
+        return {"Content-Type": "application/json", "Accept": "application/json", **self._auth_headers(),
                 "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **self._default_headers}
+
+    def _http_error(self, response: httpx.Response, body_text: Optional[str] = None) -> "GeminiAPIError":
+        return gemini_http_error(response, body_text=body_text, api_key=self.api_key, base_url=self.base_url)
 
     @staticmethod
     def _advance_stream_iterator(iterator: Iterator[_GeminiStreamChunk]) -> tuple[bool, Optional[_GeminiStreamChunk]]:
@@ -861,10 +874,10 @@ class GeminiNativeClient:
         model = bare_gemini_model_id(model)
         url = f"{self.base_url}/models/{model}:"
         if stream:
-            return self._stream_completion(model, url + "streamGenerateContent?alt=sse", request, timeout)
-        response = self._http.post(url + "generateContent", json=request, headers=self._headers(), timeout=timeout)
+            return self._stream_completion(model, f"{url}{self.STREAM_METHOD}?alt=sse", request, timeout)
+        response = self._http.post(url + self.GENERATE_METHOD, json=request, headers=self._headers(), timeout=timeout)
         if response.status_code != 200:
-            raise gemini_http_error(response, api_key=self.api_key, base_url=self.base_url)
+            raise self._http_error(response)
         try:
             payload = response.json()
         except ValueError as exc:
@@ -878,9 +891,7 @@ class GeminiNativeClient:
             headers = {**self._headers(), "Accept": "text/event-stream"}
             with self._http.stream("POST", url, json=request, headers=headers, timeout=timeout) as response:
                 if response.status_code != 200:
-                    raise gemini_http_error(
-                        response, body_text=read_streaming_error_body(response), api_key=self.api_key, base_url=self.base_url,
-                    )
+                    raise self._http_error(response, read_streaming_error_body(response))
                 tool_call_indices: Dict[str, Dict[str, Any]] = {}
                 for event in _iter_sse_events(response):
                     yield from translate_stream_event(event, model, tool_call_indices)

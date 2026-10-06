@@ -1331,15 +1331,15 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
 def _resume_windows_gateways_and_merge_outcome(outcome, _windows_gateway_resume, gateway_mode: bool):
     """Resume gateways paused for a Windows update and fold the token into ``outcome``'s systemd/launchd-style
     bookkeeping so reconciliation never reports a healthy gateway as unaccounted. Must never abort the update."""
-    from hermes_cli.update_cmd import _m, _write_gateway_update_exit_code
+    from hermes_cli.update_cmd import _m
     try:
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
     except Exception as _windows_resume_exc:
+        # Owed restart, not a failed update (C3): verification records the ``gateway_restart``
+        # follow-up; the gateway's /update marker keeps the committed result.
         outcome.incomplete = True
         outcome.phase_errors.append(str(_windows_resume_exc))
         print(f"  ⚠ Windows gateway service restart incomplete: {_windows_resume_exc}")
-        if gateway_mode:
-            _write_gateway_update_exit_code(False)
     if not isinstance(_windows_gateway_resume, dict):
         return
 

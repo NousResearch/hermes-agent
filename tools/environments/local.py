@@ -800,6 +800,25 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
     return "\n".join(prelude) + "\n" + cmd_string
 
 
+def _prepend_managed_path_restore(cmd_string: str) -> str:
+    """Prepend idempotent PATH-restore lines for Hermes-managed dirs.
+
+    Login profiles can reset PATH outright — Debian's ``/etc/profile`` does so
+    for non-root shells, dropping the venv dir the process env put there
+    (#56634). Sits between the init-file prelude and the command (the env
+    snapshot's ``export -p``), so restored entries survive into the snapshot.
+    Each ``case`` guard re-adds its dir only when absent, keeping reruns and
+    profiles that kept the entries duplicate-free."""
+    if _IS_WINDOWS:
+        return cmd_string  # native PATH stays ``;``-joined; bash sees a converted copy
+    entries = [d for d in (_resolve_hermes_bin_dir(), *_managed_runtime_path_entries())
+               if d and '"' not in d]
+    if not entries:
+        return cmd_string
+    lines = [f'case ":$PATH:" in *":{d}:"*) ;; *) PATH="{d}:$PATH" ;; esac' for d in entries]
+    return "\n".join(lines) + "\n" + cmd_string
+
+
 # --- Process-group teardown (POSIX) ---
 def _wait_for_group_exit(proc, pgid: int, timeout: float) -> bool:
     """Wait until the process group is gone, reaping the wrapper as we go (a dead
@@ -1044,8 +1063,12 @@ class LocalEnvironment(BaseEnvironment):
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
         # Login invocations (init_session's env snapshot) source the user's rc /
-        # custom init files so nvm/asdf/pyenv land on PATH in the snapshot.
+        # custom init files so nvm/asdf/pyenv land on PATH in the snapshot; the
+        # managed-dir restore runs after that prelude so a profile that resets
+        # PATH (Debian's /etc/profile) can't drop Hermes' own dirs from the
+        # snapshot (#56634).
         if login:
+            cmd_string = _prepend_managed_path_restore(cmd_string)
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()

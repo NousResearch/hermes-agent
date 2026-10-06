@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
+import { $pinnedSessionIds, pinSession } from '@/store/layout'
 import { $sessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 

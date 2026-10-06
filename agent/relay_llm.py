@@ -673,7 +673,17 @@ class AnthropicStreamAccumulator:
         merged = {**_jsonable_dict(base), **assembled}
         if content or "content" not in merged:
             merged["content"] = content
-        return _namespace(merged)
+        response = _namespace(merged)
+        # The envelope is attribute-shaped, but a tool_use ``input`` is opaque JSON that
+        # transports re-serialize verbatim (json.dumps), so restore the parsed value (#133500).
+        for raw_block, block in zip(content, getattr(response, "content", None) or ()):
+            if (
+                isinstance(raw_block, dict)
+                and raw_block.get("type") == "tool_use"
+                and "input" in raw_block
+            ):
+                block.input = raw_block["input"]
+        return response
 
 
 def _logical_parent(

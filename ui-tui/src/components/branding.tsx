@@ -3,7 +3,7 @@ import { mix } from '@hermes/shared/color'
 import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
-import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
+import { artWidth, caduceus, logo, LOGO_WIDTH } from '../banner.js'
 import { useT } from '../i18n/useT.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
@@ -212,13 +212,23 @@ const SKELETON_ROWS: readonly (readonly [number, number])[] = [
 const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
+// A whitespace-only hero draws no art, so it gets no hero track. Reserving
+// one (artWidth of a blank line + 4 = five columns) puts the model, cwd and
+// session lines in that track and shreds them into vertical fragments.
+function heroLayout(t: Theme, cols: number) {
+  const hideHero = t.bannerHero.length > 0 && t.bannerHero.trim().length === 0
+  const heroLines = hideHero ? [] : caduceus(t.color, t.bannerHero || undefined)
+  const heroW = artWidth(heroLines)
+  const leftW = heroW ? Math.min(heroW + 4, Math.floor(cols * 0.4)) : 0
+
+  return { heroLines, leftW, wide: leftW > 0 && cols >= 90 && leftW + 40 < cols }
+}
+
 export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const T = useT().chatBits.branding
   const term = useStdout().stdout?.columns ?? 100
   const cols = Math.max(20, Math.min(term, maxWidth ?? term))
-  const heroLines = caduceus(t.color, t.bannerHero || undefined)
-  const leftW = Math.min((artWidth(heroLines) || CADUCEUS_WIDTH) + 4, Math.floor(cols * 0.4))
-  const wide = cols >= 90 && leftW + 40 < cols
+  const { heroLines, leftW, wide } = heroLayout(t, cols)
   const w = Math.max(20, wide ? cols - leftW - 14 : cols - 12)
   const lineBudget = Math.max(12, w - 2)
   const strip = (s: string) => (s.endsWith('_tools') ? s.slice(0, -6) : s)

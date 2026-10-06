@@ -120,6 +120,13 @@ class ProviderProfile:
     # model_aliases: short name -> id in fallback_models, for providers whose catalog is not
     # in models.dev (external processes); `/model <alias>` resolves here before core guessing.
     model_aliases: dict = field(default_factory=dict)
+    # Catalog path this profile serves, e.g. ``/chat/completions`` or ``/messages``. Set it on a
+    # multi-wire provider so a live ``/models`` payload's own ``supported_endpoints`` keeps rows the
+    # provider accepts on THIS wire: without it a single-endpoint catalog is offered whole to every
+    # profile and each pick picks a model the API rejects with a 400. Empty (default) = no
+    # endpoint filter: the catalog is one wire's worth, and rows that publish no annotation are
+    # always admitted.
+    catalog_endpoint: str = ""
 
     # hostname: base hostname for URL→provider reverse-mapping in model_metadata.py
     # e.g. "api.gmi-serving.com". Derived from base_url when empty.
@@ -340,6 +347,28 @@ class ProviderProfile:
         any inference request; ``None`` falls back to ``fallback_models``."""
         return None
 
+    def fetch_catalog_items(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: float = 8.0,
+    ) -> list[dict[str, Any]] | None:
+        """Raw ``/models`` rows (with all their metadata), or None when unavailable.
+
+        Split from :meth:`fetch_models` so a subclass can customise only the
+        request (auth, path, response shape) while the shared filtering — dropping
+        generation rows and rows the provider does not accept on this profile's
+        wire, per ``catalog_endpoint`` — stays in one place.
+        """
+        return None
+
+    def _filter_catalog_items(self, items: list[dict[str, Any]]) -> list[str]:
+        """Chat ids from raw catalog rows: no generation rows, no rows off this wire."""
+        from hermes_cli.chat_catalog import chat_catalog_ids
+
+        return chat_catalog_ids(items, endpoint=self.catalog_endpoint)
+
     def fetch_models(
         self,
         *,
@@ -370,11 +399,21 @@ class ProviderProfile:
         and forwards self.default_headers. Override to customise auth, path,
         response shape, or to return None for providers with no REST catalog.
 
+        Overriding this whole method is rarely the right hook: a provider whose
+        catalog is one payload shared across several wires should override
+        :meth:`fetch_catalog_items` instead, so the shared filtering (generation
+        rows, off-wire rows per ``catalog_endpoint``) still applies.
+
         Callers must always fall back to the static _PROVIDER_MODELS list
         when this returns None.
         """
         if not self.supports_model_listing:
             return None
+        # A provider that only customises the catalog request overrides
+        # fetch_catalog_items; the shared filtering below still applies.
+        items = self.fetch_catalog_items(api_key=api_key, base_url=base_url, timeout=timeout)
+        if items is not None:
+            return self._filter_catalog_items(items)
         caller_base = (base_url or "").strip()
         effective_base = caller_base or self.base_url
         custom_base = bool(caller_base) and (
@@ -409,9 +448,9 @@ class ProviderProfile:
             with open_credentialed_url(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             items = data if isinstance(data, list) else data.get("data", [])
-            from hermes_cli.chat_catalog import chat_catalog_ids
-
-            return chat_catalog_ids(items)
+            if not isinstance(items, list):
+                return None
+            return self._filter_catalog_items(items)
         except Exception as exc:
             logger.debug("fetch_models(%s): %s", self.name, exc)
             return None

@@ -3,7 +3,7 @@
 import asyncio
 import re
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from tests.gateway.test_telegram_group_gating import _group_message, _group_voice_message, _make_adapter
 
@@ -26,8 +26,10 @@ def test_foreign_command_target_is_not_overridden_by_mentions_in_arguments():
         for carrier in ("command", "text", "caption"):
             for text, exclusive in (("/model@ops_bot gpt-5 @hermes_bot", True),
                                     ("@hermes_bot /queue@ops_bot 😀 ask @hermes_bot for details", True),
-                                    ("/model@ops_bot gpt-5 @hermes_bot", False)):
+                                    ("/model@ops_bot gpt-5 @hermes_bot", False),
+                                    *((f"/model@ops_bot{mark} gpt-5 @hermes_bot", True) for mark in ".!?)")):
                 adapter = _make_adapter(require_mention=True, exclusive_bot_mentions=exclusive)
+                adapter._schedule_bot_identity_recheck = Mock()
                 adapter._ensure_forum_commands = AsyncMock()
                 adapter._cache_inbound_av = AsyncMock(return_value=False)
                 events = []
@@ -42,6 +44,7 @@ def test_foreign_command_target_is_not_overridden_by_mentions_in_arguments():
                     handler = adapter._handle_command if carrier == "command" else adapter._handle_text_message
                 await handler(SimpleNamespace(update_id=1701, message=message, effective_message=None), SimpleNamespace())
                 assert not events, (carrier, text, [(event.get_command(), event.get_command_args()) for event in events])
+                adapter._schedule_bot_identity_recheck.assert_called_once()
     asyncio.run(run())
 
 

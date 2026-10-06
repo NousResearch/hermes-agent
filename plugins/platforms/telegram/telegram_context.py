@@ -46,6 +46,7 @@ def should_process_message(adapter: "TelegramAdapter", message: "Message") -> bo
     if not adapter._is_group_chat(message):
         return True
     if command_targets_other_bot(adapter, message):
+        adapter._schedule_bot_identity_recheck()
         return False
     thread_id = adapter._effective_message_thread_id(message)
     if adapter._topic_gates_pass(thread_id, warn_non_numeric=True) is False:
@@ -77,20 +78,22 @@ def command_targets_other_bot(adapter: "TelegramAdapter", message: "Message") ->
     own = adapter._current_bot_username()
     if not own:
         return False
+    address = r"/[^\s/@]+@([A-Za-z0-9_]+)"
     for text, entities in adapter._entity_sources(message):
-        match = re.match(rf"(?i)^\s*(?:@{re.escape(own)}\b[,:\-]*\s*)*(/[^\s/@]+)@([A-Za-z0-9_]+)\b[,:\-]*(?=\s|$)", text)
-        if not match or match[2].lower() == own:
-            continue
+        prefix = re.match(rf"(?i)^\s*(?:@{re.escape(own)}\b[,:\-]*\s*)*", text)
         if not entities:
-            return True
-        offset = len(text[:match.start(1)].encode("utf-16-le")) // 2
+            command = re.match(address, text[prefix.end():])
+            if command and command[1].lower() != own:
+                return True
+            continue
+        offset = len(text[:prefix.end()].encode("utf-16-le")) // 2
         # Code and URL entities do not turn quoted command-looking text into an address.
-        command = f"{match[1]}@{match[2]}".lower()
-        if any(adapter._entity_type(entity) == "bot_command"
-               and getattr(entity, "offset", None) == offset
-               and (adapter._entity_span(text, entity) or "").lower() == command
-               for entity in entities):
-            return True
+        for entity in entities:
+            if adapter._entity_type(entity) != "bot_command" or getattr(entity, "offset", None) != offset:
+                continue
+            command = re.match(address, adapter._entity_span(text, entity) or "")
+            if command and command[1].lower() != own:
+                return True
     return False
 
 

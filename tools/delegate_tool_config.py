@@ -176,6 +176,27 @@ def _get_inherit_mcp_toolsets() -> bool:
     """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
     return is_truthy_value(_cfg().get("inherit_mcp_toolsets"), default=True)
 
+_DELEGATION_MCP_DICT_WARNED = False
+
+def _get_delegation_mcp_servers() -> List[str]:
+    """``delegation.mcp_servers``: names of ``mcp_servers`` entries reserved for delegate_task children — the
+    main agent never sees their tools. Names only: the server is still defined once under ``mcp_servers``, so
+    secret redaction, the suspicious-server filter, OAuth and reload keep a single source. ``mcp-`` prefix
+    tolerated."""
+    global _DELEGATION_MCP_DICT_WARNED
+    from agent.skill_utils import parse_config_string_list
+    raw = _cfg().get("mcp_servers")
+    if isinstance(raw, dict):
+        if not _DELEGATION_MCP_DICT_WARNED:
+            _DELEGATION_MCP_DICT_WARNED = True
+            logger.warning(
+                "delegation.mcp_servers takes server NAMES (a list); define the servers under mcp_servers "
+                "and list them here. Treating the keys %s as names.", sorted(map(str, raw)),
+            )
+        raw = list(raw)
+    names = (name.strip() for name in parse_config_string_list(raw))
+    return list(dict.fromkeys(name.removeprefix("mcp-") for name in names if name))
+
 def _normalized_runtime_url(value: Any) -> str:
     return str(value or "").strip().rstrip("/")
 

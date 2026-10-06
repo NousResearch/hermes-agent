@@ -902,6 +902,12 @@ def _print_nonretryable_auth_guidance(
                     f"         Nous catalog model, or run `/model openrouter:{model}` to use OpenRouter.",
                 )
         return
+    from hermes_cli.auth_plugin_providers import plugin_refresh_hook
+    if status_code == 401 and plugin_refresh_hook(str(provider or "")) is not None:
+        # A plugin OAuth grant the pool could not refresh: the fix is a fresh sign-in, not a key.
+        from agent.turn_failure_copy import oauth_relogin_command
+        _vlines(agent, f"   💡 {provider} sign-in was rejected (HTTP 401). Sign in again: `{oauth_relogin_command(provider)}`")
+        return
     _vlines(
         agent,
         "   💡 Your API key was rejected by the provider. Check:",

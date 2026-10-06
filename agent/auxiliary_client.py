@@ -5401,12 +5401,6 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
     arm = REGISTRY_AUTHTYPE_ARMS.get(auth_type)
     if arm is not None:
         return arm(req)
-    if auth_type in {"oauth_device_code", "oauth_external"}:
-        # nous / openai-codex / xai-oauth already returned from their explicit branches.
-        _log_once_debug(_LOGGED_UNSUPPORTED_OAUTH_KEYS, provider,
-                        "resolve_provider_client: OAuth provider %s not "
-                        "directly supported, try 'auto'", provider)
-        return None, None
     # The first occurrence surfaces a real schema-drift bug; per-call retries stay silent.
     _log_once_debug(_LOGGED_UNHANDLED_AUTHTYPE_KEYS, (auth_type, provider),
                     "resolve_provider_client: unhandled auth_type %s for %s",

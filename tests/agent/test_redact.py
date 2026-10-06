@@ -63,6 +63,18 @@ class TestKnownPrefixes:
         assert redact_terminal_output(benign, "git log --stat") == benign
         assert redact_sensitive_text(benign, file_read=True) == benign
 
+    @pytest.mark.parametrize("text", [
+        "my key is {k}.", "my key is {k}. Next sentence", "keys: {k}.\n", "({k}.)",
+    ])
+    def test_zhipu_key_before_sentence_final_dot_still_masked(self, text):
+        """A sentence-final ``.`` after the key is punctuation, not another dotted segment;
+        the ``(?![….])`` lookahead left the whole key in clear there."""
+        key = "50aaed1234567890abcdef1234567890" + "." + "ZpSh99AbCdEfGh12"
+        out = redact_sensitive_text(text.format(k=key), force=True)
+        assert "ZpSh99" not in out
+        # A dot followed by another segment is still a filename / longer token, not a key.
+        assert redact_sensitive_text(f"{key}.png", force=True) == f"{key}.png"
+
 
 
     def test_gitlab_token_prefixes(self):

@@ -229,30 +229,96 @@ _MODEL_CARD_KEYS = (
 )
 
 
+def _attach_tool_calls(db, cutoff: float, raw_rows: List[Dict[str, Any]]) -> None:
+    """Fill the ``tool_calls`` card metric for per-call rows, in place.
+
+    Tool calls are session-level data (``sessions.tool_call_count``), not per API
+    call, so they cannot come from ``session_model_usage``. Attribute each
+    session-window (model, billing_provider) tool-call total to the card of the
+    pair its sessions row records — the session's last active route — falling
+    back to any card of that model when the pair has no per-call row (route
+    switched after the last call). Never zeroes the metric (#71778).
+    """
+    pair_rows = _rows(db, """
+        SELECT model, billing_provider, SUM(COALESCE(tool_call_count, 0)) as tool_calls
+        FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
+        GROUP BY model, billing_provider
+    """, cutoff)
+    by_pair = {
+        (r.get("model") or "", r.get("billing_provider") or ""): r.get("tool_calls") or 0
+        for r in pair_rows
+    }
+    index: Dict[tuple, Dict[str, Any]] = {}
+    by_model: Dict[str, List[Dict[str, Any]]] = {}
+    for row in raw_rows:
+        row["tool_calls"] = 0
+        index.setdefault((row["model"], row.get("billing_provider") or ""), row)
+        by_model.setdefault(row["model"], []).append(row)
+    for (model, provider), calls in by_pair.items():
+        target = index.get((model, provider)) or (by_model.get(model) or [None])[0]
+        if target is not None:
+            target["tool_calls"] += calls
+
+
 def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
     """Per-model token/cost/session breakdown plus models.dev capability metadata."""
     db = _open_session_db_for_profile(profile, read_only=True)
     try:
         cutoff = time.time() - (days * 86400)
 
-        raw_rows = _rows(db, """
-            SELECT model,
-                   billing_provider,
-                   SUM(input_tokens) as input_tokens,
-                   SUM(output_tokens) as output_tokens,
-                   SUM(cache_read_tokens) as cache_read_tokens,
-                   SUM(reasoning_tokens) as reasoning_tokens,
-                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
-                   COUNT(*) as sessions,
-                   SUM(COALESCE(api_call_count, 0)) as api_calls,
-                   SUM(tool_call_count) as tool_calls,
-                   MAX(started_at) as last_used_at,
-                   AVG(input_tokens + output_tokens) as avg_tokens_per_session
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
-            GROUP BY model, billing_provider
-            ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
-        """, cutoff)
+        # Main usage from session_model_usage: every API call's delta lands there
+        # with the model/provider active at call time, so a mid-session /model
+        # switch (or a silent fallback rewrite) splits across the pairs that
+        # actually ran. The sessions table keeps only the final pair, and
+        # grouping it attributed the whole session to it (#71778). Insights
+        # (_compute_model_breakdown) reads the same table.
+        try:
+            cur = db._conn.execute("""
+                SELECT u.model,
+                       u.billing_provider,
+                       SUM(u.input_tokens) as input_tokens,
+                       SUM(u.output_tokens) as output_tokens,
+                       SUM(u.cache_read_tokens) as cache_read_tokens,
+                       SUM(u.reasoning_tokens) as reasoning_tokens,
+                       COALESCE(SUM(u.estimated_cost_usd), 0) as estimated_cost,
+                       COALESCE(SUM(u.actual_cost_usd), 0) as actual_cost,
+                       COUNT(DISTINCT u.session_id) as sessions,
+                       SUM(COALESCE(u.api_call_count, 0)) as api_calls,
+                       MAX(u.last_seen) as last_used_at,
+                       AVG(u.input_tokens + u.output_tokens) as avg_tokens_per_session
+                FROM session_model_usage u
+                JOIN sessions s ON s.id = u.session_id
+                WHERE s.started_at > ? AND u.model IS NOT NULL AND u.model != ''
+                      AND u.task = ''
+                GROUP BY u.model, u.billing_provider
+                ORDER BY SUM(u.input_tokens) + SUM(u.output_tokens) DESC
+            """, (cutoff,))
+            raw_rows = [dict(r) for r in cur.fetchall()]
+        except Exception:
+            raw_rows = []  # pre-v17 DB without session_model_usage
+        if not raw_rows:
+            # No per-call rows in the window (pre-table DB): fall back to the
+            # sessions aggregate, which for those sessions is the only source.
+            raw_rows = _rows(db, """
+                SELECT model,
+                       billing_provider,
+                       SUM(input_tokens) as input_tokens,
+                       SUM(output_tokens) as output_tokens,
+                       SUM(cache_read_tokens) as cache_read_tokens,
+                       SUM(reasoning_tokens) as reasoning_tokens,
+                       COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
+                       COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
+                       COUNT(*) as sessions,
+                       SUM(COALESCE(api_call_count, 0)) as api_calls,
+                       SUM(tool_call_count) as tool_calls,
+                       MAX(started_at) as last_used_at,
+                       AVG(input_tokens + output_tokens) as avg_tokens_per_session
+                FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
+                GROUP BY model, billing_provider
+                ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
+            """, cutoff)
+        else:
+            _attach_tool_calls(db, cutoff, raw_rows)
 
         # Aux-only models (dedicated vision/compression) as (model, provider) rows,
         # keyed like the GROUP BY above, so they appear on the Models page.

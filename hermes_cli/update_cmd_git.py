@@ -6,7 +6,7 @@ test patches on ``update_cmd`` stay effective).
 """
 
 import logging
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -363,12 +363,16 @@ def _offer_upstream_remote(git_cmd: list[str], cwd: Path, *, assume_yes: bool, i
     return True
 
 
-def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: bool = False, input_fn=None) -> bool:
+def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: bool = False, input_fn=None,
+                                  checkout_move=None) -> bool:
     """Offer to add ``upstream``, compare origin/main vs upstream/main, ff-pull when strictly behind, then push origin.
 
     Returns True only when origin/main was actually verified against upstream/main; False when the check never
     happened, so the caller never reports "up to date" on an origin-only compare. Fetches only upstream/main:
     a bare fetch drags in thousands of auto-generated branches.
+
+    ``checkout_move(target)`` is the caller's context for the one tree write (the merge): the
+    paused gateways' tree gate is bound to *target* before git writes a file.
 
     See #97052.
     """
@@ -408,7 +412,8 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
         # The fetch above already brought upstream/main: a local fast-forward (no network, so no
         # credential helper is started under the checkout lock fd a mutator inherits) to the
         # very commit counted above.
-        run_git(git_cmd, ["merge", "--ff-only", upstream], cwd=cwd, check=True, **_no_prompt_git_kwargs())
+        with (checkout_move or (lambda _target: nullcontext()))(upstream):
+            run_git(git_cmd, ["merge", "--ff-only", upstream], cwd=cwd, check=True, **_no_prompt_git_kwargs())
     except subprocess.CalledProcessError:
         print("  ✗ Failed to pull from upstream. You may need to resolve conflicts manually.")
         return False

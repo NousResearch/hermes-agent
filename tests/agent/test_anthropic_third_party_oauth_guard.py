@@ -164,6 +164,7 @@ class TestOAuthFlagOnRefresh:
         """Production order: the turn publishes its aux runtime BEFORE the first request triggers
         the silent refresh, so same-turn `auto` aux calls must still pick up the new token."""
         from agent import auxiliary_client as aux
+        from agent.auxiliary_key_rotation import rotate_runtime_main_api_key
         from agent.chat_completion_helpers import _context_thread_target
         from agent.turn_context import _publish_runtime_main
 
@@ -202,6 +203,11 @@ class TestOAuthFlagOnRefresh:
                     "anthropic", agent.model, runtime.get("base_url", ""), runtime.get("api_key"), "anthropic_messages",
                 )
             assert seen["api_key"] == new
+            # A scoped runtime (normalized copy) rotates in place but never reaches the legacy mirrors.
+            with aux.scoped_runtime_main({"provider": "anthropic", "api_key": old, "model": "m"}):
+                rotate_runtime_main_api_key(old, new)
+                assert aux._RUNTIME_MAIN_CONTEXT.get()["api_key"] == new
+            assert (aux._RUNTIME_MAIN_MODEL, aux._RUNTIME_MAIN_API_KEY) == (agent.model, new)
         finally:
             aux.clear_runtime_main()
 

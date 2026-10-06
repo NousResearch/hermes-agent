@@ -63,7 +63,50 @@ class TestResolveRuntimeWithFallback:
         with caplog.at_level("WARNING", logger="hermes_cli.runtime_provider"):
             _, entry = resolve_runtime_with_fallback(_CFG, requested="openai-codex")
         assert entry["provider"] == "openai"
-        assert any(r.levelname == "WARNING" and "anthropic" in r.getMessage() for r in caplog.records)
+        assert any(
+            r.levelname == "WARNING" and "misconfigured and was skipped" in r.getMessage()
+            for r in caplog.records
+        )
+        assert "anthropic" not in caplog.text
+
+    def test_misconfigured_shorthand_never_leaks_route_or_exception_text(self, monkeypatch, caplog):
+        secret = "FAKE_URL_SECRET_9f31"
+        config = {"fallback_providers": [{
+            "provider": "anthropic",
+            "model": f"model-{secret}",
+        }]}
+
+        def fail(**kwargs):
+            if kwargs.get("requested") == "openai-codex":
+                raise AuthError("primary down")
+            raise ValueError(f"bad route contained {secret}")
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fail)
+        with caplog.at_level("DEBUG", logger="hermes_cli.runtime_provider"):
+            with pytest.raises(AuthError, match="primary down"):
+                resolve_runtime_with_fallback(config, requested="openai-codex")
+
+        assert "misconfigured and was skipped" in caplog.text
+        assert secret not in caplog.text
+        assert "anthropic" not in caplog.text
+
+    def test_halt_without_usable_chain_preserves_primary_error(self, monkeypatch, caplog):
+        primary = AuthError("primary unavailable")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **kwargs: (_ for _ in ()).throw(primary),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.fallback_config.fallback_halt_active",
+            lambda: (True, "fallback halt refusal"),
+        )
+
+        with caplog.at_level("WARNING", logger="hermes_cli.runtime_provider"):
+            with pytest.raises(AuthError) as raised:
+                resolve_runtime_with_fallback({}, requested="openai-codex")
+
+        assert raised.value is primary
+        assert "fallback halt refusal" not in caplog.text
 
 
 def test_run_agent_falls_back_when_primary_resolution_raises_auth_error(monkeypatch):

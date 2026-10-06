@@ -44,3 +44,24 @@ def test_missing_codex_credential_verdict_names_the_home_it_read(two_homes):
     with _profile_cron_scope(alpha):
         reason = _preflight_check_provider_key(JOB, {"cron": {}})
     assert reason and _scope(reason) == ("alpha", str(alpha))
+
+
+def test_halted_fallback_chain_does_not_skip_primary_credential_preflight(monkeypatch):
+    calls = []
+    chain = [{"provider": "openrouter", "model": "fallback-model"}]
+    monkeypatch.setattr(
+        "hermes_cli.fallback_config.fallback_halt_active", lambda: (True, "halted")
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    cfg = {
+        "model": {"provider": "openai-codex", "default": "gpt-5.6-sol"},
+        "fallback_providers": chain,
+    }
+    assert _preflight_check_provider_key({"id": "unpinned"}, cfg) is None
+    assert len(calls) == 1
+    assert calls[0]["requested"] != "openrouter"
+    assert calls[0]["target_model"] != "fallback-model"

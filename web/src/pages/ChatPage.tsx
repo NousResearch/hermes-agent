@@ -711,10 +711,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
     const handleBrowserPaste = (ev: ClipboardEvent) => {
       const files = imageFilesFromTransfer(ev.clipboardData);
-      if (!files.length) return;
+      if (files.length) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        uploadAndAttachImages(files);
+        return;
+      }
+      // Plain-text pastes must still reach the terminal: context-menu paste,
+      // and bare Ctrl+V on origins where the Clipboard API is not exposed and
+      // the keydown above deliberately leaves the native event alone
+      // (#132591). Route the text through term.paste() explicitly and stop
+      // the event so xterm's own textarea listener does not paste it twice.
+      const text = ev.clipboardData?.getData("text/plain") ?? "";
+      if (!text) return;
       ev.preventDefault();
       ev.stopPropagation();
-      uploadAndAttachImages(files);
+      term.paste(text);
     };
     const handleBrowserDragOver = (ev: DragEvent) => {
       if (!transferMayContainImage(ev.dataTransfer)) return;
@@ -799,39 +811,52 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // preventDefault suppresses the DOM paste event, so image paste must
         // be handled here via clipboard.read() — readText() alone misses
         // image-only clipboards (the Discord / #24860 failure mode).
-        ev.preventDefault();
-        void (async () => {
-          try {
-            const read = navigator.clipboard?.read;
-            if (typeof read === "function") {
-              const items = await read.call(navigator.clipboard);
-              const files: File[] = [];
-              for (const item of items) {
-                const type = item.types.find((t) => t.startsWith("image/"));
-                if (!type) continue;
-                const blob = await item.getType(type);
-                const ext = type.split("/")[1]?.split("+")[0] || "png";
-                files.push(
-                  new File([blob], `clipboard.${ext}`, { type }),
-                );
+        // Suppress it only when the Clipboard API is actually exposed: on a
+        // plain-HTTP origin it is not, so an unconditional preventDefault()
+        // would swallow the native paste event while every read below
+        // throws into its catch — a silent no-op (#132591). Without the API,
+        // let the native paste event run (the host paste listener below
+        // routes text and images) but still return false so xterm does not
+        // turn Ctrl+V into ^V for the PTY, where the TUI would read the
+        // server's own clipboard and report "No image found in clipboard".
+        if (
+          navigator.clipboard &&
+          typeof navigator.clipboard.readText === "function"
+        ) {
+          ev.preventDefault();
+          void (async () => {
+            try {
+              const read = navigator.clipboard?.read;
+              if (typeof read === "function") {
+                const items = await read.call(navigator.clipboard);
+                const files: File[] = [];
+                for (const item of items) {
+                  const type = item.types.find((t) => t.startsWith("image/"));
+                  if (!type) continue;
+                  const blob = await item.getType(type);
+                  const ext = type.split("/")[1]?.split("+")[0] || "png";
+                  files.push(
+                    new File([blob], `clipboard.${ext}`, { type }),
+                  );
+                }
+                if (files.length) {
+                  uploadAndAttachImages(files);
+                  return;
+                }
               }
-              if (files.length) {
-                uploadAndAttachImages(files);
-                return;
-              }
+            } catch {
+              /* fall through to text paste */
             }
-          } catch {
-            /* fall through to text paste */
-          }
-          try {
-            const text = await navigator.clipboard.readText();
-            if (text) term.paste(text);
-          } catch (err) {
-            const message =
-              err instanceof Error ? err.message : String(err);
-            console.warn("[dashboard clipboard] paste failed:", message);
-          }
-        })();
+            try {
+              const text = await navigator.clipboard.readText();
+              if (text) term.paste(text);
+            } catch (err) {
+              const message =
+                err instanceof Error ? err.message : String(err);
+              console.warn("[dashboard clipboard] paste failed:", message);
+            }
+          })();
+        }
         return false;
       }
 

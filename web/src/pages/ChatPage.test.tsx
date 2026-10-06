@@ -21,6 +21,7 @@ class FakeWebglAddon {
 }
 
 class FakeTerminal {
+  static instances: FakeTerminal[] = [];
   options: Record<string, unknown>;
   rows = 24;
   cols = 80;
@@ -28,12 +29,16 @@ class FakeTerminal {
     registerOscHandler: vi.fn(),
   };
   unicode = { activeVersion: "" };
+  keyEventHandler: ((ev: KeyboardEvent) => boolean) | null = null;
+  paste = vi.fn();
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
+    FakeTerminal.instances.push(this);
   }
 
-  attachCustomKeyEventHandler() {
+  attachCustomKeyEventHandler(handler: (ev: KeyboardEvent) => boolean) {
+    this.keyEventHandler = handler;
     return true;
   }
 
@@ -76,8 +81,6 @@ class FakeTerminal {
   scrollToBottom() {}
 
   open() {}
-
-  paste() {}
 
   refresh() {}
 
@@ -205,6 +208,7 @@ async function render(ui: ReactNode) {
 
 beforeEach(() => {
   FakeWebSocket.instances = [];
+  FakeTerminal.instances = [];
   maybeReloadForLoopbackWsAuthFailure.mockClear();
   apiMocks.buildWsUrl.mockReset();
   apiMocks.buildWsUrl.mockResolvedValue("ws://localhost/api/pty?channel=chat-1");
@@ -725,5 +729,101 @@ describe("ChatPage PTY ticket connect deadline", () => {
     // force-close a wedged handshake — the two must not both fire.
     await advance(PTY_TICKET_TIMEOUT_MS);
     expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ChatPage bare Ctrl+V paste routing", () => {
+  // jsdom reports no platform by default; pin a non-mac one so the paste
+  // modifier resolves to Ctrl across hosts.
+  beforeEach(() => {
+    Object.defineProperty(window.navigator, "platform", {
+      configurable: true,
+      value: "Linux x86_64",
+    });
+  });
+
+  async function renderChat() {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() =>
+      expect(FakeTerminal.instances.length).toBeGreaterThan(0),
+    );
+    return FakeTerminal.instances[FakeTerminal.instances.length - 1];
+  }
+
+  function ctrlV(): KeyboardEvent {
+    return new KeyboardEvent("keydown", {
+      cancelable: true,
+      ctrlKey: true,
+      key: "v",
+    });
+  }
+
+  it("suppresses the native paste event when the Clipboard API is exposed", async () => {
+    Object.defineProperty(window.navigator, "clipboard", {
+      configurable: true,
+      value: {
+        readText: vi.fn(async () => "api text"),
+        writeText: vi.fn(async () => {}),
+      },
+    });
+    const term = await renderChat();
+    expect(term.keyEventHandler).not.toBeNull();
+
+    const ev = ctrlV();
+    expect(term.keyEventHandler!(ev)).toBe(false);
+    expect(ev.defaultPrevented).toBe(true);
+
+    await vi.waitFor(() =>
+      expect(term.paste).toHaveBeenCalledWith("api text"),
+    );
+  });
+
+  it("keeps the native paste event alive when the Clipboard API is absent", async () => {
+    // Plain-HTTP LAN origin: the whole Async Clipboard API is not exposed.
+    Object.defineProperty(window.navigator, "clipboard", {
+      configurable: true,
+      value: undefined,
+    });
+    const term = await renderChat();
+
+    const ev = ctrlV();
+    // false stops xterm from turning Ctrl+V into ^V for the PTY (the
+    // server-side TUI cannot see the browser clipboard), but the keydown
+    // must NOT be prevented — that would swallow the native paste event
+    // and leave the shortcut a silent no-op (#132591).
+    expect(term.keyEventHandler!(ev)).toBe(false);
+    expect(ev.defaultPrevented).toBe(false);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(term.paste).not.toHaveBeenCalled();
+  });
+
+  it("routes a plain-text paste event into the terminal", async () => {
+    const term = await renderChat();
+    const host = container.querySelector(".hermes-chat-xterm-host");
+    expect(host).not.toBeNull();
+
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        files: [],
+        items: [],
+        getData: (type: string) =>
+          type === "text/plain" ? "plain paste text" : "",
+      },
+    });
+    await act(async () => {
+      host!.dispatchEvent(paste);
+    });
+
+    expect(paste.defaultPrevented).toBe(true);
+    expect(term.paste).toHaveBeenCalledWith("plain paste text");
   });
 });

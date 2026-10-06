@@ -6,6 +6,7 @@
 import contextlib
 import difflib
 import inspect
+import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -54,6 +55,21 @@ _OP_MARKERS: List[Tuple[OperationType, re.Pattern]] = [
     (OperationType.DELETE, re.compile(r'\*\*\*\s*Delete\s+File:\s*(.+)')),
     (OperationType.MOVE, re.compile(r'\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)'))]
 _HINT_RE = re.compile(r'@@\s*(.+?)\s*@@')
+# Validation-overlay content of a binary file: present, but with no text to edit.
+_BINARY = object()
+_BINARY_TEXT_ERROR = "binary file, cannot be edited as text"
+
+
+def _text_read_error(r: Any) -> Optional[str]:
+    """Why a raw read has no editable text, or None. An image read is binary WITHOUT an
+    error (``read_file_raw`` short-circuits before byte detection), so ``error`` alone
+    would hand back ``""`` as the file's text and an Update would overwrite the image."""
+    return r.error or (_BINARY_TEXT_ERROR if getattr(r, "is_binary", False) else None)
+
+
+def _has_image_name(path: str) -> bool:
+    from tools.file_operations import IMAGE_EXTENSIONS
+    return os.path.splitext(path)[1].lower() in IMAGE_EXTENSIONS
 
 
 def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[str]]:
@@ -158,11 +174,31 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
 
     def _read(path: str) -> Tuple[Optional[str], Optional[str]]:
         if path in pending_content:
+            # Apply re-reads the path, and an image name reads as binary whatever text an
+            # earlier Add or Move put there: refuse now, before that operation has applied.
+            if pending_content[path] is _BINARY or _has_image_name(path):
+                return None, _BINARY_TEXT_ERROR
             return pending_content[path], None
         if path in removed_paths:
             return None, "file not found"
         r = file_ops.read_file_raw(path)
-        return (None, r.error) if r.error else (r.content, None)
+        err = _text_read_error(r)
+        return (None, err) if err else (r.content, None)
+
+    def _source(path: str, missing: str) -> Tuple[Any, Optional[str]]:
+        """``(content, error)`` of a Delete/Move source. The text reader refuses a binary file,
+        but it is still a file to remove or rename. Any other failed read is reported as itself:
+        only ``not_found`` says the path is absent."""
+        if path in pending_content:
+            return pending_content[path], None
+        if path in removed_paths:
+            return None, missing
+        r = file_ops.read_file_raw(path)
+        if getattr(r, "is_binary", False):
+            return _BINARY, None
+        if not r.error:
+            return r.content, None
+        return None, missing if getattr(r, "not_found", False) else r.error
 
     def _occupied(path: str) -> Optional[str]:
         """Why an Add target or Move destination is not free, or None. Only a read that reports
@@ -225,17 +261,17 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
             continue
         real_change_count += 1
         if op.operation == OperationType.DELETE:
-            if _read(op.file_path)[1]:
-                errors.append(f"{op.file_path}: file not found for deletion")
+            if err := _source(op.file_path, "file not found for deletion")[1]:
+                errors.append(f"{op.file_path}: {err}")
             else:
                 _remove(op.file_path)
         elif op.operation == OperationType.MOVE:
             if not op.new_path:
                 errors.append(f"{op.file_path}: MOVE operation missing destination path")
                 continue
-            src_content, src_err = _read(op.file_path)
+            src_content, src_err = _source(op.file_path, "source file not found for move")
             if src_err:
-                errors.append(f"{op.file_path}: source file not found for move")
+                errors.append(f"{op.file_path}: {src_err}")
             dst_taken = _occupied(op.new_path)
             if dst_taken == "exists":
                 errors.append(f"{op.new_path}: destination already exists — move would overwrite")
@@ -364,10 +400,11 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> ApplyResult:
 def _apply_delete(op: PatchOperation, file_ops: Any) -> ApplyResult:
     """Delete a file, producing a real unified diff of the removed content."""
     read_result = file_ops.read_file_raw(op.file_path)  # re-read guards validate/apply races
-    if read_result.error:
+    binary = getattr(read_result, "is_binary", False)
+    if read_result.error and not binary:
         return _fail(f"Cannot delete {op.file_path}: file not found")
     result = file_ops.delete_file(op.file_path)
-    diff = _unified_diff(op.file_path, read_result.content, None) or f"# Deleted: {op.file_path}"
+    diff = (not binary and _unified_diff(op.file_path, read_result.content, None)) or f"# Deleted: {op.file_path}"
     return _fail(result.error) if result.error else (True, diff, None, None)
 
 
@@ -404,8 +441,9 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
     """Apply each hunk via fuzzy replace, then write once."""
     from tools.fuzzy_match import fuzzy_find_and_replace, is_already_applied
     read_result = file_ops.read_file_raw(op.file_path)  # raw: no line numbers / truncation
-    if read_result.error:
-        return _fail(f"Cannot read file: {read_result.error}")
+    read_error = _text_read_error(read_result)
+    if read_error:
+        return _fail(f"Cannot read file: {read_error}")
     current_content = new_content = read_result.content
     for hunk in op.hunks:
         search_lines, replace_lines = _split_hunk(hunk)

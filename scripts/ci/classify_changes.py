@@ -290,12 +290,13 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/_subprocess_compat.py",  # update git env, process-tree kill, PM git exposure
     "hermes_cli/local_runtime/processes.py",  # bounded probes' spawn_server/job custody
     "agent/deadline.py",  # bounded probes' process-tree timeout cleanup
-    # migrate_all_homes' second-hop provider/profile/install decisions.
+    # migrate_all_homes' second-hop provider/profile decisions, run on every update. Its
+    # plugin-install branch (plugins_cmd, plugins_cmd_install) runs only for a home whose
+    # configured memory provider left core; no update journey's home has one, so those
+    # modules stay with the unit lane (tests/ci/test_update_transitive_routing.py).
     "agent/memory_provider.py",
-    "hermes_cli/plugins_cmd_install.py",
-    "hermes_cli/plugins_cmd.py",
     "pm/plugins_state.py",
-    "pm/install.py",
+    "pm/install.py",  # also sealed()/lazy_installs_allowed(): every update's default-tool install
     "hermes_cli/desktop_build_lock.py",
     "hermes_cli/memory_provider_migration.py",
     "hermes_cli/left_core_migration.py",  # source_build migrates plugins that left core

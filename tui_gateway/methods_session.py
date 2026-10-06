@@ -2019,7 +2019,7 @@ def _(rid, params: dict, session: dict) -> dict:
 @_session_method("session.undo", live=True)
 def _(rid, params: dict, session: dict) -> dict:
     # Under a running turn the post-run write would clobber the undo — stop the reply first.
-    busy = _err(rid, 4009, busy_message("undo"))
+    busy = _err(rid, 4009, busy_message("undo", bool(session.get("_manual_compress_active"))))
     if session.get("running"):
         return busy
     removed = 0

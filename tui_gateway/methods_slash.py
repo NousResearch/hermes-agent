@@ -486,7 +486,7 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         if _session_uses_compute_host(session):
             return _compute_host_slash(sid, session, name, command)[1]
         if session.get("running"):
-            return busy_message(name)
+            return busy_message(name, bool(session.get("_manual_compress_active")))
     if (mirror := _SLASH_MIRRORS.get(name)) is None:
         return ""
     try:

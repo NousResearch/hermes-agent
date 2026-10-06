@@ -140,7 +140,7 @@ def _mcp_config_server_or_error(rid, params):
 
 def _busy_error(rid, session, cmd: str):
     if session.get("running"):
-        return _err(rid, 4009, busy_message(cmd))
+        return _err(rid, 4009, busy_message(cmd, bool(session.get("_manual_compress_active"))))
     return None
 
 
@@ -1225,7 +1225,7 @@ def _(rid, params: dict, session) -> dict:
     # Full-history rollback mutates session history → rejected mid-turn (prompt.submit
     # would drop the agent's output or clobber it). File-scoped only touches disk.
     if not file_path and session.get("running"):
-        return _err(rid, 4009, busy_message("rollback restore"))
+        return _err(rid, 4009, busy_message("rollback restore", bool(session.get("_manual_compress_active"))))
 
     def go(mgr, cwd):
         if reason := _container_checkpoint_refusal(session, mgr, cwd):

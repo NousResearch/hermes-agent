@@ -223,7 +223,9 @@ def test_submit_during_manual_compress_is_queued_and_reply_persists(monkeypatch)
     second = server._methods["session.compress"]("r3", {"session_id": "sid"})  # the locked claim maps to busy
     assert second["error"]["code"] == 4009
     # tools.configure rebuilds the agent (history_version bump): refused before it reads the action
-    assert server._methods["tools.configure"]("r4", {"session_id": "sid"})["error"]["code"] == 4009
+    refused = server._methods["tools.configure"]("r4", {"session_id": "sid"})["error"]
+    assert refused["code"] == 4009
+    assert "/compress" in refused["message"] and "Stop" not in refused["message"]  # nothing is replying
     with pytest.raises(server.CompressionBusy):  # the /compress + slash-mirror core: a typed busy, not a failure
         server._compress_live_with_feedback("sid", session, agent, "", snapshot_kwargs=True)
     # "/compress --aggressive" never touches history: answered without claiming (or draining) the busy session

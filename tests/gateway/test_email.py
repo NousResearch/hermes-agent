@@ -1398,25 +1398,30 @@ class TestSenderAuthentication(unittest.TestCase):
         self.assertTrue(ok, reason)
 
     def test_auth_pass_verdict_authenticates(self):
-        """RFC 7005 ``auth`` (SMTP AUTH) is the only method some receiving MTAs (e.g. PurelyMail) stamp (#133298)."""
-        # Bare pass from the pinned authserv-id, and passes whose smtp.auth identity aligns with From.
+        """RFC 7005 ``auth`` (SMTP AUTH) verdicts tie the SMTP login to the claimed sender (#133298)."""
+        # A pass whose smtp.auth identity equals From exactly — case and a trailing root dot aside.
         for ar in (
-            "mx.ourserver.com; auth=pass",
             "mx.ourserver.com; auth=pass smtp.auth=admin@example.com",
-            "mx.ourserver.com; auth=pass smtp.auth=user@sub.example.com",
-            "mx.ourserver.com; spf=fail smtp.mailfrom=evil.test; auth=pass",
+            'mx.ourserver.com; auth=pass smtp.auth="admin@example.com"',
+            "mx.ourserver.com; auth=pass smtp.auth=Admin@Example.COM",
+            "mx.ourserver.com; spf=fail smtp.mailfrom=evil.test; auth=pass smtp.auth=admin@example.com",
         ):
             with self.subTest(ar=ar):
                 ok, reason = self._verify("admin@example.com", [ar])
                 self.assertTrue(ok, (ar, reason))
-        # Misaligned smtp.auth, a non-pass verdict, a second auth clause (one verdict per transaction,
-        # like spf), an unpinned/mismatched authserv-id, and an auth verdict smuggled inside a quoted
-        # value all stay rejected — the auth arm never weakens the fail-closed defaults.
+        # A bare pass carries no identity to tie the login to (any account on the receiver could send
+        # under a different From), a merely domain-aligned identity lets same-domain accounts swap
+        # identities, a non-pass verdict, a second auth clause (one verdict per transaction, like spf),
+        # an unpinned/mismatched authserv-id, and an auth verdict smuggled inside a quoted value all
+        # stay rejected — the auth arm never weakens the fail-closed defaults.
         for ar in (
+            "mx.ourserver.com; auth=pass",
+            "mx.ourserver.com; spf=fail smtp.mailfrom=evil.test; auth=pass",
+            "mx.ourserver.com; auth=pass smtp.auth=user@sub.example.com",
             "mx.ourserver.com; auth=pass smtp.auth=admin@evil.test",
             "mx.ourserver.com; auth=fail smtp.auth=admin@example.com",
             "mx.ourserver.com; auth=pass; auth=pass smtp.auth=admin@example.com",
-            "edge.receiver.test; auth=pass",
+            "edge.receiver.test; auth=pass smtp.auth=admin@example.com",
             'mx.ourserver.com; spf=fail smtp.mailfrom="x auth=pass smtp.auth=example.com "@evil.test; auth=fail',
         ):
             with self.subTest(ar=ar):

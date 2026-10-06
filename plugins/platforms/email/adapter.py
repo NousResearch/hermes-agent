@@ -372,8 +372,8 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     FIRST instance is authoritative, and it must match the required, already-normalised *authserv_id* exactly. A matching id is a
     pin, not proof of provenance: the receiving MTA must strip inbound results claiming its id (RFC 8601).
     True on DMARC pass, aligned SPF pass, aligned DKIM (``header.d``) pass, or a single ``auth`` pass
-    (RFC 7005 SMTP AUTH) with an aligned ``smtp.auth`` when present. No header or no pin → fail-closed
-    (opt out via ``EmailAdapter._require_authenticated_sender``)."""
+    (RFC 7005 SMTP AUTH) whose ``smtp.auth`` identity equals ``From:`` exactly. No header, no pin, or no
+    identity to tie the login to → fail-closed (opt out via ``EmailAdapter._require_authenticated_sender``)."""
     from_domain = _domain_of(from_addr)
     if not from_domain:
         return False, "missing From domain"
@@ -417,15 +417,20 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     if any(r == "pass" and aligned(props, ("header.d",) if any(p == "header.d" for p, _ in props) else ("header.from",))
            for r, props in results["dkim"]):
         return True, "dkim=pass aligned"
-    # RFC 7005 ``auth`` (SMTP AUTH) verdict — the only method some receiving MTAs (e.g. PurelyMail) stamp.
-    # One verdict per transaction, like spf: a second auth clause means the signal is not trusted. An
-    # ``smtp.auth`` identity must align with From; a bare pass is trusted like an attribute-less dmarc pass.
+    # RFC 7005 ``auth`` (SMTP AUTH) verdict. One verdict per transaction, like spf: a second auth clause
+    # means the signal is not trusted. SMTP AUTH proves an account logged in, not that the account
+    # owns ``From:`` — on a receiver that lets an account send under a different From, a bare pass would
+    # let any account spoof an allowlisted sender. The login is therefore tied to the claimed sender: one
+    # pass whose ``smtp.auth`` identity equals From exactly (an aligned domain alone would still let
+    # same-domain accounts swap identities). A bare pass carries no identity to tie and stays fail-closed;
+    # receivers that stamp none (e.g. PurelyMail) keep the ``require_authenticated_sender`` opt-out.
     if (
         len(results["auth"]) == 1
         and (auth := results["auth"][0])[0] == "pass"
-        and aligned(auth[1], ("smtp.auth",), required=False)
+        and (identities := [v for p, v in auth[1] if p == "smtp.auth"])
+        and all(i.lower().rstrip(".") == from_addr.lower().rstrip(".") for i in identities)
     ):
-        return True, "auth=pass"
+        return True, "auth=pass smtp.auth match"
     return False, f"authentication failed ({trusted[:120]})"
 
 

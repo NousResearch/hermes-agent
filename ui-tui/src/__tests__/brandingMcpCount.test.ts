@@ -53,6 +53,11 @@ const baseInfo = (mcp_servers: McpServerStatus[]): SessionInfo => ({
 
 async function renderFooter(info: SessionInfo, t = DEFAULT_THEME): Promise<string> {
   const streams = makeStreams()
+  // SessionPanel reads its width from process.stdout (useStdout), not the render
+  // stream. Pin it to the stream's 100 columns so the layout doesn't depend on
+  // the terminal the tests run in.
+  const columns = Object.getOwnPropertyDescriptor(process.stdout, 'columns')
+  Object.defineProperty(process.stdout, 'columns', { configurable: true, value: 100 })
 
   const instance = renderSync(React.createElement(SessionPanel, { info, sid: 'test', t }), {
     patchConsole: false,
@@ -70,6 +75,12 @@ async function renderFooter(info: SessionInfo, t = DEFAULT_THEME): Promise<strin
   } finally {
     instance.unmount()
     instance.cleanup()
+
+    if (columns) {
+      Object.defineProperty(process.stdout, 'columns', columns)
+    } else {
+      delete (process.stdout as { columns?: number }).columns
+    }
   }
 }
 
@@ -90,6 +101,14 @@ describe('branding MCP headline count', () => {
   it('uses one full-width metadata column when a skin suppresses the panel hero', async () => {
     const frame = await renderFooter(baseInfo([]), { ...DEFAULT_THEME, bannerHero: ' ' })
 
+    expect(frame).toContain('test-model · Nous Research')
+    expect(frame).toContain(`${messages().chatBits.branding.sessionLabel}test`)
+  })
+
+  it('keeps a narrow hero from squeezing the model and session lines', async () => {
+    const frame = await renderFooter(baseInfo([]), { ...DEFAULT_THEME, bannerHero: '[#FFD700]★[/]' })
+
+    expect(frame).toContain('★')
     expect(frame).toContain('test-model · Nous Research')
     expect(frame).toContain(`${messages().chatBits.branding.sessionLabel}test`)
   })

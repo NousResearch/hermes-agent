@@ -3,7 +3,7 @@ import { mix } from '@hermes/shared/color'
 import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
-import { artWidth, caduceus, logo, LOGO_WIDTH } from '../banner.js'
+import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { useT } from '../i18n/useT.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
@@ -212,14 +212,16 @@ const SKELETON_ROWS: readonly (readonly [number, number])[] = [
 const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
-// A whitespace-only hero draws no art, so it gets no hero track. Reserving
-// one (artWidth of a blank line + 4 = five columns) puts the model, cwd and
-// session lines in that track and shreds them into vertical fragments.
+// The hero track also holds the model, cwd and session lines, so it can't be
+// sized to the art alone: a narrow hero (one glyph, a short word) made a track
+// a few columns wide and shredded those lines into vertical fragments. Floor
+// the track at the default caduceus width. A whitespace-only hero draws no
+// art, so it gets no track and the panel falls back to its single column.
 function heroLayout(t: Theme, cols: number) {
   const hideHero = t.bannerHero.length > 0 && t.bannerHero.trim().length === 0
   const heroLines = hideHero ? [] : caduceus(t.color, t.bannerHero || undefined)
   const heroW = artWidth(heroLines)
-  const leftW = heroW ? Math.min(heroW + 4, Math.floor(cols * 0.4)) : 0
+  const leftW = heroW ? Math.min(Math.max(heroW, CADUCEUS_WIDTH) + 4, Math.floor(cols * 0.4)) : 0
 
   return { heroLines, leftW, wide: leftW > 0 && cols >= 90 && leftW + 40 < cols }
 }

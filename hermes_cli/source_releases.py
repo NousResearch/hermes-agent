@@ -172,15 +172,19 @@ def _retirement_commit_proof(request: dict, terminal: dict, git_cmd, cwd,
             raise ValueError("Source retirement would downgrade a newer source version; select the destination channel explicitly")
     if git_cmd is not None:
         return _git_retirement_proof(request, terminal, git_cmd, cwd, strict)
-    # No Git: the ZIP updater and the embedded desktop checker. The stamp's
-    # commit is the authoritative installed identity when one exists. Keeping
-    # main's version floor above plus the stamp/destination equality checks
-    # admits exactly the older-or-equal installs; the divergent-history hole
-    # needs Git and cannot be closed here without breaking the mode.
+    # No Git: the ZIP updater and the embedded desktop checker. The version
+    # floor above is the only ordering evidence this transport has, and it
+    # already refused the provably newer installs. Publication heads carry
+    # buildId/sequence/manifestKey/sha256, not a commit, so Git-grade ancestry
+    # is unavailable here: a stamp naming the pinned target (or, when a
+    # channel head does publish one, the destination head) is proven, while
+    # any other stamp is unproven rather than proven-newer -- refusing it
+    # would strand supported older installs that the permissive posture
+    # admits.
     stamp = _stamp_commit(cwd)
-    if stamp is not None and stamp not in (request["commit"], terminal["head"].get("commit")):
-        raise ValueError("Source retirement would downgrade a newer source commit; select the destination channel explicitly")
-    return stamp is not None
+    if stamp is not None and stamp in (request["commit"], terminal["head"].get("commit")):
+        return True
+    return False
 
 
 def _git_retirement_proof(request: dict, terminal: dict, git_cmd, cwd,

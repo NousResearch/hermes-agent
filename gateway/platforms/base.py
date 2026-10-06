@@ -1880,19 +1880,18 @@ def resolve_channel_skills(
     bindings = config_extra.get("channel_skill_bindings") or []
     if not isinstance(bindings, list) or not bindings:
         return None
-    ids_to_check = {str(key) for key in (channel_id, parent_id) if key}
-    if not ids_to_check:
-        return None
-    for entry in bindings:
-        if not isinstance(entry, dict) or str(entry.get("id", "")) not in ids_to_check:
-            continue
-        skills = entry.get("skills") or entry.get("skill")
-        if isinstance(skills, str):
-            return [skills.strip()] if skills.strip() else None
-        if isinstance(skills, list) and skills:
-            seen = dict.fromkeys(
-                nm for name in skills if isinstance(name, str) and (nm := name.strip()))
-            return list(seen) or None
+    # One pass per id, not one pass matching either: the parent's entry may be listed first.
+    for wanted in (str(key) for key in (channel_id, parent_id) if key):
+        for entry in bindings:
+            if not isinstance(entry, dict) or str(entry.get("id", "")) != wanted:
+                continue
+            skills = entry.get("skills") or entry.get("skill")
+            if isinstance(skills, str):
+                return [skills.strip()] if skills.strip() else None
+            if isinstance(skills, list) and skills:
+                seen = dict.fromkeys(
+                    nm for name in skills if isinstance(name, str) and (nm := name.strip()))
+                return list(seen) or None
     return None
 
 

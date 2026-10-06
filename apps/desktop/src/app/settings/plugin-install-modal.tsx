@@ -331,8 +331,9 @@ export function PluginInstallModal() {
         }
 
         closePluginInstallRequest()
-        // Catalog picks come from Capabilities → Plugins; land back there.
-        navigate(request.catalogName ? '/capabilities?tab=plugins' : '/settings?tab=plugins')
+        // Land on the inventory (Capabilities → Plugins) — Git installs too;
+        // `/settings?tab=plugins` is the plugin settings pages now.
+        navigate('/capabilities?tab=plugins')
 
         return
       }

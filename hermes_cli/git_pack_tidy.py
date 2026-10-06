@@ -125,6 +125,12 @@ def _pinned(pack: Path, cutoff: float) -> bool:
         return True
 
 
+def _unlink(part: Path) -> None:
+    if os.name == "nt":
+        os.chmod(part, 0o666)  # git writes packs read-only; Windows refuses to unlink those
+    part.unlink()
+
+
 def _drop_midx(pack_dir: Path) -> None:
     """A multi-pack-index names the packs it covers; dropping it before any pack goes means no crash
     can leave one naming a deleted pack. git rebuilds it on its own maintenance.
@@ -136,9 +142,7 @@ def _drop_midx(pack_dir: Path) -> None:
     (layers / "multi-pack-index-chain").unlink(missing_ok=True)
     for layer in layers.glob("*"):
         with contextlib.suppress(OSError):  # a layer a reader still maps goes on a later run
-            if os.name == "nt":
-                os.chmod(layer, 0o666)  # git writes layers read-only; Windows refuses to unlink those
-            layer.unlink()
+            _unlink(layer)
     with contextlib.suppress(OSError):
         layers.rmdir()
 
@@ -154,9 +158,7 @@ def _remove_pack(pack: Path) -> int:
         part = pack.with_suffix(suffix)
         try:
             size = part.stat().st_size
-            if os.name == "nt":
-                os.chmod(part, 0o666)  # git writes packs read-only; Windows refuses to unlink those
-            part.unlink()
+            _unlink(part)
             freed += size
         except FileNotFoundError:
             continue
@@ -164,7 +166,9 @@ def _remove_pack(pack: Path) -> int:
 
 
 def _sweep_remnants(pack_dir: Path) -> None:
-    """Finish deletions an earlier run could not complete: pack files whose payload is already gone."""
+    """Finish deletions an earlier run could not complete: pack files whose payload is already gone.
+
+    Aborted-transfer ``tmp_*`` files are gitlock.clear_stale_tmp_packs's job, earlier in the update."""
     cutoff = time.time() - _MIN_PACK_AGE_SECONDS
     for part in pack_dir.glob("pack-*.*"):
         try:

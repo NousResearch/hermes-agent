@@ -886,14 +886,10 @@ def create_audio_recorder() -> AudioRecorder | TermuxAudioRecorder:
 def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str, Any]:
     """Transcribe a WAV via ``transcribe_audio()``, filtering Whisper hallucinations;
     returns ``{success, transcript[, error]}``."""
-    from tools.transcription_common import MAX_FILE_SIZE
     from tools.transcription_tools import transcribe_audio
 
+    # transcribe_audio fits oversized recordings under the provider's upload cap itself.
     result = transcribe_audio(wav_path, model=model, source="voice_mode")
-    # Only chunk when the provider itself reports "File too large" — local
-    # providers have no upload cap and never return this error.
-    if not result.get("success") and "File too large" in result.get("error", ""):
-        result = _transcribe_wav_in_chunks(wav_path, model=model, max_file_size=MAX_FILE_SIZE)
     # A configured stop phrase always survives: "bye"/"okay" overlap the
     # hallucination blocklist, and swallowing them would make "bye" fail to end the chat.
     if result.get("success"):
@@ -906,67 +902,6 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
     if result.get("no_speech"):
         return {"success": True, "transcript": "", "no_speech": True}
     return result
-
-
-def _transcribe_wav_in_chunks(wav_path: str, *, model: Optional[str], max_file_size: int) -> Dict[str, Any]:
-    """Split an oversized WAV into provider-sized chunks and join transcripts."""
-    from tools.transcription_tools import transcribe_audio
-
-    chunk_paths, transcripts = [], []
-    try:
-        chunk_paths = _split_wav_for_transcription(wav_path, max_file_size=max_file_size)
-        if not chunk_paths:
-            return {"success": False, "transcript": "", "error": "No audio chunks were created"}
-        logger.info("Transcribing oversized WAV in %d chunks: %s", len(chunk_paths), wav_path)
-        for index, chunk_path in enumerate(chunk_paths, start=1):
-            result = transcribe_audio(chunk_path, model=model, source="voice_mode")
-            if not result.get("success"):
-                error = result.get("error", "Unknown transcription error")
-                return {"success": False, "transcript": "",
-                        "error": f"Chunk {index}/{len(chunk_paths)} failed: {error}"}
-            transcript = result.get("transcript", "").strip()
-            if transcript and not is_whisper_hallucination(transcript):
-                transcripts.append(transcript)
-        return {"success": True, "transcript": " ".join(transcripts).strip(),
-                "provider": result.get("provider"), "chunks": len(chunk_paths)}
-    except Exception as e:
-        logger.error("Chunked transcription failed for %s: %s", wav_path, e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Chunked transcription failed: {e}"}
-    finally:
-        for chunk_path in chunk_paths:
-            _unlink_quietly(chunk_path)
-
-
-def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[str]:
-    """Write WAV chunks small enough to pass the shared STT file-size gate."""
-    os.makedirs(_TEMP_DIR, exist_ok=True)
-    chunk_paths: List[str] = []
-    with wave.open(wav_path, "rb") as source:
-        params = source.getparams()
-        block_align = max(1, params.nchannels * params.sampwidth)
-        max_data_bytes = max_file_size - 64 * 1024  # header reserve
-        if max_data_bytes < block_align:
-            raise ValueError("STT max_file_size is too small for WAV chunking")
-        frames_per_chunk = max(1, max_data_bytes // block_align)
-        index = 0
-        while True:
-            frames = source.readframes(frames_per_chunk)
-            if not frames:
-                break
-            index += 1
-            with tempfile.NamedTemporaryFile(
-                    prefix=f"{os.path.splitext(os.path.basename(wav_path))[0]}_chunk{index:03d}_",
-                    suffix=".wav", dir=_TEMP_DIR, delete=False) as temp:
-                chunk_path = temp.name
-            try:
-                with wave.open(chunk_path, "wb") as chunk:
-                    chunk.setparams(params._replace(nframes=0))
-                    chunk.writeframes(frames)
-                chunk_paths.append(chunk_path)
-            except Exception:
-                _unlink_quietly(chunk_path)
-                raise
-    return chunk_paths
 
 
 # ── Audio playback (interruptable) ──

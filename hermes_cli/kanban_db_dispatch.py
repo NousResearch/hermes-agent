@@ -974,6 +974,50 @@ _PROTOCOL_VIOLATION_ERROR = (
 )
 
 
+# Transient provider/capacity wall as it lands in a worker's log: the rendered
+# provider error or the SDK exception text (``Error code: 429``, ``overloaded_error``,
+# ``Connection reset by peer``). Anchored to error shapes on purpose — a worker whose
+# log merely *discusses* these words must keep the protocol-violation budget (an
+# operator-visible block) instead of silently retrying forever on the rate-limit
+# cooldown (#133795).
+_TRANSIENT_RESOURCE_EXIT_RE = re.compile(
+    r"error(?:\s+code)?\s*[:=]\s*(?:429|502|503|504)\b"
+    r"|\b(?:429|502|503|504)\b\s*[-–—:]\s*(?:too many requests|rate limit|quota"
+    r"|service unavailable|bad gateway|gateway timeout|overloaded)"
+    r"|\b(?:too many requests|rate limit exceeded|rate_limit_error"
+    r"|overloaded_error|provider busy|temporarily unavailable"
+    r"|temporarily overloaded|service unavailable)\b"
+    r"|\bconnection\s+(?:reset|refused)\b",
+    re.IGNORECASE,
+)
+
+_TRANSIENT_EXIT_TAIL_BYTES = 65536
+
+
+def _transient_resource_line(task_id: str, board: Optional[str] = None) -> str:
+    """First line of the dead worker's log tail that names a transient provider/capacity
+    wall (trimmed), or ``""`` when the tail is unreadable or says nothing.
+
+    A clean-exit worker usually skipped only the terminal board call, but one that
+    burned its retries against a 429/503 wall can also end its turn "completed" and
+    exit 0 without ever reaching the kanban tools — the wall is then only in the log
+    (#133795). Best-effort by design: an unreadable log falls through to the
+    protocol-violation booking.
+    """
+    try:
+        raw = _kb.read_worker_log(
+            task_id, tail_bytes=_TRANSIENT_EXIT_TAIL_BYTES, board=board
+        )
+    except Exception:
+        return ""
+    if not raw:
+        return ""
+    for line in raw.splitlines():
+        if _TRANSIENT_RESOURCE_EXIT_RE.search(line):
+            return line.strip()[:200]
+    return ""
+
+
 # Rich panel/rule chrome around the rendered response, and the CLI's own preamble lines.
 _LOG_CHROME = re.compile(r"[─━═╭╮╰╯│┃┌┐└┘]+|☤\s*Hermes")
 
@@ -1086,6 +1130,27 @@ def _classify_dead_worker_exit(
         # rc=0 while still ``running``: usually the work succeeded and only the
         # paperwork was skipped; the corrective sentence reaches the retry
         # worker via ``build_worker_context``.
+        if task_id:
+            wall = _transient_resource_line(task_id, board=board)
+            if wall:
+                # The turn "completed" against a 429/503-style provider wall and the
+                # worker exited 0 without a terminal board call (#133795): same
+                # booking as the ``KANBAN_RATE_LIMIT_EXIT_CODE`` path — requeue
+                # without counting, cooldown via ``check_respawn_guard``.
+                return _DeadWorker(
+                    "rate_limited",
+                    code,
+                    f"pid {pid} exited cleanly but its log tail shows a transient provider wall "
+                    f"({wall!r}) — requeued without counting a failure",
+                    "rate_limited",
+                    {
+                        "pid": pid,
+                        "claimer": claimer,
+                        "exit_code": code,
+                        "transient_resource": True,
+                    },
+                    rate_limited=True,
+                )
         return _DeadWorker(
             kind, code, _PROTOCOL_VIOLATION_ERROR, "protocol_violation",
             # ``protocol_violation`` is the durable marker for

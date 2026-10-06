@@ -33,7 +33,9 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
-def _dead_worker_with_log(conn, tid: str, pid: int, rc: int) -> None:
+def _dead_worker_with_log(
+    conn, tid: str, pid: int, rc: int, log_text: str | None = None
+) -> None:
     """Claim ``tid`` for a worker that already exited ``rc`` and wrote its log — never reaped here."""
     host = kb._claimer_id().split(":", 1)[0]
     kb.claim_task(conn, tid, claimer=f"{host}:w{pid}")
@@ -44,8 +46,16 @@ def _dead_worker_with_log(conn, tid: str, pid: int, rc: int) -> None:
     conn.commit()
     log = kb.worker_log_path(tid)
     log.parent.mkdir(parents=True, exist_ok=True)
+    text = (
+        log_text
+        if log_text is not None
+        else (
+            f"the model said something\n\nResume this session with:\n  hermes --resume x\n\n"
+            f"{KANBAN_WORKER_EXIT_TRAILER}{rc}\n"
+        )
+    )
     with open(log, "a", encoding="utf-8") as f:
-        f.write(f"the model said something\n\nResume this session with:\n  hermes --resume x\n\n{KANBAN_WORKER_EXIT_TRAILER}{rc}\n")
+        f.write(text)
 
 
 @pytest.mark.parametrize(
@@ -144,3 +154,61 @@ def test_exit_single_query_writes_trailer_only_for_kanban_workers(monkeypatch, c
         exit_single_query(kb.KANBAN_RATE_LIMIT_EXIT_CODE)
     assert exc.value.code == kb.KANBAN_RATE_LIMIT_EXIT_CODE
     assert f"{KANBAN_WORKER_EXIT_TRAILER}{kb.KANBAN_RATE_LIMIT_EXIT_CODE}" in capsys.readouterr().err
+
+
+def test_clean_exit_on_a_transient_wall_requeues_without_counting(kanban_home):
+    """A worker whose turn "completed" against a 429/503 wall exits 0 without a terminal
+    board call; the wall is only in its log (#133795). The sweep must book the run
+    ``rate_limited`` (requeue, no failure count, respawn cooldown) instead of charging
+    the protocol-violation budget."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="wall", assignee="a")
+        _dead_worker_with_log(
+            conn, tid, 70051, 0,
+            log_text=(
+                "Query: work kanban task\n"
+                "Error code: 429 - {'type': 'rate_limit_error', 'msg': 'Too many requests'}\n"
+                "giving up on this attempt\n\n"
+                f"{KANBAN_WORKER_EXIT_TRAILER}0\n"
+            ),
+        )
+
+        kbd.detect_crashed_workers(conn)
+
+        run = conn.execute(
+            "SELECT outcome, metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (tid,)).fetchone()
+        task = kb.get_task(conn, tid)
+        assert run["outcome"] == "rate_limited"
+        assert kb._json_dict(run["metadata"]).get("transient_resource") is True
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0  # a capacity wall spends no retry budget
+        assert "transient provider wall" in (task.last_failure_error or "")
+        assert kbd.check_respawn_guard(conn, tid) == "rate_limit_cooldown"
+
+
+def test_clean_exit_log_that_merely_mentions_the_words_stays_a_violation(kanban_home):
+    """The transient-wall match is anchored to error shapes: a worker that only
+    *talks about* rate limits while skipping the terminal call keeps the corrective
+    protocol-violation booking, so a chatty log cannot park the card on the
+    rate-limit cooldown forever."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="chat", assignee="a")
+        _dead_worker_with_log(
+            conn, tid, 70052, 0,
+            log_text=(
+                "the model explained that HTTP 429 is documented in the integration guide\n"
+                "and finished the turn without a board call\n\n"
+                f"{KANBAN_WORKER_EXIT_TRAILER}0\n"
+            ),
+        )
+
+        kbd.detect_crashed_workers(conn)
+
+        run = conn.execute(
+            "SELECT outcome, metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (tid,)).fetchone()
+        task = kb.get_task(conn, tid)
+        assert run["outcome"] == "crashed"
+        assert kb._json_dict(run["metadata"]).get("protocol_violation") is True
+        assert kbd._protocol_violation_streak(conn, tid) == 1

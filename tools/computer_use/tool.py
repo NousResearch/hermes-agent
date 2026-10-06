@@ -533,21 +533,27 @@ def _classify_action_result(res: ActionResult) -> Dict[str, Any]:
         delivered, requested = meta.get("delivered_chars"), meta.get("requested_chars")
         if (
             res.action in ("type", "type_text")
+            and res.code == "type_text_incomplete"
             and isinstance(delivered, int)
             and isinstance(requested, int)
             and requested > 0
             and delivered <= 0
         ):
-            # Zero delivery: the field swallowed every synthetic keystroke (trusted-event checks on web
-            # inputs do this). Neither rung of the delivery ladder can fix a target that drops events at
-            # the source — the AX set_value path writes the value directly and bypasses event filtering.
+            # Zero delivery on the driver's own partial-delivery verdict: the field swallowed every
+            # synthetic keystroke (trusted-event checks on web inputs do this). Neither rung of the
+            # delivery ladder can fix a target that drops events at the source — the AX set_value
+            # path writes the value directly and bypasses event filtering. The code gate matters:
+            # `type_text_synthesis_budget_exceeded` also reports delivered 0, but that is the bounded
+            # synthesis budget declining to emit at all, and the driver's own `chunk` recommendation
+            # stays the right next step there.
             return {
                 "decision": "escalate",
                 "recommended": "set_value",
                 "hint": (
                     "0 characters landed: this input drops synthetic keystrokes, so no delivery rung will fix it. "
-                    "Use set_value on the field's element index instead — it sets the value through the "
-                    "accessibility API and bypasses event filtering. Re-capture first if the index is stale."
+                    "Climb to the set_value action on the field's element index instead — it is an action, not a "
+                    "delivery mode, and sets the value through the accessibility API, bypassing event filtering. "
+                    "Re-capture first if the index is stale."
                 ),
             }
         return {"decision": "escalate", **({"recommended": res.escalation.get("recommended")}

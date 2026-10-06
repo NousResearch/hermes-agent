@@ -126,6 +126,7 @@ All env vars are documented in `plugin.yaml`. The most important:
 | `PHOTON_TELEMETRY`        | false                      | Spectrum SDK telemetry — toggle with `hermes photon telemetry on\|off` (restart the gateway to apply) |
 | `PHOTON_MARKDOWN`         | true                       | Send agent replies as markdown (iMessage renders natively). `false` strips formatting to plain text |
 | `PHOTON_REACTIONS`        | false                      | Tapback 👀/👍/👎 as processing status; tapbacks on bot messages reach the agent as `reaction:added:<emoji>` |
+| `PHOTON_CATCHUP`          | on                         | Keep the inbound resume cursor in `<hermes-home>/runtime/photon-catchup.json` so a restarted sidecar replays messages sent while it was down. `off` = live-only |
 
 ## Attachments & limitations
 
@@ -208,6 +209,10 @@ deliberate:
    are tied to that build's output. `npm install` runs it via `postinstall` and
    fails loudly if the anchors no longer match — update them to the new output
    (`test_spectrum_patch.py` covers the patch).
+   `sidecar/patch-spectrum-resume-cursor.mjs` adds three hook lines to
+   `resumableOrderedStream` in `@spectrum-ts/core/dist/authoring.js`; if its
+   anchors stop matching, the sidecar logs `catch-up hook not installed` and runs
+   live-only until they are updated (`test_catchup_cursor.py` covers it).
 5. Run `pytest tests/plugins/platforms/photon/`.
 6. Verify end-to-end: `hermes photon status`, a DM and a group roundtrip,
    and an agent reply into a group right after a gateway restart (exercises

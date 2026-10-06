@@ -640,6 +640,12 @@ def _defer_unadvertised_owner_dm(home: Path, dm_file: str, argv: list[str],
         if record is not None and record["status"] == "transferred":
             # A live owner (this runner's conversion or the poller's) owns it now.
             return _wait_live_dm(str(home), delivery_id, dm_file=dm_file)
+        if record is not None and record["status"] in ("settled", "failed"):
+            # Another runner already drained this delivery; report its receipt, do not resend.
+            payload = {key: record[key] for key in ("reply", "error", "reason") if record.get(key)}
+            payload.update(status=record["status"], delivery_id=delivery_id)
+            print(json.dumps(payload))
+            return 0 if record["status"] == "settled" else 1
         owner = find_canonical_live_owner(home)
         if owner is not None:
             pending.convert_to_live_owner(home, delivery_id, owner)
@@ -675,6 +681,11 @@ def _drain_pending_cli_turn(home: Path, dm_file: str, argv: list[str],
 
     from tools.bot_relay import delivery_env
 
+    # The parked record is the durable copy: the 24h cache sweep may have taken the
+    # dm file while the record waited, so re-materialize it from the record's message.
+    record = pending.read_pending(home, delivery_id) or {}
+    if not os.path.exists(dm_file):
+        dm_file = _write_dm_file(str(record.get("message") or ""))
     env = delivery_env(author, home)
     with _delivery_lock(argv, stdin_file=False):
         try:
@@ -712,7 +723,9 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
     # The live consumer owns turn admission; never compete for its CLI lease.
     if not stdin_file:
         home = profile_home or _local_delivery_home(argv)
-        if home is not None:
+        # A pinned live intent means this delivery was already admitted to a live
+        # owner once: the retry must replay that receipt, never park a second record.
+        if home is not None and not os.path.exists(_live_intent_file(dm_file)):
             from tools.bot_live_delivery import find_canonical_live_owner, find_canonical_owner
             if find_canonical_owner(home) is not None and find_canonical_live_owner(home) is None:
                 # #128996: a surface holds the Bot Chat without advertising live delivery.

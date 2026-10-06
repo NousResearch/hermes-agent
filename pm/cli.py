@@ -453,13 +453,21 @@ def cmd_doctor(args) -> int:
             bad += 0 if soft else 1
             continue
         entry = store.entry(fact["entry"])
-        reason = package.verify(entry, target)
+        recorded = fact.get("digest")
+        try:
+            reason = package.verify(entry, target)
+            tampered = not reason and recorded is not None and tree_digest(entry) != recorded
+        except OSError as exc:
+            # One unreadable entry must not abort the walk: the packages
+            # after it would go unreported, which is what doctor is for.
+            print(f"✗ {name}: could not be verified: {exc}")
+            bad += 1
+            continue
         if reason:
             print(f"✗ {name}: installed but failed verification: {reason}")
             bad += 1
             continue
-        recorded = fact.get("digest")
-        if recorded is not None and tree_digest(entry) != recorded:
+        if tampered:
             # Doctor is the expensive-path tool: re-hash the realized
             # bytes. Boot checks stay O(1) json compares.
             print(f"✗ {name}: realized bytes do not match recorded digest")

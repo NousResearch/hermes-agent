@@ -13,7 +13,9 @@ import os
 import queue
 import re
 import shlex
+import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -45,10 +47,17 @@ _ROLE_LABELS = {"system": "System", "user": "User", "assistant": "Assistant", "t
 # True/False is cached, so a CLI installed mid-session is picked up.
 _ACP_PROBE_CACHE: dict[str, bool] = {}
 _PROMPT_PREAMBLE = (
-    "You are being used as the active ACP agent backend for Hermes.",
-    "Use ACP capabilities to complete tasks.",
-    "IMPORTANT: If you take an action with a tool, you MUST output tool calls using <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI function-call shape.",
+    "You are the language model engine for Hermes Agent.",
+    "You do not have system-level function tools in this session. All tool execution is handled by Hermes.",
+    "IMPORTANT: When you want to call an available tool, you MUST output the call in your response content using <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI function-call shape.",
+    "Never place pseudo-calls or hypothetical calls inside your thinking. Emit the exact <tool_call> block directly in your output response.",
     "If no tool is needed, answer normally.",
+)
+_DEFAULT_COPILOT_EXCLUDED_TOOLS = (
+    "apply_patch", "dynamic_workflows_manage", "glob", "list_agents",
+    "list_powershell", "powershell", "read_agent", "read_powershell",
+    "rg", "run_dynamic_workflow", "skill", "sql", "stop_powershell",
+    "task", "view", "web_fetch", "write_agent",
 )
 _INITIALIZE_PARAMS = {
     "protocolVersion": 1,
@@ -73,11 +82,21 @@ def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
 
 
 def _resolve_command() -> str:
-    return os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip() or os.getenv("COPILOT_CLI_PATH", "").strip() or "copilot"
+    cmd = os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip() or os.getenv("COPILOT_CLI_PATH", "").strip() or "copilot"
+    if sys.platform == "win32" and cmd.lower() in ("copilot", "copilot.cmd", "copilot.exe"):
+        if resolved := shutil.which("copilot.cmd") or shutil.which("copilot"):
+            return resolved
+    return cmd
 
 
 def _resolve_args() -> list[str]:
-    return shlex.split(os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()) or ["--acp", "--stdio"]
+    raw = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
+    if raw:
+        return shlex.split(raw)
+    return [
+        "--acp", "--stdio", "--no-custom-instructions", "--no-ask-user",
+        "--disable-builtin-mcps", "--excluded-tools", *_DEFAULT_COPILOT_EXCLUDED_TOOLS,
+    ]
 
 
 def _acp_supported(command: str, args: list[str]) -> bool | None:
@@ -195,18 +214,53 @@ def _model_selection_request(session: dict[str, Any], requested_model: str) -> t
 def _format_messages_as_prompt(
     messages: list[dict[str, Any]], model: str | None = None, tools: list[dict[str, Any]] | None = None, tool_choice: Any = None,
 ) -> str:
-    # Deliberately no "requested model" line: the model is applied for real via ACP session/set_model;
-    # a prompt-text mention makes a substituted backend model FALSELY self-identify as the requested
-    # one. Copilot has no tools of its own that collide with Hermes', so forward the whole toolset.
     sections: list[str] = [*_PROMPT_PREAMBLE, *_render_tool_bridge_sections(tools, tool_choice)]
     transcript: list[str] = []
     for message in (m for m in messages if isinstance(m, dict)):
         role = str(message.get("role") or "unknown").strip().lower()
-        if rendered := _render_message_content(message.get("content")):
-            transcript.append(f"{_ROLE_LABELS.get(role, 'Context')}:\n{rendered}")
+        content = _render_message_content(message.get("content"))
+        tool_calls = message.get("tool_calls") or []
+        if role == "assistant":
+            parts = []
+            if content:
+                parts.append(content)
+            for tc in tool_calls:
+                fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
+                tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", "")
+                fn_name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", "")
+                fn_args = fn.get("arguments") if isinstance(fn, dict) else getattr(fn, "arguments", "{}")
+                if not isinstance(fn_args, str):
+                    fn_args = json.dumps(fn_args, ensure_ascii=False)
+                parts.append(
+                    f'<tool_call>{{"id": "{tc_id}", "type": "function", "function": {{"name": "{fn_name}", "arguments": {json.dumps(fn_args)}}}}}</tool_call>'
+                )
+            if parts:
+                transcript.append("Assistant:\n" + "\n".join(parts))
+        elif role == "tool":
+            tool_name = message.get("name") or message.get("tool_name")
+            tool_call_id = message.get("tool_call_id")
+            label = "Tool"
+            if tool_name:
+                label = f"Tool ({tool_name})"
+            elif tool_call_id:
+                label = f"Tool ({tool_call_id})"
+            transcript.append(f"{label}:\n{content}")
+        else:
+            role_label = _ROLE_LABELS.get(role, "Context")
+            if content:
+                transcript.append(f"{role_label}:\n{content}")
     if transcript:
         sections.append("Conversation transcript:\n\n" + "\n\n".join(transcript))
-    sections.append("Continue the conversation from the latest user request.")
+    last_role = str(messages[-1].get("role") or "").strip().lower() if messages else ""
+    if last_role == "tool":
+        sections.append(
+            "Tool execution complete. Review the tool results above and take the next concrete action to resolve the user's request. "
+            "If more tools are needed to investigate, search, read files, run commands, or apply fixes, invoke them immediately using <tool_call>{...}</tool_call>. "
+            "Do NOT stop to give an interim conversational explanation of what you plan to do next—actively execute it with tools. "
+            "Only give a final text response when the task is fully completed or if you require essential user clarification."
+        )
+    else:
+        sections.append("Continue the conversation from the latest user request.")
     return "\n\n".join(section.strip() for section in sections if section and section.strip())
 
 
@@ -335,8 +389,13 @@ class CopilotACPClient:
         prompt_text = _format_messages_as_prompt(messages or [], model=model, tools=tools, tool_choice=tool_choice)
         response_text, reasoning = self._run_prompt(prompt_text, timeout_seconds=_effective_timeout(timeout), model=model)
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
+        if not tool_calls and reasoning:
+            fallback_calls, _ = _extract_tool_calls_from_text(reasoning)
+            if fallback_calls:
+                tool_calls = fallback_calls
         message = SimpleNamespace(
-            content=cleaned_text, tool_calls=tool_calls, reasoning=reasoning or None, reasoning_content=reasoning or None,
+            content=cleaned_text or None if tool_calls else cleaned_text,
+            tool_calls=tool_calls, reasoning=reasoning or None, reasoning_content=reasoning or None,
             reasoning_details=None,
         )
         completion = SimpleNamespace(
@@ -482,6 +541,8 @@ class CopilotACPClient:
             update = (msg.get("params") or {}).get("update") or {}
             content = update.get("content") or {}
             chunk_text = str(content.get("text") or "") if isinstance(content, dict) else ""
+            if chunk_text.startswith(("Info: Disabled tools:", "Info: Unknown tool name")):
+                return True
             sinks = {"agent_message_chunk": text_parts, "agent_thought_chunk": reasoning_parts}
             if chunk_text and (sink := sinks.get(str(update.get("sessionUpdate") or "").strip())) is not None:
                 sink.append(chunk_text)

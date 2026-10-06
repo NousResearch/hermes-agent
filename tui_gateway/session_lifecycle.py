@@ -128,11 +128,19 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     if (canonical := _canonical_ledger_refusal(session)) is not None:
         return canonical
     if session.get("active_session_lease") is not None:
+
+
+    held = session.get("active_session_lease")
+    if held is not None and not _lease_lost_to_another_backend(sid, session, held):
         return None
+    handed_over = held is not None
     key = str(session.get("session_key") or "")
     lease, limit_message = _claim_active_session_slot(
         key, live_session_id=sid, surface=_session_source(session), profile_home=session.get("profile_home"))
     if limit_message is None:
+        if handed_over and not _reload_history_after_handover(sid, session):
+            lease.release()
+            return _SESSION_OWNERSHIP_UNAVAILABLE
         _evict_other_session_leases(sid, key)
         _attach_lease(session, lease)
         return None
@@ -142,6 +150,7 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     return limit_message
 
 
+<<<<<<< HEAD
 _CANONICAL_PENDING_SQL = """SELECT status FROM session_admissions WHERE target_session_id=? AND status!='terminal'
     UNION ALL SELECT status FROM worker_executions WHERE session_id=? AND status!='terminal' LIMIT 1"""
 
@@ -177,6 +186,38 @@ def _canonical_ledger_refusal(session: dict):
         f"Session {key} has {'outcome-unknown' if row[0] == 'unknown' else 'pending'} work in the gateway's "
         "durable queue. Resume it through the gateway (hermes chat --resume, Desktop or the TUI) to "
         "resolve it; nothing was run here.", SESSION_NOT_OWNED)
+=======
+def _lease_lost_to_another_backend(sid: str, session: dict, lease) -> bool:
+    """True, with the dead lease dropped, when another backend process replaced it.
+
+    ``allow_session_takeover`` lets a second ``hermes serve`` on the same HERMES_HOME (Desktop's
+    child next to an always-on backend, an SSH ``--isolated`` serve) replace this runtime's
+    registry entry, and nothing signals this process. Without the check the in-memory lease kept
+    passing every later turn, so both processes wrote one session from two snapshots. One locked
+    registry read per turn; an unreadable registry keeps the lease (no worse than before)."""
+    from hermes_cli.active_sessions import active_session_lease_is_current
+
+    if active_session_lease_is_current(lease) is not False:
+        return False
+    logger.info("Session %s lost its lease for %s to another backend", sid, session.get("session_key"))
+    with session["history_lock"]:
+        session.pop("active_session_lease", None)
+        session["_lease_taken_over"] = True
+    return True
+
+
+def _reload_history_after_handover(sid: str, session: dict) -> bool:
+    """Continue from the stored transcript the other backend extended, not this runtime's snapshot.
+    False when it cannot be read: replaying the stale snapshot would drop the other side's turns."""
+    history = _load_durable_truncation_history(session)
+    if history is None:
+        logger.warning("Session %s: could not reload the transcript after a handover", sid)
+        return False
+    with session["history_lock"]:
+        session["history"] = history
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+    return True
+>>>>>>> 264548ab3c (fix(sessions): notice a takeover by another backend process before the next turn)
 
 
 def _evict_other_session_leases(current_sid: str, key: str, sessions_dict: dict | None = None, lock=None) -> None:

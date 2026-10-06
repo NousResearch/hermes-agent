@@ -49,7 +49,7 @@ export interface ChallengeRequest {
   attempt?: number
 }
 
-interface ChallengeWindowDependencies {
+export interface ChallengeWindowDependencies {
   isReady: () => boolean
   getSession: () => Session | null
   resolvePortalBaseUrl: () => string

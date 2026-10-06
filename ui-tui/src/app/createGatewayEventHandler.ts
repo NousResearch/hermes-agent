@@ -30,6 +30,7 @@ import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
 
 import { applyConnectionRequest, applyConnectionUpdate } from './connectionOperationStore.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
+import { createFreeTierChallengePresenter, presentBillingVerification } from './gatewayBrowserLinks.js'
 import { applyGoalSnapshot } from './goalStatus.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { getOverlayState, patchOverlayState, SENSITIVE_PROMPTS } from './overlayStore.js'
@@ -464,8 +465,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   // an abandoned-prompt record, so the tool.complete and message.complete
   // paths can't both persist the same prompt twice.
   const persistedAbandonedClarify = new Set<string>()
-  // One browser tab per free-tier challenge ticket, however many attempts resume it.
-  const openedChallengeUrls = new Set<string>()
+  const showChallenge = createFreeTierChallengePresenter(sys, openExternalUrl)
+  const showBillingVerification = presentBillingVerification(sys, openExternalUrl)
 
   // When a clarify prompt is dismissed without an answer (the backend request
   // timed out and returned no answer), the live ClarifyPrompt overlay is
@@ -829,28 +830,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         return
-      case 'free_tier.challenge': {
-        // The account service wants a browser check before the free-tier token
-        // (hermes_cli/anon_challenge.py). The gateway polls for the result on
-        // its own; this only puts the link where the user is. An optional
-        // check is the desktop's to run hidden, never the user's.
-        const challenge = ev.payload
 
-        if (!challenge?.required || !challenge.url) {
-          return
-        }
-
-        sys(challenge.message)
-        sys(challenge.url)
-
-        if (!openedChallengeUrls.has(challenge.url)) {
-          openedChallengeUrls.add(challenge.url)
-          void openExternalUrl(challenge.url)
-        }
+      case 'free_tier.challenge':
+        showChallenge(ev.payload)
 
         return
-      }
-
       case 'session.info': {
         let info = ev.payload as SessionInfo | undefined
 
@@ -1016,36 +1000,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         turnController.clearNotice(ev.payload?.key)
 
         return
-      case 'billing.step_up.verification': {
-        // The billing step-up device flow runs in the headless gateway, so it
-        // can't open a browser or print the URL where the user sees it. Surface
-        // the link here (clickable/copyable in the transcript) and best-effort
-        // open it via the TUI process's own opener. This event arrives while the
-        // billing.step_up RPC is still polling (and may even outlive the RPC's
-        // 120s timeout), so the link — not the RPC result — is the source of truth.
-        if (!ev.payload) {
-          return
-        }
 
-        const url = ev.payload.verification_url
-        const code = ev.payload.user_code
-
-        if (!url) {
-          return
-        }
-
-        sys(t('gatewayMsg.billing.openLinkRemoteSpending'))
-        sys(url)
-
-        if (code) {
-          sys(t('gatewayMsg.billing.enterCode', code))
-        }
-
-        void openExternalUrl(url)
+      case 'billing.step_up.verification':
+        showBillingVerification(ev.payload)
 
         return
-      }
-
       case 'gateway.stderr': {
         // Every raw line is already in the /logs buffer (gatewayClient.pushLog).
         // Only failure-looking lines earn an activity row, and a traceback's

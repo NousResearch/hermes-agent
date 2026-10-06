@@ -29,6 +29,7 @@ import crypto from 'node:crypto'
 
 import { READY_IN_MERGED_OUTPUT_RE } from './backend-ready'
 import { parseRemoteProfileListing } from './connection-registry'
+import { backendProfileArg } from './profile-id-guard'
 import { assertBootstrapNotSuperseded, withRemoteTimeout } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -1151,7 +1152,20 @@ async function terminateOwnedDashboardForUpdate(ssh, expected) {
 // fd-detachment is already handled by </dev/null + redirect + &).
 function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const hermes = expandRemotePath(hermesPath)
-  const profileArgs = profile ? `--profile ${shq(profile)} ` : ''
+  // The roster/SSH bridge hands us the profile verbatim: a non-slug value must never
+  // cross into the remote spawn argv, where the CLI used to str()-coerce it into a
+  // phantom profiles/0/ directory (#88842).
+  const pinned = backendProfileArg(profile)
+  const profileArgs = pinned ? `--profile ${shq(pinned)} ` : ''
+
+  // The lockfile the spawn script publishes must carry the SAME normalized
+  // profile as the argv: pidIsOurDashboard and the managed-update drain both
+  // prove ownership by comparing the live `--profile` value against
+  // lock.profile, and a raw-case record refuses to reap our own backend.
+  if (opts.lockMetadata && opts.lockMetadata.profile !== (pinned ?? '')) {
+    opts.lockMetadata = { ...opts.lockMetadata, profile: pinned ?? '' }
+  }
+
   const logPath = expandRemotePath(opts.logPath)
   const tokenFilePath = opts.tokenFilePath
   const tokenArg = tokenFilePath ? ` --ssh-session-token-file ${expandRemotePath(tokenFilePath)}` : ''
@@ -1506,7 +1520,7 @@ async function waitForRemoteSpawnCompletion(ssh, ownershipId, timeoutMs) {
 async function connect(deps) {
   const {
     ssh,
-    profile = '',
+    profile: requestedProfile = '',
     remoteHermesPath = '',
     ownershipId,
     forward,
@@ -1519,6 +1533,13 @@ async function connect(deps) {
     guestOnboarding = false,
     signal
   } = deps
+
+  // The profile must be normalized ONCE, before anything derives from it: the
+  // spawn argv (via buildSpawnCommand), the lockfile metadata the spawn script
+  // publishes, the ownedSpawn rewrite, and the reuse check all have to agree,
+  // or the argv-based ownership proof (pidIsOurDashboard) refuses to reap our
+  // own backend after a case-folding change (#88842).
+  const profile = backendProfileArg(requestedProfile) ?? ''
 
   const log = msg => rememberLog(`[ssh-lifecycle] ${msg}`)
 
@@ -1722,9 +1743,13 @@ async function connect(deps) {
     // record. Inside the try: if this write itself fails, the catch still
     // kills the just-spawned process via the in-memory record.
     await writeLockfile(ssh, ownershipId, ownedSpawn)
+    // The spawn command returns the short-lived wrapper pid. The detached
+    // serve daemon can outlive that wrapper while it is still starting, so a
+    // wrapper liveness check races the READY line and rejects healthy boots.
+    // The bounded READY wait is the authoritative startup check; later
+    // requests verify the daemon through the established connection.
     remotePort = await scrapeReadyPort(ssh, logPath, {
       timeoutMs: readyTimeoutMs,
-      isAlive: () => remotePidAlive(ssh, pid),
       signal
     })
     assertBootstrapNotSuperseded(signal)

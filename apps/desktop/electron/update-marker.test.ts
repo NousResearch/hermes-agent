@@ -140,6 +140,7 @@ test('posixProcessState: own pid is probeable and not a zombie; dead pid is unkn
   if (process.platform === 'win32') {
     // Windows has no zombie state and no ps stat lane; the probe is a no-op.
     assert.equal(posixProcessState(process.pid), null)
+
     return
   }
 

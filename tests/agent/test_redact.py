@@ -747,7 +747,12 @@ class TestStrictUrlCredentialRedaction:
             (
                 "//user:NET_SECRET@x.test/path",
                 "NET_SECRET",
-                "//user:***@x.test/path",
+                "//***:***@x.test/path",
+            ),
+            (
+                "https://Zq8vT3kP9wLm2xR7nB4cY6fH1dJ5sA0e:@llm-proxy.example/v1",
+                "Zq8vT3kP9wLm2xR7nB4cY6fH1dJ5sA0e",
+                "https://***:***@llm-proxy.example/v1",
             ),
         ],
     )

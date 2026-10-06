@@ -192,6 +192,8 @@ class MessageCompletePayload(Payload):
     reasoning: str | None = None
     warning: str | None = None
     response_previewed: bool | None = None
+    #: ``text`` is a response this turn already delivered (streamed and/or sealed) — it adds no text.
+    response_reused: bool | None = None
     response_transformed: bool | None = None
     billing: BillingBlock | None = None
     failure_reason: str | None = None

@@ -452,9 +452,20 @@ def _is_codex_token_expired(agent: Any, api_error: Exception) -> bool:
     return isinstance(reason, str) and reason.strip().lower() == "token_expired"
 
 
-def _recover_stale_codex_reasoning(agent: Any, _retry: TurnRetryState, messages: List[Dict[str, Any]]) -> bool:
-    """Stale ``codex_reasoning_items`` blob rejected by the provider: disable replay for the
-    session, strip cached items (mutates persisted ``messages``), retry once."""
+def reset_codex_reasoning_replay(agent: Any) -> None:
+    """The replay verdict belongs to the route that earned it: a ``/model`` switch, fallback
+    activation or primary restore starts the new route with replay on (#61552)."""
+    agent._codex_reasoning_replay_enabled = True
+    agent._codex_reasoning_replay_rejected = False
+
+
+def _recover_stale_codex_reasoning(
+    agent: Any, _retry: TurnRetryState, messages: List[Dict[str, Any]], api_messages: Any,
+) -> bool:
+    """Stale ``codex_reasoning_items`` blob rejected by the provider: strip cached items (mutates
+    persisted ``messages``) and retry once. The first rejection keeps replay on, since blobs the
+    route mints from now on are sealed with its current key; a repeat rejection means the route
+    cannot round-trip its own blobs, so replay is disabled for the session."""
     if (
         _retry.invalid_encrypted_content_retry_attempted
         or agent.api_mode != "codex_responses"
@@ -469,16 +480,22 @@ def _recover_stale_codex_reasoning(agent: Any, _retry: TurnRetryState, messages:
     ):
         return False
     _retry.invalid_encrypted_content_retry_attempted = True
-    replay_stats = agent._disable_codex_reasoning_replay(messages)
+    keep_replay = not getattr(agent, "_codex_reasoning_replay_rejected", False)
+    agent._codex_reasoning_replay_rejected = True
+    replay_stats = agent._disable_codex_reasoning_replay(messages, keep_replay=keep_replay)
+    # The retry is rebuilt from the request copy; with replay kept on it would resend the stale blob.
+    for _m in api_messages if isinstance(api_messages, list) else []:
+        if isinstance(_m, dict):
+            _m.pop("codex_reasoning_items", None)
+    action = "stripped stale" if keep_replay else "disabled replay for this session and stripped"
     _vlines(
         agent,
         f"⚠️  Encrypted reasoning replay was rejected by the provider — "
-        f"disabled replay and stripped {replay_stats['items']} item(s) from "
-        f"{replay_stats['messages']} message(s), retrying...",
+        f"{action} {replay_stats['items']} item(s) from {replay_stats['messages']} message(s), retrying...",
     )
     logger.warning(
-        "%sInvalid encrypted reasoning recovery: disabled replay and stripped %d items from %d messages",
-        agent.log_prefix, replay_stats["items"], replay_stats["messages"],
+        "%sInvalid encrypted reasoning recovery: %s %d items from %d messages",
+        agent.log_prefix, action, replay_stats["items"], replay_stats["messages"],
     )
     return True
 
@@ -490,28 +507,36 @@ def _recover_format_errors(
     """One-shot format-recovery strips: thinking-signature → invalid-encrypted-content
     replay disable → native-compaction reject → llama.cpp grammar strip. Returns True when
     the request was repaired and should be retried."""
-    # Upstream mutation invalidates Anthropic's thinking-block signature (400). Strip
-    # ``reasoning_details`` from ``api_messages`` only, never ``messages`` (state.db).
+    # Upstream mutation can invalidate a thinking signature. Native Anthropic has multiple replay
+    # carriers and preserved historical blocks, so suppress the rejected opaque blocks across all
+    # carriers and persist that suppression. Other transports keep their established one-request
+    # repair: drop reasoning_details only.
     if classified.reason == FailoverReason.thinking_signature and not _retry.thinking_sig_retry_attempted:
         _retry.thinking_sig_retry_attempted = True
-        _api_stripped = 0
-        for _m in api_messages:
-            if isinstance(_m, dict) and "reasoning_details" in _m:
-                _m.pop("reasoning_details", None)
-                _api_stripped += 1
-        _vlines(agent, "⚠️  Thinking block signature invalid, stripped reasoning_details from api_messages for retry...")
+        from agent.anthropic_thinking_replay import remember_rejected_thinking, tracks_rejected_thinking
+
+        if tracks_rejected_thinking(agent):
+            removed = remember_rejected_thinking(agent, api_messages)
+            detail = "suppressed rejected Anthropic replay blocks"
+        else:
+            removed = 0
+            for message in api_messages:
+                if isinstance(message, dict) and "reasoning_details" in message:
+                    message.pop("reasoning_details", None)
+                    removed += 1
+            detail = "stripped reasoning_details"
+        _vlines(agent, f"⚠️  Thinking block signature invalid, {detail} and retrying...")
         logger.warning(
-            "%sThinking block signature recovery: stripped "
-            "reasoning_details from %d api_messages "
+            "%sThinking block signature recovery: %s from %d carrier/message(s) "
             "(canonical messages unchanged)",
-            agent.log_prefix, _api_stripped,
+            agent.log_prefix, detail, removed,
         )
         return True
 
     # 400 ``invalid_encrypted_content`` on a stale ``codex_reasoning_items`` blob (the 401
     # ``token_expired`` twin is taken ahead of the credential pool in the caller).
     if classified.reason == FailoverReason.invalid_encrypted_content and _recover_stale_codex_reasoning(
-        agent, _retry, messages
+        agent, _retry, messages, api_messages
     ):
         return True
 
@@ -634,7 +659,9 @@ def recover_after_classification(
     # stale replayed blob far more often than a dead bearer (#88510): strip BEFORE the pool
     # refreshes/benches every healthy entry over a session-state problem. A real expiry pays
     # one extra round-trip and then takes the credential path below as before.
-    if _is_codex_token_expired(agent, api_error) and _recover_stale_codex_reasoning(agent, _retry, messages):
+    if _is_codex_token_expired(agent, api_error) and _recover_stale_codex_reasoning(
+        agent, _retry, messages, api_messages
+    ):
         return True, False
 
     if (
@@ -874,6 +901,12 @@ def _print_nonretryable_auth_guidance(
                     "         Nous Portal won't recognize that model name. Either switch to a",
                     f"         Nous catalog model, or run `/model openrouter:{model}` to use OpenRouter.",
                 )
+        return
+    from hermes_cli.auth_plugin_providers import plugin_refresh_hook
+    if status_code == 401 and plugin_refresh_hook(str(provider or "")) is not None:
+        # A plugin OAuth grant the pool could not refresh: the fix is a fresh sign-in, not a key.
+        from agent.turn_failure_copy import oauth_relogin_command
+        _vlines(agent, f"   💡 {provider} sign-in was rejected (HTTP 401). Sign in again: `{oauth_relogin_command(provider)}`")
         return
     _vlines(
         agent,

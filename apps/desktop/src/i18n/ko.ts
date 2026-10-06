@@ -5,65 +5,6 @@ import { introKo } from './intro-ko'
 
 export const koOverrides = {
   intro: introKo,
-  catalog: {
-    add: '추가',
-    added: '추가됨',
-    discover: '탐색',
-    featured: '추천',
-    explorePlugins: '플러그인 탐색',
-    exploreSkills: '스킬 탐색',
-    mostStarred: '스타 많은 순',
-    newest: '최신순',
-    recentlyUpdated: '최근 업데이트순',
-    alphabetical: '이름순',
-    sortBy: '정렬',
-    seeAll: '모두 보기',
-    related: '비슷한 항목',
-    tags: '태그',
-    screenshots: '스크린샷',
-    listView: '목록 보기',
-    cardView: '카드 보기',
-    installTitle: (name: string) => `“${name}”을(를) 설치할까요?`,
-    installDescription: '이 스킬은 새 세션부터 사용할 수 있습니다. 신뢰하는 소스만 설치하세요.',
-    installTo: '설치 위치',
-    thisComputer: '이 컴퓨터',
-    installing: '설치 중…',
-    installComplete: (name: string) => `“${name}” 설치됨`,
-    destinationChanged: '설치 위치가 바뀌었습니다. 이 창을 닫고 설치 링크를 다시 여세요.',
-    installed: '설치됨',
-    searchSkills: '스킬 검색',
-    searchPlugins: '플러그인 검색',
-    allSources: '모든 소스',
-    allCategories: '모든 카테고리',
-    about: '정보',
-    author: '작성자',
-    source: '소스',
-    category: '카테고리',
-    version: '버전',
-    platforms: '플랫폼',
-    requires: '요구 사항',
-    tools: '도구',
-    hooks: '훅',
-    middleware: '미들웨어',
-    commands: '명령',
-    license: '라이선스',
-    addedDate: '추가일',
-    updatedDate: '업데이트일',
-    repository: '저장소',
-    documentation: '문서',
-    noResults: '일치하는 항목 없음',
-    tryAnother: '다른 검색어를 쓰거나 필터를 지우세요.',
-    clearFilters: '필터 지우기',
-    filters: '필터',
-    loadFailed: '카탈로그를 불러오지 못했습니다',
-    retry: '재시도',
-    more: '더 보기',
-    pinned: '검토된 커밋',
-    snapshotHint: 'Hermes 카탈로그의 목록입니다. 탐색 중에는 소스 저장소에 접속하지 않습니다.',
-    installHint: '설치 전에 소스를 검토하세요. 변경 사항은 새 세션부터 적용됩니다.',
-    results: (count: number) => `결과 ${count.toLocaleString()}개`,
-    back: '결과로 돌아가기'
-  },
   connectors: {
     title: '앱 연결하기',
     connect: '연결',
@@ -454,6 +395,7 @@ export const koOverrides = {
       '매일 만들어지는 패키지를 Nous 텔레메트리 서비스로 올립니다. 동의 기간 안의 데이터만 전송합니다. 수집을 켜야 합니다.',
     unavailable: '이 설정을 바꾸려면 Hermes 백엔드를 업데이트하세요.',
     stripBody: '범위가 제한된 집계값만 수집하며, 프롬프트나 파일은 절대 담지 않습니다.',
+    stripReaskBody: '한 번 더 여쭙니다: 이전 버전에서는 이 안내를 보기 전에 “참여 안 함”이 저장될 수 있었습니다.',
     stripChoices: { share: 'Nous로 전송', local: '이 기기에만', off: '참여 안 함' },
     stripDetails: '자세히'
   },
@@ -920,6 +862,15 @@ export const koOverrides = {
     resetConfirm: '모든 설정을 Hermes 기본값으로 초기화할까요?',
     exportFailed: '내보내기 실패',
     resetFailed: '초기화 실패',
+    pluginPages: {
+      blurb:
+        '설치된 플러그인이 추가한 옵션입니다. 플러그인마다 자체 페이지가 있고, 일부는 그 아래에 하위 페이지를 추가합니다.',
+      empty: '아직 설정이 있는 플러그인이 없습니다.',
+      manage: '플러그인 관리',
+      agentSettings: '에이전트 설정',
+      pageCount: n => `페이지 ${n}개`,
+      missing: '이 플러그인에는 설정 페이지가 없습니다. 비활성화되었거나 제거되었을 수 있습니다.'
+    },
     nav: {
       providers: '공급자',
       providerAccounts: '계정',
@@ -937,24 +888,16 @@ export const koOverrides = {
       about: '정보',
       billing: '결제',
       notifications: '알림',
-      vault: '비밀번호와 로그인'
+      vault: '비밀번호와 로그인',
+      plugins: '플러그인'
     },
     plugins: {
       title: '데스크톱 플러그인',
-      blurb:
-        '에이전트가 아니라 이 앱을 확장합니다 — 어떤 프로필, 게이트웨이, 머신에 연결하든 앱 전체에 한 번만 설치됩니다. 내장되거나 desktop-plugins 폴더에 넣으면 되고, 켜고 끄면 바로 반영됩니다.',
-      count: n => `${n}개 설치됨`,
       openFolder: '데스크톱 플러그인 폴더 열기',
       rescan: '재검색',
       reveal: '파일 관리자에서 보기',
-      enable: '활성화',
-      disable: '비활성화',
       failed: '실패',
-      empty: '설치된 데스크톱 플러그인이 없습니다.',
       kinds: { bundled: '내장', disk: '디스크', runtime: '런타임' },
-      agentHalfMissing: '에이전트 쪽이 없음',
-      agentHalfMissingTip:
-        '내장 플러그인의 데스크톱 쪽입니다. 현재 연결된 백엔드/프로필에는 에이전트 쪽이 설치되어 있지 않습니다. 기능 → 플러그인에서 설치하세요.',
       installModal: {
         installFromGit: 'Git에서 설치',
         reviewRepository: '저장소 살펴보기',
@@ -1160,6 +1103,9 @@ export const koOverrides = {
       system: { label: '시스템', description: 'OS 설정 따르기' }
     },
     appearance: {
+      chatTextScaleTitle: '대화 글자 크기',
+      chatTextScaleDesc:
+        'UI 배율을 기준으로 대화 텍스트와 메시지 편집기 크기를 조정합니다. 사이드바와 컨트롤 크기는 그대로입니다.',
       title: '모양',
       intro: '데스크톱 전용입니다. 모드는 밝기를, 테마는 색상과 대화 화면 구성을 정합니다.',
       colorMode: '색상 모드',
@@ -1708,6 +1654,9 @@ export const koOverrides = {
       keepAwakeTitle: '컴퓨터 절전 방지',
       keepAwakeDesc:
         '긴 작업이나 야간 실행이 계속되도록 이 머신이 잠자기로 들어가지 않게 합니다. 화면은 어두워질 수 있습니다.',
+      keepAwakeOff: '끔',
+      keepAwakeWhileWorking: '작업 중에만',
+      keepAwakeAlways: '항상',
       disableF12Title: 'F12 개발자 도구 비활성화',
       disableF12Desc: 'F12로 개발자 도구가 열리지 않게 합니다. Ctrl+Shift+I(Mac에서는 Cmd+Opt+I)는 그대로 동작합니다.',
       attachmentSizeTitle: '미리보기 / 이미지 최대 로드 크기',
@@ -2016,6 +1965,8 @@ export const koOverrides = {
         '지원하지 않는 원격 플랫폼입니다. Hermes Desktop SSH 모드는 Linux, macOS, Windows 원격 호스트를 지원합니다.',
       sshErrTimeout: 'SSH 연결이 시간 초과되었습니다. 호스트에 닿지 못하거나 절전 상태일 수 있습니다.',
       sshErrUpdateRequired: '데스크톱 SSH로 연결하기 전에 원격 호스트의 Hermes를 업데이트하세요.',
+      sshErrInteractiveAuth:
+        'Tailscale SSH는 브라우저에서 대화형 확인이 필요합니다. 터미널에서 `ssh <host> true`를 실행해 확인을 마친 뒤 재시도하세요 — Hermes는 SSH를 비대화형으로 실행합니다.',
       sshErrUnknown: 'SSH 연결에 실패했습니다.'
     },
     keys: {
@@ -2086,6 +2037,8 @@ export const koOverrides = {
       defaultsLabel: '기본값',
       reasoning: '추론',
       reasoningOff: '끔',
+      speed: '속도',
+      speedStandard: '표준',
       defaultsFailed: '모델 기본값을 저장하지 못했습니다',
       loadFailed: '모델을 불러오지 못했습니다',
       restartRequired: '이 백엔드는 업데이트 후에도 이전 코드로 실행 중입니다. 새 코드를 불러오려면 재시작하세요.',
@@ -2101,6 +2054,8 @@ export const koOverrides = {
       change: '변경',
       autoUseMain: '자동 · 기본 모델 사용',
       inheritMainEffort: '상속 · 기본 모델의 추론 강도',
+      inheritsFrom: task => `${task} 상속`,
+      followTask: task => `${task} 따르기`,
       providerDefault: '(공급자 기본값)',
       fallbackAdd: '대체 모델 추가',
       fallbackEmpty: '대체 모델이 없습니다 — 기본 모델이 실패하지 않는 한 그대로 사용됩니다.',
@@ -2720,6 +2675,17 @@ export const koOverrides = {
       }
     }
   },
+  skillDeepLink: {
+    installTitle: name => `“${name}”을(를) 설치할까요?`,
+    installDescription: '이 스킬은 새 세션부터 사용할 수 있습니다. 신뢰하는 소스만 설치하세요.',
+    installTo: '설치 위치',
+    thisComputer: '이 컴퓨터',
+    installing: '설치 중…',
+    installComplete: name => `“${name}” 설치됨`,
+    destinationChanged: '설치 위치가 바뀌었습니다. 이 창을 닫고 설치 링크를 다시 여세요.',
+    installed: '설치됨',
+    source: '소스'
+  },
   skills: {
     tabSkills: '스킬',
     tabToolsets: '도구',
@@ -2819,6 +2785,7 @@ export const koOverrides = {
         no_interactive_session: '대화형 세션 없음',
         version_too_old: '버전이 너무 오래됨',
         missing_app: '앱 없음',
+        unsupported_gpu: 'GPU 미지원',
         unknown: '상태 알 수 없음'
       },
       catalogTitle: '플러그인 카탈로그',
@@ -2863,7 +2830,7 @@ export const koOverrides = {
         save: '설정 저장',
         saved: (name: string) => `${name} 설정을 저장했습니다.`,
         saveFailed: (name: string) => `${name} 설정을 저장하지 못했습니다`,
-        optional: '(선택)',
+        required: '필수',
         secretSet: '•••••••• (설정됨)',
         secretStoredAs: (env: string) =>
           `프로필의 .env에 ${env}(으)로 저장되며 config.yaml에는 절대 들어가지 않습니다. 현재 값을 유지하려면 비워 두세요.`
@@ -3231,6 +3198,9 @@ export const koOverrides = {
     replaceValue: '현재 값 교체',
     openDocs: '문서 열기',
     clearField: key => `${key} 지우기`,
+    addListEntry: '항목 추가',
+    removeListEntry: '삭제',
+    listEntryPlaceholder: 'ID 입력',
     enableAria: name => `${name} 사용`,
     disableAria: name => `${name} 비활성`,
     platformEnabled: name => `${name} 사용`,
@@ -3929,6 +3899,8 @@ export const koOverrides = {
       reveal: '폴더에서 보기',
       copyPath: '경로 복사',
       removeFromSidebar: '사이드바에서 숨기기',
+      createdInPreviousContext:
+        '이전 연결 또는 프로필에서 만든 프로젝트입니다. 그쪽으로 다시 전환하면 찾을 수 있으며, IDEA.md는 작성되지 않았습니다.',
       createFailed: '프로젝트를 생성하지 못했습니다',
       staleBackend:
         '프로젝트를 만들려면 Hermes 백엔드를 업데이트하세요 — 백엔드가 이 데스크톱 앱보다 오래되었습니다(설정 → 업데이트 → 백엔드).',
@@ -4212,6 +4184,11 @@ export const koOverrides = {
     queueDroppedTitle: '대기 중인 프롬프트가 삭제됨',
     queueDroppedBody:
       '세션을 여러 번 재개하지 못해 이 백그라운드 대기열 항목을 삭제했습니다. 대기열의 다른 항목에는 영향이 없습니다.',
+    terminalSelectionMissingTitle: '터미널 선택 영역을 사용할 수 없음',
+    terminalSelectionMissingBody:
+      '보내기 전에 터미널 줄을 다시 선택하세요(Ctrl/Cmd+L) — 이 칩에는 원본 텍스트가 없습니다.',
+    queuedTerminalSelectionExpiredBody:
+      '대기 중인 이 터미널 선택 영역은 더 이상 사용할 수 없습니다. 줄을 다시 선택(Ctrl/Cmd+L)한 뒤 메시지를 다시 대기열에 넣으세요.',
     previewUnavailable: '미리보기를 사용할 수 없음',
     previewLabel: label => `${label} 미리보기`,
     couldNotPreview: label => `${label}을(를) 미리 보지 못했습니다`,
@@ -4426,6 +4403,7 @@ export const koOverrides = {
       scopeUncommitted: '커밋 안 함',
       scopeBranch: '브랜치',
       scopeLastTurn: '마지막 턴',
+      readOnlyScope: '읽기 전용 보기 — 스테이지, 되돌리기, 커밋은 커밋하지 않은 변경에 적용됩니다',
       commit: '커밋',
       commitAndPush: '커밋하고 푸시',
       commitPlaceholder: shortcut => `메시지(${shortcut}로 커밋)`,
@@ -4895,17 +4873,41 @@ export const koOverrides = {
       editModels: '모델 편집…',
       followDefault: '설정 기본값 사용',
       refreshModels: '모델 새로고침',
+      favorites: '즐겨찾기',
+      addFavorite: '즐겨찾기에 추가',
+      removeFavorite: '즐겨찾기에서 제거',
+      favoriteShortcut: '⇧ 클릭',
       fast: '빠름',
       free: '무료',
       cacheRead: '캐시 읽기',
       priceTitle: (input: string, output: string, cache: string) =>
-        `입력 ${input}/Mtok · 출력 ${output}/Mtok` + (cache ? ` · 캐시 읽기 ${cache}/Mtok` : '')
+        `입력 ${input}/Mtok · 출력 ${output}/Mtok` + (cache ? ` · 캐시 읽기 ${cache}/Mtok` : ''),
+      limited: '제한됨',
+      limitedUntil: time => `${time}까지 제한됨`,
+      limitedTip: (provider, time) =>
+        time
+          ? `${provider} 사용 한도에 도달했습니다. ${time}에 초기화되며, 그 뒤에 쓸 모델은 지금 고를 수 있습니다.`
+          : `${provider} 사용 한도에 도달했습니다. 초기화된 뒤에 쓸 모델은 지금 고를 수 있습니다.`,
+      modelResets: time => `${time} 초기화`,
+      modelLimitedTip: time =>
+        `이 모델은 자체 한도에 도달했으며 ${time}에 초기화됩니다. 여기의 다른 모델은 계속 쓸 수 있습니다.`,
+      usageLeft: (percent, time) => (time ? `${percent}% 남음 · ${time} 초기화` : `${percent}% 남음`),
+      poolAccounts: count => `계정 ${count}개`,
+      poolLimited: (limited, total) => `계정 ${total}개 중 ${limited}개 제한됨`,
+      poolAccount: number => `계정 ${number}`,
+      poolUnknown: '사용량을 알 수 없음',
+      poolUnavailable: '다시 로그인',
+      usageTip: provider => `${provider} 사용 한도가 거의 다 찼습니다.`,
+      usageWindow: (label, percent, time) =>
+        time ? `${label}: ${percent}% 남음, ${time} 초기화` : `${label}: ${percent}% 남음`
     },
     modelOptions: {
       noOptions: '이 모델에는 선택지가 없습니다',
       options: '옵션',
       thinking: '사고',
       fast: '빠름',
+      ultrafast: '초고속',
+      useStandardSpeed: '표준 속도 사용',
       effort: '강도',
       minimal: 'minimal',
       low: 'low',
@@ -4968,6 +4970,9 @@ export const koOverrides = {
       showTerminal: '터미널 보기',
       hideTerminal: '터미널 숨기기',
       gateway: '게이트웨이',
+      backend: '백엔드',
+      messagingStopped: '메시징 중지됨',
+      messagingDegraded: name => `${name} 중단됨`,
       gatewayReady: '준비됨',
       gatewayNeedsSetup: '설정 필요',
       gatewayUnavailable: '추론 사용 불가',
@@ -5097,10 +5102,15 @@ export const koOverrides = {
   },
   preview: {
     tab: '미리보기',
+    pin: '작업 공간에 고정',
+    unpin: '작업 공간에서 고정 해제',
     closePane: '미리보기 창 닫기',
     loading: '미리보기를 불러오는 중',
     unavailable: '미리보기를 사용할 수 없음',
     missingTarget: '이 컴퓨터에 없는 경로입니다',
+    missingTitle: '파일이 더 이상 없습니다',
+    missingBody: label =>
+      `${label}이(가) 삭제·이동되었거나 임시 위치가 정리되었습니다. 다음 실행 때 이 탭은 복원되지 않습니다.`,
     opening: '여는 중...',
     hide: '숨기기',
     openPreview: '미리보기 열기',
@@ -5126,6 +5136,7 @@ export const koOverrides = {
     editing: '편집 중',
     unsavedChanges: '저장하지 않은 변경 사항',
     saveFailed: message => `저장하지 못했습니다: ${message}`,
+    saveScopeChanged: '이 초안을 저장하려면 원래 연결과 프로필로 다시 전환하세요.',
     diskChangedTitle: '디스크에서 파일이 변경됨',
     diskChangedBody: '파일을 연 뒤 내용이 바뀌었습니다. 내 버전으로 덮어쓸까요, 아니면 편집을 버리고 다시 불러올까요?',
     overwrite: '덮어쓰기',
@@ -5317,6 +5328,7 @@ export const koOverrides = {
       branchNewChat: '새 대화로 분기',
       react: '반응',
       dismissError: '오류 닫기',
+      responseStopped: '응답 중지됨',
       errorLayers: {
         auth: '로그인 문제',
         billing: '크레딧 소진',
@@ -5563,6 +5575,8 @@ export const koOverrides = {
       skipped: '건너뜀',
       noAnswer: '답변 없음',
       confirmAndContinueLabel: '확인하고 계속',
+      singleSelectHint: '하나 선택',
+      multiSelectHint: '해당하는 항목 모두 선택',
       questionProgress: (answered, total) => `${total}개 중 ${answered}개 답변함`,
       notDelivered:
         '이 질문이 앱에 전달되지 않아 여기서는 답할 수 없습니다. 중지를 눌러 턴을 끝낸 뒤 채팅에서 답하세요.'
@@ -5765,11 +5779,11 @@ export const koOverrides = {
     sessionUnavailable: '세션을 사용할 수 없음',
     createSessionFailed: '새 세션을 생성하지 못했습니다',
     promptFailed: '프롬프트 실패',
-    staleSessionTitle: '대화가 최신이 아닙니다',
-    staleSessionBody:
-      '이 창이 같은 대화의 다른 화면보다 뒤처져 있었습니다. 최신 메시지를 불러왔습니다. 그래도 보내시려면 다시 보내세요.',
     providerCredentialRequired: '첫 메시지를 전송하기 전에 공급자 자격 증명을 추가하세요.',
     emptySlashCommand: '빈 슬래시 명령',
+    slashCommandIgnoredTitle: '명령을 보내지 않음',
+    slashCommandIgnoredBody:
+      '슬래시 명령은 첨부 파일과 함께 보낼 수 없습니다. 첨부 파일을 빼거나 명령을 따로 보내세요.',
     desktopCommands: '데스크톱 명령',
     skillCommandsAvailable: count => `사용 가능한 스킬 명령 ${count}개.`,
     warningLine: message => `경고: ${message}`,
@@ -5834,6 +5848,9 @@ export const koOverrides = {
     openImage: '이미지 열기',
     downloadImage: '이미지 다운로드',
     savingImage: '이미지를 저장하는 중',
+    zoomIn: '확대',
+    zoomOut: '축소',
+    resetZoom: '확대/축소 초기화',
     imagePreviewFailed: '이미지 미리보기 실패',
     imageAttach: '이미지 첨부',
     imageWriteFailed: '이미지를 디스크에 기록하지 못했습니다.',

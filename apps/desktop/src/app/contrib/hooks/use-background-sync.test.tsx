@@ -156,8 +156,7 @@ describe('useBackgroundSync keeps a quiet working turn live', () => {
     noteSessionEvent('rt-quiet')
   }
 
-  const cardShown = () =>
-    Boolean($sessionStates.get()['rt-quiet']?.messages.some(message => message.errorSurface))
+  const cardShown = () => Boolean($sessionStates.get()['rt-quiet']?.messages.some(message => message.errorSurface))
 
   beforeEach(() => {
     vi.useFakeTimers()

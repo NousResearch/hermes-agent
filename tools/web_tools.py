@@ -111,9 +111,14 @@ def _get_backend() -> str:
         # Shared selection exists (use_gateway) but no shared name: firecrawl, no ladder.
         return "firecrawl"
 
-    # Never-configured install. Explicit user credentials beat the managed-gateway probe (a Nous OAuth
-    # token's tier may not grant web access; the gateway then fails at runtime with no fallback).
-    # Free tiers trail paid.
+    # Never-configured install.
+    return _autodetect_backend() or _keyless_backend() or "firecrawl"  # default (backward compat)
+
+
+def _autodetect_backend() -> Optional[str]:
+    """Autodetect rungs above the keyless tier, or None. Explicit user credentials beat the managed-gateway
+    probe (a Nous OAuth token's tier may not grant web access; the gateway then fails at runtime with no
+    fallback). Free tiers trail paid."""
     backend_candidates = (
         ("tavily", _has_env("TAVILY_API_KEY")), ("perplexity", _has_env("PERPLEXITY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
@@ -130,8 +135,7 @@ def _get_backend() -> str:
     for provider in _list_registered_web_providers():
         if provider.name not in _LEGACY_WEB_BACKENDS and _probe(provider, "is_available"):
             return provider.name
-
-    return _keyless_backend() or "firecrawl"  # default (backward compat)
+    return None
 
 
 def _keyless_backend() -> Optional[str]:
@@ -153,13 +157,19 @@ def _keyless_backend() -> Optional[str]:
 
 def _managed_web_search() -> bool:
     """True when web_search is on the managed Nous route: the stored ``nous`` selection, or a
-    never-configured install whose autodetect lands on the gateway. A stored vendor selection never is."""
+    never-configured install whose autodetect lands on the gateway — the entitled Firecrawl gateway, or
+    free Perplexity fast search for any Nous identity when nothing else is configured (search-only: the
+    extract ladder is untouched). A stored vendor selection never is."""
     if _configured_backend("search_backend"):
         return False
     selected = read_selection("web")
     if selected is not None:
         return selected == NOUS_MANAGED_PROVIDER
-    return _get_backend() == "firecrawl" and not (_has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")) and _is_tool_gateway_ready()
+    backend = _autodetect_backend()
+    if backend == "firecrawl":
+        return not (_has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")) and _is_tool_gateway_ready()
+    from tools.managed_tool_gateway import peek_nous_access_token, resolve_free_search_gateway
+    return backend is None and resolve_free_search_gateway(token_reader=peek_nous_access_token) is not None
 
 
 def _get_search_backend() -> str:

@@ -1682,8 +1682,6 @@ def run_kanban_goal_loop(
             _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
             return _result("stopped", f"status={status}")
 
-        # The between-turns judge runs outside any agent turn: bind the per-task relay-affinity
-        # scope (same shape as the handoff gates) so the relay does not reject the call (#113669).
         from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
         affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
         try:
@@ -1691,6 +1689,9 @@ def run_kanban_goal_loop(
         finally:
             if affinity_token is not None:
                 reset_affinity_scope(affinity_token)
+        if _transport_failed:
+            _log(f"kanban goal loop: judge transport failed on turn {turns_used}; stopping")
+            return _result("stopped", "judge transport failure")
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
@@ -1728,10 +1729,22 @@ def run_kanban_goal_loop(
             return _result("blocked_budget", "turn budget exhausted")
 
         try:
-            last_response = run_turn(prompt) or ""
+            result = run_turn(prompt)
+            if isinstance(result, dict):
+                last_response = result.get("response", "") or ""
+                failed = bool(result.get("failed", False))
+                failure_reason = result.get("failure_reason") or "unknown"
+            else:
+                # backward compatibility: assume it's a string
+                last_response = result or ""
+                failed = False
+                failure_reason = None
         except Exception as exc:
             _log(f"kanban goal loop: run_turn failed ({exc}); stopping")
             return _result("stopped", f"run_turn error: {type(exc).__name__}")
+        if failed:
+            _log(f"kanban goal loop: worker failed on turn {turns_used} (reason={failure_reason}); stopping")
+            return _result("stopped", f"worker failed: {failure_reason}")
         turns_used += 1
 
 

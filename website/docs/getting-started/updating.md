@@ -30,9 +30,8 @@ For a managed source installation:
 hermes update
 ```
 
-The default source channel tracks `main`. Configured stable and canary channels
-track their published release commits. The update prepares dependencies through
-PM and reports configuration changes and process-restart results.
+Source installs track `main`, the only valid source channel. The update
+prepares dependencies through PM and reports configuration changes and process-restart results.
 
 ### Bundled desktop updates
 
@@ -74,46 +73,6 @@ when another live installation uses the same profile; this is advisory, not a
 lock. Desktop post-update notices are scoped to the application, so launching
 canary cannot consume stable's pending notice. The `hermes://` URL scheme remains
 shared; the application that most recently registered it handles links.
-
-### Source channels and install identity
-
-```bash
-hermes update --install-id
-hermes update --set-channel stable
-hermes update --channel stable --check
-# Or track published canary commits in this source installation:
-hermes update --set-channel canary
-hermes update
-```
-
-`--install-id` prints the installation identity and path. `--set-channel`
-changes only that installation's configuration, then exits without applying an
-update. `--channel` is a one-run override. An explicit `--branch` takes precedence
-for a source checkout.
-
-Channel names are registered in the release archive on Cloudflare R2, not in a
-fixed list shipped with Hermes. The `main` record selects source-branch delivery;
-published-build channels select an exact Git commit. Custom preview channels use
-the same source commands, for example `hermes update --set-channel pm-preview`.
-The publisher must have created that channel before an update can resolve it.
-An unavailable or invalid record reports an error rather than falling back to
-`main` or another release. Switching a source channel does not install a desktop
-package.
-Per-install subscriptions live under `update.installs` in configuration, so one
-checkout's choice does not change another installation's channel. The source-built
-desktop uses that same selection for checks and update handoffs; it does not
-replace a selected release channel with its default branch.
-
-For branch-tracking source installs, the desktop keeps the current named branch
-unless an explicit desktop branch override exists. A detached checkout uses the
-default branch. Older checkouts without source-channel probing predate release
-channels, so the desktop updates them from `main` over git; that update brings in
-the probing.
-
-Packaged desktop feed channels derive from their build tag and package owner.
-Changing a source channel is not an MSIX or Store channel switch. Canary builds
-can advance stored data formats; switching back is not a schema rollback.
-Back up data before changing release channels.
 
 :::tip
 `hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
@@ -157,6 +116,8 @@ The restart is drain-first: the running gateway refuses new turns, then waits fo
 Chat turns show their session key, model and current tool; cron jobs show the job id, name and the process running them (an external restart-safe worker on systemd installs, otherwise the gateway itself). `hermes gateway status` lists the same units while the gateway is draining. To stop waiting, finish or kill the listed work, or lower `agent.restart_after_turn_timeout` in `config.yaml` (`0` enters the forced drain immediately).
 
 Wedged work does not hold the restart: a chat turn idle past `agent.gateway_timeout`, or a cron run older than the scheduler's in-flight allowance (`max(2 × the job's interval, cron.inflight_max_minutes)`, 30 minutes by default), is excluded from the wait and interrupted by the restart instead.
+
+Work that outlives the gateway does not hold the restart either: a cron run already handed to a worker in its own systemd scope (`systemd-run --user --scope`, the normal case on a systemd install) keeps running when the gateway stops, and its result is delivered from the durable queue by whichever gateway comes up next — so the restart proceeds instead of waiting up to the full cap. A worker that could not get its own scope (no reachable user D-Bus session, see `cron.require_restart_safe_scope`) stays in the gateway's cgroup and is still awaited, because the restart would kill it mid-run.
 
 ### Missing Windows updater files
 
@@ -205,9 +166,57 @@ git -C $repo rev-list --objects --missing=print --all | Where-Object { $_.Starts
 git -C $repo rev-list --objects --missing=error --all | Out-Null; $LASTEXITCODE   # 0 = complete
 ```
 
+### `.git` keeps growing in a partial clone
+
+The installer's checkout is a blobless partial clone: every commit and directory listing is local,
+and git downloads file contents on demand, each on-demand download written as its own small pack.
+Installers from late September 2026 made treeless (`--filter=tree:0`) clones instead. git asks for
+a missing tree without saying which ones it already has, so a treeless checkout downloaded complete
+directory snapshots again on every checkout and path-filtered history walk. `hermes update`
+converts such a checkout once, as its first step after pulling the new code and before the
+dependency work: one `git fetch --refetch --filter=blob:none` brings every commit and tree (about
+120 MB), and later updates stop re-downloading them. Re-running the installer over such a checkout
+converts it the same way. If that fetch fails, the update prints a warning, carries on, and retries
+the conversion next time.
+
+A Hermes Desktop built before the conversion existed runs path-filtered history walks every few
+minutes, so on a treeless checkout it could fill a disk with pack files (one report reached 434 GB)
+and keep going after a failed update. To recover when that already happened:
+
+1. Quit Hermes Desktop, then end any leftover `git rev-list`, `git maintenance` or
+   `git commit-graph` processes; quitting the app does not stop them.
+2. If the disk is completely full, delete the abandoned transfer files to get room back:
+   `rm -f "$repo"/.git/objects/pack/tmp_pack_*` (Windows: delete `tmp_pack_*` in
+   `.git\objects\pack`). Each update also removes them on its own once no git process is running.
+3. Run `hermes update`. It converts the checkout first, then cleans the pack pile down over this
+   and later updates as described below.
+
+If `hermes update` itself cannot start, the conversion by hand is:
+
+```bash
+git -C "$repo" fetch --refetch --filter=blob:none origin
+git -C "$repo" config remote.origin.partialclonefilter blob:none
+``` `hermes update` and `hermes update --check`
+set `maintenance.commit-graph.enabled`, `gc.writeCommitGraph` and `fetch.writeCommitGraph` to
+`false` in that checkout, because a commit-graph write over commits the graph has not seen yet
+downloads every one of their trees. Leave those settings alone, and leave `gc.auto` at its
+default so git's own automatic gc can still fold packs.
+
+Each `hermes update` also spends at most 60 seconds cleaning those packs up, picking up where the
+previous update stopped. It deletes packs whose every object is also stored in another pack, then
+merges the smallest remaining packs while there are more than 50. Nothing stored locally is ever
+lost, and nothing depends on GitHub still serving it. Packs that a killed `git fetch` left pinned
+with a `.keep` file are included; git's own repack never touches those. To fold
+everything at once by hand instead (with Hermes closed; on a large checkout this is a full repack
+that can run for many minutes):
+
+```bash
+git -C "$repo" -c gc.writeCommitGraph=false gc --auto
+```
+
 ### Updating against a non-default branch: `--branch`
 
-On the default source channel, `hermes update` tracks `origin/main`. Use
+Source installs track `origin/main`. Use
 `--branch NAME` for a one-run branch override:
 
 ```bash
@@ -264,7 +273,7 @@ You can pass `--keep-stash` to a terminal `hermes update` too if you want the sa
 
 ### Preview-only: `hermes update --check`
 
-`hermes update --check` compares the checkout with its source-channel target
+`hermes update --check` compares the checkout with `origin/main`
 without applying code, installing dependencies, or restarting gateways. The
 comparison can fetch Git metadata; it is not a promise of zero filesystem writes.
 Package-owned installs report their external update method.

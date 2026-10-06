@@ -45,6 +45,35 @@ def _update_in_progress() -> bool:
         return True  # cannot prove the swap is over: wait
 
 
+def _run_retirement_watchdog(server, *, observe: Callable[[], Optional[str]], fence, poll_s: float,
+                             max_polls: Optional[int], thread_name: str) -> threading.Thread:
+    """Daemon thread shared by the SSH-isolated retirement watchdogs: ``observe`` returns the log
+    reason while retirement is warranted (else None); after ``_CONFIRMATIONS`` consecutive reasons
+    the backend exits only through the retirement fence (proven idle, admission closed first)."""
+    if fence is None:
+        from hermes_cli.backend_retirement import retirement
+
+        fence = retirement
+
+    def _loop() -> None:
+        seen = polls = 0
+        while not getattr(server, "should_exit", False) and (max_polls is None or polls < max_polls):
+            polls += 1
+            reason = observe()
+            seen = seen + 1 if reason else 0
+            if seen >= _CONFIRMATIONS:
+                permit = fence.prepare()
+                if permit.get("ok") and fence.commit(permit.get("token")).get("ok"):
+                    _log.warning("%s", reason)
+                    server.should_exit = True
+                    return
+            time.sleep(poll_s)
+
+    thread = threading.Thread(target=_loop, daemon=True, name=thread_name)
+    thread.start()
+    return thread
+
+
 def start_code_skew_watchdog(server, *, skew_fn: Optional[Callable[[], Skew]] = None,
                              update_probe: Callable[[], bool] = _update_in_progress,
                              fence=None, poll_s: float = DEFAULT_SKEW_POLL_S,
@@ -55,30 +84,14 @@ def start_code_skew_watchdog(server, *, skew_fn: Optional[Callable[[], Skew]] = 
         from gateway.code_skew import detect_code_skew
 
         skew_fn = detect_code_skew
-    if fence is None:
-        from hermes_cli.backend_retirement import retirement
-
-        fence = retirement
     read_skew: Callable[[], Skew] = skew_fn
 
-    def _loop() -> None:
-        seen = polls = 0
-        while not getattr(server, "should_exit", False) and (max_polls is None or polls < max_polls):
-            polls += 1
-            skew = read_skew()
-            if should_retire_for_skew(skew=skew, update_in_progress=update_probe()):
-                seen += 1
-            else:
-                seen = 0
-            if seen >= _CONFIRMATIONS and skew:
-                permit = fence.prepare()
-                if permit.get("ok") and fence.commit(permit.get("token")).get("ok"):
-                    _log.warning("SSH-isolated backend loaded %s but the install is now at %s; "
-                                 "retiring so its client respawns it on the new code.", *skew)
-                    server.should_exit = True
-                    return
-            time.sleep(poll_s)
+    def _observe() -> Optional[str]:
+        skew = read_skew()
+        if not (skew and should_retire_for_skew(skew=skew, update_in_progress=update_probe())):
+            return None
+        return ("SSH-isolated backend loaded %s but the install is now at %s; "
+                "retiring so its client respawns it on the new code." % skew)
 
-    thread = threading.Thread(target=_loop, daemon=True, name="ssh-isolated-skew-watchdog")
-    thread.start()
-    return thread
+    return _run_retirement_watchdog(server, observe=_observe, fence=fence, poll_s=poll_s,
+                                    max_polls=max_polls, thread_name="ssh-isolated-skew-watchdog")

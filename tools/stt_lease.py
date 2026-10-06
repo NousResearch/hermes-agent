@@ -80,6 +80,15 @@ def warm_stt_provider(
         # A just-warmed model counts as activity: the idle-unload watcher must
         # not treat the load itself as idle time and evict it immediately.
         transcription_tools._touch_transcription_time()
+        # Register with the idle-lifetime mechanism: a model loaded ONLY by
+        # warm-up (mic open → cancel, no transcription) would otherwise sit
+        # resident with no watcher, silently ignoring
+        # stt.local.unload_after_idle_seconds until some later successful
+        # transcription starts one. Also covers the reload-after-prior-eviction
+        # case (the previous watcher exited after unloading).
+        idle_timeout = transcription_tools._get_idle_unload_seconds(local_cfg)
+        if idle_timeout > 0:
+            transcription_tools._start_idle_unload_watcher(idle_timeout)
     except Exception as exc:  # engine missing, download failed, bad device…
         logger.warning("[STT] warm-up for local model '%s' failed: %s", model_name, exc)
         result.update(action="error", error=str(exc))

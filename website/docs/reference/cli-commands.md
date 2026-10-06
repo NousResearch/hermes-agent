@@ -742,13 +742,17 @@ has no usage endpoint, or the fetch fails (stdout stays empty).
 ## `hermes status`
 
 ```bash
-hermes status [--all] [--deep]
+hermes status [--full] [--deep]
 ```
+
+By default prints a one-screen summary: model, active provider, every provider with
+credentials (the same list the `/model` picker offers), gateway state, the messaging
+platforms the gateway would start, and scheduled jobs. No key values are printed.
 
 | Option | Description |
 |--------|-------------|
-| `--all` | Show all details in a shareable redacted format. |
-| `--deep` | Run deeper checks that may take longer. |
+| `--full` | Print every section (API keys redacted, auth providers, terminal backend, sessions, ...). `--all` is an alias. |
+| `--deep` | Run deeper checks that may take longer. Implies `--full`. |
 
 ## `hermes cron`
 
@@ -1566,7 +1570,7 @@ See [Hooks](../user-guide/features/hooks.md) for event signatures and payload sh
 hermes memory <subcommand>
 ```
 
-Set up and manage external memory provider plugins. Bundled providers: honcho, openviking, mem0, holographic, retaindb, byterover, supermemory; hindsight (plugin catalog) after `hermes plugins install hindsight`. Only one external provider can be active at a time. Built-in memory (MEMORY.md/USER.md) is always active.
+Set up and manage external memory provider plugins. Bundled providers: openviking, mem0, holographic, retaindb, byterover; honcho, hindsight and supermemory (plugin catalog) after `hermes plugins install <name>` (`hermes update` does this automatically for a provider already named in `memory.provider`). Only one external provider can be active at a time. Built-in memory (MEMORY.md/USER.md) is always active.
 
 Subcommands:
 
@@ -2000,8 +2004,8 @@ external update owner. See [Updating & Uninstalling](../getting-started/updating
 | Option | Description |
 |--------|-------------|
 | `--install-id` | Print this installation's identity and path, then exit. |
-| `--set-channel CHANNEL` | Persist `main`, `stable`, or `canary` for this source installation without applying an update. Bundled applications have a fixed build channel and refuse channel changes. |
-| `--channel CHANNEL` | Select a source channel for this invocation only. |
+| `--set-channel CHANNEL` | Persist the update channel for this source installation without applying an update. `main` is the only valid source channel. Bundled applications have a fixed build channel and refuse channel changes. |
+| `--channel CHANNEL` | Select a source channel for this invocation only (`main` is the only valid one). |
 | `--branch NAME` | Select a source branch for this invocation; takes precedence over source channel selection. |
 | `--gateway` | Internal mode used by the messaging `/update` command. Uses file-based IPC for prompts and progress streaming instead of reading from terminal stdin. Not a gateway restart flag. |
 | `--check` | Check whether an update is available without pulling, installing dependencies, or restarting anything. |

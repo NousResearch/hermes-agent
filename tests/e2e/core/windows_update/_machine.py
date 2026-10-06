@@ -12,7 +12,7 @@ Only external edges are replaced (tests/install/README.md, "The isolation trick"
 
 * git: a bare clone of this checkout (``serve.git``) answers every canonical Hermes URL via
   ``url.<file>.insteadOf`` in a machine-owned ``GIT_CONFIG_GLOBAL``. ``serve.git`` allows
-  filtered fetches, so the installer's ``--filter=tree:0`` clone is a real partial clone,
+  filtered fetches, so the installer's ``--filter=blob:none`` clone is a real partial clone,
   as it is against GitHub. Every ``git.exe`` directory is removed from PATH, so the
   installer stages its own pinned Git, as it does on a clean Windows box.
 * the model provider: the recording loopback server (tests/fakes/fake_llm_provider.py).

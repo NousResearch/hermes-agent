@@ -36,14 +36,28 @@ def clear_git_debris(root: Path) -> None:
     A crashed fetch can leave ``.git/shallow.lock`` (or another lock) behind, and every later
     fetch then fails with "File exists". Aborted fetches on flaky lines also strand
     ``tmp_pack_*`` debris: unchecked it reached 6 GB and corrupted the pack dir (#93732).
+    A partial clone also gets its commit-graph-off keys re-applied (#127711).
     """
-    from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
+    from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs, settle_partial_clone_maintenance
 
     for lock_path in clear_stale_git_locks(root):
         print(f"  (removed stale git lock: {lock_path})")
     swept = clear_stale_tmp_packs(root)
     if swept:
         print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
+    settle_partial_clone_maintenance(root)
+
+
+def report_pack_tidy(root: Path) -> None:
+    """Spend the update's bounded slice on a partial clone's on-demand packs, and say what it did."""
+    from hermes_cli.git_pack_tidy import TIDY_BUDGET_SECONDS, tidy_partial_clone_packs
+
+    tidy = tidy_partial_clone_packs(root)
+    if tidy.erased or tidy.merged:
+        print(f"  (git cleanup: erased {tidy.erased} duplicate pack(s), {tidy.freed_bytes / 1e6:.0f} MB freed;"
+              f" merged {tidy.merged}; {tidy.packs_left} left)")
+    if tidy.out_of_time:
+        print(f"  (git cleanup stopped at its {TIDY_BUDGET_SECONDS}s limit; the next update continues it)")
 
 
 def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path) -> str | None:

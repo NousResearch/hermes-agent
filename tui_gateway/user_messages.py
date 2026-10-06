@@ -118,7 +118,7 @@ AGENT_STILL_STARTING = (
 
 # A deferred build that finished WITHOUT attaching an agent (its session record was replaced or
 # closed while it ran) leaves ``agent_ready`` set and ``agent`` None; this is the recorded cause.
-AGENT_BUILD_ABANDONED = "agent build aborted: the session record was replaced before the build finished"
+AGENT_BUILD_ABANDONED = "agent build aborted: the session was closed or replaced before the build finished"
 # Turn refusal when the record still has no agent at admission time (reason unknown).
 AGENT_MISSING_FOR_TURN = (
     "Hermes could not start the assistant for this session, so your message was not run. "

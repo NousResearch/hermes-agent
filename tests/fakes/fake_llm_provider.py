@@ -430,6 +430,10 @@ def write_hermes_home(
         "  context_length: 128000\n"
         "agent:\n"
         "  api_max_retries: 1\n"
+        # Answered, so an interactive chat never stops on the one-time shared-metrics offer.
+        "telemetry:\n"
+        "  shared_metrics:\n"
+        "    enabled: false\n"
         + extra_config,
         encoding="utf-8",
     )

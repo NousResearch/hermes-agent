@@ -206,12 +206,15 @@ def build_write_denied_paths(home: str) -> set[str]:
     return {os.path.realpath(p) for p in paths}
 
 
+# Home-relative credential directories (POSIX paths). Also dropped from profile exports (hermes_cli.profiles).
+HOME_CREDENTIAL_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh", ".config/gcloud")
+
+
 def build_write_denied_prefixes(home: str) -> list[str]:
     """Return sensitive directory prefixes that must never be written."""
     paths = [
-        *(os.path.join(home, d) for d in (".ssh", ".aws", ".gnupg", ".kube")),
+        *(os.path.join(home, *d.split("/")) for d in HOME_CREDENTIAL_DIRS),
         "/etc/sudoers.d", "/etc/systemd",
-        *(os.path.join(home, *d) for d in ((".docker",), (".azure",), (".config", "gh"), (".config", "gcloud"))),
     ]
     return [os.path.realpath(p) + os.sep for p in paths]
 

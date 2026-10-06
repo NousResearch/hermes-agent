@@ -1936,11 +1936,11 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     FakeWebSocket.mode = 'open'
     await advanceBackoff()
     expect(desktop.revalidateConnection).toHaveBeenCalledTimes(2)
-    // The manual reconnect dials the WINDOW-owned primary backend (no profile
-    // arg) — same contract as the sleep/wake reconnect: passing the active
-    // profile would retarget the primary socket after a live profile swap.
+    // The manual reconnect dials the WINDOW-owned primary backend by its own
+    // recorded route — same contract as the sleep/wake reconnect: neither the
+    // active profile nor main's foreground route may retarget the primary.
     const lastCall = desktop.getConnection.mock.calls.at(-1) ?? []
-    expect(lastCall.length === 0 || lastCall[0] == null || lastCall[0] === '').toBe(true)
+    expect(lastCall[0]).toBe('default')
     expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(3)
     expect(oldPrimary.readyState).toBe(FakeWebSocket.CLOSED)
     expect(backgroundSocket.readyState).toBe(FakeWebSocket.OPEN)
@@ -2176,7 +2176,8 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     const reconnectCalls = desktop.getConnection.mock.calls.slice(callsBeforeDrop)
     expect(reconnectCalls.some(args => (args[0] ?? '').trim() === 'coder')).toBe(false)
-    expect(reconnectCalls.some(args => args.length === 0 || args[0] == null || args[0] === '')).toBe(true)
+    expect(reconnectCalls.every(args => args[0] === 'default')).toBe(true)
+    expect(reconnectCalls.length).toBeGreaterThan(0)
 
     const primaryReconnectSockets = FakeWebSocket.instances
       .slice(socketsBeforeDrop)
@@ -2748,6 +2749,171 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect(FakeWebSocket.instances.length).toBeGreaterThan(socketCountBefore)
     expect($gatewayState.get()).toBe('open')
+  })
+
+  it.each([false, true])(
+    'primary reconnect preserves its source while a secondary is foregrounded (registry=%s)',
+    async registryScoped => {
+      const primary = { ...remotePrimaryConn, registryScoped }
+      const secondary = { ...coderConn, profile: 'default', registryScoped: true }
+      let foreground: { connectionId: string | null; profile: string; registryScoped: boolean } | null = null
+
+      const desktop = {
+        ...fakeDesktop(),
+        setActiveConnectionRoute: vi.fn(route => {
+          foreground = route
+        }),
+        // Main's rule (electron/desktop-profile resolveDesktopConnectionRequest):
+        // a profile-less request follows the sender's foreground route, an
+        // explicit profile keeps the legacy route.
+        getConnection: vi.fn(async (profile?: null | string) =>
+          !profile?.trim() && foreground?.registryScoped && foreground.connectionId === secondary.connectionId
+            ? secondary
+            : primary
+        ),
+        getConnectionFor: vi.fn(async ({ connectionId }: { connectionId: string; profile: string }) =>
+          connectionId === secondary.connectionId ? secondary : primary
+        ),
+        getGatewayWsUrlFor: vi.fn(async ({ connectionId }: { connectionId: string; profile: string }) =>
+          connectionId === secondary.connectionId ? secondary.wsUrl : primary.wsUrl
+        )
+      }
+
+      ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+      render(<Harness />)
+      await flushAsync()
+      const primarySocket = FakeWebSocket.instances[0]
+      expect(primarySocket.url).toBe(primary.wsUrl)
+      let opening!: Promise<boolean>
+      act(() => {
+        opening = ensureGatewayForAgent(secondary.connectionId, secondary.profile)
+      })
+      await flushAsync()
+      await opening
+      expect(foreground).toMatchObject({ connectionId: secondary.connectionId, registryScoped: true })
+      expect(isActivePrimary()).toBe(false)
+      act(() => primarySocket.drop())
+      await advanceBackoff()
+      expect(FakeWebSocket.instances.at(-1)?.url).toBe(primary.wsUrl)
+      expect($connection.get()?.connectionId).toBe(secondary.connectionId)
+      expect(isActivePrimary()).toBe(false)
+
+      // Explicit connection apply must still follow main's rewritten foreground
+      // route, and replace the reconnect target rather than pinning it forever.
+      act(() => connectionApplied?.())
+      await flushAsync()
+      expect(FakeWebSocket.instances.at(-1)?.url).toBe(secondary.wsUrl)
+      act(() => FakeWebSocket.instances.at(-1)!.drop())
+      await advanceBackoff()
+      expect(FakeWebSocket.instances.at(-1)?.url).toBe(secondary.wsUrl)
+    }
+  )
+
+  it('a reconnect lookup that resolves after a connection apply cannot re-own the primary', async () => {
+    const oldPrimary = { ...remotePrimaryConn, registryScoped: true }
+    const newPrimary = { ...coderConn, mode: 'remote' as const, profile: 'default', registryScoped: true }
+    const heldOldLookup = deferred<typeof oldPrimary>()
+    let applied = false
+
+    const desktop = {
+      ...fakeDesktop(),
+      // Main resolves a profile-less request from the applied window route.
+      getConnection: vi.fn(async () => (applied ? newPrimary : oldPrimary)),
+      getConnectionFor: vi.fn(({ connectionId }: { connectionId: string; profile: string }) =>
+        connectionId === newPrimary.connectionId ? Promise.resolve(newPrimary) : heldOldLookup.promise
+      ),
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId }: { connectionId: string; profile: string }) =>
+        connectionId === newPrimary.connectionId ? newPrimary.wsUrl : oldPrimary.wsUrl
+      )
+    }
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    expect(FakeWebSocket.instances[0].url).toBe(oldPrimary.wsUrl)
+
+    // The old primary drops and its reconnect parks on the route lookup.
+    act(() => FakeWebSocket.instances[0].drop())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000)
+    })
+    expect(desktop.getConnectionFor).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: oldPrimary.connectionId })
+    )
+
+    applied = true
+    act(() => connectionApplied?.())
+    await flushAsync()
+    expect(FakeWebSocket.instances.at(-1)?.url).toBe(newPrimary.wsUrl)
+    expect($gatewayState.get()).toBe('open')
+
+    await act(async () => {
+      heldOldLookup.resolve(oldPrimary)
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect($connection.get()?.connectionId).toBe(newPrimary.connectionId)
+
+    act(() => FakeWebSocket.instances.at(-1)!.drop())
+    await advanceBackoff()
+    expect(FakeWebSocket.instances.at(-1)?.url).toBe(newPrimary.wsUrl)
+    expect($connection.get()?.connectionId).toBe(newPrimary.connectionId)
+  })
+
+  it('a reconnect ticket minted after a connection apply never dials the old primary', async () => {
+    const oldPrimary = { ...remotePrimaryConn, registryScoped: true }
+    const newPrimary = { ...coderConn, mode: 'remote' as const, profile: 'default', registryScoped: true }
+    const heldOldMint = deferred<string>()
+    let applied = false
+    let oldMints = 0
+
+    const desktop = {
+      ...fakeDesktop(),
+      getConnection: vi.fn(async () => (applied ? newPrimary : oldPrimary)),
+      getConnectionFor: vi.fn(async ({ connectionId }: { connectionId: string; profile: string }) =>
+        connectionId === newPrimary.connectionId ? newPrimary : oldPrimary
+      ),
+      // The boot mint resolves at once; the reconnect's re-mint parks.
+      getGatewayWsUrlFor: vi.fn(({ connectionId }: { connectionId: string; profile: string }) => {
+        if (connectionId === newPrimary.connectionId) {
+          return Promise.resolve(newPrimary.wsUrl)
+        }
+
+        oldMints += 1
+
+        return oldMints === 1 ? Promise.resolve(oldPrimary.wsUrl) : heldOldMint.promise
+      })
+    }
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    expect(FakeWebSocket.instances[0].url).toBe(oldPrimary.wsUrl)
+
+    act(() => FakeWebSocket.instances[0].drop())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000)
+    })
+    expect(oldMints).toBe(2)
+
+    applied = true
+    act(() => connectionApplied?.())
+    await flushAsync()
+    expect(FakeWebSocket.instances.at(-1)?.url).toBe(newPrimary.wsUrl)
+
+    // The applied socket drops while the stale mint is still parked, so
+    // connect() is no longer a no-op on an open socket.
+    act(() => FakeWebSocket.instances.at(-1)!.drop())
+    const sockets = FakeWebSocket.instances.length
+
+    await act(async () => {
+      heldOldMint.resolve(oldPrimary.wsUrl)
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(FakeWebSocket.instances.slice(sockets).map(s => s.url)).not.toContain(oldPrimary.wsUrl)
+
+    await advanceBackoff()
+    expect(FakeWebSocket.instances.at(-1)?.url).toBe(newPrimary.wsUrl)
+    expect($connection.get()?.connectionId).toBe(newPrimary.connectionId)
   })
 })
 

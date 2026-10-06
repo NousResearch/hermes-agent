@@ -28,7 +28,20 @@ class TTSProvider(CatalogProviderBase):
 
     Subclasses must implement :attr:`name` (rejected at registration if it
     collides with a built-in TTS provider name) and :meth:`synthesize`.
+
+    Opting into the streaming voice path (CLI/TUI speaker, desktop speak-stream,
+    gateway streaming audio): set :attr:`streams_pcm` and :attr:`stream_sample_rate`
+    and make ``stream(text, format="pcm", ...)`` yield raw int16 little-endian mono
+    PCM at that rate. Both are read (with :meth:`is_available`) each time a reply
+    resolves its streamer, so they may be properties reflecting live state; a
+    missing rate falls back to per-sentence :meth:`synthesize`. Unlike
+    :meth:`synthesize`, ``stream()`` may run concurrently for consecutive
+    sentences of one reply (the speaker prefetches up to 3), so it must be
+    thread-safe.
     """
+
+    streams_pcm: bool = False
+    stream_sample_rate: Optional[int] = None
 
     def list_voices(self) -> List[Dict[str, Any]]:
         """Voice catalog entries: ``{"id"}`` required; ``display`` / ``language``

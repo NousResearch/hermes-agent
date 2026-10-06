@@ -14,7 +14,6 @@ from contextlib import ExitStack, suppress
 import logging
 import re
 import shutil
-import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -30,8 +29,8 @@ from agent.skill_utils import (
     SKILL_PROMPT_DESC_LIMIT)
 from tools.skill_manager_guards import (
     _background_review_preflight, _background_review_read_before_write_guard, _background_review_write_guard,
-    _containing_skills_root, _curator_consolidation_delete_guard, _is_path_redirect, _maybe_auto_propose_org_edit,
-    _org_mirror_write_guard, _pinned_guard, _validate_delete_target, _is_background_review, _refusal as _err)
+    _containing_skills_root, _curator_consolidation_delete_guard, _is_path_redirect, _pinned_guard,
+    _validate_delete_target, _is_background_review, _refusal as _err)
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
@@ -334,16 +333,13 @@ def _resolve_supporting_file(skill_dir: Path, file_path: str):
     return (None, _err(err)) if err else (target, None)
 
 
-def _locate_for_write(name: str, action: str, not_found_suffix: str = "", *,
-                      org_guard: bool = True):
-    """Find the skill; run the org-mirror (unless ``org_guard=False``) and background-review
-    write guards -> ``(skill_dir, None)`` | ``(None, error_dict)``."""
+def _locate_for_write(name: str, action: str, not_found_suffix: str = ""):
+    """Find the skill; run the background-review write guard -> ``(skill_dir, None)`` | ``(None, error_dict)``."""
     existing = _find_skill(name)
     if not existing:
         return None, _err(_skill_not_found_error(name, not_found_suffix))
     skill_dir = existing["path"]
-    guard = ((org_guard and _org_mirror_write_guard(name, skill_dir, action))
-             or _background_review_write_guard(name, skill_dir, action))
+    guard = _background_review_write_guard(name, skill_dir, action)
     return (None, guard) if guard else (skill_dir, None)
 
 
@@ -367,13 +363,6 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
     else:
         target.unlink(missing_ok=True)
     return _err(scan_error)
-
-
-def _attach_org_note(result: Dict[str, Any], name: str, skill_dir: Path) -> Dict[str, Any]:
-    if org_note := _maybe_auto_propose_org_edit(name, skill_dir):
-        result["org_sharing"] = org_note
-        result["message"] = f"{result['message']} {org_note}"
-    return result
 
 
 def _add_description_prompt_preview(result: Dict[str, Any], content: str) -> Dict[str, Any]:
@@ -464,7 +453,7 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     result = {
         "success": True, "message": f"Skill '{name}' updated (full rewrite).",
         "path": str(skill_dir), "_change": {"description": _description_preview(content)}}
-    return _add_description_prompt_preview(_attach_org_note(result, name, skill_dir), content)
+    return _add_description_prompt_preview(result, content)
 
 
 def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = None,
@@ -511,7 +500,6 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
         "success": True,
         "message": f"Patched {target_label} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
         "_change": {"old": _clip(old_string, 200, "…"), "new": _clip(new_string, 200, "…")}}
-    result = _attach_org_note(result, name, skill_dir)
     # SKILL.md grows by patches, not by creates: surface findings on the patch that crosses a line
     # (oversized-body, incident-log-shape) — a clean patch attaches nothing and stays quiet.
     if not file_path:
@@ -578,8 +566,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     target, err = _resolve_supporting_file(skill_dir, file_path)
     if guard := err or _guarded_write(name, skill_dir, target, "write_file", file_path, file_content):
         return guard
-    result = _attach_org_note({"success": True, "message": f"File '{file_path}' written to skill '{name}'.",
-                               "path": str(target)}, name, skill_dir)
+    result = {"success": True, "message": f"File '{file_path}' written to skill '{name}'.", "path": str(target)}
     # references/ is where per-session hoarding shows up; surface the sprawl finding on the write
     # that crosses the line so the review fork sees it in the same turn.
     if file_path.startswith("references/") and (skill_dir / "SKILL.md").exists():
@@ -591,7 +578,7 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     """Remove a supporting file from any skill directory."""
     if err := _validate_file_path(file_path):
         return _err(err)
-    skill_dir, guard = _locate_for_write(name, "remove_file", org_guard=False)
+    skill_dir, guard = _locate_for_write(name, "remove_file")
     if guard:
         return guard
     target, err = _resolve_supporting_file(skill_dir, file_path)
@@ -668,41 +655,6 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
         _skill_gate_bypass.reset(token)
 
 
-# Sync push debounce: a burst of skill_manage writes collapses into one push on a daemon timer.
-# One timer per profile home: in a multiplexed process B's write must not cancel A's pending push.
-_sync_push_timers: Dict[str, threading.Timer] = {}
-_sync_push_lock = threading.Lock()
-_SYNC_PUSH_DEBOUNCE_S = 5.0
-
-
-def _maybe_debounced_sync_push(skill_name: str) -> None:
-    """Debounced best-effort sync push after a skill write; never blocks the caller. Skills not
-    opted into sync do nothing (no auth/network); ``maybe_push_skills`` enforces the access gate."""
-    try:
-        from tools.skill_usage import is_sync_enabled
-        if not is_sync_enabled(skill_name):
-            return
-    except Exception:
-        return
-    from hermes_constants import hermes_home_key
-    home_key = hermes_home_key()
-    # Timer threads start with empty ContextVars; without the scheduling turn's context the push would
-    # resolve the launch profile's home and credentials instead of the writing profile's.
-    ctx = _ctxvars.copy_context()
-    def _fire():
-        with suppress(Exception):
-            from tools.skills_sync_client import maybe_push_skills
-            maybe_push_skills(message=f"sync: {skill_name}")
-    with _sync_push_lock:
-        pending = _sync_push_timers.get(home_key)
-        if pending is not None:
-            pending.cancel()  # only sets an Event; never raises
-        timer = threading.Timer(_SYNC_PUSH_DEBOUNCE_S, ctx.run, args=(_fire,))
-        timer.daemon = True
-        _sync_push_timers[home_key] = timer
-        timer.start()
-
-
 def _act_patch(a):
     """Two shapes: old_string/new_string = targeted replacement (validated in _patch_skill so the
     tool and the helper give the same guidance); content alone = full rewrite (the old 'edit')."""
@@ -727,7 +679,7 @@ _ACTION_HANDLERS = {
 def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
                     session_id, ledger_before) -> None:
     """Best-effort post-mutation side effects (never break the tool): ledger, prompt-cache
-    clear, curator telemetry, debounced sync push."""
+    clear, curator telemetry (which fires ``on_skill_lifecycle`` for plugins)."""
     with suppress(Exception):
         from tools import skill_ledger as _ledger
         _post = _find_skill(name)
@@ -759,9 +711,6 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
             bump_patch(name, action=action, task_id=task_id, session_id=session_id)
         elif action == "delete" and not result.get("_archived"):
             forget(name)
-    # Only AFTER the write gate passed (staged writes returned early): never push un-reviewed content.
-    with suppress(Exception):
-        _maybe_debounced_sync_push(name)
 
 
 def skill_manage(

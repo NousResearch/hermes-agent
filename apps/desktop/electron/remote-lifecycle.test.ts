@@ -960,6 +960,27 @@ test('buildSpawnCommand is headless serve, detached, token not in argv', () => {
   assert.ok(!cmd.includes('HERMES_DASHBOARD_SESSION_TOKEN'), 'token env var must not appear')
 })
 
+test('buildSpawnCommand never pins a non-slug profile into the remote argv', () => {
+  // The roster/SSH bridge hands the profile verbatim; a numeric id or display
+  // label must never cross into the remote serve argv, where the CLI used to
+  // str()-coerce it into a phantom profiles/0/ directory (#88842).
+  const bad = buildSpawnCommand('/x/hermes', 0 as unknown as string, {
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+  })
+
+  assert.ok(!bad.includes('--profile'), 'a non-string profile must not be pinned')
+
+  const empty = buildSpawnCommand('/x/hermes', '', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
+  assert.ok(!empty.includes('--profile'), 'an empty profile must not be pinned')
+
+  const label = buildSpawnCommand('/x/hermes', 'My Profile!', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
+  assert.ok(!label.includes('--profile'), 'a non-slug label must not be pinned')
+
+  const good = buildSpawnCommand('/x/hermes', 'Work', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
+  assert.ok(good.includes('--profile'), 'a valid profile stays pinned')
+  assert.ok(good.includes("'work'"), 'the profile is normalized like the CLI would')
+})
+
 test.skipIf(process.platform === 'win32')(
   'detached backend does not inherit the update mutex descriptor',
   async (): Promise<void> => {
@@ -1120,8 +1141,11 @@ test('connect() spawns fresh when there is no lockfile, adopts the served token'
     [/python3 -c/, ''], // token file write
     [/printf '%s\\n'/, ''],
     [/setsid/, '777\n'],
-    [/kill -0 777/, 'ALIVE'],
-    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=51999\n']
+    // The wrapper may exit before the detached daemon writes READY; startup
+    // must rely on the bounded log wait rather than kill -0 on this pid.
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=51999\n'],
+    // The post-readiness served-token adoption still verifies the daemon.
+    [/kill -0 777/, 'ALIVE']
   ])
 
   const result = await connect(
@@ -1823,7 +1847,7 @@ test('connect removes the token file when a fresh backend fails after returning 
     [/kill -0 999/, 'DEAD']
   ])
 
-  await assert.rejects(() => connect(connectDeps(ssh)), /exited before announcing/i)
+  await assert.rejects(() => connect(connectDeps(ssh)), /Timed out waiting for the remote dashboard/i)
   assert.ok(ssh.calls.some(command => /rm -f .*\.token/.test(command)))
 })
 

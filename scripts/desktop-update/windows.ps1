@@ -1667,6 +1667,23 @@ try {
         }
     }
 
+    # Contract C3: a Desktop build that failed after the code committed is an owed follow-up
+    # (exit 0); the CLI prints one whole "Desktop app build owed:" line for it. The user is on
+    # the new Hermes but this app was not rebuilt: a manual outcome, never plain success.
+    if (-not $desktopBuildFailed -and $res.Output -match '(?m)^\s*Desktop app build owed: ') {
+        Add-Followup "build: the Desktop app build is owed by the committed update" "the Desktop app could not be rebuilt, so it still runs its old build. Run 'hermes desktop --force-build' in a terminal to rebuild it; the update log has the build error." -Manual
+    }
+
+    # Every other owed follow-up of the committed update (a gateway still on the old code, a
+    # Windows resume, a lost completion...) prints one whole "Update follow-up '<step>' did not
+    # finish:" line (hermes_cli/update_receipt.record_followup): never a plain success either.
+    $owedSteps = @([regex]::Matches(($res.Output -join "`n"), "Update follow-up '([A-Za-z0-9_]+)' did not finish: ") |
+        ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+    if ($owedSteps.Count -gt 0) {
+        $owedHint = if ($owedSteps -contains 'gateway_restart') { " Run 'hermes gateway restart' to move the messaging gateway onto the new code now." } else { '' }
+        Add-Followup ("followup: owed by the committed update: " + ($owedSteps -join ', ')) ("some follow-up steps did not finish (" + ($owedSteps -join ', ') + "). The next launch or 'hermes update' retries them; the update log has the details." + $owedHint) -Manual
+    }
+
     # A zero-exit update is not proof that the runtime survived the update.
     if (-not $desktopBuildFailed) {
         $verifyFailure = $null

@@ -755,6 +755,9 @@ def test_a_host_without_psutil_records_an_identity_the_liveness_rule_can_prove(m
     judges with, so a psutil-less host never writes ``ct=None`` (unprovable, so never orphaned)."""
     from hermes_cli import update_lock
     monkeypatch.setitem(sys.modules, "psutil", None)  # `import psutil` raises ImportError
+    # Our own creation time is cached per process; one an earlier test read with psutil differs
+    # from the stdlib probe by its resolution (macOS `ps -o lstart`: 1 s). Judge with one probe.
+    monkeypatch.setattr(update_lock, "_OWN_CT", {})
     ident = pause_record.identity()
     assert ident["ct"] is not None, "no creation time without psutil"
     assert update_lock.incarnation_live(ident["pid"], ident["ct"]) is True

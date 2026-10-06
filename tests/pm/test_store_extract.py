@@ -129,6 +129,74 @@ def test_git_unpack_requires_a_windows_host(tmp_path, monkeypatch):
     assert not calls, "the guard must refuse before any execution"
 
 
+@pytest.mark.require_symlinks
+def test_git_unpack_neutralizes_the_staged_posix_links(tmp_path, monkeypatch):
+    """The SFX restores the archive's POSIX links (`etc/mtab -> /proc/mounts`,
+    `dev/fd -> /proc/self/fd`, …) as WSL reparse points on some Windows hosts:
+    CPython sees regular files (is_symlink() is False) that open() rejects with
+    EINVAL, so tree_digest() dies on the published entry and the install never
+    stamps. Whatever the extractor staged there must end up empty regular
+    files, and the digested tree must equal a hand-built one."""
+    import subprocess
+    from pathlib import Path
+    import pm.packages
+    from pm.packages import Git
+    from pm.store import tree_digest
+
+    def run_as_sfx(argv, **kwargs):
+        staged = Path(argv[1][2:])  # the -o<path> argument
+        (staged / "etc").mkdir(parents=True)
+        (staged / "etc" / "mtab").symlink_to("/proc/mounts")
+        (staged / "dev").mkdir(parents=True)
+        (staged / "dev" / "fd").symlink_to("/proc/self/fd")
+        (staged / "dev" / "stdin").symlink_to("/proc/self/fd/0")
+        (staged / "dev" / "stdout").symlink_to("/proc/self/fd/1")
+        (staged / "dev" / "stderr").symlink_to("/proc/self/fd/2")
+        (staged / "cmd").mkdir()
+        (staged / "cmd" / "git.exe").write_bytes(b"MZ")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(pm.packages, "_HOST_IS_WINDOWS", True)
+    monkeypatch.setattr(subprocess, "run", run_as_sfx)
+    staged = tmp_path / "scratch" / "tree"
+    Git().unpack(_portable_git(tmp_path), staged, "win32-x64")
+    for rel in ("etc/mtab", "dev/fd", "dev/stdin", "dev/stdout", "dev/stderr"):
+        path = staged.joinpath(*rel.split("/"))
+        assert not path.is_symlink(), rel
+        assert path.read_text() == "", rel
+    # A symlink left anywhere would contribute its link target text to the
+    # digest instead of empty bytes, so equality with a hand-built tree pins
+    # the neutralization harder than "digest did not raise".
+    expected = tmp_path / "expected"
+    for rel in ("etc/mtab", "dev/fd", "dev/stdin", "dev/stdout", "dev/stderr"):
+        path = expected.joinpath(*rel.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+    (expected / "cmd").mkdir(parents=True)
+    (expected / "cmd" / "git.exe").write_bytes(b"MZ")
+    assert tree_digest(staged) == tree_digest(expected)
+
+
+def test_git_unpack_leaves_a_tree_without_mtab_untouched(tmp_path, monkeypatch):
+    """A post-install tree that never carried etc/mtab (MinGit's shape)
+    must not gain one: the fix replaces, it does not create."""
+    import subprocess
+    from pathlib import Path
+    import pm.packages
+    from pm.packages import Git
+
+    def run_as_sfx(argv, **kwargs):
+        staged = Path(argv[1][2:])
+        (staged / "cmd").mkdir()
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(pm.packages, "_HOST_IS_WINDOWS", True)
+    monkeypatch.setattr(subprocess, "run", run_as_sfx)
+    staged = tmp_path / "scratch" / "tree"
+    Git().unpack(_portable_git(tmp_path), staged, "win32-x64")
+    assert not (staged / "etc").exists()
+
+
 def test_target_uses_shared_native_arch(monkeypatch):
     from hermes_platform.host import facts
     from pm import store

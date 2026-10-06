@@ -584,6 +584,19 @@ function Get-PinnedGit {
             Fail "pinned git self-extractor exited $($sfx.ExitCode) (it reports nothing under -y; usual causes: disk full, path-length limit, antivirus lock)"
         }
         if (-not (Test-Path (Join-Path $extractDir "cmd\git.exe"))) { Fail "git.exe not found in the downloaded archive" }
+        # Neutralize the POSIX links the SFX restores as WSL reparse points
+        # (IO_REPARSE_TAG_LX_SYMLINK): they read as regular files that open()
+        # rejects with EINVAL, and pm's tree_digest walks every entry before
+        # the first run. pm/packages.py applies the same set after its own
+        # extraction; Get-Item -Force stats the reparse point itself instead
+        # of following it.
+        foreach ($rel in @('dev\fd', 'dev\stdin', 'dev\stdout', 'dev\stderr', 'etc\mtab')) {
+            $p = Join-Path $extractDir $rel
+            if (Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue) {
+                Remove-Item -LiteralPath $p -Force
+                New-Item -ItemType File -Path $p | Out-Null
+            }
+        }
         if (Test-Path $entry) { Remove-Item -Recurse -Force $entry }
         # Prerequisites run first, so on a fresh host the store root does not
         # exist yet; Move-Item never creates the destination's parent.

@@ -774,9 +774,7 @@ DEFAULT_CONFIG = {
         "title_generation": {
             "enabled": True,
             "model_upgrade_enabled": True,  # False = keep the instant derived title, never call a model
-            # Note: session_search no longer uses an auxiliary LLM (PR #27590 — single-shape tool returns DB
-            # content directly). The old ``auxiliary.session_search.*`` block was removed here. Existing
-            # values in user config.yaml files are harmless leftovers and ignored.
+            # session_search no longer uses an aux LLM (#27590); leftover auxiliary.session_search is ignored.
             "provider": "auto",
             "model": "",
             "prefer_fast_model": False,
@@ -789,6 +787,7 @@ DEFAULT_CONFIG = {
         },
         "memory_query_rewrite": _aux(8, reasoning_effort=False),
         "tts_audio_tags": _aux(30),
+        "voice_chat": _aux(120),  # spoken voice-mode turns (agent/voice_turn_route.py); auto = session model
         # Kanban: triage_specifier expands a Triage one-liner into a spec (cheap model OK);
         # kanban_decomposer emits a JSON graph of child tasks (more tokens).
         "triage_specifier": _aux(120),

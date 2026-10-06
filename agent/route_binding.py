@@ -50,7 +50,7 @@ def bind_route_entry(agent: Any, entry: Dict[str, Any], provider: str, model: st
         try:
             from hermes_cli.model_normalize import normalize_model_for_provider
             model = normalize_model_for_provider(model, provider)
-        except Exception as norm_err:
+        except Exception as norm_err:  # health: allow BLE001 -- moved verbatim from try_activate_fallback; a bad catalog entry keeps the raw id
             logger.warning("Could not normalize fallback model %r for provider %r: %s", model, provider, norm_err)
         base_url = str(client.base_url)
         from hermes_cli.providers import is_actual_route

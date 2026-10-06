@@ -1249,8 +1249,7 @@ class TurnRunner:
 
     def _wire_turn_agent_callbacks(self, agent, turn_route, reasoning_config,
                                    stream_delta_cb, interim_assistant_cb, want_interim_messages):
-        """Per-message state — callbacks and reasoning config change every turn, so they aren't
-        baked into the cached agent."""
+        """Per-message state (callbacks, reasoning, voice route) — never baked into the cached agent."""
         ctx = self._ctx
         runner = self._runner
         agent._notification_config = ctx.user_config
@@ -1272,6 +1271,7 @@ class TurnRunner:
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
+        agent._voice_turn_pending = ctx.voice_turn  # auxiliary.voice_chat route
         self._merge_turn_request_overrides(agent, turn_route)
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.

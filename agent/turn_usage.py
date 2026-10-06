@@ -271,6 +271,7 @@ def record_response_usage(
                 if cost_result.status == "included" else None,
                 model=agent.model,
                 api_call_count=1,
+                task=getattr(agent, "_turn_route_task", "") or "",
             )
         except Exception as e:  # silent loss here undercounts analytics
             logger.debug(

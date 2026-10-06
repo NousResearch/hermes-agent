@@ -59,6 +59,7 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("review", "Review", "/review reviewer subagent"),
     ("memory_query_rewrite", "Memory query rewrite", "memory retrieval queries"),
     ("tts_audio_tags", "TTS audio tags", "Gemini TTS tag insertion"),
+    ("voice_chat", "Voice chat", "spoken voice-mode replies"),
     ("skills_hub", "Skills hub", "skills search/install"),
     ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
     ("kanban_decomposer", "Kanban decomposer", "task decomposition"),

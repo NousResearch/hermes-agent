@@ -3481,6 +3481,8 @@
     "settings.model.tasks.triage_specifier.label",
     "settings.model.tasks.vision.hint",
     "settings.model.tasks.vision.label",
+    "settings.model.tasks.voice_chat.hint",
+    "settings.model.tasks.voice_chat.label",
     "settings.nav.about",
     "settings.nav.apiKeys",
     "settings.nav.archivedChats",

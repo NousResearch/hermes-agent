@@ -26564,6 +26564,18 @@
             "default": null,
             "title": "Voice Context"
           },
+          "voice_turn": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice Turn"
+          },
           "title_preview": {
             "anyOf": [
               {

@@ -1409,6 +1409,7 @@ $ hermes model
 [ ] vision               currently: auto / main model
 [ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
 [ ] tts_audio_tags       currently: auto / main model
+[ ] voice_chat           currently: auto / main model
 [ ] compression          currently: auto / main model
 [ ] approval             currently: auto / main model
 [ ] triage_specifier     currently: auto / main model
@@ -1420,6 +1421,8 @@ $ hermes model
 Select a task, pick a provider (OAuth flows open a browser; API-key providers prompt), pick a model. The change persists to `auxiliary.<task>.*` in `config.yaml`. Same machinery as the main-model picker — no extra syntax to learn.
 
 The **Delegation** entry is special: it routes the model used by `delegate_task` subagents and persists to the top-level `delegation.*` section (`delegation.provider` / `delegation.model`) rather than `auxiliary.*`, because subagents are full child agents, not side-LLM calls. Its `auto` means "inherit the parent agent's provider, model, and credentials."
+
+The **Voice chat** entry picks the model that answers spoken voice-mode turns (tools included); typed turns stay on the main model. See [Voice chat model](features/voice-mode.md#voice-chat-model).
 
 If you do not want Hermes to auto-generate titles after the first exchange, set
 `auxiliary.title_generation.enabled: false`. Manual titles still work through

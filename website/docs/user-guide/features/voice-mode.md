@@ -241,6 +241,22 @@ How it works: pressing the voice button opens a WebRTC session from the desktop 
 
 Not supported in this mode: the Nous-managed audio proxy (direct key only), the CLI/TUI (`/voice` keeps the chained loop), and the `tts` tool (it keeps using `tts.provider`).
 
+### Voice chat model
+
+Spoken turns can run on a different (usually faster) model than the one you type to. Set the `voice_chat` auxiliary slot, in Settings → Models → Auxiliary models on Desktop, in `hermes model` → Auxiliary models, or in config.yaml:
+
+```yaml
+auxiliary:
+  voice_chat:
+    provider: openrouter          # "auto" = the session's model (default)
+    model: google/gemini-3-flash-preview   # empty with a provider = that provider's fast model
+    reasoning_effort: low         # optional; applies to voice turns only
+```
+
+It applies to every chained voice turn: CLI and TUI voice mode, the Desktop voice conversation, and voice notes on messaging platforms. The voice turn has the full toolset; only the model answering it changes. The next typed message goes back to the session's model, and so do memory and skill reviews after the turn. Usage is recorded under the `voice_chat` task, so the session keeps the model you picked as its own.
+
+The voice model never forces a compaction: when the conversation is already larger than its context window, that turn runs on the session's model and a one-time notice says so. GPT-Live voice chat ignores this slot, because there the voice layer already is the fast model and delegates real work to the session's model.
+
 ### Barge-in
 
 You can interrupt the agent at ANY point in its turn — the microphone stays live from the moment you finish speaking until the reply has fully played (full duplex):

@@ -201,6 +201,12 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
     ahead_count = int(ahead.stdout.strip())
     if ahead_count == 0:
         return True, ""
+    # Git before 2.44 ignores GIT_NO_LAZY_FETCH, so on a partial clone cherry still lazy-fetches
+    # without bound (git 2.43 on WSL hung here, #124767). Its patch-ids need blobs a partial clone
+    # keeps on the remote, so it rarely refines anything there: settle for the commit count.
+    promisor = _git_run(git_cmd, ["config", "--get-regexp", r"^(remote\..*\.promisor|extensions\.partialclone)$"], cwd)
+    if any(line.split()[-1].lower() != "false" for line in promisor.stdout.splitlines()):
+        return True, f"unmerged:{ahead_count}"
     # The patch-id refinement must never fetch: on a tree:0 clone `git cherry` lazy-fetches
     # a tree batch per commit and, with nothing bounding it, one such walk wrote 332 packs /
     # 180 GiB over 7 h on Windows (#131444). With lazy fetch off a missing object fails the

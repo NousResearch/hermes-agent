@@ -288,6 +288,28 @@ def test_parked_branch_guard_never_lazy_fetches_from_a_live_promisor(tmp_path, m
     assert _pack_count(clone) == packs_before
 
 
+def test_parked_branch_guard_skips_cherry_on_a_partial_clone_when_git_ignores_no_lazy_fetch(
+        tmp_path, monkeypatch):
+    """Git before 2.44 ignores GIT_NO_LAZY_FETCH, so the no-lazy-fetch child alone would still
+    fetch without bound there (#124767, git 2.43). A partial clone must not reach cherry at all:
+    with the override emptied, as old git effectively sees it, the assessment starts no fetch."""
+    import hermes_cli.update_cmd_git as update_cmd_git
+    monkeypatch.setattr(update_cmd_git, "NO_LAZY_FETCH_ENV", {})
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    clone = _treeless_repo_pair(tmp_path, promisor_reachable=True)
+    (clone / "feature.txt").write_text("unmerged work\n", encoding="utf-8")
+    _git(clone, "add", "feature.txt")
+    _git(clone, "commit", "-qm", "feature work")
+    trace = tmp_path / "trace2.json"
+    monkeypatch.setenv("GIT_TRACE2_EVENT", str(trace))
+    safe, reason = update_cmd._assess_parked_branch_switch(GIT, clone, "old-feature", "main")
+    monkeypatch.delenv("GIT_TRACE2_EVENT")
+    events = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
+    assert (safe, reason) == (True, "unmerged:1")
+    assert [e["argv"] for e in events if e.get("event") == "child_start" and "fetch" in e.get("argv", [])] == []
+
+
 # ---------------------------------------------------------------------------
 # Skip warning content
 # ---------------------------------------------------------------------------

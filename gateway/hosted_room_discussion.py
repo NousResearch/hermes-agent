@@ -236,6 +236,17 @@ def _validate_member(raw: Any, index: int, known_profiles: set[str]) -> Discussi
     if remote_fields := frozenset(raw) & _REMOTE_MEMBER_FIELDS:
         raise DiscussionValidationError(
             f"member {index} contains cross-gateway fields: {', '.join(sorted(remote_fields))}")
+    # Older Desktop builds persisted a member's friendly name as ``label``.
+    # Current clients send ``display_name``, but legacy rooms and replicas can
+    # still carry the old field. Resolve it at the strict roster boundary so
+    # existing data becomes drivable without rewriting the store.
+    if "label" in raw:
+        canonical = dict(raw)
+        label = canonical.pop("label")
+        display_name = canonical.get("display_name")
+        if not isinstance(display_name, str) or not display_name.strip():
+            canonical["display_name"] = label
+        raw = canonical
     member = _exact_fields(
         raw, label=f"member {index}", required=frozenset({"member_id", "profile", "handle"}),
         optional=frozenset({"display_name", "target"}))

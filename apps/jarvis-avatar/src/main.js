@@ -12,7 +12,7 @@
 */
 import { CFG, IMG, ASSETS, PARAMS, STILL, SO_FUNDO, REDUCED, COARSE, MOBILE, FONT } from './config.js';
 import { clamp, mix, ease, rnd, $, toast } from './util.js';
-import { QUAD_VS, BG_FS, MESH_VS, MESH_FS, PART_VS, PART_FS } from './shaders.js';
+import { QUAD_VS, BG_FS, MESH_VS, MESH_FS, BODY_FS, PART_VS, PART_FS } from './shaders.js';
 import { buildParticles, buildMesh, STRIDE } from './model3d.js';
 import { createAudio } from './audio.js';
 import { createPose } from './pose.js';
@@ -47,7 +47,7 @@ function loadImage(src) {
 }
 
 function start(imgs) {
-  const [imFundo, imMascaras, imEmissao, imInfo] = imgs;
+  const [imFundo, imMascaras, imCorpoRGB, imCorpoA, imEmissao, imInfo] = imgs;
   const gl = canvas.getContext('webgl', { antialias: false, alpha: false, depth: true, stencil: false, powerPreference: 'high-performance' });
   if (!gl) throw new Error('este navegador não liberou WebGL (ative a aceleração de hardware ou use Chrome, Edge ou Safari)');
   const bctx = bloomCv.getContext('2d');
@@ -76,7 +76,8 @@ function start(imgs) {
   }
   const P = {
     bg: makeProgram('fundo', QUAD_VS, BG_FS),
-    mesh: makeProgram('corpo', MESH_VS, MESH_FS),
+    mesh: makeProgram('corpo 3D', MESH_VS, MESH_FS),
+    body: makeProgram('corpo', QUAD_VS, BODY_FS),
     part: makeProgram('partículas', PART_VS, PART_FS),
   };
 
@@ -94,7 +95,7 @@ function start(imgs) {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     return t;
   }
-  const T = { bg: texture(imFundo), masks: texture(imMascaras) };
+  const T = { bg: texture(imFundo), masks: texture(imMascaras), bodyRGB: texture(imCorpoRGB), bodyA: texture(imCorpoA) };
 
   /* ---------- partículas: pixels marcados em info.png, com a cor de emissao.png ---------- */
   function pixels(img) {
@@ -301,8 +302,23 @@ function start(imgs) {
         for (let loc = 1; loc < 5; loc++) gl.disableVertexAttribArray(loc);
         attr(0, B.meshHome, 2, gl.FLOAT, false, 0);
         attr(5, B.meshP3, 4, gl.FLOAT, false, 0);
+        gl.uniform2f(p.u.uImg, IMG.w, IMG.h);
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, T.bodyRGB); gl.uniform1i(p.u.uBodyRGB, 0);
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, T.bodyA); gl.uniform1i(p.u.uBodyA, 1);
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, B.meshIdx);
         gl.drawElements(gl.TRIANGLES, B.meshCount, gl.UNSIGNED_SHORT, 0);
+        // halo e brilho da foto fora da malha (bem ao fundo: só passa onde a malha não desenhou)
+        p = P.body;
+        gl.useProgram(p.prog);
+        shared(p);
+        fieldUniforms(p, fieldOn);
+        head.uniforms(gl, p);
+        gl.uniform1f(p.u.uVis, ST.head);
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, T.bodyRGB); gl.uniform1i(p.u.uBodyRGB, 0);
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, T.bodyA); gl.uniform1i(p.u.uBodyA, 1);
+        gl.depthMask(false);
+        gl.depthFunc(gl.LESS);
+        quad();
       }
 
       gl.blendFunc(gl.ONE, gl.ONE);                     // partículas somam luz; testam a profundidade, não gravam

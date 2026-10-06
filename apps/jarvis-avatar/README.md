@@ -12,7 +12,9 @@ tronco** formam outro sólido, que torce, e as **orelhas** são placas. Cada par
 da superfície que a projeta exatamente onde ela está na foto, então de frente a cena é a foto,
 pixel a pixel. Girando, a faixa da borda (comprimida na foto) apaga e no lugar entra o mesmo desenho
 continuado em volta da cabeça (lateral e nuca). O contorno do alto vira silhueta, e uma malha
-escura com profundidade esconde o que fica atrás. Rosto liso, sem feições, como no original.
+com profundidade esconde o que fica atrás e veste a luz da foto (`corpo-rgb`: base escura, contorno neon,
+halo): parado é a foto exata; girando, o neon da foto que entra no rosto apaga e a borda nova ganha
+o mesmo neon. Rosto liso, sem feições, como no original.
 
 ## Rodar
 
@@ -46,7 +48,7 @@ python3 build.py                 # gera dist/jarvis.html (~5,4 MB, tudo embutido
 | `src/model3d.js` | busto 3D: sólidos, partículas da foto vestidas neles, lateral/nuca e malha de profundidade |
 | `src/shapes.js` | formas: cabeça, esfera, galáxia, texto |
 | `src/main.js` | WebGL, buffers, render (malha + partículas com profundidade), entrada, API pública, loop |
-| `assets/img/` | camadas da foto (1672×941): `fundo`, `mascaras` e, pra aura em volta da figura, `emissao` e `info` |
+| `assets/img/` | camadas da foto (1672×941): `fundo`, `mascaras`, `corpo-rgb`/`corpo-alfa` (a luz da figura) e `emissao`/`info` (as partículas) |
 | `assets/fonts/` | Sora 300/600/700 (SIL Open Font License 1.1) |
 | `build.py` | empacota tudo em `dist/jarvis.html` (só biblioteca padrão) |
 

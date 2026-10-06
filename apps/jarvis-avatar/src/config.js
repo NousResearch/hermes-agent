@@ -40,6 +40,8 @@ export const FONT = `'Sora','Avenir Next','Segoe UI',ui-sans-serif,system-ui,san
 export const ASSETS = [
   'assets/img/fundo.webp',      // fundo: a original + a reconstrução atrás da figura
   'assets/img/mascaras.png',    // r: brilhos pontuais · g: água · b: via láctea
+  'assets/img/corpo-rgb.webp',  // brilho da figura (base escura + contorno neon e halo), pré-multiplicado
+  'assets/img/corpo-alfa.png',  // alfa da base escura
   'assets/img/emissao.png',     // cor de cada partícula
   'assets/img/info.png',        // r: relevo · g: borda · b: marca da partícula (>200 = aura)
 ];

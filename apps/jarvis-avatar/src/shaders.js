@@ -118,15 +118,18 @@ void main() {
   gl_FragColor = vec4(c, 1.0);
 }`;
 
-// Malha escura do manequim: a base do busto (mais clara pra borda, o volume) e quem tampa o que fica atrás.
+// Corpo da foto (a luz da figura: base escura, contorno neon, halo) vestido na malha 3D: cada vértice lê a foto no
+// ponto onde estava com giro 0, então parado é a foto exata; girando, a luz vai junto com a superfície. O contorno da
+// foto é silhueta, não superfície: quando ele gira pra dentro do rosto, apaga, e a borda nova ganha luz de borda.
 export const MESH_VS = `
 precision highp float;
 attribute vec2 aHome;
 attribute vec4 aP3;
-uniform vec2 uRes, uOffset, uPar;
+uniform vec2 uRes, uOffset, uPar, uImg;
 uniform float uScale;
 ` + FIELD + POSE + `
-varying float vNz;
+varying vec2 vUv;
+varying float vNz, vMove, vSide;
 void main() {
   vec3 q = place3D(aHome, aP3, uYaw.x);
   vec2 p = vec2(q.x, aHome.y);
@@ -134,17 +137,52 @@ void main() {
   p += field(p).xy + uPar * (4.0 + 3.0 * max(aP3.z, 0.0));   // a mesma paralaxe das partículas (relevo = de frente)
   vec2 s = p * uScale + uOffset;
   gl_Position = vec4(s.x / uRes.x * 2.0 - 1.0, 1.0 - s.y / uRes.y * 2.0, depthOf(q.y), 1.0);
+  vUv = aHome / uImg;
   vNz = q.z;
+  vMove = abs(q.z - aP3.z);                       // quanto este ponto mudou de orientação
+  vSide = abs(aP3.y);                             // perto da borda da foto (normal de lado)
 }`;
 
 export const MESH_FS = `
 precision mediump float;
+uniform sampler2D uBodyRGB, uBodyA;
 uniform float uVis;
-varying float vNz;
+varying vec2 vUv;
+varying float vNz, vMove, vSide;
 void main() {
-  float fr = 1.0 - clamp(vNz, 0.0, 1.0);
-  vec3 base = mix(vec3(0.006, 0.02, 0.05), vec3(0.04, 0.12, 0.26), fr * fr * fr);
-  gl_FragColor = vec4(base, 0.8) * uVis;           // pré-multiplicado
+  vec3 rgb = texture2D(uBodyRGB, vUv).rgb;         // pré-multiplicado
+  float a = texture2D(uBodyA, vUv).r;
+  // faixa da borda da foto (contorno neon) que girou pra dentro: vira base escura
+  float off = smoothstep(0.04, 0.3, vMove) * smoothstep(0.4, 0.85, vSide);
+  rgb = mix(rgb, vec3(0.012, 0.035, 0.07) * a, off);
+  // luz de borda na silhueta nova (só onde o ponto mudou de orientação: parado, a foto já tem a dela)
+  // (a mesma cor e largura do neon da foto: azul-ciano que estoura pra branco na borda)
+  float e = 1.0 - clamp(vNz, 0.0, 1.0), fr = pow(e, 2.2) * 1.3 + pow(e, 8.0) * 1.6;
+  rgb += vec3(0.4, 0.72, 1.0) * fr * smoothstep(0.02, 0.2, vMove);
+  gl_FragColor = vec4(rgb, max(a, 0.6 * smoothstep(0.02, 0.2, vMove))) * uVis;
+}`;
+
+// O resto do corpo da foto (halo e brilho que ficam fora da malha: em volta da cabeça, orelhas, ombros): tela cheia,
+// desenhado só onde a malha não está (teste de profundidade). Some ao girar: o halo é da silhueta parada.
+export const BODY_FS = `
+precision highp float;
+uniform vec2 uRes, uOffset, uImg, uPar;
+uniform float uScale, uVis;
+uniform sampler2D uBodyRGB, uBodyA;
+` + FIELD + POSE + `
+void main() {
+  vec2 sp = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
+  vec2 p = (sp - uOffset) / uScale - uPar * 5.5;
+  vec3 f = field(p);
+  vec2 q = p - f.xy;
+  vec2 h = q - pose(q);
+  h = q - pose(h);
+  h = q - pose(h);
+  h = q - pose(h);                                // inverte a pose (ponto fixo, 4 passos)
+  vec2 uv = h / uImg;
+  float keep = 1.0 - smoothstep(0.04, 0.3, abs(uYaw.x));
+  if (uVis * keep < 0.002 || uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) discard;
+  gl_FragColor = vec4(texture2D(uBodyRGB, uv).rgb, texture2D(uBodyA, uv).r) * uVis * keep;
 }`;
 
 export const PART_VS = `

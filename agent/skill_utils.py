@@ -7,7 +7,6 @@ import logging
 import os
 import re
 import sys
-import threading
 from pathlib import Path, PurePath
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -318,26 +317,6 @@ def _config_str_list(raw) -> list[str]:
     return [e for e in (str(entry).strip() for entry in raw) if e]
 
 
-# One WARNING per process per configured path: a missing entry is DROPPED from the
-# external dirs, so a typo silently removes every skill in that directory with no other
-# user-visible signal. The dedupe keeps the per-skill scan hot path from repeating it.
-_MISSING_EXTERNAL_DIR_WARNED: Set[str] = set()
-_MISSING_EXTERNAL_DIR_LOCK = threading.Lock()
-
-
-def _warn_missing_external_dir(path: Path) -> None:
-    """Warn (once per process) that a ``skills.external_dirs`` entry does not exist."""
-    key = str(path)
-    with _MISSING_EXTERNAL_DIR_LOCK:
-        if key in _MISSING_EXTERNAL_DIR_WARNED:
-            return
-        _MISSING_EXTERNAL_DIR_WARNED.add(key)
-    logger.warning(
-        "External skills dir does not exist, skipping %s (its skills will not load). "
-        "Check skills.external_dirs in %s; a relative entry resolves against HERMES_HOME.",
-        path, get_config_path())
-
-
 def get_external_skills_dirs() -> list[Path]:
     """Validated, deduplicated ``skills.external_dirs`` (existing dirs only). Entries
     are ``~``/``${VAR}`` expanded, relative to HERMES_HOME; the local skills dir is skipped."""
@@ -361,7 +340,7 @@ def get_external_skills_dirs() -> list[Path]:
         if p.is_dir():
             result.append(p)
         else:
-            _warn_missing_external_dir(p)
+            logger.debug("External skills dir does not exist, skipping: %s", p)
     if cache_key is not None:
         _EXTERNAL_DIRS_CACHE[cache_key] = list(result)
     return result

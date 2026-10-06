@@ -313,9 +313,6 @@ def install_from_quarantine(
         # The aside (recovery) dir is per-attempt unique (like staging) so concurrent
         # same-skill installs cannot clobber each other's aside copy.
         recovery_dir = staging_root / f".recovery-{safe_skill_name}-{uuid.uuid4().hex[:8]}"
-        # Read path only for orphans left by older builds that used a deterministic name;
-        # never a write target.
-        legacy_recovery = staging_root / f".recovery-{safe_skill_name}"
         swapped = False
         orphan_path: Optional[Path] = None
         try:
@@ -360,7 +357,7 @@ def install_from_quarantine(
                     f"previous installation could NOT be restored. Swap error: {exc}"
                 ) from exc
             # Swapped: the live dir is the UNVALIDATED new bundle. Quarantine it aside to a
-            # per-attempt orphan path (never legacy_recovery), then restore the old tree.
+            # per-attempt orphan path, then restore the old tree.
             # 'restored' is claimed only when the recovery->install move actually completes.
             orphan_path = staging_root / f".failed-{safe_skill_name}-{uuid.uuid4().hex[:8]}"
             shutil.move(str(install_dir), str(orphan_path))  # may raise; surfaced below
@@ -370,8 +367,8 @@ def install_from_quarantine(
                 restored = True
             if not restored and not install_dir.exists():
                 raise RuntimeError(
-                    f"skill '{safe_skill_name}' install failed after swap and the previous "
-                    f"installation could NOT be restored (no previous installation to restore); "
+                    f"skill '{safe_skill_name}' install failed after swap on a fresh install "
+                    f"(no previous installation existed to restore); "
                     f"bad bundle quarantined at {orphan_path}. Swap error: {exc}"
                 ) from exc
             raise RuntimeError(

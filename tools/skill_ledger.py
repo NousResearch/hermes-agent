@@ -632,7 +632,11 @@ def begin_file_tool_write(path) -> Optional[Dict[str, Any]]:
     """Pre-write capture for a host-local file-tool write: ``{"info", "before"}`` when
     *path* lands in a live skills tree, else None. A modification whose before-state
     cannot be captured returns None (entry skipped) rather than recording a hollow
-    before=[] that rollback would interpret as 'delete this file'. Never raises."""
+    before=[] that rollback would interpret as 'delete this file'. File-tool writes are
+    ledgered but NOT serialized under ``_skill_mutation_lock``: concurrent
+    write_file/patch calls to the same skill can interleave. Both sides still land in
+    the ledger, so rollback can restore one of the two states, but the ordering race
+    the lock closes for skill_manage stays open here. Never raises."""
     try:
         info = classify_file_tool_target(path)
         if info is None:

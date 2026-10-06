@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 
 import { resolveReadyTimeoutMs } from './remote-lifecycle'
+import { WINDOWS_CHECKOUT_LOCK_PS, WINDOWS_MARKER_JUDGE_PS } from './remote-update-marker-programs'
 import { assertBootstrapNotSuperseded, redactSecrets, SSH_ERROR } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -97,13 +98,26 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   const parsed = JSON.parse(lines[lines.length - 1] || 'null')
 
   if (!parsed?.os || !parsed?.arch) {
-    throw new Error(`Windows probe did not return the expected platform JSON: ${String(lines[lines.length - 1] ?? '').slice(0, 200)}`)
+    throw new Error(
+      `Windows probe did not return the expected platform JSON: ${String(lines[lines.length - 1] ?? '').slice(0, 200)}`
+    )
   }
 
   return parsed
 }
 
-function windowsUpdateMarkerProbeCommand(hermesHome) {
+// The checkouts whose update lock guards a dead marker (update_lock._reclaim_dead):
+// the installer's `<install root>\hermes-agent` and the checkout of the runtime
+// python (`<root>\venv\Scripts\python.exe`). Defines $checkoutRoots; needs $installRoot.
+function windowsCheckoutRootsScript(python = '') {
+  const runtimeRoot = python
+    ? `[IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName(${psLiteral(python)})))`
+    : '$null'
+
+  return `$checkoutRoots=@([IO.Path]::Combine($installRoot,"hermes-agent"),${runtimeRoot})`
+}
+
+function windowsUpdateMarkerProbeCommand(hermesHome, python = '') {
   const script = [
     '$ProgressPreference="SilentlyContinue"',
     '$ErrorActionPreference="Stop"',
@@ -123,6 +137,8 @@ public static class HermesMarkerNoFollow {
 }
 '@
 `,
+    WINDOWS_MARKER_JUDGE_PS,
+    WINDOWS_CHECKOUT_LOCK_PS,
     'function Assert-NoReparse([string]$candidate,[bool]$allowMissing=$false){',
     'if([string]::IsNullOrWhiteSpace($candidate)){return}',
     '$current=[IO.Path]::GetFullPath($candidate);$first=$true',
@@ -137,6 +153,7 @@ public static class HermesMarkerNoFollow {
     '$parent=Split-Path -Parent $hermesHome',
     'if((Split-Path -Leaf $parent) -ieq "profiles"){$installRoot=Split-Path -Parent $parent}',
     '$marker=Join-Path $installRoot ".hermes-update-in-progress"',
+    windowsCheckoutRootsScript(python),
     '$result="UNCERTAIN"',
     '$stream=$null;$memory=$null',
     'try{',
@@ -144,21 +161,11 @@ public static class HermesMarkerNoFollow {
     'if(-not (Test-Path -LiteralPath $marker -PathType Leaf)){$result="CLEAR"}else{$stream=[HermesMarkerNoFollow]::OpenRead($marker)',
     'Assert-NoReparse $marker $false',
     '$memory=New-Object IO.MemoryStream;$stream.CopyTo($memory);$bytes=$memory.ToArray()',
-    'if($bytes.Length -le 256){',
+    'if($bytes.Length -le 4096){',
     '$utf8=[Text.UTF8Encoding]::new($false,$true)',
     '$text=$utf8.GetString($bytes)',
-    "$match=[regex]::Match($text,'\\A([1-9][0-9]*)\\r?\\n([0-9]+)(?:\\r?\\n)?\\z')",
-    '[uint32]$ownerPid=0',
-    '[uint64]$lease=0',
-    '$valid=$match.Success',
-    'if($valid){$valid=[uint32]::TryParse($match.Groups[1].Value,[Globalization.NumberStyles]::None,[Globalization.CultureInfo]::InvariantCulture,[ref]$ownerPid)}',
-    'if($valid){$valid=[uint64]::TryParse($match.Groups[2].Value,[Globalization.NumberStyles]::None,[Globalization.CultureInfo]::InvariantCulture,[ref]$lease)}',
-    'if($valid -and $lease -le 9007199254740991){',
-    'try{',
-    '$process=[Diagnostics.Process]::GetProcessById([int]$ownerPid)',
-    'try{if($process.HasExited){$result="CLEAR"}else{$result="LIVE:"+[string]$ownerPid}}finally{$process.Dispose()}',
-    '}catch [ArgumentException]{$result="CLEAR"} catch{$result="UNCERTAIN"}',
-    '}',
+    '$result=Get-MarkerVerdict $text',
+    'if($result -eq "CLEAR" -and (Test-CheckoutLockHeld $checkoutRoots)){$result="HELD"}',
     '}',
     '}}catch [IO.FileNotFoundException]{$result="CLEAR"}catch{$result="UNCERTAIN"}finally{if($memory){$memory.Dispose()};if($stream){$stream.Dispose()}}',
     'Write-Output $result'
@@ -172,14 +179,14 @@ public static class HermesMarkerNoFollow {
  * This uses only PowerShell/.NET and therefore never imports the remote
  * checkout while an updater may be replacing it.
  */
-async function assertWindowsRemoteInstallUpdateClear(ssh, hermesHome) {
+async function assertWindowsRemoteInstallUpdateClear(ssh, hermesHome, python = '') {
   let observation = ''
 
   try {
     // Same stdout channel as the probe: a CLIXML progress block after the
     // final `Write-Output $result` would otherwise win the .pop() and turn a
     // CLEAR gate into a fail-closed 'update-in-progress' verdict.
-    observation = stripPowerShellNoise(await ssh.exec(windowsUpdateMarkerProbeCommand(hermesHome))).pop() || ''
+    observation = stripPowerShellNoise(await ssh.exec(windowsUpdateMarkerProbeCommand(hermesHome, python))).pop() || ''
   } catch (cause) {
     const error: any = new Error('Could not prove that the remote Hermes install is clear for SSH startup.')
     error.kind = 'update-in-progress'
@@ -196,7 +203,9 @@ async function assertWindowsRemoteInstallUpdateClear(ssh, hermesHome) {
   const error: any = new Error(
     live
       ? `Remote Hermes update process ${live[1]} is still running; SSH startup is paused.`
-      : 'The remote Hermes update marker is unreadable or malformed; refusing SSH startup.'
+      : observation === 'HELD'
+        ? 'A process the remote Hermes update started still holds the install; SSH startup is paused.'
+        : 'The remote Hermes update marker is unreadable or malformed; refusing SSH startup.'
   )
 
   error.kind = 'update-in-progress'
@@ -285,16 +294,23 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
   const script = [
     '$ProgressPreference="SilentlyContinue"',
     '$ErrorActionPreference="Stop"',
+    WINDOWS_MARKER_JUDGE_PS,
+    WINDOWS_CHECKOUT_LOCK_PS,
     `$hermesHome=${psLiteral(runtime.hermesHome)}`,
     '$installRoot=$hermesHome',
     '$parent=Split-Path -Parent $hermesHome',
     'if((Split-Path -Leaf $parent) -ieq "profiles"){$installRoot=Split-Path -Parent $parent}',
     '$marker=Join-Path $installRoot ".hermes-update-in-progress"',
-    '$mutexPath=$marker+".mutex"',
-    '$mutex=[IO.File]::Open($mutexPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite)',
+    windowsCheckoutRootsScript(runtime.python),
+    // The updaters' kernel lock (A7 rule 1): `<marker>.lock` opened sharing
+    // nothing, like marker.ps1 Open-MarkerLock / update_lock.py, bounded 10 s.
+    // A dead claim is deleted inside the hold, but only while the checkout lock
+    // is free (a killed updater's child still holding it answers HELD); a
+    // live/malformed one refuses.
+    '$clock=[Diagnostics.Stopwatch]::StartNew();$mutex=$null',
+    'while(-not $mutex){try{$mutex=[IO.File]::Open($marker+".lock",[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)}catch{if($clock.ElapsedMilliseconds -ge 10000){throw "remote update marker lock is busy"};Start-Sleep -Milliseconds 25}}',
     'try{',
-    '  $mutex.Lock(0,1)',
-    '  if([IO.File]::Exists($marker)){throw "remote update marker is present"}',
+    '  if([IO.File]::Exists($marker)){$verdict=Get-MarkerVerdict ([IO.File]::ReadAllText($marker));if($verdict -eq "CLEAR" -and (Test-CheckoutLockHeld $checkoutRoots)){$verdict="HELD"};if($verdict -ne "CLEAR"){throw "remote update marker is $verdict"};[IO.File]::Delete($marker)}',
     reservation.ownershipId
       ? `  $existingLines=@(& ${helper('read-lock').map(psLiteral).join(' ')} ${psLiteral(reservation.ownershipId)}); $existingExit=$LASTEXITCODE; ` +
         '  if($existingExit -eq 0 -and $existingLines.Count -gt 0){try{$existing=$existingLines[-1]|ConvertFrom-Json}catch{$existing=$null}; ' +
@@ -313,7 +329,7 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
         `  $lock | & ${helper('write-lock').map(psLiteral).join(' ')} ${psLiteral(reservation.ownershipId)} | Out-Null; if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}; $spawnLines|Write-Output`
       : '',
     '  if([IO.File]::Exists($marker)){throw "remote update marker claimed during backend spawn"}',
-    '}finally{try{$mutex.Unlock(0,1)}catch{};$mutex.Dispose()}'
+    '}finally{$mutex.Dispose()}'
   ]
     .filter(line => line !== '')
     .join(';')
@@ -593,7 +609,7 @@ async function connectWindowsRemote(deps) {
 
   assertBootstrapNotSuperseded(signal)
   const runtime = await probeWindowsRemote(ssh, remoteHermesPath)
-  await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
+  await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome, runtime.python)
   const inspection = await helper(ssh, runtime, 'inspect', [runtime.hermesPath])
 
   if (!inspection.supported) {
@@ -607,7 +623,7 @@ async function connectWindowsRemote(deps) {
   rememberLog(`[ssh-lifecycle] remote platform Windows/${runtime.arch}`)
   rememberLog(`[ssh-lifecycle] located hermes at ${runtime.hermesPath}`)
 
-  await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
+  await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome, runtime.python)
   const lock = await helper(ssh, runtime, 'read-lock', [ownershipId])
 
   if (validLock(lock, ownershipId)) {
@@ -622,7 +638,7 @@ async function connectWindowsRemote(deps) {
     const reusable = reusableWindowsLock(lock, state, profile, reuseToken, runtime)
 
     if (reusable) {
-      await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
+      await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome, runtime.python)
       const localPort = await pickLocalPort()
       await forward(localPort, lock.port)
 
@@ -654,23 +670,23 @@ async function connectWindowsRemote(deps) {
         }
 
         await cancelForward(localPort, lock.port)
-        await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
+        await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome, runtime.python)
         await cleanupOwned(ssh, runtime, ownershipId, lock)
       } catch (error) {
         await cancelForward(localPort, lock.port)
         throw error
       }
     } else {
-      await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
+      await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome, runtime.python)
       await cleanupOwned(ssh, runtime, ownershipId, lock)
     }
   } else if (lock) {
-    await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
+    await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome, runtime.python)
     await helper(ssh, runtime, 'remove-lock', [ownershipId])
   }
 
   assertBootstrapNotSuperseded(signal)
-  await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
+  await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome, runtime.python)
   const token = crypto.randomBytes(32).toString('hex')
   const spawnNonce = crypto.randomBytes(8).toString('hex')
   await helper(ssh, runtime, 'upload-token', [ownershipId, spawnNonce], token)
@@ -679,7 +695,7 @@ async function connectWindowsRemote(deps) {
   let spawned
 
   try {
-    await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
+    await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome, runtime.python)
     spawned = await atomicWindowsSpawn(
       ssh,
       runtime,

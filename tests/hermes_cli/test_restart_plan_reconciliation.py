@@ -494,7 +494,7 @@ def test_live_gateway_pids_from_fleet_skips_down_and_unusable_rows():
     PRE-restart PID (nothing replaced it) so it must never count as a successor;
     rows without a usable profile/PID are skipped; a ``stale`` row is a live
     successor (the fleet matrix escalates staleness on its own)."""
-    from hermes_cli.update_cmd_fleet import _live_gateway_pids_from_fleet
+    from hermes_cli.update_cmd_fleet_verify import _live_gateway_pids_from_fleet
 
     rows = [
         {"profile": "coder", "pid": 76796, "state": "current"},

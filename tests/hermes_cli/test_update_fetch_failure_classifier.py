@@ -124,7 +124,7 @@ def test_update_network_git_calls_never_prompt_for_credentials():
 
 
 def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch, tmp_path):
-    """Exercise origin fetch and fork fetch/pull/push, not their source spelling."""
+    """Exercise origin fetch and fork fetch/merge/push, not their source spelling."""
     import subprocess
     from hermes_cli import update_cmd_git
 
@@ -135,19 +135,26 @@ def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch,
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "credential.helper")
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "fixture-helper")
     monkeypatch.setattr(update_cmd, "_has_upstream_remote", lambda *a: True)
+    upstream = "c" * 40
     monkeypatch.setattr(update_cmd, "_count_commits_between",
-                        lambda git, cwd, base, head: 2 if head == "upstream/main" else 0)
+                        lambda git, cwd, base, head: 2 if head == upstream else 0)
     calls = []
 
     def run(cmd, **kwargs):
         calls.append((cmd[1:], kwargs))
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 0, upstream if "rev-parse" in cmd else "", "")
 
     monkeypatch.setattr(subprocess, "run", run)
     update_cmd._git_run(["git"], ["fetch", "origin", "main"], cwd=tmp_path, network=True, check=True)
     assert update_cmd_git._sync_with_upstream_if_needed(["git"], tmp_path, assume_yes=True)
-    assert [args[0] for args, _ in calls] == ["fetch", "fetch", "pull", "push"]
-    for args, kwargs in calls:
+    from hermes_cli.update_custody import git_subcommand
+
+    # The fork's fast-forward is local (`merge --ff-only upstream/main` after the fetch): no
+    # credential helper ever runs under the checkout lock fd a mutator inherits (R2).
+    network = [(args, kwargs) for args, kwargs in calls if git_subcommand(args) != "rev-parse"]
+    assert [git_subcommand(args) for args, _ in network] == ["fetch", "fetch", "merge", "push"]
+    assert network[2][0][-1] == upstream  # the counted commit, not a name a local branch can shadow
+    for args, kwargs in network:
         assert kwargs["stdin"] is subprocess.DEVNULL, args
         env = kwargs["env"]
         assert env["GIT_TERMINAL_PROMPT"] == "0", args

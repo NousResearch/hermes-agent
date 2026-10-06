@@ -228,11 +228,13 @@ method("free_tier.ack_notice", params=ProfileParams, result=FreeTierAckNoticeRes
 class SharedMetricsConsentResult(Result):
     """The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while
     ``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults
-    are not an answer)."""
+    are not an answer) and it is not a ``reask``: an "off" from before the type-ahead fix, offered
+    once more with the reason."""
 
     enabled: bool
     send: bool
     decided: bool
+    reask: bool = False
 
 
 method("shared_metrics.status", params=ProfileParams, result=SharedMetricsConsentResult,

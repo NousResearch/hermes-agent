@@ -1018,6 +1018,8 @@ def parse_reasoning_effort(effort) -> dict | None:
     effort = str(effort).strip().lower()  # False -> "false" -> disabled; "" matches neither set
     if effort in {"none", "false", "disabled"}:
         return {"enabled": False}
+    if effort in {"default", "auto", "native"}:
+        return None
     if effort in VALID_REASONING_EFFORTS:
         return {"enabled": True, "effort": effort}
     return None
@@ -1128,7 +1130,8 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     # Keep the raw value: ``or ""`` would turn a YAML False into "" and silently re-enable thinking.
     effort = agent_cfg.get("reasoning_effort", "")
     result = parse_reasoning_effort(effort)
-    if effort and str(effort).strip() and result is None:
+    effort_str = str(effort).strip().lower() if effort is not None else ""
+    if effort_str and effort_str not in {"default", "auto", "native"} and result is None:
         import logging
         logging.getLogger(__name__).warning("Unknown reasoning_effort '%s', using default (medium)", effort)
     return result

@@ -97,15 +97,113 @@ def pre_agent_fallback_notice(
 
 
 
-def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
+def is_fallback_heuristics_enabled(
+    config: dict[str, Any] | None = None,
+    entry: dict[str, Any] | None = None,
+) -> bool:
+    """Check whether dynamic fallback heuristics are enabled.
+
+    By default, fallback heuristics are OFF (False) and must be explicitly switched on.
+    Users can enable heuristics via:
+    - Entry level: ``entry["heuristic_enabled"]`` or ``entry["enable_heuristic"]``
+    - Top level config: ``fallback_heuristics: true`` (or ``fallback_heuristics_enabled: true``)
+    - Agent section: ``agent.fallback_heuristics: true``
+    - Fallback section: ``fallback.heuristics: true``
+    """
+    if entry and isinstance(entry, dict):
+        if entry.get("heuristic_enabled") is True or entry.get("enable_heuristic") is True:
+            return True
+        if entry.get("heuristic_enabled") is False or entry.get("enable_heuristic") is False:
+            return False
+
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly() or {}
+        except (OSError, ValueError, TypeError, KeyError):
+            config = {}
+
+    if not isinstance(config, dict):
+        return False
+
+    if "fallback_heuristics" in config:
+        return bool(config["fallback_heuristics"])
+    if "fallback_heuristics_enabled" in config:
+        return bool(config["fallback_heuristics_enabled"])
+
+    agent_cfg = config.get("agent")
+    if isinstance(agent_cfg, dict):
+        if "fallback_heuristics" in agent_cfg:
+            return bool(agent_cfg["fallback_heuristics"])
+        if "fallback_heuristics_enabled" in agent_cfg:
+            return bool(agent_cfg["fallback_heuristics_enabled"])
+
+    fallback_cfg = config.get("fallback")
+    if isinstance(fallback_cfg, dict):
+        if "heuristics" in fallback_cfg:
+            return bool(fallback_cfg["heuristics"])
+        if "heuristics_enabled" in fallback_cfg:
+            return bool(fallback_cfg["heuristics_enabled"])
+
+    return False
+
+
+def _iter_fallback_entries(raw: Any, config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     candidates = [raw] if isinstance(raw, dict) else raw if isinstance(raw, list) else []
     entries: list[dict[str, Any]] = []
     for entry in candidates:
         if not isinstance(entry, dict):
             continue
-        provider = str(entry.get("provider") or "").strip()
+        provider = str(entry.get("provider") or entry.get("model_provider") or "").strip()
         model = str(entry.get("model") or "").strip()
-        if not provider or not model:
+        has_criteria = bool(entry.get("criteria") or entry.get("heuristic")) or (
+            model.startswith(("auto:", "heuristic:", "criteria:"))
+        )
+        if not provider and has_criteria:
+            try:
+                from hermes_cli.fallback_heuristics import parse_fallback_criteria
+                crit = parse_fallback_criteria(entry)
+                provider = crit.provider or "nous"
+            except (ValueError, TypeError, KeyError):
+                provider = "nous"
+            entry = {**entry, "provider": provider}
+        if not provider:
+            continue
+        if has_criteria:
+            # Check if heuristics are switched on (default: OFF)
+            heuristics_active = is_fallback_heuristics_enabled(config, entry)
+            if not heuristics_active:
+                logger.debug(
+                    "Fallback heuristic on provider %s skipped because fallback heuristics are disabled by default. "
+                    "Enable via 'fallback_heuristics: true' in config.yaml or 'hermes fallback heuristics on'.",
+                    provider,
+                )
+                if model and not model.startswith(("auto:", "heuristic:", "criteria:")):
+                    normalized = {**entry, "provider": provider, "model": model}
+                    base_url = _normalized_base_url(entry.get("base_url"))
+                    if base_url:
+                        normalized["base_url"] = base_url
+                    entries.append(normalized)
+                continue
+
+            try:
+                from hermes_cli.fallback_heuristics import resolve_fallback_entry
+                resolved_entries = resolve_fallback_entry(entry)
+            except Exception as exc:
+                logger.warning("Failed to resolve fallback criteria for provider %s: %s", provider, exc, exc_info=True)
+                resolved_entries = []
+            for res in resolved_entries:
+                res_provider = str(res.get("provider") or "").strip()
+                res_model = str(res.get("model") or "").strip()
+                if not res_provider or not res_model:
+                    continue
+                normalized = {**res, "provider": res_provider, "model": res_model}
+                base_url = _normalized_base_url(res.get("base_url"))
+                if base_url:
+                    normalized["base_url"] = base_url
+                entries.append(normalized)
+            continue
+        if not model:
             continue
         normalized = {**entry, "provider": provider, "model": model}
         base_url = _normalized_base_url(entry.get("base_url"))
@@ -135,7 +233,7 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     chain: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     for key in ("fallback_providers", "fallback_model"):
-        for entry in _iter_fallback_entries(config.get(key)):
+        for entry in _iter_fallback_entries(config.get(key), config=config):
             identity = _entry_identity(entry)
             if identity not in seen:
                 seen.add(identity)

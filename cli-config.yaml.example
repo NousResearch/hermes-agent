@@ -307,6 +307,72 @@ model:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
 # =============================================================================
+# Fallback Providers & Heuristic Model Selection
+# =============================================================================
+# When the primary model or provider fails (e.g. rate-limited 429, 5xx outages,
+# credit exhaustion, or unavailable endpoints), Hermes walks this ordered chain.
+#
+# You can specify exact fallback models, or specify dynamic CRITERIA / HEURISTICS.
+# Dynamic heuristics solve the problem of ephemeral free models (which come and
+# go) by evaluating available models on the fly without manual config updates.
+#
+# Supported criteria:
+#   sort_by:
+#     - "largest_parameter_count" : Fallback to model with largest parameter count (e.g. 70b, 120b, 405b)
+#     - "greatest_context"        : Fallback to model with greatest context window (e.g. 1M, 200k)
+#     - "smallest"                : Fallback to smallest / fastest model (e.g. 0.5b, 3b, 8b)
+#     - "latest"                  : Fallback to newest model by release date / version
+#     - "latest_flash"            : Fallback to newest flash-tier model
+#   provider / model_provider     : Target provider ("nous" or "openrouter"). Defaults to "nous"
+#                                   (Nous Research Portal), which hosts guaranteed free models.
+#   reasoning_effort              : Thinking effort on fallback model: "default" (native model default),
+#                                   "none" (disable thinking), "low", "medium", "high". Defaults to "default"
+#                                   so fallback models use their native default rather than inheriting
+#                                   the primary model's global effort setting.
+#   free: true                    : Filter to free models (costs 0 credits)
+#   require_tools: true           : Filter to models supporting tool calling (default: true)
+#   filter: "flash"               : Filter by substring, keyword, or glob pattern
+#   vendor: "google"              : Filter by lab/vendor (e.g. google, meta-llama, qwen)
+#   max_candidates: 3             : Top N matching models to queue in fallback chain (default: 3)
+#
+# Fallback heuristics toggle (default: false):
+# Dynamic heuristics are DISABLED by default to guarantee deterministic behavior.
+# To enable dynamic model resolution, set `fallback_heuristics: true` below,
+# set `heuristic_enabled: true` on an individual fallback entry, or run:
+#   hermes fallback heuristics on
+#
+# fallback_heuristics: false
+#
+# fallback_providers:
+#   # Example 1: Heuristic fallback on Nous Research (default provider) to largest free model
+#   # (Requires fallback_heuristics: true to resolve dynamically)
+#   # Defaults to the model's native default thinking effort ("default")
+#   - criteria:
+#       sort_by: "largest_parameter_count"
+#       free: true
+#       require_tools: true
+#       max_candidates: 3
+#
+#   # Example 2: Shorthand heuristic string (defaults to Nous Research)
+#   - heuristic: "largest_parameter_count_free"
+#
+#   # Example 3: Limit heuristic to OpenRouter with model_provider, explicitly disabling thinking
+#   - model_provider: "openrouter"
+#     criteria:
+#       sort_by: "greatest_context"
+#       free: true
+#       reasoning_effort: "none"
+#       max_candidates: 2
+#
+#   # Example 4: Shorthand with inline provider and vendor filtering
+#   - heuristic: "provider:openrouter, vendor:google, latest_flash_free"
+#
+#   # Example 5: Traditional static fallback model with native default thinking
+#   - provider: "anthropic"
+#     model: "claude-sonnet-5"
+#     reasoning_effort: "default"
+
+# =============================================================================
 # Unified Timeouts (operation deadlines)
 # =============================================================================
 # One place to override Hermes's internal operation deadlines (seconds).

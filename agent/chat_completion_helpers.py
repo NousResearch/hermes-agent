@@ -2021,18 +2021,9 @@ def _update_fallback_context_compressor(agent) -> None:
         revalidate_compression_feasibility(agent)
 
 
-def _reresolve_fallback_reasoning_config(agent) -> None:
-    """Per-model override > global reasoning_effort (YAML False = disabled); a config load
-    failure keeps the current reasoning_config rather than killing the swap."""
-    try:
-        # Re-resolve reasoning_config for the new fallback model (Closes #21256). Wrapped in try/except
-        # because a config load failure must not kill the swap.
-        from hermes_cli.config import load_config
-        from hermes_constants import resolve_reasoning_config
-        agent.reasoning_config = resolve_reasoning_config(load_config() or {}, agent.model)
-        logger.info("Fallback %s: reasoning_config resolved: %s", agent.model, agent.reasoning_config)
-    except Exception as _reasoning_err:
-        logger.debug("Failed to resolve reasoning_config for fallback %s; keeping current: %s", agent.model, _reasoning_err)
+def _reresolve_fallback_reasoning_config(agent, fallback_entry: dict | None = None) -> None:
+    from agent.fallback_reasoning import reresolve_fallback_reasoning_config
+    reresolve_fallback_reasoning_config(agent, fallback_entry)
 
 
 def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_base_url: str) -> None:
@@ -2103,12 +2094,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             fb_model = agent.model  # normalized by the binder
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
-            notice = (
-                f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
-                f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}.")
-            if cooldown_seconds is not None:
-                remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
-                notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."
+            from agent.fallback_reasoning import format_fallback_notice
+            remaining_s = max(0, math.ceil(agent._rate_limited_until - time.monotonic())) if cooldown_seconds is not None else 0
+            notice = format_fallback_notice(
+                old_model, old_provider, fb_model, fb_provider, reason, fb, cooldown_seconds, remaining_s)
             _buffer_fallback_notice(agent, notice)
             # ``_fallback_activated`` is also reused by `/model --once` restoration; separate
             # provenance so the restore path only emits a recovery notice after a real fallback.

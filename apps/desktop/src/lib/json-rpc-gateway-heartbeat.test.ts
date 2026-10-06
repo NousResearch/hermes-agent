@@ -152,7 +152,9 @@ describe('JsonRpcGatewayClient heartbeat recovery', () => {
     socket.message({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: { heartbeat: true } } })
 
     const pings = () =>
-      socket.sent.map(text => JSON.parse(text) as { id: string; method: string }).filter(f => f.method === 'gateway.ping')
+      socket.sent
+        .map(text => JSON.parse(text) as { id: string; method: string })
+        .filter(f => f.method === 'gateway.ping')
 
     // One throttled tick: the clock moves 60 with only the last interval run.
     const throttledTick = async () => {

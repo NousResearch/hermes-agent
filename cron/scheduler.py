@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- security fix for #82010: distinguish an explicitly-empty toolset allowlist (fail closed, nothing allowed) from an absent one (no restriction); the added lines are minimal fail-closed branches at this existing chokepoint
 """Cron job scheduler: tick() runs due jobs (gateway calls it every 60s from a background thread).
 A file lock (~/.hermes/cron/.tick.lock) keeps overlapping processes to one tick at a time.
 """
@@ -494,7 +495,10 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
 
     1. Per-job ``enabled_toolsets`` (set via ``cronjob`` tool on create/update). Keeps the agent's
     job-scoped toolset override intact — #6130. Enabled MCP servers are layered on per
-    ``_merge_mcp_into_per_job_toolsets`` so a native-toolset allowlist does not silently strip MCP tools. 2.
+    ``_merge_mcp_into_per_job_toolsets`` so a native-toolset allowlist does not silently strip MCP tools.
+    An explicitly-set EMPTY list is a zero-toolset allowlist, not a clear to the platform default —
+    it is falsy, so it must be compared with ``is not None``, else it fell through to the config
+    default and widened an unattended job back to every toolset (#82010). 2.
     Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``) so users can gate cron toolsets
     globally without recreating every job. 3. Never ``None``: AIAgent reads ``None`` as "every
     toolset", so an unreadable ``platform_toolsets.cron`` restriction would hand an unattended job
@@ -502,7 +506,11 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
     error on the job and opens an incident, so the operator sees it instead of a widened run.
     """
     per_job = job.get("enabled_toolsets")
-    if per_job:
+    if per_job is not None:
+        if not per_job:
+            # Explicit zero: no toolsets at all — no MCP merge either, else every enabled server
+            # would ride back in and widen the allowlist the operator just emptied (#82010).
+            return []
         return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
     try:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load

@@ -561,6 +561,19 @@ def _coerce_platform_toolsets_value(value, platform: str):
     return value
 
 
+def _platform_toolsets_explicitly_saved(config: dict, platform: str) -> bool:
+    """True when ``platform_toolsets.<platform>`` holds an explicitly saved LIST (even ``[]``).
+
+    ``_get_platform_tools``'s ``explicitly_configured`` flag without re-running the resolver
+    (post-coercion, so a list-literal string counts too): an unset key or a non-list value
+    falls back to the platform default. Callers use this to tell an explicit zero-tool
+    selection (fail closed, #82010) from an absent one ("no restriction").
+    """
+    platform_toolsets = config.get("platform_toolsets") or {}
+    raw = platform_toolsets.get(platform)
+    return isinstance(_coerce_platform_toolsets_value(raw, platform), list)
+
+
 def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_servers: bool = True) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
     platform_toolsets = config.get("platform_toolsets") or {}

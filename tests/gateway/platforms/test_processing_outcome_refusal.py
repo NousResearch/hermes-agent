@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.session import SessionSource, build_session_key
@@ -58,28 +58,53 @@ async def _run(handler) -> list:
     return adapter.outcomes
 
 
-@pytest.mark.asyncio
-async def test_refused_event_is_not_scored_success():
-    async def refuse(event):
-        event._hermes_refused = True
-        return None
-
-    assert await _run(refuse) == [ProcessingOutcome.CANCELLED]
-
-
-@pytest.mark.asyncio
-async def test_unauthorized_sender_at_admission_gate_scores_cancelled():
+@pytest.fixture
+def runner():
     from gateway.run import GatewayRunner
 
-    runner = object.__new__(GatewayRunner)
-    runner.config = None
-    runner._is_user_authorized_for_source = lambda source: False
+    runner = GatewayRunner(config=GatewayConfig())
+    yield runner
+    runner.session_store.close_all_db_handles()
+    runner.close_all_session_db_handles()
 
-    async def admit(event):
-        assert await runner._hm_admit_event(event) is None
-        return None
 
-    assert await _run(admit) == [ProcessingOutcome.CANCELLED]
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rewrite", [False, True])
+async def test_unauthorized_sender_at_admission_gate_scores_cancelled(runner, monkeypatch, rewrite):
+    seen = []
+
+    async def plugin_hook(name, **kwargs):
+        assert name == "pre_gateway_dispatch"
+        seen.append(kwargs["event"])
+        return [{"action": "rewrite", "text": "rewritten"}] if rewrite else []
+
+    monkeypatch.setattr("hermes_cli.plugins.ainvoke_hook", plugin_hook)
+
+    assert await _run(runner._handle_message) == [ProcessingOutcome.CANCELLED]
+    assert len(seen) == 1
+    assert seen[0].text == "hello"
+
+
+@pytest.mark.asyncio
+async def test_busy_session_refusal_is_marked_without_queuing_or_completing(runner):
+    adapter = _OutcomeAdapter()
+    adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
+    event = MessageEvent(
+        text="hello",
+        source=SessionSource(platform=Platform.DISCORD, chat_id="111", chat_type="group", user_id="42"),
+        message_id="m2",
+    )
+    session_key = build_session_key(event.source)
+    active = asyncio.Event()
+    adapter._active_sessions[session_key] = active
+
+    await adapter._handle_message_while_active(event, session_key)
+
+    assert getattr(event, "_hermes_refused", False) is True
+    assert not adapter._pending_messages
+    assert adapter._active_sessions[session_key] is active
+    assert not active.is_set()
+    assert adapter.outcomes == []
 
 
 @pytest.mark.asyncio

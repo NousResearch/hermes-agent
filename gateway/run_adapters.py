@@ -870,10 +870,13 @@ class GatewayAdapterLifecycleMixin:
                 # __init__ stay open until the next GC pass — and aiohttp/SQLite handles don't get GC'd
                 # promptly, so 2 fds/retry leak at 300s backoff cap = ~12 fds/hour (#37011).
                 await _dispose_unused_adapter(adapter)
+                # Inbound it held during connect or salvaged in disconnect goes back to the predecessor.
+                hand_over_held_inbound(adapter, info.get("predecessor"))
         except Exception as e:
             if adapter is not None:
                 # An exception escaping connect leaves the adapter in the same unowned state.
                 await _dispose_unused_adapter(adapter)
+                hand_over_held_inbound(adapter, info.get("predecessor"))
             # A reconnect exception is transient; keep retrying at the cap rather than auto-pausing.
             backoff = self._bump_reconnect_backoff(platform, info, attempt, None, str(e))
             logger.warning("Reconnect %s error: %s, next retry in %ds", platform.value, e, backoff)
@@ -1446,8 +1449,9 @@ class GatewayAdapterLifecycleMixin:
                 self._configure_profile_adapter(adapter, profile_name, platform)
                 success = await self._connect_adapter_with_timeout(adapter, platform, is_reconnect=True)
             except BaseException:
-                # Caller never sees this adapter; release its partial resources here.
+                # Caller never sees this adapter; release its partial resources and return its held inbound.
                 await self._safe_adapter_disconnect(adapter, platform)
+                hand_over_held_inbound(adapter, predecessor)
                 raise
             return adapter, success
 
@@ -1489,8 +1493,9 @@ class GatewayAdapterLifecycleMixin:
                                              platform.value, profile_name, exc_info=True)
                             return
                     # Not installed (newer reconnect won the slot, shutdown began, or connect failed):
-                    # release partial resources; stop only for a non-retryable fatal.
+                    # release partial resources and return its held inbound; stop only for a non-retryable fatal.
                     await self._safe_adapter_disconnect(adapter, platform)
+                    hand_over_held_inbound(adapter, predecessor)
                     if success or (
                         getattr(adapter, "has_fatal_error", False)
                         and not getattr(adapter, "fatal_error_retryable", True)
@@ -1499,6 +1504,7 @@ class GatewayAdapterLifecycleMixin:
                 except BaseException as exc:
                     if adapter is not None:
                         await self._safe_adapter_disconnect(adapter, platform)
+                        hand_over_held_inbound(adapter, predecessor)
                     if not isinstance(exc, Exception):
                         raise  # CancelledError (and other BaseExceptions) propagate after release
                     logger.debug(

@@ -81,10 +81,11 @@ def carry_inbound_dedup(predecessor: Any, adapter: Any) -> None:
 
 
 def hand_over_held_inbound(predecessor: Any, adapter: Any) -> None:
-    """Move inbound the retired instance is holding to its now-published replacement (#132829).
+    """Move inbound ``predecessor`` is holding to ``adapter`` (#132829, #133399).
 
-    Runs at publish time, not before connect: a candidate that fails to connect never owns the
-    queue, and the predecessor keeps holding until a replacement is registered."""
+    The runner calls it at publish time (retired instance -> replacement) and after disposing a
+    failed reconnect candidate (candidate -> retained predecessor): a candidate that fails connect
+    can hold acked updates and salvage pending batches in disconnect(), which must not die with it."""
     adopt = getattr(adapter, "adopt_held_inbound", None)
     if predecessor is not None and callable(adopt):
         adopt(predecessor)

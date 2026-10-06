@@ -223,6 +223,17 @@ def _last_run_display(job: Dict[str, Any]) -> str:
     return display
 
 
+def _hold_display(job: Dict[str, Any]) -> str:
+    """Why a parked job is not firing on its cadence (cron/quota_hold.py, cron/billing_hold.py)."""
+    from cron.quota_hold import BILLING_PROVIDER_KEY, STATE_KEY, hold_active
+    if not hold_active(job):
+        return ""
+    if job.get(BILLING_PROVIDER_KEY):
+        return color(f"{job[BILLING_PROVIDER_KEY]} is out of credits; re-checked at the next run "
+                     f"(`hermes cron run {job.get('id', '<id>')}` retries now)", Colors.YELLOW)
+    return color(f"provider usage window closed until {job[STATE_KEY]}", Colors.YELLOW)
+
+
 def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
     """``(label, value)`` detail rows for one job in ``cron list``."""
     # `repeat` / `deliver` may be present-but-null (dict-default only covers a missing key).
@@ -248,6 +259,7 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
         ("Python", job.get("interpreter")),
         ("Last run", f"{job.get('last_run_at', '?')}  {_last_run_display(job)}"
          if job.get("last_status") else ""),
+        ("Held", _hold_display(job)),
         ("Dispatch", _dispatch_display(job.get("last_dispatch"))),
         ("Execution", f"{latest_execution.get('status', '?')}  {latest_execution.get('id', '?')}"
          if latest_execution else "")]

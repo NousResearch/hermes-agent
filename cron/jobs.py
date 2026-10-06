@@ -2150,6 +2150,9 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             # parked. The next fire re-parks (with a fresh notice) if the window is still closed.
             from cron.quota_hold import clear_state as _clear_quota_hold
             _clear_quota_hold(updated)
+        elif any(updated.get(k) != job.get(k) for k in ("model", "provider", "base_url")):
+            from cron.quota_hold import release_for_new_runtime
+            release_for_new_runtime(updated)
         if {"schedule", "next_run_at", "enabled", "state"}.intersection(updates):
             # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
             # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.
@@ -2489,6 +2492,7 @@ def mark_job_run(
     ladder_rung: bool = False,
     quota_hold_seconds: Optional[float] = None,
     recover_consumed_fire: bool = False,
+    billing_hold_provider: Optional[str] = None,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2510,6 +2514,9 @@ def mark_job_run(
     it on every tick. ``recover_consumed_fire`` lets a scheduled sparse cron recover its
     consumed fire when the provider reopens; manual runs retain the natural schedule
     (cron/quota_hold.py, #89376).
+
+    ``billing_hold_provider``: the provider refused the run for billing/credits (no reset time).
+    Recurring jobs are held and re-probed at most hourly instead (cron/billing_hold.py).
     """
     def apply(jobs, _i, job):
         if expected_fire_owner is not None:
@@ -2532,6 +2539,9 @@ def mark_job_run(
             clear_state(job)
         if not success and quota_hold_seconds and not is_terminal_job(job):
             quota_hold.plan_hold(job, quota_hold_seconds, recover_consumed_fire=recover_consumed_fire)
+        elif not success and billing_hold_provider and not is_terminal_job(job):
+            from cron.billing_hold import plan_hold as plan_billing_hold
+            plan_billing_hold(job, billing_hold_provider)
         else:
             quota_hold.clear_state(job)
         save_jobs(jobs)

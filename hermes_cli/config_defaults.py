@@ -37,7 +37,11 @@ DEFAULT_CONFIG = {
     # min_switch_reset_seconds: opt-in (0 = off). When a rate-limited primary declares a reset
     # sooner than this many seconds, stay on it (the retry backoff rides out the window) instead
     # of switching the turn to a fallback model.
-    "fallback": {"min_switch_reset_seconds": 0},
+    # background_local_when_billing_blocked: when a background run's (cron job, Kanban worker)
+    # provider refuses it for billing/credits, it does not continue on a LOCAL fallback (loopback
+    # or LAN endpoint): cron holds the job and re-probes hourly. True keeps the local switch.
+    # Interactive sessions and cloud fallbacks are unaffected.
+    "fallback": {"min_switch_reset_seconds": 0, "background_local_when_billing_blocked": False},
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on

@@ -42,6 +42,16 @@ async def _close_ws(ws, code: int) -> None:
         pass
 
 
+def _process_ancestors(pid: int) -> set[int]:
+    """Pids of ``pid``'s live ancestors; empty when the process is gone or unreadable."""
+    import psutil  # type: ignore
+
+    try:
+        return {parent.pid for parent in psutil.Process(pid).parents()}
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, ValueError):
+        return set()
+
+
 def _resume_target(key: str) -> str:
     """The resume target a keep-alive key was registered under.
 
@@ -143,18 +153,21 @@ class PtySession:
         self.attached = False
         self.last_detached_at = time.monotonic()
 
-    def runs_pid(self, pid: Optional[int]) -> bool:
-        """Whether this PTY's child is the process named by ``pid``.
+    def hosts_pid(self, pid: Optional[int]) -> bool:
+        """Whether ``pid`` runs inside this PTY: the leader itself or one of its descendants.
 
-        A bridge that cannot report one (already reaped, or a stub) is simply
-        not a match.
+        The dashboard's PTY leader is ``node entry.js``; the process that takes the
+        session lease is its ``tui_gateway`` child, so the lease pid is never the
+        bridge's own pid and only ancestry identifies the terminal. A bridge that
+        cannot report a pid (already reaped, or a stub) is simply not a match.
         """
         if pid is None:
             return False
         try:
-            return int(self.bridge.pid) == pid
+            leader = int(self.bridge.pid)
         except (AttributeError, TypeError, ValueError, OSError):
             return False
+        return leader == pid or leader in _process_ancestors(pid)
 
     async def close(self) -> None:
         self.alive = False
@@ -274,12 +287,14 @@ class PtySessionRegistry:
             doomed = [
                 key for key, session in self._sessions.items()
                 if key != keep_key and not session.attached
-                and (_resume_target(key) == resume or session.runs_pid(holder_pid))
+                and (_resume_target(key) == resume or session.hosts_pid(holder_pid))
             ]
-            for key in doomed:
-                session = self._sessions.pop(key, None)
-                if session is not None:
-                    await session.close()
+            sessions = [self._sessions.pop(key) for key in doomed]
+        # Close outside the registry lock — a close can wait out its helpers' SIGHUP grace and
+        # this lock serializes every new chat — but still before the caller spawns: the child's
+        # session lease is only released once its close finishes.
+        for session in sessions:
+            await session.close()
 
     def detach(self, key: str, ws) -> None:
         s = self._sessions.get(key)

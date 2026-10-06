@@ -436,18 +436,21 @@ async def _pty_fail(ws: WebSocket, exc: BaseException) -> None:
     await ws.close(code=1011)
 
 
-def _lease_holder_pid(session_id: Optional[str]) -> Optional[int]:
+def _lease_holder_pid(session_id: Optional[str], *, registry_home: Optional[str] = None) -> Optional[int]:
     """The live process holding ``session_id``'s single-writer lease, if any.
 
     A keep-alive PTY whose chat was never resumed from carries no resume target
     in its registry key, so the lease holder is what identifies the terminal
-    that has to give the session back. A registry that cannot be read is not a
-    reason to refuse the attach: the caller simply finds no holder.
+    that has to give the session back. Leases live under the HOME the chat runs
+    in — a profile-scoped chat's child claims its lease in the profile's home,
+    not the dashboard's launch home — so ``registry_home`` is the child's. A
+    registry that cannot be read is not a reason to refuse the attach: the
+    caller simply finds no holder.
     """
     if not session_id:
         return None
     try:
-        for entry in active_session_registry_snapshot():
+        for entry in active_session_registry_snapshot(registry_home=registry_home):
             if entry.get("session_id") == session_id and isinstance(entry.get("pid"), int):
                 return entry["pid"]
     except (ActiveSessionRegistryError, OSError, ValueError):
@@ -556,8 +559,8 @@ async def pty_ws(ws: WebSocket) -> None:
     # Keep-alive path: the PTY outlives this socket; reattach by token.
     try:
         await PTY_REGISTRY.close_other_sessions(raw_attach_token, keep_key=attach_token)
-        await PTY_REGISTRY.close_orphaned_sessions(
-            registry_resume, keep_key=attach_token, holder_pid=_lease_holder_pid(registry_resume))
+        holder_pid = _lease_holder_pid(registry_resume, registry_home=(env or {}).get("HERMES_HOME"))
+        await PTY_REGISTRY.close_orphaned_sessions(registry_resume, keep_key=attach_token, holder_pid=holder_pid)
         session, _created = await PTY_REGISTRY.attach_or_spawn(attach_token, spawn=_spawn)
     except (PtyUnavailableError, FileNotFoundError, OSError, RegistryFull) as exc:
         await _pty_fail(ws, exc)

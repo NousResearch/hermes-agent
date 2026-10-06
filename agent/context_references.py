@@ -97,6 +97,11 @@ _SENSITIVE_HOME_FILES = tuple(Path(p) for p in (
     ".profile", ".bash_profile", ".zprofile", ".netrc", ".pgpass", ".npmrc", ".pypirc",
 ))
 _TEXT_EXTENSIONS = (".py", ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".js", ".ts")
+# Whole-file tabular/data exports are never inlined: their `text/*` MIME keeps them out of
+# the binary sniff, yet one dropped CSV can cost 100K+ tokens that compression then keeps
+# verbatim. They get the same on-disk pointer XLSX/ZIP already get (#134201). A ranged ref
+# (`@file:...:1-5`) still streams just that window.
+_DATA_FILE_EXTENSIONS = (".csv", ".tsv", ".jsonl", ".ndjson", ".log")
 # Bound the work one message can force: each expanded ref reads at most a bounded prefix /
 # window, and at most this many refs are expanded per message.
 _MAX_EXPANDED_REFERENCES = 16
@@ -321,6 +326,10 @@ def _read_file_reference(
         # A bare "not supported" warning was a dead end (the model gave up); the file IS
         # on disk where the agent's tools run, so hand it an actionable block instead.
         return (None, _binary_reference_block(ref, path)), ""
+    if ref.line_start is None and path.suffix.lower() in _DATA_FILE_EXTENSIONS:
+        # Same dead-end avoidance, opposite failure: a whole-file data export inline is
+        # easily 100K+ tokens and compression keeps user messages verbatim (#134201).
+        return (None, _data_file_reference_block(ref, path)), ""
     if ref.line_start is not None:
         # A ranged ref wants a slice, not the file: stream to the window so a GB-scale
         # file serves :1-5 without being materialized. Lines are read in bounded pieces
@@ -664,6 +673,16 @@ def _binary_reference_block(ref: ContextReference, path: Path) -> str:
         reason="binary file, not inlined as text.",
         guidance="Use your tools to work with it (read or convert it, extract its text, "
                  "or view/render it as needed); do not tell the user the file type is unsupported.",
+    )
+
+
+def _data_file_reference_block(ref: ContextReference, path: Path) -> str:
+    return _on_disk_reference_block(
+        ref, path,
+        descriptor=f"{path.suffix.lower().lstrip('.')} data file",
+        reason="data export, not inlined as raw text.",
+        guidance="Use read_file with a narrow line range, search_files, or code tools "
+                 "(e.g. pandas) to sample and aggregate it; do not load the entire file into context.",
     )
 
 

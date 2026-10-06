@@ -11,11 +11,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import threading
+import time
 from pathlib import Path
 
 from agent.i18n import t
 
 logger = logging.getLogger(__name__)
+
+# A store flapping across the disk-full line must not post a notice pair every tick.
+NOTICE_REPEAT_SECONDS = 3600.0
 
 
 def install_cron_store_notices(runner, loop: asyncio.AbstractEventLoop) -> None:
@@ -23,7 +28,23 @@ def install_cron_store_notices(runner, loop: asyncio.AbstractEventLoop) -> None:
     adapters are connected, so a store that degraded during boot is announced then."""
     from cron.store_health import degraded_records, set_transition_listener
 
+    last_sent: dict[str, float] = {}  # store -> monotonic time of its last notice
+    announced: set[str] = set()  # stores whose current outage got an "unwritable" notice
+    lock = threading.Lock()
+
     def on_transition(event, record) -> None:
+        store, now = record.store, time.monotonic()
+        with lock:
+            if event == "unwritable":
+                last = last_sent.get(store)
+                if last is not None and now - last < NOTICE_REPEAT_SECONDS:
+                    return  # the logs still carry every transition
+                announced.add(store)
+            elif store in announced:
+                announced.discard(store)
+            else:
+                return  # its outage was never announced: no lone "recovered"
+            last_sent[store] = now
         asyncio.run_coroutine_threadsafe(send_cron_store_notice(runner, event, record), loop)
 
     set_transition_listener(on_transition)

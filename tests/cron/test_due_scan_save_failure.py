@@ -228,7 +228,8 @@ def test_unwritable_store_degrades_once_throttles_and_catches_up_once(cron_store
 def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store, monkeypatch, capsys):
     """`hermes cron status` probes the store itself (a real 0500 dir) and leads with the red
     headline + fix; the gateway posts ONE home-channel notice on entry and ONE on recovery,
-    each naming the store, the error, since-when and the skipped runs."""
+    each naming the store, the error, since-when and the skipped runs; re-entry within the hour
+    posts nothing."""
     from types import SimpleNamespace
     from gateway.cron_store_notices import install_cron_store_notices
     from hermes_cli import cron as cron_cli
@@ -264,6 +265,7 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
             cronjobs.warn_store_unwritable(enospc, "x", site, [_due_job()])
         save_jobs([_due_job()])
         save_jobs([_due_job()])
+        cronjobs.warn_store_unwritable(enospc, "x", "scan", [_due_job()])  # flaps back within the hour
         loop.run_until_complete(asyncio.sleep(0.05))
     finally:
         loop.close()

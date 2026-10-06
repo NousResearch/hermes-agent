@@ -1664,14 +1664,13 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Every COMMAND_REGISTRY command is a native slash via one regex matcher. Commands must
         # ALSO be declared in the app manifest (`hermes slack manifest`): Socket Mode won't
-        # deliver undeclared commands at all.
-        from hermes_cli.commands_platforms import slack_native_slashes
-        _slash_names = [name for name, _d, _h in slack_native_slashes()]
-        if _slash_names:
-            _slash_pattern = re.compile(
-                r"^/(?:" + "|".join(re.escape(n) for n in _slash_names) + r")$")
-        else:  # pragma: no cover - registry always non-empty
-            _slash_pattern = re.compile(r"^/hermes$")
+        # deliver undeclared commands at all. The matcher covers the uncapped registrable
+        # universe, not the capped manifest list: an app created under Slack's older, higher
+        # cap keeps its extra commands declared and delivered, and those must keep being
+        # answered (#124762).
+        from hermes_cli.commands_platforms import slack_slash_command_pattern
+
+        _slash_pattern = slack_slash_command_pattern()
 
         self._app.command(_slash_pattern)(self._handle_hermes_command)
 

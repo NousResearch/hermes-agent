@@ -44,6 +44,9 @@ def test_voice_turn_routes_then_restores(tmp_path, monkeypatch, voice_window_ok)
         voice_models = [r["model"] for r in voice.main_requests()]
         if voice_window_ok:
             assert voice_models == ["voice-model"]
+            # Unconfigured effort: the voice turn goes out with reasoning off, the main turns untouched.
+            assert voice.main_requests()[0]["reasoning_effort"] == "none"
+            assert {r["reasoning_effort"] for r in main.main_requests()} == {"medium"}
             assert main_models == ["fake-model", "fake-model"]
             assert spoken["model"] == "voice-model"
         else:  # too large for the voice model's window: the main model answers, nothing compacts
@@ -52,6 +55,23 @@ def test_voice_turn_routes_then_restores(tmp_path, monkeypatch, voice_window_ok)
         assert agent.model == "fake-model"
         assert agent.base_url.rstrip("/") == main.base_url.rstrip("/")
         assert agent._fallback_activated is False
+
+
+@pytest.mark.parametrize("model,api_mode,expected", [
+    ("gpt-6-astra", "codex_responses", "low"),        # Responses ladder has no "none"
+    ("claude-opus-5-5", "anthropic_messages", "low"),  # mandatory thinking
+    ("gpt-5.6-sol", "codex_responses", None),          # "none" is on its ladder: stays off
+    ("claude-sonnet-4-6", "anthropic_messages", None),  # accepts thinking.type=disabled
+])
+def test_reasoning_off_falls_to_the_lowest_valid_level(model, api_mode, expected):
+    from types import SimpleNamespace
+
+    from agent.voice_turn_route import _voice_reasoning
+
+    agent = SimpleNamespace(model=model, api_mode=api_mode, provider="custom",
+                            base_url="https://api.openai.com/v1" if "gpt" in model else "https://api.anthropic.com")
+    got = _voice_reasoning(agent, {"enabled": False})
+    assert got == ({"enabled": True, "effort": expected} if expected else {"enabled": False})
 
 
 def test_voice_usage_never_becomes_the_session_route(tmp_path):

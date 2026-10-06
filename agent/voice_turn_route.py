@@ -23,10 +23,14 @@ logger = logging.getLogger(__name__)
 
 TASK = "voice_chat"
 
-# Agent fields the route swap touches outside the ``_primary_runtime``-shaped snapshot.
+# Agent fields the route swap touches outside the ``_primary_runtime``-shaped snapshot. The
+# reasoning-rejection flags are facts about one route: the voice model starts without the main
+# model's and leaves its own behind (a learned floor is remembered per route instead).
+_REJECTION_FIELDS = ("_reasoning_disable_rejected", "_reasoning_floor_required", "_reasoning_effort_rejected")
 _EXTRA_FIELDS = (
     "_fallback_activated", "_fallback_index", "_provider_fallback_active", "_provider_fallback_route",
     "_rate_limit_backoff_count", "_credential_pool", "_credential_pool_entry_id", "_config_context_length",
+    *_REJECTION_FIELDS,
 )
 
 
@@ -64,6 +68,40 @@ def _fits(agent: Any, messages: List[Dict[str, Any]], system_prompt: str) -> boo
     tokens = estimate_request_tokens_rough(
         messages, system_prompt=system_prompt or "", tools=getattr(agent, "tools", None) or None)
     return tokens < limit
+
+
+def _lowest_effort(agent: Any) -> Optional[str]:
+    """The weakest enabled level the active route accepts when it cannot switch reasoning OFF, else
+    None (OFF goes on the wire as configured). Static knowledge only; a route that 400s on the disable
+    anyway is learned by turn_recovery and remembered by ``end_voice_turn_route``."""
+    from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT, known_reasoning_floor
+    off = {"enabled": False}
+    if known_reasoning_floor(off, agent.provider, agent.base_url, agent.model, TASK) is not off:
+        return REASONING_FLOOR_EFFORT
+    if agent.api_mode == "codex_responses":
+        from agent.codex_responses_adapter import classify_responses_route
+        from agent.transports.codex import _resolve_reasoning
+        route = classify_responses_route(agent)
+        # An enabled "none" clamps to "none" where the route has it, else to its weakest level
+        # (None: the route takes no reasoning field at all).
+        effort, _ = _resolve_reasoning(agent.model, {
+            "provider": agent.provider, "base_url": agent.base_url, "is_codex_backend": route.is_codex_backend,
+            "is_xai_responses": route.is_xai_responses, "reasoning_config": {"enabled": True, "effort": "none"}})
+        return None if effort in (None, "none") else effort
+    if agent.api_mode == "anthropic_messages":
+        from agent.anthropic_adapter import _MANDATORY_THINKING_CLAUDE_SUBSTRINGS, _model_matches
+        # Mandatory-thinking Claude omits the disable and thinks at its default effort.
+        return REASONING_FLOOR_EFFORT if _model_matches(agent.model, _MANDATORY_THINKING_CLAUDE_SUBSTRINGS) else None
+    return None
+
+
+def _voice_reasoning(agent: Any, effort: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """``effort`` for the active route: reasoning OFF becomes the lowest valid level where OFF is
+    not an option."""
+    if not (isinstance(effort, dict) and effort.get("enabled") is False):
+        return effort
+    lowest = _lowest_effort(agent)
+    return {"enabled": True, "effort": lowest} if lowest else effort
 
 
 def _capture(agent: Any) -> Dict[str, Any]:
@@ -125,10 +163,12 @@ def begin_voice_turn_route(agent: Any, messages: List[Dict[str, Any]], system_pr
             return agent._cached_system_prompt or system_prompt
         from agent.chat_completion_helpers import rewrite_prompt_model_identity
         rewrite_prompt_model_identity(agent, agent.model, agent.provider)
+        for name in _REJECTION_FIELDS:
+            setattr(agent, name, False)
         agent._turn_route_task = TASK
         logger.info("Voice turn routed to %s (%s)", agent.model, agent.provider)
     if effort is not None:
-        agent.reasoning_config = effort
+        agent.reasoning_config = _voice_reasoning(agent, effort)
     return agent._cached_system_prompt or system_prompt
 
 
@@ -141,6 +181,10 @@ def end_voice_turn_route(agent: Any) -> None:
     agent._turn_route_task = ""
     try:
         if "snapshot" in state:
+            if getattr(agent, "_reasoning_floor_required", False):
+                # The voice model 400'd on the disable this turn: start the next voice turn at the floor.
+                from agent.auxiliary_reasoning_floor import remember_reasoning_floor
+                remember_reasoning_floor(agent.provider, agent.base_url, {"model": agent.model}, None)
             _reinstall(agent, state)
     except Exception:
         logger.warning("Voice turn route restore failed; the next turn re-resolves the main runtime",

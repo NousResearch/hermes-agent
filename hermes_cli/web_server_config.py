@@ -807,6 +807,12 @@ def _normalize_aux_reasoning_effort(value: Optional[str]) -> Optional[str]:
     return "none" if parsed.get("enabled") is False else parsed["effort"]
 
 
+def _aux_default_effort(slot: str) -> str:
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    block = (DEFAULT_CONFIG.get("auxiliary") or {}).get(slot)
+    return str(block.get("reasoning_effort") or "") if isinstance(block, dict) else ""
+
+
 def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, base_url: str, api_key: str,
                                reasoning_effort: Optional[str] = _UNSET) -> dict:
     from hermes_cli.config import save_config
@@ -862,7 +868,12 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
             slot_cfg.pop("base_url", None)
             clear_model_endpoint_credentials(slot_cfg)
         if effort is None:
-            slot_cfg.pop("reasoning_effort", None)
+            # "Inherit" is an explicit "" where the slot ships a default (voice_chat: none); popping
+            # the key would bring that default straight back.
+            if _aux_default_effort(slot):
+                slot_cfg["reasoning_effort"] = ""
+            else:
+                slot_cfg.pop("reasoning_effort", None)
         elif effort is not _UNSET:
             slot_cfg["reasoning_effort"] = effort
         aux[slot] = slot_cfg

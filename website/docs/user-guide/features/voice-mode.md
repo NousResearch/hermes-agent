@@ -250,8 +250,10 @@ auxiliary:
   voice_chat:
     provider: openrouter          # "auto" = the session's model (default)
     model: google/gemini-3-flash-preview   # empty with a provider = that provider's fast model
-    reasoning_effort: low         # optional; applies to voice turns only
+    reasoning_effort: none        # default: reasoning off on voice turns (see below)
 ```
+
+Reasoning is off on voice turns by default, also when the slot is left on `auto` and the session's model answers. A model that cannot switch reasoning off (gpt-6-astra, mandatory-thinking Claude, routes whose catalog marks it mandatory) gets its lowest accepted level instead, and a route that rejects the disable at runtime is remembered for the next voice turn. Set any level, or `""` to use the session's effort.
 
 It applies to every chained voice turn: CLI and TUI voice mode, the Desktop voice conversation, and voice notes on messaging platforms. The voice turn has the full toolset; only the model answering it changes. The next typed message goes back to the session's model, and so do memory and skill reviews after the turn. Usage is recorded under the `voice_chat` task, so the session keeps the model you picked as its own.
 

@@ -424,17 +424,30 @@ test('observeUpdaterHandoff reports a signal death inside the window', async () 
   assert.equal(outcome.signal, 'SIGTERM')
 })
 
-test('observeUpdaterHandoff accepts a clean exit 0 (Windows cmd start wrapper)', async () => {
+test('observeUpdaterHandoff requires the orchestrator readiness receipt after wrapper exit 0', async () => {
   const child = new FakeChild()
   const timer = manualTimer()
-  const outcomePromise = observeUpdaterHandoff(child, 2500, timer.deps)
+  const outcomePromise = observeUpdaterHandoff(child, 2500, { ...timer.deps, requireReady: () => false })
 
   child.emit('exit', 0, null)
+  timer.fire()
 
   const outcome = await outcomePromise
 
-  assert.equal(outcome.ok, true)
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.reason, 'readiness-missing')
   assert.equal(outcome.code, 0)
+})
+
+test('observeUpdaterHandoff accepts an explicit orchestrator readiness receipt', async () => {
+  const child = new FakeChild()
+  const timer = manualTimer()
+  const outcomePromise = observeUpdaterHandoff(child, 2500, { ...timer.deps, requireReady: () => true })
+
+  child.emit('exit', 0, null)
+  timer.fire()
+
+  assert.equal((await outcomePromise).ok, true)
 })
 
 test('observeUpdaterHandoff settles ok when the child survives the window', async () => {

@@ -26,10 +26,14 @@ for (const failureAt of ['prepare', 'register', 'teardown', 'open', 'none']) {
     }
 
     const deps: AppInstallerStrategyDeps = {
-      python: 'unused-checker',
-      module: 'unused.module',
+      python: 'checker-python',
+      module: 'checker.module',
+      // A config feedBaseUrl without a channel target still asks the OS checker (only a channel `feed`
+      // skips it); an available update with no source URI hands off through feedBaseUrl.
       run: async () => {
-        throw new Error('configured feed does not need the checker')
+        calls.push('check')
+
+        return { code: 2, stdout: '{"available": true, "availability": "Available"}' }
       },
       channel: 'stable',
       light: false,
@@ -81,7 +85,7 @@ for (const failureAt of ['prepare', 'register', 'teardown', 'open', 'none']) {
         const result = await new AppInstallerStrategy(deps).apply()
         assert.equal(result.ok, true)
         assert.equal(result.handedOff, true, 'keep backend restart blocked until the quitting app exits')
-        assert.deepEqual(calls, ['prepare', 'register', 'teardown', 'open', 'quit'])
+        assert.deepEqual(calls, ['check', 'prepare', 'register', 'teardown', 'open', 'quit'])
         assert.equal(fs.existsSync(marker), true)
       } else {
         await assert.rejects(new AppInstallerStrategy(deps).apply(), error => error === failure)

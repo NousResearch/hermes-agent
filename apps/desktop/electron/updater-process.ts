@@ -501,7 +501,7 @@ export function spawnUpdaterProcess(
 export interface UpdaterHandoffOutcome {
   ok: boolean
   /** Set when ok is false. */
-  reason?: 'spawn-error' | 'early-exit'
+  reason?: 'spawn-error' | 'early-exit' | 'readiness-missing'
   /** Human-readable detail for logs (never contains argv secrets). */
   message?: string
   /** Exit code when the child exited inside the settle window. */
@@ -513,6 +513,7 @@ export interface UpdaterHandoffOutcome {
 export interface ObserveUpdaterHandoffDeps {
   setTimeoutFn?: (callback: () => void, ms: number) => unknown
   clearTimeoutFn?: (timer: unknown) => void
+  requireReady?: () => boolean
 }
 
 /**
@@ -572,6 +573,7 @@ export function observeUpdaterHandoff(
 
   return new Promise(resolve => {
     let settled = false
+    let cleanEarlyExit = false
 
     const finish = (outcome: UpdaterHandoffOutcome) => {
       if (settled) {
@@ -613,13 +615,25 @@ export function observeUpdaterHandoff(
         return
       }
 
-      // Clean exit 0 inside the window is expected for wrapper shapes
-      // (cmd.exe `start` on Windows exits immediately after launching the
-      // real script in its own console).
-      finish({ ok: true, code: code ?? 0, signal: null })
+      // A wrapper can exit 0 before the real updater is ready. Keep observing
+      // until the settle window so the orchestrator can publish its receipt.
+      cleanEarlyExit = true
     }
 
-    const timer = setTimeoutFn(() => finish({ ok: true }), settleMs)
+    const timer = setTimeoutFn(() => {
+      if (cleanEarlyExit && deps.requireReady && !deps.requireReady()) {
+        finish({
+          ok: false,
+          reason: 'readiness-missing',
+          message: 'updater wrapper exited before the orchestrator reported readiness',
+          code: 0,
+          signal: null
+        })
+        return
+      }
+
+      finish(cleanEarlyExit ? { ok: true, code: 0, signal: null } : { ok: true })
+    }, settleMs)
 
     observable.once('error', onError)
     observable.once('exit', onExit)

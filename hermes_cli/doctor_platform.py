@@ -251,6 +251,24 @@ def check_certificates(should_fix: bool = False, issues: "list | None" = None) -
         check_ok("TLS default SSL context available (OpenSSL trust paths)")
 
 
+def _check_windows_gateway_task(issues: list[str]) -> None:
+    """Warn when Windows login persistence exists but its Scheduled Task has never executed."""
+    try:
+        from hermes_cli import gateway_windows
+        if not gateway_windows.is_task_registered():
+            return
+        info = gateway_windows.query_task_status()
+    except Exception as exc:
+        return check_warn("Windows gateway Scheduled Task", f"(could not inspect task status: {exc})")
+    if not gateway_windows.task_has_never_run(info):
+        return
+    _section("Gateway Service")
+    check_warn("Windows Scheduled Task has never run", "(Task Scheduler result 267011 / 0x41303)")
+    check_info("The task action has not executed; after sign-out/sign-in inspect its LogonTrigger and principal.")
+    check_info("Repair: hermes gateway install")
+    issues.append("Repair Windows gateway login persistence: hermes gateway install")
+
+
 def _check_gateway_service_linger(issues: list[str]) -> None:
     """Warn when a systemd user gateway service will stop after logout (skipped under s6: no linger concept).
 
@@ -578,7 +596,10 @@ def _check_web_dashboard_import(should_fix: bool, f: Finding) -> None:
 
 @doctor_check()
 def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
-    _check_gateway_service_linger(f.issues)
+    if sys.platform == "win32":
+        _check_windows_gateway_task(f.issues)
+    else:
+        _check_gateway_service_linger(f.issues)
     _check_s6_supervision(f.issues)
     _check_windows_gateway_autostart(should_fix, f)
 

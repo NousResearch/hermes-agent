@@ -1608,3 +1608,20 @@ class TestMacOSTCCGrants:
         out = capsys.readouterr().out
         assert "could not read code-signing requirement" in out
         assert "stable" not in out
+
+
+def test_windows_gateway_doctor_surfaces_never_run_task(monkeypatch, capsys):
+    """#124041: doctor reuses the gateway's authoritative never-run predicate."""
+    from hermes_cli import gateway_windows
+
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "query_task_status", lambda: {"last run result": "267011"})
+
+    issues = []
+    doctor_platform._check_windows_gateway_task(issues)
+    out = capsys.readouterr().out
+
+    assert "Gateway Service" in out
+    assert "Windows Scheduled Task has never run" in out
+    assert "267011 / 0x41303" in out
+    assert any("hermes gateway install" in issue for issue in issues)

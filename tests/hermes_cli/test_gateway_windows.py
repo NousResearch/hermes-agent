@@ -841,3 +841,48 @@ def test_wizard_install_service_asks_once_and_never_starts_after_windows_install
 
     assert installs == [{"force": False, "start_now": True, "start_on_login": True}]
     assert starts == []
+
+
+# ---------------------------------------------------------------------------
+# Registered-but-never-run Scheduled Task diagnosis — issue #124041
+# ---------------------------------------------------------------------------
+
+def test_query_task_status_recognizes_never_run_result_under_localized_labels(monkeypatch):
+    """267011 is locale-stable even when schtasks field names are translated."""
+    localized = "\r\n".join([
+        "主机名: MYPC",
+        "任务名: \\Hermes_Gateway",
+        "状态: Ready",
+        "上次运行时间: 1999/11/30 0:00:00",
+        "上次运行结果: 267011",
+    ])
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda _args: (0, localized, ""))
+
+    info = gateway_windows.query_task_status()
+
+    assert info["last run result"] == "267011"
+    assert gateway_windows.task_has_never_run(info) is True
+    assert gateway_windows.task_has_never_run({"last run result": "0"}) is False
+
+
+def test_status_does_not_mark_a_never_run_task_healthy(monkeypatch, capsys):
+    """#124041: a registered task with SCHED_S_TASK_HAS_NOT_RUN must not receive a green status line."""
+    import hermes_cli.gateway_windows_legacy as gateway_windows_legacy
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(gateway_windows, "query_task_status", lambda: {"last run result": "267011"})
+    monkeypatch.setattr(gateway_windows, "_print_scheduled_task_drift", lambda _name: None)
+    monkeypatch.setattr(gateway_windows, "_print_start_attestation_warning", lambda: None)
+    monkeypatch.setattr(gateway_windows_legacy, "warn_legacy_launchers", lambda: None)
+
+    gateway_windows.status()
+    out = capsys.readouterr().out
+
+    assert "⚠ Scheduled Task registered: Hermes_Gateway (registered but has never run)" in out
+    assert "✓ Scheduled Task registered" not in out
+    assert "hermes gateway install" in out

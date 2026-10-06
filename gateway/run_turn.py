@@ -21,7 +21,6 @@ from agent.session_activity import format_iteration_progress
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
-from types import SimpleNamespace
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
@@ -39,7 +38,7 @@ from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from utils import base_url_hostname
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -155,6 +154,12 @@ async def filter_model_history(
     The input rows are NEVER mutated — the caller may pass the persisted transcript itself. This
     is a model-view shadow: the durable transcript keeps the raw text; every replay to the model
     is filtered. Returns the original list object when nothing changed (byte-identical replay).
+
+    Subscribers MUST be stable: the same field text replayed on a later turn must yield the same
+    replacement (a deterministic function of the text and of the context passed). The model-facing
+    history is recomputed from the raw transcript on every turn, so an unstable subscriber (e.g. a
+    fresh random token per call) would rewrite earlier messages between turns — breaking
+    prompt-cache reuse and showing the model a different pseudonym for the same value.
     """
     if not history or hooks is None or not callable(getattr(hooks, "emit_collect", None)):
         return history
@@ -3037,11 +3042,10 @@ class GatewayTurnMixin:
         proxy_result = await self._run_agent_filter_response_before_delivery(
             proxy_result, source, session_id, stream_consumer=_stream_consumer,
         )
-        await self._run_agent_mark_streamed_delivery(proxy_result, cast(
-            "TurnContext", SimpleNamespace(
-                stream_consumer_holder=[_stream_consumer], source=source, session_key=session_id,
-            ),
-        ))
+        await self._run_agent_mark_streamed_delivery(
+            proxy_result,
+            stream_consumer=_stream_consumer, source=source, session_key=session_id,
+        )
         return proxy_result
 
     async def _run_agent_filter_response_before_delivery(
@@ -4238,14 +4242,20 @@ class GatewayTurnMixin:
         response["already_sent"] = True
         logger.info(*ok)
 
-    async def _run_agent_mark_streamed_delivery(self, response: Any, turn_ctx: TurnContext) -> None:
+    async def _run_agent_mark_streamed_delivery(
+        self, response: Any, *, stream_consumer: Any, source: SessionSource, session_key: Optional[str],
+    ) -> None:
         """Set ``response["already_sent"]`` when streaming already delivered the final reply.
+
+        The three inputs are passed explicitly rather than as a ``TurnContext``: the proxy lane has
+        no turn context (and a fake one would hide what this method reads), so naming the fields is
+        the honest signature.
 
         Never when the agent failed (the error is unseen content) or on "(empty)". Both suppression
         flags reflect call success, not content, so reconcile against the recorded turn-final
         payload: a mismatch (False, incl. payload-less split delivery) never suppresses; None (no
         record) keeps legacy trust."""
-        _sc, source, session_key = turn_ctx.stream_consumer_holder[0], turn_ctx.source, turn_ctx.session_key
+        _sc = stream_consumer
         if not isinstance(response, dict) or response.get("failed"):
             return
         _final = response.get("final_response") or ""
@@ -4563,6 +4573,9 @@ class GatewayTurnMixin:
         response = await self._run_agent_filter_response_before_delivery(
             response, source, session_id, turn_ctx=turn_ctx,
         )
-        await self._run_agent_mark_streamed_delivery(response, turn_ctx)
+        await self._run_agent_mark_streamed_delivery(
+            response, stream_consumer=turn_ctx.stream_consumer_holder[0],
+            source=turn_ctx.source, session_key=turn_ctx.session_key,
+        )
         self._run_agent_schedule_bubble_cleanup(response, _cleanup_adapter, turn_ctx)
         return response

@@ -668,22 +668,38 @@ class GatewayBusySessionMixin:
                 getattr(self, "hooks", None), "agent:message:filter", ctx, "message", text,
             )
 
+    async def _steer_filtered(
+        self, running_agent, text: str, session_key: str, event: Optional[MessageEvent] = None
+    ) -> bool:
+        """The single filtered steer entry point: filter the user's text, then inject it mid-run.
+
+        A steer never passes the turn funnel, so ``agent:message:filter`` is emitted here (see
+        ``_filter_inbound_text``) — otherwise text typed while the agent is busy (exactly the PII
+        case this pair exists for) reaches the model unfiltered. The filter runs BEFORE
+        ``_steer_text_with_origin`` decorates the text, so the hook sees the user's own words.
+
+        Every steer lane routes through here: busy-input steer mode, the priority fast path, and
+        the ``/steer`` slash command.
+        """
+        filtered = await self._filter_inbound_text(text, event, session_key)
+        call_text = self._steer_text_with_origin(filtered, event) if event else filtered
+        return self._steer_running_agent(running_agent, call_text)
+
     async def _try_agent_verb(
         self, running_agent, verb: str, text: str, session_key: str, *, event: Optional[MessageEvent] = None
     ) -> bool:
         """Call ``running_agent.<verb>(text)`` (steer/redirect); False + warning on failure.
 
-        Both busy-input lanes (``/steer`` and ``redirect``) hand the user's text straight to the
-        running turn without passing the turn funnel, so the ``agent:message:filter`` hook is
-        emitted HERE as well: otherwise text typed while the agent is busy — exactly the PII case
-        this pair exists for — would reach the model unfiltered. The text is filtered BEFORE
-        ``_steer_text_with_origin`` decorates it, so the hook sees the user's own words.
+        Both busy-input lanes hand the user's text straight to the running turn without passing
+        the turn funnel, so the ``agent:message:filter`` hook is emitted HERE as well — steer via
+        ``_steer_filtered``, redirect inline below. Otherwise text typed while the agent is busy
+        (exactly the PII case this pair exists for) would reach the model unfiltered.
         """
         try:
-            text = await self._filter_inbound_text(text, event, session_key)
-            call_text = self._steer_text_with_origin(text, event) if event else text
             if verb == "steer":
-                return self._steer_running_agent(running_agent, call_text)
+                return await self._steer_filtered(running_agent, text, session_key, event)
+            call_text = await self._filter_inbound_text(text, event, session_key)
+            call_text = self._steer_text_with_origin(call_text, event) if event else call_text
             return bool(getattr(running_agent, verb)(call_text))
         except Exception as exc:
             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
@@ -1123,7 +1139,7 @@ class GatewayBusySessionMixin:
         if not running_agent or not hasattr(running_agent, "steer"):
             return _queue_fallback(t("gateway.steer.queued_no_agent"))
         try:
-            accepted = self._steer_running_agent(running_agent, self._steer_text_with_origin(steer_text, event))
+            accepted = await self._steer_filtered(running_agent, steer_text, quick_key, event)
         except Exception as exc:
             logger.warning("Steer failed for session %s: %s", quick_key, exc)
             return t("gateway.steer.failed", error=exc)

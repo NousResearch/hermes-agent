@@ -9,6 +9,7 @@ subscriber that raises never breaks the turn (fail-open).
 """
 
 import contextlib
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -374,6 +375,10 @@ async def test_queued_first_response_is_filtered_before_its_send(monkeypatch, tm
 # (3) las emisiones deben correr dentro del ámbito del perfil del source, no del llamante.
 
 _busy_unbound = cast(Any, GatewayRunner._try_agent_verb)
+# The two steer lanes that did NOT go through ``_try_agent_verb``: called unbound for the same
+# reason (a stub stands in for the runner).
+_steer_command_unbound = cast(Any, GatewayRunner._busy_steer_command)
+_priority_steer_unbound = cast(Any, GatewayRunner._hm_busy_steer)
 
 
 class _ScopeTrackingStub:
@@ -505,6 +510,7 @@ class _BusyStub(_ScopeTrackingStub):
 
     _filter_inbound_text = cast(Any, GatewayRunner._filter_inbound_text)
     _text_filter_context = cast(Any, GatewayRunner._text_filter_context)
+    _steer_filtered = cast(Any, GatewayRunner._steer_filtered)
 
 
 class _AgentDeMentira:
@@ -526,8 +532,9 @@ class _AgentDeMentira:
 async def test_steer_and_redirect_text_is_filtered_before_reaching_the_model():
     """Punto 1: el texto tecleado con el agente ocupado también pasa por el filtro.
 
-    Ambas ramas (steer y redirect) desembocan en ``_try_agent_verb``; antes del arreglo el texto
-    llegaba al modelo sin pasar por ``agent:message:filter`` — justo el caso PII.
+    Steer y redirect acaban en la entrada filtrada del carril busy (``_steer_filtered`` /
+    ``_try_agent_verb``); antes del arreglo el texto llegaba al modelo sin pasar por
+    ``agent:message:filter`` — justo el caso PII.
     """
     for verbo in ("steer", "redirect"):
         stub = _BusyStub(_RecordingFilterHooks())
@@ -570,4 +577,103 @@ async def test_the_busy_lanes_filter_inside_the_profile_scope_too():
     )
 
     assert stub.momentos == [("agent:message:filter", True)]
+
+
+class _BusyLaneStub(_ScopeTrackingStub):
+    """Doble que ejercita la entrada de steer FILTRADA real en los carriles que la saltaban."""
+
+    _filter_inbound_text = cast(Any, GatewayRunner._filter_inbound_text)
+    _text_filter_context = cast(Any, GatewayRunner._text_filter_context)
+    _steer_filtered = cast(Any, GatewayRunner._steer_filtered)
+
+    def __init__(self, hooks, running_agent):
+        super().__init__(hooks)
+        self.hooks = hooks
+        self._running_agent = running_agent
+        self.folded: list = []
+        self.queued: list = []
+
+    def _peek_session_state(self, key):
+        return SimpleNamespace(turn=SimpleNamespace(agent=self._running_agent))
+
+    def _fold_into_running_turn(self, agent, key, event):
+        self.folded.append(key)
+        return None
+
+    def _agent_has_active_subagents(self, agent):
+        return False
+
+    def _queue_or_replace_pending_event(self, key, event):
+        self.queued.append(key)
+
+    @staticmethod
+    def _hm_text_only(event):
+        return event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
+
+
+def _busy_lane(hooks_replacement="[dni oculto]"):
+    agente = _AgentDeMentira()
+    stub = _BusyLaneStub(_RecordingFilterHooks(), agente)
+    hooks = _ScopeAware(stub, message_replacement=hooks_replacement)
+    stub.hooks = hooks
+    stub.momentos = []
+    return stub, hooks, agente
+
+
+@pytest.mark.asyncio
+async def test_the_steer_command_lane_is_filtered_too():
+    """«/steer» es un carril propio (no pasa por ``_try_agent_verb``): debe filtrar igual.
+
+    Antes del arreglo ``_busy_steer_command`` llamaba a ``_steer_running_agent`` en directo, así
+    que el texto redactable llegaba al modelo en crudo — la misma fuga que el carril busy.
+    """
+    stub, hooks, agente = _busy_lane()
+    event = MessageEvent(
+        text="/steer mi dni es 12345678Z", message_type=MessageType.TEXT,
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm"),
+        message_id="m3",
+    )
+
+    reply = await _steer_command_unbound(stub, event, "s-key", event.source)
+
+    assert agente.recibido == ["[dni oculto]"], "el comando /steer no filtró el texto"
+    assert [e for e, _ in hooks.events] == ["agent:message:filter"]
+    assert reply  # a real confirmation, not the usage/failed copy
+
+
+@pytest.mark.asyncio
+async def test_the_priority_steer_lane_is_filtered_too():
+    """El carril rápido «PRIORITY steer» inyecta texto sin pasar por el funnel: filtra igual."""
+    stub, hooks, agente = _busy_lane()
+    event = MessageEvent(
+        text="mi dni es 12345678Z", message_type=MessageType.TEXT,
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm"),
+        message_id="m4",
+    )
+
+    await _priority_steer_unbound(stub, event, agente, "s-key")
+
+    assert agente.recibido == ["[dni oculto]"], "el carril PRIORITY steer no filtró el texto"
+    assert [e for e, _ in hooks.events] == ["agent:message:filter"]
+    assert stub.folded == ["s-key"]
+
+
+@pytest.mark.asyncio
+async def test_model_history_replay_is_stable_for_a_deterministic_subscriber():
+    """El historial se re-filtra cada turno: un subscriptor estable debe dar el MISMO resultado.
+
+    Es el contrato que protege la caché de prompt: si el reemplazo cambiara entre turnos, los
+    mensajes antiguos cambiarían en la entrada del modelo (y el transcript guarda el texto crudo,
+    así que no hay copia filtrada que reutilizar). Este test no exige re-emitir: una memoización
+    futura que devuelva el mismo texto también pasa.
+    """
+    hooks = _RecordingFilterHooks(message_replacement="[redactado]")
+    history = [{"role": "user", "content": "mi dni es 12345678Z"}]
+
+    first = await filter_model_history(hooks, "agent:message:filter", {"session_id": "s"}, history)
+    second = await filter_model_history(hooks, "agent:message:filter", {"session_id": "s"}, history)
+
+    assert first == second == [{"role": "user", "content": "[redactado]"}]
+    # El transcript durable nunca se toca.
+    assert history[0]["content"] == "mi dni es 12345678Z"
 

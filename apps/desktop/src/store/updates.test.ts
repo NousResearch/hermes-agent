@@ -1496,7 +1496,12 @@ describe('applyBackendUpdate recovery', () => {
       name: 'hermes-update',
       pid: null,
       running: false,
-      receipt: { outcome: 'success', followups: [{ step: 'dependencies', reason: 'sync failed' }], user_action: null }
+      receipt: {
+        action_id: 'e'.repeat(32),
+        outcome: 'success',
+        followups: [{ step: 'dependencies', reason: 'sync failed' }],
+        user_action: null
+      }
     })
     notifySpy.mockClear()
 
@@ -1509,6 +1514,43 @@ describe('applyBackendUpdate recovery', () => {
     expect(notifySpy).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'warning', message: expect.stringContaining('dependencies (sync failed)') })
     )
+  })
+
+  it("names a partial update's owed user action verbatim, only from this action's own receipt", async () => {
+    const instruction = 'Your local changes are parked in stash@{0}; run `git stash pop` in ~/.hermes/hermes-agent.'
+
+    const status = (actionId: string) => ({
+      exit_code: 1,
+      lines: ['update parked local changes'],
+      name: 'hermes-update',
+      pid: null,
+      running: false,
+      receipt: {
+        action_id: actionId,
+        outcome: 'partial',
+        followups: [],
+        user_action: { step: 'local_changes', reason: instruction }
+      }
+    })
+
+    updateHermesSpy.mockResolvedValue({ action_id: 'c'.repeat(32), ok: true, name: 'hermes-update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue(status('c'.repeat(32)))
+    const own = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+    const result = await own
+
+    // exit 1 stays a failed apply, but the committed run's debt is named, never as "re-run hermes update".
+    expect(result).toMatchObject({ ok: false, error: 'apply-failed' })
+    expect(result.message).toContain(`local_changes: ${instruction}`)
+    expect(result.message).not.toMatch(/Re-run `hermes update`/)
+    expect($backendUpdateApply.get()).toMatchObject({ stage: 'error', message: result.message })
+
+    // The status route attaches the latest receipt when this action has none: another run's debt is not ours.
+    getActionStatusSpy.mockResolvedValue(status('d'.repeat(32)))
+    const foreign = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+
+    expect((await foreign).message).not.toContain('local_changes')
   })
 
   it("never lets another action's receipt certify this update", async () => {

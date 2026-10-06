@@ -3,6 +3,7 @@
  * surfaces it as an ambient pill, and orchestrates the apply flow.
  */
 
+import { updateDebt } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { connectionScoped, profileScoped } from '@/api/client'
@@ -747,15 +748,43 @@ const BACKEND_ACTION_POLL_MS = 1500
 const BACKEND_ACTION_MAX_MS = 6 * 60 * 1000
 const BACKEND_RETURN_MAX_MS = 4 * 60 * 1000
 
-// C3: a committed update succeeds even when post-commit steps are still owed.
-// Name every owed step (and its reason) instead of reporting plain success.
-function owedSteps(receipt: UpdateReceiptSummary | undefined): string {
-  return [...(receipt?.followups ?? []), ...(receipt?.user_action ? [receipt.user_action] : [])]
-    .map(step => (step.reason ? `${step.step} (${step.reason})` : step.step))
-    .join('; ')
+// C3: a committed update succeeds even when post-commit steps are still owed,
+// and a partial one (committed, but the user must act) still owes them. Name
+// every owed step of THIS action's committed run whatever the exit: follow-ups
+// with the rerun remedy, a user action with the producer's own instruction,
+// verbatim (a rerun does not restore a parked stash).
+function owedMessage(receipt: UpdateReceiptSummary | undefined, actionId: string | undefined): string | null {
+  const debt = updateDebt(receipt, actionId)
+
+  if (!debt) {
+    return null
+  }
+
+  return [debt.followups && translateNow('updates.applyStatus.owed', debt.followups), debt.userAction]
+    .filter(Boolean)
+    .join(' ')
 }
 
-function finishBackendApply(returned: boolean, receipt?: UpdateReceiptSummary): DesktopUpdateApplyResult {
+// A failed apply whose receipt still proves a committed partial run (exit 1)
+// names what that run owes instead of only "failed" / "did not come back".
+function failBackendApply(
+  fallback: { shown: string; result: string },
+  status: { receipt?: UpdateReceiptSummary } | null,
+  actionId: string | undefined
+): DesktopUpdateApplyResult {
+  const owed = owedMessage(status?.receipt, actionId)
+  const message = owed ? `${translateNow('updates.applyStatus.failed')} ${owed}` : fallback.shown
+
+  $backendUpdateApply.set({ ...$backendUpdateApply.get(), applying: false, stage: 'error', error: 'apply-failed', message })
+
+  return { ok: false, error: 'apply-failed', message: owed ? message : fallback.result }
+}
+
+function finishBackendApply(
+  returned: boolean,
+  receipt?: UpdateReceiptSummary,
+  actionId?: string
+): DesktopUpdateApplyResult {
   if (returned) {
     $backendUpdateApply.set(IDLE)
     setUpdateOverlayOpen(false)
@@ -773,27 +802,22 @@ function finishBackendApply(returned: boolean, receipt?: UpdateReceiptSummary): 
     // affordance in remote mode targets the backend, so nothing ever told
     // them the app itself was stale). Nudge with a one-click client update.
     void maybeNudgeClientAfterBackendUpdate()
-    const owed = owedSteps(receipt)
+    const owed = owedMessage(receipt, actionId)
 
     if (owed) {
-      const message = translateNow('updates.applyStatus.owed', owed)
-      notify({ durationMs: 0, kind: 'warning', message })
+      notify({ durationMs: 0, kind: 'warning', message: owed })
 
-      return { ok: true, message }
+      return { ok: true, message: owed }
     }
 
     return { ok: true, message: 'Backend update applied.' }
   }
 
-  $backendUpdateApply.set({
-    ...$backendUpdateApply.get(),
-    applying: false,
-    stage: 'error',
-    error: 'apply-failed',
-    message: translateNow('updates.applyStatus.noReturn')
-  })
-
-  return { ok: false, error: 'apply-failed', message: 'Backend did not come back online.' }
+  return failBackendApply(
+    { shown: translateNow('updates.applyStatus.noReturn'), result: 'Backend did not come back online.' },
+    { receipt },
+    actionId
+  )
 }
 
 function ingestBackendActionStatus(status: Awaited<ReturnType<typeof getActionStatus>>): void {
@@ -955,7 +979,7 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       }
 
       if (last.exit_code === 0 || (last.exit_code === null && completedAfterRestart(last, started.action_id))) {
-        return finishBackendApply(true, last.receipt)
+        return finishBackendApply(true, last.receipt, started.action_id)
       }
 
       // #91277 bullet 3: the backend now attaches the durable update
@@ -963,7 +987,7 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       // this update off is authoritative — read its outcome instead of
       // inferring from log markers or timing out across the restart gap.
       if (last.exit_code === null && receiptProvesOutcome(last, applyStartedAtMs, started.action_id)) {
-        return finishBackendApply(last.receipt!.outcome === 'success', last.receipt)
+        return finishBackendApply(last.receipt!.outcome === 'success', last.receipt, started.action_id)
       }
 
       if (!started.action_id && last.exit_code === null) {
@@ -983,15 +1007,11 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       }
     }
 
-    $backendUpdateApply.set({
-      ...$backendUpdateApply.get(),
-      applying: false,
-      stage: 'error',
-      error: 'apply-failed',
-      message: translateNow('updates.applyStatus.failed')
-    })
-
-    return { ok: false, error: 'apply-failed', message: 'Backend update failed.' }
+    return failBackendApply(
+      { shown: translateNow('updates.applyStatus.failed'), result: 'Backend update failed.' },
+      last,
+      started.action_id
+    )
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     $backendUpdateApply.set({

@@ -1,9 +1,12 @@
 import json
 import logging
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.conversation_compression import compress_context
+import pytest
+
+from agent.conversation_compression import _emit_aborted_attempt_telemetry, compress_context
 from agent.context_compressor import ContextCompressor
 
 
@@ -198,3 +201,83 @@ def test_aux_call_telemetry_records_content_free_phase_timings():
         "commit_ms": 11,
     }
     assert "TOPSECRET_TRANSCRIPT_TEXT" not in json.dumps(payload)
+
+
+def test_automatic_compaction_counts_once_in_shared_metrics(monkeypatch):
+    from hermes_cli.observability import shared_metrics_events
+    from hermes_cli.observability.shared_metrics_fields import compression_fields
+
+    calls = []
+    monkeypatch.setattr(shared_metrics_events, "record_compression", lambda **kw: calls.append(kw))
+    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+        compressor = ContextCompressor(
+            model="test/main-model", provider="test-provider", threshold_percent=0.50, quiet_mode=True,
+            config_context_length=100_000,
+        )
+    compressor.tail_token_budget = 10
+    agent = _Agent(compressor)
+
+    with patch.object(compressor, "_generate_summary", return_value="SANITIZED SUMMARY"):
+        compress_context(agent, _messages(), "system prompt", approx_tokens=80_000)
+
+    assert [compression_fields(**kw) for kw in calls] == [
+        {"trigger": "auto", "outcome": "success", "context_fill_bucket": "75_to_90"}
+    ]
+
+
+def test_structural_no_op_is_counted_skipped_with_the_compressors_class(caplog, monkeypatch):
+    """A transcript that fits inside the protected tail makes no summary call: the attempt log names
+    ``no_compressible_window`` (not the caller's generic ``no_progress``) and the shared metric counts
+    it ``skipped``, not ``failed`` (#131412)."""
+    from hermes_cli.observability import shared_metrics_events
+    from hermes_cli.observability.shared_metrics_fields import compression_fields
+
+    recorded = []
+    monkeypatch.setattr(shared_metrics_events, "record_compression", lambda **kw: recorded.append(kw))
+    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+        compressor = ContextCompressor(
+            model="test/main-model", provider="test-provider", threshold_percent=0.50, quiet_mode=True,
+            config_context_length=100_000,
+        )
+    agent = _Agent(compressor)
+    messages = _messages()
+
+    with patch.object(compressor, "_find_tail_cut_by_tokens", return_value=0):
+        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+            compressed, _ = compress_context(agent, messages, "system prompt", approx_tokens=75_000)
+
+    assert compressed == messages
+    payload = _extract_telemetry(caplog)
+    assert (payload["commit_status"], payload["failure_class"]) == ("aborted", "no_compressible_window")
+    assert [compression_fields(**kw)["outcome"] for kw in recorded] == ["skipped"]
+
+
+@pytest.mark.parametrize(
+    ("recorded", "caller", "expected"),
+    [
+        # Nothing recorded: the caller's verdict is the only information there is.
+        (None, "no_progress", "no_progress"),
+        # Sibling generic verdict: a terminal summary failure keeps its documented class.
+        ("summary_auth_failure", "summary_generation_aborted", "summary_auth_failure"),
+        # A caller-side event the compressor cannot see still outranks a recorded class.
+        ("no_compressible_window", "attempt_superseded", "attempt_superseded"),
+        # A snapshot restore put the PREVIOUS attempt's telemetry back: its class is not this attempt's.
+        (("no_compressible_window", "previous-attempt"), "no_progress", "no_progress"),
+    ],
+)
+def test_generic_caller_verdicts_defer_to_the_recorded_failure_class(caplog, monkeypatch, recorded, caller, expected):
+    from hermes_cli.observability import shared_metrics_events
+
+    recorded, attempt_id = recorded if isinstance(recorded, tuple) else (recorded, "this-attempt")
+    monkeypatch.setattr(shared_metrics_events, "finish_compression_attempt", lambda *_args, **_kwargs: None)
+    compressor = SimpleNamespace(
+        _last_compression_telemetry={"failure_class": recorded, "attempt_id": attempt_id}, context_length=100_000,
+    )
+    agent = SimpleNamespace(
+        context_compressor=compressor, session_id="session-telemetry-test", _compression_attempt_id="this-attempt",
+    )
+
+    with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        _emit_aborted_attempt_telemetry(agent, time.monotonic(), caller)
+
+    assert _extract_telemetry(caplog)["failure_class"] == expected

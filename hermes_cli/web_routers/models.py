@@ -5,6 +5,7 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 """
 
 import asyncio
+import concurrent.futures
 import logging
 from typing import Optional
 
@@ -13,7 +14,7 @@ from fastapi import APIRouter, HTTPException
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
     _AUX_TASK_SLOTS, _UNSET, _apply_model_assignment_sync, _dashboard_code_skew_guard,
-    _prepare_main_assignment,
+    _plugin_aux_tasks, _prepare_main_assignment,
 )
 from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
@@ -50,6 +51,41 @@ def _load_config_scoped(profile: Optional[str]) -> dict:
         return load_config()
 
 
+# Blocking budget for /api/model/info's context-length resolution. The resolver
+# chain (agent.model_metadata.get_model_context_length) runs several sequential
+# provider probes, each with its own multi-second timeout, so an unreachable or
+# blackholed model.base_url can hold this response for tens of seconds — and the
+# Desktop Model Settings page waits on it (#63214).
+_MODEL_INFO_PROBE_BUDGET_S = 5.0
+
+
+def _bounded_context_length_probe(model: str, base_url: str, provider: str) -> int:
+    """``get_model_context_length`` with the route's blocking budget.
+
+    On timeout the abandoned probe keeps running in its worker thread (bounded
+    by its own per-request timeouts) while the response degrades to
+    ``auto_context_length = 0`` ("auto-detected: unknown").
+    """
+    from agent.model_metadata import get_model_context_length
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="model-info-probe")
+    try:
+        return pool.submit(
+            get_model_context_length, model=model, base_url=base_url, provider=provider,
+            config_context_length=None
+        ).result(timeout=_MODEL_INFO_PROBE_BUDGET_S)
+    except concurrent.futures.TimeoutError:
+        _log.warning(
+            "GET /api/model/info: context-length probe for %r at %s exceeded %.1fs — returning unknown",
+            model, base_url or "<default>", _MODEL_INFO_PROBE_BUDGET_S,
+        )
+        return 0
+    finally:
+        # wait=False: never block the response (or interpreter exit) on the
+        # abandoned probe.
+        pool.shutdown(wait=False)
+
+
 @router.get("/api/model/info")
 def get_model_info(profile: Optional[str] = None):
     """Resolved metadata for the configured model: auto-detected vs configured
@@ -65,10 +101,10 @@ def get_model_info(profile: Optional[str] = None):
             return dict(_EMPTY_MODEL_INFO, provider=provider)
 
         try:
-            from agent.model_metadata import get_model_context_length
-            # config_context_length=None: ignore the override — we want the auto value
-            auto_ctx = get_model_context_length(model=model_name, base_url=base_url, provider=provider,
-                                                config_context_length=None)
+            # config_context_length=None: ignore the override — we want the auto value.
+            # Bounded: the resolver's provider probes can hang for tens of seconds
+            # when model.base_url is unreachable (#63214).
+            auto_ctx = _bounded_context_length_probe(model_name, base_url, provider)
         except Exception:
             auto_ctx = 0
 
@@ -137,7 +173,7 @@ def _nous_recommended_default() -> dict:
 
 
 @router.get("/api/model/recommended-default")
-def get_recommended_default_model(provider: str = ""):
+def get_recommended_default_model(provider: str = "", profile: Optional[str] = None):
     """Recommended default model for a freshly-authenticated provider, mirroring
     ``hermes model``'s curation so GUI onboarding lands on a sensible default.
     Nous honors the user's free/paid tier. Any other provider gets the preferred
@@ -150,7 +186,11 @@ def get_recommended_default_model(provider: str = ""):
 
     if slug == "nous":
         try:
-            return _nous_recommended_default()
+            # The tier, Portal URL and recommendation caches are all per profile home.
+            with _config_profile_scope(profile):
+                return _nous_recommended_default()
+        except HTTPException:
+            raise  # an unknown ?profile= is the scope's 404, not an empty recommendation
         except Exception:
             _log.exception("GET /api/model/recommended-default (nous) failed")
             return {"provider": "nous", "model": "", "free_tier": None}
@@ -159,12 +199,17 @@ def get_recommended_default_model(provider: str = ""):
         from hermes_cli.inventory import build_models_payload, load_picker_context
         from hermes_cli.models import pick_silent_default_model
 
-        payload = build_models_payload(load_picker_context())
+        # build_models_payload -> list_authenticated_providers -> _save_discovered_models_to_config:
+        # this GET lazily PERSISTS discovered custom-provider models, so it needs the scope too.
+        with _config_profile_scope(profile):
+            payload = build_models_payload(load_picker_context())
         for row in payload.get("providers", []):
             if str(row.get("slug", "")).lower() == slug:
                 models = [str(m) for m in (row.get("models") or [])]
                 return {"provider": slug, "model": pick_silent_default_model(models, provider=slug), "free_tier": None}
         return {"provider": slug, "model": "", "free_tier": None}
+    except HTTPException:
+        raise  # an unknown ?profile= is the scope's 404, not an empty recommendation
     except Exception:
         _log.exception("GET /api/model/recommended-default failed")
         return {"provider": slug, "model": "", "free_tier": None}
@@ -175,24 +220,49 @@ def get_auxiliary_models(profile: Optional[str] = None):
     """Current auxiliary task assignments: ``{"tasks": [{task, provider, model,
     base_url}, ...], "main": {provider, model}}``. ``profile`` scopes the read —
     without it the Models page would show the dashboard profile's pins while
-    /api/model/set wrote the selected profile's."""
+    /api/model/set wrote the selected profile's.
+
+    Built-in slots come first; plugin-registered tasks follow, each carrying the
+    ``label``/``hint``/``plugin`` the plugin declared (built-ins are labelled client-side) and
+    ``inherit_from`` (base slot key or null). An inheriting row also carries ``effective``: the
+    route it resolves to right now, which is the base's while the row itself is unpinned.
+    ``provider``/``model``/``base_url`` stay the slot's own stored values on every row."""
+    from agent.auxiliary_client import _get_auxiliary_task_config
+
     with http_failure("GET /api/model/auxiliary failed", 500, detail="Failed to read auxiliary config"):
-        cfg = _load_config_scoped(profile)
+        with _profile_scope(profile):
+            cfg = load_config()
+            # Inside the scope on purpose: plugin discovery and the resolver key on the same
+            # context-local home, so profile B's rows come from B's plugins and B's config.
+            plugin_tasks = _plugin_aux_tasks()
+            effective = {entry["key"]: _get_auxiliary_task_config(entry["key"])
+                         for entry in plugin_tasks if entry.get("inherit_from")}
         aux_cfg = cfg.get("auxiliary", {})
         if not isinstance(aux_cfg, dict):
             aux_cfg = {}
 
-        tasks = []
-        for slot in _AUX_TASK_SLOTS:
+        def _row(slot: str) -> dict:
             slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
             base_url = str(slot_cfg.get("base_url", "") or "")
-            tasks.append({
+            return {
                 "task": slot, "provider": str(slot_cfg.get("provider", "auto") or "auto"),
                 "model": str(slot_cfg.get("model", "") or ""), "base_url": base_url,
                 "reasoning_effort": str(slot_cfg.get("reasoning_effort") or "") or None,
                 # Lets the UI tell a free local/LAN pin from a forgotten paid-provider pin.
                 "local_endpoint": is_local_endpoint(base_url),
-            })
+            }
+
+        tasks = [_row(slot) for slot in _AUX_TASK_SLOTS]
+        tasks.extend({
+            **_row(entry["key"]),
+            "label": str(entry.get("display_name") or entry["key"]),
+            "hint": str(entry.get("description") or ""),
+            "plugin": str(entry.get("plugin") or ""),
+            "inherit_from": entry.get("inherit_from") or None,
+            **({"effective": {field: str(effective[entry["key"]].get(field) or "")
+                              for field in ("provider", "model", "base_url")}}
+               if entry["key"] in effective else {}),
+        } for entry in plugin_tasks)
 
         model, provider = _main_model_fields(cfg.get("model", {}))
         return {"tasks": tasks, "main": {"provider": str(provider or ""), "model": str(model or "")}}
@@ -282,6 +352,14 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
         raise HTTPException(status_code=400, detail="scope must be 'main' or 'auxiliary'")
 
     with http_failure("POST /api/model/set failed", 500, detail="Failed to save model assignment"):
+        # #99859 (R2): the options picker already refuses on code skew; the WRITE path
+        # must too — a stale process persisting a post-update model string is the
+        # invalid-model-serving failure the reporter hit.
+        skew_msg = _dashboard_code_skew_guard()
+        if skew_msg:
+            _log.warning("POST /api/model/set refused: %s", skew_msg)
+            raise HTTPException(status_code=503, detail=f"Restart required: {skew_msg}")
+
         # Expensive-model warning runs BEFORE the profile scope is entered: _profile_scope
         # must never be held across an await (the RLock is reentrant per-thread, so a second
         # coroutine interleaving on the event-loop thread could cross-restore module globals).

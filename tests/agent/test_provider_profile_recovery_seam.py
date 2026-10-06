@@ -55,3 +55,31 @@ def test_plugin_refresh_returning_none_benches_instead_of_phantom_success(plugin
     monkeypatch.setattr(pool, "_persist", lambda *a, **k: None)
     assert pool._refresh_entry_impl(entry, force=True) is None
     assert pool.entries()[0].last_status == STATUS_EXHAUSTED
+
+
+def test_profile_hook_should_fallback_is_non_retryable_by_default(monkeypatch):
+    """The fallback walk only runs for non-retryable verdicts outside the retryable-client reasons
+    (the built-in terminal verdicts pin ``retryable=False``). A hook asking for fallback on such a
+    reason gets the built-in default instead of a retry against the dead route; a rate-limit hook
+    keeps the built-in retry-then-fallback shape."""
+    def classify(error, *, status_code, error_code, message, body, model):
+        return {"reason": "billing", "should_fallback": True}
+
+    providers.register_provider(ProviderProfile(name="example-fallback", auth_type="oauth_external",
+                                                base_url="https://example.invalid/v1", classify_api_error=classify))
+    try:
+        verdict = classify_api_error(_error(403, "quota_exhausted"), provider="example-fallback", model="m")
+    finally:
+        providers._REGISTRY.pop("example-fallback", None)
+        providers._PROVIDER_LIST_CACHE = None
+    assert (verdict.reason, verdict.should_fallback, verdict.retryable) == (FailoverReason.billing, True, False)
+
+    providers.register_provider(ProviderProfile(
+        name="example-ratelimit", auth_type="oauth_external", base_url="https://example.invalid/v1",
+        classify_api_error=lambda error, **kw: {"reason": "rate_limit", "should_fallback": True}))
+    try:
+        limited = classify_api_error(_error(429, "slow_down"), provider="example-ratelimit", model="m")
+    finally:
+        providers._REGISTRY.pop("example-ratelimit", None)
+        providers._PROVIDER_LIST_CACHE = None
+    assert (limited.reason, limited.should_fallback, limited.retryable) == (FailoverReason.rate_limit, True, True)

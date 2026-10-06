@@ -2,6 +2,7 @@
 gateway forwarding.
 """
 
+import asyncio
 import contextlib
 import logging
 import inspect
@@ -87,7 +88,7 @@ def _cron_profile_dicts() -> List[Dict[str, Any]]:
     try:
         return [
             {"name": name, "path": str(home), "is_default": name == "default"}
-            for name, home in profiles_mod.profiles_to_serve(multiplex=True)]
+            for name, home in profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True)]
     except Exception:
         _log.exception("Failed to list profiles for cron dashboard; falling back to directory scan")
         return _fallback_profile_dicts(profiles_mod)
@@ -386,7 +387,7 @@ async def _forward_cron_fire_to_gateway(
     drops the fire with 200: retrying into an operator-stopped gateway can never succeed.
     """
     _profile_name, home = _cron_profile_home(profile)
-    url = _gateway_fire_endpoint(_profile_name, home)
+    url = await asyncio.to_thread(_gateway_fire_endpoint, _profile_name, home)
     import httpx
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -415,7 +416,7 @@ def _gateway_intentionally_stopped(profile: Optional[str]) -> bool:
     """
     import json as _json
     try:
-        data = _json.loads((_cron_profile_home(profile)[1] / "gateway_state.json").read_text(encoding="utf-8"))
+        data = _json.loads((_cron_profile_home(profile)[1] / "gateway_state.json").read_text(encoding="utf-8-sig"))
         return isinstance(data, dict) and data.get("desired_state") == "stopped"
     except Exception:
         return False

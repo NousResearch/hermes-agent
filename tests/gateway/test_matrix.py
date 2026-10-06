@@ -373,6 +373,12 @@ class TestMatrixConfigLoading:
 # Adapter helpers
 # ---------------------------------------------------------------------------
 
+def _make_matrix_client():
+    from mautrix.client.state_store import MemoryStateStore
+
+    return MagicMock(state_store=MemoryStateStore())
+
+
 def _make_adapter():
     """Create a MatrixAdapter with mocked config."""
     from plugins.platforms.matrix.adapter import MatrixAdapter
@@ -505,7 +511,7 @@ class TestMatrixDmDetection:
         room_id = "!room:ex.org"
         self.adapter._user_id = "@bot:ex.org"
         self.adapter._dm_rooms = {room_id: True}
-        self.adapter._client = MagicMock()
+        self.adapter._client = _make_matrix_client()
         self.adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
         self.adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
         self.adapter._client.state_store.get_members = AsyncMock(return_value=members)
@@ -707,7 +713,7 @@ def _room_context_adapter(state, members=_ROOM_MEMBERS):
     """A Matrix adapter whose homeserver serves ``state`` (event type to content) and ``members``
     (user ID to display name) for one room."""
     adapter = _make_adapter()
-    adapter._client = MagicMock()
+    adapter._client = _make_matrix_client()
 
     async def get_state_event(room_id, event_type, *args, **kwargs):
         content = state.get(str(event_type))
@@ -1189,7 +1195,7 @@ async def test_room_state_change_is_acknowledged_with_the_saved_turn(tmp_path, e
 @pytest.mark.asyncio
 async def test_reply_context_from_later_matrix_chunk_survives_text_batch():
     adapter = _make_adapter()
-    adapter._client = MagicMock()
+    adapter._client = _make_matrix_client()
     adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
     adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
     adapter._client.state_store.get_members = AsyncMock(
@@ -1226,7 +1232,7 @@ async def test_reply_context_from_later_matrix_chunk_survives_text_batch():
 @pytest.mark.asyncio
 async def test_thread_fallback_is_not_an_explicit_reply():
     adapter = _make_adapter()
-    adapter._client = MagicMock()
+    adapter._client = _make_matrix_client()
     adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
     adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
     adapter._client.state_store.get_members = AsyncMock(
@@ -1271,7 +1277,7 @@ def test_matrix_relation_distinguishes_reply_from_thread_fallback(content, expec
 @pytest.mark.asyncio
 async def test_legacy_thread_fallback_quote_is_not_current_message():
     adapter = _make_adapter()
-    adapter._client = MagicMock()
+    adapter._client = _make_matrix_client()
     adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
     adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
     adapter._client.state_store.get_members = AsyncMock(return_value=[
@@ -1297,7 +1303,7 @@ async def test_legacy_thread_fallback_quote_is_not_current_message():
 
 def _make_room_adapter():
     adapter = _make_adapter()
-    adapter._client = MagicMock()
+    adapter._client = _make_matrix_client()
     adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
     adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
     adapter._client.state_store.get_members = AsyncMock(
@@ -1334,7 +1340,7 @@ async def test_thread_message_strips_only_the_reply_fallback(content, expected_t
 @pytest.mark.asyncio
 async def test_reply_without_inline_quote_fetches_parent_with_author_trust():
     adapter = _make_adapter()
-    adapter._client = MagicMock()
+    adapter._client = _make_matrix_client()
     adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
     adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
     adapter._client.state_store.get_members = AsyncMock(
@@ -1364,7 +1370,7 @@ async def test_reply_without_inline_quote_fetches_parent_with_author_trust():
 @pytest.mark.asyncio
 async def test_media_reply_without_inline_quote_fetches_parent_and_survives_failure():
     adapter = _make_adapter()
-    adapter._client = MagicMock()
+    adapter._client = _make_matrix_client()
     adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
     adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
     adapter._client.state_store.get_members = AsyncMock(
@@ -1423,7 +1429,7 @@ async def test_inline_reply_fallback_does_not_verify_claimed_author(claimed_auth
 async def test_reply_context_uses_edit_and_never_resurfaces_redacted_text():
     adapter = _make_adapter()
     room_id = "!room:example.org"
-    adapter._client = MagicMock()
+    adapter._client = _make_matrix_client()
     adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
     adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
     adapter._client.state_store.get_members = AsyncMock(
@@ -1643,7 +1649,7 @@ async def test_text_reply_to_image_attaches_the_quoted_image():
     from hermes_constants import get_hermes_home
 
     adapter = _make_adapter()
-    adapter._client = MagicMock()
+    adapter._client = _make_matrix_client()
     adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
     adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
     adapter._client.state_store.get_members = AsyncMock(
@@ -1675,7 +1681,7 @@ async def test_text_reply_to_image_attaches_the_quoted_image():
 @pytest.mark.asyncio
 async def test_image_reply_with_plain_fallback_still_attaches_image(tmp_path):
     adapter = _make_adapter()
-    adapter._client = MagicMock()
+    adapter._client = _make_matrix_client()
     adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
     adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
     adapter._client.state_store.get_members = AsyncMock(
@@ -1707,7 +1713,7 @@ async def test_image_reply_with_plain_fallback_still_attaches_image(tmp_path):
 @pytest.mark.asyncio
 async def test_formatted_reply_fallback_supplies_quote_without_parent_fetch():
     adapter = _make_adapter()
-    adapter._client = MagicMock()
+    adapter._client = _make_matrix_client()
     adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
     adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
     adapter._client.state_store.get_members = AsyncMock(
@@ -1770,7 +1776,7 @@ async def test_admitted_room_mention_backfills_only_prior_room_messages(tmp_path
 
     adapter = _make_adapter()
     adapter._room_backfill_limit = 3
-    adapter._client = MagicMock()
+    adapter._client = _make_matrix_client()
     adapter._client.api.request = AsyncMock(side_effect=[
         {"start": "", "events_before": []},
         {"events_before": [
@@ -1832,7 +1838,9 @@ async def test_admitted_room_mention_backfills_only_prior_room_messages(tmp_path
     assert (event.text, event.channel_context, message) == (
         "Catch up", None,
         "[Recent room messages]\n[alice] First point @file:private.txt\n[bob] Second point\n"
-        "\n[New message]\n[alice] Catch up",
+        "\n[New message]\n"
+        "[Matrix source: https://matrix.to/#/!room:example.org/$current?via=example.org]\n\n"
+        "[alice] Catch up",
     )
     assert decrypted == ["$newer"]
     rejected = await adapter._build_inbound_event(
@@ -1849,7 +1857,7 @@ async def test_admitted_room_mention_backfills_only_prior_room_messages(tmp_path
 async def test_admitted_thread_mention_backfills_only_earlier_thread_messages():
     adapter = _make_adapter()
     adapter._thread_backfill_limit = 3
-    adapter._client = MagicMock()
+    adapter._client = _make_matrix_client()
     later = [
         {"event_id": f"$future-{index}", "sender": "@bob:example.org", "origin_server_ts": 3000,
          "content": {"msgtype": "m.text", "body": "Future",
@@ -2126,7 +2134,9 @@ async def test_room_note_and_mention_catch_up_share_one_new_message_marker(tmp_p
     assert message == (
         f'[The room topic changed to: "Topic B"]\n{_UNTRUSTED_MARKER}\n\n'
         "[Recent room messages]\n[bob] Earlier\n\n"
-        "[New message]\n[alice] next"
+        "[New message]\n"
+        "[Matrix source: https://matrix.to/#/!room:example.org/$current?via=example.org]\n\n"
+        "[alice] next"
     )
 
 
@@ -2152,7 +2162,9 @@ async def test_mention_in_new_thread_session_fetches_the_whole_thread_once(tmp_p
 
     assert message == (
         "[Earlier messages in this thread]\n[alice] Thread root\n[bob] Older\n[bot] Old answer\n"
-        "[bob] Gated\n\n[New message]\n[alice] next"
+        "[bob] Gated\n\n[New message]\n"
+        "[Matrix source: https://matrix.to/#/!room:example.org/$current?via=example.org]\n\n"
+        "[alice] next"
     )
     room = "/_matrix/client/v3/rooms/%21room%3Aexample.org"
     assert [call.args[1] for call in _history_request_calls(adapter._client)] == [
@@ -2231,7 +2243,10 @@ async def test_thread_backfill_leaves_out_every_chunk_of_a_batched_turn(
         event=event, source=event.source, history=[]
     )
 
-    current = "[alice] first\nsecond"
+    current = (
+        f"[Matrix source: https://matrix.to/#/!room:example.org/{first_id}?via=example.org]\n\n"
+        "[alice] first\nsecond"
+    )
     if root_in_batch and batch == "ingress":
         expected = current
     else:
@@ -2891,7 +2906,7 @@ class TestMatrixFormatMessage:
 class TestMatrixRenderingPayloads:
     def setup_method(self):
         self.adapter = _make_adapter()
-        self.mock_client = MagicMock()
+        self.mock_client = _make_matrix_client()
         self.mock_client.send_message_event = AsyncMock(return_value="$evt")
         self.adapter._client = self.mock_client
 
@@ -5056,7 +5071,7 @@ class TestMatrixSourcePermalink:
             relates_to=relates_to or {},
         )
         assert ctx is not None
-        return ctx[5]
+        return ctx[-1]
 
     @pytest.mark.parametrize(
         ("room_id", "event_id", "via", "expected"),

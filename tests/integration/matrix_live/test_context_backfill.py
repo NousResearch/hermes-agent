@@ -101,7 +101,7 @@ def test_room_mention_recovers_unaddressed_messages(
                 "m.relates_to": {"rel_type": "m.annotation", "event_id": target, "key": "👍"},
             })
             assert isinstance(reacted, RoomSendResponse), reacted
-            await _send(client, live_room.room_id, f"{live_room.bot.user_id} catch up",
+            trigger = await _send(client, live_room.room_id, f"{live_room.bot.user_id} catch up",
                         mention=live_room.bot.user_id)
             stage = "catch-up reply"
             await _wait_for_final(client, live_room, seen, "ok")
@@ -113,7 +113,9 @@ def test_room_mention_recovers_unaddressed_messages(
                 "[Recent room messages]\n[alice] Room decision alpha\n"
                 f"[reaction by {live_room.observer.user_id} to {target}] 👍\n"
                 "[alice] Room decision beta\n\n"
-                "[New message]\ncatch up",
+                "[New message]\n"
+                f"[Matrix source: https://matrix.to/#/{live_room.room_id}/{trigger}?via=matrix.test]\n\n"
+                "catch up",
             )
         finally:
             await client.close()
@@ -158,14 +160,16 @@ def test_thread_mention_recovers_only_its_earlier_messages(
             assert "Thread B earlier" not in prompt
             assert "Thread B root" not in prompt
 
-            await _send(client, live_room.room_id, f"{live_room.bot.user_id} thread follow-up",
+            trigger = await _send(client, live_room.room_id, f"{live_room.bot.user_id} thread follow-up",
                         root=root_a, mention=live_room.bot.user_id)
             await _wait_for_final(client, live_room, seen, "ok")
 
             requests = group_gateway.model.main_requests()
             assert len(requests) == 2
             assert (_conversation_roles(requests[1]), _last_user_text(requests[1])) == (
-                ["user", "assistant", "user"], "[alice] thread follow-up",
+                ["user", "assistant", "user"],
+                f"[Matrix source: https://matrix.to/#/{live_room.room_id}/{trigger}?via=matrix.test]\n\n"
+                "[alice] thread follow-up",
             )
         finally:
             await client.close()

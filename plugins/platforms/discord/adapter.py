@@ -5078,6 +5078,12 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         """This adapter's DISCORD_NO_THREAD_CHANNELS list (per-profile)."""
         return self._gate_csv_set(self._gate_raw("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS"))
 
+    def _get_thread_on_free_response_channels(self) -> set:
+        """Free-response channels that should still auto-thread instead of replying inline."""
+        return self._gate_csv_set(
+            self._gate_raw("thread_on_free_response_channels", "DISCORD_THREAD_ON_FREE_RESPONSE_CHANNELS")
+        )
+
     def _get_allowed_users(self) -> set:
         """This adapter's DISCORD_ALLOWED_USERS entries (per-profile, cleaned)."""
         raw = self._gate_raw("allow_from", "DISCORD_ALLOWED_USERS")
@@ -6203,12 +6209,18 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 ):
                     return False
         # Auto-thread: isolate each @mention in a text channel into its own thread (Slack-style).
+        # thread_on_free_response_channels: free-response channels that opt back
+        # into auto-threading even when the global free-response auto-thread is off.
+        # On thread-creation failure, falls back to inline reply (never drop).
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels = self._get_no_thread_channels()
+            _thread_on_free = self._get_thread_on_free_response_channels()
+            _free_wants_thread = bool(channel_keys & _thread_on_free)
             # Voice-linked and reply exclusions live in the auto-thread gate below, not in skip_thread.
             skip_thread = bool(channel_keys & no_thread_channels) or (
-                is_free_channel and not self._discord_free_response_auto_thread()
+                is_free_channel and not _free_wants_thread
+                and not self._discord_free_response_auto_thread()
             )
             auto_thread = self._extra_or_env_flag("auto_thread", "DISCORD_AUTO_THREAD", "true", truthy=True)
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
@@ -6226,23 +6238,14 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                     auto_threaded_channel = thread
                     await self._threads.mark_async(thread_id)
                 else:
-                    # Auto-threading is the routing target; do NOT fall back to an inline parent-channel
-                    # reply (dumps the task into a shared channel). Surface an error and skip the run.
-                    try:
-                        # That breaks thread-first Discord workflows by dumping a new task into a shared
-                        # channel. Surface a short visible error so the user can retry once Discord
-                        # recovers, and skip agent invocation for this message. See #20243.
-                        await message.channel.send(
-                            self.warning_text(
-                                t("platform.discord.thread.auto_create_failed"),
-                                t("platform.discord.thread.auto_create_failed_generic"))
-                        )
-                    except Exception as notify_error:
-                        logger.warning(
-                            "[%s] Failed to notify user of auto-thread failure: %s", self.name,
-                            notify_error,
-                        )
-                    return False
+                    # Thread creation failed.  Log a warning and fall through
+                    # to inline reply — never drop the message entirely.
+                    logger.warning(
+                        "[%s] Auto-thread creation failed for message in %s; "
+                        "falling back to inline reply.",
+                        self.name,
+                        message.channel.id,
+                    )
         referenced_attachments = []
         reference = getattr(message, "reference", None)
         resolved_reference = getattr(reference, "resolved", None) if reference else None

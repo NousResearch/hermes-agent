@@ -246,8 +246,11 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         # A bare question may be aimed at the bot even in a free-response group.
         if not self._bot_ids_from_message(data) or (data.get("hasQuotedMessage") and not data.get("quotedParticipant")):
             return None
-        # Mentioning or quoting someone else (bot ruled out above) is addressed elsewhere, question or not.
-        if data.get("mentionedIds") or data.get("quotedParticipant"):
+        # Opening with a mention of, or quoting, someone else (bot ruled out above) is addressed
+        # elsewhere, question or not; a mid-sentence mention may still be a question for the bot.
+        lead = re.match(r"@(\w+)", body)
+        mentioned = {self._normalize_whatsapp_id(m).split("@", 1)[0] for m in data.get("mentionedIds") or ()}
+        if (lead and lead.group(1) in mentioned) or data.get("quotedParticipant"):
             return False
         return None if "?" in body else False
 

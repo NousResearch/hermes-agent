@@ -253,7 +253,7 @@ def _(rid, params):
                             sid, record, target, profile, row, reused=False
                         ),
                     )
-    except Exception:
+    except Exception:  # health: allow BLE001 -- deliberate RPC fail-closed boundary: any store, ownership, or recovery observation failure must refuse attachment without claiming unowned/idle or falling back to execution
         # Never turn a failed store/liveness/recovery query into unowned/idle.
         return _err(
             rid,

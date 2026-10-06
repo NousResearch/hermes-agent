@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- rebase of existing session.attach contribution: the two cold-attachment resume/activate fences add four lines at the live reuse chokepoints; preserve upstream module layout and behavior
 """Session / delegation / spawn-tree / billing / pet JSON-RPC handlers.
 
 Bodies are rebound onto server.py's globals at install time (method_ctx.py), so they use server

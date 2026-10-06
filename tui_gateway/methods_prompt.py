@@ -679,7 +679,7 @@ _CLIENT_SURFACES = frozenset({"hud", "voice-live"})
 
 
 @method("prompt.submit")
-def _(rid, params: dict) -> dict:
+def _(rid, params: dict) -> dict:  # health: allow CC -- existing session.attach fence must precede process-global voice-stop and speech state effects; this single admission branch preserves the public PR contract
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
     sid = params.get("session_id", "")
     raw_text = params.get("text", "")

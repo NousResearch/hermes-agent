@@ -19,7 +19,7 @@ description: >-
   phrase's occurrence count dropped by exactly one (allowing for copies inside the replacement),
   and that the page's font/size/colour set is unchanged; a pixel-diff band is reported for
   information and does not decide the outcome. Refuses, writing nothing, on scans, Type3/XObject
-  text, pages with more than one content stream, an empty replacement, and a replacement needing
+  text, pages with more than one content stream, and a replacement needing
   a glyph the embedded subset lacks — it never falls back to substituting a typeface. Widths are
   measured from the embedded font program, not the system font of the same name. action="inspect"
   lists each line with its baseline and BT/ET block count so a caller can tell whether a document
@@ -37,7 +37,7 @@ maintainer: Samuek9
 tier: community
 category: tools
 docs_url: https://github.com/Samuek9/pdf-surgeon#readme
-version: "1.0.2"
+version: "1.0.1"
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools:

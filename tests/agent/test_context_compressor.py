@@ -3697,7 +3697,7 @@ class TestPreLlmFeasibilityCheck:
             assert len(benched) < len(msgs)
             assert compressor._last_feasibility_skip is True  # recorded streak-neutral
 
-            compressor._fallback_probe_at = time.monotonic() - 1  # recovery window elapsed
+            compressor._fallback_probe_at = time.time() - 1  # recovery window elapsed
             compressor.compress(self._make_messages(), force=False)
             mock_gen.assert_called_once()
 
@@ -3732,7 +3732,7 @@ class TestPreLlmFeasibilityCheck:
             self._record_boundary(compressor)
             assert compressor._fallback_compression_streak == 2  # a bench is streak-neutral
 
-            compressor._fallback_probe_at = time.monotonic() - 1  # recovery window elapsed
+            compressor._fallback_probe_at = time.time() - 1  # recovery window elapsed
             compressor.compress(self._make_messages(), force=False)  # probe
             self._record_boundary(compressor)
 
@@ -3743,7 +3743,7 @@ class TestPreLlmFeasibilityCheck:
         """One probe per recovery window: a probe whose summary fails again counts as a fallback
         and benches the summary model for another full window."""
         compressor._fallback_compression_streak = 2
-        compressor._fallback_probe_at = time.monotonic() - 1  # recovery window elapsed
+        compressor._fallback_probe_at = time.time() - 1  # recovery window elapsed
 
         with patch.object(compressor, "_generate_summary", return_value=None) as mock_gen:
             compressor.compress(self._make_messages(), force=False)  # probe, summary fails
@@ -3756,6 +3756,30 @@ class TestPreLlmFeasibilityCheck:
 
         assert mock_gen.call_count == 1
         assert compressor._fallback_probe_at >= before + compressor._ANTI_THRASH_RECOVERY_SECONDS
+
+    def test_bench_probe_deadline_survives_a_compressor_rebuild(self, compressor, tmp_path):
+        """The gateway rebuilds the agent on cache eviction: a fresh compressor bound to the same
+        session must resume the persisted bench window, not restart it (else the probe starves)."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", "cli")
+        db.set_compression_fallback_streak("s1", 2)
+        compressor.bind_session_state(db, "s1")
+        window = compressor._ANTI_THRASH_RECOVERY_SECONDS
+
+        with patch("agent.context_compressor.time.time", return_value=1000.0), \
+                patch.object(compressor, "_generate_summary", return_value="LLM summary") as mock_gen:
+            compressor.compress(self._make_messages(), force=False)  # benched, arms the window
+        mock_gen.assert_not_called()
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            rebuilt = ContextCompressor(
+                model="test/model", threshold_percent=0.85, protect_first_n=2, protect_last_n=2, quiet_mode=True,
+            )
+        rebuilt.bind_session_state(db, "s1")
+        with patch("agent.context_compressor.time.time", return_value=1000.0 + window + 1), \
+                patch.object(rebuilt, "_generate_summary", return_value="LLM summary") as mock_gen:
+            rebuilt.compress(self._make_messages(), force=False)
+        mock_gen.assert_called_once()
 
     def test_skip_count_resets_on_session_reset(self, compressor):
         """_prellm_skip_count must reset alongside _ineffective_compression_count."""

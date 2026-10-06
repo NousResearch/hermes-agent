@@ -328,6 +328,7 @@ _DB_PERSISTED_MARKER = "_db_persisted"
 # they don't duplicate live copies in recall; never persisted (unknown column).
 _COMPACTION_TAIL_MARKER = "_compaction_tail"
 PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY = "_proactive_prune_rearm_tokens"
+FALLBACK_PROBE_AT_MODEL_CONFIG_KEY = "_fallback_probe_at"
 
 _NO_USER_TASK_SENTINEL = "None. This session contains no user-authored turns."
 COMPRESSION_CONTINUATION_USER_CONTENT = (
@@ -2398,7 +2399,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._prellm_skip_count = 0
         # Only a healthy completed summary resets this; ordinary fitting responses do not.
         self._fallback_compression_streak = 0
-        # Monotonic time of the next summary-model probe while the fallback streak benches it; 0.0 = unarmed.
+        # Wall-clock time of the next summary-model probe while the fallback streak benches it; 0.0 = unarmed.
         self._fallback_probe_at = 0.0
         # Armed at a completed boundary; consumed by the next real prompt count in update_from_response().
         self._verify_compaction_cleared_threshold = False
@@ -2426,12 +2427,16 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._consecutive_timeout_failures = self._consecutive_truncation_failures = self._fallback_compression_streak = 0
         self._consecutive_overload_aborts = 0
         self._ineffective_compression_count = self._prellm_skip_count = 0
-        self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = 0.0
+        self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = self._fallback_probe_at = 0.0
         self._reset_proactive_prune_rearm()
         self.get_active_compression_failure_cooldown()
         self._load_fallback_compression_streak()
         self._load_ineffective_compression_count()
         self._load_anti_thrash_recovery_deadline()
+        self._load_durable(
+            "_fallback_probe_at", "get_session_model_config_value", "summary-model probe deadline",
+            float, 0.0, FALLBACK_PROBE_AT_MODEL_CONFIG_KEY, 0.0,
+        )
         self._load_consecutive_overload_aborts()
         self._load_proactive_prune_rearm_tokens()
 
@@ -2580,6 +2585,16 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             return
         self._anti_thrash_recovery_deadline = deadline
         self._durable_write("set_compression_recovery_deadline", "compression recovery deadline", deadline)
+
+    def _set_fallback_probe_at(self, at: float) -> None:
+        """Set the summary-model probe deadline, persisting on change only (0 = unarmed) so a rebuilt
+        compressor resumes the bench window instead of restarting it (same contract as #100185)."""
+        if at == self._fallback_probe_at:
+            return
+        self._fallback_probe_at = at
+        self._durable_write(
+            "patch_session_model_config", "summary-model probe deadline", {FALLBACK_PROBE_AT_MODEL_CONFIG_KEY: at or None},
+        )
 
     def _record_ineffective_compression_verdict(self, count: int) -> None:
         """Set the anti-thrash strike counter; persists only on change."""
@@ -5422,19 +5437,20 @@ Write only the summary body. Do not include any preamble or prefix."""
         paying for a summary model that keeps failing (#63008). One probe per recovery window; a
         healthy summary resets the streak, another fallback benches it again."""
         if self._fallback_compression_streak < 2:
-            self._fallback_probe_at = 0.0
+            self._set_fallback_probe_at(0.0)
             return False
-        now = time.monotonic()
+        # Wall clock: the deadline is persisted on the session row so a gateway rebuild resumes the window.
+        now = time.time()
         if self._fallback_probe_at and now >= self._fallback_probe_at:
-            self._fallback_probe_at = 0.0
+            self._set_fallback_probe_at(0.0)
             if not self.quiet_mode:
                 logger.info(
                     "Compression: probing the summary model again after %d fallback summaries in a row",
                     self._fallback_compression_streak,
                 )
             return False
-        if not self._fallback_probe_at:
-            self._fallback_probe_at = now + self._ANTI_THRASH_RECOVERY_SECONDS
+        if not self._fallback_probe_at or self._fallback_probe_at - now > self._ANTI_THRASH_RECOVERY_SECONDS:
+            self._set_fallback_probe_at(now + self._ANTI_THRASH_RECOVERY_SECONDS)
         self._last_feasibility_skip = True
         telemetry["failure_class"] = "summary_model_benched"
         if not self.quiet_mode:

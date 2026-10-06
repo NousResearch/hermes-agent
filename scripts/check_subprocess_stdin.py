@@ -103,13 +103,25 @@ def _definition_sets_stdin(tree: ast.AST, name: str) -> bool:
     return node is not None and _sets_stdin(node)
 
 
+def _is_stdin_key(node: ast.AST | None) -> bool:
+    return isinstance(node, ast.Constant) and node.value == "stdin"
+
+
 def _sets_stdin(node: ast.AST) -> bool:
-    """stdin appears as a keyword (dict(stdin=...)) or a dict-literal key ({"stdin": ...})."""
-    return any(
-        (isinstance(sub, ast.keyword) and sub.arg == "stdin")
-        or (isinstance(sub, ast.Constant) and sub.value == "stdin")
-        for sub in ast.walk(node)
-    )
+    """stdin is set as a keyword (``dict(stdin=...)``), a dict-literal key (``{"stdin": ...}``),
+    a subscript store (``kw["stdin"] = ...``) or ``kw.setdefault("stdin", ...)``. A ``"stdin"``
+    string anywhere else (a value, a path) does not count."""
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.keyword) and sub.arg == "stdin":
+            return True
+        if isinstance(sub, ast.Dict) and any(_is_stdin_key(key) for key in sub.keys):
+            return True
+        if isinstance(sub, ast.Subscript) and isinstance(sub.ctx, ast.Store) and _is_stdin_key(sub.slice):
+            return True
+        if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+                and sub.func.attr == "setdefault" and sub.args and _is_stdin_key(sub.args[0])):
+            return True
+    return False
 
 
 def _is_inheriting_call(call: ast.Call) -> bool:
@@ -129,12 +141,12 @@ def _call_is_safe(call: ast.Call, tree: ast.AST) -> bool:
             return True
         if kw.arg is not None:
             continue
+        # Inline splat that sets it: ``**dict(stdin=...)`` / ``**{"stdin": ...}``.
+        if _sets_stdin(kw.value):
+            return True
         # ``**name`` / ``**name(...)`` splat: safe when the same-file definition sets stdin=.
         value = kw.value.func if isinstance(kw.value, ast.Call) else kw.value
-        if isinstance(value, ast.Name):
-            if _definition_sets_stdin(tree, value.id):
-                return True
-        elif _sets_stdin(kw.value):  # inline ``**dict(stdin=...)`` / ``**{"stdin": ...}``
+        if isinstance(value, ast.Name) and _definition_sets_stdin(tree, value.id):
             return True
     return False
 

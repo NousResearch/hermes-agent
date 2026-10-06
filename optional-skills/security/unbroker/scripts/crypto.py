@@ -53,8 +53,16 @@ def ensure_identity() -> Path:
             p.parent.chmod(0o700)
         except OSError:
             pass
-        subprocess.run(["age-keygen", "-o", str(p)], check=True, capture_output=True,
-                       stdin=subprocess.DEVNULL, timeout=30)
+        # Generate beside the target and move it into place, so a timed-out or failed run
+        # leaves no partial identity that the exists() check above would accept next time.
+        partial = p.with_name(f"{p.name}.partial")
+        partial.unlink(missing_ok=True)
+        try:
+            subprocess.run(["age-keygen", "-o", str(partial)], check=True, capture_output=True,
+                           stdin=subprocess.DEVNULL, timeout=30)
+            partial.replace(p)
+        finally:
+            partial.unlink(missing_ok=True)
         try:
             p.chmod(0o600)
         except OSError:

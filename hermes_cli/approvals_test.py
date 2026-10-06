@@ -6,8 +6,9 @@ order the runtime guard (``check_all_command_guards``) applies them:
 
 1. container-skip gate (isolated backends bypass all guards), 2. hardline blocklist (never
 bypassable, fires before yolo/off), 3. sudo-stdin guard (unconditional), 4. user ``approvals.deny``
-rules (fire before yolo/off), 5. yolo / ``approvals.mode: off`` bypass, 6. permanent
-``command_allowlist``, 7. dangerous-pattern detection (would prompt).
+rules (fire before yolo/off), 4b. user ``approvals.ask`` rules (prompt before yolo/off), 5. yolo /
+``approvals.mode: off`` bypass, 6. permanent ``command_allowlist``, 7. dangerous-pattern detection
+(would prompt).
 """
 
 from __future__ import annotations
@@ -50,8 +51,15 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
             "normalized_variants": variants,
         }
 
-    # 1. Isolated container backends skip every guard except the operator's approvals.deny
-    #    (fires BEFORE the hardline floor at runtime).
+    def ask_result(ask_pattern: str) -> dict:
+        return result(
+            "ask-approval", rule=f"approvals.ask: {ask_pattern}",
+            detail="matches a user-defined approvals.ask rule in config.yaml; the runtime "
+                   "prompts even under --yolo / approvals.mode=off (and blocks where nobody can answer)",
+        )
+
+    # 1. Isolated container backends skip every guard except the operator's approvals.deny /
+    #    approvals.ask (they fire BEFORE the hardline floor at runtime).
     if approval._should_skip_container_guards(env_type):
         deny_pattern = approval_floors._match_user_deny_rule(command)
         if deny_pattern is not None:
@@ -60,10 +68,13 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
                 detail="matches a user-defined approvals.deny rule in config.yaml "
                        "(blocked even in an isolated container, under --yolo / mode=off)",
             )
+        ask_pattern = approval_floors._match_user_ask_rule(command)
+        if ask_pattern is not None:
+            return ask_result(ask_pattern)
         return result(
             "allow",
             detail=(f"env_type '{env_type}' is an isolated container backend; "
-                    "the runtime skips all command guards for it except approvals.deny"),
+                    "the runtime skips all command guards for it except approvals.deny / approvals.ask"),
         )
 
     # 2. Hardline blocklist — never bypassable, even under yolo.
@@ -88,6 +99,11 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
             detail="matches a user-defined approvals.deny rule in "
                    "config.yaml (blocked even under --yolo / mode=off)",
         )
+
+    # 4b. User-defined approvals.ask rules — prompt before yolo/off.
+    ask_pattern = approval_floors._match_user_ask_rule(command)
+    if ask_pattern is not None:
+        return ask_result(ask_pattern)
 
     # 5. Yolo / approvals.mode=off bypass.
     if (approval._YOLO_MODE_FROZEN

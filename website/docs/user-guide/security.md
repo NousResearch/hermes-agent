@@ -183,6 +183,28 @@ Like the rest of the approval config, changes take effect immediately (the confi
 Deny rules are a shell-command policy, not a complete shell interpreter or an OS capability sandbox. Normalization does not resolve arbitrary variables (including GNU `env -S` `${NAME}` expansion), aliases, functions, renamed binaries, scripts, interpreter programs, or every shell/launcher grammar (for example, case-pattern syntax, clustered launcher options, or options embedded inside an `env -S` string). Do not use a basename deny rule as a guarantee that a capability cannot be reached by other means. For containment, use OS permissions and an isolated backend with appropriately restricted mounts, credentials, and network access. This matching behavior does not change the configured approval mode or the empty-deny-list default.
 :::
 
+### User-Defined Ask Rules (`approvals.ask`)
+
+`approvals.ask` is the tier between `deny` and the permanent allowlist: the same globs and matching as `deny`, but a match **prompts** instead of blocking — and keeps prompting under `--yolo`, `/yolo`, `approvals.mode: off`, a `command_allowlist` hit, and isolated container backends. Use it to run unattended with a short list of things you still want to see: "do everything without asking, but every `ssh` asks me first."
+
+```yaml
+approvals:
+  mode: off          # everything else runs without prompts
+  ask:
+    - "ssh *"
+    - "scp *"
+    - "git push*"
+```
+
+- `deny` wins when a command matches both lists; the hardline floor runs before either.
+- The prompt is the normal approval prompt (CLI, TUI, Desktop, gateway `/approve`). When the command also trips a dangerous-pattern or Tirith finding, one prompt lists every reason. `[s]ession` and `[a]lways` persist per rule (`ask_rule:<glob>`), so answering "always" to `ssh *` never blankets `scp *`. Smart mode's guardian never answers an ask rule for you.
+- Where nobody can answer — cron jobs, `hermes chat -q`, unattended platforms — a match is **blocked** even with `cron_mode` / `single_query_mode` / `unattended_mode: approve`: those modes waive the heuristic prompt, not a rule whose only purpose is to force a human. Remove the rule if the command is safe unattended.
+- `hermes approvals test "<command>"` reports a match as `ask-approval` (exit 2).
+
+The same threat-model note as deny applies: an ask rule is a shell-command policy, not a sandbox.
+
+Inspired by Claude Cowork, where an admin's "Restrict to Ask" tool policy keeps prompting inside the user's "Skip all approvals" mode.
+
 ### Approval Timeout
 
 When a dangerous command prompt appears, the user has a configurable amount of time to respond. If no response is given within the timeout, the command is **denied** by default (fail-closed).

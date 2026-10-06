@@ -19,10 +19,9 @@ _NEMOTRON_PARSER_MODEL_MARKER = "nemotron-3.5-lightning"
 def answer_in_reasoning_capability(agent: Any) -> bool:
     """True when the live route may return a clean-stop reasoning payload as the answer.
 
-    Trusted: an explicit ``answer_in_reasoning`` bool in ``runtime_capabilities`` (seeded at
-    startup from the constructor's ``capabilities=``, e.g. a provider-level ``capabilities:``
-    block, so it holds on the primary route only: fallback rebuilds drop it and primary restore
-    brings it back), a custom_providers per-model ``answer_in_reasoning`` opt-in, or the local
+    Trusted: an explicit ``answer_in_reasoning`` bool in ``runtime_capabilities``, a
+    custom_providers per-model ``answer_in_reasoning`` opt-in or provider-level
+    ``capabilities: {answer_in_reasoning: ...}`` block on the live route, or the local
     Nemotron-3.5-Lightning parser route from #109205. OpenRouter and non-chat-completions
     transports are never trusted.
     """
@@ -44,15 +43,24 @@ def answer_in_reasoning_capability(agent: Any) -> bool:
     # Returns None on unreadable config, so no guard is needed here.
     from hermes_cli.config import get_custom_provider_model_capability
 
+    from hermes_cli.config_providers import _entries_for_route
+
     model = str(getattr(agent, "model", "") or "")
+    custom_providers = getattr(agent, "_custom_providers", None)
     configured = get_custom_provider_model_capability(
         model=model,
         base_url=base_url,
         capability=_ANSWER_IN_REASONING_CAPABILITY,
-        custom_providers=getattr(agent, "_custom_providers", None),
+        custom_providers=custom_providers,
     )
     if configured is not None:
         return configured
+    # The provider-level ``capabilities:`` block, re-read on the live route like the per-model key
+    # so it holds on CLI/TUI (no constructor ``capabilities=``) and survives /model switches.
+    for entry in _entries_for_route(base_url, custom_providers, None):
+        configured = (entry.get("capabilities") or {}).get(_ANSWER_IN_REASONING_CAPABILITY)
+        if isinstance(configured, bool):
+            return configured
 
     if _NEMOTRON_PARSER_MODEL_MARKER not in model.lower():
         return False

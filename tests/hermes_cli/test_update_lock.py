@@ -979,3 +979,31 @@ def test_checkout_lock_never_writes_through_a_link_to_a_file_outside_the_install
     assert lock.acquire() is False
     assert lock.holder is not None and lock.holder.reason
     assert outside.read_bytes() == b"PRECIOUS USER DATA"
+
+
+def test_delegate_line_naming_our_pid_at_our_truncated_second_is_us(marker):
+    """The POSIX hand-off writes the delegate ct from bash's Darwin proc_ct (`ps -o lstart`),
+    which cannot carry a fraction: whole seconds only, unlike Linux where bash and psutil
+    derive the same tick value. The 5 ms own-incarnation epsilon alone rejected that claim,
+    so the hand-off's update child refused ITS OWN delegate line and every Desktop-button
+    update on macOS died with "Another Hermes update is already running" (exit 2)."""
+    from hermes_cli import update_lock as _ul
+    ours = float(int(process_create_time()))  # what bash writes: .000
+    now = int(time.time())
+    marker.write_text(
+        f"{DEAD_PID}\n{now}\nct:1799999999.000\ndelegate:{os.getpid()} ct:{ours:.3f}\n",
+        encoding="utf-8", newline="")
+
+    parsed = _ul._parse_marker(marker.read_bytes())
+    assert parsed.delegate_live() is True, "bash-quantized own delegate must read as us"
+    assert os.getpid() in _ul._live_partners(parsed)
+
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True, "adopted its own delegate claim"
+    # adopting a live partner claim succeeds without the "we wrote the marker" flag (v1424)
+
+    # a fractional ct from a different writer still needs the 5 ms epsilon,
+    # and a whole-second ct from a different second is not us
+    assert _ul._incarnation(os.getpid(), ours - 0.5, _ul._real_world()) is False
+    exact = process_create_time()
+    assert exact is not None and _ul._incarnation(os.getpid(), exact - 0.007, _ul._real_world()) is False

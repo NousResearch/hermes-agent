@@ -295,7 +295,19 @@ def _incarnation(pid: int, recorded: float | None, w: _World) -> bool | None:
     if pid == w.pid:  # we are alive by definition: only the incarnation is in question
         if w.ct is None:
             return recorded is None
-        return recorded is not None and abs(w.ct - recorded) <= _OWN_CREATE_TIME_EPSILON
+        if recorded is None:
+            return False
+        if abs(w.ct - recorded) <= _OWN_CREATE_TIME_EPSILON:
+            return True
+        # marker.sh's Darwin proc_ct quantizes to whole seconds (`ps -o lstart`
+        # has no fractional source), unlike Linux where bash and psutil derive
+        # the same tick value: a delegate line naming our pid at our own
+        # truncated second is this incarnation (the 5 ms epsilon alone made the
+        # POSIX hand-off's update child refuse its own delegate claim on macOS).
+        # ponytail: 1 s truncation window reuses the CREATE_TIME_TOLERANCE risk
+        # class already accepted for non-own identities; tighten only if a
+        # same-second pid-recycling false-accept is ever observed.
+        return recorded == int(recorded) and 0.0 <= w.ct - recorded < 1.0
     if not w.alive(pid):
         return False
     actual = None if recorded is None else w.ct_of(pid)

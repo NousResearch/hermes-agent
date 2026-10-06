@@ -542,6 +542,47 @@ describe('ChatSidebar event socket reconnect', () => {
     expect(routerMocks.navigate).toHaveBeenCalledWith('/env')
   })
 
+  it("shows the chat agent's credential problems from the feed, per chat (#133333)", async () => {
+    await renderSidebar()
+    const feedEvent = (type: string, payload: Record<string, unknown>) =>
+      FakeWebSocket.instances.at(-1)?.emit('message', {
+        data: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { type, session_id: 'pty-1', payload }
+        })
+      })
+
+    await act(async () => {
+      feedEvent('session.info', {
+        credential_warning: "No API key configured for provider 'openrouter'. First message will fail."
+      })
+      feedEvent('session.info', { title: 'Renamed chat' }) // partial payload: must not clear it
+    })
+    expect(container.textContent).toContain('openrouter')
+
+    // "Reconnect side panel" resets the sidecar; the PTY does not re-send session.info, and
+    // /api/events has no replay, so the chat's warning has to survive on its own.
+    await act(async () => {
+      gatewayMocks.handlers.get('error')?.({ payload: { message: 'sidecar boom' } })
+    })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(b => b.textContent?.includes('Reconnect side panel'))
+        ?.click()
+    })
+    expect(container.textContent).toContain('openrouter')
+
+    // Another chat: the warning belonged to the previous one; a provider error reaches the banner too.
+    const { ChatSidebar } = await import('./ChatSidebar')
+    await act(async () => root.render(<ChatSidebar channel="chat-2" />))
+    expect(container.textContent).not.toContain('openrouter')
+    await act(async () => {
+      feedEvent('error', { code: 'provider_not_configured', message: 'No LLM provider configured' })
+    })
+    expect(container.textContent).toContain('No LLM provider configured')
+  })
+
   it('still reconnects while a foreign banner suppresses its message', async () => {
     await renderSidebar()
 

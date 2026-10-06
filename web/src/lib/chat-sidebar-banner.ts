@@ -50,3 +50,23 @@ export function credentialWarning(raw: string | undefined | null): CredentialWar
     message: `No API key set for ${provider}, so messages will fail. Add a key under Keys, or pick a different provider.`
   }
 }
+
+/**
+ * The chat agent's credential warning from a `session.info` relayed by the events feed, or
+ * undefined when the payload doesn't carry one: partial payloads (a title update) must not clear it.
+ */
+export function credentialWarningFromSessionInfo(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object') return undefined
+  const warning = (payload as { credential_warning?: unknown }).credential_warning
+  return typeof warning === 'string' && warning ? warning : undefined
+}
+
+/**
+ * The message of a relayed `provider_not_configured` agent-build error (no chat can run until a
+ * provider is set up), or undefined for any other error, which the terminal already shows.
+ */
+export function providerSetupError(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object') return undefined
+  const { code, message } = payload as { code?: unknown; message?: unknown }
+  return code === 'provider_not_configured' && typeof message === 'string' && message ? message : undefined
+}

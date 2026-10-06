@@ -63,6 +63,10 @@ Within one authenticated gateway, resuming or activating a live session attaches
 
 `session.create` accepts per-session `model` / `provider` overrides. A pair the provider cannot serve (`model: gpt-5.5` with `provider: anthropic`, or with no `provider` when the profile's configured provider is Anthropic) is refused up front with JSON-RPC code `-32602` instead of minting a session whose first turn fails at the provider; `error.data` carries `model`, `provider` and up to five `suggestions` from that provider's catalog, and `error.message` repeats them. The check is offline and only refuses names Hermes knows belong elsewhere: custom endpoints (`custom`, `custom:<name>`), aggregators (OpenRouter, Nous, …), models in the provider's own family that the curated list has not caught up with, and names no catalog lists are all accepted as before.
 
+### Skipping the agent pre-warm on `session.create`
+
+`session.create` builds the session's agent in the background right after it replies, so the first `prompt.submit` does not wait for tool discovery and model metadata. A client whose session never runs a turn (the dashboard Chat sidebar's status connection) passes `prewarm: false` to skip that pre-warm, together with the memory-provider setup it triggers. Any later session-scoped call still builds the agent on demand, so the flag only changes when the agent is built, never whether a turn works.
+
 ### Rewinding history on `prompt.submit`
 
 A rewind / edit / regenerate is a `prompt.submit` that drops part of the stored transcript before running the new turn. Because that write is a destructive rewrite of the session's durable rows, the gateway honors it only when the client states its intent:

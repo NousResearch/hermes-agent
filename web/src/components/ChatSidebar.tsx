@@ -5,9 +5,9 @@
  * Two WebSockets, one per concern:
  *
  *   1. **JSON-RPC sidecar** (`GatewayClient` → /api/ws) — a lightweight
- *      session used only for connection state (the "live" badge) and
- *      credential warnings. Independent of the PTY pane's session by
- *      design. The model badge does NOT come from here: it reads the
+ *      session used only for connection state (the "live" badge); it
+ *      skips the agent pre-warm (`prewarm: false`), so it costs no
+ *      agent. Independent of the PTY pane's session by design. The model badge does NOT come from here: it reads the
  *      effective config model over REST (`/api/model/info`), and the model
  *      picker writes config over REST (`/api/model/set`) then offers a
  *      dashboard reload so the running chat adopts the new model.
@@ -15,7 +15,8 @@
  *   2. **Event subscriber** (/api/events?channel=…) — passive, receives
  *      every dispatcher emit from the PTY-side `tui_gateway.entry` that
  *      the dashboard fanned out.  The sidebar uses it for `session.info`
- *      (live chat title) and `dashboard.new_session_requested`.  The
+ *      (live chat title, the chat agent's credential warning), a
+ *      `provider_not_configured` error, and `dashboard.new_session_requested`.  The
  *      `channel` id ties this listener to the same chat tab's PTY child —
  *      see `ChatPage.tsx` for where the id is generated.  Transient drops
  *      (gateway restart, network blip) auto-reconnect with exponential
@@ -46,7 +47,12 @@ import {
   isEventsFeedMessage,
   shouldRetryEventsClose
 } from '@/lib/events-reconnect'
-import { credentialWarning, sidecarErrorMessage } from '@/lib/chat-sidebar-banner'
+import {
+  credentialWarning,
+  credentialWarningFromSessionInfo,
+  providerSetupError,
+  sidecarErrorMessage
+} from '@/lib/chat-sidebar-banner'
 import { titleFromSessionInfoPayload } from '@/lib/chat-title'
 
 import { cn } from '@/lib/utils'
@@ -102,13 +108,15 @@ interface ChatSidebarProps {
 /** Build the ``session.create`` params for the sidecar session.
  *
  * Extracted from the effect below so the invariant — close_on_disconnect
- * is set, source is "tool", and the profile is forwarded when present —
+ * is set, prewarm is off, source is "tool", and the profile is
+ * forwarded when present —
  * can be tested without reading component source text. See
  * ``chat-sidebar-session-params.test.ts``.
  */
 export function sidecarSessionCreateParams(profile?: string): Record<string, unknown> {
   return {
     close_on_disconnect: true,
+    prewarm: false,
     source: 'tool',
     ...(profile ? { profile } : {})
   }
@@ -139,6 +147,9 @@ export function ChatSidebar({
 
   const [state, setState] = useState<ConnectionState>('idle')
   const [info, setInfo] = useState<SessionInfo>({})
+  // The chat agent's credential warning, tagged with the channel it arrived on: /api/events has no
+  // replay, so a manual Reconnect must keep it, while a chat or profile switch (new channel) drops it.
+  const [chatCredential, setChatCredential] = useState<{ channel: string; warning: string } | null>(null)
   const [modelOpen, setModelOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // The badge shows config.yaml's main model (`model.default`) via
@@ -407,6 +418,17 @@ export function ChatSidebar({
       if (title !== undefined) {
         onSessionTitleChange?.(title)
       }
+      // The chat's own agent reports its credentials here; the sidecar builds none (#133333).
+      const warning = credentialWarningFromSessionInfo(ev.payload)
+      if (warning !== undefined && !unmounting) {
+        setChatCredential({ channel, warning })
+      }
+    })
+    const offProviderError = feed.on('error', ev => {
+      const message = providerSetupError(ev.payload)
+      if (message !== undefined && !unmounting) {
+        setChatCredential({ channel, warning: message })
+      }
     })
     const offNewSession = feed.on('dashboard.new_session_requested', () => {
       onDashboardNewSessionRequest?.()
@@ -423,6 +445,7 @@ export function ChatSidebar({
       offClose()
       offState()
       offSessionInfo()
+      offProviderError()
       offNewSession()
       feed.close()
     }
@@ -445,7 +468,8 @@ export function ChatSidebar({
   // sidecar gateway session, so it's available whenever the sidebar is mounted.
   const modelName = effectiveModel || info.model || '—'
   const modelLabel = modelName.split('/').slice(-1)[0] ?? '—'
-  const credential = credentialWarning(info.credential_warning)
+  const chatWarning = chatCredential?.channel === channel ? chatCredential.warning : undefined
+  const credential = credentialWarning(info.credential_warning ?? chatWarning)
   const banner = error ?? credential?.message ?? null
   const showReload = isEventsAuthRejectionMessage(error)
 

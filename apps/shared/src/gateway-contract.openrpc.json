@@ -29993,6 +29993,11 @@
             "title": "Close On Disconnect",
             "type": "boolean"
           },
+          "prewarm": {
+            "default": true,
+            "title": "Prewarm",
+            "type": "boolean"
+          },
           "hidden": {
             "default": false,
             "title": "Hidden",

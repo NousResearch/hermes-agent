@@ -476,8 +476,8 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         # the row itself (AIAgent INSERT-OR-IGNORE) with cwd=None, and the sidebar then drops it to Home. Local
         # project drafts stay lazy — their cwd reaches the row on the first prompt (no "Untitled" litter).
         _ensure_session_db_row(_sessions[sid])
-    # Return immediately so Ink can paint; the AIAgent builds right after the flush.
-    _schedule_agent_build(sid)
+    if "prewarm" not in params or _flag(params, "prewarm"):  # reply first, pre-warm after the flush
+        _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
     cwd = _sessions[sid]["cwd"]
     override = session_model_override or {}

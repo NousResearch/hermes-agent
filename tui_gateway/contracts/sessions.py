@@ -131,6 +131,9 @@ class SessionCreateParams(ProfileParams):
     fast: bool | None = None  # presence is the contract: omitted inherits, true pins priority, false pins normal
     service_tier: str | None = None
     close_on_disconnect: bool = False
+    # #133333: false skips the background agent pre-warm (the dashboard chat sidecar never runs a turn);
+    # the first session-scoped call still builds the agent on demand.
+    prewarm: bool = True
     hidden: bool = False
     room_plumbing: bool = False
     follow_profile_config: bool = False

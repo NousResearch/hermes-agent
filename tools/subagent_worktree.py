@@ -60,16 +60,27 @@ def resolve_repo_root(path: Optional[str]) -> Optional[str]:
 
 
 def _ensure_gitignore_entry(repo_root: str) -> None:
-    """Best-effort: keep ``.worktrees/`` out of git status."""
-    gitignore = Path(repo_root) / ".gitignore"
+    """Best-effort: keep ``.worktrees/`` out of git status.
+
+    Uses ``.git/info/exclude`` rather than the tracked ``.gitignore`` so this
+    never writes to a file the parent repo tracks (#103302).
+    """
     try:
-        existing = gitignore.read_text(encoding="utf-8-sig", errors="replace") if gitignore.exists() else ""
+        common_dir = _run_git(["rev-parse", "--git-common-dir"], cwd=repo_root)
+        git_dir_str = common_dir.stdout.strip() if common_dir.returncode == 0 else ".git"
+        git_dir = Path(git_dir_str)
+        if not git_dir.is_absolute():
+            git_dir = (Path(repo_root) / git_dir).resolve()
+        info_dir = git_dir / "info"
+        info_dir.mkdir(parents=True, exist_ok=True)
+        exclude = info_dir / "exclude"
+        existing = exclude.read_text(encoding="utf-8-sig", errors="replace") if exclude.exists() else ""
         if ".worktrees/" not in existing.splitlines():
-            with open(gitignore, "a", encoding="utf-8") as f:
+            with open(exclude, "a", encoding="utf-8") as f:
                 sep = "\n" if existing and not existing.endswith("\n") else ""
                 f.write(f"{sep}.worktrees/\n")
     except Exception as exc:
-        logger.debug("subagent worktree: could not update .gitignore: %s", exc)
+        logger.debug("subagent worktree: could not update git exclude file: %s", exc)
 
 
 def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[str] = None) -> Optional[Dict[str, str]]:

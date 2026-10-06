@@ -295,8 +295,9 @@ export const ptSettingsA = {
     model: 'Modelo',
     chat: 'Chat',
     appearance: 'Aparência',
-    workspace: 'Workspace',
+    workspace: 'Espaço de trabalho',
     safety: 'Segurança',
+    browser: 'Navegador',
     memory: 'Memória e contexto',
     voice: 'Voz',
     advanced: 'Avançado'

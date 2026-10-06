@@ -3324,10 +3324,18 @@ def tool_results_this_turn(messages: List[Dict[str, Any]]) -> int:
 
 # Narrow "trailing continue-intent" detector for the stall guard (agent.stall_guards): only the
 # message TAIL announcing a next action, so mid-sentence "I will" never trips it.
+# CJK branch (zh/ja/ko are unsegmented, so there is no \b after the trigger): a tail sentence
+# ending on an announced-but-not-taken action — 「先…（再/然后/接着/随后/之后）…」「让我先/来/去…」
+# 「我先…」「我这就/马上/立刻…」「接下来…」「下一步…」. Trigger glosses mirror the English group;
+# the whole branch stays tail-anchored so a plan mentioned mid-reply ("让我先看下。答案是 42。")
+# still reads as an answer.
 _TRAILING_CONTINUE_INTENT_RE = re.compile(
     r"(?:\blet me now\b|\bi(?:['\u2019])?ll now\b|\bi will now\b"
     r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b)"
-    r"[^.!?\n]{0,100}[.:\u2026]?\s*$", re.IGNORECASE,
+    r"[^.!?\n]{0,100}[.:\u2026]?\s*$"
+    r"|(?:让我(?:先|来|去)?|我先|我这就|我马上|我立刻|接下来|下一步"
+    r"|先[^。！？\n]{0,50}(?:再|然后|接着|随后|之后))"
+    r"[^。！？\n]{0,60}[。！？]?\s*$", re.IGNORECASE,
 )
 
 # Content longer than this is a substantive reply, not a dangling ack.
@@ -3356,14 +3364,16 @@ def trailing_continue_intent(text: str) -> bool:
 # do,look}, "please let me" + one of {start,try,check,fix,send,do,look}, "I('ll)" + one of
 # {start,try,check,fix,send,do,look,run,fire}.
 _PROMOTED_REASONING_PLAN_TAIL_RE = re.compile(
-    r"(?:^|[.!?:\u3002\uff01\uff1f\u2014\u2013\n]\s*|\u2026\s*)"
+    r"(?:^|[.!?:\u3002\uff01\uff1f\u2014\u2013\n\uff0c,\uff1b;]\s*|\u2026\s*)"
     r"(?:let(?:['\u2019]s| me)\b|i(?:['\u2019]ll| will| need to| should| am going to|['\u2019]m going to)\b"
     r"|next[,:]? i\b|now i(?:['\u2019]ll| will| need to)\b|first[,:]? i(?:['\u2019]ll| will| need to)\b"
     r"|\u0e08\u0e30\u0e43\u0e2b\u0e49\u0e1c\u0e21|\u0e1c\u0e21\u0e08\u0e30"
     r"|\u0e15\u0e48\u0e2d\u0e44\u0e1b(?:\u0e08\u0e30|\u0e1c\u0e21\u0e08\u0e30)"
     r"|\u0e02\u0e2d(?:\u0e40\u0e23\u0e34\u0e48\u0e21|\u0e25\u0e2d\u0e07|\u0e15\u0e23\u0e27\u0e08|\u0e41\u0e01\u0e49|\u0e2a\u0e48\u0e07|\u0e17\u0e33|\u0e14\u0e39)"
-    r"|\u0e08\u0e30(?:\u0e40\u0e23\u0e34\u0e48\u0e21|\u0e25\u0e2d\u0e07|\u0e15\u0e23\u0e27\u0e08|\u0e41\u0e01\u0e49|\u0e2a\u0e48\u0e07|\u0e17\u0e33|\u0e14\u0e39|\u0e23\u0e31\u0e19|\u0e22\u0e34\u0e07))"
-    r"[^.!?\n\u3002\uff01\uff1f]{0,160}(?:[.:\u2026]+)?\s*$",
+    r"|\u0e08\u0e30(?:\u0e40\u0e23\u0e34\u0e48\u0e21|\u0e25\u0e2d\u0e07|\u0e15\u0e23\u0e27\u0e08|\u0e41\u0e01\u0e49|\u0e2a\u0e48\u0e07|\u0e17\u0e33|\u0e14\u0e39|\u0e23\u0e31\u0e19|\u0e22\u0e34\u0e07)"
+    r"|\u8ba9\u6211(?:\u5148|\u6765|\u53bb)?|\u6211\u5148|\u6211\u8fd9\u5c31|\u6211\u9a6c\u4e0a|\u6211\u7acb\u523b|\u63a5\u4e0b\u6765|\u4e0b\u4e00\u6b65"
+    r"|\u5148[^\u3002\uff01\uff1f\n]{0,50}(?:\u518d|\u7136\u540e|\u63a5\u7740|\u968f\u540e|\u4e4b\u540e))"
+    r"[^.!?\n\u3002\uff01\uff1f]{0,160}(?:[.:\u2026\u3002\uff01\uff1f]+)?\s*$",
     re.IGNORECASE,
 )
 

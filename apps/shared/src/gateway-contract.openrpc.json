@@ -1015,6 +1015,24 @@
       }
     },
     {
+      "name": "free_tier.challenge_result",
+      "summary": "Report a browser window outcome for the matching pending attempt; mint remains authoritative.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/FreeTierChallengeResultParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/FreeTierChallengeResult"
+        }
+      }
+    },
+    {
       "name": "free_tier.provision",
       "summary": "Explicit retry of the free-tier identity mint when the boot bootstrap could not create it.",
       "params": [
@@ -13944,6 +13962,106 @@
         "title": "FreeTierAckNoticeResult",
         "type": "object"
       },
+      "FreeTierChallengePayload": {
+        "additionalProperties": true,
+        "description": "``hermes_cli/anon_challenge.py::BrowserChallenge.as_payload``: the ``free_tier.challenge``\nevent, and ``free_tier.status``'s ``challenge`` field for a client that connected after it.",
+        "properties": {
+          "type": {
+            "const": "browser",
+            "title": "Type",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "expires_in": {
+            "title": "Expires In",
+            "type": "integer"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "attempt": {
+            "default": 0,
+            "title": "Attempt",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "type",
+          "url",
+          "required",
+          "expires_in",
+          "message"
+        ],
+        "title": "FreeTierChallengePayload",
+        "type": "object"
+      },
+      "FreeTierChallengeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "accepted"
+        ],
+        "title": "FreeTierChallengeResult",
+        "type": "object"
+      },
+      "FreeTierChallengeResultParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "attempt": {
+            "default": 0,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "outcome": {
+            "enum": [
+              "done",
+              "failed",
+              "closed",
+              "timeout",
+              "refused",
+              "error",
+              "unsupported"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "outcome"
+        ],
+        "title": "FreeTierChallengeResultParams",
+        "type": "object"
+      },
       "FreeTierProvisionResult": {
         "additionalProperties": false,
         "properties": {
@@ -14086,6 +14204,17 @@
             ],
             "default": null,
             "title": "Retry After"
+          },
+          "challenge": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FreeTierChallengePayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -39769,6 +39898,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ErrorPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "free_tier.challenge",
+      "summary": "The account service wants a browser challenge cleared before the free-tier token exchange (broadcast); the desktop loads ``url`` in a hidden window.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/FreeTierChallengePayload"
           }
         }
       ]

@@ -273,6 +273,9 @@
           },
           {
             "$ref": "#/$defs/feature_disabled_counter"
+          },
+          {
+            "$ref": "#/$defs/install_run_counter"
           }
         ]
       }
@@ -1736,42 +1739,138 @@
           "const": "counter"
         },
         "dimensions": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "name",
-            "outcome",
-            "source"
-          ],
-          "properties": {
-            "kind": {
-              "enum": [
-                "mcp_server",
-                "plugin",
-                "skill"
-              ]
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "failure_class",
+                "kind",
+                "name",
+                "outcome",
+                "registry",
+                "source"
+              ],
+              "properties": {
+                "failure_class": {
+                  "enum": [
+                    "already_installed",
+                    "ambiguous",
+                    "auth_rejected",
+                    "auth_required",
+                    "bootstrap_failed",
+                    "clone_failed",
+                    "config_invalid",
+                    "config_rejected",
+                    "connect_failed",
+                    "deps_declined",
+                    "deps_failed",
+                    "exception",
+                    "fetch_failed",
+                    "filesystem_error",
+                    "git_missing",
+                    "incompatible",
+                    "invalid_bundle",
+                    "invalid_name",
+                    "invalid_source",
+                    "manifest_invalid",
+                    "missing_credentials",
+                    "network",
+                    "non_interactive",
+                    "none",
+                    "not_found",
+                    "other",
+                    "permission",
+                    "rate_limited",
+                    "removed_from_catalog",
+                    "scan_blocked",
+                    "server_start_failed",
+                    "stale_index"
+                  ]
+                },
+                "kind": {
+                  "enum": [
+                    "mcp_server",
+                    "plugin",
+                    "skill"
+                  ]
+                },
+                "name": {
+                  "$ref": "#/$defs/catalog_identifier"
+                },
+                "outcome": {
+                  "enum": [
+                    "failed",
+                    "success"
+                  ]
+                },
+                "registry": {
+                  "enum": [
+                    "browse-sh",
+                    "clawhub",
+                    "github",
+                    "hermes-index",
+                    "lobehub",
+                    "none",
+                    "official",
+                    "other",
+                    "skills-sh",
+                    "unresolved",
+                    "url",
+                    "well-known"
+                  ]
+                },
+                "source": {
+                  "enum": [
+                    "bundled",
+                    "catalog",
+                    "hub",
+                    "local",
+                    "other",
+                    "url"
+                  ]
+                }
+              }
             },
-            "name": {
-              "$ref": "#/$defs/catalog_identifier"
-            },
-            "outcome": {
-              "enum": [
-                "failed",
-                "success"
-              ]
-            },
-            "source": {
-              "enum": [
-                "bundled",
-                "catalog",
-                "hub",
-                "local",
-                "other",
-                "url"
-              ]
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "name",
+                "outcome",
+                "source"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "mcp_server",
+                    "plugin",
+                    "skill"
+                  ]
+                },
+                "name": {
+                  "$ref": "#/$defs/catalog_identifier"
+                },
+                "outcome": {
+                  "enum": [
+                    "failed",
+                    "success"
+                  ]
+                },
+                "source": {
+                  "enum": [
+                    "bundled",
+                    "catalog",
+                    "hub",
+                    "local",
+                    "other",
+                    "url"
+                  ]
+                }
+              }
             }
-          }
+          ]
         },
         "value": {
           "type": "integer",
@@ -2567,73 +2666,167 @@
           "const": "counter"
         },
         "dimensions": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "apply_mode",
-            "duration_bucket",
-            "failed_stage",
-            "from_version_age_bucket",
-            "kind",
-            "outcome"
-          ],
-          "properties": {
-            "apply_mode": {
-              "enum": [
-                "external",
-                "git",
-                "package",
-                "unknown",
-                "zip"
-              ]
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "apply_mode",
+                "duration_bucket",
+                "failed_stage",
+                "failure_class",
+                "from_version_age_bucket",
+                "kind",
+                "outcome"
+              ],
+              "properties": {
+                "apply_mode": {
+                  "enum": [
+                    "external",
+                    "git",
+                    "package",
+                    "unknown",
+                    "zip"
+                  ]
+                },
+                "duration_bucket": {
+                  "enum": [
+                    "2m_to_5m",
+                    "30s_to_2m",
+                    "5m_to_15m",
+                    "gte_15m",
+                    "lt_30s"
+                  ]
+                },
+                "failed_stage": {
+                  "enum": [
+                    "apply",
+                    "build",
+                    "deps",
+                    "download",
+                    "none",
+                    "other",
+                    "plan",
+                    "restart",
+                    "snapshot",
+                    "verify"
+                  ]
+                },
+                "failure_class": {
+                  "enum": [
+                    "aborted_before_apply",
+                    "build_failed",
+                    "deps_failed",
+                    "exception",
+                    "fleet_stale",
+                    "fleet_unverified",
+                    "git_failed",
+                    "interrupted",
+                    "lock_held",
+                    "managed_install",
+                    "none",
+                    "os_error",
+                    "other",
+                    "restart_failed",
+                    "subprocess_failed",
+                    "unknown"
+                  ]
+                },
+                "from_version_age_bucket": {
+                  "enum": [
+                    "30d_to_90d",
+                    "7d_to_30d",
+                    "gte_90d",
+                    "lt_7d",
+                    "unknown"
+                  ]
+                },
+                "kind": {
+                  "enum": [
+                    "cli",
+                    "desktop"
+                  ]
+                },
+                "outcome": {
+                  "enum": [
+                    "failed",
+                    "noop",
+                    "refused",
+                    "success"
+                  ]
+                }
+              }
             },
-            "duration_bucket": {
-              "enum": [
-                "2m_to_5m",
-                "30s_to_2m",
-                "5m_to_15m",
-                "gte_15m",
-                "lt_30s"
-              ]
-            },
-            "failed_stage": {
-              "enum": [
-                "apply",
-                "build",
-                "deps",
-                "download",
-                "none",
-                "other",
-                "plan",
-                "restart",
-                "snapshot",
-                "verify"
-              ]
-            },
-            "from_version_age_bucket": {
-              "enum": [
-                "30d_to_90d",
-                "7d_to_30d",
-                "gte_90d",
-                "lt_7d",
-                "unknown"
-              ]
-            },
-            "kind": {
-              "enum": [
-                "cli",
-                "desktop"
-              ]
-            },
-            "outcome": {
-              "enum": [
-                "failed",
-                "noop",
-                "refused",
-                "success"
-              ]
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "apply_mode",
+                "duration_bucket",
+                "failed_stage",
+                "from_version_age_bucket",
+                "kind",
+                "outcome"
+              ],
+              "properties": {
+                "apply_mode": {
+                  "enum": [
+                    "external",
+                    "git",
+                    "package",
+                    "unknown",
+                    "zip"
+                  ]
+                },
+                "duration_bucket": {
+                  "enum": [
+                    "2m_to_5m",
+                    "30s_to_2m",
+                    "5m_to_15m",
+                    "gte_15m",
+                    "lt_30s"
+                  ]
+                },
+                "failed_stage": {
+                  "enum": [
+                    "apply",
+                    "build",
+                    "deps",
+                    "download",
+                    "none",
+                    "other",
+                    "plan",
+                    "restart",
+                    "snapshot",
+                    "verify"
+                  ]
+                },
+                "from_version_age_bucket": {
+                  "enum": [
+                    "30d_to_90d",
+                    "7d_to_30d",
+                    "gte_90d",
+                    "lt_7d",
+                    "unknown"
+                  ]
+                },
+                "kind": {
+                  "enum": [
+                    "cli",
+                    "desktop"
+                  ]
+                },
+                "outcome": {
+                  "enum": [
+                    "failed",
+                    "noop",
+                    "refused",
+                    "success"
+                  ]
+                }
+              }
             }
-          }
+          ]
         },
         "value": {
           "type": "integer",
@@ -4758,6 +4951,106 @@
             },
             "retry_count_bucket": {
               "$ref": "#/$defs/count_bucket"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "install_run_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.install.run"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "duration_bucket",
+            "failed_stage",
+            "failure_class",
+            "installer",
+            "outcome"
+          ],
+          "properties": {
+            "duration_bucket": {
+              "enum": [
+                "2m_to_5m",
+                "30s_to_2m",
+                "5m_to_15m",
+                "gte_15m",
+                "lt_30s"
+              ]
+            },
+            "failed_stage": {
+              "enum": [
+                "complete",
+                "config",
+                "gateway",
+                "none",
+                "other",
+                "prerequisites",
+                "products",
+                "python_deps",
+                "repository",
+                "setup",
+                "venv"
+              ]
+            },
+            "failure_class": {
+              "enum": [
+                "commit_not_on_branch",
+                "curl_missing",
+                "deps_install_failed",
+                "dir_not_checkout",
+                "download_digest_mismatch",
+                "download_failed",
+                "filesystem_error",
+                "gateway_failed",
+                "git_checkout_failed",
+                "git_clone_failed",
+                "git_extract_failed",
+                "git_fetch_failed",
+                "git_missing",
+                "git_reset_failed",
+                "interrupted",
+                "libstdcxx_missing",
+                "local_changes_blocked",
+                "none",
+                "other",
+                "products_build_failed",
+                "python_install_failed",
+                "setup_failed",
+                "unsupported_platform",
+                "uv_unusable"
+              ]
+            },
+            "installer": {
+              "enum": [
+                "install_ps1",
+                "install_sh",
+                "other"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "failed",
+                "success"
+              ]
             }
           }
         },

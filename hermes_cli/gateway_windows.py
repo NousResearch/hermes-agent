@@ -717,7 +717,7 @@ def _build_gateway_argv(home: Path | None = None) -> tuple[list[str], str, dict[
     return _gateway_run_argv(python_exe, profile_arg), working_dir, env_overlay
 
 
-def windowless_gateway_restart_spec(run_argv: list[str]) -> tuple[list[str], str, dict[str, str]]:
+def windowless_gateway_restart_spec(run_argv: list[str], home: str | None = None) -> tuple[list[str], str, dict[str, str]]:
     """(argv, cwd, env overlay) for a hidden-console gateway respawn; arguments after the interpreter
     are preserved verbatim. Non-Windows or a non-python argv[0] → argv unchanged, empty overlay.
 
@@ -728,6 +728,8 @@ def windowless_gateway_restart_spec(run_argv: list[str]) -> tuple[list[str], str
     every console-subsystem child allocated a visible conhost). This helper now only normalizes the
     interpreter via ``_resolve_detached_python`` and supplies the stable cwd + env overlay (HERMES_HOME,
     VIRTUAL_ENV, PYTHONPATH) so the respawn doesn't depend on the watcher's transient working directory.
+    ``HERMES_HOME`` is ``home`` when given: a replayed selectorless argv runs on whatever home its
+    environment names, so the paused runtime's home, not the updater's, must come back.
     """
     if not run_argv or sys.platform != "win32":
         return run_argv, "", {}
@@ -739,7 +741,7 @@ def windowless_gateway_restart_spec(run_argv: list[str]) -> tuple[list[str], str
         return run_argv, "", {}
 
     try:
-        hermes_home = str(_hermes_home().resolve())
+        hermes_home = str(Path(home or _hermes_home()).resolve())
     except Exception:
         hermes_home = ""
     env_overlay: dict[str, str] = {"PYTHONIOENCODING": "utf-8", "HERMES_GATEWAY_DETACHED": "1", "VIRTUAL_ENV": str(venv_dir)}

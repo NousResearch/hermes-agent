@@ -52,7 +52,7 @@ def source(tmp_path, monkeypatch):
     monkeypatch.setattr(update_cmd, "_begin_update_receipt_and_plan", lambda *_: None)
     monkeypatch.setattr(main, "_run_pre_update_backup", lambda *_: None)
     monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: None)
-    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (False, ["git"], False))
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (False, ["git"], False))
     return SimpleNamespace(home=home, origin=origin, root=checkout, commits=commits, parser=parser)
 
 
@@ -350,7 +350,7 @@ def test_retirement_refuses_to_downgrade_newer_source(
         git(source.root.parent, "clone", "--depth=1", source.origin.as_uri(), str(source.root))
     if transport == "zip":
         (source.root / "pyproject.toml").write_text('[project]\nversion = "1.2.2"\n')
-        monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (True, ["git"], False))
+        monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (True, ["git"], False))
     original = deepcopy(saved(source))
     completed = []
     monkeypatch.setattr(update_cmd, "_complete_source_update", lambda request: completed.append(request))
@@ -380,7 +380,7 @@ def test_tagless_zip_apply_uses_pinned_source_archive(source, monkeypatch, dirty
         urls.append(url)
         shutil.copyfile(archive, filename)
     monkeypatch.setattr(urllib.request, "urlretrieve", download)
-    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (True, ["git"], False))
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (True, ["git"], False))
     completed = []
     monkeypatch.setattr(update_cmd, "_complete_source_update", lambda req: completed.append(deepcopy(req)))
     if dirty:

@@ -20,6 +20,22 @@ from hermes_cli.config import get_hermes_home
 _log = logging.getLogger("hermes_cli.web_server")
 
 
+# Defense against a hostile/compromised upstream serving an unbounded body to
+# the dashboard's JSON readers: refuse to buffer past this size.
+_DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES = 1024 * 1024
+
+
+def _read_dashboard_json_response(response) -> Any:
+    """Read a JSON HTTP response body with a hard size cap (issue #54808)."""
+    raw = response.read(_DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES + 1)
+    if len(raw) > _DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES:
+        raise ValueError(
+            "dashboard HTTP JSON response exceeded "
+            f"{_DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES} bytes"
+        )
+    return json.loads(raw.decode("utf-8"))
+
+
 def _probe_gateway_health() -> tuple[bool, dict | None]:
     """Probe the gateway's HTTP health endpoint (cross-container). Blocking — run in an executor.
 
@@ -36,7 +52,7 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
             req = urllib.request.Request(path, method="GET")
             with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
                 if resp.status == 200:
-                    return True, json.loads(resp.read())
+                    return True, _read_dashboard_json_response(resp)
         except Exception:
             continue
     return False, None

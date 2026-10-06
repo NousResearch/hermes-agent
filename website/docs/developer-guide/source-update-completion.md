@@ -109,6 +109,61 @@ lifecycle obligation when the child cannot execute or is killed. A failed child
 never clears the pending fleet obligation. No automatic code rollback after
 maintenance has begun (SQLite snapshots remain file-loss recovery, not rollback).
 
+### Damaged recovery code
+
+Launch-time checkout repair requires both the checkout lock and the child-custody
+runner to be importable. If either module is torn, launch stops with
+`Cannot safely repair` and retains the interrupted-update marker instead of
+writing without exclusion. An updater that already imported healthy code can
+still hold and write the checkout even when its on-disk modules are damaged.
+Wait for any running update to finish.
+
+The repair code lives in the tree a killed move tears (`hermes_bootstrap.py`,
+`hermes_cli/__init__.py`, `_early_recovery.py`, `update_lock.py`,
+`update_custody.py`). Before git writes, every tree move publishes those
+recovery/lock/custody modules, as committed at the move's starting commit, to
+`<git dir>/hermes-update-recovery/<pre>/`, outside the working tree and keyed
+to the marker's `pre` (a full commit id, nothing else), with a `MANIFEST` of
+each file's blob id; files and directory are fsynced before the rename. When
+the checkout's own import fails while the marker exists, the minted launcher
+(`.hermes/bin/hermes`) runs that published copy only if every file hashes to
+its manifest id. A missing, torn or foreign copy (or none, from an older
+updater) is rebuilt first from git's objects at `pre` (`--no-replace-objects`,
+the recorded git or an absolute `PATH` entry, never the current directory) and
+verified the same way. Then: stdlib plus the copy only, the same restore claim
+and checkout lock (a live writer gets `Not repairing the checkout now` and exit
+1, no traceback), then a relaunch from the restored tree. Limits: other entry
+points (`python -m hermes_cli.main`, the `hermes-agent` hook) have no such
+fallback; a launcher minted before this fallback existed has none, so a kill
+during the first update onto this code (run under the old launcher) is not
+covered; a `pre` whose tree lacks the checkout lock or custody runner is not
+used.
+
+### Behaviour changes on the git path
+
+Intended differences from the pre-transactional updater, for release notes:
+
+- The Windows ZIP fallback runs only from an untouched checkout. Once git has
+  stashed, switched or half-moved the tree, the ZIP overlay (which replaces
+  every top-level entry) would bury that state, so the run fails with the git
+  error instead.
+- The commit point arms the completion tail, the fleet restart and the marker
+  before git writes. If any of them cannot be made durable, the update stops with
+  the checkout unchanged: moving without them is the "tail never runs" state.
+- Startup files (the launcher and `hermes_bootstrap` import closure) are
+  compiled at the target commit before the move, by an interpreter the target's
+  `requires-python` admits (`uv python find`, then `python3.N`). With none
+  installed the refusal names the Python to install. The preflight is one
+  `git cat-file --batch`.
+- Every move names the resolved commit id, not a ref, and its marker is dropped
+  only once HEAD is that commit. A branch that moves during the switch is
+  reported as a failed switch. The restart is owed for the HEAD the switch
+  actually landed on.
+- The fork's upstream fast-forward is judged the same way before it moves. A
+  broken upstream commit rolls the whole update back.
+- A recovery marker whose target commit is gone (gc, re-clone) is retired only
+  over a clean tracked tree at `pre`. Until then each launch warns.
+
 ## Historical surface
 
 All names frozen from the complete reachable shipped updater history stay

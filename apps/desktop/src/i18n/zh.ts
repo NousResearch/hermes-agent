@@ -4,6 +4,7 @@ import { defineLocale } from './define-locale'
 import { introZh } from './intro-zh'
 import { zhAuxTasks } from './zh_aux_tasks'
 import { zhModelMenu } from './zh_model_menu'
+import { zhNotices } from './zh_notices'
 import { zhSharedMetrics } from './zh_shared_metrics'
 
 export const zh = defineLocale({
@@ -290,9 +291,7 @@ export const zh = defineLocale({
     }
   },
 
-  remoteDisplayBanner: {
-    message: reason => `软件渲染已启用 — 检测到远程显示（${reason}）。为防止画面闪烁，已禁用 GPU 加速。`
-  },
+  ...zhNotices,
 
   billingBlock: {
     titleNous: 'Nous 额度已用尽',

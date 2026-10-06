@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { deAuxTasks } from './de_aux_tasks'
 import { deBoot } from './de_boot'
 import { deModelMenu } from './de_model_menu'
+import { deNotices } from './de_notices'
 import { deSharedMetrics } from './de_shared_metrics'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
@@ -509,10 +510,7 @@ export const deOverrides = {
       creditsTitle: 'Credits'
     }
   },
-  remoteDisplayBanner: {
-    message: reason =>
-      `Software-Rendering aktiv — Remote-Display erkannt (${reason}). GPU-Beschleunigung ist deaktiviert, um Flackern zu verhindern.`
-  },
+  ...deNotices,
   billingBlock: {
     titleNous: 'Keine Nous-Credits mehr',
     titleProvider: provider => `Keine Credits mehr — ${provider}`,

@@ -514,6 +514,7 @@
     "boot.updateHold.title",
     "boot.updateHold.titleUnverified",
     "boot.updateHold.unverified",
+    "butterbar.goTo",
     "commandCenter.actionDone",
     "commandCenter.actionFailed",
     "commandCenter.actionRunning",

@@ -3,6 +3,7 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import { enAuxTasks } from './en_aux_tasks'
 import { enBoot } from './en_boot'
 import { enModelMenu } from './en_model_menu'
+import { enNotices } from './en_notices'
 import { enSharedMetrics } from './en_shared_metrics'
 import type { Translations } from './types'
 
@@ -500,10 +501,7 @@ export const en: Translations = {
     }
   },
 
-  remoteDisplayBanner: {
-    message: reason =>
-      `Software rendering active — remote display detected (${reason}). GPU acceleration is disabled to prevent flickering.`
-  },
+  ...enNotices,
 
   billingBlock: {
     titleNous: 'Out of Nous credits',

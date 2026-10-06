@@ -189,7 +189,7 @@ def _shorten_espeak_data_path() -> None:
     try:
         import espeakng_loader
         data_path = espeakng_loader.get_data_path()
-    except Exception:
+    except (ImportError, AttributeError):
         return
     if len(os.fsencode(data_path)) < _ESPEAK_PATH_HOME_MAX:
         return

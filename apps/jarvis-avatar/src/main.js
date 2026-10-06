@@ -10,9 +10,10 @@
   Parâmetros de URL: ?estatico · ?sofundo · ?fps · ?q=0.4..1
   Atalhos: H esconde a interface · F tela cheia · M microfone · P pensar · espaço fala · 1–4 formas · D mostra FPS
 */
-import { CFG, IMG, HEAD3D, ASSETS, PARAMS, STILL, SO_FUNDO, REDUCED, COARSE, MOBILE, FONT } from './config.js';
+import { CFG, IMG, ASSETS, PARAMS, STILL, SO_FUNDO, REDUCED, COARSE, MOBILE, FONT } from './config.js';
 import { clamp, mix, ease, rnd, $, toast } from './util.js';
-import { QUAD_VS, BG_FS, BODY_FS, PART_VS, PART_FS } from './shaders.js';
+import { QUAD_VS, BG_FS, MESH_VS, MESH_FS, PART_VS, PART_FS } from './shaders.js';
+import { buildParticles, buildMesh, STRIDE } from './model3d.js';
 import { createAudio } from './audio.js';
 import { createPose } from './pose.js';
 import { buildShapes, buildText } from './shapes.js';
@@ -47,12 +48,12 @@ function loadImage(src) {
 
 function start(imgs) {
   const [imFundo, imMascaras, imEmissao, imInfo] = imgs;
-  const gl = canvas.getContext('webgl', { antialias: false, alpha: false, depth: false, stencil: false, powerPreference: 'high-performance' });
+  const gl = canvas.getContext('webgl', { antialias: false, alpha: false, depth: true, stencil: false, powerPreference: 'high-performance' });
   if (!gl) throw new Error('este navegador não liberou WebGL (ative a aceleração de hardware ou use Chrome, Edge ou Safari)');
   const bctx = bloomCv.getContext('2d');
 
   /* ---------- programas ---------- */
-  const ATTR = { aPos: 0, aHome: 0, aCol: 1, aInfo: 2, aFrom: 3, aTo: 4, aSil: 5, aPhi: 6, aRel: 7 };
+  const ATTR = { aPos: 0, aHome: 0, aCol: 1, aInfo: 2, aFrom: 3, aTo: 4, aP3: 5 };
   function makeProgram(name, vsrc, fsrc) {
     const prog = gl.createProgram();
     for (const [src, type] of [[vsrc, gl.VERTEX_SHADER], [fsrc, gl.FRAGMENT_SHADER]]) {
@@ -75,7 +76,7 @@ function start(imgs) {
   }
   const P = {
     bg: makeProgram('fundo', QUAD_VS, BG_FS),
-    body: makeProgram('corpo', QUAD_VS, BODY_FS),
+    mesh: makeProgram('corpo', MESH_VS, MESH_FS),
     part: makeProgram('partículas', PART_VS, PART_FS),
   };
 
@@ -105,143 +106,21 @@ function start(imgs) {
   }
   const em = pixels(imEmissao), inf = pixels(imInfo);
 
-  // silhueta da cabeça 3D por linha (bordas esquerda e direita, px): o perfil desenhado do manequim (HEAD3D.PROFILE)
-  // centrado no eixo. Quantizada a 1/32 px: o corpo lê a mesma tabela numa textura (16 bits por borda) e as
-  // partículas num atributo, com valores idênticos.
-  const sil = new Float32Array(IMG.h * 2);
-  {
-    const P = HEAD3D.PROFILE, last = P.length - 1;
-    for (let y = 0; y < IMG.h; y++) {
-      let w = 0;
-      if (y >= P[0][0]) {
-        let k = 0;
-        while (k < last - 1 && y >= P[k + 1][0]) k++;
-        const p0 = P[Math.max(0, k - 1)][1], p1 = P[k][1], p2 = P[k + 1][1], p3 = P[Math.min(last, k + 2)][1];
-        const t = clamp((y - P[k][0]) / (P[k + 1][0] - P[k][0]), 0, 1), t2 = t * t, t3 = t2 * t;
-        w = Math.max(0, 0.5 * (2 * p1 + (p2 - p0) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (3 * p1 - p0 - 3 * p2 + p3) * t3));
-      }
-      sil[y * 2] = Math.round((IMG.axisX + 0.5 - w) * 32) / 32; sil[y * 2 + 1] = Math.round((IMG.axisX + 0.5 + w) * 32) / 32;
-    }
-  }
-  const silBytes = new Uint8Array(IMG.h * 4);
-  for (let i = 0; i < IMG.h * 2; i++) { const v = Math.round(sil[i] * 32); silBytes[i * 2] = v >> 8; silBytes[i * 2 + 1] = v & 255; }
-  T.sil = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, T.sil);
-  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, IMG.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, silBytes);
-  for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
   let total = 0;
   for (let i = 2; i < inf.length; i += 4) if (inf[i] > 0) total++;
   if (!total) throw new Error('as camadas de partículas vieram vazias');
   const cap = CFG.maxParticles || (MOBILE ? 90000 : 400000);
   const keep = Math.min(1, cap / total);                 // celular: amostra e compensa o brilho (uGain)
-  // O busto é 3D: uma nuvem de partículas na superfície de um manequim moldado pela silhueta da foto (cada linha é
-  // uma fatia elíptica, sliceOf no shader; no tronco, rasa). Da foto ficam só o fundo e a aura em volta.
-  const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
-  const TR = HEAD3D.TORSO;
-  const sliceAt = (y) => {
-    const m = 0.5 * (sil[y * 2] + sil[y * 2 + 1]), w = Math.max(0.5 * (sil[y * 2 + 1] - sil[y * 2]), 0.001);
-    const cap = TR.depth + (1e4 - TR.depth) * (1 - smooth(TR.from, TR.to, y + 0.5));
-    return { m, w, d: HEAD3D.K * Math.min(w, cap) };
-  };
-  // rosto: relevo (px, pra fora) no ponto da frente a u px do eixo, na altura y
-  const N3 = HEAD3D.NOSE;
-  const relief = (u, y) => {
-    let h = 0;
-    for (const F of HEAD3D.FACE) {
-      for (const sx of F.pair ? [-1, 1] : [1]) h += F.h * Math.exp(-(((u - sx * F.x) / F.rx) ** 2) - (((y - F.y) / F.ry) ** 2));
-    }
-    const t = clamp((y - N3.top) / (N3.tip - N3.top), 0, 1);
-    const nw = N3.w * (0.7 + 0.6 * t), under = y > N3.tip ? Math.exp(-(((y - N3.tip) / 7) ** 2)) : 1;
-    return h + N3.h * t * t * (3 - 2 * t) * under * Math.exp(-((u / nw) ** 2)) * (y > N3.top ? 1 : 0);
-  };
-  const pts = [];          // x, y, cor r g b, relevo da foto, borda, aura, phi, relevo do rosto
-  // 1) foto: só a aura em volta da figura
-  for (let y = 0, px = 0; y < IMG.h; y++) {
-    for (let x = 0; x < IMG.w; x++, px += 4) {
-      if (inf[px + 2] <= 200 || rnd() > keep) continue;
-      pts.push(x + 0.5, y + 0.5, em[px], em[px + 1], em[px + 2], inf[px], inf[px + 1], 255, 9, 0);
-    }
-  }
-  // 2) superfície do manequim: amostragem uniforme por área (arco da fatia x inclinação entre linhas). No tronco, que
-  // quase não gira, só a metade da frente (o verso nunca aparece).
-  {
-    const dens = HEAD3D.DENS * keep, STEPS = 128;
-    const [mx, my] = IMG.mouth;
-    const L = [-0.28, -0.5, 0.82];                      // luz do rosto: do alto, um pouco da esquerda
-    for (let y = Math.max(0, IMG.headTop - 4); y < IMG.h; y++) {
-      const S = sliceAt(y), Sn = sliceAt(Math.min(IMG.h - 1, y + 1));
-      if (S.w < 2) continue;
-      const tilt = Math.hypot(1, Sn.w - S.w);
-      const span = y > TR.to ? Math.PI / 2 + 0.35 : Math.PI;
-      const ds = (f) => Math.hypot(S.w * Math.cos(f), S.d * Math.sin(f));
-      let per = 0;
-      for (let k = 0; k < STEPS; k++) per += ds(-span + 2 * span * (k + 0.5) / STEPS);
-      per *= 2 * span / STEPS;
-      const want = per * tilt * dens;
-      const n = Math.floor(want) + (rnd() < want % 1 ? 1 : 0);
-      const dsMax = Math.max(S.w, S.d);
-      for (let j = 0; j < n; j++) {
-        let f;
-        do f = -span + 2 * span * rnd(); while (rnd() * dsMax > ds(f));    // uniforme em comprimento de arco
-        const u = S.w * Math.sin(f), yy = y + rnd();
-        // rosto: relevo só na frente da cabeça; a luz do relevo vira brilho da própria partícula (gira junto)
-        const front = y < 640 ? smooth(0.1, 0.6, Math.cos(f)) : 0;
-        let rel = 0, shade = 1;
-        if (front > 0) {
-          rel = relief(u, yy) * front;
-          // luz suave de cima + o que dá leitura de rosto mesmo de frente: fundo escurece (olhos), saliência e quina
-          // convexa clareiam (dorso do nariz, maçãs, lábios, queixo), como oclusão ambiente
-          const h0 = relief(u, yy), hx1 = relief(u + 2, yy), hx0 = relief(u - 2, yy), hy1 = relief(u, yy + 2), hy0 = relief(u, yy - 2);
-          const gx = (hx1 - hx0) / 4 * front, gy = (hy1 - hy0) / 4 * front, lap = (hx1 + hx0 + hy1 + hy0 - 4 * h0) / 4 * front;
-          const dir = (-gx * L[0] - gy * L[1] + L[2]) / Math.hypot(gx, gy, 1) / L[2];
-          const depth = Math.exp((h0 > 0 ? 0.016 : 0.085) * h0 * front);
-          shade = clamp(Math.max(dir, 0) ** 1.8 * depth * clamp(Math.exp(-7 * lap), 0.45, 2.2), 0.15, 2.8);
-        }
-        const x = S.m + u + rel * (S.d * Math.sin(f)) / Math.hypot(S.d * Math.sin(f), S.w * Math.cos(f));
-        // malha de holograma: meridianos a cada 22,5° e paralelos a cada 30 px, finos. Giram com a cabeça e deixam o
-        // volume legível; no rosto ela some (as feições é que contam) e no tronco também (só a cabeça gira de verdade)
-        const mer = Math.abs(Math.sin(f * 8)) * S.w / 8, lat = Math.abs(((yy - IMG.headTop) % 30) - 15) - 13.5;
-        const line = Math.max(Math.exp(-mer * mer / 2), lat > 0 ? Math.exp(-((1.5 - lat) ** 2) / 0.6) : 0) * (1 - 0.85 * front) * (1 - smooth(600, 680, y));
-        // o tronco escurece pra baixo: o olhar fica no rosto
-        const fade = 1 - 0.45 * smooth(680, IMG.h, y);
-        // no rosto o brilho varia menos de partícula pra partícula: as feições é que desenham
-        const l = (0.55 + 0.45 * (1 - 0.6 * front) * Math.pow(rnd(), 1.5)) * (1 + 2.2 * line) * shade * fade, spark = rnd() < 0.025 * fade * (1 - front) ? 1 : 0;
-        let r = Math.min(255, 40 * l + 160 * spark), g = Math.min(255, 125 * l + 110 * spark), bl = 255 * Math.min(1, l + 0.2);
-        const gold = Math.cos(f) > 0 && y < 640 ? Math.exp(-(((x - mx) / 85) ** 2) - (((yy - my) / 60) ** 2)) : 0;
-        r = r + (255 - r) * gold; g = g + (175 - g) * gold; bl = bl + (55 - bl) * gold;
-        pts.push(x, yy, r, g, bl, 255 * Math.max(0, Math.cos(f)), 0, 0, f, rel);
-      }
-    }
-  }
-  // 3) orelhas: placas ovais presas na lateral do crânio (HEAD3D.EAR), estendidas pra trás no shader. A borda da
-  // orelha é mais clara (é ela que desenha a orelha de frente).
-  {
-    const E = HEAD3D.EAR, dens = HEAD3D.DENS * keep * 1.6;
-    for (let y = Math.ceil(E.cy - E.ry); y < E.cy + E.ry; y++) {
-      const v = (y + 0.5 - E.cy) / E.ry, U = E.out * Math.sqrt(Math.max(0, 1 - v * v));
-      const S = sliceAt(y);
-      for (const sg of [-1, 1]) {
-        const want = U * 2.2 * dens;                   // a placa tem ~2,2x a largura vista de frente (vai pra trás)
-        for (let j = 0, n = Math.floor(want) + (rnd() < want % 1 ? 1 : 0); j < n; j++) {
-          const u = U * Math.sqrt(rnd()), edge = Math.exp(-((U - u) ** 2) / 8);
-          const l = 0.45 + 0.35 * rnd() + 0.9 * edge;
-          pts.push(S.m + sg * (S.w + u), y + rnd(), Math.min(255, 45 * l), Math.min(255, 135 * l), 255, 120, 0, 0, 10 + u, 0);
-        }
-      }
-    }
-  }
-  const K9 = 10;
-  let N = pts.length / K9;
-  const homeT = new Float32Array(N * 2), silT = new Float32Array(N * 2), colT = new Uint8Array(N * 4), infoT = new Uint8Array(N * 4);
-  const phiT = new Float32Array(N), relT = new Float32Array(N);
+  // busto 3D (model3d.js): aura da foto + superfície do manequim + orelhas, e a malha escura que tampa o que fica atrás
+  const pts = buildParticles(em, inf, keep), mesh = buildMesh();
+  const N = pts.length / STRIDE;
+  const homeT = new Float32Array(N * 2), colT = new Uint8Array(N * 4), infoT = new Uint8Array(N * 4), p3T = new Float32Array(N * 4);
   for (let i = 0; i < N; i++) {
-    const o = i * K9, y = Math.min(IMG.h - 1, Math.floor(pts[o + 1]));
+    const o = i * STRIDE;
     homeT[i * 2] = pts[o]; homeT[i * 2 + 1] = pts[o + 1];
-    silT[i * 2] = sil[y * 2]; silT[i * 2 + 1] = sil[y * 2 + 1];
     colT[i * 4] = pts[o + 2]; colT[i * 4 + 1] = pts[o + 3]; colT[i * 4 + 2] = pts[o + 4];
     infoT[i * 4] = pts[o + 5]; infoT[i * 4 + 1] = pts[o + 6]; infoT[i * 4 + 2] = pts[o + 7]; infoT[i * 4 + 3] = (rnd() * 255) | 0;
-    phiT[i] = pts[o + 8]; relT[i] = pts[o + 9];
+    for (let k = 0; k < 4; k++) p3T[i * 4 + k] = pts[o + 8 + k];
   }
   const gain = 1 / keep;
   const SHAPES = buildShapes(N, homeT);
@@ -255,9 +134,13 @@ function start(imgs) {
   }
   const B = {
     tri: buffer(new Float32Array([-1, -1, 3, -1, -1, 3])),
-    home: buffer(homeT), sil: buffer(silT), col: buffer(colT), info: buffer(infoT), phi: buffer(phiT), rel: buffer(relT),
+    home: buffer(homeT), col: buffer(colT), info: buffer(infoT), p3: buffer(p3T),
+    meshHome: buffer(mesh.home), meshP3: buffer(mesh.p3), meshIdx: gl.createBuffer(), meshCount: mesh.idx.length,
     shape: { head: buffer(SHAPES.head), sphere: buffer(SHAPES.sphere), galaxy: buffer(SHAPES.galaxy), text: null },
   };
+
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, B.meshIdx);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.idx, gl.STATIC_DRAW);
 
   /* ---------- estado ---------- */
   const clock = { time: 0 };
@@ -361,7 +244,7 @@ function start(imgs) {
 
   /* ---------- desenho ---------- */
   function quad() {
-    for (let loc = 1; loc < 8; loc++) gl.disableVertexAttribArray(loc);
+    for (let loc = 1; loc < 6; loc++) gl.disableVertexAttribArray(loc);
     gl.bindBuffer(gl.ARRAY_BUFFER, B.tri);
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
@@ -403,19 +286,28 @@ function start(imgs) {
 
     if (!SO_FUNDO) {
       gl.enable(gl.BLEND);
+      gl.clear(gl.DEPTH_BUFFER_BIT);
+      gl.enable(gl.DEPTH_TEST);
       if (ST.head > 0.002) {
-        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);   // corpo pré-multiplicado: tampa o fundo e soma o brilho do contorno
-        p = P.body;
+        // malha escura do busto: tampa o fundo (pré-multiplicada) e grava a profundidade que esconde o que fica atrás
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+        gl.depthMask(true);
+        p = P.mesh;
         gl.useProgram(p.prog);
         shared(p);
         fieldUniforms(p, fieldOn);
         head.uniforms(gl, p);
         gl.uniform1f(p.u.uVis, ST.head);
-        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, T.sil); gl.uniform1i(p.u.uSil, 0);
-        quad();
+        for (let loc = 1; loc < 5; loc++) gl.disableVertexAttribArray(loc);
+        attr(0, B.meshHome, 2, gl.FLOAT, false, 0);
+        attr(5, B.meshP3, 4, gl.FLOAT, false, 0);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, B.meshIdx);
+        gl.drawElements(gl.TRIANGLES, B.meshCount, gl.UNSIGNED_SHORT, 0);
       }
 
-      gl.blendFunc(gl.ONE, gl.ONE);                     // partículas somam luz
+      gl.blendFunc(gl.ONE, gl.ONE);                     // partículas somam luz; testam a profundidade, não gravam
+      gl.depthMask(false);
+      gl.depthFunc(gl.LEQUAL);
       p = P.part;
       gl.useProgram(p.prog);
       shared(p);
@@ -440,10 +332,10 @@ function start(imgs) {
       attr(2, B.info, 4, gl.UNSIGNED_BYTE, true, 0);
       attr(3, B.shape[fromShape] || B.shape.head, 3, gl.FLOAT, false, 0);
       attr(4, B.shape[toShape] || B.shape.head, 3, gl.FLOAT, false, 0);
-      attr(5, B.sil, 2, gl.FLOAT, false, 0);
-      attr(6, B.phi, 1, gl.FLOAT, false, 0);
-      attr(7, B.rel, 1, gl.FLOAT, false, 0);
+      attr(5, B.p3, 4, gl.FLOAT, false, 0);
       gl.drawArrays(gl.POINTS, 0, N);
+      gl.disable(gl.DEPTH_TEST);
+      gl.depthMask(true);
     }
 
     const glowAmt = CFG.bloom && !STILL && !SO_FUNDO ? clamp(A.level * 0.9 + ST.think * 0.3 + ST.speak * 0.2, 0, 0.85) : 0;

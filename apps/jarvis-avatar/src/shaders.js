@@ -36,7 +36,7 @@ uniform vec4 uPose;    // x: giro (rad) · y: aceno (rad, + = olhar pra baixo) �
 uniform vec4 uPoseLag; // a mesma pose, atrasada por uma mola mole: a aura vem atrás da cabeça e balança
 uniform vec3 uLean, uLeanLag;   // x, y: a cabeça vai na direção do mouse (px) · z: chega perto da tela (escala)
 uniform vec2 uYaw;     // giro (rad, + = pra direita de quem olha) e sua cópia atrasada (aura); o giro 3D está mais abaixo
-const float YAW_PIV = ${(0.45 * HEAD_RX).toFixed(1)};                  // px: eixo do pescoço atrás do centro da cabeça
+const float YAW_PIV = ${HEAD3D.PIVOT.toFixed(1)};                  // px: eixo do giro, atrás do centro da cabeça
 // cx: quanto o giro levou a cabeça pro lado (px). A pose é aplicada DEPOIS do giro, então o crânio do aceno
 // acompanha a cabeça girada; centrado na foto, a lateral girada saía da elipse e dobrava (faixa cinza no topo).
 vec2 poseOf(vec2 p, vec4 P, vec3 L, float cx) {
@@ -63,28 +63,18 @@ vec2 poseOf(vec2 p, vec4 P, vec3 L, float cx) {
   return roll + turn + breath + lean;
 }
 vec2 pose(vec2 p) { return poseOf(p, uPose, uLean, YAW_PIV * sin(uYaw.x)); }
-// Cabeça 3D: um manequim de partículas. Cada linha da foto é uma fatia elíptica com a largura da silhueta naquela
-// altura (lida do alfa do corpo; nas orelhas, a do crânio) e profundidade YAW_K vezes essa largura. O giro (yaw) é uma
-// rotação 3D em torno de um eixo vertical no pescoço, YAW_PIV px atrás do rosto; o pescoço torce e o tronco acompanha
-// só um pouco (yawW). O rosto tem relevo de manequim (aRel: px ao longo da normal, gerado em main.js).
-// A luz vem da própria superfície: borda brilhante onde ela fica rasante (fresnel) e o verso aparece fraco, como um
-// holograma. Orelhas: placas presas na lateral, estendidas pra trás. Da foto ficam o fundo e a aura.
-const float YAW_K = ${HEAD3D.K.toFixed(3)};
+// Busto 3D (model3d.js): cada ponto chega com (x, y) de giro 0, z (pra frente), normal (nx, nz) e o quanto acompanha
+// o giro (k: 1 na cabeça, o pescoço torcendo, pouco nos ombros). O giro é uma rotação 3D em torno de um eixo vertical
+// YAW_PIV px atrás do centro da cabeça; projeção ortográfica. Partículas e malha escura usam a MESMA conta.
 const float AX = ${IMG.axisX.toFixed(1)};
-float headW(vec2 p) { return 1.0 - smoothstep(${IMG.chinY.toFixed(1)}, ${NECK_Y.toFixed(1)}, p.y); }
-// quanto cada altura acompanha o giro: a cabeça inteira, o pescoço torcendo, o tronco só um pouco (TWIST)
-float yawW(vec2 p) { return mix(${HEAD3D.TWIST.toFixed(3)}, 1.0, headW(p)); }
-// fatia da linha y: (meio, meia-largura, meia-profundidade). Do pescoço pra baixo a profundidade para de crescer
-// com a largura (ombros são largos, não fundos); igual a sliceAt em main.js
-vec3 sliceOf(vec2 sil, float y) {
-  float m = 0.5 * (sil.x + sil.y), w = max(0.5 * (sil.y - sil.x), 0.001);
-  float cap = mix(1e4, ${HEAD3D.TORSO.depth.toFixed(1)}, smoothstep(${HEAD3D.TORSO.from.toFixed(1)}, ${HEAD3D.TORSO.to.toFixed(1)}, y));
-  return vec3(m, w, YAW_K * min(w, cap));
+// (x na tela, z, normal z na tela): z serve pro teste de profundidade, a normal pra luz (1 = encara a câmera)
+vec3 place3D(vec2 home, vec4 p3, float yaw) {
+  float a = yaw * p3.w, c = cos(a), sn = sin(a);
+  float rx = home.x - AX, rz = p3.x + YAW_PIV;
+  return vec3(AX + rx * c + rz * sn, -rx * sn + rz * c - YAW_PIV, -p3.y * sn + p3.z * c);
 }
-// fatia girada (c, s = cos, sin do giro): (x do centro na tela, meia-largura projetada)
-vec2 sliceRot(vec3 S, float c, float s) {
-  return vec2(AX + (S.x - AX) * c + YAW_PIV * s, sqrt(S.y * S.y * c * c + S.z * S.z * s * s));
-}
+// profundidade pro WebGL (perto = menor)
+float depthOf(float z) { return clamp(-z / 1500.0, -0.999, 0.999); }
 float turnShade(vec2 p) {                        // quanto o ponto passou a olhar pra câmera (+) ou pra longe (-)
   vec2 e = (p - vec2(${IMG.axisX.toFixed(1)}, ${IMG.headCY.toFixed(1)})) / vec2(${HEAD_RX.toFixed(1)}, ${HEAD_RY.toFixed(1)});
   float z = sqrt(max(0.0, 1.0 - dot(e, e)));
@@ -128,43 +118,33 @@ void main() {
   gl_FragColor = vec4(c, 1.0);
 }`;
 
-export const BODY_FS = `
+// Malha escura do manequim: a base do busto (mais clara pra borda, o volume) e quem tampa o que fica atrás.
+export const MESH_VS = `
 precision highp float;
-uniform vec2 uRes, uOffset, uImg, uPar;
-uniform float uScale, uVis;
-uniform sampler2D uSil;   // silhueta por linha da foto (1 x ${IMG.h}): RG = borda esquerda, BA = direita (px * 32, 16 bits)
+attribute vec2 aHome;
+attribute vec4 aP3;
+uniform vec2 uRes, uOffset, uPar;
+uniform float uScale;
 ` + FIELD + POSE + `
-float silDec(vec2 hl) { return (floor(hl.x * 255.0 + 0.5) * 256.0 + floor(hl.y * 255.0 + 0.5)) / 32.0; }
-vec2 silRow(float row) {
-  vec4 t = texture2D(uSil, vec2(0.5, (clamp(row, 0.0, ${(IMG.h - 1).toFixed(1)}) + 0.5) / ${IMG.h.toFixed(1)}));
-  return vec2(silDec(t.xy), silDec(t.zw));
-}
-vec2 silAt(float y) {                           // interpolada entre centros de linha (= o valor exato da linha da partícula)
-  float t = y - 0.5, r0 = floor(t);
-  return mix(silRow(r0), silRow(r0 + 1.0), t - r0);
-}
+varying float vNz;
 void main() {
-  vec2 sp = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
-  vec2 p = (sp - uOffset) / uScale - uPar * 5.5;
-  vec3 f = field(p);
-  vec2 q = p - f.xy;
-  vec2 h = q - pose(q);
-  h = q - pose(h);
-  h = q - pose(h);
-  h = q - pose(h);                                // inverte a pose (ponto fixo, 4 passos)
-  float shade = 1.0 + 0.35 * turnShade(h);
-  // base escura do manequim girado, mais clara pra borda (volume), com um halo suave por fora da silhueta
-  float a = uYaw.x * yawW(h), c = cos(a), sn = sin(a);
-  vec3 S = sliceOf(silAt(h.y), h.y);
-  vec2 R = sliceRot(S, c, sn);
-  float D = abs(h.x - R.x) - R.y;                    // < 0 dentro da silhueta
-  float inside = (1.0 - smoothstep(-1.5, 1.5, D)) * step(2.0, S.y);
-  float glow = exp(-max(D, 0.0) / 14.0) * (1.0 - inside) * step(1.0, S.y);
-  float u = clamp(abs(h.x - R.x) / max(R.y, 1.0), 0.0, 1.0);
-  vec3 base = mix(vec3(0.006, 0.02, 0.05), vec3(0.03, 0.09, 0.2), u * u * u) * shade;
-  vec4 col = vec4(base * inside + vec3(0.12, 0.42, 1.0) * glow * 0.7, inside * 0.8);
-  float vis = uVis * (1.0 - clamp(length(f.xy) / 70.0, 0.0, 0.55));
-  gl_FragColor = col * vis;
+  vec3 q = place3D(aHome, aP3, uYaw.x);
+  vec2 p = vec2(q.x, aHome.y);
+  p += poseOf(p, uPose, uLean, YAW_PIV * sin(uYaw.x));
+  p += field(p).xy + uPar * (4.0 + 3.0 * max(aP3.z, 0.0));   // a mesma paralaxe das partículas (relevo = de frente)
+  vec2 s = p * uScale + uOffset;
+  gl_Position = vec4(s.x / uRes.x * 2.0 - 1.0, 1.0 - s.y / uRes.y * 2.0, depthOf(q.y), 1.0);
+  vNz = q.z;
+}`;
+
+export const MESH_FS = `
+precision mediump float;
+uniform float uVis;
+varying float vNz;
+void main() {
+  float fr = 1.0 - clamp(vNz, 0.0, 1.0);
+  vec3 base = mix(vec3(0.006, 0.02, 0.05), vec3(0.04, 0.12, 0.26), fr * fr * fr);
+  gl_FragColor = vec4(base, 0.8) * uVis;           // pré-multiplicado
 }`;
 
 export const PART_VS = `
@@ -174,9 +154,7 @@ attribute vec3 aCol;
 attribute vec4 aInfo;            // relevo, borda, aura (0/1), semente
 attribute vec3 aFrom;
 attribute vec3 aTo;
-attribute vec2 aSil;             // silhueta (borda esquerda, direita; px) da linha de origem: a mesma que o corpo lê em uSil
-attribute float aPhi;            // < 4: manequim, no ângulo aPhi da fatia · 9: foto · >= 10: orelha (10 + px além do crânio)
-attribute float aRel;            // relevo do rosto: px pra fora, ao longo da normal da fatia
+attribute vec4 aP3;              // z (px, pra frente), normal (nx, nz), quanto acompanha o giro (model3d.js)
 uniform vec2 uRes, uOffset, uPar, uMouth;
 uniform float uScale, uTime, uStill, uMorphT0, uLevel, uThink, uListen, uGain, uHeadness, uAxisX, uHeadCY, uChinY;
 uniform float uBands[8];
@@ -211,33 +189,23 @@ void main() {
   float wv = 0.5 + 0.5 * sin(p.y * 0.05 - uTime * 6.0 + seed * 6.28);
   p += nrm * (uLevel * 2.5 + bnd * 6.0) * (0.3 + 0.7 * seed) * (0.4 + 0.6 * wv) * hd;
 
-  // giro 3D: onde o ponto vai parar (X) menos onde estava com giro 0, aplicado sobre base (a troca de forma continua
-  // funcionando com base fora de casa). Mesma fatia e mesma conta do corpo.
+  // giro 3D: onde o ponto vai parar menos onde estava com giro 0, aplicado sobre base (a troca de forma continua
+  // funcionando com base fora de casa). A malha escura usa a mesma conta (place3D) e tampa o que fica atrás.
   float yawS = mix(uYaw.x, uYaw.y, aura) * hd;
-  float a = yawS * yawW(aHome), c = cos(a), sn = sin(a);
-  vec3 S = sliceOf(aSil, aHome.y);
-  vec2 R = sliceRot(S, c, sn);
   vec2 turned = base.xy;
-  float lit = 1.0;                                  // luz da superfície (1 nas outras formas)
-  bool solid = aPhi != 9.0;                         // manequim ou orelha (não é foto)
-  if (aPhi < 4.0) {
-    float sp = sin(aPhi), cp = cos(aPhi);
-    vec2 nrm0 = vec2(S.z * sp, S.y * cp) / length(vec2(S.z * sp, S.y * cp));        // normal da fatia (x, z)
-    vec2 q0 = vec2(S.y * sp, S.z * cp) + aRel * nrm0;                                // ponto com o relevo do rosto
-    turned.x += R.x + q0.x * c + q0.y * sn - (S.x + q0.x);
-    float nz = nrm0.y * c - nrm0.x * sn;                                             // encara a câmera: 1
-    float fr = 1.0 - clamp(nz, 0.0, 1.0);
-    lit = nz > 0.0 ? 0.85 + 3.0 * pow(fr, 2.5) : 0.1 * smoothstep(-1.0, -0.2, nz) + 0.03;
-  } else if (aPhi > 9.5) {
-    float u = aPhi - 10.0, z = -1.4 * u;
-    float xe = AX + (aHome.x - AX) * c + (z + YAW_PIV) * sn;
-    float ze = -(aHome.x - AX) * sn + (z + YAW_PIV) * c - YAW_PIV;
-    float behind = (1.0 - smoothstep(-2.0, 2.0, abs(xe - R.x) - R.y)) * (1.0 - smoothstep(-6.0, 0.0, ze));
-    turned.x += xe - aHome.x;
-    lit = 1.1 * (1.0 - 0.92 * behind);
-  } else {                                          // foto (aura): anda colada à borda nova
-    float sg = aHome.x < S.x ? -1.0 : 1.0;
-    turned.x += (R.x - S.x) + sg * (R.y - S.y);
+  float lit = 1.0, zd;                              // luz da superfície (1 nas outras formas) · profundidade
+  bool solid = aura < 0.5;                          // manequim e orelhas (a aura é da foto)
+  if (solid) {
+    vec3 q = place3D(aHome, aP3, yawS);
+    turned.x += q.x - aHome.x;
+    float fr = 1.0 - clamp(q.z, 0.0, 1.0);          // borda brilhante onde a superfície fica rasante
+    lit = 0.85 + 3.0 * pow(fr, 2.5);
+    zd = q.y + 16.0;                                // um pouco à frente da malha (as cavidades do rosto ficam abaixo dela)
+  } else {
+    // aura: um halo em volta da silhueta; acompanha o centro da cabeça e a largura dela girada, sempre atrás do busto
+    float a = yawS * aP3.w, c = cos(a), sn = sin(a);
+    turned.x += (aHome.x - AX) * (sqrt(c * c + ${(HEAD3D.DEPTH * HEAD3D.DEPTH).toFixed(3)} * sn * sn) - 1.0) + YAW_PIV * sn;
+    zd = -400.0;
   }
   lit = mix(1.0, lit, hd);
   vMv = 0.0;
@@ -259,7 +227,7 @@ void main() {
   p += f.xy * (1.0 + aura * 0.3) + drift + uPar * (4.0 + depth * 3.0);
 
   vec2 s = p * uScale + uOffset;
-  gl_Position = vec4(s.x / uRes.x * 2.0 - 1.0, 1.0 - s.y / uRes.y * 2.0, 0.0, 1.0);
+  gl_Position = vec4(s.x / uRes.x * 2.0 - 1.0, 1.0 - s.y / uRes.y * 2.0, mix(-0.999, depthOf(zd), hd), 1.0);   // outras formas: na frente de tudo
   float pop = clamp(f.z / 25.0, 0.0, 1.5);
   float sz = uScale * (1.0 + pop * 0.5 + fly * 1.2 + (1.0 - hd) * 0.6) * (1.0 + uLean.z * 1.2 * hd);   // perto: pontos maiores
   float s0 = solid ? max(1.5, sz * 1.7) : max(1.0, sz);         // manequim: pontos um pouco maiores e suaves

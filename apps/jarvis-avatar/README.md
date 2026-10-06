@@ -5,13 +5,13 @@ Avatar do Jarvis em WebGL: a imagem de referência é separada em camadas (fundo
 ondas, voz e estados (ouvindo / pensando / falando) deslocam partículas e corpo pela mesma
 função na GPU, então tudo se move junto.
 
-O busto é 3D: um manequim de partículas moldado pela silhueta da foto (perfil medido e alisado em
-`HEAD3D.PROFILE`; cada linha é uma fatia elíptica, rasa no tronco). A cabeça gira em torno do pescoço
-até ~72°, o pescoço torce e o tronco acompanha só um pouco. O rosto tem relevo de manequim
-(`HEAD3D.FACE` e `HEAD3D.NOSE`: sobrancelhas, olhos, nariz, maçãs, lábios, queixo) que desloca as
-partículas em 3D, então o nariz aparece de perfil. A luz vem da superfície: borda brilhante onde ela
-fica rasante, cavidades escuras e saliências claras, malha sutil na cabeça, verso fraco como
-holograma e o brilho dourado da boca preso no rosto. Da foto ficam o fundo e a aura.
+O busto é 3D (`src/model3d.js`), feito de sólidos de fatias elípticas medidas no desenho de
+partículas da foto: a **cabeça** é rígida, e a mandíbula afina e avança, então o queixo fica na
+frente do pescoço. O **pescoço e o tronco** formam outro sólido, atrás da cabeça, que torce e só
+acompanha um pouco o giro. As **orelhas** são placas. Uma malha escura dos mesmos sólidos grava a
+profundidade, e as partículas que ficam atrás dela (nuca, orelha do outro lado, pescoço atrás do
+queixo) somem. O rosto tem relevo de manequim (`HEAD3D.FACE` e `HEAD3D.NOSE`): o nariz aparece de
+perfil, as cavidades escurecem e as saliências clareiam. Da foto ficam o fundo e a aura.
 
 ## Rodar
 
@@ -39,11 +39,12 @@ python3 build.py                 # gera dist/jarvis.html (~5,4 MB, tudo embutido
 | `index.html` | marcação da interface (status, dock, controles) |
 | `src/styles.css` | visual + `@font-face` da Sora |
 | `src/config.js` | `CFG` (ajustes), geometria da foto (`IMG`), lista de camadas, parâmetros de URL |
-| `src/shaders.js` | GLSL: campo do mouse/ondas, pose, cabeça 3D (fatias, luz), fundo, corpo e partículas |
+| `src/shaders.js` | GLSL: campo do mouse/ondas, pose, giro 3D (`place3D`), fundo, malha e partículas |
 | `src/audio.js` | microfone, `<audio>` externo, voz do navegador → volume + 8 bandas |
 | `src/pose.js` | balanço, olhadas, seguir o mouse, reação aos estados (molas amortecidas) |
+| `src/model3d.js` | busto 3D: sólidos, partículas da superfície, relevo do rosto e malha de profundidade |
 | `src/shapes.js` | formas: cabeça, esfera, galáxia, texto |
-| `src/main.js` | WebGL, partículas (foto + manequim 3D + orelhas), render, entrada, API pública, loop |
+| `src/main.js` | WebGL, buffers, render (malha + partículas com profundidade), entrada, API pública, loop |
 | `assets/img/` | camadas da foto (1672×941): `fundo`, `mascaras` e, pra aura em volta da figura, `emissao` e `info` |
 | `assets/fonts/` | Sora 300/600/700 (SIL Open Font License 1.1) |
 | `build.py` | empacota tudo em `dist/jarvis.html` (só biblioteca padrão) |

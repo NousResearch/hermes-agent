@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-MODULES = ["config", "util", "shaders", "audio", "pose", "shapes", "main"]
+MODULES = ["config", "util", "shaders", "model3d", "audio", "pose", "shapes", "main"]
 MIME = {".webp": "image/webp", ".png": "image/png", ".woff2": "font/woff2"}
 
 IMPORT_RE = re.compile(r"^import\s.+?\sfrom\s+'\./[\w-]+\.js';\s*$", re.M)
@@ -34,6 +34,8 @@ def bundle_js() -> str:
             if decl in owner:
                 sys.exit(f"build: '{decl}' declarado em {owner[decl]}.js e {name}.js")
             owner[decl] = name
+        if re.search(r"^import\s*\{[^}]*\sas\s", src, re.M):
+            sys.exit(f"build: {name}.js usa 'import {{ x as y }}': o build descarta os imports, o apelido sumiria")
         src = IMPORT_RE.sub("", src)
         if re.search(r"^\s*(import|export)\b(?!\s+(const|let|function|async))", src, re.M):
             sys.exit(f"build: {name}.js tem import/export que este build não entende (use uma linha por import)")

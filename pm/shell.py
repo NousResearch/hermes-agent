@@ -105,6 +105,7 @@ def _bash_starts(candidate: str) -> bool:
 
 
 _RESOLUTION_ENV = ("PATH", "PATHEXT", "HERMES_GIT_BASH_PATH", "HERMES_RUNTIME_DIR",
+                   "HERMES_HOME", "HERMES_INSTALL_ROOT",
                    "ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA", "SHELL")
 _resolved: tuple[tuple, str] | None = None
 _resolved_lock = threading.Lock()
@@ -122,9 +123,11 @@ def bash() -> str | None:
 
     Memoised per process: every terminal command asks, and on Windows each
     resolution re-reads the store's facts and spawns bash.exe to prove it
-    starts. The key is the environment the ladder reads; a re-staged git
-    Package moves its entry dir, which the isfile check on a hit catches.
-    A miss (no bash) is never cached, so an install mid-process is seen.
+    starts. The key is the env vars the ladder and store lookup read; file
+    contents (facts.json, manifest, install stamp) are not, so a moved store
+    is noticed once the old bash is gone. A cached bash that still exists but
+    no longer starts is kept until a spawn site calls forget(). A miss (no
+    bash) is never cached, so an install mid-process is seen.
     """
     global _resolved
     key = tuple(os.environ.get(name) for name in _RESOLUTION_ENV)
@@ -136,6 +139,14 @@ def bash() -> str | None:
         found = _resolve_bash()
         _resolved = (key, found) if found else None
         return found
+
+
+def forget() -> None:
+    """Drop the memoised bash so the next bash() resolves and probes again;
+    for spawn sites whose launch of it failed."""
+    global _resolved
+    with _resolved_lock:
+        _resolved = None
 
 
 def _resolve_bash() -> str | None:

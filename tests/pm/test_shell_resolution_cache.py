@@ -36,3 +36,23 @@ def test_changed_environment_or_vanished_bash_re_resolves(staged, monkeypatch):
     monkeypatch.setattr(shell, "_staged_bash", lambda: str(restaged))
     bash_exe.unlink()
     assert shell.bash() == str(restaged)
+
+
+def test_missing_bash_is_not_cached(tmp_path, monkeypatch):
+    found = []
+    monkeypatch.setattr(shell, "_resolved", None)
+    monkeypatch.setattr(shell, "_resolve_bash", lambda: found[0] if found else None)
+    assert shell.bash() is None
+
+    installed = tmp_path / "bash.exe"
+    installed.write_bytes(b"")
+    found.append(str(installed))
+    assert shell.bash() == str(installed)
+
+
+def test_forget_makes_next_call_probe_again(staged):
+    bash_exe, probes = staged
+    shell.bash()
+    shell.forget()
+    assert shell.bash() == str(bash_exe)
+    assert len(probes) == 2

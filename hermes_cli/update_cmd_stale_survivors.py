@@ -1,7 +1,7 @@
 """Post-update escalation for gateways the fleet matrix proved stale.
 
 ``_verify_fleet_after_update`` compares every live gateway's stamped ``code_sha`` against the
-fresh checkout. Until now a ``stale`` row only failed the update (exit 1) and left the process
+fresh checkout. A ``stale`` row once only failed the update (exit 1) and left the process
 running pre-update modules: its cron ticker then yields every tick to the "fresh gateway" it
 assumes exists, and nothing ever restarts it (#117275). A proven-stale survivor is now handed to
 the same drain-first ``request_restart`` path (SIGUSR1) the restart phase uses — a supervised
@@ -29,7 +29,7 @@ def signal_stale_fleet_survivors(fleet: list, restart, drain_budget: float) -> l
     """Drain-first restart every proven-stale gateway; returns the PIDs signalled.
 
     Bookkeeping lands in ``restart.killed_pids`` so the receipt and the survivor sweep see them.
-    Never raises: verification must still finalize the receipt and exit 1.
+    Never raises: verification must still finalize the receipt (with an owed restart).
     """
     from hermes_cli.update_cmd_fleet import _drain_or_signal_gateway_for_update
 
@@ -58,6 +58,11 @@ def signal_stale_fleet_survivors(fleet: list, restart, drain_budget: float) -> l
             logger.warning("Could not signal stale gateway PID %s: %s", pid, exc)
             print(f"  ⚠ {label}: could not be signalled ({exc}) — restart it by hand")
     if manual:
+        # No successor: the receipt's gateway_restart follow-up names them and the fleet
+        # obligation stays armed, so the stop is never silent (codemap §6 V7).
+        stopped = getattr(restart, "stopped_unmapped_pids", None)
+        if isinstance(stopped, set):
+            stopped.update(manual)
         print(f"  → Stopped {len(manual)} manual gateway process(es) that had no supervisor to respawn them")
         print("    Restart manually: hermes gateway run")
         if len(manual) > 1:

@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import type { HermesReviewFile } from '@/global'
 import { I18nProvider } from '@/i18n'
@@ -17,6 +17,13 @@ import {
 import { ReviewPane } from './index'
 
 const file = (path: string): HermesReviewFile => ({ added: 1, path, removed: 0, staged: false, status: 'M' })
+
+// Radix menus use pointer capture and scrollIntoView; jsdom has neither.
+beforeAll(() => {
+  Element.prototype.hasPointerCapture ??= () => false
+  Element.prototype.releasePointerCapture ??= () => undefined
+  Element.prototype.scrollIntoView ??= () => undefined
+})
 
 function renderPane() {
   return render(
@@ -60,15 +67,25 @@ describe('ReviewPane header gating', () => {
     expect((screen.getByLabelText('Revert all') as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('renders the three scope options and switches scope on selection', () => {
+  it('renders the three scope tabs and switches scope on selection', () => {
     renderPane()
 
-    expect(screen.getByText('Uncommitted')).toBeTruthy()
-    expect(screen.getByText('Branch')).toBeTruthy()
-    expect(screen.getByText('Last turn')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Uncommitted', pressed: true })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Last turn', pressed: false })).toBeTruthy()
 
-    fireEvent.click(screen.getByText('Branch'))
+    fireEvent.click(screen.getByRole('button', { name: 'Branch', pressed: false }))
 
     expect($reviewScope.get()).toBe('branch')
+  })
+
+  it('narrow-pane dropdown names the active scope and switches it', () => {
+    $reviewScope.set('lastTurn')
+    renderPane()
+
+    const trigger = screen.getByRole('button', { name: 'Last turn', expanded: false })
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Uncommitted' }))
+
+    expect($reviewScope.get()).toBe('uncommitted')
   })
 })

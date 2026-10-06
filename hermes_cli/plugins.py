@@ -602,59 +602,29 @@ class PluginContext:
     # manager's home, never the active profile's (#65593 constraint).
     def inject_message(
         self, content: str, role: str = "user", *, session_key: str | None = None,
+        origin: Mapping[str, Any] | None = None,
     ) -> bool:
         """Inject a message into a CLI, Ink TUI/desktop, or messaging-gateway conversation.
 
         CLI uses the attached REPL queues. Ink TUI and desktop use a separate injector
         from the messaging gateway and queue onto the live session named by ``session_key``
-        (the durable key, not the ephemeral UI session id). Non-CLI injection needs that
-        ``session_key`` plus ``plugins.entries.<plugin_id>.allow_gateway_injection``.
+        (the durable key, not the ephemeral UI session id). ``origin`` (a
+        ``SessionSource.to_dict()``-shaped mapping: platform, chat_id, chat_type, thread_id,
+        user_id, ...) instead names a messaging chat: the gateway starts (or continues) that
+        chat's session in THIS plugin's own profile and runs a turn there; the plugin cannot
+        target another profile. Non-CLI injection needs ``session_key`` or ``origin`` plus
+        ``plugins.entries.<plugin_id>.allow_gateway_injection`` in the plugin's profile config.
         ``True`` means a host accepted the request, not that the turn completed.
         """
-        cli = self._manager._cli_ref
-        msg = content if role == "user" else f"[{role}] {content}"
-        if cli is not None:
-            queue_ = cli._interrupt_queue if getattr(cli, "_agent_running", False) else cli._pending_input
-            queue_.put(msg)
-            return True
-        if not session_key:
-            logger.warning("inject_message: gateway mode requires an existing session_key")
-            return False
-        if not self._gateway_injection_allowed():
-            logger.warning("inject_message: gateway injection denied for plugin %s; set "
-                           "plugins.entries.%s.allow_gateway_injection: true to allow it",
-                           self.plugin_id, self.plugin_id)
-            return False
-        # TUI/desktop host is a different slot. It accepts only when it owns this
-        # session_key; a miss falls through so a co-resident messaging gateway
-        # still receives its own keys. An exception fails closed — do not also
-        # hand the same text to the gateway.
-        if self._manager.has_tui_message_injector:
-            try:
-                if self._manager.inject_tui_message(
-                    session_key=session_key, content=msg, plugin_id=self.plugin_id,
-                ):
-                    return True
-            except Exception:
-                logger.warning("inject_message: TUI scheduling failed for plugin %s", self.plugin_id,
-                               exc_info=True)
-                return False
-        if not self._manager.has_gateway_message_injector:
-            logger.warning("inject_message: no live gateway is available")
-            return False
-        try:
-            return bool(self._manager.inject_gateway_message(
-                session_key=session_key, content=msg, plugin_id=self.plugin_id,
-            ))
-        except Exception:
-            logger.warning("inject_message: gateway scheduling failed for plugin %s", self.plugin_id,
-                           exc_info=True)
-            return False
+        from hermes_cli.plugins_injection import inject_plugin_message
+        return inject_plugin_message(self, content, role, session_key=session_key, origin=origin)
 
     def _gateway_injection_allowed(self) -> bool:
-        """Return whether this plugin may trigger gateway session turns."""
+        """Return whether this plugin may trigger gateway session turns (read from the plugin's
+        own profile config, never the calling thread's ambient home)."""
         try:
-            cfg = load_config_readonly() or {}
+            with _plugin_home_scope(self._manager.home_path):
+                cfg = load_config_readonly() or {}
         except Exception:
             return False
         return (_plugin_settings_entry(cfg, self.plugin_id) or {}).get("allow_gateway_injection") is True
@@ -883,34 +853,22 @@ class PluginContext:
     def register_auxiliary_task(
         self, key: str, *, display_name: str, description: str,
         defaults: Optional[Dict[str, Any]] = None,
+        inherit_from: Optional[str] = None,
     ) -> PluginRegistration:
         """Register an auxiliary LLM task with its own ``auxiliary.<key>`` config block (picker entry,
         ``AUXILIARY_<KEY>_*`` env bridge, defaults merged into loaded configs). ``defaults`` may
         override provider/model/base_url/api_key/timeout/extra_body (unknown keys kept verbatim).
+        ``inherit_from`` names a built-in or already-registered auxiliary task whose effective
+        configuration becomes the base for this one; it is resolved at read time, so the task tracks
+        the base's current config instead of snapshotting it (precedence: inherited base, then
+        ``defaults``, then user config in ``auxiliary.<key>``). An unknown or self-referential
+        ``inherit_from`` logs a warning and registers the task without inheritance.
         Raises ``ValueError`` for an empty/invalid key, a built-in key, or another plugin's key."""
-        me = self.manifest.name
-        if not key or not isinstance(key, str):
-            raise ValueError(f"Plugin '{me}' tried to register auxiliary task with invalid key {key!r}")
-        if not all(c.isalnum() or c == "_" for c in key):
-            raise ValueError(f"Plugin '{me}' auxiliary task key {key!r} "
-                             f"must contain only alphanumeric characters and underscores")
-        from hermes_cli.main_provider_setup import _AUX_TASKS as _BUILTIN_AUX_TASKS
-        if key in {k for k, _name, _desc in _BUILTIN_AUX_TASKS}:
-            raise ValueError(f"Plugin '{me}' cannot register auxiliary task {key!r} — that key is reserved "
-                             f"for a built-in task. Pick a plugin-namespaced key (e.g. '{me}_{key}').")
-        # Owner is the canonical id ``ctx.llm`` is bound to, so agent/plugin_llm.py can match it.
-        owner_id = self.plugin_id
+        from hermes_cli.plugins_aux_tasks import build_auxiliary_task_entry
         existing = self._manager._aux_tasks.get(key)
-        if existing is not None and existing.get("plugin") != owner_id:
-            raise ValueError(f"Plugin '{me}' cannot register auxiliary task {key!r} — already registered "
-                             f"by plugin '{existing.get('plugin')}'")
-        # Plugin owns the schema; routing fields are guaranteed present so consumers don't crash.
-        entry = {
-            "key": key, "display_name": display_name, "description": description,
-            "defaults": {"provider": "auto", "model": "", "base_url": "", "api_key": "", "timeout": 60,
-                         "extra_body": {}, **(defaults or {})},
-            "plugin": owner_id, "plugin_key": owner_id,
-        }
+        entry = build_auxiliary_task_entry(
+            self.manifest.name, self.plugin_id, key, display_name=display_name, description=description,
+            defaults=defaults, inherit_from=inherit_from, registered=self._manager._aux_tasks)
         return self._register_entry("auxiliary_task", key, self._manager._aux_tasks, entry,
                                     "Plugin %s registered auxiliary task: %s (%s)", key, display_name,
                                     previous=existing)
@@ -1052,38 +1010,7 @@ class PluginContext:
         self._manager._subscribe_event(self.plugin_id, event, callback)
         logger.debug("Plugin %s subscribed to event: %s", self.manifest.name, event)
 
-    @_serialized_replacement
-    def register_skill(
-        self, name: str, path: Path, description: str = "",
-        frontmatter: Optional[Mapping[str, Any]] = None,
-    ) -> PluginRegistration:
-        """Register a read-only skill resolvable as ``'<plugin_name>:<name>'`` via ``skill_view()``
-        and listed by ``skills_list``. Not copied into ``~/.hermes/skills/`` and not in the system
-        prompt's ``<available_skills>``. Raises ``ValueError`` (``':'``/invalid chars) or
-        ``FileNotFoundError``."""
-        from agent.skill_utils import _NAMESPACE_RE
-        if ":" in name:
-            raise ValueError(f"Skill name '{name}' must not contain ':' (the namespace is derived from the "
-                             f"plugin name '{self.manifest.name}' automatically).")
-        if not name or not _NAMESPACE_RE.match(name):
-            raise ValueError(f"Invalid skill name '{name}'. Must match [a-zA-Z0-9_-]+.")
-        # Plugin register() helpers commonly pass the SKILL.md location as str
-        # (PluginManifest.path is stored as str); the registry and find_plugin_skill()
-        # promise a Path downstream.
-        path = Path(path)
-        if not path.exists():
-            raise FileNotFoundError(f"SKILL.md not found at {path}")
-        namespace = self.manifest.skill_namespace or self.manifest.name
-        qualified = f"{namespace}:{name}"
-        if self.manifest.portable and qualified in self._manager._plugin_skills:
-            raise ValueError(f"Plugin skill '{qualified}' is already registered")
-        entry = {
-            "path": path, "plugin": namespace, "plugin_key": self.plugin_id, "bare_name": name,
-            "description": description, "frontmatter": dict(frontmatter or {}),
-        }
-        return self._register_entry("skill", qualified, self._manager._plugin_skills, entry,
-                                    "Plugin %s registered skill: %s", qualified)
-
+    from hermes_cli.plugins_content import register_automation_blueprint, register_skill
 
 # -- scoped provider registrars ------------------------------------------------------------------
 # Every ``register_<category>_provider`` shares one body (:meth:`PluginContext._register_scoped_provider`):
@@ -1260,6 +1187,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._plugin_commands: Dict[str, dict] = {}
         self._system_prompt_sections: Dict[str, PluginSystemPromptSection] = {}
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
+        self._automation_blueprints: Dict[str, Any] = {}  # "<plugin>:<key>" -> AutomationBlueprint
         self._portable_mcp_servers: Dict[str, Dict[str, Any]] = {}
         self._portable_mcp_server_plugins: Dict[str, str] = {}
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
@@ -1632,6 +1560,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
                 "category": "plugin", "frontmatter": dict(entry.get("frontmatter", {})),
             } for qualified, entry in sorted(self._plugin_skills.items())
         ]
+
+    def list_automation_blueprints(self) -> List[Any]:
+        """Plugin-registered ``AutomationBlueprint``s, sorted by key."""
+        return [bp for _key, bp in sorted(self._automation_blueprints.items())]
 
     def has_portable_mcp_servers(self) -> bool:
         return bool(self._portable_mcp_servers)

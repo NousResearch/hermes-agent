@@ -96,6 +96,33 @@ def test_yes_deps_carries_consent_through_non_interactive_install(admission_env,
     assert 'dependency install skipped (non-interactive)' not in output
 
 
+def test_dashboard_install_publishes_a_plugin_the_config_already_selects(admission_env, monkeypatch):  # health: allow F811 -- pytest injects the imported admission_env fixture by parameter name
+    """The Desktop/dashboard Install click on a plugin memory.provider already names (a provider that
+    left core, a synced config, a re-install after remove) publishes like any fresh install instead of
+    the non-interactive 'Install declined' that a retry can never get past. A forced replacement of an
+    installed plugin keeps the veto: that is the reinstall the click did not review."""
+    root, home = admission_env
+    source = root / 'mem-source'
+    source.mkdir()
+    (source / 'plugin.yaml').write_text(yaml.safe_dump({'name': 'mem-twin'}), encoding='utf-8')
+    (source / '__init__.py').write_text('class Twin(MemoryProvider): ...\n', encoding='utf-8')
+    (source / 'pyproject.toml').write_text(
+        '[project]\nname="mem-twin"\nversion="1.0"\nrequires-python=">=3.11"\n', encoding='utf-8')
+    env = {k: v for k, v in os.environ.items() if k not in {'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'}}
+    for args in [('init', '-q'), ('add', '.'), ('-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture')]:
+        subprocess.run(['git', *args], cwd=source, env=env, check=True, capture_output=True, timeout=30)
+    config = yaml.safe_load((home / 'config.yaml').read_text(encoding='utf-8'))
+    config['memory'] = {'provider': 'mem-twin'}
+    (home / 'config.yaml').write_text(yaml.safe_dump(config), encoding='utf-8')
+    monkeypatch.setattr(plugins_cmd.sys.stdin, 'isatty', lambda: False)
+
+    result = plugins_cmd.dashboard_install_plugin(source.as_uri(), force=False, enable=True)
+    assert result['ok'], result
+    assert (home / 'plugins' / 'mem-twin' / 'plugin.yaml').is_file()
+    again = plugins_cmd.dashboard_install_plugin(source.as_uri(), force=True, enable=True)
+    assert not again['ok'] and 'Reinstall declined' in again['error']
+
+
 def test_publish_assume_consent_skips_replacement_veto(tmp_path, monkeypatch):
     """The active-replacement veto at publication honors --yes-deps: with the
     explicit answer the PM handoff runs; the default without it stays the

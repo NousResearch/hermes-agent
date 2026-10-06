@@ -4881,6 +4881,7 @@ export const frOverrides = {
       toggleSessionTimer: 'Minuteur de session',
       toggleTerminal: 'Terminal',
       toggleTokensPerSecond: 'Tokens par seconde',
+      resetTokensPerSecond: 'Réinitialiser les statistiques de débit',
       toggleVersion: 'Version et mises à jour',
       toggleFreeTier: 'Offre gratuite',
       toggleWorkspace: 'Espace de travail',

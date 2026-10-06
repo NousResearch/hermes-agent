@@ -433,9 +433,10 @@ class TestCacheHitRate:
 
 
 class TestRollingLatencyVelocity:
-    def _with_history(self, cli_obj, latencies, outputs):
+    def _with_history(self, cli_obj, latencies, outputs, decodes=None):
         from collections import deque
         cli_obj.agent._api_latency_history = deque(latencies, maxlen=10)
+        cli_obj.agent._api_decode_duration_history = deque(decodes if decodes is not None else latencies, maxlen=10)
         cli_obj.agent._api_output_history = deque(outputs, maxlen=10)
         return cli_obj
 
@@ -451,6 +452,20 @@ class TestRollingLatencyVelocity:
 
         assert "\u25f7 3.0s" in text           # mean latency (2+4)/2
         assert "\u2191 50 t/s" in text          # true throughput 300/6.0
+
+    def test_tps_divides_by_decode_phase_not_wall_clock(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
+            api_calls=5, context_tokens=12_000, context_length=200_000,
+        )
+        # 10s wall clock (8s load + 2s decode) for 20 tokens: latency shows the
+        # wait, velocity shows the 10 tok/s decode rate.
+        self._with_history(cli_obj, [10.0], [20], decodes=[2.0])
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["avg_latency"] == 10.0
+        assert snapshot["avg_velocity"] == 10.0
 
     def test_latency_hidden_without_history(self):
         cli_obj = _attach_agent(

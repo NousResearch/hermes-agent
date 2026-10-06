@@ -383,11 +383,14 @@ class CLIStatusBarMixin:
         snapshot["cache_hit_label"] = f"{pct:.0f}%" if pct is not None else ""
 
         # Rolling avg latency / velocity over the deques kept by agent/conversation_loop.py
-        # (hidden on Codex app-server, which reports no latency).
+        # (hidden on Codex app-server, which reports no latency). Latency is the wall
+        # clock; velocity divides by the decode phase (first token → completion), falling
+        # back to the wall clock for histories recorded before decode tracking.
         avg_lat = avg_vel = None
         try:
             lhist = list(getattr(agent, "_api_latency_history", []) or [])
             ohist = list(getattr(agent, "_api_output_history", []) or [])
+            dhist = list(getattr(agent, "_api_decode_duration_history", []) or []) or lhist
             n = min(len(lhist), len(ohist))  # appended together; keep aligned
             if n:
                 lhist, ohist = lhist[-n:], ohist[-n:]
@@ -395,6 +398,10 @@ class CLIStatusBarMixin:
                 # Mean for latency; sum/sum for velocity (true throughput, not mean of ratios).
                 avg_lat = _finite(total_lat / n)
                 avg_vel = _finite(sum(ohist) / total_lat if total_lat > 0 else None)
+            m = min(len(dhist), len(ohist))
+            if m:
+                decode_total = sum(dhist[-m:])
+                avg_vel = _finite(sum(ohist[-m:]) / decode_total if decode_total > 0 else None)
         except Exception:
             avg_lat = avg_vel = None
         snapshot["avg_latency"] = float(avg_lat) if avg_lat is not None else None

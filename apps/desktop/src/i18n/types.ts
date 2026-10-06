@@ -3834,6 +3834,7 @@ export interface Translations extends NoticeTranslations {
       toggleSessionTimer: string
       toggleTerminal: string
       toggleTokensPerSecond: string
+      resetTokensPerSecond: string
       toggleVersion: string
       toggleFreeTier: string
       toggleWorkspace: string

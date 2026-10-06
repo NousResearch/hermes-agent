@@ -4420,6 +4420,7 @@ export const en: Translations = {
       toggleSessionTimer: 'Session timer',
       toggleTerminal: 'Terminal',
       toggleTokensPerSecond: 'Tokens per second',
+      resetTokensPerSecond: 'Reset throughput stats',
       toggleVersion: 'Version & updates',
       toggleFreeTier: 'Free tier',
       toggleWorkspace: 'Workspace',

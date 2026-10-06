@@ -4864,6 +4864,7 @@ export const esOverrides = {
       toggleSessionTimer: 'Temporizador de sesión',
       toggleTerminal: 'Terminal',
       toggleTokensPerSecond: 'Tokens por segundo',
+      resetTokensPerSecond: 'Restablecer estadísticas de rendimiento',
       toggleVersion: 'Versión y actualizaciones',
       toggleFreeTier: 'Plan gratuito',
       toggleWorkspace: 'Espacio de trabajo',

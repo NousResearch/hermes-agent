@@ -187,8 +187,8 @@ class GatewayVoiceMixin:
         previous = adapter._voice_text_channels.get(guild_id)
         if previous is not None and previous != text_channel_id and hasattr(adapter, "discard_pending_voice_input"):
             adapter.discard_pending_voice_input(guild_id)
-       adapter._voice_text_channels[guild_id] = text_channel_id
-         # Re-assert the callback: bind-before-join races with a concurrent failed join's
+        adapter._voice_text_channels[guild_id] = text_channel_id
+        # Re-assert the callback: bind-before-join races with a concurrent failed join's
         # null-out (STT kept transcribing with no submit path).
         self._bind_voice_input_callback(adapter)
         if hasattr(adapter, "_voice_sources"):

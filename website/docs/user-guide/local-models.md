@@ -151,6 +151,8 @@ local_runtime:
   backend: auto      # auto | cuda | metal | vulkan | hip | cpu
   detect_ports: [8081]  # extra ports to probe for a llama-server you run
                         # yourself (the default probe is :8080 only)
+  context_window: null  # optional positive token cap; null keeps the
+                        # automatic window (values above native clamp to native)
 ```
 
 Running `llama-server` yourself on a fixed port works with the same

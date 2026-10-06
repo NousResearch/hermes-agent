@@ -327,7 +327,9 @@ def test_growth_requires_an_admissible_materialized_preset(hermes_home, tmp_path
 
     def refresh():
         calls.append(True)
-        presets.generate_presets(mdir, budget, preset_path)
+        presets.generate_presets(
+            mdir, budget, preset_path,
+            context_window=growth._configured_context_window())
         return True
 
     monkeypatch.setattr(bootstrap, "refresh_local_runtime", refresh)
@@ -338,6 +340,21 @@ def test_growth_requires_an_admissible_materialized_preset(hermes_home, tmp_path
     assert growth.maybe_grow_window(model_id, **args) == next_window
     assert presets.read_preset_decisions(preset_path)[model_id].window == next_window
     assert growth.load_window_overrides()[model_id] == next_window
+
+    # A lower configured cap is a valid final growth target, rather than a
+    # reason to request a larger rung and let startup silently reduce it.
+    cap = FLOOR * 9 // 8
+    monkeypatch.setattr(growth, "_configured_context_window", lambda: cap)
+    assert growth.maybe_grow_window(model_id, **args) == cap
+    assert growth.load_window_overrides()[model_id] == cap
+
+    # Once that launch cap is reached, do not persist another request or bounce
+    # the running server only to return to it.
+    saved = []
+    monkeypatch.setattr(growth, "save_window_override", lambda *args: saved.append(args))
+    calls.clear()
+    assert growth.maybe_grow_window(model_id, **{**args, "current_window": cap}) is None
+    assert not calls and not saved
 
     # A restart that claims success but does not materialize the grant must not tell the agent it grew.
     monkeypatch.setattr(bootstrap, "refresh_local_runtime", lambda: True)

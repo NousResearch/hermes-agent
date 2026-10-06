@@ -60,6 +60,16 @@ def is_managed_endpoint(base_url: str) -> bool:
     return False
 
 
+def _configured_context_window() -> int | None:
+    """Return the valid configured launch cap, if one was requested."""
+    from hermes_cli.config import load_config
+
+    value = (load_config().get("local_runtime") or {}).get("context_window")
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        return None
+    return value
+
+
 def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
                       current_window: int,
                       measured_decode_tok_s: float | None = None) -> int | None:
@@ -93,6 +103,13 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
         logger.debug("growth skip %s: unreadable gguf (%s)", model_id, exc)
         return None
 
+    configured_window = _configured_context_window()
+    effective_cap = min(configured_window, profile.n_ctx_train) if (
+        configured_window and profile.n_ctx_train) else configured_window
+    if effective_cap is not None and current_window >= effective_cap:
+        logger.debug("growth %s: configured context cap already reached", model_id)
+        return None
+
     try:
         server_idle = sup.is_idle(model_id)
     except Exception:  # noqa: BLE001
@@ -120,21 +137,23 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
     # The grown instance loads after this one exits, so the model's own memory counts as free.
     # Other loaded models still count as held, which errs toward a smaller window.
     live = _launch_budget(budget, own_bytes=resident_footprint(gguf, budget, current_window) or 0)
-    plan = preset_for_model(gguf, budget, set(), requested_window=decision.next_window, live=live)
-    if plan is None or plan.refusal or plan.window < decision.next_window:
-        logger.debug("growth %s: the next rung does not fit beside other programs' GPU memory",
-                     model_id)
+    requested_window = min(decision.next_window, effective_cap) if effective_cap else decision.next_window
+    plan = preset_for_model(
+        gguf, budget, set(), requested_window=requested_window,
+        context_window=configured_window, live=live)
+    if plan is None or plan.refusal or plan.window < requested_window:
+        logger.debug("growth %s: next rung does not fit the effective launch budget", model_id)
         return None
 
     logger.info("context growth %s: %s", model_id, decision.reason)
-    save_window_override(model_id, decision.next_window)
+    save_window_override(model_id, requested_window)
     if not refresh_local_runtime():
         # The override still lands at the next boot; report no growth NOW so the caller
         # compresses instead of overflowing a stale window.
         logger.warning("growth %s: server refresh failed; compression proceeds", model_id)
         return None
     materialized = read_preset_decisions().get(model_id)
-    if materialized is None or materialized.window < decision.next_window:
+    if materialized is None or materialized.window < requested_window:
         logger.warning("growth %s: refreshed preset did not grant the requested window", model_id)
         return None
     return materialized.window

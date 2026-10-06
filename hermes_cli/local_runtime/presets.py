@@ -78,7 +78,8 @@ def _draft_fits(path: Path, profile, budget: HardwareBudget, window: int, overhe
 
 def preset_for_model(gguf: Path, budget: HardwareBudget,
                      mtp_capable: set[str], *, requested_window: int | None = None,
-                     live: HardwareBudget | None = None) -> PresetEntry | None:
+                     live: HardwareBudget | None = None,
+                     context_window: int | None = None) -> PresetEntry | None:
     """The launch decision for one staged model, or None when its header is unreadable.
 
     ``budget`` is the card's capacity; ``live`` (from ``hardware.launch_budget``) narrows the
@@ -101,8 +102,9 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     fixed_overhead = RUNTIME_OVERHEAD_BYTES + (
         entry.mmproj.size_bytes if entry is not None and mmproj_path is not None else 0)
     plan = plan_launch(profile, budget, mtp_capable=is_mtp, fixed_overhead=fixed_overhead,
-                       requested_window=(load_window_overrides().get(model_id)
-                                         if requested_window is None else requested_window))
+                        requested_window=(load_window_overrides().get(model_id)
+                                          if requested_window is None else requested_window),
+                        context_window=context_window)
     if live is not None:
         plan = fit_to_free_memory(plan, profile, live, mtp_capable=is_mtp,
                                   fixed_overhead=fixed_overhead)
@@ -218,21 +220,25 @@ def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configure
 
 
 def plan_presets(models_dir: Path, budget: HardwareBudget, mtp_capable: set[str] | None = None,
-                 *, live: HardwareBudget | None = None) -> list[PresetEntry]:
+                 *, live: HardwareBudget | None = None,
+                 context_window: int | None = None) -> list[PresetEntry]:
     """The launch decision for every staged model; unreadable headers are skipped."""
     from hermes_cli.local_runtime.bootstrap import staged_in
 
-    entries = (preset_for_model(gguf, budget, mtp_capable or set(), live=live)
+    entries = (preset_for_model(gguf, budget, mtp_capable or set(), live=live,
+                                context_window=context_window)
                for gguf in staged_in(models_dir))
     return [entry for entry in entries if entry is not None]
 
 
 def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path,
                      mtp_capable: set[str] | None = None, *,
-                     live: HardwareBudget | None = None) -> list[PresetEntry]:
+                     live: HardwareBudget | None = None,
+                     context_window: int | None = None) -> list[PresetEntry]:
     """Plan every staged model and write one INI. Refused models get no section (the picker
     surfaces the refusal from the returned entries)."""
-    entries = plan_presets(models_dir, budget, mtp_capable, live=live)
+    entries = plan_presets(models_dir, budget, mtp_capable, live=live,
+                           context_window=context_window)
     write_presets(entries, preset_path)
     return entries
 

@@ -1236,33 +1236,30 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 
 # --- Ticker heartbeat (liveness signal for `hermes cron status`) ---
 
-def _write_marker(name: str, text: str, tmp_prefix: str) -> None:
+def _write_marker(name: str, text: str, tmp_prefix: str, *, fsync_file: bool = True) -> None:
     """Atomic (never torn) best-effort marker write; failures swallowed so markers never break the
     tick."""
     try:
         ensure_dirs()
-        atomic_write_text(_current_cron_store().cron_dir / name, text, tmp_prefix=tmp_prefix, mode=0o600)
+        atomic_write_text(_current_cron_store().cron_dir / name, text, tmp_prefix=tmp_prefix,
+                          mode=0o600, fsync_file=fsync_file)
     except Exception:
         pass
 
 
 def record_ticker_heartbeat(success: bool = False) -> None:
-    """Record ticker liveness (+ last-success marker when ``success``) so `cron status` can tell
-    "alive but failing" from "firing"; scoped per profile store.
+    """Record profile-scoped liveness and, on success, the last successful tick.
 
-    The ticker calls this once per loop iteration. ``success=True`` additionally bumps the *last successful
-    tick* marker. We track two distinct signals so `hermes cron status` can tell a thread that is merely
-    *alive and looping* (heartbeat fresh, success stale) from one that is actually *firing jobs* (both
-    fresh) — a ticker stuck failing every tick would otherwise keep the plain heartbeat fresh and falsely
-    report healthy (#32612, #32895).
-    Resolution uses ``_current_cron_store()`` so the heartbeat is correctly scoped to the active profile's
-    store — critical under multiplex_profiles where each profile needs its own liveness signal (#69377).
+    Separate stamps let ``cron status`` distinguish a ticker looping but failing from one firing
+    jobs (#32612, #32895). Resolve the current store on every tick so multiplexed profiles never
+    borrow another profile's health (#69377).
     """
     # ``<epoch> <pid>``: a killed ticker's last stamp reads fresh for ~3 minutes, so a reader with no
     # other proof of the scheduler (the in-process serve/Desktop ticker) checks the writer is alive.
-    _write_marker("ticker_heartbeat", f"{time.time()} {os.getpid()}", ".hb_")
+    # Liveness is regenerated on startup; forcing each profile tick to disk stalls other I/O.
+    _write_marker("ticker_heartbeat", f"{time.time()} {os.getpid()}", ".hb_", fsync_file=False)
     if success:
-        _write_marker("ticker_last_success", str(time.time()), ".hb_")
+        _write_marker("ticker_last_success", str(time.time()), ".hb_", fsync_file=False)
 
 
 def _read_marker_fields(name: str) -> List[str]:

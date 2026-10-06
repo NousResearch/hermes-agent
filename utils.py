@@ -288,7 +288,8 @@ def rmtree_readonly(path: Union[str, Path], *, ignore_errors: bool = False) -> N
 
 
 def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None,
-                  preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False) -> None:
+                  preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False,
+                  fsync_file: bool = True) -> None:
     """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.
 
     *write(f)* emits the payload into the open handle (text, or bytes when *binary*). The temp file
@@ -319,7 +320,8 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
                 os.fchmod(f.fileno(), mode)
             write(f)
             f.flush()
-            os.fsync(f.fileno())
+            if fsync_file:
+                os.fsync(f.fileno())
         replaced = Path(atomic_replace(tmp_path, path))  # symlink-preserving actual destination
         _restore_file_metadata(replaced, original_owner, mode)
         if fsync_dir:
@@ -338,10 +340,13 @@ def _mode_for_write(path: Path, create_mode: "int | None", preserve: bool = True
 
 def atomic_write_text(path: Union[str, Path], content: str, *, encoding: str = "utf-8", tmp_prefix: str = ".tmp_",
                       preserve_mode: bool = False, create_mode: "int | None" = None, mode: "int | None" = None,
-                      fsync_dir: bool = False) -> None:
+                      fsync_dir: bool = False, fsync_file: bool = True) -> None:
     """Write *content* to *path* via temp file + fsync + atomic rename.
 
-    The target is never left partially written on crash/interrupt. Shared by every destructive
+    Disposable liveness markers may skip file durability with ``fsync_file=False``;
+    atomic visibility and permissions are still preserved.
+
+    Readers see the old content or a complete replacement, even on process interruption. Shared by every destructive
     file rewrite (memory store, skill manager, agent importer, ...). *mode* forces the final
     permission bits (secret files: ``0o600``) regardless of what exists; *create_mode* applies only
     when the target is new and *preserve_mode* carries an existing file's bits and owner across.
@@ -349,7 +354,7 @@ def atomic_write_text(path: Union[str, Path], content: str, *, encoding: str = "
     path = Path(path)
     _atomic_write(path, lambda f: f.write(content), prefix=tmp_prefix, encoding=encoding,
                   mode=mode if mode is not None else _mode_for_write(path, create_mode, preserve=preserve_mode),
-                  preserve_owner=preserve_mode, fsync_dir=fsync_dir)
+                  preserve_owner=preserve_mode, fsync_dir=fsync_dir, fsync_file=fsync_file)
 
 
 def atomic_write_bytes(path: Union[str, Path], content: bytes, *, tmp_prefix: str = ".tmp_",

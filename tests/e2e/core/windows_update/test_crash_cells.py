@@ -511,6 +511,8 @@ UPDATE_DONE = "Update complete!"
 # says success, the checkout is at the target, the process exits 120). It replaces ANY
 # exit status, a failure's too, so 120 proves nothing without the run's own receipt.
 PY_FINAL_FLUSH_FAILED = 120
+# Run 37393368977 sampled the custodian's marker ~2 s before its release; a stuck one lives minutes.
+ORPHAN_RELEASE_GRACE = 30.0
 
 
 def _receipts(machine) -> set[Path]:
@@ -650,6 +652,11 @@ def _orphan(machine, srv, label: str) -> dict:
         tree_after_orphan = _tree(machine, label)
         orphan_reported_done = _update_banners(machine, UPDATE_DONE) > done_before
         orphan_receipt = _new_receipt_outcome(machine, receipts_before)
+        # The custodian that took the dead script's claim over (Start-MarkerCustodian) releases
+        # it on its next 1 s poll after the update ends; only a marker outliving that is a gap.
+        release_by = time.monotonic() + ORPHAN_RELEASE_GRACE
+        while orphan_finished and _read_marker(machine) is not None and time.monotonic() < release_by:
+            time.sleep(0.25)
         marker_after_orphan = _read_marker(machine)
         marker_after_orphan_text = _marker_text(machine)
         turn = one_shot_turn(machine, srv, f"{label}-next-launch")

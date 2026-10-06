@@ -66,7 +66,7 @@ def hot_config(tmp_path, monkeypatch):
             "auxiliary": {"title_generation": {
                 "fallback_chain": [{"provider": provider, "model": "test-model"}]}}
         }
-        (home / "config.yaml").write_text(json.dumps(config))
+        (home / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
 
     def call():
         before = {id(client): len(client.calls) for client in clients}

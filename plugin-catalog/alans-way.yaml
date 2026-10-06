@@ -1,19 +1,19 @@
 name: alans-way
 repo: https://github.com/capthvnsen/alans-way-agents
-sha: 73cf09767695b714edc03606d5605bd206a1a34e
+sha: 9e2b928241364fb23becea0419d9eb0db2e97fb6
 subdir: alans-way
-version: "0.4.2"
+version: "0.5.0"
 title: "Alan's Way"
-description: Proactive primary bot for a Hermes gateway running on a remote Linux machine. After install, the workspace-setup skill walks that agent through a separate Mac app and Tailscale setup.
+description: Proactive primary bot for a Hermes gateway running on a remote Linux machine or a macOS VM. After install, the workspace-setup skill walks that agent through a separate companion app and Tailscale setup on the user's computer (macOS or Windows).
 maintainer: capthvnsen
 tier: community
 category: automation
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/capthvnsen/alans-way
 readme: true
-platforms: [linux]
+platforms: [linux, macos]
 known_issues:
-  - "Install this on the remote Linux machine that runs Hermes, not on the Mac. The Mac app is Apple Silicon only. Ask the agent to set up Alan's Way. If the plugin is already installed, that setup must pass --skip-plugin so this pin stays."
+  - "Install this on the machine that runs Hermes — a remote Linux host or a macOS guest VM — not on the user's primary computer. The companion app runs on Apple Silicon macOS or Windows x64. Ask the agent to set up Alan's Way. If the plugin is already installed, that setup must pass --skip-plugin so this pin stays."
 capabilities:
   provides_tools:
     - proactive_control

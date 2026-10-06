@@ -540,5 +540,3 @@ class BlueBubblesAdapter(BlueBubblesInboundMixin, BasePlatformAdapter):
         except Exception as exc:
             logger.warning("[bluebubbles] failed to download attachment %s: %s", _redact(att_guid), exc)
             return None
-
-    # --- Webhook handling ---

@@ -1,7 +1,9 @@
 """BlueBubbles same-GUID ownership, late media, routing, and gateway admission."""
 
 import asyncio
+import base64
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import httpx
@@ -175,6 +177,49 @@ class TestBlueBubblesInboundRegression:
 class TestBlueBubblesAdmissionBoundaries:
     _payload = staticmethod(TestBlueBubblesInboundRegression._payload)
     _capture = staticmethod(TestBlueBubblesInboundRegression._capture)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("text", ["ordinary group message", ""])
+    async def test_group_mentions_gate_known_text_before_media_hydration(self, monkeypatch, text):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False, require_mention=True)
+        admitted, requests = [], []
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8"
+            "AAwMCAO+jR7kAAAAASUVORK5CYII=")
+        chat = {"guid": "any;+;group", "style": 43}
+        attachment = {"guid": "photo", "mimeType": "image/png", "transferState": 5}
+
+        async def accept(event):
+            event._gateway_accepted = True
+            admitted.append(event)
+
+        def transport(request):
+            requests.append(request)
+            assert request.method == "GET"
+            if request.url.path == "/api/v1/message/msg-1":
+                assert request.url.params["with"] == "chats,attachments"
+                return httpx.Response(200, json={"data": {
+                    "text": "@hermes photo", "chats": [chat], "attachments": [attachment],
+                }})
+            assert request.url.path == "/api/v1/attachment/photo/download"
+            return httpx.Response(200, content=png)
+
+        adapter.handle_message = accept
+        async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+            adapter.client = client
+            response = await adapter._handle_webhook(_FakeBlueBubblesRequest(
+                self._payload(chat=chat, text=text, attachments=[attachment])))
+        assert response.status == 200
+        if text:
+            assert admitted == []
+            assert requests == []
+        else:
+            assert len(admitted) == 1
+            assert admitted[0].text == "photo"
+            assert admitted[0].source.chat_id == chat["guid"]
+            assert admitted[0].media_types == ["image/png"]
+            assert Path(admitted[0].media_urls[0]).read_bytes() == png
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("caption", ["caption", ""])
     async def test_failed_download_can_complete_without_losing_caption(self, monkeypatch, caption):

@@ -304,6 +304,10 @@ class BlueBubblesInboundMixin:
 
         chat_guid, chat_id, chat_identifier, sender, is_group = route
         record = state.record
+        text = self._value(record.get("text"), record.get("message"), record.get("body")) or ""
+        # Known unmentioned group text needs no media I/O; sparse text can still hydrate below.
+        if is_group and self.require_mention and text and not self._message_matches_mention_patterns(text):
+            return _ok()
         if record.get("attachments") and self.client:
             try:
                 self._merge_inbound_record(record, await self._hydrate_inbound_record(message_id))
@@ -389,7 +393,7 @@ class BlueBubblesInboundMixin:
                                if isinstance(att, dict) and att.get("guid")}
                 if state.accepted and attachments <= state.delivered:
                     return _ok()
-                # Reserve conversation order before any attachment awaits; unrelated chats stay free.
+                # Resolve sparse routes in order; attachment work runs outside the routing lock.
                 async with self._inbound_routing_lock:
                     route = await self._route_inbound_message(payload, state, message_id)
                     if route is None:

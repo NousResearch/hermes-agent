@@ -464,6 +464,22 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
             rid, 4028,
             "truncation would erase the entire session transcript; "
             "resubmit with confirm_empty_truncate=true if this is intended"), {}
+    # Depth gate (#133716): a valid anchor can still name the wrong row (a stale client
+    # binding replayed a 4-hour-old turn and archived 107 messages). Tail regenerate and
+    # edit-last drop exactly the target turn; anything deeper needs its own opt-in.
+    archived_user_turns = len(_history_user_indices(history)) - ordinal
+    if archived_user_turns > 1 and not is_truthy_value(params.get("confirm_deep_truncate")):
+        archived_messages = len(history) - len(truncated)
+        logger.warning(
+            "prompt.submit: REFUSED deep truncation of session %s (%d messages / %d user "
+            "turns would be archived; ordinal=%d).",
+            sid, archived_messages, archived_user_turns, ordinal)
+        return _err(
+            rid, 4033,
+            "truncation would archive later user turns; resubmit with "
+            "confirm_deep_truncate=true if this is intended",
+            data={"archived_messages": archived_messages,
+                  "archived_user_turns": archived_user_turns}), {}
     log_fn = logger.warning if not truncated else logger.info
     log_fn(
         "prompt.submit: truncating session %s history %d -> %d messages (ordinal=%d)",

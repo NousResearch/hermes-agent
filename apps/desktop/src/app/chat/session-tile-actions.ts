@@ -510,7 +510,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       truncateMessageId?: string,
       truncateRowId?: number,
       sourceText?: string,
-      rebindRowIds?: readonly number[]
+      rebindRowIds?: readonly number[],
+      confirmDeepTruncate?: boolean
     ) =>
       runRewindSubmit(
         requestSessionGateway,
@@ -525,7 +526,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         },
         truncateRowId,
         sourceText,
-        rebindRowIds
+        rebindRowIds,
+        confirmDeepTruncate
       ),
     [bindRecoveredRuntime, requestSessionGateway]
   )
@@ -578,7 +580,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateMessageId,
             plan.truncateRowId,
             plan.sourceText,
-            durableRowIdsForRebind(messages)
+            durableRowIdsForRebind(messages),
+            plan.confirmDeepTruncate ?? false
           )
         )
       } catch (err) {

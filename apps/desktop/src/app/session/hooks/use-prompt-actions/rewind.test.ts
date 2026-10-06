@@ -736,7 +736,9 @@ describe('planConfirmedReload (#133716)', () => {
         false,
         undefined,
         plan.truncateRowId,
-        plan.sourceText
+        plan.sourceText,
+        undefined,
+        plan.confirmDeepTruncate ?? false
       )
     }
 
@@ -751,12 +753,14 @@ describe('planConfirmedReload (#133716)', () => {
     expect(asked).toBe(1)
 
     expect(await submitPlan(await planConfirmedReload(transcript, 'a1', async () => true))).toMatchObject({
-      truncate_before_row_id: 11
+      truncate_before_row_id: 11,
+      confirm_deep_truncate: true
     })
 
     const tail = await submitPlan(await planConfirmedReload(transcript, 'a2', askAndDecline))
 
     expect(asked).toBe(1)
     expect(tail).toMatchObject({ confirm_truncate: true, truncate_before_row_id: 13 })
+    expect(tail?.confirm_deep_truncate).toBeUndefined()
   })
 })

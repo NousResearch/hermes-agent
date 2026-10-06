@@ -176,6 +176,10 @@ def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):
     script_package.mkdir(parents=True)
     (script_package / "SKILL.md").write_text("---\nname: helper\n---\n", encoding="utf-8")
 
+    evals_package = real / "evals" / "archived-eval-skill"
+    evals_package.mkdir(parents=True)
+    (evals_package / "SKILL.md").write_text("---\nname: archived-eval\n---\n", encoding="utf-8")
+
     found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
     desc_found = list(iter_skill_index_files(tmp_path, "DESCRIPTION.md"))
 
@@ -183,10 +187,12 @@ def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):
     assert desc_found == []
     assert is_skill_support_path(package / "SKILL.md") is True
     assert is_excluded_skill_path(package / "SKILL.md") is True
+    assert is_skill_support_path(evals_package / "SKILL.md") is True
+    assert is_excluded_skill_path(evals_package / "SKILL.md") is True
 
 
 def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
-    """A category named scripts/templates/assets/references is still valid."""
+    """A category named scripts/templates/assets/references/evals is still valid."""
     scripts_skill = tmp_path / "scripts" / "bash-helper"
     scripts_skill.mkdir(parents=True)
     (scripts_skill / "SKILL.md").write_text(
@@ -199,11 +205,21 @@ def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
         "---\nname: deck-template\n---\n", encoding="utf-8"
     )
 
+    evals_skill = tmp_path / "evals" / "eval-runner-skill"
+    evals_skill.mkdir(parents=True)
+    (evals_skill / "SKILL.md").write_text(
+        "---\nname: eval-runner-skill\n---\n", encoding="utf-8"
+    )
+
     found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
 
-    assert found == [scripts_skill / "SKILL.md", templates_skill / "SKILL.md"]
+    # iter_skill_index_files yields sorted paths: evals < scripts < templates
+    assert found == [evals_skill / "SKILL.md", scripts_skill / "SKILL.md",
+                     templates_skill / "SKILL.md"]
     assert is_skill_support_path(scripts_skill / "SKILL.md") is False
     assert is_excluded_skill_path(scripts_skill / "SKILL.md") is False
+    assert is_skill_support_path(evals_skill / "SKILL.md") is False
+    assert is_excluded_skill_path(evals_skill / "SKILL.md") is False
 
 
 def test_skill_support_path_uses_explicit_discovery_root_not_cwd(tmp_path, monkeypatch):

@@ -4,7 +4,7 @@
 Skills are the agent's procedural memory (narrow "how to do X"; MEMORY.md/USER.md are
 broad, declarative). New skills land in ~/.hermes/skills/ (or ``skills.create_dir``);
 existing skills (bundled, hub, user) are modified in place. Layout:
-``<skills>/[category/]<skill>/SKILL.md`` + optional ``references/ templates/ scripts/ assets/``.
+``<skills>/[category/]<skill>/SKILL.md`` + optional ``references/ templates/ scripts/ assets/ evals/``.
 """
 
 import contextvars as _ctxvars
@@ -798,7 +798,8 @@ _FILE_PATH = {
     "type": "string",
     "description": (
         "Path RELATIVE to the skill's own directory, e.g. 'references/api.md' — no leading "
-        "slash, never absolute; first segment references/, templates/, scripts/, or assets/."
+        "slash, never absolute; first segment references/, templates/, scripts/, assets/, "
+        "or evals/."
     ),
 }  # stated once (write_file); patch/remove_file point at it
 

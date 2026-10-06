@@ -173,4 +173,27 @@ describe('connecting overlay vs recovery surface', () => {
     expect(screen.getByRole('button', { name: /gateway settings/i })).toBeTruthy()
     expect(isConnectingShown()).toBe(false)
   })
+
+  it('a launch parked behind a running update says UPDATING, then CONNECTING once main moves on', async () => {
+    const isUpdatingShown = () =>
+      screen.queryAllByText((_, el) => /^UPDA[/\\|\-_=+<>~:*A-Z]*$/.test(el?.textContent?.trim() ?? '')).length > 0
+
+    const bootAt = (phase: string) =>
+      $desktopBoot.set({ ...$desktopBoot.get(), error: null, phase, progress: 12, running: true, visible: true })
+
+    setGatewayState('idle')
+    bootAt('backend.update-wait')
+    const { rerender } = render(<GatewayConnectingOverlay />)
+
+    expect(isUpdatingShown()).toBe(true)
+    expect(isConnectingShown()).toBe(false)
+
+    await act(async () => {
+      bootAt('backend.start')
+      rerender(<GatewayConnectingOverlay />)
+    })
+
+    expect(isConnectingShown()).toBe(true)
+    expect(isUpdatingShown()).toBe(false)
+  })
 })

@@ -12,6 +12,12 @@ import { $gatewayState } from '@/store/session'
 // Decode mechanics live in the shared <DecodeText> primitive
 // (components/ui/decode-text.tsx). "CONN" stays legible via prefix={4}.
 const TEXT = 'CONNECTING'
+// Main holds a Desktop opened during an update behind the update marker (phase
+// `backend.update-wait`, electron/main.ts waitForUpdateToFinish) for minutes.
+// CONNECTING for that long reads as a hang and invites yet another reopen; name
+// what the window is actually waiting for.
+const UPDATE_WAIT_PHASE = 'backend.update-wait'
+const UPDATING_TEXT = 'UPDATING'
 
 // Exit choreography (ms): text fades down + out, hold, then the overlay fades.
 const TEXT_OUT_MS = 360
@@ -165,7 +171,7 @@ export function GatewayConnectingOverlay() {
         cursor
         loop
         prefix={4}
-        text={TEXT}
+        text={boot.phase === UPDATE_WAIT_PHASE ? UPDATING_TEXT : TEXT}
       />
     </div>
   )

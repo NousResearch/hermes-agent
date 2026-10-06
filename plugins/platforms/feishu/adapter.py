@@ -27,6 +27,7 @@ import hmac
 import itertools
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -34,7 +35,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -161,6 +162,8 @@ _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS = 30          # max seconds to read request
 _FEISHU_WEBHOOK_ANOMALY_THRESHOLD = 25             # consecutive error responses before WARNING log
 _FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS = 6 * 60 * 60  # anomaly tracker TTL (6 hours) — matches openclaw
 _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup window (15 min)
+_FEISHU_TRUSTED_INGRESS_TTL_SECONDS = 5 * 60
+_FEISHU_TRUSTED_INGRESS_KEY = os.urandom(32)
 
 _APPROVAL_CHOICE_MAP: Dict[str, str] = {
     "approve_once": "once", "approve_session": "session", "approve_always": "always", "deny": "deny",
@@ -194,6 +197,117 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 # delete-failures, not a capacity plan.
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
 _FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message text lookups
+
+
+def _feishu_value(obj: Any, key: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _feishu_namespace(account_id: str) -> str:
+    return "feishu:" + hashlib.sha256(account_id.encode("utf-8")).hexdigest()[:16]
+
+
+@dataclass(frozen=True, slots=True)
+class TrustedFeishuIngressTicket:
+    """Process-local proof that a Feishu callback crossed the adapter edge."""
+
+    version: int
+    transport: str
+    event_kind: str
+    event_type: str
+    event_key: str
+    account_id: str
+    namespace: str
+    actor_id: str
+    actor_id_type: str
+    principal_kind: str
+    chat_id: str
+    thread_id: str
+    message_id: str
+    issued_at: float
+    expires_at: float
+    signature: str = field(repr=False)
+
+    def _signed_fields(self) -> tuple[Any, ...]:
+        return (
+            self.version,
+            self.transport,
+            self.event_kind,
+            self.event_type,
+            self.event_key,
+            self.account_id,
+            self.namespace,
+            self.actor_id,
+            self.actor_id_type,
+            self.principal_kind,
+            self.chat_id,
+            self.thread_id,
+            self.message_id,
+            self.issued_at,
+            self.expires_at,
+        )
+
+    @classmethod
+    def issue(cls, **fields: Any) -> "TrustedFeishuIngressTicket":
+        issued_at = float(fields.pop("issued_at", time.time()))
+        unsigned = cls(
+            version=1,
+            issued_at=issued_at,
+            expires_at=float(
+                fields.pop(
+                    "expires_at",
+                    issued_at + _FEISHU_TRUSTED_INGRESS_TTL_SECONDS,
+                )
+            ),
+            signature="",
+            **fields,
+        )
+        signature = hmac.new(
+            _FEISHU_TRUSTED_INGRESS_KEY,
+            json.dumps(unsigned._signed_fields(), separators=(",", ":")).encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return replace(unsigned, signature=signature)
+
+    def is_valid(self, *, account_id: str, now: Optional[float] = None) -> bool:
+        checked_at = float(now if now is not None else time.time())
+        lifetime = self.expires_at - self.issued_at
+        if (
+            self.version != 1
+            or self.account_id != account_id
+            or self.namespace != _feishu_namespace(account_id)
+            or self.transport not in {"websocket", "webhook"}
+            or self.event_kind not in {"message", "reaction", "button", "form", "comment", "vc"}
+            or self.actor_id_type not in {"open_id", "union_id", "user_id"}
+            or self.principal_kind not in {"human", "bot", "system"}
+            or not self.event_key
+            or not self.actor_id
+            or (self.event_kind in {"message", "reaction", "button", "form"} and not self.chat_id)
+            or not all(math.isfinite(value) for value in (checked_at, self.issued_at, self.expires_at, lifetime))
+            or self.issued_at > checked_at + 30
+            or lifetime <= 0
+            or lifetime > _FEISHU_TRUSTED_INGRESS_TTL_SECONDS
+            or self.expires_at <= checked_at
+        ):
+            return False
+        expected = hmac.new(
+            _FEISHU_TRUSTED_INGRESS_KEY,
+            json.dumps(self._signed_fields(), separators=(",", ":")).encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return hmac.compare_digest(self.signature, expected)
+
+
+@dataclass(frozen=True, slots=True)
+class _TrustedFeishuEnvelope:
+    raw: Any
+    trusted_feishu_ingress_ticket: TrustedFeishuIngressTicket
+    trusted_feishu_ingress_admission: Any = field(repr=False, default=None)
+
+    def __getattr__(self, key: str) -> Any:
+        return _feishu_value(self.raw, key)
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -1280,6 +1394,7 @@ class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
+    _trusted_ingress_admitter: Any = None
 
     supports_code_blocks = True  # Feishu renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
@@ -1426,16 +1541,26 @@ class FeishuAdapter(BasePlatformAdapter):
         return (
             EventDispatcherHandler.builder(self._encrypt_key, self._verification_token)
             .register_p2_im_message_message_read_v1(self._on_message_read_event)
-            .register_p2_im_message_receive_v1(self._on_message_event)
+            .register_p2_im_message_receive_v1(
+                lambda d: self._dispatch_trusted_ingress("im.message.receive_v1", d, transport="websocket")
+            )
             .register_p2_im_message_reaction_created_v1(lambda d: self._on_reaction_event("im.message.reaction.created_v1", d))
             .register_p2_im_message_reaction_deleted_v1(lambda d: self._on_reaction_event("im.message.reaction.deleted_v1", d))
-            .register_p2_card_action_trigger(self._on_card_action_trigger)
+            .register_p2_card_action_trigger(
+                lambda d: self._dispatch_trusted_ingress("card.action.trigger", d, transport="websocket")
+            )
             .register_p2_im_chat_member_bot_added_v1(self._on_bot_added_to_chat)
             .register_p2_im_chat_member_bot_deleted_v1(self._on_bot_removed_from_chat)
             .register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(self._on_p2p_chat_entered)
             .register_p2_im_message_recalled_v1(self._on_message_recalled)
-            .register_p2_customized_event("drive.notice.comment_add_v1", self._on_drive_comment_event)
-            .register_p2_customized_event("vc.bot.meeting_invited_v1", self._on_meeting_invited_event)
+            .register_p2_customized_event(
+                "drive.notice.comment_add_v1",
+                lambda d: self._dispatch_trusted_ingress("drive.notice.comment_add_v1", d, transport="websocket"),
+            )
+            .register_p2_customized_event(
+                "vc.bot.meeting_invited_v1",
+                lambda d: self._dispatch_trusted_ingress("vc.bot.meeting_invited_v1", d, transport="websocket"),
+            )
             .build()
         )
 
@@ -1971,6 +2096,157 @@ class FeishuAdapter(BasePlatformAdapter):
         return content.strip()
 
     # --- Inbound event handlers ---
+    @staticmethod
+    def _trusted_ingress_kind(event_type: str, data: Any) -> str:
+        if event_type == "card.action.trigger":
+            action = _feishu_value(_feishu_value(data, "event"), "action")
+            return "form" if _feishu_value(action, "form_value") is not None else "button"
+        return {
+            "im.message.receive_v1": "message",
+            "im.message.reaction.created_v1": "reaction",
+            "im.message.reaction.deleted_v1": "reaction",
+            "drive.notice.comment_add_v1": "comment",
+            "vc.bot.meeting_invited_v1": "vc",
+        }.get(event_type, "")
+
+    def _issue_trusted_ingress_ticket(
+        self, event_type: str, data: Any, *, transport: str,
+    ) -> Optional[TrustedFeishuIngressTicket]:
+        event = _feishu_value(data, "event")
+        header = _feishu_value(data, "header")
+        kind = self._trusted_ingress_kind(event_type, data)
+        message = _feishu_value(event, "message")
+        context = _feishu_value(event, "context")
+        action = _feishu_value(event, "action")
+        sender = _feishu_value(event, "sender")
+        sender_id = _feishu_value(sender, "sender_id")
+        user_id = _feishu_value(event, "user_id")
+        operator = _feishu_value(event, "operator")
+
+        actor_ids = (
+            (
+                "open_id",
+                _feishu_value(sender_id, "open_id")
+                or _feishu_value(user_id, "open_id")
+                or _feishu_value(operator, "open_id"),
+            ),
+            (
+                "union_id",
+                _feishu_value(sender_id, "union_id")
+                or _feishu_value(user_id, "union_id")
+                or _feishu_value(operator, "union_id"),
+            ),
+            (
+                "user_id",
+                _feishu_value(sender_id, "user_id")
+                or _feishu_value(user_id, "user_id")
+                or _feishu_value(operator, "user_id"),
+            ),
+        )
+        actor_id_type, actor_id = next(
+            ((id_type, str(value)) for id_type, value in actor_ids if value),
+            ("open_id", ""),
+        )
+        chat_id = str(
+            _feishu_value(message, "chat_id")
+            or _feishu_value(context, "open_chat_id")
+            or _feishu_value(event, "chat_id")
+            or ""
+        )
+        thread_id = str(
+            _feishu_value(message, "thread_id")
+            or _feishu_value(message, "root_id")
+            or _feishu_value(context, "open_thread_id")
+            or ""
+        )
+        message_id = str(
+            _feishu_value(message, "message_id")
+            or _feishu_value(event, "message_id")
+            or _feishu_value(context, "open_message_id")
+            or ""
+        )
+        event_id = str(
+            _feishu_value(header, "event_id")
+            or _feishu_value(event, "event_id")
+            or _feishu_value(event, "token")
+            or ""
+        )
+        if not event_id and message_id:
+            action_name = str(_feishu_value(action, "name") or _feishu_value(action, "tag") or "")
+            event_id = hashlib.sha256(
+                "\x1f".join((event_type, message_id, actor_id, action_name)).encode("utf-8")
+            ).hexdigest()
+
+        sender_type = str(
+            _feishu_value(sender, "sender_type")
+            or _feishu_value(event, "operator_type")
+            or "user"
+        ).lower()
+        principal_kind = "bot" if sender_type in {"bot", "app"} else "human"
+        account_id = str(self._app_id or "")
+        if kind not in {"message", "button", "form"} or not account_id or not actor_id or not event_id:
+            return None
+        return TrustedFeishuIngressTicket.issue(
+            transport=transport,
+            event_kind=kind,
+            event_type=event_type,
+            event_key=event_id,
+            account_id=account_id,
+            namespace=_feishu_namespace(account_id),
+            actor_id=actor_id,
+            actor_id_type=actor_id_type,
+            principal_kind=principal_kind,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            message_id=message_id,
+        )
+
+    def _admit_trusted_ingress_ticket(self, ticket: Any) -> Any:
+        admitter = getattr(type(self), "_trusted_ingress_admitter", None)
+        if not (
+            callable(admitter)
+            and ticket
+            and ticket.is_valid(account_id=str(self._app_id or ""))
+        ):
+            return None
+        try:
+            return admitter(ticket=ticket, adapter=self)
+        except Exception:
+            logger.error("[Feishu] trusted ingress admission failed", exc_info=True)
+            return None
+
+    def _dispatch_native_ingress(self, event_type: str, data: Any) -> Any:
+        if event_type.startswith("im.message.reaction."):
+            return self._on_reaction_event(event_type, data)
+        handler_name = {
+            "im.message.receive_v1": "_on_message_event",
+            "card.action.trigger": "_on_card_action_trigger",
+            "drive.notice.comment_add_v1": "_on_drive_comment_event",
+            "vc.bot.meeting_invited_v1": "_on_meeting_invited_event",
+        }.get(event_type)
+        if handler_name is None:
+            logger.debug("[Feishu] Ignoring unknown trusted-ingress event type: %s", event_type or "unknown")
+            return None
+        return getattr(self, handler_name)(data)
+
+    def _dispatch_trusted_ingress(self, event_type: str, data: Any, *, transport: str) -> Any:
+        """Optionally stamp/admit an external callback before downstream execution."""
+        admitter = getattr(type(self), "_trusted_ingress_admitter", None)
+        kind = self._trusted_ingress_kind(event_type, data)
+        if not callable(admitter) or kind == "reaction":
+            return self._dispatch_native_ingress(event_type, data)
+        if kind in {"comment", "vc"}:
+            logger.warning("[Feishu] trusted ingress denied reason=bridge_disabled kind=%s", kind)
+            return None
+
+        ticket = self._issue_trusted_ingress_ticket(event_type, data, transport=transport)
+        admission = self._admit_trusted_ingress_ticket(ticket)
+        if admission is None:
+            logger.warning("[Feishu] trusted ingress denied reason=admission kind=%s", kind or "unknown")
+            return self._card_response() if kind in {"button", "form"} else None
+        envelope = _TrustedFeishuEnvelope(data, ticket, admission)
+        return self._dispatch_native_ingress(event_type, envelope)
+
     def _on_message_event(self, data: Any) -> None:
         """SDK dispatcher callback (background thread); queues for replay while the loop isn't ready."""
         loop = self._loop
@@ -2472,6 +2748,15 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _handle_message_with_guards(self, event: MessageEvent) -> None:
         """Run one event through the agent pipeline under the per-chat lock (openclaw createChatQueue)."""
+        raw = event.raw_message
+        ticket = getattr(raw, "trusted_feishu_ingress_ticket", None)
+        admission = getattr(raw, "trusted_feishu_ingress_admission", None)
+        if ticket is not None:
+            event.trusted_feishu_ingress_ticket = ticket  # type: ignore[attr-defined]
+            event.trusted_feishu_ingress_admission = admission  # type: ignore[attr-defined]
+            if event.source is not None:
+                event.source.trusted_feishu_ingress_ticket = ticket  # type: ignore[attr-defined]
+                event.source.trusted_feishu_ingress_admission = admission  # type: ignore[attr-defined]
         chat_id = getattr(event.source, "chat_id", "") or "" if event.source else ""
         chat_lock = self._get_chat_lock(chat_id)
         async with chat_lock:
@@ -2629,10 +2914,14 @@ class FeishuAdapter(BasePlatformAdapter):
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
             timestamp=datetime.now(),
         )
+        normalized.sender_open_id = getattr(sender_id, "open_id", None)  # type: ignore[attr-defined]
         await self._dispatch_inbound_event(normalized)
 
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:
         """Apply Feishu-specific burst protection before entering the base adapter."""
+        if getattr(event.raw_message, "trusted_feishu_ingress_ticket", None) is not None:
+            await self._handle_message_with_guards(event)
+            return
         if event.message_type == MessageType.TEXT and not event.is_command():
             await self._enqueue_text_event(event)
             return
@@ -2795,6 +3084,13 @@ class FeishuAdapter(BasePlatformAdapter):
         except (json.JSONDecodeError, UnicodeDecodeError):
             return self._webhook_reject(remote_ip, "400", 400, json_msg="invalid json")
 
+        admitter = getattr(type(self), "_trusted_ingress_admitter", None)
+        if callable(admitter) and not self._verification_token and not self._encrypt_key:
+            logger.error("[Feishu] Webhook rejected: authentication is not configured")
+            return self._webhook_reject(
+                remote_ip, "503-auth-unavailable", 503, "Webhook authentication unavailable",
+            )
+
         # Verification token: second defence layer beyond the signature (matches openclaw).
         if self._verification_token:
             header = payload.get("header") or {}
@@ -2827,6 +3123,13 @@ class FeishuAdapter(BasePlatformAdapter):
         data = self._namespace_from_mapping(payload)
         if event_type in {"im.message.reaction.created_v1", "im.message.reaction.deleted_v1"}:
             self._on_reaction_event(event_type, data)
+        elif event_type in {
+            "im.message.receive_v1",
+            "card.action.trigger",
+            "drive.notice.comment_add_v1",
+            "vc.bot.meeting_invited_v1",
+        }:
+            self._dispatch_trusted_ingress(event_type, data, transport="webhook")
         else:
             handler = self._WEBHOOK_EVENT_HANDLERS.get(event_type)
             if handler is None:

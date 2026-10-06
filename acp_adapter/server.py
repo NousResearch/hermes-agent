@@ -790,7 +790,18 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 token = set_edit_approval_requester(edit_approval_requester)
                 return lambda: reset_edit_approval_requester(token)
 
+            def _home_override() -> Callable[[], None]:
+                from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+                token = set_hermes_home_override(str(get_hermes_home()))
+                return lambda: reset_hermes_home_override(token)
+
             _bind_guarded(stack, "session context", _session_context)
+            # With a symlinked <home>/state.db (overlay homes) the registry stores the resolved
+            # store path, so _agent_home's db-parent fallback would load SOUL.md/memories/skills
+            # from the store folder instead of HERMES_HOME (#133955). Pin the launch home for
+            # every prompt build/rebuild in the turn (prologue rebuild and post-compression).
+            _bind_guarded(stack, "HERMES_HOME override", _home_override)
             if approval_cb:
                 _bind_guarded(stack, "approval callback", _approval)
             if edit_approval_requester:

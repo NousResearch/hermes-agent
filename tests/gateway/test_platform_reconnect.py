@@ -550,7 +550,9 @@ class TestReconnectKeepsInboundDedup:
             await runner._run_secondary_profile_reconnect("coder", Platform.TELEGRAM, predecessor)
 
         if installed:
-            assert (predecessor._held_inbound_events or []) + (failed._held_inbound_events or []) == [salvaged]
+            assert failed._held_inbound_events == [salvaged] and not predecessor._held_inbound_events
+            assert getattr(failed, "_held_inbound_successor", None) is None
+            assert predecessor._held_inbound_successor() is failed
             return
         assert failed._held_inbound_events == []
         assert predecessor._held_inbound_events == [in_connect, salvaged]

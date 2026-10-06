@@ -460,7 +460,8 @@ interface PendingClarifyLocation {
 function findPendingClarifyLocation(
   messages: ChatMessage[],
   payload: GatewayEventPayload,
-  toolName = 'clarify'
+  toolName = 'clarify',
+  includeSettled = false
 ): PendingClarifyLocation | null {
   const stableId = toolId(payload)
   const matchValues = toolPayloadMatchValues(payload)
@@ -473,7 +474,17 @@ function findPendingClarifyLocation(
     for (let partIndex = message.parts.length - 1; partIndex >= 0; partIndex -= 1) {
       const part = message.parts[partIndex]
 
-      if (part.type !== 'tool-call' || part.toolName !== toolName || part.result !== undefined) {
+      if (part.type !== 'tool-call' || part.toolName !== toolName) {
+        continue
+      }
+
+      // A settled row (tool.complete paired a stored result) is invisible to
+      // the wait-end helpers — settling it again would overwrite the answer it
+      // already carries. A re-ARM is different: the request is still open, so
+      // the row's result is a stale leftover (timeout residue, a replayed
+      // request racing the persisted result row), and `includeSettled` lets
+      // correlation reopen that exact row instead of appending a second card.
+      if (part.result !== undefined && !includeSettled) {
         continue
       }
 
@@ -482,6 +493,10 @@ function findPendingClarifyLocation(
 
       if (exactId || contextual) {
         return { messageIndex, partIndex }
+      }
+
+      if (part.result !== undefined) {
+        continue
       }
 
       // A sealed call (settle-time `completedAt`, no result) is a clarify the
@@ -622,7 +637,7 @@ export function restorePendingBlockingToolCall(
   clarifyPayload: GatewayEventPayload & { name: string },
   occurredAt = Date.now() / 1000
 ): PendingClarifyProjection {
-  const location = findPendingClarifyLocation(messages, clarifyPayload, clarifyPayload.name)
+  const location = findPendingClarifyLocation(messages, clarifyPayload, clarifyPayload.name, true)
 
   if (location) {
     const message = messages[location.messageIndex]
@@ -637,8 +652,11 @@ export function restorePendingBlockingToolCall(
     // A sparse hydrated projection may already be marked pending while still
     // lacking the authoritative clarify.request args, so re-arm in place and
     // merge the live payload into that provider-authored part, preserving its
-    // tool-call id and transcript position.
-    const { completedAt: _completedAt, ...unsealed } = part
+    // tool-call id and transcript position. The wait is by definition still
+    // open (that is what a re-arm means), so a result already on the row is a
+    // stale leftover, not the answer to this wait — reopen over it rather
+    // than mounting a second card next to the settled one (#133770).
+    const { completedAt: _completedAt, result: _settledResult, ...unsealed } = part
     const args = toolArgs(clarifyPayload, part.args)
     const parts = [...message.parts]
     parts[location.partIndex] = {

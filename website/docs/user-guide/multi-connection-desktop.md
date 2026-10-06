@@ -147,20 +147,70 @@ Edit any non-local entry later with the pencil button, or remove it with the
 trash button — removal asks for confirmation and reminds you that *"The
 instance itself is not touched — you can add it again any time."*
 
-### Troubleshooting an SSH connection
+### Set up and verify an SSH connection
 
-Desktop runs SSH in batch mode and starts Hermes through a non-interactive
-remote shell. A command that works after an interactive `ssh user@host` login
-can therefore still be absent from the `PATH` that Desktop sees. Reproduce the
-same conditions from the desktop machine:
+Before adding the gateway, confirm that the desktop machine can reach the
+remote host and that Hermes is installed there:
+
+```bash
+ssh user@host
+hermes --version
+exit
+```
+
+Desktop cannot stop to ask for the remote account's password. Use an existing
+SSH key, or create one on the desktop machine if you do not already have one:
+
+```bash
+ssh-keygen -t ed25519
+```
+
+Do not overwrite an existing key when `ssh-keygen` asks. Install its public
+half on the remote host (this step asks for the account password once):
+
+```bash
+ssh-copy-id -i ~/.ssh/id_ed25519.pub user@host
+```
+
+On a machine without `ssh-copy-id`, use SSH itself:
+
+```bash
+cat ~/.ssh/id_ed25519.pub | ssh user@host \
+  'umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys'
+```
+
+Now reproduce Desktop's passwordless, non-interactive authentication mode:
 
 ```bash
 ssh -o BatchMode=yes -i ~/.ssh/id_ed25519 user@host \
-  'command -v hermes; hermes --version'
+  'echo SSH_OK; command -v hermes; hermes --version'
 ```
 
-If that reports `hermes: command not found`, but the normal interactive shell
-can run Hermes, test the managed wrapper by its absolute path:
+If the key has a passphrase, load it into the desktop machine's SSH agent
+before opening Desktop:
+
+```bash
+ssh-add ~/.ssh/id_ed25519
+```
+
+The command should print `SSH_OK` and the Hermes version without prompting.
+Configure the SSH gateway with these values:
+
+| Desktop field | Value |
+|---|---|
+| **SSH host** | `user@host:22` (omit `:22` for the default port) |
+| **Identity file** | The absolute path on the desktop machine, such as `/Users/alice/.ssh/id_ed25519` |
+| **Hermes path** | Leave blank when `command -v hermes` printed a path; otherwise use the absolute remote executable path described below |
+
+Save the connection and click **Test**. A *Reachable* result verifies both the
+HTTP and WebSocket legs, not only the SSH login.
+
+### Troubleshoot an SSH connection
+
+Desktop starts Hermes through a non-interactive remote shell. A command that
+works after a normal `ssh user@host` login can therefore still be absent from
+the `PATH` that Desktop sees. If the batch-mode check reports
+`hermes: command not found`, test the managed wrapper by its absolute path:
 
 ```bash
 ssh -o BatchMode=yes -i ~/.ssh/id_ed25519 user@host \
@@ -171,12 +221,17 @@ When the absolute-path command works, edit the registered SSH gateway and set
 **Hermes path** to the expanded remote path, for example
 `/home/alice/.local/bin/hermes`. Use the executable wrapper, not the install
 directory such as `/home/alice/.hermes/hermes-agent`; a directory is not a
-valid Hermes path. Also enter the key's absolute path in **Identity file**, or
-load a passphrase-protected key into the local SSH agent before testing:
+valid Hermes path.
 
-```bash
-ssh-add ~/.ssh/id_ed25519
-```
+Read the exact failure in **Open logs** when Desktop's summary is not specific.
+Common SSH failures map directly to the next check:
+
+- `No route to host` — confirm the hostname or IP, network, and port from the
+  desktop machine.
+- `Permission denied (publickey,password)` — repeat the batch-mode command and
+  verify **Identity file** or `ssh-add -l`.
+- `Hermes is not installed` or an update-required message while the remote is
+  current — verify **Hermes path** with the absolute-path command above.
 
 If startup instead says that a remote Hermes update process is still running,
 do not start another update concurrently. Quit Desktop, then check the PID

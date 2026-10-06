@@ -19,7 +19,10 @@
 # creation time (5 ms: the marker rounds to 3 decimals); a no-ct claim naming
 # our pid is a previous incarnation. Any other pid matches within 2 s; with no
 # recorded or readable creation time it is live only within 20 minutes of
-# line 2.
+# line 2. proc_ct must therefore report the clock the Python reader compares
+# against (psutil's): a reading floored to whole seconds is far outside our own
+# incarnation's 5 ms and reads as a previous incarnation. macOS has no
+# sub-second `ps`, so proc_ct reads kern.proc's p_starttime through sysctl(2).
 #
 # Mutation (A7): every read -> judge -> write/delete of the marker happens
 # while holding an exclusive kernel lock on the sidecar "$MARKER.lock" (flock
@@ -53,7 +56,32 @@ proc_ct() { # pid -> creation time (unix seconds, 3 decimals), or nothing
     lstart="$(TZ=UTC0 LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//;s/ *$//')"
     [ -n "$lstart" ] || return 0
     secs="$(TZ=UTC0 LC_ALL=C date -j -f '%a %b %e %T %Y' "$lstart" +%s 2>/dev/null)" || return 0
-    [ -n "$secs" ] && printf '%s.000\n' "$secs"
+    [ -n "$secs" ] || return 0
+    # ps reports whole seconds only, and a writer that FLOORS a creation time reads as a
+    # PREVIOUS incarnation to the Python reader, which judges our own pid within
+    # update_lock._OWN_CREATE_TIME_EPSILON (5 ms). The hand-off publishes the update child as
+    # the marker's delegate (marker_add_delegate), so a floored reading made the update refuse
+    # its own hand-off's claim -- exit 2, no Desktop update on macOS could start.
+    # Read the clock the Python reader's psutil reads: kern.proc's p_starttime timeval
+    # (seconds + microseconds), which extern_proc exposes at offset 0 of the sysctl buffer.
+    # Perl is the only sub-second process-clock reader on a stock macOS and reports the
+    # identical value psutil does; anything else falls back to the ps whole-second reading.
+    prec=""
+    if command -v perl >/dev/null 2>&1; then
+      prec="$(perl -e '
+        my $pid = shift; my $want = shift;
+        my @mib = (1, 14, 1, $pid);        # CTL_KERN, KERN_PROC, KERN_PROC_PID, pid
+        my $buf = "\0" x 1024;
+        my $len = pack("L", 1024);
+        exit 1 unless syscall(202, pack("L*", @mib), 4, $buf, $len, 0, 0) == 0;
+        my $s = unpack("q<", substr($buf, 0, 8));
+        my $u = unpack("L<", substr($buf, 8, 4));
+        exit 1 if $u >= 1000000;
+        exit 1 if $s > $want + 1 || $s < $want - 1;   # not the process ps named: unknown layout
+        printf "%d.%03d\n", $s, int($u / 1000);
+      ' "$pid" "$secs" 2>/dev/null)" || prec=""
+    fi
+    if [ -n "$prec" ]; then printf '%s\n' "$prec"; else printf '%s.000\n' "$secs"; fi
   fi
 }
 

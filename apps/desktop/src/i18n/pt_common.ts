@@ -45,6 +45,8 @@ export const ptCommon = {
       'Transmite cada pacote diário ao serviço de telemetria da Nous. Só dados de dentro de uma janela de consentimento são enviados. Requer a coleta ativada.',
     unavailable: 'Atualize o backend do Hermes para alterar esta configuração.',
     stripBody: 'Apenas contadores limitados, nunca prompts ou arquivos.',
+    stripReaskBody:
+      'Perguntando mais uma vez: uma versão anterior podia salvar “Não, obrigado” antes de você ver esta mensagem.',
     stripChoices: {
       share: 'Enviar à Nous',
       local: 'Somente local',

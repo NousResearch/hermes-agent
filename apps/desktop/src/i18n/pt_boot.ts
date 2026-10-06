@@ -1,6 +1,37 @@
 import type { TranslationOverrides } from './define-locale'
 
 export const ptBoot = {
+  appTour: {
+    sessions: {
+      title: 'Seus chats',
+      text: 'Cada conversa fica aqui. Busque, fixe ou reabra qualquer uma delas.'
+    },
+    composer: {
+      title: 'Pergunte aqui',
+      text: 'Diga o que você quer que seja feito. Digite @ para incluir um arquivo.'
+    },
+    newSession: {
+      title: 'Comece do zero',
+      text: 'Uma nova sessão tem o próprio contexto. Use uma por tarefa.'
+    },
+    model: {
+      title: 'Seletor de modelo',
+      text: 'Escolhe qual modelo responde a você.'
+    },
+    modelLocal: 'Este computador pode rodar um modelo localmente: Configurações > Provedores > Modelos locais.',
+    capabilities: {
+      title: 'Capacidades',
+      text: 'Skills, ferramentas e plugins que o Hermes pode usar. Adicione mais aqui.'
+    },
+    messaging: {
+      title: 'Mensagens',
+      text: 'Fale com o Hermes pelo Telegram, Slack, Discord e mais.'
+    },
+    rightPane: {
+      title: 'O painel de trabalho',
+      text: 'Abre arquivos, terminal, revisão e o navegador do app, à direita.'
+    }
+  },
   boot: {
     ready: 'Hermes Desktop está pronto',
     desktopBootFailedWithMessage: message => `A inicializa\xE7\xE3o do Desktop falhou: ${message}`,
@@ -76,6 +107,32 @@ export const ptBoot = {
       signInToRemoteGateway: 'Fazer login no gateway remoto',
       signInWithProvider: provider => `Entrar com ${provider}`,
       identityProvider: 'seu provedor de identidade'
+    },
+    updateHold: {
+      title: 'Uma atualização anterior ainda segura o Hermes',
+      titleUnverified: 'O Hermes não consegue confirmar que a última atualização terminou',
+      description:
+        'O Hermes está adiando a inicialização para não carregar arquivos que uma atualização ainda pode estar alterando. Ele inicia sozinho assim que o bloqueio terminar.',
+      heldByProcess: pid =>
+        `A atualiza\xE7\xE3o (processo ${pid}) terminou, mas um processo iniciado por ela ainda mant\xE9m a instala\xE7\xE3o do Hermes em uso.`,
+      heldUnknown:
+        'Uma atualização terminou, mas um processo iniciado por ela ainda mantém a instalação do Hermes em uso.',
+      unverified:
+        'O assistente de atualização não conseguiu verificar agora quem está usando a instalação do Hermes. O Hermes continua verificando.',
+      since: time => `Aguardando desde ${time}`,
+      lastChecked: time => `\xDAltima verifica\xE7\xE3o ${time}`,
+      recoveryHint:
+        'Isso costuma se resolver em alguns minutos. Se não resolver: feche o Hermes, encerre os processos git ou hermes que sobraram (ou reinicie o computador) e abra o Hermes de novo.',
+      checkAgain: 'Verificar novamente',
+      quit: 'Sair do Hermes',
+      openLogs: 'Abrir logs',
+      startAnyway: 'Iniciar mesmo assim…',
+      confirmTitle: 'Iniciar o Hermes enquanto a atualização ainda o mantém em uso?',
+      confirmBody:
+        'O processo de atualização que sobrou ainda pode estar alterando os arquivos do Hermes. Iniciar agora pode carregar uma instalação pela metade, que talvez não funcione até você executar a atualização de novo. O Hermes registra essa escolha no log e mantém o marcador da atualização.',
+      confirmKeepWaiting: 'Continuar aguardando',
+      confirmStart: 'Iniciar mesmo assim',
+      startAnywayRefused: 'O que mantém a instalação em uso mudou antes de o Hermes iniciar. Revise e tente de novo.'
     }
   },
   remoteDisplayBanner: {
@@ -131,7 +188,8 @@ export const ptBoot = {
       'Uma nova versão do Hermes está pronta. O Hermes vai fechar, o Windows conclui a atualização e o Hermes reabre sozinho.',
     updateNow: 'Atualizar agora',
     maybeLater: 'Talvez depois',
-    moreChanges: count => `+ ${count} alteraç${count === 1 ? 'ão' : 'ões'} incluída${count === 1 ? '' : 's'}.`,
+    moreChanges: count =>
+      `+ ${count} altera\xE7${count === 1 ? '\xE3o' : '\xF5es'} inclu\xEDda${count === 1 ? '' : 's'}.`,
     copyFullLog: 'Copiar o changelog completo',
     manualTitle: 'Atualize pelo terminal',
     manualUnavailableTitle: 'Não é possível atualizar daqui',
@@ -196,10 +254,12 @@ export const ptBoot = {
       notAvailable: 'Atualização indisponível para este backend.',
       failed: 'Falha na atualização do backend.',
       noReturn:
-        'O backend não voltou a ficar online. A atualização pode não ter sido concluída: verifique o host do backend.'
+        'O backend não voltou a ficar online. A atualização pode não ter sido concluída: verifique o host do backend.',
+      owed: steps =>
+        `Backend atualizado, mas ainda faltam: ${steps}. Execute \`hermes update\` de novo para conclu\xED-los.`
     },
     appName: 'Hermes',
-    version: value => `Versão ${value}`,
+    version: value => `Vers\xE3o ${value}`,
     versionUnavailable: 'Versão indisponível',
     checkNow: 'Verificar agora',
     seeWhatsNew: 'Ver o que há de novo',
@@ -211,20 +271,20 @@ export const ptBoot = {
     updateReady: count =>
       `Uma nova atualiza\xE7\xE3o est\xE1 pronta (${count} ${count === 1 ? 'mudan\xE7a inclu\xEDda' : 'mudan\xE7as inclu\xEDdas'}).`,
     updateReadyUnknown: 'Uma nova atualização está pronta.',
-    availableBodyRelease: tag => `A versão ${tag} está pronta para instalar.`,
-    lastChecked: age => `Última verificação ${age}`,
+    availableBodyRelease: tag => `A vers\xE3o ${tag} est\xE1 pronta para instalar.`,
+    lastChecked: age => `\xDAltima verifica\xE7\xE3o ${age}`,
     never: 'nunca',
     justNow: 'agora há pouco',
-    minAgo: count => `há ${count} min`,
-    hoursAgo: count => `há ${count} h`,
-    daysAgo: count => `há ${count} d`,
+    minAgo: count => `h\xE1 ${count} min`,
+    hoursAgo: count => `h\xE1 ${count} h`,
+    daysAgo: count => `h\xE1 ${count} d`,
     justNowSuffix: ' · agora há pouco',
     bundleOutOfSync: 'Build do app desatualizado',
     bundleOutOfSyncDesc:
       'O runtime do Hermes foi atualizado, mas o app desktop ainda é uma versão antiga — novas funcionalidades (como o Bot Mode) não aparecerão até que seja atualizado. Rode a atualização abaixo para recompilar o app. Se o aviso continuar, reinstale a partir do instalador mais recente.',
     bundleOutOfSyncAction: 'Baixar instalador',
     checkingShort: 'Verificando…',
-    releaseAvailable: tag => `A versão ${tag} está disponível.`,
+    releaseAvailable: tag => `A vers\xE3o ${tag} est\xE1 dispon\xEDvel.`,
     versionDetailsTitle: 'Detalhes da versão',
     versionDetailsBody: 'Esta instalação é gerenciada fora do app. Atualize-a da mesma forma que você a instalou.',
     versionDetailsVersion: 'Versão',
@@ -258,7 +318,7 @@ export const ptBoot = {
   },
   guidedGreeting: {
     line: 'Ei, pode entrar. Eu sou o Hermes. Me dê dois minutinhos para arrumar o lugar ao seu redor, e depois vamos pôr em prática algo que você realmente queira resolver.\n\nMas, antes, como devo chamar você?',
-    nameSuggestion: name => `(Se preferir, também posso chamar você de ${name}.)`
+    nameSuggestion: name => `(Se preferir, tamb\xE9m posso chamar voc\xEA de ${name}.)`
   },
   install: {
     stageStates: {
@@ -270,7 +330,7 @@ export const ptBoot = {
     },
     oneTimeTitle: 'O Hermes precisa de uma instalação única',
     unsupportedDesc: platform =>
-      `A instalação automática na primeira execução ainda não está disponível no ${platform}. Abra o Terminal e execute o comando abaixo; depois, reabra este app. As próximas execuções pulam esta etapa.`,
+      `A instala\xE7\xE3o autom\xE1tica na primeira execu\xE7\xE3o ainda n\xE3o est\xE1 dispon\xEDvel no ${platform}. Abra o Terminal e execute o comando abaixo; depois, reabra este app. As pr\xF3ximas execu\xE7\xF5es pulam esta etapa.`,
     installCommand: 'Comando de instalação',
     copyCommand: 'Copiar comando',
     viewDocs: 'Ver a documentação de instalação',
@@ -325,7 +385,7 @@ export const ptBoot = {
       'Uma das etapas da instalação não foi concluída. Isso pode acontecer quando outra cópia do Hermes está em execução, a conexão com a internet caiu ou o antivírus bloqueou o instalador. Feche outras janelas do Hermes, escolha Recarregar e tente novamente. Se falhar de novo, abra os logs e envie-os ao suporte.',
     activeDesc:
       'Esta é uma configuração única. O instalador do Hermes está baixando dependências e configurando a sua máquina. As próximas inicializações pulam esta etapa.',
-    progress: (completed, total) => `${completed} de ${total} etapas concluídas`,
+    progress: (completed, total) => `${completed} de ${total} etapas conclu\xEDdas`,
     currentStage: stage => ` -- agora: ${stage}`,
     fetchingManifest: 'Obtendo o manifesto do instalador…',
     error: 'Erro',
@@ -401,14 +461,14 @@ export const ptBoot = {
       external: 'Entre uma vez no seu terminal e volte para conversar'
     },
     startingSignIn: provider => `Iniciando o login em ${provider}...`,
-    verifyingCode: provider => `Verificando o seu código com ${provider}...`,
+    verifyingCode: provider => `Verificando o seu c\xF3digo com ${provider}...`,
     connectedProvider: provider => `${provider} conectado`,
-    connectedPicking: provider => `${provider} conectado. Escolhendo um modelo padrão...`,
+    connectedPicking: provider => `${provider} conectado. Escolhendo um modelo padr\xE3o...`,
     signInFailed: 'Falha no login. Tente novamente.',
     signInExpired:
       'A página de login expirou antes de você concluir. Tente novamente e complete a etapa do navegador em alguns minutos, ou use uma chave de API.',
     signInDidNotFinish: provider =>
-      `O login com ${provider} não foi concluído. Verifique sua conexão com a internet e tente de novo, ou escolha outro provedor.`,
+      `O login com ${provider} n\xE3o foi conclu\xEDdo. Verifique sua conex\xE3o com a internet e tente de novo, ou escolha outro provedor.`,
     tryAgain: 'Tentar novamente',
     useApiKeyInstead: 'Usar uma chave de API',
     errorDetails: 'Detalhes',
@@ -420,23 +480,23 @@ export const ptBoot = {
     pasteAuthCode: 'Cole o código de autorização',
     reopenAuthPage: 'Reabrir a página de autorização',
     autoBrowser: provider =>
-      `Abrimos ${provider} no seu navegador. Autorize o Hermes por lá e você será conectado automaticamente: não há nada para copiar ou colar.`,
+      `Abrimos ${provider} no seu navegador. Autorize o Hermes por l\xE1 e voc\xEA ser\xE1 conectado automaticamente: n\xE3o h\xE1 nada para copiar ou colar.`,
     reopenSignInPage: 'Reabrir a página de login',
     waitingAuthorize: 'Aguardando você autorizar…',
     externalPending: provider =>
-      `${provider} faz o login pela própria CLI. Execute este comando em um terminal, depois volte e escolha “Já fiz login”:`,
+      `${provider} faz o login pela pr\xF3pria CLI. Execute este comando em um terminal, depois volte e escolha \u201CJ\xE1 fiz login\u201D:`,
     signedIn: 'Já fiz login',
-    deviceCodeOpened: provider => `Abrimos ${provider} no seu navegador. Digite este código por lá:`,
+    deviceCodeOpened: provider => `Abrimos ${provider} no seu navegador. Digite este c\xF3digo por l\xE1:`,
     reopenVerification: 'Reabrir a página de verificação',
     copy: 'Copiar',
     defaultModel: 'Modelo padrão',
     freeTier: 'Plano gratuito',
     pro: 'Pro',
     free: 'Gratuito',
-    price: (input, output) => `${input} de entrada / ${output} de saída por Mtok`,
+    price: (input, output) => `${input} de entrada / ${output} de sa\xEDda por Mtok`,
     change: 'Alterar',
     startChatting: 'Começar',
-    docs: provider => `Documentação de ${provider}`
+    docs: provider => `Documenta\xE7\xE3o de ${provider}`
   },
   freeTier: {
     providerRowTitle: 'Nous · plano gratuito',
@@ -451,7 +511,7 @@ export const ptBoot = {
     openModelPicker: 'Abrir o seletor de modelo',
     dismiss: 'Dispensar',
     providerName: 'Nous',
-    statusLabel: model => `Nous · ${model}`,
+    statusLabel: model => `Nous \xB7 ${model}`,
     signIn: 'Fazer login',
     signInHeading: 'Faça login com uma conta Nous para liberar mais modelos e ferramentas.',
     settingUp: 'Configurando a inferência gratuita…',
@@ -480,7 +540,7 @@ export const ptBoot = {
     errorBody: 'O login não foi concluído. Tente novamente quando quiser.',
     busyHeading: 'Quase lá',
     busyBody: wait =>
-      `O Hermes não conseguiu concluir o seu login porque o serviço da Nous está ocupado. Tente de novo em ${wait}. A sua sessão continua aqui enquanto isso.`,
+      `O Hermes n\xE3o conseguiu concluir o seu login porque o servi\xE7o da Nous est\xE1 ocupado. Tente de novo em ${wait}. A sua sess\xE3o continua aqui enquanto isso.`,
     unreachableBody:
       'O Hermes não conseguiu acessar o serviço da Nous para concluir o seu login. Verifique sua conexão com a internet e tente novamente. A sua sessão continua aqui.',
     alreadySignedInHeading: 'Você já está conectado.',
@@ -491,7 +551,7 @@ export const ptBoot = {
       paused:
         'O uso do Hermes sem login está pausado por um instante. O Hermes continuará verificando. Fazer login é grátis e deixa você começar agora mesmo.',
       rateLimited: wait =>
-        `Muita gente está começando agora, então o Hermes tentará de novo em ${wait}. Fazer login é grátis e dispensa a espera.`,
+        `Muita gente est\xE1 come\xE7ando agora, ent\xE3o o Hermes tentar\xE1 de novo em ${wait}. Fazer login \xE9 gr\xE1tis e dispensa a espera.`,
       unreachable:
         'O Hermes não conseguiu acessar o serviço da Nous. Verifique sua conexão com a internet e toque em Tentar novamente. Ou conecte outro provedor por enquanto.',
       serverError:
@@ -560,6 +620,7 @@ export const ptBoot = {
   }
 } satisfies Pick<
   TranslationOverrides,
+  | 'appTour'
   | 'boot'
   | 'remoteDisplayBanner'
   | 'updates'

@@ -1,9 +1,12 @@
 import type { TranslationOverrides } from './define-locale'
 
 export const ptChat = {
+  butterbar: {
+    goTo: (index, total) => `Mostrar o aviso ${index} de ${total}`
+  },
   composer: {
     message: 'Mensagem',
-    wakingProfile: profile => `Acordando ${profile}…`,
+    wakingProfile: profile => `Acordando ${profile}\u2026`,
     placeholderStarting: 'Iniciando o Hermes…',
     placeholderReconnecting: 'Reconectando ao Hermes…',
     placeholderFollowUp: 'Enviar complemento',
@@ -55,10 +58,11 @@ export const ptChat = {
     voiceDictation: 'Ditado por voz',
     speakReplies: 'Ler respostas em voz alta',
     stopSpeakingReplies: 'Parar de ler as respostas em voz alta',
-    wakeWord: phrase => `Palavra de ativação “${phrase}”`,
-    wakeWordListening: phrase => `Palavra de ativação: “${phrase}” — ouvindo`,
-    wakeWordOff: phrase => `Palavra de ativação: “${phrase}” — desativada`,
-    wakeWordPausedVoice: phrase => `Palavra de ativação: “${phrase}” — pausada durante o chat por voz`,
+    wakeWord: phrase => `Palavra de ativa\xE7\xE3o \u201C${phrase}\u201D`,
+    wakeWordListening: phrase => `Palavra de ativa\xE7\xE3o: \u201C${phrase}\u201D \u2014 ouvindo`,
+    wakeWordOff: phrase => `Palavra de ativa\xE7\xE3o: \u201C${phrase}\u201D \u2014 desativada`,
+    wakeWordPausedVoice: phrase =>
+      `Palavra de ativa\xE7\xE3o: \u201C${phrase}\u201D \u2014 pausada durante o chat por voz`,
     lookupLoading: 'Procurando…',
     lookupNoMatches: 'Nenhuma correspondência.',
     lookupTry: 'Tente',
@@ -159,7 +163,7 @@ export const ptChat = {
     urlHintPre: 'Inclua a URL completa, por exemplo ',
     attach: 'Anexar',
     queued: count => `${count} na fila`,
-    queuedPaused: count => `${count} na fila — pausada`,
+    queuedPaused: count => `${count} na fila \u2014 pausada`,
     attachmentOnly: 'Turno apenas com anexo',
     emptyTurn: 'Turno vazio',
     hiddenQueued: 'Nota de configuração',
@@ -189,8 +193,8 @@ export const ptChat = {
     queuedTerminalSelectionExpiredBody:
       'Esta seleção de terminal na fila não está mais disponível. Selecione as linhas de novo (Ctrl/Cmd+L) e coloque a mensagem na fila outra vez.',
     previewUnavailable: 'Pré-visualização indisponível',
-    previewLabel: label => `Prévia de ${label}`,
-    couldNotPreview: label => `Não foi possível gerar a prévia de ${label}`,
+    previewLabel: label => `Pr\xE9via de ${label}`,
+    couldNotPreview: label => `N\xE3o foi poss\xEDvel gerar a pr\xE9via de ${label}`,
     removeAttachment: label => `Remover ${label}`,
     dictating: 'Ditando',
     preparingAudio: 'Preparando o áudio',
@@ -215,16 +219,16 @@ export const ptChat = {
     dropSession: 'Solte para vincular este chat',
     mcpSuggestions: {
       label: server => `Adicionar ${server}`,
-      tip: keyword => `Sugerido porque você mencionou “${keyword}”. Clique para conectar`,
-      connecting: server => `Conectando ${server}…`,
+      tip: keyword => `Sugerido porque voc\xEA mencionou \u201C${keyword}\u201D. Clique para conectar`,
+      connecting: server => `Conectando ${server}\u2026`,
       cancelTip: 'Clique para cancelar',
       added: server => `${server} adicionado`,
       addedTip: 'Conectado: as ferramentas dele estão prontas neste chat',
-      connectFailed: server => `Não foi possível conectar ${server}`
+      connectFailed: server => `N\xE3o foi poss\xEDvel conectar ${server}`
     },
     skillSuggestions: {
       label: skill => `Usar a skill: ${skill}`,
-      tip: skill => `Você mencionou “${skill}”. Clique para começar com essa skill`,
+      tip: skill => `Voc\xEA mencionou \u201C${skill}\u201D. Clique para come\xE7ar com essa skill`,
       done: skill => `/${skill} adicionada`,
       doneTip: 'A skill é carregada quando você envia'
     },
@@ -236,16 +240,16 @@ export const ptChat = {
     },
     repairSuggestions: {
       label: server => `Reconectar ${server}`,
-      tip: server => `Uma chamada a ${server} acabou de falhar com um erro de conexão`,
-      working: server => `Reconectando ${server}…`,
+      tip: server => `Uma chamada a ${server} acabou de falhar com um erro de conex\xE3o`,
+      working: server => `Reconectando ${server}\u2026`,
       workingTip: 'Clique para cancelar',
       done: server => `${server} reconectado`,
       doneTip: 'As credenciais novas estão ativas neste chat',
-      failed: server => `Não foi possível reconectar ${server}`
+      failed: server => `N\xE3o foi poss\xEDvel reconectar ${server}`
     },
     cronSuggestions: {
       label: 'Agendar isto',
-      tip: phrase => `“${phrase}” parece algo recorrente. Que tal executar em um agendamento?`,
+      tip: phrase => `\u201C${phrase}\u201D parece algo recorrente. Que tal executar em um agendamento?`,
       prefix: 'Configure isto como uma tarefa agendada:',
       done: 'Marcado para agendamento',
       doneTip: 'Envie e o agente cria a tarefa'
@@ -284,7 +288,7 @@ export const ptChat = {
     running: 'Em execução',
     stop: 'Parar',
     dismiss: 'Dispensar',
-    exit: code => `saída ${code}`,
+    exit: code => `sa\xEDda ${code}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `Turno ${turn}/${maxTurns}`,
       goalDoneTurns: turns => `${turns} turno${turns === 1 ? '' : 's'}`,
@@ -301,14 +305,14 @@ export const ptChat = {
       clearGoal: 'Limpar objetivo',
       clearGoalConfirmTitle: 'Limpar o objetivo?',
       clearGoalConfirmBody: 'Tem certeza de que quer limpar o objetivo ativo? Esta ação não pode ser desfeita.',
-      copyCriterion: index => `Copiar o critério ${index}`,
-      removeCriterion: index => `Remover o critério ${index}`,
-      removeCriterionConfirmTitle: index => `Remover o critério ${index}?`,
-      removeCriterionConfirmBody: index => `Tem certeza de que quer remover o critério ${index}?`,
+      copyCriterion: index => `Copiar o crit\xE9rio ${index}`,
+      removeCriterion: index => `Remover o crit\xE9rio ${index}`,
+      removeCriterionConfirmTitle: index => `Remover o crit\xE9rio ${index}?`,
+      removeCriterionConfirmBody: index => `Tem certeza de que quer remover o crit\xE9rio ${index}?`,
       clearCriteria: 'Limpar todos os critérios',
       clearCriteriaConfirmTitle: 'Limpar todos os critérios?',
       clearCriteriaConfirmBody: 'Tem certeza de que quer remover todos os critérios deste objetivo?',
-      criteriaHeader: count => `Critérios · ${count}`,
+      criteriaHeader: count => `Crit\xE9rios \xB7 ${count}`,
       noCriteria: 'Sem critérios',
       goalDetailsTitle: 'Detalhes do objetivo',
       objectiveLabel: 'Objetivo',
@@ -318,21 +322,21 @@ export const ptChat = {
       contractBoundaries: 'Limites',
       contractStopWhen: 'Parar quando',
       waitBarrierTitle: 'Condição de espera',
-      waitUntil: target => `Aguardando até ${target}`,
-      waitSession: target => `Aguardando a sessão ${target}`,
+      waitUntil: target => `Aguardando at\xE9 ${target}`,
+      waitSession: target => `Aguardando a sess\xE3o ${target}`,
       waitPid: pid => `Aguardando o processo ${pid}`,
       qualityGatesTitle: 'Portões de qualidade',
       gateCommand: 'Comando',
       gateAttempts: (attempts, max) => `${attempts}/${max} tentativas`,
       gateTimeout: seconds => `limite de ${seconds} s`,
-      gateLastExit: code => (code === null ? 'Pendente' : `Código de saída: ${code}`),
+      gateLastExit: code => (code === null ? 'Pendente' : `C\xF3digo de sa\xEDda: ${code}`),
       loopActive: 'Loop ativo',
       loopPaused: 'Loop pausado',
       loopDeferred: 'Loop adiado',
       loopFinished: 'Loop concluído',
-      loopRuns: runs => `${runs} execuç${runs === 1 ? 'ão' : 'ões'}`,
-      loopRunCount: (current, total) => `Execução ${current}/${total}`,
-      loopNext: time => `próxima ${time}`,
+      loopRuns: runs => `${runs} execu\xE7${runs === 1 ? '\xE3o' : '\xF5es'}`,
+      loopRunCount: (current, total) => `Execu\xE7\xE3o ${current}/${total}`,
+      loopNext: time => `pr\xF3xima ${time}`,
       loopEverySeconds: seconds => `a cada ${seconds} s`,
       loopEveryMinutes: minutes => `a cada ${minutes} min`,
       loopEveryHours: hours => `a cada ${hours} h`,
@@ -354,7 +358,7 @@ export const ptChat = {
       heartbeatEveryMinutes: minutes => `a cada ${minutes} min`,
       heartbeatEveryHours: hours => `a cada ${hours} h`,
       heartbeatEverySeconds: seconds => `a cada ${seconds} s`,
-      heartbeatNext: time => `próximo ${time}`,
+      heartbeatNext: time => `pr\xF3ximo ${time}`,
       heartbeatDueWaitingForIdle: 'pendente, aguardando ociosidade',
       heartbeatActions: 'Ações do heartbeat',
       pauseHeartbeat: 'Pausar heartbeat',
@@ -363,7 +367,7 @@ export const ptChat = {
       clearHeartbeatConfirmTitle: 'Limpar o heartbeat?',
       clearHeartbeatConfirmBody: 'Tem certeza de que quer limpar este heartbeat?',
       heartbeatFiredCount: count => `Disparado ${count} ${count === 1 ? 'vez' : 'vezes'}`,
-      actionFailed: msg => `Falha na ação: ${msg}`,
+      actionFailed: msg => `Falha na a\xE7\xE3o: ${msg}`,
       actionSucceeded: 'Ação concluída',
       copySuccess: 'Critério copiado para a área de transferência',
       copyFailure: 'Não foi possível copiar o critério para a área de transferência',
@@ -371,7 +375,7 @@ export const ptChat = {
       continuationQueued: 'Objetivo retomado: a continuação ficou na fila até o turno atual terminar',
       continuationBusy:
         'Objetivo retomado: sessão ocupada; interrompa primeiro a resposta atual (botão Parar ou Esc) para continuar',
-      controlUnavailable: msg => `Controles da sessão indisponíveis: ${msg}`,
+      controlUnavailable: msg => `Controles da sess\xE3o indispon\xEDveis: ${msg}`,
       dismissError: 'Dispensar erro',
       add: 'Adicionar'
     },
@@ -381,8 +385,8 @@ export const ptChat = {
       detached: 'desanexada',
       clean: 'Limpa',
       changed: count => `${count} alterado${count === 1 ? '' : 's'}`,
-      ahead: count => `${count} à frente`,
-      behind: count => `${count} atrás`,
+      ahead: count => `${count} \xE0 frente`,
+      behind: count => `${count} atr\xE1s`,
       review: 'Revisar',
       close: 'Fechar',
       openChanges: 'Abrir alterações',
@@ -421,7 +425,7 @@ export const ptChat = {
       newBranch: 'Nova branch',
       branchOffFrom: base => `Nova branch a partir de ${base}`,
       switchTo: branch => `Mudar para ${branch}`,
-      switchFailed: branch => `Não foi possível mudar para ${branch}`,
+      switchFailed: branch => `N\xE3o foi poss\xEDvel mudar para ${branch}`,
       worktrees: 'Worktrees'
     }
   },
@@ -443,14 +447,14 @@ export const ptChat = {
     vaultUnlockSendFailed: 'Não foi possível enviar a senha mestra',
     vaultUnlockTitle: name => `Desbloquear ${name}`,
     vaultUnlockDesc: name =>
-      `O agente quer entrar em um site com um login salvo em ${name}. Informe a sua senha mestra para desbloqueá-lo nesta sessão: ela vai direto para ${name} nesta máquina e nunca é armazenada nem mostrada ao agente.`,
+      `O agente quer entrar em um site com um login salvo em ${name}. Informe a sua senha mestra para desbloque\xE1-lo nesta sess\xE3o: ela vai direto para ${name} nesta m\xE1quina e nunca \xE9 armazenada nem mostrada ao agente.`,
     vaultUnlockPlaceholder: 'Senha mestra',
     vaultUnlockKeepLocked: 'Manter bloqueado',
     vaultUnlockConfirm: 'Desbloquear',
     vaultSaveSendFailed: 'Não foi possível salvar o login',
     vaultSaveTitle: site => `Salvar o seu login de ${site}?`,
     vaultSaveDesc: origin =>
-      `O Hermes chegou a uma página de login em ${origin} e não tem um login para ela. Informe-o uma vez aqui: ele é criptografado nesta máquina e preenchido na página sem que o modelo veja a senha.`,
+      `O Hermes chegou a uma p\xE1gina de login em ${origin} e n\xE3o tem um login para ela. Informe-o uma vez aqui: ele \xE9 criptografado nesta m\xE1quina e preenchido na p\xE1gina sem que o modelo veja a senha.`,
     vaultSaveIdentifierLabel: 'E-mail ou nome de usuário',
     vaultSaveIdentifierPlaceholder: 'voce@exemplo.com.br',
     vaultSavePasswordPlaceholder: 'Senha',
@@ -458,9 +462,9 @@ export const ptChat = {
     vaultSaveDecline: 'Não salvar',
     vaultSaveConfirm: 'Salvar e entrar',
     vaultCodeSendFailed: 'Não foi possível enviar o código',
-    vaultCodeTitle: site => `Código de verificação de ${site}`,
+    vaultCodeTitle: site => `C\xF3digo de verifica\xE7\xE3o de ${site}`,
     vaultCodeDesc: site =>
-      `${site} está pedindo um código de uso único (SMS, e-mail ou app autenticador). Informe-o aqui e o Hermes o digita na página; o modelo nunca o vê.`,
+      `${site} est\xE1 pedindo um c\xF3digo de uso \xFAnico (SMS, e-mail ou app autenticador). Informe-o aqui e o Hermes o digita na p\xE1gina; o modelo nunca o v\xEA.`,
     vaultCodeLabel: 'Código',
     vaultCodeFootnote:
       'Dica: salve a chave do autenticador junto com este login em Configurações → Senhas e logins, e o Hermes digita os códigos por você.',
@@ -472,9 +476,6 @@ export const ptChat = {
     sessionUnavailable: 'Sessão indisponível',
     createSessionFailed: 'Não foi possível criar uma nova sessão',
     promptFailed: 'Falha no prompt',
-    staleSessionTitle: 'Chat desatualizado',
-    staleSessionBody:
-      'Esta janela estava atrás de outra visualização do mesmo chat. As mensagens mais recentes foram carregadas. Envie de novo se ainda quiser.',
     providerCredentialRequired: 'Adicione uma credencial de provedor antes de enviar sua primeira mensagem.',
     emptySlashCommand: 'comando barra (slash) vazio',
     slashCommandIgnoredTitle: 'Comando não enviado',
@@ -533,7 +534,7 @@ export const ptChat = {
     modelSwitchFailed: 'Falha ao trocar o modelo',
     modelSwitchKeepLabel: 'Manter o modelo atual',
     modelSwitchStaleNotice: 'A seleção mudou: a troca de modelo não foi aplicada.',
-    hydrationSyncing: profile => `Sincronizando ${profile}…`,
+    hydrationSyncing: profile => `Sincronizando ${profile}\u2026`,
     sessionExported: 'Sessão exportada',
     sessionExportFailed: 'Não foi possível exportar a sessão',
     imageSaved: 'Imagem salva',
@@ -628,8 +629,8 @@ export const ptChat = {
       signIn: 'Entrar',
       view: 'Visualizar',
       disable: 'Desativar',
-      disabledMessage: name => `MCP ${name} desativado. Reative-o quando quiser em Capacidades → MCP.`,
-      disableFailed: name => `Não foi possível desativar o MCP ${name}.`
+      disabledMessage: name => `MCP ${name} desativado. Reative-o quando quiser em Capacidades \u2192 MCP.`,
+      disableFailed: name => `N\xE3o foi poss\xEDvel desativar o MCP ${name}.`
     },
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT precisa de ELEVENLABS_API_KEY.',
@@ -679,15 +680,15 @@ export const ptChat = {
       liveError: 'Voz ao vivo',
       liveDelegationFailed: 'Não foi possível entregar o pedido ao Hermes',
       liveUnavailable: reason =>
-        `O chat por voz GPT-Live não está disponível: ${reason}. Usando fala para texto no lugar.`
+        `O chat por voz GPT-Live n\xE3o est\xE1 dispon\xEDvel: ${reason}. Usando fala para texto no lugar.`
     },
     native: {
       approvalTitle: 'Aprovação necessária',
-      approvalTitleNamed: session => `Aprovação necessária — ${session}`,
+      approvalTitleNamed: session => `Aprova\xE7\xE3o necess\xE1ria \u2014 ${session}`,
       approveAction: 'Aprovar',
       rejectAction: 'Rejeitar',
       inputTitle: 'Entrada necessária',
-      inputTitleNamed: session => `Entrada necessária — ${session}`,
+      inputTitleNamed: session => `Entrada necess\xE1ria \u2014 ${session}`,
       inputBody: 'O Hermes está aguardando sua resposta.',
       turnDoneTitle: 'Hermes terminou',
       turnDoneBody: '',
@@ -699,5 +700,5 @@ export const ptChat = {
   }
 } satisfies Pick<
   TranslationOverrides,
-  'composer' | 'statusStack' | 'prompts' | 'desktop' | 'sendDiagnostics' | 'notifications'
+  'butterbar' | 'composer' | 'statusStack' | 'prompts' | 'desktop' | 'sendDiagnostics' | 'notifications'
 >

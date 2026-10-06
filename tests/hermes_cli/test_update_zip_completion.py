@@ -253,7 +253,7 @@ def test_zip_build_failure_after_swap_is_a_followup(zip_update, monkeypatch, rou
     import pm
 
     state = zip_update
-    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (route == "direct", ["git"], False))
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (route == "direct", ["git"], False))
     monkeypatch.setattr(main, "_warn_orphaned_update_autostashes", lambda *args: None)
     monkeypatch.setattr(update_cmd, "_should_zip_fallback_on_update_error", lambda exc: True)
 
@@ -285,7 +285,7 @@ def test_zip_dependency_sync_failure_after_swap_is_a_followup(zip_update, monkey
     from hermes_cli.venv_sync import completion_pending_path
 
     state = zip_update
-    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (route == "direct", ["git"], False))
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (route == "direct", ["git"], False))
     monkeypatch.setattr(main, "_warn_orphaned_update_autostashes", lambda *args: None)
     monkeypatch.setattr(update_cmd, "_should_zip_fallback_on_update_error", lambda exc: True)
 
@@ -324,7 +324,7 @@ def test_ctrl_c_after_the_swap_reports_the_new_code_not_a_failure(zip_update, mo
     # The tree is new, so the run is ``interrupted`` (never "failed" / "still on the previous
     # version") and the message says what is owed; a non-zero exit for an interrupt is fine.
     state = zip_update
-    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (True, ["git"], False))
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (True, ["git"], False))
     monkeypatch.setattr(main, "_warn_orphaned_update_autostashes", lambda *args: None)
 
     def interrupted(request):

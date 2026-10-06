@@ -14405,6 +14405,24 @@
             ],
             "default": null,
             "title": "Heartbeat"
+          },
+          "capabilities": {
+            "additionalProperties": true,
+            "title": "Capabilities",
+            "type": "object"
+          },
+          "protocol": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Protocol"
           }
         },
         "required": [
@@ -16606,6 +16624,18 @@
             ],
             "default": null,
             "title": "Error Surface"
+          },
+          "client_turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Turn Id"
           }
         },
         "title": "InflightTurn",
@@ -26564,6 +26594,18 @@
             "default": null,
             "title": "Voice Context"
           },
+          "client_turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Turn Id"
+          },
           "title_preview": {
             "anyOf": [
               {
@@ -26752,6 +26794,18 @@
             ],
             "default": null,
             "title": "Turn Isolation"
+          },
+          "client_turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Turn Id"
           }
         },
         "title": "PromptSubmitResult",

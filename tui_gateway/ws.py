@@ -361,12 +361,14 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         skin_payload = await asyncio.to_thread(server.resolve_skin)
         # change_events: this backend broadcasts pet/cron/sessions.changed, so clients can demote legacy
         # polls to backstops. replay_epoch lets reconnecting clients detect a backend restart and reset
-        # their per-session seq watermarks (event_replay).
+        # their per-session seq watermarks (event_replay). capabilities/protocol: capability
+        # negotiation so a mobile client can tell "no recovery guarantee" from guaranteed
+        # recovery (#130702).
+        from tui_gateway.gateway_capabilities import gateway_ready_payload
         ready_ok = await transport.write_async({
             "jsonrpc": "2.0", "method": "event",
-            "params": {"type": "gateway.ready", "payload": {
-                "skin": skin_payload, "change_events": True, "heartbeat": True, "replay_epoch": replay_epoch(),
-            }},
+            "params": {"type": "gateway.ready", "payload": gateway_ready_payload(
+                skin_payload, replay_epoch(), heartbeat=True)},
         })
         if ready_ok:
             # Live-apply skins Hermes activates mid-conversation, and track this peer for session-less

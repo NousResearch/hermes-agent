@@ -4,7 +4,8 @@ All HttpOnly, ``SameSite=Lax`` unless noted, Path = proxy prefix or /: ``hermes_
 (access token; Max-Age = token TTL), ``hermes_session_rt`` (rotating refresh token; written only
 when the provider returned one, always cleared on logout/expiry), ``hermes_session_provider``
 (non-secret routing hint so an RT is not handed to the wrong provider), ``hermes_session_pkce``
-(PKCE state + CSRF nonce + provider hint, 10 min; ``SameSite=None; Secure`` over HTTPS because it
+(PKCE state + CSRF nonce + provider hint, 30 min — one interactive login that may wait on an
+emailed code, #126061; ``SameSite=None; Secure`` over HTTPS because it
 is set on the /auth/login 302 and must survive the cross-site redirect chain — Chromium drops Lax
 cookies set on such a 302, crbug 40508226), ``hermes_sso_attempt`` (auto-SSO loop guard, 60 s).
 ``Secure`` only when ``request.url.scheme`` is https. Cookie-prefix hardening per
@@ -36,7 +37,11 @@ _NAME_VARIANTS = ("__Host-", "__Secure-", "")
 # RT cookie lifetime is a generous browser-side upper bound; the provider's own RT TTL is the
 # real authority (an expired RT -> RefreshExpiredError -> re-login).
 _RT_MAX_AGE = 30 * 24 * 60 * 60
-_PKCE_MAX_AGE = 10 * 60
+# 30 minutes, not 10: IDP flows that wait on an emailed verification code regularly
+# outlive a 10-minute window, and the failure lands as an opaque 400 on /auth/callback
+# (#126061). Widening is cheap — the cookie is single-use, bound to one state, and
+# cleared on callback, so the extra window is not a reusable credential.
+_PKCE_MAX_AGE = 30 * 60
 # Long enough for one portal round trip / back-button; short enough that a user returning later
 # gets a fresh silent attempt rather than a stuck /login.
 _SSO_ATTEMPT_MAX_AGE = 60

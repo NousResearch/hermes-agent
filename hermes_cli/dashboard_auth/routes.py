@@ -173,11 +173,29 @@ def _start_upstream_login(request: Request, p, *, audit_failure: bool, extra_pkc
 
 # --- Public: login page + provider list ------------------------------------
 
+# Server-authored login-page notices, keyed by the ``notice=`` query param the
+# auth routes redirect with. Whitelist-mapped only: an unmapped (attacker-
+# controlled) value renders no notice rather than echoing user input.
+_LOGIN_NOTICES = {
+    "signin_expired": "Your sign-in session expired — please sign in again.",
+    "signin_failed": "Sign-in failed — please try again.",
+}
+
+
+def _login_notice_redirect(request: Request, notice: str) -> RedirectResponse:
+    """Send the browser to the login page with a whitelisted notice instead of parking it
+    on a ``/auth/callback`` URL whose raw 400/JSON body reads as a crash and can only be
+    re-failed by reloading (#126061)."""
+    return RedirectResponse(
+        url=f"{_prefix(request)}/login?notice={notice}", status_code=302)
+
+
 @router.get("/login", name="login_page")
 async def login_page(request: Request) -> HTMLResponse:
     # ``next=`` is set by the gate's redirect but /login is reachable directly.
     next_path = _validate_post_login_target(request.query_params.get("next", ""))
-    return HTMLResponse(render_login_html(next_path=next_path), headers=_NO_STORE)
+    notice = _LOGIN_NOTICES.get(request.query_params.get("notice", ""), "")
+    return HTMLResponse(render_login_html(next_path=next_path, notice=notice), headers=_NO_STORE)
 
 
 @router.get("/api/auth/providers", name="auth_providers")
@@ -320,28 +338,35 @@ async def auth_callback(
     error_description: str = ""):
     pkce_raw = read_pkce_cookie(request)
     if not pkce_raw:
+        # The PKCE cookie expired mid-round-trip (e.g. an emailed verification
+        # code outlived its Max-Age) or was dropped. A 400 JSON here reads as a
+        # crash and parks the browser on a URL that can never succeed on
+        # reload; send the user back to a readable login page instead (#126061).
         _audit(request, AuditEvent.LOGIN_FAILURE, reason="missing_pkce_cookie")
-        raise _http(400, "Missing PKCE state cookie")
+        return _login_notice_redirect(request, "signin_expired")
     # ``next`` and ``broker`` come from the server-set cookie ONLY: the IDP
     # echoes back just code+state, so any such query param is attacker controlled.
     parts = parse_pkce_payload(pkce_raw)
     provider_name = parts.get("provider", "")
     p = get_provider(provider_name)
     if p is None:
-        raise _http(400, f"Unknown provider in cookie: {provider_name!r}")
+        # Same dead-end as a missing cookie, one hop later: the cookie names a
+        # provider this gateway no longer serves (config change / stale cookie).
+        _login_failure(request, provider_name, "unknown_provider")
+        return _login_notice_redirect(request, "signin_expired")
     if error:
         _login_failure(request, provider_name, "idp_error", error=error)
-        raise _http(400, f"OAuth error from provider: {error} ({error_description})")
+        return _login_notice_redirect(request, "signin_failed")
     if not state or state != parts.get("state", ""):
         _login_failure(request, provider_name, "state_mismatch")
-        raise _http(400, "OAuth state mismatch (CSRF check failed)")
+        return _login_notice_redirect(request, "signin_failed")
     try:
         session = p.complete_login(
             code=code, state=state, code_verifier=parts.get("verifier", ""),
             redirect_uri=_redirect_uri(request))
     except InvalidCodeError as e:
         _login_failure(request, provider_name, "invalid_code")
-        raise _http(400, f"Invalid code: {e}")
+        return _login_notice_redirect(request, "signin_failed")
     except ProviderError as e:
         _login_failure(request, provider_name, "provider_unreachable")
         raise _http(503, f"Provider unreachable: {e}")

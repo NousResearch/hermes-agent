@@ -177,6 +177,7 @@ _STATE_BADGES = {"paused": ("[paused]", Colors.YELLOW), "completed": ("[complete
 def cron_list(show_all: bool = False):
     """List all scheduled jobs."""
     from cron.jobs import effective_job_state, list_jobs
+    store_report = _store_unwritable_report()
     jobs = list_jobs(include_disabled=True)
     if not show_all:
         jobs = [
@@ -191,6 +192,8 @@ def cron_list(show_all: bool = False):
         return
 
     _print_banner(f"Scheduled Jobs (profile: {get_active_profile_name()})")
+    if store_report is not None:
+        _print_store_unwritable(store_report, brief=True)
 
     for job in jobs:
         # effective_job_state honours the scheduler flag — never [paused] when enabled=true.
@@ -410,6 +413,29 @@ def _ticker_age_is_fresh(age: Optional[float]) -> bool:
     return age is not None and age <= TICKER_INTERVAL_SECONDS * 3 + 20
 
 
+def _store_unwritable_report() -> Optional[dict]:
+    """Probe the active cron store (never a marker inside it): ``None`` when it accepts writes.
+    Runs before any job read: loading jobs re-secures the dir, which can mask a mode problem."""
+    from cron.jobs import _current_cron_store, list_jobs
+    from cron.store_health import probe_report
+    report = probe_report(_current_cron_store().cron_dir)
+    if report is not None:
+        report["skipped"] = sum(1 for j in list_jobs(include_disabled=False)
+                                if (_next_run_overdue_seconds(j.get("next_run_at")) or 0) > 0)
+    return report
+
+
+def _print_store_unwritable(report: dict, *, brief: bool = False) -> None:
+    if brief:  # `cron list`: one line
+        print(color(f"⚠ Cron store {report['store']} is NOT writable ({report['error']}) — scheduled jobs "
+                    f"are being skipped; {report['fix']}. See `hermes cron status`.", Colors.RED))
+        return
+    print(color("⚠ Cron store is NOT writable — scheduled jobs are being skipped", Colors.RED))
+    print(color(f"  {report['store']}: {report['error']} (last successful write {report['since']}; "
+                f"{report['skipped']} due run(s) not fired)", Colors.RED))
+    print(color(f"  Fix: {report['fix']}. Each due job then fires once on the next tick.", Colors.YELLOW))
+
+
 def _print_ticker_health(pids: list, restart_command: str = "hermes gateway restart") -> None:
     """Report builtin-ticker liveness for a gateway process known to be alive.
 
@@ -480,6 +506,9 @@ def cron_status():
     from hermes_cli.profiles import get_active_profile_name
     print()
 
+    if (store_report := _store_unwritable_report()) is not None:
+        _print_store_unwritable(store_report)
+        print()
     provider = _active_cron_provider_name()
     if provider != "builtin":
         # External providers fire via webhook: no ticker thread / heartbeat file by design, so

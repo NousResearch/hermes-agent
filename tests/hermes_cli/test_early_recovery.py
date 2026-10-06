@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -119,6 +120,49 @@ def test_pm_commands_and_healthy_startup_do_not_repair(tmp_path, monkeypatch):
 def test_pid_liveness_recognizes_current_process():
     assert er._pid_is_running(os.getpid()) is True
     assert er._pid_is_running(0) is False
+
+
+@pytest.mark.platforms("posix")
+def test_pid_liveness_counts_a_zombie_as_dead():
+    """A crashed stage lingering unreaped must not read as a live owner.
+
+    ``os.kill(pid, 0)`` succeeds for a zombie, so before the state probe a
+    crashed updater under an un-reaping parent pinned every lock keyed on its
+    pid (update marker, recovery marker) for the full age ceiling.
+    """
+    pid = os.fork()
+    assert pid >= 0
+    if pid == 0:
+        os._exit(0)  # noqa: P111 — child exits without running pytest teardown
+
+    # Do NOT wait() yet: the child must linger unreaped (a zombie). Poll until
+    # the state probe actually reports 'Z' so the assertion can't race the exit.
+    became_zombie = False
+    for _ in range(40):
+        state = er._process_state(pid)
+        if state is not None and state.upper().startswith("Z"):
+            became_zombie = True
+            break
+        time.sleep(0.05)
+    assert became_zombie, "child never reached zombie state on this platform"
+
+    assert er._pid_is_running(pid) is False, "a zombie is not a live owner"
+
+    os.waitpid(pid, 0)  # reap so the test leaks no children
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_process_state_reports_a_letter_for_a_live_pid():
+    state = er._process_state(os.getpid())
+    assert state is not None and len(state) == 1, "a live pid must expose a state"
+    assert not state.upper().startswith("Z"), "this process is not a zombie"
+
+
+@pytest.mark.platforms("posix")
+def test_process_state_is_none_for_a_dead_pid():
+    state = er._process_state(4294967294)
+    assert state is None, "an unprobeable pid must degrade to None (unknown)"
+
 
 def test_marker_owner_liveness_uses_recorded_pid(tmp_path, monkeypatch):
     marker = tmp_path / ".update-incomplete"

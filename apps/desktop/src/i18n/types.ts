@@ -8,6 +8,9 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
+import type { AuxTaskCopyMap } from './types_aux_tasks'
+import type { ModelMenuTranslations } from './types_model_menu'
+
 /** The locales compiled into the app (`TRANSLATIONS`). */
 export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
 
@@ -60,11 +63,6 @@ interface ModeOptionCopy {
   description: string
 }
 
-interface AuxTaskCopy {
-  label: string
-  hint: string
-}
-
 export interface Translations {
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: {
@@ -109,65 +107,6 @@ export interface Translations {
   intro: {
     stock: Record<string, string[]>
     custom: (label: string) => string[]
-  }
-  catalog: {
-    add: string
-    added: string
-    discover: string
-    featured: string
-    explorePlugins: string
-    exploreSkills: string
-    mostStarred: string
-    newest: string
-    recentlyUpdated: string
-    alphabetical: string
-    sortBy: string
-    seeAll: string
-    related: string
-    tags: string
-    screenshots: string
-    listView: string
-    cardView: string
-    installTitle: (name: string) => string
-    installDescription: string
-    installTo: string
-    thisComputer: string
-    installing: string
-    installComplete: (name: string) => string
-    destinationChanged: string
-    installed: string
-    searchSkills: string
-    searchPlugins: string
-    allSources: string
-    allCategories: string
-    about: string
-    author: string
-    source: string
-    category: string
-    version: string
-    platforms: string
-    requires: string
-    tools: string
-    hooks: string
-    middleware: string
-    commands: string
-    license: string
-    addedDate: string
-    updatedDate: string
-    repository: string
-    documentation: string
-    noResults: string
-    tryAnother: string
-    clearFilters: string
-    filters: string
-    loadFailed: string
-    retry: string
-    more: string
-    pinned: string
-    snapshotHint: string
-    installHint: string
-    results: (count: number) => string
-    back: string
   }
   connectors: {
     title: string
@@ -784,6 +723,9 @@ export interface Translations {
     resetConfirm: string
     exportFailed: string
     resetFailed: string
+    pluginPages: Record<'agentSettings' | 'blurb' | 'empty' | 'manage' | 'missing', string> & {
+      pageCount: (n: number) => string
+    }
     nav: {
       providers: string
       providerAccounts: string
@@ -802,21 +744,15 @@ export interface Translations {
       billing: string
       notifications: string
       vault: string
+      plugins: string
     }
     plugins: {
       title: string
-      blurb: string
-      count: (n: number) => string
       openFolder: string
       rescan: string
       reveal: string
-      enable: string
-      disable: string
       failed: string
-      empty: string
       kinds: { bundled: string; disk: string; runtime: string }
-      agentHalfMissing: string
-      agentHalfMissingTip: string
       installModal: {
         installFromGit: string
         reviewRepository: string
@@ -974,6 +910,8 @@ export interface Translations {
       hideThreadTimelineDesc: string
       reasoningCollapsedTitle: string
       reasoningCollapsedDesc: string
+      chatTextScaleTitle: string
+      chatTextScaleDesc: string
       uiScaleTitle: string
       uiScaleDesc: (percent: number) => string
       sessionDensityTitle: string
@@ -1201,6 +1139,9 @@ export interface Translations {
       toolsetsWipeConfirm: string
       keepAwakeTitle: string
       keepAwakeDesc: string
+      keepAwakeOff: string
+      keepAwakeWhileWorking: string
+      keepAwakeAlways: string
       disableF12Title: string
       disableF12Desc: string
       alwaysExternalLinksTitle: string
@@ -1475,6 +1416,7 @@ export interface Translations {
       sshErrPlatform: string
       sshErrTimeout: string
       sshErrUpdateRequired: string
+      sshErrInteractiveAuth: string
       sshErrUnknown: string
     }
     keys: {
@@ -1558,6 +1500,8 @@ export interface Translations {
       defaultsLabel: string
       reasoning: string
       reasoningOff: string
+      speed: string
+      speedStandard: string
       defaultsFailed: string
       loadFailed: string
       restartRequired: string
@@ -1572,6 +1516,8 @@ export interface Translations {
       change: string
       autoUseMain: string
       inheritMainEffort: string
+      inheritsFrom: (task: string) => string
+      followTask: (task: string) => string
       providerDefault: string
       fallbackAdd: string
       fallbackEmpty: string
@@ -1582,7 +1528,7 @@ export interface Translations {
       moaAggregator: string
       moaAggregatorBilled: string
       moaReferenceHint: string
-      tasks: Record<string, AuxTaskCopy>
+      tasks: AuxTaskCopyMap
     }
     localModels: {
       connectionChanged: string
@@ -2080,6 +2026,17 @@ export interface Translations {
     }
   }
 
+  skillDeepLink: {
+    installTitle: (name: string) => string
+    installDescription: string
+    installTo: string
+    thisComputer: string
+    installing: string
+    installComplete: (name: string) => string
+    destinationChanged: string
+    installed: string
+    source: string
+  }
   skills: {
     tabSkills: string
     tabToolsets: string
@@ -2168,6 +2125,7 @@ export interface Translations {
         no_interactive_session: string
         version_too_old: string
         missing_app: string
+        unsupported_gpu: string
         unknown: string
       }
       catalogTitle: string
@@ -2204,7 +2162,7 @@ export interface Translations {
         save: string
         saved: (name: string) => string
         saveFailed: (name: string) => string
-        optional: string
+        required: string
         secretSet: string
         secretStoredAs: (env: string) => string
       }
@@ -2540,6 +2498,9 @@ export interface Translations {
     replaceValue: string
     openDocs: string
     clearField: (key: string) => string
+    addListEntry: string
+    removeListEntry: string
+    listEntryPlaceholder: string
     enableAria: (name: string) => string
     disableAria: (name: string) => string
     platformEnabled: (name: string) => string
@@ -3095,6 +3056,7 @@ export interface Translations {
       reveal: string
       copyPath: string
       removeFromSidebar: string
+      createdInPreviousContext: string
       createFailed: string
       staleBackend: string
       deleteConfirm: string
@@ -3277,6 +3239,9 @@ export interface Translations {
     queueStuckBody: string
     queueDroppedTitle: string
     queueDroppedBody: string
+    terminalSelectionMissingTitle: string
+    terminalSelectionMissingBody: string
+    queuedTerminalSelectionExpiredBody: string
     previewUnavailable: string
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string
@@ -3476,6 +3441,7 @@ export interface Translations {
       scopeUncommitted: string
       scopeBranch: string
       scopeLastTurn: string
+      readOnlyScope: string
       commit: string
       commitAndPush: string
       commitPlaceholder: (shortcut: string) => string
@@ -3891,22 +3857,14 @@ export interface Translations {
     windowControls: string
     paneControls: string
     appControls: string
-    modelMenu: {
-      search: string
-      noModels: string
-      editModels: string
-      followDefault: string
-      refreshModels: string
-      fast: string
-      free: string
-      cacheRead: string
-      priceTitle: (input: string, output: string, cache: string) => string
-    }
+    modelMenu: ModelMenuTranslations
     modelOptions: {
       noOptions: string
       options: string
       thinking: string
       fast: string
+      ultrafast: string
+      useStandardSpeed: string
       effort: string
       minimal: string
       low: string
@@ -3970,6 +3928,9 @@ export interface Translations {
       showTerminal: string
       hideTerminal: string
       gateway: string
+      backend: string
+      messagingStopped: string
+      messagingDegraded: (name: string) => string
       gatewayReady: string
       gatewayNeedsSetup: string
       gatewayUnavailable: string
@@ -4089,6 +4050,9 @@ export interface Translations {
     terminalHide: string
     terminalsAria: string
     terminalNew: string
+    terminalReadOnly: string
+    terminalReadOnlyHelp: string
+    terminalOpenInteractive: string
     terminalCloseOthers: string
     terminalCloseAll: string
     addToChat: string
@@ -4096,9 +4060,14 @@ export interface Translations {
 
   preview: {
     tab: string
+    pin: string
+    unpin: string
     closePane: string
     loading: string
     unavailable: string
+    missingTarget: string
+    missingTitle: string
+    missingBody: (label: string) => string
     opening: string
     hide: string
     openPreview: string
@@ -4124,6 +4093,7 @@ export interface Translations {
     editing: string
     unsavedChanges: string
     saveFailed: (message: string) => string
+    saveScopeChanged: string
     diskChangedTitle: string
     diskChangedBody: string
     overwrite: string
@@ -4303,6 +4273,7 @@ export interface Translations {
       branchNewChat: string
       react: string
       dismissError: string
+      responseStopped: string
       /** Layer titles for the structured error card (agent/error_surface.py).
        *  `generic` is the fallback when the backend sent no descriptor. */
       errorLayers: {
@@ -4421,13 +4392,11 @@ export interface Translations {
       placeholder: string
       skip: string
       skipped: string
-      continueLabel: string
+      noAnswer: string
       confirmAndContinueLabel: string
-      answeredBadge: string
+      singleSelectHint: string
+      multiSelectHint: string
       questionProgress: (answered: number, total: number) => string
-      lateAnswer: (question: string, choice: string) => string
-      lateAnswerTip: string
-      lateAnswerHint: string
       notDelivered: string
     }
     catalogInstall: {
@@ -4580,10 +4549,10 @@ export interface Translations {
     sessionUnavailable: string
     createSessionFailed: string
     promptFailed: string
-    staleSessionTitle: string
-    staleSessionBody: string
     providerCredentialRequired: string
     emptySlashCommand: string
+    slashCommandIgnoredTitle: string
+    slashCommandIgnoredBody: string
     desktopCommands: string
     skillCommandsAvailable: (count: number) => string
     warningLine: (message: string) => string
@@ -4644,6 +4613,9 @@ export interface Translations {
     openImage: string
     downloadImage: string
     savingImage: string
+    zoomIn: string
+    zoomOut: string
+    resetZoom: string
     imagePreviewFailed: string
     imageAttach: string
     imageWriteFailed: string

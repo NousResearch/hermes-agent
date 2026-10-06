@@ -16,6 +16,9 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
     from hermes_cli.update_stage import ensure_panel, publish_stage
 
     ensure_panel(root)
+    # An older updater hands off here instead of update_completion._prepare.
+    from hermes_cli.gitlock import convert_treeless_checkout_first
+    convert_treeless_checkout_first(root)
     publish_stage("Updating Python dependencies (PM)")
     from pm import receipt
     from pm.client import ensure_tools_for_sync, sync_venv, venv_is_current

@@ -179,11 +179,13 @@ gateway:
     label_normal: "NORMAL"
     status_fast: "rápido"
     status_normal: "normal"
-    picker_title: "⚡ **Priority Processing**\\n\\nModo actual: `{mode}`\\n\\nElige una opción:"
+    picker_title: "⚡ **Priority Processing**\n\nModo actual: `{mode}`\n\nElige una opción:"
     choice_fast: "fast — Priority Processing activado"
     choice_normal: "normal — procesamiento estándar"
     choice_auto: "auto — rápido en los primeros segundos de cada turno"
     choice_cold: "cold — rápido solo en el primer turno de una sesión"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, precio x6)"
+    ultrafast_not_supported: "⚡ Ultrafast solo está disponible para GPT-6 Astra (modelo actual: `{model}`)."
   footer:
     status: "📎 Pie de ejecución: **{state}**\nCampos: `{fields}`\nPlataforma: `{platform}`"
     usage: "Uso: `/footer [on|off|status]`"
@@ -280,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ `/reasoning reset --global` no es compatible. Usa `/reasoning <level> --global` para cambiar el valor global por defecto."
     reset_done: "🧠 ✓ Anulación de razonamiento de la sesión borrada; volviendo a la configuración global."
     unknown_arg: "⚠️ Argumento desconocido: `{arg}`\n\n**Niveles válidos:** none, minimal, low, medium, high, xhigh, max, ultra\n**Visualización:** show, hide\n**Persistir:** añade `--global` para guardar más allá de esta sesión"
-    picker_title: "🧠 **Ajustes de razonamiento**\\n\\n**Esfuerzo:** `{level}`\\n**Alcance:** {scope}\\n**Visualización:** {display}\\n\\nElige una opción:"
+    picker_title: "🧠 **Ajustes de razonamiento**\n\n**Esfuerzo:** `{level}`\n**Alcance:** {scope}\n**Visualización:** {display}\n\nElige una opción:"
     choice_none: "none — desactivar razonamiento"
     choice_reset: "reset — borrar el ajuste de sesión"
     choice_show: "mostrar razonamiento en respuestas"
@@ -653,6 +655,7 @@ gateway:
     cancelled: "↩️ Aclaración cancelada — tu mensaje se tratará como un mensaje de seguimiento."
     expired: "⏳ Esta pregunta expiró — envía una nueva solicitud."
     native_stream_placeholder: "💬 Esperando tu elección..."
+    skip_hint: 'Responde "skip" para omitir esta pregunta.'
   errors:
     rate_limited: "⏱️ El servicio del modelo de IA está limitando la tasa de solicitudes. Espera un momento y luego usa /retry."
     auth_failed: "⚠️ Falló el inicio de sesión en el servicio del modelo de IA. Usa /login para iniciar sesión de nuevo, o pide a quien administra este bot que ejecute `hermes doctor` en el host."
@@ -1445,8 +1448,6 @@ platform:
   irc:
     quit_message: "Hermes Agent se está apagando"
     standalone_quit: "entregado"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Aprobar una vez"
     confirm_always_approve: "Aprobar siempre"
@@ -1597,7 +1598,7 @@ slash:
   reasoning:
     description: "Gestionar el esfuerzo de razonamiento y su visualización"
   fast:
-    description: "Modo rápido: OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Modo rápido: OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Mostrar o cambiar el skin/tema de la interfaz"
   indicator:
@@ -2032,7 +2033,6 @@ cli:
     clarify_other_type_below: "Otra (escríbela abajo)"
     clarify_other_type_answer: "Otra (escribe tu respuesta)"
     clarify_guidance: "Escribe tu respuesta en el prompt de abajo y luego presiona Enter."
-    clarify_question_truncated: "… (pregunta truncada)"
     picker_title_provider: "⚙ Selector de modelos — Elige un proveedor"
     picker_provider_row_one: "{name} ({count} modelo)"
     picker_provider_row_other: "{name} ({count} modelos)"
@@ -2077,7 +2077,6 @@ cli:
     hint_vault_username: "visible mientras escribes · Enter para continuar"
     hint_clarify_freetext: "escribe tu respuesta y presiona Enter"
     hint_clarify_batch: "↑/↓ para seleccionar, Enter para fijar, Tab siguiente pregunta"
-    hint_clarify_choice: "↑/↓ para seleccionar, Enter para confirmar"
     hint_input_disabled: "entrada desactivada temporalmente"
     hint_input_queues: "la entrada sigue activa; Enter pone en cola"
     hint_command_running: "{frame} comando en curso · {detail}"
@@ -2260,7 +2259,6 @@ cli:
   clarify:
     bell_context: "aclaración"
     label: "Aclarar"
-    timed_out_agent_decides: "(la aclaración expiró tras {timeout}s — el agente decidirá)"
     timed_out_locked_answers: "(la aclaración expiró tras {timeout}s — se devolvieron las respuestas fijadas)"
   connect:
     bell_context: "configuración de conexión"
@@ -2355,6 +2353,7 @@ cli:
     removed: "Se eliminó el elemento {index} de la cola: {preview}"
     item_not_found: "No se encontró el elemento {index} de la cola. Tamaño actual: {size}"
     usage_edit: "Uso: /queue edit <número> <nuevo prompt>"
+    usage_remove: "Uso: /queue rm <número>"
     updated: "Se actualizó el elemento {index} de la cola: {preview}"
     usage_move: "Uso: /queue move <desde> <hasta>"
     move_out_of_range: "Movimiento fuera de rango en la cola. Tamaño actual: {size}"
@@ -2653,7 +2652,9 @@ cli:
       feature_generic: "Modo rápido"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Uso: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast solo está disponible para GPT-6 Astra (modelo actual: {model})."
+      usage: "Uso: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} establecido en {value} {scope}"
     hatch:
@@ -2718,6 +2719,7 @@ cli:
       restored: "Estado restaurado desde: {snapshot_id}"
       restart_recommended: "Se recomienda reiniciar los procesos del gateway/dashboard para que apliquen los cambios de state.db."
       not_found: "Instantánea no encontrada: {snapshot_id}"
+      restore_incomplete: "La instantánea {snapshot_id} no se restauró por completo; algunos archivos fueron rechazados (consulta los registros)"
       usage_prune: "Uso: /snapshot prune [keep-count]"
       pruned: "Se eliminaron {deleted} instantánea(s) antigua(s) (conservando {keep})."
     export:
@@ -3285,6 +3287,7 @@ cli:
     shallow_clone_keeping: "⚠ Clon superficial — no se puede verificar el estado del push, se conserva: {path}"
     next_session_deepens: "La próxima sesión `hermes -w` profundiza el clon y elimina automáticamente los worktrees fusionados."
     unpushed_keeping: "⚠ El worktree tiene commits sin push, se conserva: {path}"
+    uncommitted_keeping: "⚠ El worktree tiene cambios sin commit, se conserva: {path}"
     clean_up_manually: "Para limpiar manualmente: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree limpiado: {path}"
 display:
@@ -3671,7 +3674,7 @@ tips:
   t197: "El guardado de trayectorias (--save-trajectories) captura trazas completas de uso de herramientas para entrenar modelos."
   t198: "Tres tipos de plugin: generales (herramientas/hooks), proveedores de memoria y motores de contexto."
   t199: "hermes plugins install owner/repo instala plugins directamente desde GitHub."
-  t200: "Proveedores de memoria externos: Honcho, OpenViking y Mem0 vienen incluidos; Hindsight y otros vía hermes plugins install."
+  t200: "Proveedores de memoria externos: OpenViking y Mem0 vienen incluidos; Honcho, Hindsight y otros vía hermes plugins install."
   t201: "Los hooks de plugin incluyen pre/post_tool_call, pre/post_llm_call y transform_terminal_output para canonicalizar la salida."
   t202: "El caché de prompts (Anthropic) reduce costos reutilizando prefijos del prompt del sistema ya cacheados."
   t203: "El agente genera los títulos de sesión automáticamente en un hilo en segundo plano: sin impacto en la latencia."

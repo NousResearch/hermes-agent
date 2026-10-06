@@ -9,7 +9,9 @@ import errno
 import hashlib
 import os
 from pathlib import Path
+import shutil
 import stat
+import sys
 import tempfile
 import time
 
@@ -80,3 +82,42 @@ def durable_write_bytes(path: Path, data: bytes) -> None:
                 os.close(directory)
     finally:
         Path(temporary).unlink(missing_ok=True)
+
+
+#: A handle still open inside the tree. Windows reports antivirus and indexer scans of freshly
+#: written files this way (WinError 5 and 32 both surface as EACCES) and they clear in moments;
+#: a missing source or an occupied destination never does, so those raise at once.
+_HELD_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EBUSY})
+_HELD_RETRY_DELAYS = (0.1, 0.2, 0.4, 0.8, 1.6)
+
+
+def retry_held(operation):
+    """Run a rename-like mutation, riding out a transient Windows hold (~3s) before raising."""
+    for delay in (*_HELD_RETRY_DELAYS, None):
+        try:
+            return operation()
+        except OSError as error:
+            if delay is None or error.errno not in _HELD_ERRNOS:
+                raise
+            time.sleep(delay)
+
+
+def remove_tree(path: Path) -> None:
+    """``shutil.rmtree`` that clears a Windows read-only attribute and retries that one unlink.
+
+    Windows refuses to unlink read-only files (PortableGit ships ``etc/hosts`` read-only), and no
+    retry clears that bit. Every other failure, and every POSIX failure, raises as plain rmtree
+    would: a POSIX permission error is about the parent directory, and chmodding the path there
+    would follow a symlink out of the tree. Lives here, not in ``hermes_cli``: PM installs run
+    before the rest of the tree exists (the Docker toolchain stage copies only ``pm/``).
+    """
+    def _retry_writable(func, failed, error):
+        error = error[1] if isinstance(error, tuple) else error
+        if os.name != "nt" or func not in (os.unlink, os.rmdir) or not isinstance(error, PermissionError):
+            raise error
+        # Windows >= 3.13 chmod follows links; the attribute to clear is the link's own.
+        os.chmod(failed, stat.S_IWRITE, **({"follow_symlinks": False} if os.chmod in os.supports_follow_symlinks else {}))
+        func(failed)
+
+    handler = {"onexc": _retry_writable} if sys.version_info >= (3, 12) else {"onerror": _retry_writable}
+    shutil.rmtree(path, **handler)

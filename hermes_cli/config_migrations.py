@@ -503,8 +503,8 @@ def _migrate_to_38(results: Dict[str, Any], quiet: bool) -> None:
     _persist_migration(config)
     message = (
         "Removed legacy Relay plugin from plugins.enabled: "
-        f"{', '.join(removed)}. Configure native Relay plugins with "
-        "HERMES_NEMO_RELAY_PLUGINS_TOML.")
+        f"{', '.join(removed)}. Configure a standard user or system Relay plugins.toml, or use "
+        "HERMES_NEMO_RELAY_PLUGINS_TOML for an explicit user-file override.")
     results["warnings"].append(message)
     if not quiet:
         print(f"  ⚠ {message}")

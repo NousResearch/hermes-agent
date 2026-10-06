@@ -179,11 +179,13 @@ gateway:
     label_normal: "ЗВИЧАЙНИЙ"
     status_fast: "швидкий"
     status_normal: "звичайний"
-    picker_title: "⚡ **Priority Processing**\\n\\nПоточний режим: `{mode}`\\n\\nОберіть варіант:"
+    picker_title: "⚡ **Priority Processing**\n\nПоточний режим: `{mode}`\n\nОберіть варіант:"
     choice_fast: "fast — Priority Processing увімкнено"
     choice_normal: "normal — стандартна обробка"
     choice_auto: "auto — швидко в перші секунди кожного ходу"
     choice_cold: "cold — швидко лише на першому ході сесії"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, ціна ×6)"
+    ultrafast_not_supported: "⚡ Ultrafast доступний лише для GPT-6 Astra (поточна модель: `{model}`)."
   footer:
     status: "📎 Нижній колонтитул середовища: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"
     usage: "Використання: `/footer [on|off|status]`"
@@ -280,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ `/reasoning reset --global` не підтримується. Використовуйте `/reasoning <level> --global`, щоб змінити глобальне значення за замовчуванням."
     reset_done: "🧠 ✓ Перевизначення мислення для сеансу скинуто; повернення до глобальної конфігурації."
     unknown_arg: "⚠️ Невідомий аргумент: `{arg}`\n\n**Дійсні рівні:** none, minimal, low, medium, high, xhigh, max, ultra\n**Показ:** show, hide\n**Зберегти:** додайте `--global`, щоб зберегти поза цим сеансом"
-    picker_title: "🧠 **Налаштування мислення**\\n\\n**Зусилля:** `{level}`\\n**Область:** {scope}\\n**Показ:** {display}\\n\\nОберіть варіант:"
+    picker_title: "🧠 **Налаштування мислення**\n\n**Зусилля:** `{level}`\n**Область:** {scope}\n**Показ:** {display}\n\nОберіть варіант:"
     choice_none: "none — вимкнути мислення"
     choice_reset: "reset — скинути перевизначення сесії"
     choice_show: "показувати мислення у відповідях"
@@ -653,6 +655,7 @@ gateway:
     cancelled: "↩️ Уточнення скасовано — ваше повідомлення буде оброблено як продовження."
     expired: "⏳ Термін цього запиту минув — надішліть новий запит."
     native_stream_placeholder: "💬 Очікую на ваш вибір..."
+    skip_hint: 'Відповідайте «skip», щоб пропустити це питання.'
   errors:
     rate_limited: "⏱️ Сервіс AI-моделі обмежує частоту запитів. Зачекайте трохи, а потім скористайтеся /retry."
     auth_failed: "⚠️ Не вдалося ввійти в сервіс AI-моделі. Скористайтеся /login, щоб увійти знову, або попросіть того, хто адмініструє цього бота, виконати `hermes doctor` на хості."
@@ -1445,8 +1448,6 @@ platform:
   irc:
     quit_message: "Hermes Agent завершує роботу"
     standalone_quit: "доставлено"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Схвалити один раз"
     confirm_always_approve: "Завжди схвалювати"
@@ -1597,7 +1598,7 @@ slash:
   reasoning:
     description: "Керувати рівнем зусиль міркування та його показом"
   fast:
-    description: "Швидкий режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Швидкий режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Показати або змінити оформлення (тему) інтерфейсу"
   indicator:
@@ -2032,7 +2033,6 @@ cli:
     clarify_other_type_below: "Інше (введіть нижче)"
     clarify_other_type_answer: "Інше (введіть свою відповідь)"
     clarify_guidance: "Введіть відповідь у полі нижче та натисніть Enter."
-    clarify_question_truncated: "… (питання скорочено)"
     picker_title_provider: "⚙ Вибір моделі — виберіть провайдера"
     picker_provider_row_one: "{name} ({count} модель)"
     picker_provider_row_other: "{name} ({count} моделей)"
@@ -2077,7 +2077,6 @@ cli:
     hint_vault_username: "видно під час введення · Enter — продовжити"
     hint_clarify_freetext: "введіть відповідь і натисніть Enter"
     hint_clarify_batch: "↑/↓ — вибрати, Enter — зафіксувати, Tab — наступне питання"
-    hint_clarify_choice: "↑/↓ — вибрати, Enter — підтвердити"
     hint_input_disabled: "введення тимчасово вимкнено"
     hint_input_queues: "введення активне; Enter додає в чергу"
     hint_command_running: "{frame} команда виконується · {detail}"
@@ -2260,7 +2259,6 @@ cli:
   clarify:
     bell_context: "уточнення"
     label: "Уточнення"
-    timed_out_agent_decides: "(час на уточнення вийшов через {timeout} с — агент вирішить сам)"
     timed_out_locked_answers: "(час на уточнення вийшов через {timeout} с — повернено зафіксовані відповіді)"
   connect:
     bell_context: "налаштування підключення"
@@ -2355,6 +2353,7 @@ cli:
     removed: "Видалено елемент черги {index}: {preview}"
     item_not_found: "Елемент черги {index} не знайдено. Поточний розмір: {size}"
     usage_edit: "Використання: /queue edit <number> <new prompt>"
+    usage_remove: "Використання: /queue rm <number>"
     updated: "Оновлено елемент черги {index}: {preview}"
     usage_move: "Використання: /queue move <from> <to>"
     move_out_of_range: "Переміщення в черзі поза межами діапазону. Поточний розмір: {size}"
@@ -2653,7 +2652,9 @@ cli:
       feature_generic: "Швидкий режим"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Використання: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast доступний лише для GPT-6 Astra (поточна модель: {model})."
+      usage: "Використання: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature}: встановлено {value} {scope}"
     hatch:
@@ -2718,6 +2719,7 @@ cli:
       restored: "Стан відновлено з: {snapshot_id}"
       restart_recommended: "Рекомендовано перезапустити процеси шлюзу та панелі керування, щоб вони підхопили зміни state.db."
       not_found: "Знімок не знайдено: {snapshot_id}"
+      restore_incomplete: "Знімок {snapshot_id} відновлено не повністю: деякі файли відхилено (див. журнали)"
       usage_prune: "Використання: /snapshot prune [keep-count]"
       pruned: "Видалено старих знімків: {deleted} (залишено {keep})."
     export:
@@ -3285,6 +3287,7 @@ cli:
     shallow_clone_keeping: "⚠ Неглибокий клон — неможливо перевірити стан push, залишаємо: {path}"
     next_session_deepens: "Наступний сеанс `hermes -w` поглибить клон і автоматично видалить злиті робочі дерева."
     unpushed_keeping: "⚠ У робочому дереві є невідправлені коміти, залишаємо: {path}"
+    uncommitted_keeping: "⚠ У робочому дереві є незафіксовані зміни, залишаємо: {path}"
     clean_up_manually: "Щоб очистити вручну: git worktree remove --force {path}"
     cleaned_up: "✓ Робоче дерево очищено: {path}"
 display:
@@ -3671,7 +3674,7 @@ tips:
   t197: "Збереження траєкторій (--save-trajectories) фіксує повні сліди використання інструментів для навчання моделей."
   t198: "Три типи плагінів: загальні (інструменти та хуки), провайдери пам'яті та контекстні рушії."
   t199: "hermes plugins install owner/repo встановлює плагіни безпосередньо з GitHub."
-  t200: "Зовнішні провайдери пам'яті: Honcho, OpenViking, Mem0 вбудовані; Hindsight та інші — через hermes plugins install."
+  t200: "Зовнішні провайдери пам'яті: OpenViking, Mem0 вбудовані; Honcho, Hindsight та інші — через hermes plugins install."
   t201: "Хуки плагінів включають pre/post_tool_call, pre/post_llm_call і transform_terminal_output для канонізації виводу."
   t202: "Кешування промптів (Anthropic) знижує витрати, повторно використовуючи кешовані префікси системного промпту."
   t203: "Агент генерує назви сеансів у фоновому потоці — без жодного впливу на затримку."

@@ -103,6 +103,15 @@ def _str_records(entries: Any, keys: tuple[str, ...], *, pid: bool = False) -> l
     return records
 
 
+def _launcher_correlation_id() -> Optional[str]:
+    """Correlation id handed in by an external launcher, or None.
+
+    Desktop's managed SSH update exports ``HERMES_UPDATE_CORRELATION_ID`` and
+    only accepts a receipt whose ``correlation_id`` equals it. This is separate
+    from ``update_id``, which stays the CLI's own id for pm sync receipts."""
+    return os.environ.get("HERMES_UPDATE_CORRELATION_ID", "").strip() or None
+
+
 class UpdateReceipt:
     """Collects the observable facts of one ``hermes update`` run."""
 
@@ -118,6 +127,7 @@ class UpdateReceipt:
         # (pm.receipt captures it via the _correlation ContextVar).
         self.correlation_id = uuid.uuid4().hex
         self.data["update_id"] = self.correlation_id
+        self.data["correlation_id"] = _launcher_correlation_id()
 
     def step(self, name: str, ok: bool, detail: str = "") -> None:
         self.data["steps"].append({"name": name, "ok": bool(ok), "detail": detail, "at": _utc_now_iso()})
@@ -201,6 +211,8 @@ def begin_update_receipt(*, previous: dict | None = None, correlation_id: str | 
             receipt.data.update(copy.deepcopy(previous))
         receipt.correlation_id = correlation_id or receipt.correlation_id
         receipt.data.update(update_id=receipt.correlation_id, outcome="running", finished_at=None)
+        # A handoff receipt from an older interpreter may predate the field.
+        receipt.data["correlation_id"] = receipt.data.get("correlation_id") or _launcher_correlation_id()
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not start update receipt: %s", exc)
         return

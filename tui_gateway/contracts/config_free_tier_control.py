@@ -113,17 +113,21 @@ method("config.set", params=ConfigSetParams, result=ConfigSetResult,
 
 class SetupStatusResult(Result):
     """``provider_configured`` is the loose answer; the boot record's fields (``ready``,
-    ``free_tier``, ``other_providers``, ``inference_provider``) ride along on the launch profile.
-    An unknown ``profile`` answers ``ok=False`` + ``error``."""
+    ``free_tier_account``, ``free_tier_route``, ``other_providers``, ``inference_provider``) ride along
+    on the launch profile. An unknown ``profile`` answers ``ok=False`` + ``error``."""
 
     provider_configured: bool | None = None
     ready: bool | None = None
-    free_tier: bool | None = None
+    free_tier_account: bool | None = None
+    free_tier_route: bool | None = None
     other_providers: bool | None = None
     inference_provider: str | None = None
     profile: str | None = None
     ok: bool | None = None
     error: str | None = None
+    error_code: str | None = None
+    retryable: bool | None = None
+    retry_after: int | None = None
 
 
 method("setup.status", params=ProfileParams, result=SetupStatusResult,
@@ -135,7 +139,7 @@ class SetupRuntimeCheckParams(ProfileParams):
 
 
 class SetupRuntimeCheckResult(Result):
-    """``ok=False`` + ``error`` when the resolved model can't be served; ``free_tier`` says the
+    """``ok=False`` + ``error`` when the resolved model can't be served; ``free_tier_route`` says the
     selected route is the welcome host."""
 
     ok: bool
@@ -143,7 +147,7 @@ class SetupRuntimeCheckResult(Result):
     model: str | None = None
     source: str | None = None
     error: str | None = None
-    free_tier: bool | None = None
+    free_tier_route: bool | None = None
     profile: str | None = None
 
 
@@ -179,7 +183,7 @@ method("diagnostics.share_nous", params=DiagnosticsShareNousParams, result=Diagn
 
 class FreeTierStatusResult(Result):
     """``available`` = an identity exists AND the tier is on; whether inference runs on it is
-    ``setup.runtime_check.free_tier``'s question."""
+    ``setup.runtime_check.free_tier_route``'s question."""
 
     has_guest: bool
     enabled: bool
@@ -187,6 +191,10 @@ class FreeTierStatusResult(Result):
     notice_pending: bool
     model: str
     label: str
+    error: str | None = None
+    error_code: str | None = None
+    retryable: bool | None = None
+    retry_after: int | None = None
 
 
 method("free_tier.status", params=ProfileParams, result=FreeTierStatusResult,
@@ -197,6 +205,9 @@ class FreeTierProvisionResult(Result):
     has_guest: bool
     enabled: bool
     error: str | None = None
+    error_code: str | None = None
+    retryable: bool | None = None
+    retry_after: int | None = None
 
 
 method("free_tier.provision", params=ProfileParams, result=FreeTierProvisionResult,
@@ -419,8 +430,65 @@ class ModelCapabilities(Result):
     """``hermes_cli/inventory.py::_apply_capabilities``."""
 
     fast: bool
+    ultrafast: bool = False
     reasoning: bool
     can_disable_reasoning: bool | None = None
+
+
+class ProviderLimit(Result):
+    """``hermes_cli/inventory.py::_apply_limits`` — ``account``: the whole login is rate-limited until
+    ``resets_at`` (ISO, absent when unknown); ``models``: only these models are, each until its time."""
+
+    scope: Literal["account", "models"]
+    resets_at: str | None = None
+    models: dict[str, str] | None = None
+
+
+class ProviderUsageWindow(Result):
+    """One subscription usage window (``agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour
+    session or the weekly cap, with how much of it is spent and when it rolls over (ISO).
+
+    ``scope``: ``account`` — exhausting the window exhausts the whole login (Codex session/weekly,
+    so a limited account's resets_at must wait for it); ``model`` — the window caps only one model
+    family (Anthropic Opus/Sonnet weekly) and can never imply the account itself is out of quota."""
+
+    label: str
+    used_percent: float
+    resets_at: str | None = None
+    scope: Literal["account", "model"] = "account"
+
+
+class ProviderUsageAccount(Result):
+    """One account of a provider's credential pool (``hermes_cli/inventory.py::_pool_usage_accounts``).
+    ``id`` is a stable non-secret account identity (never a key or URL); ``label`` may be empty (UI
+    falls back to a localized "Account N"). ``windows`` is empty while the account's usage is not
+    yet known — state carries the meaning, never a fabricated gauge.
+
+    ``state``: ``ready`` — live quota below the cap (numeric windows present); ``limited`` — a live
+    credential-wide cooldown or exhausted account-scoped quota windows; ``unknown`` — no live
+    numeric windows (failed/empty fetch, stale snapshot, provider without a usage API);
+    ``unavailable`` — DEAD auth row (kept visible, never a quota row).
+
+    ``resets_at``: for a limited account, the LATEST of its exhausted account-scoped windows (or a
+    live cooldown when later); ``None`` when unknown (the frontend renders its own advisory, e.g.
+    the earliest limited sibling)."""
+
+    id: str
+    label: str = ""
+    windows: list[ProviderUsageWindow] = Field(default_factory=list)
+    state: Literal["ready", "limited", "unknown", "unavailable"]
+    resets_at: str | None = None
+
+
+class ProviderUsage(Result):
+    """``hermes_cli/inventory.py::_apply_usage`` — the provider's subscription usage, from cache.
+
+    Multi-entry credential pools carry ``accounts`` (one row per account; the legacy ``windows``
+    stays EMPTY there — a provider-wide percentage across different logins would be fabricated).
+    Single-account providers keep the legacy ``windows`` gauge."""
+
+    windows: list[ProviderUsageWindow] = Field(default_factory=list)
+    accounts: list[ProviderUsageAccount] | None = None
 
 
 class ModelOptionProvider(OpenModel):
@@ -448,6 +516,8 @@ class ModelOptionProvider(OpenModel):
     free_tier_pending: bool | None = None
     free_tier_row: bool | None = None
     unavailable_models: list[str] | None = None
+    limit: ProviderLimit | None = None
+    usage: ProviderUsage | None = None
 
 
 class ModelOptionsResult(Result):

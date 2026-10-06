@@ -198,11 +198,13 @@ def test_submit_during_manual_compress_is_queued_and_reply_persists(monkeypatch)
     monkeypatch.setattr(ccm, "compress_now", fake_compress_now)
     monkeypatch.setattr(server, "_run_prompt_submit", fake_turn)
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
-    for name in ("_status_update", "_emit", "_sync_session_key_after_compress", "_persist_queued_user_row",
+    infos = []
+    monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: event == "session.info" and infos.append(payload))
+    for name in ("_status_update", "_sync_session_key_after_compress", "_persist_queued_user_row",
                  "_replace_queued_user_row_for_turn", "_clear_pending", "_announce_cancelled_gateway_approvals"):
         monkeypatch.setattr(server, name, lambda *a, **k: None)
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda _s: False)
-    monkeypatch.setattr(server, "_session_info", lambda *a, **k: {})
+    monkeypatch.setattr(server, "_session_info", lambda agent, session: {"running": bool(session["running"])})
     agent = types.SimpleNamespace(
         session_id="session-key", _cached_system_prompt="", tools=None, context_compressor=None,
         interrupt=lambda *a, **k: (_ for _ in ()).throw(AssertionError("compaction must not be interrupted")))
@@ -224,3 +226,4 @@ def test_submit_during_manual_compress_is_queued_and_reply_persists(monkeypatch)
     assert session["history"][-1]["content"] == "REPLY"
     assert session["history"][0]["content"] == "[summary]"
     assert session["running"] is False
+    assert infos[0] == {"running": True} and infos[-1] == {"running": False}  # Desktop sees the busy edge close

@@ -234,6 +234,8 @@ def _manual_compress_turn(sid: str, session: dict):
     finally:
         with session["history_lock"]:
             session["running"] = session["_manual_compress_active"] = False
+        # The compaction emitted session.info with running=true; close that edge or Desktop latches busy.
+        _emit_session_info_for_session(sid, session)
         _drain_queued_prompt("__compress__", sid, session)
 
 

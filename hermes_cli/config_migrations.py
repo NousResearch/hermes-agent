@@ -882,24 +882,20 @@ def run_migrations(
     """
     token = _CONFIG_ONLY.set(config_only)
     try:
-        _run_steps(current_ver, results, quiet, unversioned)
+        for target_ver, migration_fn in MIGRATIONS:
+            if current_ver < target_ver and (target_ver in LEGACY_KEY_STEPS or not unversioned):
+                try:
+                    migration_fn(results, quiet)
+                except Exception as exc:
+                    # A malformed nested value in one step must not abort the rest of the
+                    # ladder (config loading itself fails otherwise). Loud, not silent.
+                    warning = f"config migration to v{target_ver} failed and was skipped: {exc}"
+                    results.setdefault("warnings", []).append(warning)
+                    # Quiet callers (profile creation, unattended update) discard ``results`` and
+                    # migrate_config still stamps the latest version, so without a log line the
+                    # skipped step vanishes for good.
+                    logger.warning("%s", warning)
+                    if not quiet:
+                        print(f"  ⚠ {warning}")
     finally:
         _CONFIG_ONLY.reset(token)
-
-
-def _run_steps(current_ver: int, results: Dict[str, Any], quiet: bool, unversioned: bool) -> None:
-    for target_ver, migration_fn in MIGRATIONS:
-        if current_ver < target_ver and (target_ver in LEGACY_KEY_STEPS or not unversioned):
-            try:
-                migration_fn(results, quiet)
-            except Exception as exc:
-                # A malformed nested value in one step must not abort the rest of the
-                # ladder (config loading itself fails otherwise). Loud, not silent.
-                warning = f"config migration to v{target_ver} failed and was skipped: {exc}"
-                results.setdefault("warnings", []).append(warning)
-                # Quiet callers (profile creation, unattended update) discard ``results`` and
-                # migrate_config still stamps the latest version, so without a log line the
-                # skipped step vanishes for good.
-                logger.warning("%s", warning)
-                if not quiet:
-                    print(f"  ⚠ {warning}")

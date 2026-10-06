@@ -43,7 +43,9 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields
 from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance
-from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
+from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get, config_exists
+from hermes_cli.config_backend import require_file_tooling
+from gateway.run_common import _csv_or_list_to_set
 from hermes_cli.fallback_config import pre_agent_fallback_notice
 from gateway.turn_executor import _UnboundedThreadExecutor
 
@@ -1176,15 +1178,6 @@ def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool
     return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
 
 
-def _csv_or_list_to_set(raw: Any) -> set[str]:
-    """Normalize a config list or comma-separated scalar into a string set."""
-    if raw is None:
-        return set()
-    if isinstance(raw, list):
-        return {str(part).strip() for part in raw if str(part).strip()}
-    return {part.strip() for part in str(raw).split(",") if part.strip()}
-
-
 def _slack_ignored_channels_from_gateway_config(config: Any, adapter: Any = None) -> set[str]:
     """Return Slack channels that the generic gateway must never dispatch.
 
@@ -1595,7 +1588,6 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
     """Re-bridge agent.max_turns (+ sessions.*) per turn; managed overlay applies or it reverts.
     Skipped inside a served secondary's scope: the env slots are the launch profile's and
     hermes_state reads the routed profile's ``sessions.*`` from its own config under scope."""
-    from hermes_cli.config_backend import config_exists
     from gateway.platforms._shared import profile_scoped
     if profile_scoped():
         return
@@ -1616,7 +1608,6 @@ def _current_max_iterations() -> int:
     ``int()`` crash. A routed profile (HERMES_HOME override, multiplexed turns) reads ITS
     ``agent.max_turns`` straight from config: the ``HERMES_MAX_ITERATIONS`` bridge is one process-wide
     slot holding the launch profile's value, so every secondary would inherit the default's budget."""
-    from hermes_cli.config_backend import config_exists
     _reload_runtime_env_preserving_config_authority()
     from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
     override = get_hermes_home_override()
@@ -2115,7 +2106,6 @@ def _load_bridge_config(config_path: Path) -> dict:
 
 _config_path = _hermes_home / 'config.yaml'
 _cfg: dict = {}
-from hermes_cli.config_backend import config_exists
 if config_exists(_config_path):
     try:
         _cfg = _load_bridge_config(_config_path)
@@ -6011,7 +6001,6 @@ def main():
 
     config = None
     if args.config:
-        from hermes_cli.config_backend import require_file_tooling
         require_file_tooling("gateway --config <file>")
         import hermes_yaml as yaml
         with open(args.config, encoding="utf-8-sig") as f:

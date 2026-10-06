@@ -1675,7 +1675,6 @@ def _main_model_pin() -> Tuple[Optional[str], Optional[str]]:
     no second precedence axis. ``(None, None)`` when nothing is configured (the job stays unpinned)."""
     from hermes_cli.config_backend import config_exists
     from hermes_cli.config_effective import load_user_config_effective
-
     cfg_path = get_hermes_home() / "config.yaml"
     cfg = load_user_config_effective(cfg_path) if config_exists(cfg_path) else {}
     model_cfg = cfg.get("model") or {}

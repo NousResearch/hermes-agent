@@ -420,7 +420,7 @@ def _bootstrap_env(home: Path | None = None, project_env: Path | None = None) ->
         from hermes_cli import managed_scope
 
         managed_dir = managed_scope.get_managed_dir()
-    except Exception:  # noqa: BLE001 — same fail-open as _apply_managed_env
+    except Exception:  # health: allow BLE001 -- managed scope never blocks startup, as in _apply_managed_env
         managed_dir = None
     if managed_dir is not None:
         layers.append((managed_dir / ".env", True))

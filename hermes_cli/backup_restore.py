@@ -17,7 +17,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_state_holders import read_only_db_uri
 from utils import (
@@ -567,3 +567,23 @@ def _import_db_member(
             os.unlink(tmp_name)
         except OSError:
             pass
+
+
+def _get_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...]) -> Any:
+    node: Any = data
+    for key in dotted:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node
+
+
+def _set_config_path_value(data: Dict[str, Any], dotted: Tuple[str, ...], value: Any) -> None:
+    node = data
+    for key in dotted[:-1]:
+        child = node.get(key)
+        if not isinstance(child, dict):
+            child = {}
+            node[key] = child
+        node = child
+    node[dotted[-1]] = value

@@ -37,6 +37,20 @@ DEFAULT_TOKEN_LEEWAY_SECONDS = 60.0
 # dashboard auth providers: refuse to buffer past this size (issue #55121).
 _OIDC_RESPONSE_BODY_LIMIT_BYTES = 1 * 1024 * 1024
 _OIDC_RESPONSE_CHUNK_BYTES = 64 * 1024
+# ``iter_bytes()`` already applied these. Passing them through makes
+# ``httpx.Response(content=decoded)`` inflate the plain body again
+# (issue #134128: gzip token responses raise "incorrect header check").
+_DECODED_BODY_DROP_HEADERS = frozenset({
+    "content-encoding",
+    "content-length",
+    "transfer-encoding",
+})
+
+
+def _headers_for_decoded_body(headers: Any) -> list[tuple[str, str]]:
+    """Header pairs safe to attach to an already-decoded body."""
+    items = headers.multi_items() if hasattr(headers, "multi_items") else headers.items()
+    return [(key, value) for key, value in items if key.lower() not in _DECODED_BODY_DROP_HEADERS]
 
 
 def _request_limited_response(method: str, url: str, **kwargs: Any) -> httpx.Response:
@@ -44,7 +58,9 @@ def _request_limited_response(method: str, url: str, **kwargs: Any) -> httpx.Res
 
     Content-Length is prechecked when declared; the streamed body is capped
     chunk-by-chunk either way (a lying/absent header cannot bypass the bound).
-    Returns a fully-read ``httpx.Response`` with the same status/headers.
+    Returns a fully-read ``httpx.Response``. ``iter_bytes()`` has already
+    decoded ``content-encoding``, so those headers are dropped before the
+    body is reattached — otherwise ``Response.read()`` inflates it again.
     """
     with httpx.stream(method, url, **kwargs) as response:
         declared = response.headers.get("content-length")
@@ -71,7 +87,7 @@ def _request_limited_response(method: str, url: str, **kwargs: Any) -> httpx.Res
 
         return httpx.Response(
             status_code=response.status_code,
-            headers=response.headers,
+            headers=_headers_for_decoded_body(response.headers),
             content=b"".join(chunks),
             request=response.request,
         )

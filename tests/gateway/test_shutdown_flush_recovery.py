@@ -6,16 +6,21 @@ properties the live drain already guarantees for that spool.
 """
 
 import json
-import threading
-import time
+import math
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from gateway.shutdown_flush import (
+    QUARANTINE_SUFFIX,
     TRANSCRIPT_CAP_DROP_REASON,
+    _order_flush_files,
+    drain_transcript_spool,
+    recover_gateway_pending,
     recover_pending_to_db,
 )
 
@@ -31,14 +36,48 @@ def flush_dir(tmp_path, monkeypatch):
     return directory
 
 
+@pytest.fixture
+def make_store(tmp_path):
+    """Build a real ``SessionStore`` whose transcript writes go to *db*. It goes through the
+    constructor, so new store state does not break these tests."""
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+
+    def build(db):
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+        store._loaded = True
+        store._db = db
+        return store
+
+    return build
+
+
+@pytest.fixture
+def boot_db(monkeypatch):
+    """Make boot recovery's default state.db the given handle."""
+    import hermes_state_registry
+
+    def use(db):
+        monkeypatch.setattr(hermes_state_registry, "acquire", lambda: db)
+        monkeypatch.setattr(hermes_state_registry, "release_or_close", lambda _db: None)
+
+    return use
+
+
+def _boot(store) -> int:
+    runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=False), session_store=store)
+    return recover_gateway_pending(runner)
+
+
 def _write_spool(
     flush_dir: Path,
     name: str,
     session_id: str,
     message: dict,
     *,
-    ts: int,
-    seq: int,
+    ts: Any,
+    seq: Any,
 ) -> Path:
     """Write one cap-drop spool payload under an explicit file name.
 
@@ -94,46 +133,60 @@ def test_an_out_of_range_ordering_field_does_not_abort_recovery(flush_dir):
     assert sorted(_contents(mock_db)) == ["huge ts", "valid"]
 
 
-def test_a_replayed_row_is_the_row_the_live_writer_writes(flush_dir):
-    """Every field the live drain persists survives the restart round trip: losing
-    tool_call_id orphans a tool result, losing api_content makes the next replay diverge,
-    and reasoning stays assistant-only. A missing timestamp falls back to the payload
-    clock, but epoch 0 is a real timestamp."""
+def test_live_drain_and_restart_pass_order_malformed_files_alike(flush_dir):
+    """Every live write waits on the live drain, so a ``ts`` it cannot compare must not raise there,
+    and both passes must replay a session's files in the same order."""
+    _write_spool(flush_dir, "pending-a.json", "sess-1",
+                 {"role": "user", "content": "string ts"}, ts="later", seq=0)
+    _write_spool(flush_dir, "pending-b.json", "sess-1",
+                 {"role": "user", "content": "nan ts"}, ts=math.nan, seq=1)
+    _write_spool(flush_dir, "pending-c.json", "sess-1",
+                 {"role": "user", "content": "ts 5"}, ts=5, seq=2)
+
+    restart = [json.loads(path.read_text())["data"]["message"]["content"]
+               for path in _order_flush_files(flush_dir.glob("*.json"))]
+    live = []
+    assert drain_transcript_spool("sess-1", lambda message: live.append(message["content"])) == (3, 0)
+
+    assert live == restart == ["string ts", "nan ts", "ts 5"]
+
+
+def test_a_replayed_row_is_the_row_the_live_writer_writes(flush_dir, make_store):
+    """A replayed spool row must be the row the live writer would have written for the same
+    message: losing tool_call_id orphans a tool result, losing api_content makes the next replay
+    diverge. Only a message with no timestamp differs: it takes the payload clock, and epoch 0 is
+    a real timestamp."""
     tool_calls = [{"id": "call-1", "type": "function",
                    "function": {"name": "send_payment", "arguments": "{}"}}]
-    _write_spool(flush_dir, "pending-ccc.json", "sess-1", {
+    assistant = {
         "role": "assistant", "content": None, "tool_calls": tool_calls,
         "reasoning": "deliberating", "reasoning_content": "chain",
         "reasoning_details": [{"type": "text"}], "codex_reasoning_items": [{"id": "r1"}],
         "codex_message_items": [{"id": "m1"}], "platform_message_id": "tg-42",
         "observed": True, "timestamp": 0, "api_content": "exact bytes sent to the API",
         "display_kind": "internal_notification",
-    }, ts=100, seq=0)
-    _write_spool(flush_dir, "pending-bbb.json", "sess-1", {
-        "role": "tool", "content": "receipt-1", "tool_call_id": "call-1", "tool_name": "send_payment",
-    }, ts=100, seq=1)
-    _write_spool(flush_dir, "pending-aaa.json", "sess-1", {
-        "role": "user", "content": "hi", "reasoning": "leaked", "message_id": "tg-7",
-    }, ts=999, seq=2)
+    }
+    tool = {"role": "tool", "content": "receipt-1", "tool_call_id": "call-1", "tool_name": "send_payment"}
+    user = {"role": "user", "content": "hi", "reasoning": "leaked", "message_id": "tg-7"}
+    _write_spool(flush_dir, "pending-ccc.json", "sess-1", assistant, ts=100, seq=0)
+    _write_spool(flush_dir, "pending-bbb.json", "sess-1", tool, ts=100, seq=1)
+    _write_spool(flush_dir, "pending-aaa.json", "sess-1", user, ts=999, seq=2)
 
-    mock_db = MagicMock()
-    assert recover_pending_to_db(mock_db) == 3
-    assistant, tool, user = (c.kwargs for c in mock_db.append_message.call_args_list)
+    recovery_db, live_db = MagicMock(), MagicMock()
+    assert recover_pending_to_db(recovery_db) == 3
+    store = make_store(live_db)
+    for message in (assistant, tool, user):
+        store._append_transcript_message("sess-1", message)
 
-    assert assistant["content"] is None  # a tool-call row legitimately has no content
-    assert assistant["tool_calls"] == tool_calls
-    assert (assistant["reasoning"], assistant["reasoning_content"]) == ("deliberating", "chain")
-    assert assistant["reasoning_details"] == [{"type": "text"}]
-    assert assistant["codex_reasoning_items"] == [{"id": "r1"}]
-    assert assistant["codex_message_items"] == [{"id": "m1"}]
-    assert (assistant["platform_message_id"], assistant["observed"]) == ("tg-42", True)
-    assert assistant["api_content"] == "exact bytes sent to the API"
-    assert assistant["display_kind"] == "internal_notification"
-    assert assistant["timestamp"] == 0
-    assert (tool["tool_call_id"], tool["tool_name"]) == ("call-1", "send_payment")
-    assert user["reasoning"] is None
-    assert user["platform_message_id"] == "tg-7"
-    assert user["timestamp"] == 999
+    replayed = [c.kwargs for c in recovery_db.append_message.call_args_list]
+    written = [c.kwargs for c in live_db.append_message.call_args_list]
+    assert [row.pop("timestamp") for row in replayed] == [0, 100, 999]
+    assert [row.pop("timestamp") for row in written] == [0, None, None]
+    assert replayed == written
+    assert replayed[0]["tool_calls"] == tool_calls
+    assert replayed[0]["api_content"] == "exact bytes sent to the API"
+    assert (replayed[1]["tool_call_id"], replayed[1]["tool_name"]) == ("call-1", "send_payment")
+    assert (replayed[2]["reasoning"], replayed[2]["platform_message_id"]) == (None, "tg-7")
 
 
 def test_a_failed_replay_holds_back_that_sessions_later_messages_only(flush_dir, caplog):
@@ -165,43 +218,28 @@ def test_a_failed_replay_holds_back_that_sessions_later_messages_only(flush_dir,
     assert "Held back 2 spooled transcript file(s)" in caplog.text and "sess-1 (2)" in caplog.text
 
 
-def test_held_back_files_drain_before_that_sessions_next_live_write(flush_dir, monkeypatch):
+def test_held_back_files_drain_before_that_sessions_next_live_write(flush_dir, make_store, boot_db):
     """The live writer drains a session's spool only when the store knows it has one. If boot
     recovery does not say which sessions it held back, the next live row lands ahead of them."""
-    import hermes_state_registry
-    from gateway.run import _recover_pending_flushes
-    from gateway.session import SessionStore
-
     _write_spool(flush_dir, "pending-bbb.json", "sess-1",
                  {"role": "user", "content": "old0"}, ts=100, seq=0)
     _write_spool(flush_dir, "pending-aaa.json", "sess-1",
                  {"role": "user", "content": "old1"}, ts=100, seq=1)
     mock_db = MagicMock()
     mock_db.append_message.side_effect = [RuntimeError("still locked at boot"), 1, 1, 1]
-    monkeypatch.setattr(hermes_state_registry, "acquire", lambda: mock_db)
-    monkeypatch.setattr(hermes_state_registry, "release_or_close", lambda _db: None)
-    store = object.__new__(SessionStore)
-    store._db = mock_db
-    store._transcript_retry_lock = threading.Lock()
-    store._dirty_transcripts = {}
-    store._transcript_append_failures = {}
-    store._fts_rebuild_last_attempt_at = time.monotonic()
+    boot_db(mock_db)
+    store = make_store(mock_db)
 
-    runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=False), session_store=store)
-    assert _recover_pending_flushes(runner) == 0
+    assert _boot(store) == 0
     store.append_to_transcript("sess-1", {"role": "user", "content": "new-live"})
 
     assert _contents(mock_db) == ["old0", "old0", "old1", "new-live"]
     assert not list(flush_dir.glob("*.json"))
 
 
-def test_live_write_waits_while_held_back_files_still_fail_to_drain(flush_dir, monkeypatch):
+def test_live_write_waits_while_held_back_files_still_fail_to_drain(flush_dir, make_store, boot_db):
     """If the pre-write drain fails again, the live row must stay queued in memory: writing it
     while the older files are still on disk gives it a lower row id than they will get."""
-    import hermes_state_registry
-    from gateway.run import _recover_pending_flushes
-    from gateway.session import SessionStore
-
     _write_spool(flush_dir, "pending-bbb.json", "sess-1",
                  {"role": "user", "content": "old0"}, ts=100, seq=0)
     _write_spool(flush_dir, "pending-aaa.json", "sess-1",
@@ -209,17 +247,10 @@ def test_live_write_waits_while_held_back_files_still_fail_to_drain(flush_dir, m
     mock_db = MagicMock()
     mock_db.append_message.side_effect = [
         RuntimeError("still locked at boot"), RuntimeError("still locked at drain"), 1, 1, 1, 1]
-    monkeypatch.setattr(hermes_state_registry, "acquire", lambda: mock_db)
-    monkeypatch.setattr(hermes_state_registry, "release_or_close", lambda _db: None)
-    store = object.__new__(SessionStore)
-    store._db = mock_db
-    store._transcript_retry_lock = threading.Lock()
-    store._dirty_transcripts = {}
-    store._transcript_append_failures = {}
-    store._fts_rebuild_last_attempt_at = time.monotonic()
+    boot_db(mock_db)
+    store = make_store(mock_db)
 
-    runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=False), session_store=store)
-    assert _recover_pending_flushes(runner) == 0
+    assert _boot(store) == 0
     store.append_to_transcript("sess-1", {"role": "user", "content": "new-live"})
     assert _contents(mock_db) == ["old0", "old0"]
     assert len(list(flush_dir.glob("*.json"))) == 2
@@ -230,11 +261,65 @@ def test_live_write_waits_while_held_back_files_still_fail_to_drain(flush_dir, m
     assert not store._dirty_transcripts
 
 
-def test_repairable_spool_replay_failure_still_reaches_fts_rebuild(flush_dir):
+def test_a_poisoned_spool_row_does_not_stop_later_live_rows(flush_dir, tmp_path, make_store, boot_db):
+    """A spooled field sqlite cannot bind used to fail on every replay. With live writes waiting
+    behind the spool, the session then stopped persisting for good, across restarts too."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("sess-1", source="telegram")
+        _write_spool(flush_dir, "pending-bbb.json", "sess-1",
+                     {"role": "tool", "content": "result", "tool_call_id": {"bad": 1}}, ts=100, seq=0)
+        _write_spool(flush_dir, "pending-aaa.json", "sess-1",
+                     {"role": "user", "content": "older"}, ts=100, seq=1)
+        boot_db(db)
+        store = make_store(db)
+
+        assert _boot(store) == 2
+        store.append_to_transcript("sess-1", {"role": "user", "content": "live"})
+
+        assert [m["content"] for m in db.get_messages("sess-1")] == ["result", "older", "live"]
+        assert not list(flush_dir.iterdir())
+        assert not store._dirty_transcripts
+    finally:
+        db.close()
+
+
+def test_a_row_the_database_rejects_is_quarantined_not_retried(flush_dir, make_store, boot_db):
+    """No retry can write a row the database refuses on its own values, so at boot and in the
+    live drain it is moved aside instead of holding back the session's later rows."""
+    def append_message(**kwargs):
+        if kwargs["content"].startswith("poison"):
+            raise sqlite3.InterfaceError("Error binding parameter 3: unsupported type")
+        return 1
+
+    mock_db = MagicMock()
+    mock_db.append_message.side_effect = append_message
+    _write_spool(flush_dir, "pending-aaa.json", "sess-1",
+                 {"role": "user", "content": "poison at boot"}, ts=100, seq=0)
+    _write_spool(flush_dir, "pending-bbb.json", "sess-1",
+                 {"role": "user", "content": "after"}, ts=100, seq=1)
+    boot_db(mock_db)
+    store = make_store(mock_db)
+    assert _boot(store) == 1
+
+    _write_spool(flush_dir, "pending-ccc.json", "sess-1",
+                 {"role": "user", "content": "poison live"}, ts=200, seq=2)
+    _write_spool(flush_dir, "pending-ddd.json", "sess-1",
+                 {"role": "user", "content": "after live"}, ts=200, seq=3)
+    store.mark_spooled_drop_sessions({"sess-1"})
+    store.append_to_transcript("sess-1", {"role": "user", "content": "live"})
+
+    assert _contents(mock_db) == ["poison at boot", "after", "poison live", "after live", "live"]
+    assert sorted(p.name for p in flush_dir.iterdir()) == [
+        f"pending-aaa.json{QUARANTINE_SUFFIX}", f"pending-ccc.json{QUARANTINE_SUFFIX}"]
+    assert not store._dirty_transcripts
+
+
+def test_repairable_spool_replay_failure_still_reaches_fts_rebuild(flush_dir, make_store):
     """A spool replay failure must keep its own type, so the FTS rebuild still runs. After the
     repair the older spooled row is written before the live one."""
-    from gateway.session import SessionStore
-
     _write_spool(flush_dir, "pending-aaa.json", "sess-1",
                  {"role": "user", "content": "old"}, ts=100, seq=0)
 
@@ -253,13 +338,8 @@ def test_repairable_spool_replay_failure_still_reaches_fts_rebuild(flush_dir):
             return 1
 
     db = RepairableDb()
-    store = object.__new__(SessionStore)
-    store._db = db
-    store._transcript_retry_lock = threading.Lock()
-    store._dirty_transcripts = {}
-    store._transcript_append_failures = {}
-    store._fts_rebuild_last_attempt_at = None
-    store.spooled_drop_sessions().add("sess-1")
+    store = make_store(db)
+    store.mark_spooled_drop_sessions({"sess-1"})
 
     store.append_to_transcript("sess-1", {"role": "user", "content": "live"})
 
@@ -277,7 +357,7 @@ def test_boot_recovery_runs_before_resume_turns_and_queued_inbound(monkeypatch):
     import gateway.run as gateway_run
 
     order = []
-    monkeypatch.setattr(gateway_run, "_recover_pending_flushes",
+    monkeypatch.setattr("gateway.shutdown_flush.recover_gateway_pending",
                         lambda runner: order.append("recover") or 0)
     monkeypatch.setattr(gateway_run, "_restart_notification_pending", lambda: False)
     monkeypatch.setattr(gateway_run, "_planned_restart_notification_pending", lambda: False)

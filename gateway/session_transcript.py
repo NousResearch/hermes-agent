@@ -5,6 +5,7 @@ bound onto ``SessionStore`` via the MRO."""
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import threading
 import time
@@ -41,6 +42,19 @@ _ASSISTANT_ONLY_KEYS = (
     "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items",
     "codex_message_items",
 )
+# Message keys bound straight to a TEXT column. A spooled message is JSON from disk, and a dict or list
+# here makes sqlite refuse the whole row.
+_BOUND_TEXT_KEYS = ("role", "tool_name", "tool_call_id", "reasoning", "reasoning_content", "platform_message_id")
+
+
+def _bindable_text(value: Any) -> Any:
+    """*value* when sqlite can bind it as is, else its JSON text (``str`` if that fails too)."""
+    if value is None or isinstance(value, (str, int, float)):
+        return value
+    try:
+        return json.dumps(value, default=str)
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def transcript_append_kwargs(session_id: str, message: Dict[str, Any], *, fallback_ts: Any = None) -> Dict[str, Any]:
@@ -49,10 +63,11 @@ def transcript_append_kwargs(session_id: str, message: Dict[str, Any], *, fallba
     message lands as the row the live drain would have written. Fields are listed rather than
     splatted: a spooled message is arbitrary JSON from disk, and an unexpected key would raise and
     abort the replay. *fallback_ts* applies only to a message with no timestamp at all, because a
-    truthiness test would rewrite epoch 0."""
+    truthiness test would rewrite epoch 0. Values bound straight to a TEXT column are made bindable
+    (:func:`_bindable_text`), so one malformed field cannot make the row unwritable."""
     is_assistant = message.get("role") == "assistant"
     timestamp = message.get("timestamp")
-    return {
+    kwargs = {
         "session_id": session_id,
         "role": message.get("role", "unknown"),
         "content": message.get("content"),
@@ -71,6 +86,9 @@ def transcript_append_kwargs(session_id: str, message: Dict[str, Any], *, fallba
         "display_kind": message.get("display_kind"),
         "display_metadata": message.get("display_metadata"),
     }
+    for key in _BOUND_TEXT_KEYS:
+        kwargs[key] = _bindable_text(kwargs[key])
+    return kwargs
 
 
 class SessionTranscriptMixin:
@@ -371,8 +389,8 @@ class SessionTranscriptMixin:
                 break
             spooled += 1
         if spooled:
-            self._lazy("_spooled_drop_sessions", set).add(session_id)
             with self._transcript_retry_lock:
+                self._lazy("_spooled_drop_sessions", set).add(session_id)
                 del pending[:spooled]
                 if not pending:
                     self._dirty_transcripts.pop(queue_session_id, None)
@@ -403,7 +421,8 @@ class SessionTranscriptMixin:
             _replayed, remaining = drain_transcript_spool(
                 session_id, replay, db_known_failing=known_failing)
             if not remaining:
-                spooled_sessions.discard(session_id)
+                with self._transcript_retry_lock:
+                    spooled_sessions.discard(session_id)
                 return None
             return failures[-1] if failures else RuntimeError(
                 f"older spooled transcript rows for {session_id} still pending")
@@ -411,10 +430,13 @@ class SessionTranscriptMixin:
             logger.warning("Failed to drain transcript spool for %s: %s", session_id, exc)
             return None
 
-    def spooled_drop_sessions(self) -> set:
-        """The live set of sessions whose next transcript write drains the spool first. Boot recovery
-        adds the sessions it held back, so their next live row cannot land ahead of those files."""
-        return self._lazy("_spooled_drop_sessions", set)
+    def mark_spooled_drop_sessions(self, session_ids) -> None:
+        """Have each session's next transcript write drain the on-disk spool first. Boot recovery marks
+        the sessions it held back, so their next live row cannot land ahead of those files."""
+        if not session_ids:
+            return
+        with self._transcript_retry_lock:
+            self._lazy("_spooled_drop_sessions", set).update(session_ids)
 
     def _append_transcript_message(self, session_id: str, message: Dict[str, Any]) -> None:
         """Write one transcript row. Caller handles retry queuing."""

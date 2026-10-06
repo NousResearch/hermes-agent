@@ -447,7 +447,10 @@ def cancel_background_review_for_live_turn(
     ever sets its ``_interrupt_requested``. Pass a reason-appropriate ``message``/``tool_reason``
     when the caller isn't the live-turn-preemption path so diagnostics describe the real cause.
     The wait never fails open: ``wait_for_background_review_cancellation`` escalates (client
-    teardown, then revocation) instead of a bounded deadline.
+    teardown, then revocation) instead of a bounded deadline — so a caller that starts no live
+    turn (teardown, interrupt, exit: reaper, Timer, atexit and RPC worker threads) passes
+    ``wait=False``. The fence and the hard interrupt still land; the next live turn on the
+    session performs its own cancel + wait through the registry and the durable lease.
     """
     run, review_agent = _cancel_background_review(
         agent, session_id=session_id, profile_key=profile_key

@@ -1512,6 +1512,13 @@ def tenant_env(monkeypatch, tmp_path):
         conn.commit()
     finally:
         conn.close()
+    # Profile -> tenant binding lives in each profile's own .env (operator-owned).
+    for name, env in (("acme-peer", "HERMES_TENANT=acme\n"), ("other-worker", "HERMES_TENANT=other\n"),
+                      ("unbound", "")):
+        pdir = home / "profiles" / name
+        pdir.mkdir(parents=True)
+        (pdir / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker
+        (pdir / ".env").write_text(env, encoding="utf-8")
     monkeypatch.setenv("HERMES_KANBAN_TASK", mine)
     monkeypatch.setenv("HERMES_TENANT", "acme")
     return {"mine": mine, "theirs": theirs, "untenanted": untenanted}
@@ -1567,6 +1574,69 @@ def test_tenant_scoped_create_pins_tenant_and_rejects_foreign(tenant_env):
     try:
         assert kb.get_task(conn, out["task_id"]).tenant == "acme"
         assert not [t for t in kb.list_tasks(conn) if t.title == "hostile"]
+    finally:
+        conn.close()
+
+
+def test_tenant_scoped_create_binds_assignee_to_tenant(tenant_env):
+    """Pinning the row's tenant is not enough: the dispatcher runs the task under the assignee's
+    credentials, so omitted tenant + another tenant's profile must be refused."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    for assignee in ("other-worker", "unbound", "never-installed"):
+        out = json.loads(kt._handle_create({"title": "hostile", "assignee": assignee}))
+        assert out.get("ok") is not True and "not bound to this worker's tenant" in out["error"]
+        assert "acme" not in json.dumps(out)
+    peer = json.loads(kt._handle_create({"title": "peer", "assignee": "acme-peer"}))
+    own = json.loads(kt._handle_create({"title": "self", "assignee": "acme-worker"}))
+    assert peer["ok"] is True and own["ok"] is True
+    conn = kbc.connect()
+    try:
+        assert not [t for t in kb.list_tasks(conn) if t.title == "hostile"]
+        assert kb.get_task(conn, peer["task_id"]).tenant == "acme"
+    finally:
+        conn.close()
+
+
+def test_tenant_scoped_request_review_binds_reviewer_to_tenant(monkeypatch, tenant_env):
+    """``reviewer`` reassigns the task, so it is an execution identity like create's assignee."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    with kbc.connect() as conn:
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(kb.get_task(conn, tenant_env["mine"]).current_run_id))
+    out = json.loads(kt._handle_request_review({"summary": "done", "reviewer": "other-worker"}))
+    assert out.get("ok") is not True and "not bound to this worker's tenant" in out["error"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, tenant_env["mine"]).status == "running"
+    out = json.loads(kt._handle_request_review({"summary": "done", "reviewer": "acme-peer"}))
+    assert out["ok"] is True
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, tenant_env["mine"]).assignee == "acme-peer"
+
+
+def test_tenant_scoped_list_does_not_promote_foreign_rows(monkeypatch, tenant_env):
+    """The list's ready-promotion sweep is confined to the scope: a foreign blocked row with no
+    parents and no sticky block stays put, while the caller's own tenant still gets promoted."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+    conn = kbc.connect()
+    try:
+        own_blocked = kb.create_task(conn, title="own blocked", assignee="acme-worker", tenant="acme")
+        conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (own_blocked,))
+        conn.commit()
+        before = kb.list_events(conn, tenant_env["theirs"])
+    finally:
+        conn.close()
+    assert json.loads(kt._handle_list({}))["promoted"] == 1
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, tenant_env["theirs"]).status == "blocked"
+        assert kb.list_events(conn, tenant_env["theirs"]) == before
+        assert kb.get_task(conn, own_blocked).status == "ready"
     finally:
         conn.close()
 

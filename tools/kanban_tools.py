@@ -13,6 +13,7 @@ import logging
 import os
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from agent.redact import redact_sensitive_text
@@ -357,6 +358,39 @@ def _scoped_task(kb, conn, tid: str):
     task = _existing_task(kb, conn, tid)
     _enforce_tenant_scope(task)
     return task
+
+
+def _profile_tenant(profile: str) -> Optional[str]:
+    """Tenant *profile* is bound to: ``HERMES_TENANT`` in that profile's own ``.env``, the same
+    operator-owned value that scopes its gateway and CLI. None when undeclared or unresolvable."""
+    from agent.secret_scope import load_env_file
+    from hermes_cli.profiles import get_profile_dir
+
+    try:
+        env_path = Path(get_profile_dir(profile)) / ".env"
+    except ValueError:
+        return None
+    return (load_env_file(env_path).get("HERMES_TENANT") or "").strip() or None
+
+
+def _enforce_executor_scope(profile: str, role: str) -> None:
+    """A tenant-scoped process may only hand work to a profile bound to the same tenant. Pinning the
+    row's ``tenant`` is not enough: the dispatcher runs a task under ``task.assignee``'s home,
+    credentials and messaging identity, so a scoped worker assigning another tenant's profile would
+    execute its body with that tenant's keys. Its own profile is exempt (it is already running for
+    this tenant); an undeclared profile fails closed. The scoped id is not echoed."""
+    scope = _scope_tenant()
+    if scope is None:
+        return
+    from hermes_cli.profiles import current_profile_name, normalize_profile_name
+
+    target = normalize_profile_name(str(profile))
+    own = current_profile_name(None)
+    if own and normalize_profile_name(own) == target:
+        return
+    if _profile_tenant(target) != scope:
+        raise _Reject(f"{role} profile {profile!r} is not bound to this worker's tenant; refusing to "
+                      "hand it work. Assign a profile whose .env sets the same HERMES_TENANT.")
 
 
 def _ok(**fields: Any) -> str:
@@ -740,8 +774,9 @@ def _handle_list(args: dict, **kw) -> str:
         tenant = scope
     with _board(args.get("board")) as (kb, conn):
         # Match CLI list: dependencies cleared since the last dispatcher tick
-        # should be visible to orchestrators immediately.
-        promoted = kb.recompute_ready(conn)
+        # should be visible to orchestrators immediately. A scoped read promotes only its own
+        # tenant's rows: it must not release another tenant's pipeline as a side effect.
+        promoted = kb.recompute_ready(conn, tenant=scope)
         # One extra row lets the output report truncation without dumping the board.
         rows = kb.list_tasks(
             conn, assignee=args.get("assignee"), status=args.get("status"),
@@ -893,7 +928,7 @@ def _handle_schedule(args: dict, **kw) -> str:
     with _board(args.get("board")) as (kb, conn):
         # The goal loop treats ``scheduled`` as terminal like ``blocked``, so
         # parking would bypass the completion judge (see kanban_block, #38696).
-        task = kb.get_task(conn, tid)
+        task = _scoped_task(kb, conn, tid)
         _check(not (task and task.goal_mode),
                "goal_mode tasks cannot be scheduled: use kanban_block with kind "
                f"in {sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} for a genuine external "
@@ -930,6 +965,8 @@ def _handle_request_review(args: dict, **kw) -> str:
         _check(profile_exists(reviewer),
                f"reviewer profile {reviewer!r} is not installed. "
                f"Installed profiles: {', '.join(list_profile_names())}")
+        # ``reviewer`` reassigns the task, so it is an execution identity like create's assignee.
+        _enforce_executor_scope(reviewer, "reviewer")
     with _board(args.get("board")) as (kb, conn):
         _goal_gate("kanban_request_review", _scoped_task(kb, conn, tid), tid, summary)
         try:
@@ -1161,6 +1198,7 @@ def _handle_create(args: dict, **kw) -> str:
         _check(args.get("tenant") in (None, "", scope),
                "tenant is outside this worker's tenant scope")
         tenant = scope
+        _enforce_executor_scope(assignee, "assignee")
     with _board(args.get("board")) as (kb, conn):
         from gateway.session_context import get_session_env
         from tools.async_delegation import _current_origin_session_id

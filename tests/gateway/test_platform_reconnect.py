@@ -513,27 +513,37 @@ class TestReconnectKeepsInboundDedup:
         assert old._held_inbound_events == failed._held_inbound_events == new._held_inbound_events == []
 
     @pytest.mark.asyncio
-    async def test_failed_secondary_candidate_returns_held_inbound_to_predecessor(self):
+    @pytest.mark.parametrize("mode", ["not-installed", "cancel-after-install"])
+    async def test_failed_secondary_candidate_returns_held_inbound_to_predecessor(self, mode):
         """A secondary reconnect candidate that is not installed must hand its held inbound back to the
-        retained predecessor instead of discarding it with the candidate (#133399)."""
+        retained predecessor instead of discarding it with the candidate (#133399); an INSTALLED one
+        cancelled mid-redeliver keeps its queue -- handing back would forward in a cycle forever."""
         _Telegram = self._telegram_cls()
         runner = _make_runner()
         runner._profile_adapters, runner._profile_failed_platforms = {}, {}
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
         in_connect, salvaged = self._event("candidate"), self._event("salvage")
-        predecessor, failed = _Telegram(True), _Telegram(False, hold=in_connect, salvage=salvaged)
+        installed = mode == "cancel-after-install"
+        predecessor = _Telegram(True)
+        failed = _Telegram(installed or False, hold=in_connect, salvage=salvaged)
         predecessor._set_fatal_error("telegram_network_error", "stall", retryable=True)
 
         async def attempt(*_args):
-            await failed.connect(is_reconnect=True)
-            runner._running = False  # stop after this one failed attempt
-            return failed, False
+            success = await failed.connect(is_reconnect=True)
+            runner._running = installed  # stop after this one failed attempt
+            return failed, success
 
         runner._secondary_reconnect_attempt = attempt
-        await runner._run_secondary_profile_reconnect("coder", Platform.TELEGRAM, predecessor)
-
-        assert failed._held_inbound_events == []
-        assert predecessor._held_inbound_events == [in_connect, salvaged]
-        assert in_connect.source._transport_adapter_ref() is predecessor
+        runner._redeliver_failed_obligations_for_platform = AsyncMock(side_effect=asyncio.CancelledError)
+        if not installed:
+            await runner._run_secondary_profile_reconnect("coder", Platform.TELEGRAM, predecessor)
+            assert failed._held_inbound_events == []
+            assert predecessor._held_inbound_events == [in_connect, salvaged]
+            assert in_connect.source._transport_adapter_ref() is predecessor
+            return
+        with pytest.raises(asyncio.CancelledError):
+            await runner._run_secondary_profile_reconnect("coder", Platform.TELEGRAM, predecessor)
+        assert (predecessor._held_inbound_events or []) + (failed._held_inbound_events or []) == [salvaged]
 
 
 # --- Pause / resume circuit breaker ---

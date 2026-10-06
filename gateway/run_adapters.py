@@ -876,7 +876,8 @@ class GatewayAdapterLifecycleMixin:
             if adapter is not None:
                 # An exception escaping connect leaves the adapter in the same unowned state.
                 await _dispose_unused_adapter(adapter)
-                hand_over_held_inbound(adapter, info.get("predecessor"))
+                if self.adapters.get(platform) is not adapter:  # an installed adapter owns its queue
+                    hand_over_held_inbound(adapter, info.get("predecessor"))
             # A reconnect exception is transient; keep retrying at the cap rather than auto-pausing.
             backoff = self._bump_reconnect_backoff(platform, info, attempt, None, str(e))
             logger.warning("Reconnect %s error: %s, next retry in %ds", platform.value, e, backoff)
@@ -1504,7 +1505,8 @@ class GatewayAdapterLifecycleMixin:
                 except BaseException as exc:
                     if adapter is not None:
                         await self._safe_adapter_disconnect(adapter, platform)
-                        hand_over_held_inbound(adapter, predecessor)
+                        if self._profile_adapters.get(profile_name, {}).get(platform) is not adapter:
+                            hand_over_held_inbound(adapter, predecessor)  # an installed adapter owns its queue
                     if not isinstance(exc, Exception):
                         raise  # CancelledError (and other BaseExceptions) propagate after release
                     logger.debug(

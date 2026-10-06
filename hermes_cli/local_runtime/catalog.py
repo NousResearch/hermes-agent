@@ -28,8 +28,8 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class AssetFile:
     """One downloadable file: repo-relative path and exact bytes (feeds the estimator and the
-    progress bar; no download-time integrity check by design — a corrupt file surfaces as a
-    llama.cpp load error). ``local`` overrides the on-disk name (repos reuse generic names like
+    progress bar). An optional digest pins compatibility-sensitive companions. ``local``
+    overrides the on-disk name (repos reuse generic names like
     mmproj-BF16.gguf). Non-model extras live under the models dir's assets/ subdirectory so the
     router never lists them.
     """
@@ -37,6 +37,9 @@ class AssetFile:
     path: str                   # repo-relative (may include a subdir)
     size_bytes: int
     local: str | None = None
+    repo: str = ""              # empty inherits the catalog entry's repository
+    revision: str = "main"
+    sha256: str = ""
 
     @property
     def local_name(self) -> str:
@@ -106,21 +109,26 @@ class CatalogEntry:
     # MoE. With memory bandwidth this predicts decode speed — the physics half of the
     # recommendation.
     decode_fraction: float = 1.0
+    architecture: str = ""
+    lazy_table_bytes: int = 0   # mapped PLE table; launch_args must enable lazy-mode
+    auto_recommend: bool = True
 
     def profile(self, variant: QuantVariant) -> ModelProfile:
         layers = ([(LayerKind.FULL, self.per_layer_f16)] * self.full_layers
                   + [(LayerKind.SWA, self.per_layer_f16)] * self.swa_layers
                   + [(LayerKind.RECURRENT, 0)] * self.recurrent_layers)
         return ModelProfile(
-            name=variant.model_id, weights_bytes=variant.weights_bytes, embd_table_bytes=0,
+            name=variant.model_id, weights_bytes=variant.weights_bytes - self.lazy_table_bytes,
+            embd_table_bytes=0, architecture=self.architecture,
             n_ctx_train=self.n_ctx_train, layers=layers, swa_window=self.swa_window, moe=self.moe,
             n_vocab=self.n_vocab, kv_scale=1.2 if self.mtp else 1.0)
 
     def launch_plan(self, variant: QuantVariant, budget: HardwareBudget) -> LaunchPlan:
-        # Optional external drafts may use spare memory after download, never reduce this grant.
+        # External MTP is part of the recipe, unlike optional DSpark acceleration.
         return plan_launch(self.profile(variant), budget, mtp_capable=self.mtp,
                            fixed_overhead=RUNTIME_OVERHEAD_BYTES
-                           + (self.mmproj.size_bytes if self.mmproj else 0))
+                           + (self.mmproj.size_bytes if self.mmproj else 0)
+                           + (self.draft.size_bytes if self.mtp and self.draft else 0))
 
     def download_files(self, variant: QuantVariant) -> tuple:
         """Everything a download job fetches for this variant, in order."""
@@ -218,7 +226,7 @@ def recommended_entry(budget: HardwareBudget,
     eligible entry runs resident; spilled models remain available for explicit selection.
     """
     pool = CATALOG if entries is None else entries
-    fitting = [(e, c) for e in pool if (c := select_variant(e, budget)) is not None]
+    fitting = [(e, c) for e in pool if e.auto_recommend and (c := select_variant(e, budget)) is not None]
     if not fitting:
         return None
 
@@ -248,7 +256,7 @@ def recommended_entry(budget: HardwareBudget,
 
 _CATALOG_URL = ("https://raw.githubusercontent.com/NousResearch/hermes-agent"
                 "/main/hermes_cli/local_runtime/catalog.json")
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2  # v1 clients cannot resolve a companion from a different repository
 _REFRESH_TTL_S = 6 * 3600
 _refresh_lock = threading.Lock()
 _last_refresh_attempt = 0.0
@@ -257,7 +265,9 @@ _last_refresh_attempt = 0.0
 def _asset_from(d: "dict | None") -> "AssetFile | None":
     if not d:
         return None
-    return AssetFile(path=d["path"], size_bytes=int(d["size_bytes"]), local=d.get("local"))
+    return AssetFile(path=d["path"], size_bytes=int(d["size_bytes"]), local=d.get("local"),
+                     repo=d.get("repo", ""), revision=d.get("revision", "main"),
+                     sha256=d.get("sha256", ""))
 
 
 # Scalar CatalogEntry fields parsed from JSON: key -> (coerce, default); None default = required.
@@ -268,6 +278,8 @@ _SCALAR_FIELDS = {
     "moe": (bool, False), "mtp": (bool, False), "mtp_draft_depth": (int, 3),
     "n_vocab": (int, 0), "sampling": (dict, {}), "min_engine": (str, ""),
     "quality": (int, 0), "decode_fraction": (float, 1.0),
+    "architecture": (str, ""), "lazy_table_bytes": (int, 0),
+    "auto_recommend": (bool, True),
 }
 
 

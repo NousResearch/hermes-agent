@@ -22,6 +22,7 @@ _FLAG_TO_KEY = {
     "-c": "ctx-size", "-b": "batch-size", "-ub": "ubatch-size",
     "-ctk": "cache-type-k", "-ctv": "cache-type-v", "-fa": "flash-attn",
     "-ot": "override-tensor", "--spec-type": "spec-type", "--spec-draft-n-max": "spec-draft-n-max",
+    "-lzm": "lazy-mode", "-lm": "load-mode", "-np": "parallel",
 }
 
 
@@ -96,10 +97,16 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
         return None
     entry = entry_for_model(model_id)
     is_mtp = entry.mtp if entry is not None else model_id in mtp_capable
+    external_mtp = entry is not None and entry.mtp and entry.draft is not None
+    if external_mtp and _asset_path(entry.draft) is None:
+        return PresetEntry(model_id=model_id, window=0, spilled=False,
+                           refusal="Download the recipe's MTP draft head before loading this model.")
 
     mmproj_path = _asset_path(entry.mmproj) if entry is not None else None
     fixed_overhead = RUNTIME_OVERHEAD_BYTES + (
         entry.mmproj.size_bytes if entry is not None and mmproj_path is not None else 0)
+    if external_mtp:
+        fixed_overhead += entry.draft.size_bytes
     plan = plan_launch(profile, budget, mtp_capable=is_mtp, fixed_overhead=fixed_overhead,
                        requested_window=(load_window_overrides().get(model_id)
                                          if requested_window is None else requested_window))
@@ -132,12 +139,13 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
             keys.setdefault(k, v)
         if mmproj_path is not None:
             keys["mmproj"] = str(mmproj_path)
-        draft_path = _asset_path(entry.draft) if decision.spilled else None
-        if draft_path is not None and _draft_fits(draft_path, profile, budget, decision.window, plan.overhead_bytes):
+        draft_path = _asset_path(entry.draft) if external_mtp or decision.spilled else None
+        if draft_path is not None and (external_mtp or _draft_fits(
+                draft_path, profile, budget, decision.window, plan.overhead_bytes)):
             keys["model-draft"] = str(draft_path)
-            keys["spec-type"] = "draft-dspark"
+            keys["spec-type"] = "draft-mtp" if external_mtp else "draft-dspark"
             # Unsloth's measured cliff: acceptance 83% at 2-3 drafts, collapses at 4.
-            keys["spec-draft-n-max"] = "3"
+            keys["spec-draft-n-max"] = str(entry.mtp_draft_depth) if external_mtp else "3"
     return PresetEntry(model_id=model_id, window=decision.window,
                        spilled=decision.spilled, keys=keys)
 
@@ -155,8 +163,9 @@ def resident_footprint(gguf: Path, budget: HardwareBudget, window: int) -> int |
     entry = entry_for_model(model_id)
     is_mtp = entry.mtp if entry is not None else False
     mmproj = entry.mmproj.size_bytes if entry is not None and _asset_path(entry.mmproj) else 0
+    draft = entry.draft.size_bytes if entry is not None and entry.mtp and entry.draft else 0
     plan = plan_launch(profile, budget, mtp_capable=is_mtp,
-                       fixed_overhead=RUNTIME_OVERHEAD_BYTES + mmproj, requested_window=window)
+                       fixed_overhead=RUNTIME_OVERHEAD_BYTES + mmproj + draft, requested_window=window)
     if is_mtp and profile.kv_scale == 1.0:
         profile = replace(profile, kv_scale=1.2)
     return footprint_bytes(profile, window, overhead_bytes=plan.overhead_bytes)
@@ -178,13 +187,16 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
     entry = entry_for_model(model_id)
     is_mtp = entry.mtp if entry is not None else False
     mmproj = entry.mmproj.size_bytes if entry is not None and _asset_path(entry.mmproj) else 0
+    draft = entry.draft.size_bytes if entry is not None and entry.mtp and entry.draft else 0
     plan = plan_launch(profile, budget, mtp_capable=is_mtp,
-                       fixed_overhead=RUNTIME_OVERHEAD_BYTES + mmproj,
+                       fixed_overhead=RUNTIME_OVERHEAD_BYTES + mmproj + draft,
                        requested_window=load_window_overrides().get(model_id))
     if isinstance(plan.decision, PhysicsRefusal):
         return None
     # Priced whole even when the plan spills: a spilled model still holds part of its weights on
     # the device, and over-counting errs toward the side that cannot thrash.
+    if is_mtp and profile.kv_scale == 1.0:
+        profile = replace(profile, kv_scale=1.2)
     return footprint_bytes(profile, plan.decision.window, overhead_bytes=plan.overhead_bytes)
 
 

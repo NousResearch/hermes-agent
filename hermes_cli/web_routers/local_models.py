@@ -416,11 +416,14 @@ def _variant_files_on_disk(model_id: str) -> "list[Path]":
 
 
 def _download_plan(entry, variant) -> list:
-    """Everything a variant needs: split parts + mmproj/draft assets, as (url, dest, bytes) tuples."""
-    plan = [(_hf_url(entry.repo, a.path), bootstrap.models_dir() / a.local_name, a.size_bytes) for a in variant.files]
-    plan += [(_hf_url(entry.repo, a.path), bootstrap.assets_dir() / a.local_name, a.size_bytes)
-             for a in (entry.mmproj, entry.draft) if a is not None]
-    return plan
+    """Split parts + companions as (url, destination, bytes, optional SHA256)."""
+    def item(asset, directory):
+        repo = asset.repo or entry.repo
+        url = f"https://huggingface.co/{repo}/resolve/{asset.revision}/{asset.path}"
+        return (url, directory / asset.local_name, asset.size_bytes) + ((asset.sha256,) if asset.sha256 else ())
+
+    return ([item(a, bootstrap.models_dir()) for a in variant.files]
+            + [item(a, bootstrap.assets_dir()) for a in (entry.mmproj, entry.draft) if a is not None])
 
 
 def _run_download_plan(job: Dict[str, Any], plan: list, label: str) -> None:
@@ -440,7 +443,8 @@ def _download_progress_hook(job: Dict[str, Any]):
 def _download_job(job: Dict[str, Any], plan) -> None:
     """Model bytes use the same resumable transfer as pinned PM archives."""
     running = _RUNNING.get(job["job_id"], {})
-    dl = Download([Source(url, dest) for url, dest, _ in plan], pause_event=running.get("pause"))
+    sources = [Source(url, dest, digest[0] if digest else "") for url, dest, _, *digest in plan]
+    dl = Download(sources, pause_event=running.get("pause"))
     dl.run(progress=_download_progress_hook(job))
 
 
@@ -567,7 +571,7 @@ def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> 
     choice = catalog.select_variant(entry, budget)
     # Any variant of this family on disk counts as downloaded.
     dl = next((v for v in entry.variants if v.model_id in staged_ids
-               and all(dest.is_file() for _, dest, _ in _download_plan(entry, v))), None)
+               and all(dest.is_file() for _, dest, *_ in _download_plan(entry, v))), None)
     row: Dict[str, Any] = {
         "id": entry.id, "display_name": entry.display_name, "description": entry.description,
         "native_context": entry.n_ctx_train, "native_context_label": _k_label(entry.n_ctx_train),
@@ -698,7 +702,7 @@ def local_models_download(body: ModelDownloadBody):
     """Accepts either a family id (downloads this machine's selected variant) or an exact variant model_id."""
     entry, variant = _download_target(body.model_id)
     plan = _download_plan(entry, variant)
-    if plan and all(dest.is_file() for _, dest, _ in plan):
+    if plan and all(dest.is_file() for _, dest, *_ in plan):
         return {"job_id": None, "already_downloaded": True, "model_id": variant.model_id}
     job = _job("model-download", f"{entry.display_name} ({variant.quant})", model_id=entry.id)
     def _run():
@@ -783,7 +787,7 @@ def _repriced_quickstart(job: Dict[str, Any], body: QuickstartBody, variant):
         with _JOBS_LOCK:
             job.update(target=entry.display_name, model_id=entry.id)
     plan = _download_plan(entry, picked)
-    return entry, picked, plan if any(not dest.is_file() for _, dest, _ in plan) else []
+    return entry, picked, plan if any(not dest.is_file() for _, dest, *_ in plan) else []
 
 
 @router.post("/api/local-models/quickstart")
@@ -796,7 +800,7 @@ def local_models_quickstart(body: QuickstartBody, profile: Optional[str] = None)
     tag, backend = _runtime_target()
     need_runtime = binaries.installed_engine(backend) is None
     download_plan = _download_plan(entry, variant)
-    need_download = any(not dest.is_file() for _, dest, _ in download_plan)
+    need_download = any(not dest.is_file() for _, dest, *_ in download_plan)
     if not need_download:
         download_plan = []
     download_bytes = sum(p[2] for p in download_plan)

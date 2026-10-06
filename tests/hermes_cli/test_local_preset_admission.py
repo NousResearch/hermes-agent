@@ -35,7 +35,7 @@ def test_optional_draft_is_enabled_only_with_room_at_the_selected_window(tmp_pat
     from hermes_cli.local_runtime import bootstrap, catalog
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    entry = next(e for e in catalog.CATALOG if e.draft)
+    entry = next(e for e in catalog.CATALOG if e.draft and not e.mtp)
     main = tmp_path / f"{entry.variants[0].model_id}.gguf"
     draft = bootstrap.assets_dir() / entry.draft.local_name
     draft.parent.mkdir(parents=True, exist_ok=True)

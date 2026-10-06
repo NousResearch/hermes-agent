@@ -24,7 +24,7 @@ def budget(vram_gib: float, ram_gib: float = 64) -> HardwareBudget:
 
 def test_every_entry_ships_exactly_one_q4_build():
     """No quant ladder: one Q4-class build per entry (K_M where the repo
-    ships it, XL elsewhere) — the quant class current engines optimize
+    ships it, XL or IQ4 elsewhere) — the quant class current engines optimize
     for. Nothing below Q4 ever ships. Validation status is explicit per
     variant in catalog.json; unvalidated builds are permitted (day-0
     entries) and surface as unbadged rows in the pane."""
@@ -32,7 +32,7 @@ def test_every_entry_ships_exactly_one_q4_build():
         assert len(entry.variants) == 1, (
             f"{entry.id}: {len(entry.variants)} variants — expected exactly one")
         build = entry.variants[0]
-        assert build.quant.startswith(("UD-Q4", "Q4")), (
+        assert build.quant.removeprefix("UD-").startswith(("Q4", "IQ4")), (
             f"{entry.id}: ships {build.quant}, not a Q4-class build")
         for asset in entry.download_files(build):
             assert asset.size_bytes > 0, f"{entry.id}: no size on {asset.path}"

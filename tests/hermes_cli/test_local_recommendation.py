@@ -59,19 +59,18 @@ def _unified(size_gb: int) -> HardwareBudget:
 #    32  | qwen3.8-27b             | qwen3.6-35b-a3b
 #    48  | qwen3.8-27b             | qwen3.6-35b-a3b
 #    96  | qwen3.8-27b             | qwen3.6-35b-a3b
-#   128  | qwen3.8-flash-next      | qwen3.6-35b-a3b
-#   256  | qwen3.8-flash-next      | qwen3.8-flash-next
-#   512  | qwen3.8-flash-next      | qwen3.8-flash-next
+#   128  | qwen3.8-27b             | qwen3.6-35b-a3b
+#   256  | qwen3.8-27b             | qwen3.6-35b-a3b
+#   512  | qwen3.8-27b             | qwen3.6-35b-a3b
 #
 # Reading guide for reviewers:
 # - Discrete <=16 GB: nothing runs resident; no automatic recommendation.
 #   Browse remains available for explicit spill choices.
 # - Discrete 24-96 GB: the 27B is the flagship experience — dense reads
 #   at ~1 TB/s clear the floor easily, so quality decides.
-# - Discrete/unified where Flash Next fits resident (128 GB discrete,
-#   256+ GB unified): the frontier model is the pick — highest quality,
-#   and its sparse decode clears the floor even at UMA bandwidth
-#   (~24 tok/s predicted at 210 GB/s).
+# - Flash Next's external-MTP recipe is available for explicit selection;
+#   it is not an automatic onboarding recommendation. The calibrated 27B
+#   default on Windows N1X remains unchanged while the new recipe is evaluated.
 # - Unified 32-128 GB — the Spark class, the reason this resolver
 #   exists: the dense 27B predicts ~13 tok/s at UMA bandwidth (below
 #   the pleasant floor), so the 35B-A3B (~60 tok/s) wins.
@@ -92,12 +91,12 @@ DECISION_TABLE = [
     (48, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
     (96, "discrete", "qwen3.8-27b", "best-quality-resident"),
     (96, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
-    (128, "discrete", "qwen3.8-flash-next", "best-quality-resident"),
+    (128, "discrete", "qwen3.8-27b", "best-quality-resident"),
     (128, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
-    (256, "discrete", "qwen3.8-flash-next", "best-quality-resident"),
-    (256, "unified", "qwen3.8-flash-next", "best-quality-resident"),
-    (512, "discrete", "qwen3.8-flash-next", "best-quality-resident"),
-    (512, "unified", "qwen3.8-flash-next", "best-quality-resident"),
+    (256, "discrete", "qwen3.8-27b", "best-quality-resident"),
+    (256, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
+    (512, "discrete", "qwen3.8-27b", "best-quality-resident"),
+    (512, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
 ]
 
 
@@ -139,7 +138,7 @@ def test_measured_n1x_profile_changes_speed_eligibility_not_fit_or_quality(monke
     entry = next(e for e in CATALOG if e.id == "qwen3.8-27b")
     assert predicted_decode_tok_s(entry, entry.variants[0], budget) >= PLEASANT_FLOOR_TOK_S
     picked = recommended_entry(budget)
-    expected = {24: None, 48: "qwen3.8-27b", 256: "qwen3.8-flash-next"}[capacity]
+    expected = {24: None, 48: "qwen3.8-27b", 256: "qwen3.8-27b"}[capacity]
     assert (picked[0].id if picked else None) == expected
 
 
@@ -207,7 +206,7 @@ def test_unified_never_recommends_a_below_floor_dense_model():
     assert choice is not None and choice.zero_spill
     clears = [
         e for e in CATALOG
-        if (c := select_variant(e, budget)) is not None and c.zero_spill
+        if e.auto_recommend and (c := select_variant(e, budget)) is not None and c.zero_spill
         and predicted_decode_tok_s(e, c.variant, budget) >= PLEASANT_FLOOR_TOK_S
     ]
     if clears:
@@ -222,6 +221,6 @@ def test_quality_decides_where_speed_permits():
     pick = recommended_entry(budget)[0].id
     resident = [
         e for e in CATALOG
-        if (c := select_variant(e, budget)) is not None and c.zero_spill
+        if e.auto_recommend and (c := select_variant(e, budget)) is not None and c.zero_spill
     ]
     assert pick == max(resident, key=lambda e: e.quality).id

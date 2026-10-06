@@ -214,7 +214,7 @@ def test_quickstart_skips_satisfied_legs(client, capable_hardware, monkeypatch):
 
     for entry in CATALOG:
         for variant in entry.variants:
-            for _, dest, _ in _download_plan(entry, variant):
+            for _, dest, *_ in _download_plan(entry, variant):
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(b"downloaded fixture")
     monkeypatch.setattr(

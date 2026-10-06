@@ -146,7 +146,7 @@ def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: b
         return LaunchPlan(decision, stacked, overhead)
 
     lean = candidate(False)
-    if not mtp_capable:
+    if not mtp_capable or profile.architecture == "qwen4exp":
         return lean
     stacked = candidate(True)
     if isinstance(stacked.decision, PhysicsRefusal):
@@ -290,8 +290,12 @@ def launch_args(profile: ModelProfile, decision: WindowDecision, *, flash_attent
             args += ["-b", "4096", "-ub", "2048"]
     else:
         args += ["-b", "2048", "-ub", "2048"]
+    if profile.architecture == "qwen4exp":
+        # Lazy PLE requires mmap; override the router's default direct-I/O load mode.
+        args += ["-b", "2048", "-ub", "512", "-lzm", "on", "-lm", "mmap", "-np", "1"]
     if flash_attention:
-        args += ["-ctk", "q8_0", "-ctv", "q8_0", "-fa", "on"]
+        cache = "f16" if profile.architecture == "qwen4exp" else "q8_0"
+        args += ["-ctk", cache, "-ctv", cache, "-fa", "on"]
     if decision.spilled and not uma:
         args += spill_overrides(profile, decision.spill_bytes)
     return args

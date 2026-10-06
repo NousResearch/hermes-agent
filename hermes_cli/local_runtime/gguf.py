@@ -60,6 +60,7 @@ class GGUFHeader:
     n_tensors: int = 0
     tensor_bytes: int = 0          # exact sum over the tensor table
     embd_table_bytes: int = 0      # token_embd.weight (duplicated host-side when fully offloaded)
+    lazy_table_bytes: int = 0      # per_layer_token_embd.weight, demand-paged by --lazy-mode
     # block index -> bytes of that block's FFN weights (the tensors a `blk\.N\.ffn_.*\.weight`
     # -ot override moves), so spill placement can move only as many blocks as it needs.
     ffn_block_bytes: dict[int, int] = field(default_factory=dict)
@@ -182,6 +183,24 @@ class GGUFHeader:
 
 
 def read_gguf_header(path: str | Path) -> GGUFHeader:
+    """Read metadata and count tensors across every shard of a split model."""
+    path = Path(path)
+    header = _read_gguf_part(path)
+    split = SPLIT_PART_RE.search(path.name)
+    if split and int(split[1]) == 1:
+        stem = path.name[:split.start()]
+        for index in range(2, int(split[2]) + 1):
+            part = _read_gguf_part(path.with_name(f"{stem}-{index:05d}-of-{split[2]}.gguf"))
+            header.n_tensors += part.n_tensors
+            header.tensor_bytes += part.tensor_bytes
+            header.embd_table_bytes += part.embd_table_bytes
+            header.lazy_table_bytes += part.lazy_table_bytes
+            for block, size in part.ffn_block_bytes.items():
+                header.ffn_block_bytes[block] = header.ffn_block_bytes.get(block, 0) + size
+    return header
+
+
+def _read_gguf_part(path: str | Path) -> GGUFHeader:
     path = Path(path)
 
     def read(f, fmt: str):
@@ -212,6 +231,7 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
 
         tensor_bytes = 0
         embd_bytes = 0
+        lazy_bytes = 0
         ffn_block_bytes: dict[int, int] = {}
         for _ in range(n_tensors):
             name = read_str(f)
@@ -230,10 +250,13 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
             tensor_bytes += nbytes
             if name == "token_embd.weight":
                 embd_bytes = nbytes
+            elif name == "per_layer_token_embd.weight":
+                lazy_bytes = nbytes
             elif m := _FFN_WEIGHT.match(name):
                 block = int(m.group(1))
                 ffn_block_bytes[block] = ffn_block_bytes.get(block, 0) + nbytes
 
     return GGUFHeader(path=str(path), version=version, metadata=metadata,
                       n_tensors=n_tensors, tensor_bytes=tensor_bytes,
-                      embd_table_bytes=embd_bytes, ffn_block_bytes=ffn_block_bytes)
+                      embd_table_bytes=embd_bytes, ffn_block_bytes=ffn_block_bytes,
+                      lazy_table_bytes=lazy_bytes)

@@ -131,11 +131,17 @@ def profile_from_gguf(header: GGUFHeader) -> ModelProfile:
             is_swa = n_attn_seen < n_swa
         layer_dk, layer_dv = (dk_swa, dv_swa) if is_swa else (dk, dv)
         per_token = round(heads * (layer_dk + layer_dv) * _F16_BYTES_PER_ELEM)
+        if header.architecture == "qwen4exp":
+            # QSA keeps an additional f16 indexer K cache (no V), independently of
+            # the target's cache quantization. b11370: 512 bytes/token/attention layer.
+            per_token += 4 * int(header._arch_key("attention.indexer.key_length") or 0)
         layers.append((LayerKind.SWA if is_swa else LayerKind.FULL, per_token))
         n_attn_seen += 1
 
     return ModelProfile(
-        name=header.path, weights_bytes=header.tensor_bytes, embd_table_bytes=header.embd_table_bytes,
+        name=header.path, weights_bytes=header.tensor_bytes - (
+            header.lazy_table_bytes if header.architecture == "qwen4exp" else 0),
+        embd_table_bytes=header.embd_table_bytes,
         n_ctx_train=header.n_ctx_train, layers=layers, swa_window=header.sliding_window,
         moe=header.expert_count > 0, architecture=header.architecture, n_vocab=header.n_vocab,
         ffn_block_bytes=dict(header.ffn_block_bytes))
@@ -150,11 +156,12 @@ def kv_dtype_factor(flash_attention: bool) -> float:
 def ctx_bytes(profile: ModelProfile, window: int, *, flash_attention: bool = True) -> int:
     """Context memory for one window: full layers linear in T, SWA layers capped at the sliding
     window, recurrent layers constant. Scaled by profile.kv_scale (MTP draft context)."""
-    factor = kv_dtype_factor(flash_attention)
+    # The validated Qwen4Exp recipe uses f16 target/draft caches and lazy PLE reads.
+    factor = 1.0 if profile.architecture == "qwen4exp" else kv_dtype_factor(flash_attention)
     total = 0.0
     for kind, per_token_f16 in profile.layers:
         if kind == LayerKind.RECURRENT:
-            total += _RECURRENT_STATE_PER_LAYER
+            total += (16 << 20) if profile.architecture == "qwen4exp" else _RECURRENT_STATE_PER_LAYER
         elif kind == LayerKind.SWA:
             total += per_token_f16 * factor * min(window, profile.swa_window)
         else:

@@ -187,7 +187,7 @@ and keep going after a failed update. To recover when that already happened:
    `git commit-graph` processes; quitting the app does not stop them.
 2. If the disk is completely full, delete the abandoned transfer files to get room back:
    `rm -f "$repo"/.git/objects/pack/tmp_pack_*` (Windows: delete `tmp_pack_*` in
-   `.git\objects\pack`). Later updates sweep any that are more than an hour old on their own.
+   `.git\objects\pack`). Each update also removes them on its own once no git process is running.
 3. Run `hermes update`. It converts the checkout first, then cleans the pack pile down over this
    and later updates as described below.
 

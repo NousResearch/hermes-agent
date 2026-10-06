@@ -825,14 +825,17 @@ async def test_connect_builds_concurrent_update_processor(monkeypatch):
         order.append(f"end {name}")
 
     chat = SimpleNamespace(effective_chat=SimpleNamespace(id=1))
-    tasks = []
+    tasks, coroutines = [], []
     for name in "ABC":
-        tasks.append(asyncio.create_task(processor.process_update(chat, handler(name))))
+        coroutine = handler(name)
+        coroutines.append(coroutine)
+        tasks.append(asyncio.create_task(processor.process_update(chat, coroutine)))
         await asyncio.sleep(0.01)
     tasks[1].cancel()
     await asyncio.sleep(0.01)
     gate.set()
     results = await asyncio.gather(*tasks, return_exceptions=True)
+    coroutines[1].close()
     assert results[0] is None and results[2] is None
     assert order == ["start A", "end A", "start C", "end C"]  # C waits for A even after B is cancelled
 

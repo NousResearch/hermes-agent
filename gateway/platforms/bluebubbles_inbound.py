@@ -173,6 +173,15 @@ class BlueBubblesInboundMixin:
         return (event_type == "updated-message"
                 and not any(record.get(key) for key in ("text", "message", "body", "attachments")))
 
+    def _has_pending_inbound_content(self, message_id: Optional[str]) -> bool:
+        state = self._inbound_messages.get(message_id)
+        if state is None:
+            return False
+        if not state.accepted:
+            return any(state.record.get(key) for key in ("text", "message", "body", "attachments"))
+        return any(isinstance(att, dict) and att.get("guid") and att["guid"] not in state.delivered
+                   for att in state.record.get("attachments") or [])
+
     async def _hydrate_inbound_record(self, message_id: Optional[str]) -> Dict[str, Any]:
         """Fetch routing and attachment relationships with bounded in-request retries.
 
@@ -368,9 +377,11 @@ class BlueBubblesInboundMixin:
         assoc_type = record.get("associatedMessageType")
         if isinstance(assoc_type, int) and assoc_type in _TAPBACK_CODES:
             return _ok()
-        if self._is_receipt_only_update(event_type, record):
-            return _ok()
         message_id = self._value(record.get("guid"), record.get("messageGuid"), record.get("id"))
+        # A routing-only update can complete a retained message after hydration failed.
+        if (self._is_receipt_only_update(event_type, record)
+                and not self._has_pending_inbound_content(message_id)):
+            return _ok()
         state = self._get_inbound_message(message_id, record)
         try:
             async with state.lock:

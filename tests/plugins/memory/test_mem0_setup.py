@@ -11,6 +11,7 @@ from plugins.memory.mem0._setup import (
     _prompt_api_key,
     post_setup,
     _check_qdrant_path,
+    _finish_oss,
 )
 
 
@@ -177,6 +178,28 @@ class TestPromptApiKey:
 
 
 class TestPostSetup:
+
+    def test_oss_setup_preserves_existing_llm_fallback(self, tmp_path, monkeypatch):
+        existing_fallback = {"enabled": True, "model": "gpt-5-mini", "timeout_seconds": 45}
+        (tmp_path / "mem0.json").write_text(
+            json.dumps({"oss": {"llm": {"fallback": existing_fallback}, "old": "value"}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("plugins.memory.mem0._setup._install_provider_deps", lambda *args: None)
+        monkeypatch.setattr("plugins.memory.mem0._setup._activate_provider", lambda config: None)
+        monkeypatch.setattr("plugins.memory.mem0._setup._run_connectivity_checks", lambda config: None)
+        monkeypatch.setattr("plugins.memory.mem0._setup._print_oss_summary", lambda *args: None)
+
+        oss_config = {
+            "llm": {"provider": "openai", "config": {"model": "gpt-5-mini"}},
+            "embedder": {"provider": "openai", "config": {"model": "text-embedding-3-small"}},
+            "vector_store": {"provider": "qdrant", "config": {"path": str(tmp_path / "qdrant")}},
+        }
+        _finish_oss(str(tmp_path), {"memory": {}}, oss_config, {}, "hermes-user", "hermes")
+
+        saved = json.loads((tmp_path / "mem0.json").read_text(encoding="utf-8"))
+        assert saved["oss"]["llm"]["fallback"] == existing_fallback
+        assert saved["oss"]["llm"]["config"]["model"] == "gpt-5-mini"
 
     def test_platform_flag_mode(self, tmp_path, monkeypatch):
         monkeypatch.setattr("sys.argv", ["hermes", "--mode", "platform", "--api-key", "sk-test"])

@@ -425,6 +425,52 @@ class TestDoctorMemoryProviderSection:
         assert "Memory Provider" in out
         assert "Built-in memory active" not in out
 
+    @pytest.mark.parametrize(
+        ("vector_store", "expected_kinds"),
+        [
+            ({"provider": "qdrant", "config": {}}, ["ok", "info"]),
+            ({}, ["failure"]),
+            (None, ["failure"]),
+        ],
+    )
+    def test_mem0_oss_mode_checks_vector_store_availability(
+        self, monkeypatch, vector_store, expected_kinds
+    ):
+        import plugins.memory as memory_module
+
+        checks = []
+        oss = {"llm": {}, "embedder": {}}
+        if vector_store is not None:
+            oss["vector_store"] = vector_store
+        monkeypatch.setattr(
+            memory_module,
+            "import_provider_module",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                _load_config=lambda: {
+                    "mode": "oss",
+                    "api_key": "",
+                    "oss": oss,
+                    "user_id": "hermes-user",
+                    "agent_id": "hermes",
+                }
+            ),
+        )
+        monkeypatch.setattr(doctor_state, "check_ok", lambda *args: checks.append(("ok", args)))
+        monkeypatch.setattr(doctor_state, "check_info", lambda *args: checks.append(("info", args)))
+        monkeypatch.setattr(
+            doctor_state,
+            "_fail_and_issue",
+            lambda *args: checks.append(("failure", args)),
+        )
+
+        doctor_state._memory_provider_mem0([])
+
+        assert [kind for kind, _ in checks] == expected_kinds
+        if expected_kinds == ["ok", "info"]:
+            assert "OSS" in checks[0][1][0]
+        else:
+            assert "vector store" in checks[0][1][0]
+
     @pytest.mark.parametrize("memory_enabled", [False, True])
     def test_stale_builtin_files_reported_only_when_store_enabled(
         self, monkeypatch, tmp_path, memory_enabled

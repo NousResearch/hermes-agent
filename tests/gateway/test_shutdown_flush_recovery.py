@@ -230,6 +230,45 @@ def test_live_write_waits_while_held_back_files_still_fail_to_drain(flush_dir, m
     assert not store._dirty_transcripts
 
 
+def test_repairable_spool_replay_failure_still_reaches_fts_rebuild(flush_dir):
+    """A spool replay failure must keep its own type, so the FTS rebuild still runs. After the
+    repair the older spooled row is written before the live one."""
+    from gateway.session import SessionStore
+
+    _write_spool(flush_dir, "pending-aaa.json", "sess-1",
+                 {"role": "user", "content": "old"}, ts=100, seq=0)
+
+    class RepairableDb:
+        def __init__(self):
+            self.broken, self.rows, self.repairs = True, [], 0
+
+        def append_message(self, **kwargs):
+            if self.broken:
+                raise RuntimeError("no such table: messages_fts")
+            self.rows.append(kwargs["content"])
+
+        def rebuild_fts(self):
+            self.repairs += 1
+            self.broken = False
+            return 1
+
+    db = RepairableDb()
+    store = object.__new__(SessionStore)
+    store._db = db
+    store._transcript_retry_lock = threading.Lock()
+    store._dirty_transcripts = {}
+    store._transcript_append_failures = {}
+    store._fts_rebuild_last_attempt_at = None
+    store.spooled_drop_sessions().add("sess-1")
+
+    store.append_to_transcript("sess-1", {"role": "user", "content": "live"})
+
+    assert db.repairs == 1
+    assert db.rows == ["old", "live"]
+    assert not list(flush_dir.glob("*.json"))
+    assert not store._dirty_transcripts
+
+
 def test_boot_recovery_runs_before_resume_turns_and_queued_inbound(monkeypatch):
     """Resume turns and queued inbound write live rows. The store knows nothing about the previous
     run's spool until recovery has run, so a live row written first lands ahead of it for good."""

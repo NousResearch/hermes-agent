@@ -274,12 +274,15 @@ class SessionTranscriptMixin:
 
         # DB write outside the retry lock so other sessions can append.
         while True:
+            spool_exc = None
             try:
                 # Spooled backlog (cap eviction, a stalled session, a boot hold-back) is older than
                 # ``msg``: replay it first. While any of it stays on disk ``msg`` stays queued, since
-                # writing it now would give it a lower row id than that backlog for good.
-                if self._drain_spooled_drops(session_id):
-                    raise RuntimeError(f"older spooled transcript rows for {session_id} still pending")
+                # writing it now would give it a lower row id than that backlog for good. The replay's
+                # own error is raised so the repair/divert handling below still classifies it.
+                spool_exc = self._drain_spooled_drops(session_id)
+                if spool_exc is not None:
+                    raise spool_exc
                 self._append_transcript_message(session_id, msg)
             except Exception as exc:
                 from hermes_state import StateDbCorruptError, StateDbReplacedError
@@ -321,6 +324,8 @@ class SessionTranscriptMixin:
                             "no unique live child; not retrying", session_id)
                         return
                 if self._is_fts_corruption_error(exc) and self._rebuild_fts_once():
+                    if spool_exc is not None:
+                        continue  # repaired: drain the older spool again before ``msg``
                     try:
                         self._append_transcript_message(session_id, msg)
                     except Exception as retry_exc:
@@ -373,13 +378,22 @@ class SessionTranscriptMixin:
                     self._dirty_transcripts.pop(queue_session_id, None)
         return spooled
 
-    def _drain_spooled_drops(self, session_id: str) -> bool:
-        """Replay cap-dropped spooled transcript messages after DB recovery; True while some of them
-        are still on disk. Best-effort: replay failures keep the spool files for the next successful
-        flush; nothing here may raise."""
+    def _drain_spooled_drops(self, session_id: str) -> Exception | None:
+        """Replay cap-dropped spooled transcript messages after DB recovery; return the replay
+        failure while some of them are still on disk, else None. Best-effort: replay failures keep
+        the spool files for the next successful flush; nothing here may raise."""
         spooled_sessions = getattr(self, "_spooled_drop_sessions", None)
         if not spooled_sessions or session_id not in spooled_sessions:
-            return False
+            return None
+        failures: list[Exception] = []
+
+        def replay(message: Dict[str, Any]) -> None:
+            try:
+                self._append_transcript_message(session_id, message)
+            except Exception as exc:
+                failures.append(exc)
+                raise
+
         try:
             from gateway.shutdown_flush import drain_transcript_spool
             # Inside an outage the append that follows logs/escalates the same failure; the
@@ -387,15 +401,15 @@ class SessionTranscriptMixin:
             with self._transcript_retry_lock:
                 known_failing = bool(self._transcript_append_failures.get(session_id))
             _replayed, remaining = drain_transcript_spool(
-                session_id, lambda message: self._append_transcript_message(session_id, message),
-                db_known_failing=known_failing,
-            )
+                session_id, replay, db_known_failing=known_failing)
             if not remaining:
                 spooled_sessions.discard(session_id)
-            return bool(remaining)
+                return None
+            return failures[-1] if failures else RuntimeError(
+                f"older spooled transcript rows for {session_id} still pending")
         except Exception as exc:
             logger.warning("Failed to drain transcript spool for %s: %s", session_id, exc)
-            return False
+            return None
 
     def spooled_drop_sessions(self) -> set:
         """The live set of sessions whose next transcript write drains the spool first. Boot recovery

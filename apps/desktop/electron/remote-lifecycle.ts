@@ -375,22 +375,52 @@ print('LIVE:'+str(owner))
  * probe, or transport uncertainty fails closed so a Desktop relaunch cannot
  * start `serve` beside an updater that survived the old app process.
  */
+const INSTALL_CLEAR_PROBE_ATTEMPTS = 2
+const INSTALL_CLEAR_PROBE_RETRY_MS = 500
+
+async function readRemoteInstallUpdateObservation(ssh, home) {
+  const command = withRemoteTimeout(
+    `python3 -c ${shq(REMOTE_UPDATE_MARKER_PROBE)} ${expandRemotePath(home)}`
+  )
+  let lastCause
+
+  for (let attempt = 0; attempt < INSTALL_CLEAR_PROBE_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      await new Promise(resolve => setTimeout(resolve, INSTALL_CLEAR_PROBE_RETRY_MS))
+    }
+
+    try {
+      const observation =
+        String(await ssh.exec(command))
+          .trim()
+          .split(/\r?\n/)
+          .pop() || ''
+
+      if (observation === 'CLEAR' || observation === 'UNCERTAIN' || /^LIVE:[1-9][0-9]*$/.test(observation)) {
+        return observation
+      }
+
+      lastCause = new Error(`Unexpected update-clear probe response: ${JSON.stringify(observation)}`)
+    } catch (cause: any) {
+      // These are stable user-action failures, not transport uncertainty.
+      // Preserve their original classification so Desktop does not auto-retry
+      // a changed host key or rejected credential forever.
+      if (cause?.kind === 'host-key-changed' || cause?.kind === 'auth-failed') {
+        throw cause
+      }
+      lastCause = cause
+    }
+  }
+
+  const error: any = new Error('Could not prove that the remote Hermes install is clear for SSH startup.')
+  error.kind = 'transient-transport-error'
+  error.cause = lastCause
+  throw error
+}
+
 async function assertRemoteInstallUpdateClear(ssh, hermesHome) {
   const home = assertSafeRemoteHome(hermesHome)
-  let observation = ''
-
-  try {
-    observation =
-      String(await ssh.exec(`python3 -c ${shq(REMOTE_UPDATE_MARKER_PROBE)} ${expandRemotePath(home)}`))
-        .trim()
-        .split(/\r?\n/)
-        .pop() || ''
-  } catch (cause) {
-    const error: any = new Error('Could not prove that the remote Hermes install is clear for SSH startup.')
-    error.kind = 'update-in-progress'
-    error.cause = cause
-    throw error
-  }
+  const observation = await readRemoteInstallUpdateObservation(ssh, home)
 
   if (observation === 'CLEAR') {
     return

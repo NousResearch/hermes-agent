@@ -420,8 +420,13 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
 
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
+# Each quote may be backslash-escaped: a tool result is often a JSON *string* whose
+# embedded body has ``\"access_token\": \"…\"`` (terminal_tool returns json.dumps(...)).
+# Requiring an unescaped quote let a keyed credential ride into the live subagent
+# transcript untouched. Tolerate an optional ``\`` before the key/opening quotes and an
+# optional ``\"`` terminator; a non-escaped closing quote still terminates the value.
 _JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
-_JSON_FIELD_RE = re.compile(rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"', re.IGNORECASE)
+_JSON_FIELD_RE = re.compile(rf'(\\?"{_JSON_KEY_NAMES}\\?")\s*:\s*\\?"((?:[^"\\]|\\.)+?)\\?"', re.IGNORECASE)
 
 # Python ``repr`` uses single-quoted mapping fields, so opaque credentials in
 # tracebacks and pytest failure introspection bypass the double-quoted JSON rule

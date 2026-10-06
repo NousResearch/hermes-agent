@@ -176,7 +176,7 @@ def which_binary() -> Optional[Path]:
                 try:
                     out = subprocess.run(
                         [str(p), "--version"],
-                        capture_output=True,
+                        stdin=subprocess.DEVNULL, capture_output=True,
                         text=True,
                         timeout=5,
                     )
@@ -393,7 +393,7 @@ def run_sg(
     try:
         return subprocess.run(
             cmd,
-            capture_output=capture,
+            stdin=subprocess.DEVNULL, capture_output=capture,
             text=True,
             timeout=timeout,
         )

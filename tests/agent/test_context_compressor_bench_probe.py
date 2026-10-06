@@ -41,3 +41,14 @@ def test_bench_probe_deadline_survives_a_compressor_rebuild(tmp_path):
             patch.object(rebuilt, "_generate_summary", return_value="LLM summary") as mock_gen:
         rebuilt.compress(_messages(), force=False)
     mock_gen.assert_called_once()
+
+    # Rotating compaction (in_place: false) binds a fresh child row: the deadline must follow it.
+    with patch("agent.context_compressor.time.time", return_value=2000.0), \
+            patch.object(rebuilt, "_generate_summary", return_value="LLM summary"):
+        rebuilt.compress(_messages(), force=False)  # benched again, re-arms the window
+    db.create_session("s2", "cli", parent_session_id="s1")
+    rebuilt.on_session_start("s2", boundary_reason="compression", old_session_id="s1", session_db=db)
+    with patch("agent.context_compressor.time.time", return_value=2000.0 + window + 1), \
+            patch.object(rebuilt, "_generate_summary", return_value="LLM summary") as mock_gen:
+        rebuilt.compress(_messages(), force=False)
+    mock_gen.assert_called_once()

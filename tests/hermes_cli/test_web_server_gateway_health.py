@@ -125,3 +125,74 @@ class TestProbeGatewayHealth:
             "http://gw:8642/health/detailed",
             "http://gw:8642/health",
         ]
+
+
+class TestProbeGatewayHealthAuth:
+    """API_SERVER_KEY must authenticate the /health/detailed probe — and must
+    never leak to the unauthenticated /health fallback endpoint."""
+
+    @staticmethod
+    def _recording_urlopen(monkeypatch, detailed_behavior):
+        """urlopen mock that records each request's (url, Authorization header)."""
+        requests = []
+
+        def mock_urlopen(req, **kwargs):
+            requests.append((req.full_url, req.get_header("Authorization")))
+            if len(requests) == 1:
+                detailed_behavior()
+            mock_resp = MagicMock()
+            mock_resp.status = 200
+            mock_resp.read.return_value = json.dumps({"status": "ok"}).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            return mock_resp
+
+        monkeypatch.setattr(_web_server_gateway.urllib.request, "urlopen", mock_urlopen)
+        return requests
+
+    def test_auth_key_sent_to_detailed_endpoint(self, monkeypatch):
+        """With API_SERVER_KEY set, the /health/detailed probe carries the bearer
+        credential so an auth-protected gateway does not log 401 warnings."""
+        monkeypatch.setenv("API_SERVER_KEY", "sekrit-token")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 1)
+        requests = self._recording_urlopen(
+            monkeypatch,
+            lambda: json.dumps({"status": "ok"}),
+        )
+
+        alive, body = _web_server_gateway._probe_gateway_health()
+
+        assert alive is True
+        assert requests[0] == ("http://gw:8642/health/detailed", "Bearer sekrit-token")
+
+    def test_auth_key_never_sent_to_public_health_fallback(self, monkeypatch):
+        """The credential authenticates /health/detailed only; the unauthenticated
+        /health fallback must never receive it (it is the public endpoint)."""
+        monkeypatch.setenv("API_SERVER_KEY", "sekrit-token")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 1)
+        requests = self._recording_urlopen(
+            monkeypatch, lambda: (_ for _ in ()).throw(ConnectionError("401"))
+        )
+
+        alive, body = _web_server_gateway._probe_gateway_health()
+
+        assert alive is True
+        assert requests[0] == ("http://gw:8642/health/detailed", "Bearer sekrit-token")
+        assert requests[1] == ("http://gw:8642/health", None)
+
+    def test_no_key_means_no_header(self, monkeypatch):
+        """Without API_SERVER_KEY the probe sends no Authorization header at all."""
+        monkeypatch.delenv("API_SERVER_KEY", raising=False)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 1)
+        requests = self._recording_urlopen(
+            monkeypatch,
+            lambda: json.dumps({"status": "ok"}),
+        )
+
+        alive, body = _web_server_gateway._probe_gateway_health()
+
+        assert alive is True
+        assert requests[0][1] is None

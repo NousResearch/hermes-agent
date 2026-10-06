@@ -194,7 +194,11 @@ async def test_send_reattaches_dm_user_id_from_inbound_scope():
     live 'discord egress declined: target not routed to an onboarded tenant' on
     DM replies (the connector-side fix is gateway-gateway #67)."""
     t = _CaptureTransport()
-    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    a = RelayAdapter(
+        PlatformConfig(),
+        make_desc(platform="discord"),
+        transport=Mock(spec=RelayTransport, wraps=t, _identities=t._identities),
+    )
     a._capture_scope(_make_dm_event(chat_id="dm-1", user_id="user-42"))
 
     await a.send("dm-1", "the reply")
@@ -215,7 +219,11 @@ async def test_scoped_reply_reattaches_both_scope_id_and_user_id():
     target not routed to an onboarded tenant' on GUILD replies (paired with
     gateway-gateway makeDiscordTenantOf guild-route-miss fallback)."""
     t = _CaptureTransport()
-    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    a = RelayAdapter(
+        PlatformConfig(),
+        make_desc(platform="discord"),
+        transport=Mock(spec=RelayTransport, wraps=t, _identities=t._identities),
+    )
     a._capture_scope(
         _make_scoped_event_with_author(
             chat_id="chan-1", scope_id="scope-9", user_id="user-42"
@@ -230,7 +238,11 @@ async def test_scoped_reply_reattaches_both_scope_id_and_user_id():
 @pytest.mark.asyncio
 async def test_stop_typing_forwards_explicit_clear_with_routing_context():
     t = _CaptureTransport()
-    a = RelayAdapter(PlatformConfig(), make_desc(platform="slack"), transport=t)
+    a = RelayAdapter(
+        PlatformConfig(),
+        make_desc(platform="slack"),
+        transport=Mock(spec=RelayTransport, wraps=t, _identities=t._identities),
+    )
     event = _make_event(chat_id="channel-1", scope_id="workspace-1")
     event.source.platform = Platform.SLACK
     a._capture_scope(event)
@@ -261,7 +273,11 @@ async def test_send_typing_tags_egress_platform():
     from gateway.session import SessionSource
 
     t = _CaptureTransport()
-    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    a = RelayAdapter(
+        PlatformConfig(),
+        make_desc(platform="discord"),
+        transport=Mock(spec=RelayTransport, wraps=t, _identities=t._identities),
+    )
     src = SessionSource(
         platform=Platform.DISCORD,
         chat_id="chan-2",

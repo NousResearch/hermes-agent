@@ -3592,40 +3592,16 @@ class GatewayTurnMixin:
         """Evict the cached agent when a fallback model activated on a SUCCESSFUL run (so /model shows
         the active model and the next message retries the primary). Skip failed runs: evicting
         would loop bad model → fallback → evict → recreate."""
-        from gateway.run import _resolve_gateway_model
         session_key = turn_ctx.session_key
         _agent = turn_ctx.agent_holder[0]
         _result_for_fb = turn_ctx.result_holder[0]
         if _agent is None or not hasattr(_agent, 'model') or (_result_for_fb and _result_for_fb.get("failed")):
             return
-        source = turn_ctx.source
-        if source is not None:
-            # A channel_overrides model is this chat's configured model (the lookup
-            # _resolve_session_agent_runtime uses), not a fallback.
-            _cfg_model = self._resolve_model_for_channel(
-                source.platform, str(source.chat_id) if source.chat_id else "",
-                thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
-                parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
-            )
-        else:
-            _cfg_model = _resolve_gateway_model()
-        # Normalize as AIAgent.__init__ does (vendor prefix stripped on native providers), else the
-        # cached agent is evicted every turn, destroying prompt caching.
-        with suppress(Exception):
-            from hermes_cli.model_normalize import _AGGREGATOR_PROVIDERS, normalize_model_for_provider
-            _agent_provider = getattr(_agent, 'provider', '') or ''
-            if _agent_provider and _agent_provider not in _AGGREGATOR_PROVIDERS:
-                _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
-        # AIAgent.__init__ also pins the Nous welcome host to its one model (pin_model_for_route), whatever
-        # the chat configured. Apply it on the PRIMARY route: a fallback that lands on that host is drift.
-        _primary_route = getattr(_agent, '_primary_runtime', None) or {}
-        with suppress(Exception):
-            from hermes_cli.anon_auth import pin_model_for_route
-            _cfg_model = pin_model_for_route(
-                _primary_route.get("provider", getattr(_agent, 'provider', None)),
-                _primary_route.get("base_url", getattr(_agent, 'base_url', None)),
-                _cfg_model,
-            )
+        # A provider fallback is drift even when it serves the configured model name on another endpoint.
+        if getattr(_agent, "_provider_fallback_active", False) is True:
+            self._evict_cached_agent(session_key)
+            return
+        _cfg_model = self._fallback_baseline_model(session_key, turn_ctx.source, _agent)
         if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent, _cfg_model):
             self._evict_cached_agent(session_key)
 

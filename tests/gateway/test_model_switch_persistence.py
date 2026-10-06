@@ -171,12 +171,19 @@ class TestFallbackEvictionHonorsChannelOverrides:
     the cached agent after every turn."""
 
     @staticmethod
-    def _evicted_after_turn(monkeypatch, source, agent_model, *, global_model="default/model", **agent_attrs):
+    def _evicted_after_turn(
+        monkeypatch, source, agent_model, *, global_model="default/model", channel_model="chan/model",
+        session_model=None, session_provider="nous", **agent_attrs,
+    ):
         from gateway.turn_context import TurnContext
 
         monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda *a, **k: global_model)
         runner = _make_runner()
-        runner.config.platforms[Platform.TELEGRAM].channel_overrides = {"c1": ChannelOverride(model="chan/model")}
+        runner.config.platforms[Platform.TELEGRAM].channel_overrides = {"c1": ChannelOverride(model=channel_model)}
+        if session_model:
+            runner._session_model_overrides[build_session_key(source)] = {
+                "model": session_model, "provider": session_provider,
+            }
         runner._evict_cached_agent = MagicMock()
         ctx = TurnContext(source=source, session_key=build_session_key(source))
         ctx.agent_holder[0] = SimpleNamespace(model=agent_model, **({"provider": "openrouter"} | agent_attrs))
@@ -221,6 +228,43 @@ class TestFallbackEvictionHonorsChannelOverrides:
             monkeypatch, _make_source(), "nous/welcome", provider="nous", base_url=self._WELCOME,
             _primary_runtime={"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1"},
         ) is True
+
+    @pytest.mark.parametrize("agent_model, session_provider, switch, evicted", [
+        ("backing/model", "nous", ("nous/welcome", "backing/model"), False),  # the server's recorded move
+        ("chan/model", "nous", None, True),  # a fallback that happens to land on the channel's model
+        # The override's provider was unavailable, so this turn ran on the channel's model.
+        ("chan/model", "openai-codex", None, False),
+    ], ids=["recorded-switch-off-the-session-model", "fallback-onto-the-channel-model", "override-unavailable"])
+    def test_a_session_model_override_outranks_the_channel_model(
+        self, monkeypatch, agent_model, session_provider, switch, evicted,
+    ):
+        """The agent was built on the session's /model choice, so drift is measured from it."""
+        assert self._evicted_after_turn(
+            monkeypatch, _make_source(), agent_model, global_model="backing/model", session_model="nous/welcome",
+            session_provider=session_provider, provider="nous", base_url="https://inference-api.nousresearch.com/v1",
+            **({"_nous_model_switch": switch} if switch else {}),
+        ) is evicted
+
+    @pytest.mark.parametrize("session_model", [None, "chan/model"], ids=["channel-model", "session-model"])
+    def test_a_provider_fallback_serving_the_configured_model_still_evicts(self, monkeypatch, session_model):
+        """Same model name, different endpoint: the model strings match, but the turn ran on a fallback."""
+        route = {"provider": "custom", "base_url": "https://primary.example/v1"}
+        assert self._evicted_after_turn(
+            monkeypatch, _make_source(), "chan/model", session_model=session_model, session_provider="custom",
+            provider="custom", base_url="https://fallback.example/v1", _primary_runtime=route,
+            _provider_fallback_active=True,
+        ) is True
+
+    @pytest.mark.parametrize("primary_provider, evicted", [
+        ("anthropic", False),  # native primary: the agent runs the prefix-stripped channel model
+        ("openrouter", True),  # OpenRouter primary that fell back to native Anthropic
+    ])
+    def test_the_channel_model_is_normalized_for_the_primary_provider(self, monkeypatch, primary_provider, evicted):
+        assert self._evicted_after_turn(
+            monkeypatch, _make_source(), "claude-sonnet-4-6", channel_model="anthropic/claude-sonnet-4.6",
+            provider="anthropic", base_url="https://api.anthropic.com",
+            _primary_runtime={"provider": primary_provider},
+        ) is evicted
 
 
 class TestOneTurnModelOverrideRestore:

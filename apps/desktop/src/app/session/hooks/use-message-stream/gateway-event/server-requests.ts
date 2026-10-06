@@ -376,7 +376,7 @@ const approval: Handler = ctx => {
 
   rememberServerRequest(request)
   void receiveApprovalRequest(null, {
-    // false only when a tirith warning forbids it; backend omits the field otherwise.
+    // false only when the backend forbids a permanent allow; it omits the field otherwise.
     allowPermanent: p.allow_permanent !== false,
     choices: Array.isArray(p.choices)
       ? p.choices.filter((choice): choice is string => typeof choice === 'string')

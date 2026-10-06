@@ -593,21 +593,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "tools/tirith_security.py",
-    "symbol": "_local_tirith",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/tirith_security.py",
-    "symbol": "_verify_cosign",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/tirith_security.py",
-    "symbol": "verify_release_provenance",
-    "kind": "bare_which"
-  },
-  {
     "path": "tools/transcription_audio.py",
     "symbol": "_convert_caf_to_wav",
     "kind": "bare_which"

@@ -2700,7 +2700,6 @@ cli:
     run_model_to_retry: "Exécutez 'hermes model' pour réessayer."
     provider_configured: "✓ Fournisseur configuré — vous pouvez commencer à discuter."
     provider_setup_incomplete: "La configuration du fournisseur n'a pas abouti. Exécutez 'hermes model' pour réessayer."
-    tirith_unavailable: "⚠ Le scanner de sécurité tirith est activé mais indisponible — l'analyse des commandes se limitera à la détection par motifs"
     unknown_toolsets: "Avertissement : ensembles d'outils inconnus : {names}"
     stdin_unusable: |2-
 
@@ -3970,7 +3969,7 @@ tips:
   t167: "L'approbation des commandes dangereuses a 4 niveaux : once, session, always (liste d'autorisation permanente), deny."
   t168: "Le mode d'approbation intelligent utilise un LLM pour approuver automatiquement les commandes sûres et signaler les dangereuses."
   t169: "La protection SSRF bloque les réseaux privés, le loopback, les adresses link-local et les adresses de métadonnées cloud."
-  t170: "L'analyse pré-exécution Tirith détecte l'usurpation d'URL par homoglyphes et les schémas de type « pipe vers interpréteur »."
+  t170: "Les ID de session sont préfixés par un horodatage (20250305_091523_abcd), donc le tri fonctionne naturellement avec ls et jq."
   t171: "Les sous-processus MCP reçoivent un environnement filtré — seules les variables système sûres sont transmises."
   t172: "Les fichiers de contexte (.hermes.md, AGENTS.md) sont analysés contre les injections de prompt avant chargement."
   t173: "command_allowlist dans config.yaml approuve de façon permanente certains motifs de commandes shell."
@@ -4175,12 +4174,9 @@ tips:
   t372: "image_gen.model dans config.yaml choisit le modèle FAL : flux-2/klein, gpt-image-2, nano-banana-pro, et d'autres."
   t373: "image_gen.provider fait passer la génération d'images par un plugin (OpenAI Images, Codex, FAL) au lieu du fournisseur par défaut."
   t374: "AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY dirigent l'analyse d'images vers n'importe quel point de terminaison compatible OpenAI."
-  t375: "security.tirith_fail_open: false fait bloquer les commandes par Hermes quand le scanner tirith lui-même tombe en erreur."
-  t376: "La variable d'environnement TIRITH_FAIL_OPEN remplace la configuration tirith_fail_open — une bascule rapide sans modifier config.yaml."
+  t375: "API_SERVER_MODEL_NAME personnalise le nom du modèle sur /v1/models — indispensable pour les configurations Open WebUI multi-profils."
+  t376: "Les plugins du tableau de bord sont servis depuis /dashboard-plugins/<name>/ — déposez les fichiers dans ~/.hermes/dashboard-plugins/."
   t377: "Les chats --source tool sont exclus de hermes sessions list par défaut — passez --source explicitement pour les voir."
-  t378: "Les ID de session sont préfixés par un horodatage (20250305_091523_abcd), donc le tri fonctionne naturellement avec ls et jq."
-  t379: "API_SERVER_MODEL_NAME personnalise le nom du modèle sur /v1/models — indispensable pour les configurations Open WebUI multi-profils."
-  t380: "Les plugins du tableau de bord sont servis depuis /dashboard-plugins/<name>/ — déposez les fichiers dans ~/.hermes/dashboard-plugins/."
   placeholder:
     p01: "Posez une question, ou tapez / pour les commandes…"
     p02: "Résume le contenu de ce dossier"

@@ -7,7 +7,7 @@
 # Schema version of this file. The installers copy it to seed config.yaml, and
 # `hermes update` uses it to know which one-time migrations the file already
 # has. Hermes manages it: do not copy it into another config.
-_config_version: 49
+_config_version: 50
 
 # =============================================================================
 # Database Configuration
@@ -555,18 +555,9 @@ terminal:
 #   sudo_password: "your-password-here"
 
 # =============================================================================
-# Security Scanning (tirith)
+# Security
 # =============================================================================
-# Optional pre-exec command security scanning via tirith.
-# Detects homograph URLs, pipe-to-shell, terminal injection, env manipulation.
-# Install: brew install sheeki03/tap/tirith
-# Docs: https://github.com/sheeki03/tirith
-#
 # security:
-#   tirith_enabled: true        # Enable/disable tirith scanning
-#   tirith_path: "tirith"       # Path to tirith binary (supports ~ expansion)
-#   tirith_timeout: 5           # Scan timeout in seconds
-#   tirith_fail_open: true      # Allow commands if tirith unavailable
 #   approval:
 #     transport: builtin        # Or an explicitly enabled plugin transport name
 #     transport_fallback: deny  # Set builtin to opt into fallback on transport failure

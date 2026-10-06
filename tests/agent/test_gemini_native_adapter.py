@@ -916,3 +916,36 @@ def test_build_gemini_request_tools_plus_json_output_only_on_gemini3(model, keep
         tool_choice="auto", model=model, response_format={"type": "json_object"}, tools_as_json_schema=True,
     )["generationConfig"]
     assert ("responseMimeType" in generation) is keeps_json
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("request_timeout", ["omitted", 3.0, None])
+@pytest.mark.parametrize("client_timeout", [None, 17.0])
+def test_native_request_preserves_client_timeout(monkeypatch, stream, request_timeout, client_timeout):
+    """Omitting a request override must keep the HTTP client's bounded deadline."""
+    import httpx
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    observed = []
+    payload = {"candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}]}
+
+    def handle_request(_transport, request):
+        observed.append(request.extensions["timeout"])
+        if stream:
+            return httpx.Response(200, text="data: " + json.dumps(payload) + "\n\n")
+        return httpx.Response(200, json=payload)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handle_request)
+    constructor = {} if client_timeout is None else {"timeout": client_timeout}
+    with GeminiNativeClient(api_key="test-key", **constructor) as client:
+        configured = client._http.timeout.as_dict()
+        kwargs = {} if request_timeout == "omitted" else {"timeout": request_timeout}
+        response = client.chat.completions.create(
+            model="gemini-test", messages=[{"role": "user", "content": "hi"}], stream=stream, **kwargs,
+        )
+        if stream:
+            assert list(response)
+        else:
+            assert response.choices[0].message.content == "ok"
+    expected = configured if request_timeout == "omitted" else httpx.Timeout(request_timeout).as_dict()
+    assert observed == [expected]

@@ -90,6 +90,8 @@ FIRECRAWL_API_URL=http://localhost:3002
 
 设置 `FIRECRAWL_API_URL` 后，API 密钥为可选项（使用 `USE_DB_AUTHENTICATION=false` 禁用服务器认证）。
 
+如果 Hermes 本身运行在容器中，此处的 `localhost` 存在同样的陷阱——请改用 `http://host.docker.internal:3002`（参见[下方 SearXNG 的说明](#searxng免费自托管)）。
+
 ---
 
 ### SearXNG（免费，自托管）
@@ -185,6 +187,10 @@ web:
 ```
 
 或通过 `hermes tools` → Web Search & Extract → SearXNG 设置。
+
+:::note Hermes 本身运行在容器中？
+`localhost` 指向的是 Hermes 容器自身的网络命名空间而非宿主机，因此 `SEARXNG_URL=http://localhost:8888` 会以 `Connection refused` 失败。请改用 `http://host.docker.internal:8888`（macOS/Windows 的 Docker Desktop 原生支持；Linux 需在 Hermes 服务中添加 `extra_hosts: ["host.docker.internal:host-gateway"]`），或者将 SearXNG 与 Hermes 放入同一个用户自定义 Docker 网络并以 SearXNG 容器名作为主机名。
+:::
 
 ---
 

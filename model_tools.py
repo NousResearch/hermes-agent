@@ -332,6 +332,23 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
     from toolsets import profile_role_toolsets
     for ts_name in profile_role_toolsets()[1]:
         tools.difference_update(resolve_toolset(ts_name))
+    # Per-profile tool exclusion fence (#126923): ``kanban.worker_excluded_tools`` strips named
+    # tools from the assignee profile's selection AFTER every grant above — including the
+    # dispatcher-spawned kanban lifecycle handoff — so a reviewer profile can be made structurally
+    # read-only on the board without forking the resolver. Parsed leniently like
+    # agent.disabled_toolsets (#86661): a quoted JSON-array string is one list, a scalar names one
+    # tool. Unknown names subtract nothing.
+    try:
+        from hermes_cli.config import load_config as _load_cfg_for_exclusions
+
+        excluded_raw = (_load_cfg_for_exclusions().get("kanban") or {}).get("worker_excluded_tools")
+    except Exception:
+        excluded_raw = None
+    if excluded_raw:
+        from agent.skill_utils import parse_config_string_list
+
+        tools.difference_update(
+            name.strip() for name in parse_config_string_list(excluded_raw) if name and name.strip())
     # Disabled toolsets are always subtracted LAST, so a tool in a disabled
     # toolset is stripped even when a composite (hermes-cli) re-enables it.
     # This ensures that even if a composite toolset (like hermes-cli) is enabled, any tools belonging to a

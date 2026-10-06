@@ -293,7 +293,7 @@ def test_both_completion_children_run_in_utf8_mode(tmp_path, monkeypatch):
     into a pipe: each argv carries -X utf8 (win-utf8 review; the bootstrap child got it first)."""
     import pm
     from pm import client, environments, receipt
-    from hermes_cli import update_completion, venv_sync
+    from hermes_cli import gitlock, update_completion, venv_sync
 
     calls = []
 
@@ -303,9 +303,10 @@ def test_both_completion_children_run_in_utf8_mode(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "call", lambda command, **kw: calls.append(command) or 0)
     monkeypatch.setattr(subprocess, "Popen", popen)
+    # The treeless-checkout conversion's git probe would be captured as a third spawn.
     for module, name in ((venv_sync, "refuse_foreign_owned_venv"), (venv_sync, "arm_completion"),
                          (venv_sync, "collect_superseded_generations"), (client, "ensure_tools_for_sync"),
-                         (pm, "sync_venv")):
+                         (pm, "sync_venv"), (gitlock, "convert_treeless_checkout_first")):
         monkeypatch.setattr(module, name, lambda *a, **k: None)
     monkeypatch.setattr(receipt, "last_for_update", lambda *a, **k: None)
     monkeypatch.setattr(environments, "project_python", lambda root: "python")

@@ -729,8 +729,14 @@ append_shell_path() {
     if [ -f "$rc" ] && grep -E "$pattern" "$rc" >/dev/null 2>&1; then
         return 0
     fi
-    mkdir -p "$(dirname "$rc")"
-    printf '\n# Hermes Agent command\n%s\n' "$line" >> "$rc" || fail "cannot update PATH in $rc"
+    # A declaratively managed rc (home-manager, nix-darwin) is a read-only store
+    # symlink. The launcher is already published, so a PATH line we cannot write
+    # is the user's to add, not a failed install.
+    if ! { mkdir -p "$(dirname "$rc")" && printf '\n# Hermes Agent command\n%s\n' "$line" >> "$rc"; } 2>/dev/null; then
+        log_warn "cannot write $rc; add ~/.local/bin to PATH in your shell config yourself:"
+        printf '    %s\n' "$line"
+        return 0
+    fi
     log_success "added ~/.local/bin to PATH in $rc"
 }
 

@@ -1,14 +1,17 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { conversationSearchCopy } from './conversation-search'
 import { defineLocale } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaAuxTasks } from './ja_aux_tasks'
+import { jaLanguage } from './ja_language'
 import { jaModelMenu } from './ja_model_menu'
 import { jaNotices } from './ja_notices'
 import { jaPluginSettings } from './ja_plugins'
 import { jaSharedMetrics } from './ja_shared_metrics'
 
 export const ja = defineLocale({
+  conversationSearch: conversationSearchCopy['ja'],
   externalOpenFailed: {
     title: 'このリンクを開けませんでした',
     message: 'このアドレスを開くブラウザが登録されていません。リンクをコピーして手動で開いてください。',
@@ -311,15 +314,7 @@ export const ja = defineLocale({
     resetHudLayout: 'HUD のサイズと位置をリセット'
   },
 
-  language: {
-    label: '言語',
-    description: 'デスクトップインターフェイスの言語を選択します。',
-    saving: '言語を保存中…',
-    saveError: '言語の更新に失敗しました',
-    switchTo: '言語を切り替え',
-    searchPlaceholder: '言語を検索…',
-    noResults: '言語が見つかりません'
-  },
+  language: jaLanguage,
 
   settings: {
     uninstallSection: {

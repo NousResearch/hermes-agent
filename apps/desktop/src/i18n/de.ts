@@ -1,5 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { conversationSearchCopy, findInPageCopy } from './conversation-search'
 import { deAuxTasks } from './de_aux_tasks'
 import { deBoot } from './de_boot'
 import { deModelMenu } from './de_model_menu'
@@ -9,6 +10,7 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
 export const deOverrides = {
+  conversationSearch: conversationSearchCopy['de'],
   sharedMetrics: deSharedMetrics,
   intro: introDe,
   connectors: {
@@ -684,10 +686,7 @@ export const deOverrides = {
       'composer.cancel': 'Popover schließen · Lauf abbrechen'
     }
   },
-  findInPage: {
-    next: 'Nächster Treffer',
-    previous: 'Vorheriger Treffer'
-  },
+  findInPage: findInPageCopy.de,
   language: {
     label: 'Sprache',
     description: 'Wählen Sie die Sprache der Desktop-Oberfläche.',

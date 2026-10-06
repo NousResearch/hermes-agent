@@ -9,9 +9,11 @@ import { arCommon } from './ar_common'
 import { arConnectors } from './ar_connectors'
 import { arDiagnostics } from './ar_diagnostics'
 import { arSettings } from './ar_settings'
+import { conversationSearchCopy } from './conversation-search'
 import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
+  conversationSearch: conversationSearchCopy['ar'],
   sharedMetrics: arCommon.sharedMetrics,
   externalOpenFailed: arChrome.externalOpenFailed,
   sessionImport: arConnectors.sessionImport,

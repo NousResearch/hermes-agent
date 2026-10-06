@@ -1,5 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { conversationSearchCopy, findInPageCopy } from './conversation-search'
 import { defineLocale } from './define-locale'
 import { introZh } from './intro-zh'
 import { zhAuxTasks } from './zh_aux_tasks'
@@ -8,6 +9,7 @@ import { zhNotices } from './zh_notices'
 import { zhSharedMetrics } from './zh_shared_metrics'
 
 export const zh = defineLocale({
+  conversationSearch: conversationSearchCopy['zh'],
   externalOpenFailed: {
     title: '无法打开此链接',
     message: '没有注册用于打开此地址的浏览器。请复制链接并手动打开。',
@@ -456,10 +458,7 @@ export const zh = defineLocale({
     }
   },
 
-  findInPage: {
-    next: '下一个匹配',
-    previous: '上一个匹配'
-  },
+  findInPage: findInPageCopy.zh,
 
   language: {
     label: '语言',

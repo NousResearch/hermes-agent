@@ -1,5 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { conversationSearchCopy, findInPageCopy } from './conversation-search'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
@@ -9,6 +10,7 @@ import { frSharedMetrics } from './fr_shared_metrics'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
+  conversationSearch: conversationSearchCopy['fr'],
   sharedMetrics: frSharedMetrics,
   intro: introFr,
   connectors: {
@@ -684,10 +686,7 @@ export const frOverrides = {
       'composer.cancel': "Fermer le popover · annuler l'exécution"
     }
   },
-  findInPage: {
-    next: 'Correspondance suivante',
-    previous: 'Correspondance précédente'
-  },
+  findInPage: findInPageCopy.fr,
   language: {
     label: 'Langue',
     description: "Choisissez la langue de l'interface du desktop.",

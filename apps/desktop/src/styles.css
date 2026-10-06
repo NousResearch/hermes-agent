@@ -3814,3 +3814,9 @@ html[data-hud-window] [data-slot='popover-content'] {
 [data-pane-hidden] * {
   visibility: inherit !important;
 }
+
+/* Explicit stored-transcript match selection; cleared on query/scope change. */
+[data-message-id][data-conversation-match] {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 2px;
+}

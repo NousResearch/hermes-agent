@@ -16,11 +16,10 @@ import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts
 import { usePaneGroup, usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $hoveredTreeGroup, $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
 import { PromptOverlays } from '@/components/prompt-overlays'
-import { TitleMenuTrigger } from '@/components/ui/title-menu-trigger'
 import { type HermesGateway, type ResolvedOwner } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { NEW_SESSION_TITLE, quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
+import { quickModelOptions } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { currentModelCapabilities, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -28,11 +27,10 @@ import { cn } from '@/lib/utils'
 import { migrateSessionDraft } from '@/store/composer'
 import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
 import { $introSplash } from '@/store/intro-splash'
-import { $pinnedSessionIds } from '@/store/layout'
 import { $guideOpening, $onboardingGate } from '@/store/onboarding-gate'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile } from '@/store/profile'
 import {
   $connection,
   $contextSuggestions,
@@ -46,7 +44,6 @@ import {
   getSessionOwnerHint,
   resolveComposerSessionKey,
   sessionMatchesStoredId,
-  sessionPinId,
   shouldMigrateComposerScope
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
@@ -55,9 +52,9 @@ import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcr
 import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
 
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
-import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
 
 import { ChatDropOverlay } from './chat-drop-overlay'
+import { ChatHeader } from './chat-header'
 import { ChatSwapOverlay, ChatSyncBadge } from './chat-swap-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
 import { FloatingComposerSurface } from './composer/floating-surface'
@@ -74,13 +71,11 @@ import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { type DragKind, useFileDropZone } from './hooks/use-file-drop-zone'
 import { shouldShowIntro } from './intro-visibility'
-import { ProfileTag } from './profile-tag'
 import { ResumeExhaustedOverlay } from './resume-exhausted-overlay'
 import { isRouteSessionMismatch } from './route-session-state'
 import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
-import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { composerStaysMounted, routedSessionIsLoading, threadLoadingState } from './thread-loading'
 import {
   backfillOlderTranscriptPage,
@@ -122,80 +117,6 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onRetryResume: (sessionId: string) => void
   onTranscribeAudio?: (audio: Blob, owner?: ResolvedOwner) => Promise<string>
   onDismissError?: (messageId: string) => void
-}
-
-interface ChatHeaderProps {
-  activeSessionId: null | string
-  isRoutedSessionView: boolean
-  onDeleteSelectedSession: () => void
-  onToggleSelectedPin: () => void
-  selectedSessionId: null | string
-}
-
-function ChatHeader({
-  activeSessionId,
-  isRoutedSessionView,
-  onDeleteSelectedSession,
-  onToggleSelectedPin,
-  selectedSessionId
-}: ChatHeaderProps) {
-  const sessions = useStore($sessions)
-  const pinnedSessionIds = useStore($pinnedSessionIds)
-  const profiles = useStore($profiles)
-
-  const activeStoredSession =
-    ((selectedSessionId || activeSessionId) &&
-      sessions.find(session => sessionMatchesStoredId(session, selectedSessionId || activeSessionId || ''))) ||
-    null
-
-  const title = activeStoredSession ? sessionTitle(activeStoredSession) : NEW_SESSION_TITLE
-
-  // Which agent/persona owns this chat — glanceable in the header once a
-  // second profile exists, so the open session's ownership is never ambiguous
-  // (#66003). Single-profile users see the unchanged header.
-  const showProfileTag = profiles.length > 1 && Boolean(activeStoredSession)
-
-  // Pins live on the durable lineage-root id, but selectedSessionId is the live
-  // (tip) id — resolve through the loaded row so the menu reflects the pin
-  // state after auto-compression rotates the id.
-  const selectedIsPinned = activeStoredSession
-    ? pinnedSessionIds.includes(sessionPinId(activeStoredSession))
-    : selectedSessionId
-      ? pinnedSessionIds.includes(selectedSessionId)
-      : false
-
-  // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
-  // are compact side panels — they drop the session-actions header + border
-  // entirely. A brand-new draft has nothing to pin/delete/rename either.
-  if (isAuxiliaryWindow() || (!selectedSessionId && !activeSessionId && !isRoutedSessionView)) {
-    return null
-  }
-
-  return (
-    <header className={cn(titlebarHeaderBaseClass, isRoutedSessionView && titlebarHeaderShadowClass)}>
-      <div
-        className={cn(titlebarHeaderTitleClass, showProfileTag && 'flex items-center')}
-        style={{
-          maxWidth:
-            'calc(100vw - var(--titlebar-content-inset,0px) - var(--titlebar-tools-right) - var(--titlebar-tools-width) - 1.5rem)'
-        }}
-      >
-        {showProfileTag && <ProfileTag className="pointer-events-auto mr-1.5" profile={activeStoredSession?.profile} />}
-        <SessionActionsMenu
-          align="start"
-          onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}
-          onPin={selectedSessionId ? onToggleSelectedPin : undefined}
-          pinned={selectedIsPinned}
-          profile={activeStoredSession?.profile}
-          sessionId={selectedSessionId || activeSessionId || ''}
-          sideOffset={8}
-          title={title}
-        >
-          <TitleMenuTrigger>{title}</TitleMenuTrigger>
-        </SessionActionsMenu>
-      </div>
-    </header>
-  )
 }
 
 interface ChatRuntimeBoundaryProps {
@@ -423,6 +344,7 @@ export function ChatRuntimeBoundary({
   const transcriptWindow = useMemo(
     () => ({
       olderAvailable,
+      searchAvailable: !suppressMessages,
       expandWindow,
       revealRow,
       returnToLatest,
@@ -430,7 +352,16 @@ export function ChatRuntimeBoundary({
       isHistorical,
       newerAvailable
     }),
-    [expandWindow, olderAvailable, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable]
+    [
+      expandWindow,
+      olderAvailable,
+      suppressMessages,
+      revealRow,
+      returnToLatest,
+      currentMessages,
+      isHistorical,
+      newerAvailable
+    ]
   )
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
@@ -811,18 +742,6 @@ const ChatViewContent = memo(function ChatViewContent({
       data-session-anchor={sessionAnchor}
     >
       <Backdrop />
-      {/* Tiles get their chrome from the layout zone (chip strip); the modal
-          prompt overlays stay active-session-scoped in the primary surface. */}
-      {isPrimary && (
-        <ChatHeader
-          activeSessionId={activeSessionId}
-          isRoutedSessionView={isRoutedSessionView}
-          onDeleteSelectedSession={onDeleteSelectedSession}
-          onToggleSelectedPin={onToggleSelectedPin}
-          selectedSessionId={selectedSessionId}
-        />
-      )}
-
       {/* Mounted for the primary AND every tile, each scoped to its own session
           so a tiled/background session's blocking prompt surfaces instead of
           stalling to timeout. */}
@@ -836,6 +755,17 @@ const ChatViewContent = memo(function ChatViewContent({
         onThreadMessagesChange={onThreadMessagesChange}
         suppressMessages={routeSessionMismatch}
       >
+        {/* Tiles get their chrome from the layout zone (chip strip); the modal
+          prompt overlays stay active-session-scoped in the primary surface. */}
+        {isPrimary && (
+          <ChatHeader
+            activeSessionId={activeSessionId}
+            isRoutedSessionView={isRoutedSessionView}
+            onDeleteSelectedSession={onDeleteSelectedSession}
+            onToggleSelectedPin={onToggleSelectedPin}
+            selectedSessionId={selectedSessionId}
+          />
+        )}
         <div
           className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"
           data-slot="composer-bounds"

@@ -1,5 +1,6 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
+import { conversationSearchCopy, findInPageCopy } from './conversation-search'
 import { enAuxTasks } from './en_aux_tasks'
 import { enBoot } from './en_boot'
 import { enModelMenu } from './en_model_menu'
@@ -8,6 +9,7 @@ import { enSharedMetrics } from './en_shared_metrics'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  conversationSearch: conversationSearchCopy['en'],
   externalOpenFailed: {
     title: 'Couldn’t open this link',
     message: 'No browser is registered to open this address. Copy the link and open it manually.',
@@ -684,10 +686,7 @@ export const en: Translations = {
     }
   },
 
-  findInPage: {
-    next: 'Next match',
-    previous: 'Previous match'
-  },
+  findInPage: findInPageCopy.en,
 
   language: {
     label: 'Language',

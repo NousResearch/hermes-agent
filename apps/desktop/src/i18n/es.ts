@@ -1,5 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { conversationSearchCopy, findInPageCopy } from './conversation-search'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { esAuxTasks } from './es_aux_tasks'
 import { esBoot } from './es_boot'
@@ -9,6 +10,7 @@ import { esSharedMetrics } from './es_shared_metrics'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
+  conversationSearch: conversationSearchCopy['es'],
   sharedMetrics: esSharedMetrics,
   intro: introEs,
   connectors: {
@@ -687,10 +689,7 @@ export const esOverrides = {
       'composer.cancel': 'Cerrar popover · cancelar ejecución'
     }
   },
-  findInPage: {
-    next: 'Siguiente coincidencia',
-    previous: 'Coincidencia anterior'
-  },
+  findInPage: findInPageCopy.es,
   language: {
     label: 'Idioma',
     description: 'Elige el idioma de la interfaz de escritorio.',

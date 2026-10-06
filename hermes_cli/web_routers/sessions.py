@@ -27,6 +27,7 @@ from hermes_cli.web_models import (
 from hermes_cli.web_routers._common import (
     CORRUPT_STORE_DETAIL, corrupt_store_as_status, log as _log, destructive_profile, http_failure,
 )
+from hermes_cli.web_routers.session_transcript import router as transcript_router
 from hermes_state import is_malformed_db_error
 from hermes_state_errors import SessionActiveWriteGuardError, StateDbReplacedError, is_transient_sqlite_error
 from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
@@ -971,3 +972,6 @@ async def prune_sessions_endpoint(body: SessionPrune):
         body = body.model_copy(update={
             "profile": destructive_profile(body.profile, "POST /api/sessions/prune")})
     return await asyncio.to_thread(_prune_sessions, body)
+
+
+manage_router.include_router(transcript_router)

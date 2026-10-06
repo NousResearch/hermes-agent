@@ -832,6 +832,19 @@ this fix) changes the app's identity once, so macOS will re-prompt one final
 time. Grants are stable from then on. If a permission gets stuck, reset it with
 `tccutil reset All com.nousresearch.hermes` and re-grant.
 
+### Search the open conversation
+
+Use the search icon beside the conversation title to search its stored transcript,
+including earlier compression segments and compacted messages. Previous/next
+buttons and snippet selection load one bounded history window and highlight the
+matching message. Enter selects the next match; Shift+Enter selects the previous
+one. The thread's existing return-to-latest control resumes the live view.
+
+Search accepts keywords, quoted phrases, and Boolean queries, including CJK text
+and tool output beyond the index's bounded prefix. Failed reads offer retry rather
+than reporting no matches. Older backends with no stored-search endpoint require a
+runtime update. Ctrl/Cmd+F keeps its existing find-in-page behavior.
+
 ## See also
 
 - [CLI Guide](./cli.md) — the terminal interface

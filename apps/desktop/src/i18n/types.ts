@@ -1,13 +1,13 @@
+import type { ErrorCodeKey } from '@/lib/error-surface'
 // Desktop i18n type contract.
 //
 // `Translations` is the single source of truth for every translatable string
 // surface. Fully translated locale files may satisfy this interface directly;
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
-
-import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
+import type { ConversationSearchCopy, FindInPageCopy } from './conversation-search'
 import type { AuxTaskCopyMap } from './types_aux_tasks'
 import type { BootTranslations } from './types_boot'
 import type { ModelMenuTranslations } from './types_model_menu'
@@ -67,6 +67,7 @@ interface ModeOptionCopy {
 }
 
 export interface Translations extends NoticeTranslations {
+  conversationSearch: ConversationSearchCopy
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: SharedMetricsTranslations
   externalOpenFailed: {
@@ -601,10 +602,7 @@ export interface Translations extends NoticeTranslations {
   }
 
   // Find-in-page bar (⌘F). `close` reuses common.close.
-  findInPage: {
-    next: string
-    previous: string
-  }
+  findInPage: FindInPageCopy
 
   language: {
     label: string

@@ -1,5 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { conversationSearchCopy, findInPageCopy } from './conversation-search'
 import { defineLocale } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
 import { ruModelMenu } from './ru_model_menu'
@@ -29,6 +30,7 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 }
 
 export const ru = defineLocale({
+  conversationSearch: conversationSearchCopy['ru'],
   sharedMetrics: ruSharedMetrics,
   sessionImport: {
     title: 'Продолжить из другого приложения',
@@ -408,10 +410,7 @@ export const ru = defineLocale({
       'composer.cancel': 'Закрыть поповер · отменить запуск'
     }
   },
-  findInPage: {
-    next: 'Следующее вхождение',
-    previous: 'Предыдущее вхождение'
-  },
+  findInPage: findInPageCopy.ru,
 
   language: {
     label: 'Язык',

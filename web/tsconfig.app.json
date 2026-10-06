@@ -32,5 +32,15 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src", "../apps/shared/src"]
+  /* Vitest suites (web/vitest.config.ts) drive components through act() with test-only
+     globals and props, and the bundled @hermes/shared sources carry their own tests; none
+     of it ships in the dashboard app, so the production typecheck (scripts/build/web.mjs
+     -> tsc -b) must not fail the server on them (#134168, #119059). */
+  "include": ["src", "../apps/shared/src"],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "../apps/shared/src/**/*.test.ts",
+    "../apps/shared/src/**/*.test.tsx"
+  ]
 }

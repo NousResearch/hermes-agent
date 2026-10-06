@@ -51,6 +51,17 @@ def _served_notice_target_key(profile: Optional[str], platform_value: str, chat_
         platform_value if profile is None else f"{profile}:{platform_value}", chat_id, thread_id)
 
 
+def _wall_ledger_key(target) -> tuple:
+    """One notice target key in the form the wall marker's ``delivered_targets`` ledger stores.
+
+    ``mark_delivered`` normalizes every part to a string, so an absent thread is recorded as ``""``,
+    while a freshly computed key keeps ``None`` for it.  Comparing the two forms directly never
+    matched, so a delivered notice looked unserved on every housekeeping tick and was re-sent to
+    every home channel forever.  Both sides of every ledger comparison go through here.
+    """
+    return tuple(str(part) if part is not None else "" for part in target)
+
+
 def _safe_delivery_transport(platform, config, adapters, *, profile: Optional[str] = None):
     """``resolve_delivery_transport`` isolated to one target: ``None`` (logged) on failure.
 
@@ -1015,7 +1026,9 @@ class GatewayNotificationsMixin:
         cron job or a kanban worker also reaches the operator's channels. Owed targets come from
         CONFIG, not live transports: a removed home or an opted-out platform must not keep the
         marker alive forever. One message per home CHAT (several served profiles can share a chat),
-        and the marker is cleared only once every owed target has been served.
+        and the marker stays on disk once served: it is the incident memory ``record_provider_wall``
+        dedupes against, and dropping it on delivery made every later failing turn page the operator
+        again. Expiry (or ``clear_route`` on recovery) is what ends it.
         """
         from agent import provider_wall_notice as wall
         from gateway.warning_notifications import warning_notifications_enabled
@@ -1043,9 +1056,10 @@ class GatewayNotificationsMixin:
         skipped = set(skip_chats or ())
         incident_routes = payload.get("routes")
         delivered = {
-            tuple(str(part) if part is not None else "" for part in target)
+            _wall_ledger_key(target)
             for target in (payload.get("delivered_targets") or [])
         }
+        ledger_before = set(delivered)
         # Periodic re-notification backstop: if the provider didn't give a reset time,
         # delete the marker after _renotify_s so the next failing turn
         # creates a fresh notice with current route status.
@@ -1060,14 +1074,15 @@ class GatewayNotificationsMixin:
                 wall.clear_pending()
                 return
         owed = {
-            _served_notice_target_key(
-                profile, platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id)
+            _wall_ledger_key(_served_notice_target_key(
+                profile, platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id))
             for profile, platform, cfg in self._served_home_channel_configs()
             if cfg.home_channel and cfg.home_channel.chat_id
         }
         notified_chats: set = set()
         for profile, platform, _platform_cfg, home, transport in self._served_home_channel_transports():
-            target = _served_notice_target_key(profile, platform.value, home.chat_id, home.thread_id)
+            target = _wall_ledger_key(
+                _served_notice_target_key(profile, platform.value, home.chat_id, home.thread_id))
             chat = _delivery_target_key(platform.value, home.chat_id, home.thread_id, profile=profile)
             if target in delivered:
                 continue
@@ -1095,7 +1110,13 @@ class GatewayNotificationsMixin:
                 notified_chats.add(chat)
                 delivered.add(target)
         wall.mark_delivered(delivered)
-        logger.info("Provider wall notice delivered to every home channel")
+        if delivered != ledger_before:
+            still_owed = len(owed - delivered)
+            logger.info(
+                "Provider wall notice: %d home channel(s) served%s",
+                len(delivered) - len(ledger_before),
+                f", {still_owed} target(s) still owed" if still_owed else "",
+            )
 
     async def _send_home_channel_startup_notifications(
         self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None

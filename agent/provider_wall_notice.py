@@ -69,6 +69,9 @@ class RouteRow:
     status: str = UNKNOWN
     detail: str = ""
     reset_at: Optional[float] = None
+    #: When this route was first seen unusable. Carried forward across re-records of the same
+    #: incident so each row can report its own start instead of one card-wide timestamp.
+    since: Optional[float] = None
 
     @property
     def emoji(self) -> str:
@@ -291,7 +294,13 @@ def _fmt_wait(reset_at: Optional[float], now: float) -> str:
 
 def build_message(rows: list[RouteRow], *, profile: str = "default", now: Optional[float] = None,
                   created_at: Optional[float] = None, expires_at: Optional[float] = None) -> str:
-    """The operator notice: a header, one line per problem route, scope and remedy."""
+    """The operator notice: a header, one line per problem route, scope and remedy.
+
+    Timing is PER ROUTE (each row carries its own ``since`` and reset), never one card-wide
+    "Started / Expected reset" pair: routes wall at different moments and clear at different
+    moments, so a single pair misreports every route but one.  ``created_at``/``expires_at`` are
+    still accepted because the marker and its rebuild paths pass them, but they no longer render.
+    """
     now = time.time() if now is None else now
     down = [row for row in rows if row.status in {WALLED, COOLING}]
     usable = [row for row in rows if row.status == AVAILABLE]
@@ -301,17 +310,6 @@ def build_message(rows: list[RouteRow], *, profile: str = "default", now: Option
         else _t("provider_wall.title_partial", down=len(down), carrying=f"{usable[0].provider} · {usable[0].model}")
     )
     lines = [header, ""]
-    # Timing line: when the wall started and when it should clear
-    timing_parts = []
-    if created_at:
-        timing_parts.append(f"Started: {_fmt_reset(created_at)}")
-    if expires_at and expires_at > now:
-        timing_parts.append(f"Expected reset: {_fmt_reset(expires_at)}")
-    elif expires_at:
-        timing_parts.append("Expected reset: past due (provider did not specify)")
-    if timing_parts:
-        lines.append(" · ".join(timing_parts))
-        lines.append("")
     for row in rows:
         lines.append(_row_line(row, now))
     cmd = "hermes model" if profile in {"", "default"} else f"hermes -p {profile} model"
@@ -321,14 +319,20 @@ def build_message(rows: list[RouteRow], *, profile: str = "default", now: Option
 
 
 def _row_line(row: RouteRow, now: float) -> str:
-    until = ""
+    """One route's line, carrying that route's own start and clear time."""
+    parts: list[str] = []
+    if row.since and row.status in {WALLED, COOLING, UNKNOWN}:
+        started = _fmt_reset(row.since)
+        if started:
+            parts.append(_t("provider_wall.since", when=started))
     if row.status == WALLED and row.reset_at:
-        until = _t("provider_wall.until_reset", when=_fmt_reset(row.reset_at))
+        parts.append(_t("provider_wall.until_reset", when=_fmt_reset(row.reset_at)))
     elif row.status == COOLING and row.reset_at:
-        until = _t("provider_wall.until_cooling", wait=_fmt_wait(row.reset_at, now))
+        parts.append(_t("provider_wall.until_cooling", wait=_fmt_wait(row.reset_at, now)))
     return _t(
         f"provider_wall.row_{row.status}",
-        emoji=row.emoji, provider=row.provider, model=row.model, detail=row.detail, until=until,
+        emoji=row.emoji, provider=row.provider, model=row.model, detail=row.detail,
+        until="".join(parts),
     )
 
 
@@ -421,7 +425,8 @@ def clear_route(provider: str, model: str, home: Optional[Path] = None) -> None:
                 model=r["model"],
                 status=r.get("status", AVAILABLE),
                 detail=r.get("detail", ""),
-                reset_at=r.get("reset_at"),
+                reset_at=_as_float(r.get("reset_at")),
+                since=_as_float(r.get("since")),
             )
             for r in routes
         ]
@@ -486,6 +491,24 @@ def record_provider_wall(
         profile = _profile_name()
         now = time.time()
         previous = read_pending(home)
+        previous_routes = {
+            (str(entry.get("provider") or "").lower(), str(entry.get("model") or "")): entry
+            for entry in ((previous or {}).get("routes") or [])
+            if isinstance(entry, dict)
+        }
+        # Per-route start: a route the marker already listed keeps the moment we first saw it down,
+        # so its "since" neither drifts on a re-record nor resets when a sibling route joins.
+        rows = [
+            RouteRow(
+                provider=row.provider,
+                model=row.model,
+                status=row.status,
+                detail=row.detail,
+                reset_at=row.reset_at,
+                since=_as_float((previous_routes.get((row.provider.lower(), row.model)) or {}).get("since")) or now,
+            )
+            for row in rows
+        ]
         resets = [row.reset_at for row in rows if row.reset_at]
         created_ts = _as_float((previous or {}).get("created_at")) or now
         expires_ts = max(resets) if resets else created_ts + MARKER_TTL_S
@@ -507,8 +530,17 @@ def record_provider_wall(
             "signature": sig,
             "profile": profile,
             "text": text,
-            "routes": [{"provider": row.provider, "model": row.model, "status": row.status}
-                       for row in rows],
+            "routes": [
+                {
+                    "provider": row.provider,
+                    "model": row.model,
+                    "status": row.status,
+                    "detail": row.detail,
+                    "reset_at": row.reset_at,
+                    "since": row.since,
+                }
+                for row in rows
+            ],
             "created_at": _as_float((previous or {}).get("created_at")) or now,
             "updated_at": now,
             "delivered_targets": delivered,

@@ -65,7 +65,7 @@ def _runner(adapter=None, *, notifications_enabled=True, monkeypatch=None, profi
 
 
 @pytest.mark.asyncio
-async def test_fanout_delivers_to_the_home_channel_and_clears_the_marker(tmp_path, monkeypatch):
+async def test_fanout_delivers_to_the_home_channel_once(tmp_path, monkeypatch):
     marker = _marker(tmp_path, monkeypatch)
     _write_pending()
     runner, adapter = _runner(monkeypatch=monkeypatch)
@@ -73,7 +73,27 @@ async def test_fanout_delivers_to_the_home_channel_and_clears_the_marker(tmp_pat
     await runner._replay_pending_provider_wall_notice()
 
     assert adapter.sent == [TEXT]
-    assert not marker.exists()
+    # The marker stays on disk: it is the incident memory record_provider_wall() dedupes against,
+    # so the next failing turn does not page the operator again.
+    assert json.loads(marker.read_text())["delivered_targets"] == [["telegram", "HOME", ""]]
+
+
+@pytest.mark.asyncio
+async def test_a_served_ledger_is_not_re_sent_on_a_later_pass(tmp_path, monkeypatch):
+    """A ledger written by mark_delivered must match the key the fan-out computes.
+
+    ``mark_delivered`` stores an absent thread as ``""`` while the computed key carries ``None``,
+    so comparing the raw forms made a delivered notice look unserved and re-sent it to every home
+    channel on every housekeeping tick.
+    """
+    _marker(tmp_path, monkeypatch)
+    _write_pending(delivered_targets=[["telegram", "HOME", ""]], delivered_at=time.time())
+    runner, adapter = _runner(monkeypatch=monkeypatch)
+
+    for _pass in range(3):
+        await runner._replay_pending_provider_wall_notice()
+
+    assert adapter.sent == []
 
 
 @pytest.mark.asyncio
@@ -88,7 +108,8 @@ async def test_fanout_skips_the_chat_that_already_has_the_notice_in_band(tmp_pat
         skip_chats={_delivery_target_key("telegram", "HOME", None)})
 
     assert adapter.sent == []
-    assert not marker.exists()  # skipped counts as served; the marker must not linger
+    # Skipped counts as served, so no later pass sends it either.
+    assert json.loads(marker.read_text())["delivered_targets"] == [["telegram", "HOME", ""]]
 
 
 @pytest.mark.asyncio
@@ -100,7 +121,8 @@ async def test_fanout_respects_the_diagnostics_opt_out(tmp_path, monkeypatch):
     await runner._replay_pending_provider_wall_notice()
 
     assert adapter.sent == []
-    assert not marker.exists()
+    # An opted-out platform is settled, not left owed — otherwise the marker never discharges.
+    assert json.loads(marker.read_text())["delivered_targets"] == [["telegram", "HOME", ""]]
 
 
 @pytest.mark.asyncio
@@ -128,7 +150,7 @@ async def test_second_pass_does_not_re_send_a_delivered_notice(tmp_path, monkeyp
     await runner._replay_pending_provider_wall_notice()
 
     assert adapter.sent == [TEXT]  # delivered exactly once
-    assert not marker.exists()
+    assert json.loads(marker.read_text())["delivered_targets"] == [["telegram", "HOME", ""]]
 
 
 def _failing_first_send(runner):
@@ -168,7 +190,6 @@ async def test_fanout_reaches_a_profile_running_the_affected_route(tmp_path, mon
     await runner._replay_pending_provider_wall_notice()
 
     assert adapter.sent == [TEXT]
-    assert not marker.exists()
 
 
 @pytest.mark.asyncio
@@ -183,7 +204,8 @@ async def test_fanout_skips_a_profile_running_an_unrelated_route(tmp_path, monke
     await runner._replay_pending_provider_wall_notice()
 
     assert adapter.sent == []
-    assert not marker.exists()  # nothing owed here: the marker clears instead of lingering
+    # Nothing owed here: the profile is recorded as served instead of keeping the marker alive.
+    assert json.loads(marker.read_text())["delivered_targets"] == [["telegram", "HOME", ""]]
 
 
 @pytest.mark.asyncio

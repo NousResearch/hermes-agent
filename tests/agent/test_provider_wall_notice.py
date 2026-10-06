@@ -159,6 +159,26 @@ def test_message_uses_the_profile_scoped_remedy_command():
     assert "hermes -p comms model" in wall.build_message(rows, profile="comms")
 
 
+def test_message_times_each_route_separately():
+    now = time.time()
+    rows = [
+        wall.RouteRow(provider="custom", model="deepseek-v4-flash", status=wall.WALLED,
+                      detail="weekly usage quota exceeded", reset_at=now + 6 * 3600, since=now - 600),
+        wall.RouteRow(provider="deepseek", model="deepseek-v4-flash", status=wall.WALLED,
+                      detail="Insufficient Balance", reset_at=now + 3600, since=now - 60),
+    ]
+
+    message = wall.build_message(rows, profile="default",
+                                 created_at=now - 600, expires_at=now + 6 * 3600)
+    route_lines = [line for line in message.splitlines() if line.startswith("🔴")]
+
+    assert "Started:" not in message and "Expected reset:" not in message  # no card-wide timing
+    assert len(route_lines) == 2
+    assert all("since" in line and "resets" in line for line in route_lines)
+    assert wall._fmt_reset(now - 600) in route_lines[0]
+    assert wall._fmt_reset(now + 3600) in route_lines[1]
+
+
 # ── recording / dedupe ───────────────────────────────────────────────────
 
 
@@ -209,6 +229,24 @@ def test_a_different_wall_inside_the_quiet_window_does_not_page_twice(isolated_m
     payload = json.loads(isolated_marker.read_text())
     assert payload["signature"] != first  # the merged incident's text is the current one
     assert payload["delivered_targets"] == [["telegram", "HOME", ""]]  # ledger survives the merge
+
+
+def test_a_route_keeps_its_own_start_when_a_sibling_walls_later(isolated_marker, monkeypatch):
+    _patch_pool(monkeypatch, {"deepseek": _Pool([_Entry(
+        last_status="exhausted", last_error_code=402, failure_reason="billing",
+        last_error_message="Insufficient Balance",
+    )])})
+    agent = _Agent()
+    wall.record_provider_wall(agent)
+    started = json.loads(isolated_marker.read_text())["routes"][0]["since"]
+
+    # A second route walls later: the first keeps the moment it was first seen down.
+    agent._fallback_chain = [{"provider": "deepseek", "model": "deepseek-v4-flash"}]
+    wall.record_provider_wall(agent)
+
+    routes = {row["provider"]: row for row in json.loads(isolated_marker.read_text())["routes"]}
+    assert routes["custom"]["since"] == started
+    assert routes["deepseek"]["since"] > started
 
 
 def test_record_never_raises_when_the_pool_layer_is_broken(isolated_marker, monkeypatch):

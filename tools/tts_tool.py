@@ -301,7 +301,6 @@ def _apply_call_overrides(tts_config: Dict[str, Any], speed: Optional[float], pr
     advertises the override, and a leaked platform hint passing one anyway must not reroute
     speech to another vendor behind the operator's back."""
     if speed is not None:
-<<<<<<< HEAD
         # Non-finite / non-numeric per-call values reset to 1.0 here (NaN would survive
         # min/max and every provider's downstream clamp would inherit the garbage).
         try:
@@ -317,16 +316,12 @@ def _apply_call_overrides(tts_config: Dict[str, Any], speed: Optional[float], pr
         # per-call channel kokoro reads so its provider default (tts.kokoro.speed)
         # and the global tts.speed can't shadow it.
         tts_config = {**tts_config, "speed": clamped, "_call_speed": clamped}
-    return tts_config, provider.lower().strip() if provider else _get_provider(tts_config)
-=======
-        tts_config = {**tts_config, "speed": max(0.25, min(4.0, float(speed)))}
     configured_provider = _get_provider(tts_config)
     if provider:
         requested = provider.lower().strip()
         if requested and requested != configured_provider:
             _warn_ignored_tts_provider_override(requested, configured_provider)
     return tts_config, configured_provider
->>>>>>> origin/main
 
 
 def _session_platform() -> tuple:
@@ -685,19 +680,6 @@ TTS_SCHEMA = {
                     "Forwarded to the OpenAI backend (gpt-4o-mini-tts and OpenAI-compatible "
                     "voice-design servers). Silently ignored by backends that don't support it."
                 )
-<<<<<<< HEAD
-            },
-            "provider": {
-                "type": "string",
-                "description": (
-                    "Optional TTS provider override. Accepts built-in names "
-                    "(edge, openai, elevenlabs, minimax, xai, mistral, gemini, "
-                    "neutts, kittentts, kokoro, piper), user-declared command provider "
-                    "names from tts.providers.<name>, or plugin-registered names. "
-                    "When omitted, the configured tts.provider from config.yaml is used."
-                )
-=======
->>>>>>> origin/main
             }
         },
         "required": ["text"]

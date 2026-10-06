@@ -418,9 +418,10 @@ sync_plugin_provider_catalog()
 def listed_canonical_providers() -> list[ProviderEntry]:
     """``CANONICAL_PROVIDERS`` minus pre-release profiles the user has not opted into: what a provider
     LIST offers. Typed paths (``provider:model``, labels, ``--provider``) keep the full table."""
+    from hermes_cli import models  # the binding every list consumer read before this filter existed
     from providers import unlisted_provider_names
     hidden = unlisted_provider_names()
-    return [p for p in CANONICAL_PROVIDERS if p.slug not in hidden]
+    return [p for p in models.CANONICAL_PROVIDERS if p.slug not in hidden]
 
 
 # ---------------------------------------------------------------------------

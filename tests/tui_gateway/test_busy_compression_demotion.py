@@ -220,6 +220,9 @@ def test_submit_during_manual_compress_is_queued_and_reply_persists(monkeypatch)
     assert session["running"] is True
     second = server._methods["session.compress"]("r3", {"session_id": "sid"})  # the locked claim maps to busy
     assert second["error"]["code"] == 4009
+    # "/compress --aggressive" never touches history: answered without claiming (or draining) the busy session
+    assert server._compress_live_with_feedback("sid", session, agent, "--aggressive", snapshot_kwargs=True) == \
+        ccm.AGGRESSIVE_UNSUPPORTED
     resp = server._handle_busy_submit("r2", "sid", session, "question", "ws-1")
     gate.set()
     rpc.join(5)

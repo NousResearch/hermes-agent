@@ -1462,12 +1462,9 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
         if thread_id:
             media_metadata["thread_id"] = thread_id
 
-    # Relay egress needs metadata.scope_id (fail-closed tenant guard; scope cache is COLD after a
-    # restart; router stamps HOME only). Origin targets only: a wrong fan-out scope is worse than
-    # none.
-    if t.origin_target and t.origin.get("scope_id"):
-        route_metadata.setdefault("scope_id", str(t.origin["scope_id"]))
-        media_metadata.setdefault("scope_id", str(t.origin["scope_id"]))
+    # Relay egress discriminators (scope_id / user_id) from the persisted origin: the adapter's caches are cold
+    # after a restart. See cron/scheduler_delivery_origin.py.
+    _origin.stamp_origin_discriminators(t, route_metadata, media_metadata)
     return route_thread_id, route_metadata, media_metadata
 
 
@@ -2129,5 +2126,6 @@ def _deliver_result(
 # Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
 # populated before ``scheduler`` re-exports from it.
 from cron import scheduler as _sched  # noqa: E402
+from cron import scheduler_delivery_origin as _origin  # noqa: E402
 from cron import scheduler_preflight as _preflight  # noqa: E402
 from cron import scheduler_script as _script  # noqa: E402

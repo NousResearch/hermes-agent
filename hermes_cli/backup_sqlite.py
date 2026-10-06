@@ -65,7 +65,9 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
             else:
                 busy_deadline = now + max(0.0, timeout_seconds)
 
-        conn.backup(backup_conn, pages=256, progress=_check_backup_progress, sleep=0.1)
+        # One step: SQLite restarts a multi-step backup whenever another connection writes the
+        # source, so a live agent turn kept the 30s Desktop update pre-flight from ever finishing.
+        conn.backup(backup_conn, pages=-1, progress=_check_backup_progress, sleep=0.1)
         return True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)

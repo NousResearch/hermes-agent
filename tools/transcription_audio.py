@@ -256,8 +256,8 @@ def _cloud_vad_has_speech(file_path: str) -> bool:
                        min_silence_duration_ms=500, speech_pad_ms=400),
         )
         return bool(speech)
-    except Exception as exc:  # fail-open by design (missing faster-whisper, undecodable file)
-        logger.debug("Cloud STT VAD gate skipped for %s: %s", file_path, exc)
+    except Exception:  # fail-open by design (missing faster-whisper, undecodable file)
+        logger.debug("Cloud STT VAD gate skipped for %s", file_path, exc_info=True)
         return True
 
 

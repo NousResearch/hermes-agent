@@ -32,7 +32,7 @@ import {
   Check,
   Archive,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, authedFetch } from "@/lib/api";
 import { formatSessionPruneResult } from "@/lib/session-prune";
 import { shouldRefreshSessions } from "@/lib/session-refresh";
 import {
@@ -1504,14 +1504,9 @@ export default function SessionsPage() {
   const handleExport = useCallback(
     async (id: string) => {
       try {
-        const res = await fetch(api.exportSessionUrl(id, rowProfile(id)), {
-          credentials: "include",
-          headers: {
-            "X-Hermes-Session-Token":
-              (window as unknown as { __HERMES_SESSION_TOKEN__?: string })
-                .__HERMES_SESSION_TOKEN__ ?? "",
-          },
-        });
+        // authedFetch applies HERMES_BASE_PATH and the session token; a raw
+        // fetch() here would drop the reverse-proxy prefix.
+        const res = await authedFetch(api.exportSessionUrl(id, rowProfile(id)));
         if (!res.ok) {
           throw apiErrorFromResponse(res.status, await res.text().catch(() => ""), res.url);
         }

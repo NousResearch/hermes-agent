@@ -13,6 +13,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import { Link } from "react-router";
 import { api } from "@/lib/api";
 import { auxTaskLabel, auxTaskRows } from "@/lib/aux-tasks";
 import type {
@@ -1329,7 +1330,7 @@ export default function ModelsPage() {
                   …) and provider retries, so they diverge from your provider
                   bill. Enable{" "}
                   <span className="font-mono">dashboard.show_token_analytics</span>{" "}
-                  in <a href="/config" className="underline">Config</a> to
+                  in <Link to="/config" className="underline">Config</Link> to
                   show the local debug estimate anyway.
                 </p>
               )}

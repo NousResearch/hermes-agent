@@ -9,6 +9,7 @@ import {
   RefreshCw,
   TrendingUp,
 } from "lucide-react";
+import { Link } from "react-router";
 import { api } from "@/lib/api";
 import type {
   AnalyticsResponse,
@@ -516,7 +517,7 @@ export default function AnalyticsPage() {
                 <span className="font-mono">
                   dashboard.show_token_analytics: true
                 </span>{" "}
-                in <a href="/config" className="underline">Config</a>.
+                in <Link to="/config" className="underline">Config</Link>.
               </p>
             </div>
           </CardContent>

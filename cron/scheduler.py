@@ -4352,8 +4352,9 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         if execution is not None:  # the receipt was persisted; a later step failed
             settle_unstarted_execution(execution["id"], job_id, (
                 f"Dispatch preparation failed: {type(execution_err).__name__}: {execution_err}"))
-        logger.exception(
-            "Job '%s' not dispatched: execution creation failed: %s", job_label, execution_err)
+        logger.exception("Job '%s' not dispatched: %s failed: %s", job_label,
+                         "execution creation" if execution is None else "dispatch preparation",
+                         execution_err)
         return None
 
     def _run_and_release(j=dispatched_job, ctx=_ctx, home=_claim_home):

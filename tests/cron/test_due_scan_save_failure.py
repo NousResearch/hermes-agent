@@ -129,7 +129,7 @@ def test_tick_on_unwritable_store_returns_cleanly_without_dispatch(cron_store, m
 
 
 @pytest.mark.parametrize("site", ["claim_job_for_fire", "note_cron_execution"])
-def test_dispatch_failure_after_receipt_never_leaves_it_claimed(cron_store, monkeypatch, site):
+def test_dispatch_failure_after_receipt_never_leaves_it_claimed(cron_store, monkeypatch, caplog, site):
     """A non-OSError fire-claim failure, or a failure after create_execution in _submit_with_guard,
     must settle the receipt: a ``claimed`` row never resolves and reads forever as in flight."""
     from cron import executions, scheduler
@@ -148,3 +148,5 @@ def test_dispatch_failure_after_receipt_never_leaves_it_claimed(cron_store, monk
         pass  # a claim failure may still surface; the receipt is what must be terminal
     row = executions.latest_execution("due-job")
     assert row is not None and row["status"] == "failed"
+    if site == "note_cron_execution":  # the receipt exists, so creation did not fail
+        assert "dispatch preparation failed" in caplog.text

@@ -1395,9 +1395,12 @@ class MatrixAdapter(BasePlatformAdapter):
         for i, chunk in enumerate(chunks):
             msg_content = self._build_text_message_content(chunk)
             # Default to one quote; explicit modes change fallback, not thread routing.
+            include_reply_fallback = self._chunk_include_reply_fallback(i)
+            if metadata and metadata.get("matrix_formatted_body_unprefixed") is True:
+                include_reply_fallback = False
             self._apply_relation_metadata(
                 msg_content, reply_to=reply_to, metadata=metadata,
-                include_reply_fallback=self._chunk_include_reply_fallback(i))
+                include_reply_fallback=include_reply_fallback)
             try:
                 last_event_id = await self._send_room_message(chat_id, msg_content)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)

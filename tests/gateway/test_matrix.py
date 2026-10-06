@@ -595,6 +595,22 @@ class TestMatrixRenderingPayloads:
                 assert relation["rel_type"] == "m.thread"
 
     @pytest.mark.asyncio
+    async def test_unprefixed_pane_send_does_not_consume_reply_quote(self):
+        text = "line\n" * (self.adapter.max_message_length // len("line\n") + 200)
+        pane = await self.adapter.send(
+            "!room:example.org", "working", reply_to="$parent",
+            metadata={"matrix_formatted_body_unprefixed": True, "thread_id": "$root"})
+        answer = await self.adapter.send("!room:example.org", text, reply_to="$parent",
+                                          metadata={"thread_id": "$root"})
+        assert pane.success and answer.success
+        contents = self._sent_contents()
+        pane_relation = contents[0].get("m.relates_to", {})
+        assert "m.in_reply_to" not in pane_relation
+        assert pane_relation.get("rel_type") == "m.thread"
+        assert "m.in_reply_to" in contents[1].get("m.relates_to", {})
+        assert "m.in_reply_to" not in contents[2].get("m.relates_to", {})
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("mode", ["off", "first", "all"])
     @pytest.mark.parametrize("thread_id", [None, "$root"])
     async def test_document_honors_reply_mode(self, mode, thread_id, tmp_path):

@@ -1,193 +1,83 @@
 """Unit tests for tools.computer_use.vision_routing.
 
-Cover the small ``should_route_capture_to_aux_vision`` policy helper that
-decides whether a captured screenshot from ``computer_use(action='capture')``
-should be returned as a multimodal envelope (main model handles vision
-natively) or pre-analysed via the ``auxiliary.vision`` pipeline so the
-main model only sees text.
-
-The companion end-to-end regression for #24015 lives in
-``tests/tools/test_computer_use_capture_routing.py``; this file pins the
-unit contract of the helper in isolation so behaviour does not regress
-silently if the surrounding ``computer_use`` plumbing is refactored.
+``should_route_capture_to_aux_vision`` decides whether a ``computer_use`` capture is returned as a multimodal
+envelope (the main model reads the pixels) or pre-analysed through ``auxiliary.vision`` (the main model sees text).
+It is the negation of the shared native-tool-result gate, so these cases drive the real gate and patch only the
+capability lookups underneath it. The end-to-end regression for #24015 lives in
+``tests/tools/test_computer_use_capture_routing.py``.
 """
 
 from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
+from tools.computer_use.vision_routing import should_route_capture_to_aux_vision
 
 
-# ---------------------------------------------------------------------------
-# _explicit_aux_vision_override
-# ---------------------------------------------------------------------------
+def _route(provider, model, cfg, *, catalog, provider_takes_media, veto=False):
+    with patch("agent.image_routing._lookup_supports_vision", return_value=catalog), \
+         patch("tools.vision_tools._supports_media_in_tool_results", return_value=provider_takes_media), \
+         patch("tools.vision_tools._profile_rejects_tool_media", return_value=veto):
+        return should_route_capture_to_aux_vision(provider, model, cfg)
 
-class TestExplicitAuxVisionOverride:
-    """Mirror agent.image_routing — config detection must agree across paths."""
-
-
-
-
-    def test_returns_false_when_vision_block_missing(self):
-        from tools.computer_use.vision_routing import _explicit_aux_vision_override
-        cfg = {"auxiliary": {"compression": {"provider": "openai"}}}
-        assert _explicit_aux_vision_override(cfg) is False
-
-
-    def test_returns_true_for_provider_auto_plus_explicit_model(self):
-        """``provider: auto`` + an explicit model still counts as override."""
-        from tools.computer_use.vision_routing import _explicit_aux_vision_override
-        cfg = {
-            "auxiliary": {
-                "vision": {"provider": "auto", "model": "claude-3-haiku"},
-            }
-        }
-        assert _explicit_aux_vision_override(cfg) is True
-
-
-
-# ---------------------------------------------------------------------------
-# should_route_capture_to_aux_vision
-# ---------------------------------------------------------------------------
 
 class TestRouteDecision:
-    """End-to-end policy: explicit override > tool-result support > vision caps."""
+    def test_explicit_aux_backend_wins_over_a_vision_main_model(self):
+        """#24015: a configured auxiliary.vision backend is the de-facto image route in auto mode."""
+        cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
+        assert _route("anthropic", "claude-opus-4-5", cfg, catalog=True, provider_takes_media=True) is True
 
-    def test_explicit_override_routes_to_aux_even_for_vision_main(self):
-        """Issue #24015 core repro: explicit aux config must win.
+    def test_provider_auto_plus_explicit_model_counts_as_an_aux_backend(self):
+        cfg = {"auxiliary": {"vision": {"provider": "auto", "model": "claude-3-haiku"}}}
+        assert _route("anthropic", "claude-opus-4-5", cfg, catalog=True, provider_takes_media=True) is True
 
-        Even if the main model fully supports vision (Anthropic / Claude),
-        an explicit ``auxiliary.vision`` block means the user wants their
-        configured backend used. Don't silently bypass it.
-        """
-        from tools.computer_use import vision_routing
+    def test_vision_main_model_without_aux_backend_stays_native(self):
+        assert _route("anthropic", "claude-opus-4-5", None, catalog=True, provider_takes_media=True) is False
 
-        cfg = {
-            "auxiliary": {
-                "vision": {
-                    "provider": "openrouter",
-                    "model": "google/gemini-2.5-flash",
-                }
-            }
-        }
-        with patch.object(vision_routing,
-                          "_provider_accepts_multimodal_tool_result",
-                          return_value=True):
-            assert vision_routing.should_route_capture_to_aux_vision(
-                "anthropic", "claude-opus-4-5", cfg
-            ) is True
+    def test_catalog_text_only_model_on_a_media_provider_goes_to_aux(self):
+        """deepseek-v3.2 on OpenRouter: the provider carries tool-result media, the model cannot see. Routing it
+        native made the agent backstop swap the screenshot for a 'switch to a vision model' error."""
+        assert _route("openrouter", "deepseek/deepseek-v3.2", {}, catalog=False, provider_takes_media=True) is True
 
-    def test_non_vision_main_model_routes_to_aux(self):
-        """The reported #24015 scenario: tencent/hy3-preview has no vision."""
-        from tools.computer_use import vision_routing
+    def test_unknown_provider_and_model_fail_closed_to_aux(self):
+        assert _route("exotic-provider", "exotic-model", {}, catalog=None, provider_takes_media=False) is True
 
-        cfg = {"model": {"default": "tencent/hy3-preview", "provider": "openrouter"}}
-        with patch.object(vision_routing,
-                          "_provider_accepts_multimodal_tool_result",
-                          return_value=False):
-            assert vision_routing.should_route_capture_to_aux_vision(
-                "openrouter", "tencent/hy3-preview", cfg
-            ) is True
+    def test_image_input_mode_text_keeps_pixels_out(self):
+        cfg = {"agent": {"image_input_mode": "text"}}
+        assert _route("anthropic", "claude-opus-4-5", cfg, catalog=True, provider_takes_media=True) is True
 
-    def test_vision_main_model_no_override_keeps_multimodal(self):
-        """Default path: vision-capable main model + no aux override → native."""
-        from tools.computer_use import vision_routing
+    def test_image_input_mode_native_keeps_a_catalog_unknown_model_native(self):
+        """A proxy alias the catalog does not know: native mode is the user's explicit word for it."""
+        cfg = {"agent": {"image_input_mode": "native"}}
+        assert _route("anthropic", "my-proxy-claude", cfg, catalog=None, provider_takes_media=True) is False
 
-        with patch.object(vision_routing,
-                          "_provider_accepts_multimodal_tool_result",
-                          return_value=True):
-            assert vision_routing.should_route_capture_to_aux_vision(
-                "anthropic", "claude-opus-4-5", None
-            ) is False
+    def test_declared_supports_vision_keeps_a_local_vlm_native(self):
+        """Local/custom VLMs declare support in config; the real lookup reads it (no catalog patch)."""
+        cfg = {"model": {"default": "Qwen3.6-35B-A3B-local-vlm", "provider": "omlx", "supports_vision": True}}
+        with patch("tools.vision_tools._profile_rejects_tool_media", return_value=False):
+            assert should_route_capture_to_aux_vision("custom", "Qwen3.6-35B-A3B-local-vlm", cfg) is False
 
-
-    def test_user_declared_vision_support_keeps_custom_provider_native(self):
-        """Local/custom VLMs use config as their tool-result image escape hatch."""
-        from tools.computer_use import vision_routing
-
-        cfg = {
-            "model": {
-                "default": "Qwen3.6-35B-A3B-local-vlm",
-                "provider": "omlx",
-                "supports_vision": True,
-            }
-        }
-        with patch.object(vision_routing,
-                          "_provider_accepts_multimodal_tool_result",
-                          return_value=False):
-            assert vision_routing.should_route_capture_to_aux_vision(
-                "custom", "Qwen3.6-35B-A3B-local-vlm", cfg
-            ) is False
-
-
-    def test_unknown_provider_capabilities_fail_closed(self):
-        """When tool-result lookup returns None, route to aux (safe default)."""
-        from tools.computer_use import vision_routing
-
-        with patch.object(vision_routing,
-                          "_provider_accepts_multimodal_tool_result",
-                          return_value=None):
-            assert vision_routing.should_route_capture_to_aux_vision(
-                "exotic-provider", "exotic-model", {}
-            ) is True
-
-
-    def test_explicit_override_wins_over_unknown_caps(self):
-        """Explicit aux config wins regardless of unknown caps elsewhere."""
-        from tools.computer_use import vision_routing
-
-        cfg = {"auxiliary": {"vision": {"provider": "openrouter"}}}
-        with patch.object(vision_routing,
-                          "_provider_accepts_multimodal_tool_result",
-                          return_value=None):
-            assert vision_routing.should_route_capture_to_aux_vision(
-                "openrouter", "tencent/hy3-preview", cfg
-            ) is True
-
-
-# ---------------------------------------------------------------------------
-# Internal lookups — defensive paths
-# ---------------------------------------------------------------------------
-
-
-
-# ---------------------------------------------------------------------------
-# Module surface
-# ---------------------------------------------------------------------------
-
+    def test_profile_veto_routes_a_vision_model_to_aux(self):
+        assert _route("xiaomi", "mimo-v2.5", {}, catalog=True, provider_takes_media=False, veto=True) is True
 
 
 class TestGateAgreementWithVisionAnalyze:
-    """The capture route and the ``vision_analyze`` fast path derive from one predicate, so the lane never
-    depends on which tool asked (#115248: deepseek/deepseek-flash went native in one and aux in the other)."""
+    """Capture, vision_analyze, browser screenshots and MCP images share one predicate (#115248), so the lane never
+    depends on which tool produced the image."""
 
-    def test_catalog_vision_model_off_the_provider_whitelist_stays_native(self):
-        from tools.computer_use import vision_routing
+    @pytest.mark.parametrize("cfg,catalog,provider_takes_media,veto", [
+        ({}, True, False, False),                                   # catalog vision off the provider whitelist
+        ({}, False, True, False),                                   # text-only model on a media provider
+        ({"agent": {"image_input_mode": "text"}}, True, True, False),
+        ({"agent": {"image_input_mode": "native"}}, None, True, False),
+        ({}, True, False, True),                                    # profile veto
+    ])
+    def test_capture_route_is_the_shared_gate(self, cfg, catalog, provider_takes_media, veto):
+        from tools.vision_tools import _native_tool_result_images
 
-        cfg = {"agent": {"image_input_mode": "native"}}
-        with patch("agent.image_routing._lookup_supports_vision", return_value=True), \
-             patch("tools.vision_tools._supports_media_in_tool_results", return_value=False), \
-             patch("tools.vision_tools._profile_rejects_tool_media", return_value=False):
-            assert vision_routing.should_route_capture_to_aux_vision("deepseek", "deepseek-flash", cfg) is False
-
-    def test_profile_veto_still_routes_a_catalog_vision_model_to_aux(self):
-        from tools.computer_use import vision_routing
-
-        with patch("agent.image_routing._lookup_supports_vision", return_value=True), \
-             patch("tools.vision_tools._supports_media_in_tool_results", return_value=False), \
-             patch("tools.vision_tools._profile_rejects_tool_media", return_value=True):
-            assert vision_routing.should_route_capture_to_aux_vision("xiaomi", "mimo-v2.5", {}) is True
-
-    def test_whitelisted_provider_with_catalog_unknown_model_matches_vision_analyze(self):
-        """provider on the tool-result-media whitelist, model absent from models.dev/config (a proxy alias):
-        vision_analyze embeds natively, so capture must stay native too instead of demanding a second
-        ``supports_vision is True`` from the catalog (review follow-up)."""
-        from tools.computer_use import vision_routing
-        from tools.vision_tools import _accepts_tool_result_images
-
-        cfg = {"agent": {"image_input_mode": "native"}}
-        with patch("agent.image_routing._lookup_supports_vision", return_value=None), \
-             patch("tools.vision_tools._supports_media_in_tool_results", return_value=True), \
-             patch("tools.vision_tools._profile_rejects_tool_media", return_value=False):
-            assert _accepts_tool_result_images("anthropic", "my-proxy-claude", cfg) is True
-            assert vision_routing.should_route_capture_to_aux_vision("anthropic", "my-proxy-claude", cfg) is False
+        with patch("agent.image_routing._lookup_supports_vision", return_value=catalog), \
+             patch("tools.vision_tools._supports_media_in_tool_results", return_value=provider_takes_media), \
+             patch("tools.vision_tools._profile_rejects_tool_media", return_value=veto):
+            assert should_route_capture_to_aux_vision("p", "m", cfg) is (not _native_tool_result_images("p", "m", cfg))

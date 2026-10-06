@@ -102,6 +102,55 @@ test('an unknown process state fails open to alive (keeps the marker)', () => {
   assert.ok(fs.existsSync(markerPath(home)))
 })
 
+test('dead pid within the hand-off grace => still a live update, marker kept', () => {
+  // The desktop pre-writes the marker with the short-lived `cmd start` wrapper
+  // pid; the real hand-off script only adopts it a few hundred ms later. Within
+  // the grace the boot gate must stay parked instead of booting a backend
+  // inside the hand-off (which made the desktop never exit and the hand-off
+  // abort itself at its desktop-exit gate).
+  const home = tmpHome('dead-grace')
+  const now = 1_000_000_000_000
+  writeMarker(home, 999999, Math.floor(now / 1000) - 1) // 1s old, owner dead
+  const res = readLiveUpdateMarker(home, { kill: DEAD, now: () => now, deadOwnerGraceMs: 10_000 })
+  assert.ok(res, 'a just-written dead-owner marker is a hand-off in flight')
+  assert.equal(res.pid, 999999)
+  assert.ok(fs.existsSync(markerPath(home)), 'an in-flight marker is NOT pruned')
+})
+
+test('dead pid past the hand-off grace => no live update and pruned', () => {
+  const home = tmpHome('dead-grace-expired')
+  const now = 1_000_000_000_000
+  writeMarker(home, 999999, Math.floor((now - 30_000) / 1000)) // 30s old, owner dead
+  assert.equal(readLiveUpdateMarker(home, { kill: DEAD, now: () => now, deadOwnerGraceMs: 10_000 }), null)
+  assert.ok(!fs.existsSync(markerPath(home)), 'a crashed hand-off self-heals past the grace')
+})
+
+test('zombie within the hand-off grace => still a live update, marker kept', () => {
+  // The grace covers a zombie owner too: a freshly pre-written marker whose
+  // dead-but-unreaped wrapper pid answers signal 0 must keep the boot gate
+  // parked during the hand-off window, not prune it at the zombie probe.
+  const home = tmpHome('zombie-grace')
+  const now = 1_000_000_000_000
+  writeMarker(home, 999999, Math.floor(now / 1000) - 1) // 1s old, zombie owner
+
+  const res = readLiveUpdateMarker(home, {
+    kill: ALIVE,
+    now: () => now,
+    processState: () => 'Z',
+    deadOwnerGraceMs: 10_000
+  })
+
+  assert.ok(res, 'a just-written zombie-owned marker is a hand-off in flight')
+  assert.ok(fs.existsSync(markerPath(home)), 'an in-flight marker is NOT pruned')
+})
+
+test('default grace is 0: a dead owner is stale without it', () => {
+  const home = tmpHome('dead-no-grace')
+  const now = 1_000_000_000_000
+  writeMarker(home, 999999, Math.floor(now / 1000)) // brand new, owner dead
+  assert.equal(readLiveUpdateMarker(home, { kill: DEAD, now: () => now }), null)
+})
+
 test('expired marker (past age ceiling) => no live update and pruned', () => {
   const home = tmpHome('expired')
   const now = 1_000_000_000_000

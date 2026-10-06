@@ -54,7 +54,8 @@ param(
     [switch]$SelfTestUi,
     [switch]$SelfTestPipeDrain,
     [switch]$SelfTestMarker,
-    [switch]$SelfTestWorkingDirectory
+    [switch]$SelfTestWorkingDirectory,
+    [switch]$SelfTestRelaunchPolicy
 )
 
 if ($PSBoundParameters.ContainsKey("Branch") -and $PSBoundParameters.ContainsKey("Channel")) {
@@ -62,7 +63,7 @@ if ($PSBoundParameters.ContainsKey("Branch") -and $PSBoundParameters.ContainsKey
 }
 $targetArgs = if ($Channel) { @("--channel", $Channel.ToLowerInvariant()) } else { @("--branch", $Branch) }
 
-if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
+if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $SelfTestRelaunchPolicy -and -not $InstallRoot) {
     # Mandatory in spirit; relaxed in the signature only so the self-test
     # switches can drive the UI / the pipe drain without a checkout.
     throw "-InstallRoot is required"
@@ -647,6 +648,22 @@ function Remove-MarkerIfOwned {
     } catch {}
 }
 
+function Test-SafeToRelaunch([int]$FinalCode, [int]$TargetPid) {
+    # The failure path brings the Desktop back after showing the error --
+    # EXCEPT the desktop-exit timeout (exit 4, #88332): that abort fires only
+    # after watching the ORIGINAL window fail to exit, so the original is
+    # provably still alive and a relaunch here is a deterministic SECOND
+    # instance (two windows fighting over the single-instance lock while
+    # the update never ran). Relaunch only once the original pid is really
+    # gone -- a slow quit that finished between the abort and here leaves
+    # the relaunch safe and wanted. Every other failure code keeps the old
+    # bring-it-back behavior.
+    if ($FinalCode -eq 4 -and $TargetPid -gt 0) {
+        if (Get-Process -Id $TargetPid -ErrorAction SilentlyContinue) { return $false }
+    }
+    return $true
+}
+
 function Start-DesktopRelaunch {
     # Returns $true only when a launch VERIFIABLY happened (WMI accepted and
     # the pid exists, or the fallback spawn returned a live process). The
@@ -843,6 +860,22 @@ if ($env:HERMES_UPDATE_STEP_IDLE_SECONDS) {
 $script:StepProgressLogPath = Join-Path $LogDir "update.log"
 if ($env:HERMES_UPDATE_PROGRESS_LOG) {
     $script:StepProgressLogPath = $env:HERMES_UPDATE_PROGRESS_LOG
+}
+
+# How long step 1 gives the Desktop to actually exit. 30s was measured against
+# a bare app; on a machine with live remote scopes the app's quit has to tear
+# down its backend, every pooled remote backend and an SSH mux full of
+# forwards, and the observed latency is 35-45s. A healthy-but-slow quit was
+# therefore reported as an abort ("the Hermes window did not exit within 30s")
+# and the update silently never ran. The gate stays FAIL CLOSED on the pid --
+# a longer ceiling only delays a genuine failure, it never runs an update
+# under a live Desktop. Overridable for tests; not a documented user knob.
+$script:DesktopExitGraceSeconds = 120
+if ($env:HERMES_UPDATE_DESKTOP_EXIT_SECONDS) {
+    $parsedExit = 0
+    if ([int]::TryParse($env:HERMES_UPDATE_DESKTOP_EXIT_SECONDS, [ref]$parsedExit) -and $parsedExit -gt 0) {
+        $script:DesktopExitGraceSeconds = $parsedExit
+    }
 }
 
 function Get-StepProgressLogStamp {
@@ -1524,14 +1557,65 @@ exit 3
     exit 0
 }
 
+# -SelfTestRelaunchPolicy: exit-4 must not relaunch over a live desktop ----
+# #88332 requirement 2: the desktop-exit timeout abort proves the ORIGINAL
+# window is still alive, so relaunching from that failure path spawns a
+# deterministic second instance while the update never ran. Drives the REAL
+# Test-SafeToRelaunch against the real process table with a live child as
+# the stand-in desktop pid. Exits before any marker/desktop machinery, same
+# as the other self-test arms; touches nothing but its own child process.
+if ($SelfTestRelaunchPolicy) {
+    New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
+    $problems = @()
+    $powershell = Join-Path $PSHOME "powershell.exe"
+    $live = Start-Process -FilePath $powershell -ArgumentList "-NoProfile", "-Command", "Start-Sleep -Seconds 60" -WindowStyle Hidden -PassThru
+    try {
+        # Exit 4 + the original pid still alive: the deterministic second
+        # instance -- relaunch must be refused.
+        if (Test-SafeToRelaunch 4 ([int]$live.Id)) { $problems += "exit-4 relaunch was allowed while the desktop pid is alive" }
+        # Exit 4 + the original pid gone (slow quit finished after the
+        # abort): the relaunch is safe and wanted.
+        if (-not (Test-SafeToRelaunch 4 0)) { $problems += "exit-4 relaunch refused with no live desktop pid (slow quit should relaunch)" }
+        # Any other failure code: the old bring-it-back behavior stands.
+        if (-not (Test-SafeToRelaunch 1 ([int]$live.Id))) { $problems += "non-exit-4 failure relaunch refused" }
+        if (-not (Test-SafeToRelaunch 8 ([int]$live.Id))) { $problems += "exit-8 failure relaunch refused" }
+        # Success code: never a failure-path relaunch question, but the
+        # policy must not accidentally block it.
+        if (-not (Test-SafeToRelaunch 0 ([int]$live.Id))) { $problems += "success path was refused a relaunch" }
+    } finally {
+        Stop-Process -Id $live.Id -Force -ErrorAction SilentlyContinue
+    }
+    $detail = "verdicts across (4,live) (4,gone) (1,live) (8,live) (0,live)"
+    if ($problems.Count -gt 0) {
+        Write-Host "RELAUNCH-POLICY SELF-TEST: FAIL $detail -- $($problems -join '; ')"
+        exit 1
+    }
+    Write-Host "RELAUNCH-POLICY SELF-TEST: PASS $detail"
+    exit 0
+}
+
 $savedConsoleInputMode = if ($script:ConsoleInput) { [HermesHandoff.ConsoleInput]::DisableQuickEdit() } else { $null }
 try {
     New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
     Remove-Item -LiteralPath $ResultPath -Force -ErrorAction SilentlyContinue
-    Show-ProgressWindow
     Write-HandoffLog "hand-off start: root=$InstallRoot branch=$Branch channel=$Channel desktopPid=$DesktopPid pid=$PID"
 
     # -- 0. Claim the update marker with OUR pid ---------------------------
+    # THIS MUST STAY AHEAD OF Show-ProgressWindow.
+    #
+    # The Desktop pre-writes the marker with the pid of the `cmd /c start`
+    # WRAPPER (see wrapHandoffForDetachedConsole), and that wrapper exits
+    # immediately -- so between the spawn and this write the marker names a
+    # DEAD pid. The Desktop's update gate (apps/desktop/electron/update-gate.ts
+    # + update-marker.ts) reads a dead-owner marker as "no live update",
+    # deletes it, and reports "update finished; proceeding with backend start":
+    # it boots a fresh backend *inside* the very hand-off it is supposed to be
+    # parked for. The app then keeps running (backend + SSH scopes come back
+    # up), never exits, and step 1 below aborts the whole update -- the
+    # "did not exit within 30s" abort. Booting the progress window first
+    # (loopback server + readiness probe + browser spawn) stretched that
+    # dead-owner window to ~2s; claiming here, before any of that, keeps it
+    # down to this interpreter's own startup.
     try {
         $epoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         $startedAt = 0L
@@ -1552,6 +1636,11 @@ try {
         $finalMsg = "marker self-test complete"
         exit 0
     }
+
+    # Progress-window veneer: opened only AFTER step 0 so the Desktop's update
+    # gate sees a live marker owner before the loopback server + browser spawn
+    # add seconds of startup work.
+    Show-ProgressWindow
 
     # StartAssigned passes a null CreateProcess currentDirectory, so children
     # inherit the hand-off process directory rather than PowerShell's $PWD.
@@ -1604,7 +1693,7 @@ try {
     # -- 1. Wait for the Desktop to exit (FAIL CLOSED) ----------------------
     Publish-UiProgress "Waiting for Hermes to close"
     if ($DesktopPid -gt 0) {
-        $deadline = (Get-Date).AddSeconds(30)
+        $deadline = (Get-Date).AddSeconds($script:DesktopExitGraceSeconds)
         while ((Get-Date) -lt $deadline) {
             $proc = Get-Process -Id $DesktopPid -ErrorAction SilentlyContinue
             if (-not $proc) { break }
@@ -1614,7 +1703,7 @@ try {
         if (Get-Process -Id $DesktopPid -ErrorAction SilentlyContinue) {
             # The running Desktop still owns application outputs being replaced.
             $finalCode = 4
-            $finalMsg = "Update aborted: the Hermes window (pid $DesktopPid) did not exit within 30s. Nothing was changed. Close Hermes fully and try again."
+            $finalMsg = "Update aborted: the Hermes window (pid $DesktopPid) did not exit within $($script:DesktopExitGraceSeconds)s. Nothing was changed. Close Hermes fully and try again."
             Write-HandoffLog $finalMsg
             exit $finalCode
         }
@@ -1768,7 +1857,11 @@ try {
         if ($finalCode -ne 0) {
             Show-ErrorFinale $finalMsg
             Close-ProgressWindow
-            [void](Start-DesktopRelaunch)
+            if (Test-SafeToRelaunch $finalCode $DesktopPid) {
+                [void](Start-DesktopRelaunch)
+            } else {
+                Write-HandoffLog "skipping failure-path relaunch: the original desktop (pid $DesktopPid) is still alive after the exit-timeout abort -- relaunching would spawn a second instance over the update that never ran (#88332)"
+            }
         } else {
             Publish-UiProgress "Opening Hermes"
             $cameBack = Start-DesktopRelaunch

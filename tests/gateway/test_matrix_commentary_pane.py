@@ -206,7 +206,7 @@ async def test_adapter_sanitizes_html_on_send_and_edit_and_keeps_star_prefix_wit
     adapter._client = MagicMock()
     adapter._encryption = False
     adapter.format_message = lambda c: c
-    adapter.truncate_message = lambda c, n: [c]
+    adapter.truncate_message = lambda c, n, len_fn=None: [c]
     adapter._build_text_message_content = lambda c: {"msgtype": "m.text", "body": c}
     adapter._apply_relation_metadata = lambda *a, **k: None
     events = []

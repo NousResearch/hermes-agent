@@ -547,6 +547,13 @@ class TestKeylessFailover:
             ("HTTP 402: free credits exhausted", True),
             ("HTTP 503: upstream unavailable", True),
             ("HTTP 404: not found", False),
+            ("Keyless Firecrawl search failed: HTTP 403: your IP address looks suspicious", True),
+            # A terminal error that echoes the query is judged by the status it starts with.
+            ("HTTP 400: invalid query 'http 503'", False),
+            ("HTTP 422: query contains 'status=500'", False),
+            ("search failed for 'HTTP 503 error codes': timeout", False),
+            ("error: 500 results max exceeded", False),
+            ("Keyless Exa search failed: HTTP 400: invalid query 'http 403'", False),
             ("", False),
         ],
     )

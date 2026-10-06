@@ -49,8 +49,11 @@ def _is_rate_limitish(message: str) -> bool:
 
 # A free tier that refuses this client (401/402/403: anonymous access revoked, IP reputation gate)
 # or errors server-side (5xx) fails every query from here, while another vendor may still serve it.
+# Anchored to the status the error starts with (after the ``Keyless <Vendor> search failed:`` prefix),
+# so a terminal error that echoes the query ("HTTP 400: invalid query 'http 503'") does not match.
 _VENDOR_REFUSAL_RE = re.compile(
-    r"\b(?:http(?:\s+status)?|status(?:\s+code)?|client\s+error|error(?:\s+code)?)"
+    r"\s*(?:keyless\s+\w+\s+search\s+failed:\s*)?"
+    r"(?:http(?:\s+status)?|status(?:\s+code)?|client\s+error|error\s+code)"
     r"\s*[:=']*\s*(?:40[123]|5\d\d)\b",
     re.IGNORECASE,
 )
@@ -63,7 +66,7 @@ def _is_search_failover_eligible(message: str) -> bool:
     one free search endpoint. Free-text markers are deliberately ignored:
     vendors may echo the query in an otherwise terminal error.
     """
-    return _is_rate_limitish(message) or bool(_VENDOR_REFUSAL_RE.search(message or ""))
+    return _is_rate_limitish(message) or bool(_VENDOR_REFUSAL_RE.match(message or ""))
 
 
 def _fail_msg(vendor: str, kind: str, exc: Any, *, other_backends: bool = True) -> str:

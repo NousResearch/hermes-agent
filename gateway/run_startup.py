@@ -1507,7 +1507,8 @@ class GatewayStartupMixin:
 
     async def _start_finish_wiring(self, connected_count: int) -> None:
         """Post-connect wiring: services, boot notifications, startup restore, recovered watchers."""
-        from gateway.run import _planned_restart_notification_pending, _restart_notification_pending
+        from gateway.run import (
+            _planned_restart_notification_pending, _recover_pending_flushes, _restart_notification_pending)
         await self._start_post_connect_services(connected_count)
         # Let fresh adapters settle before lifecycle sends (helps Discord thread deliveries).
         if connected_count > 0:
@@ -1523,6 +1524,12 @@ class GatewayStartupMixin:
         await self._await_startup_boot_sends(
             planned_restart_notification_pending=_planned_restart_notification_pending(),
         )
+        # Replay the previous run's pending spool before resume turns and queued inbound write live
+        # rows: only this pass tells the store which sessions have spooled rows, and a live row
+        # written first would get a lower row id than them for good.
+        with _log_suppressed(logging.WARNING, "Pending-message recovery failed: %s"):
+            if recovered := _recover_pending_flushes(self):
+                logger.info("Recovered %d pending message(s) from shutdown flush", recovered)
         # Auto-resume restart-interrupted sessions (ledger-answered ones were cleared above); a failed
         # auto-resume stays visible on the next user message.
         self._schedule_resume_pending_sessions()

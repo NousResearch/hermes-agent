@@ -228,3 +228,33 @@ def test_live_write_waits_while_held_back_files_still_fail_to_drain(flush_dir, m
     assert _contents(mock_db) == ["old0", "old0", "old0", "old1", "new-live", "new-live-2"]
     assert not list(flush_dir.glob("*.json"))
     assert not store._dirty_transcripts
+
+
+def test_boot_recovery_runs_before_resume_turns_and_queued_inbound(monkeypatch):
+    """Resume turns and queued inbound write live rows. The store knows nothing about the previous
+    run's spool until recovery has run, so a live row written first lands ahead of it for good."""
+    import asyncio
+
+    import gateway.run as gateway_run
+
+    order = []
+    monkeypatch.setattr(gateway_run, "_recover_pending_flushes",
+                        lambda runner: order.append("recover") or 0)
+    monkeypatch.setattr(gateway_run, "_restart_notification_pending", lambda: False)
+    monkeypatch.setattr(gateway_run, "_planned_restart_notification_pending", lambda: False)
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def finish_startup_restore():
+        order.append("drain inbound")
+
+    runner = SimpleNamespace(
+        _start_post_connect_services=noop, _await_startup_boot_sends=noop,
+        _schedule_resume_pending_sessions=lambda: order.append("resume"),
+        _finish_startup_restore=finish_startup_restore,
+        _send_session_db_warning_notifications=noop, _spawn_supervised=lambda *a, **k: None,
+    )
+    asyncio.run(gateway_run.GatewayRunner._start_finish_wiring(runner, 0))
+
+    assert order == ["recover", "resume", "drain inbound"]

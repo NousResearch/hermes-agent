@@ -2,6 +2,10 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
 import { introJa } from './intro-ja'
+import { jaAuxTasks } from './ja_aux_tasks'
+import { jaModelMenu } from './ja_model_menu'
+import { jaPluginSettings } from './ja_plugins'
+import { jaSharedMetrics } from './ja_shared_metrics'
 
 export const ja = defineLocale({
   externalOpenFailed: {
@@ -10,43 +14,7 @@ export const ja = defineLocale({
     copyUrl: 'リンクをコピー',
     close: '閉じる'
   },
-  sharedMetrics: {
-    consentTitle: 'Hermes の改善に協力しますか？',
-    consentBody:
-      '共有メトリクスは上限付きのカウンターだけです。プロンプト、ファイル、パス、エラーテキストは含みません。収集はローカルで行われ、Nous への送信は別途オプトインです。',
-    whatIsCollected: '収集される内容',
-    collectedIntro: '上限付きのカウンターのみ：',
-    collectedActivity: 'アクティビティ、セッションの長さ、結果、エラーの分類',
-    collectedModels: 'モデルのルートとトークン合計',
-    collectedNames: '組み込みツール、コマンド、カタログの名前',
-    collectedMilestones: '区分けされたセットアップの件数',
-    collectedReliability:
-      'アップデートの結果と所要時間、クラッシュ、起動と応答の速さ、メッセージングプラットフォームの状態',
-    collectedUsage:
-      'Hermes の使われ方：エージェントの精度と効率（編集の適用結果、ループ、エラーからの回復、タスクごとのトークン数とツール呼び出し数、キャッシュの破棄）、画面・Desktop モードごとのアクティブ時間、アプリのどの領域・操作・設定が使われ、すぐ閉じられ、オフにされたか、プロバイダー設定の結果',
-    collectedMachine:
-      '大まかなマシン情報：RAM の範囲、GPU の種類、Hermes バージョンの古さとリリースチャネル、未適用の更新数、ローカルモデルサーバーの使用有無',
-    installId:
-      '送信すると、日次パッケージが Nous のテレメトリサービスにアップロードされます。パッケージにはこのプロファイルのインストール ID（個人情報を含まない固定のランダム UUID。共有メトリクスのディレクトリを削除するとリセット）が付きます。',
-    consentWindow:
-      '収集期間全体が記録済みの同意期間内に収まるパッケージだけが送信されます。オプトイン前のデータや、送信オフ中のデータはこのマシンに残ります。送信はいつでもオフに戻せます。',
-    readDocs: '詳細を読む',
-    share: '収集して Nous に送信する',
-    local: 'ローカルでのみ収集する',
-    off: '共有しない',
-    changeLater: '設定 → 安全性 からいつでも変更できます。',
-    saveFailed: '選択を保存できませんでした',
-    collectLabel: '利用統計を収集する',
-    collectDesc:
-      '上限付きのカウンターをこのデバイスに保存します。プロンプト、ファイル、パス、エラーテキストは含みません。',
-    sendLabel: '利用統計を Nous に送信する',
-    sendDesc:
-      '日次パッケージを Nous のテレメトリサービスにアップロードします。同意期間内のデータだけが送信されます。収集がオンである必要があります。',
-    unavailable: 'この設定を変更するには Hermes バックエンドを更新してください。',
-    stripBody: '上限付きのカウンターのみ。プロンプトやファイルは含みません。',
-    stripChoices: { share: 'Nous に送信', local: 'ローカルのみ', off: '今はしない' },
-    stripDetails: '詳細'
-  },
+  sharedMetrics: jaSharedMetrics,
   intro: introJa,
   sessionImport: {
     title: '別のアプリから続ける',
@@ -283,7 +251,7 @@ export const ja = defineLocale({
       inputTitleNamed: session => `入力が必要です — ${session}`,
       inputBody: 'Hermes が応答を待っています。',
       turnDoneTitle: 'Hermes が完了しました',
-      turnDoneBody: '',
+      turnDoneBody: 'メッセージが完了しました。',
       turnErrorTitle: 'ターンが失敗しました',
       backgroundDoneTitle: 'バックグラウンドタスクが完了しました',
       backgroundFailedTitle: 'バックグラウンドタスクが失敗しました',
@@ -439,22 +407,7 @@ export const ja = defineLocale({
       billingOverview: '概要',
       billingPlans: 'プラン'
     },
-    plugins: {
-      openFolder: 'デスクトッププラグインフォルダーを開く',
-      installModal: {
-        installUncertain:
-          'Hermes はインストール結果の待機を終了しましたが、プラグインのインストールはまだ進行中の可能性があります。この画面を閉じ、再インストールする前にプラグイン一覧を再スキャンしてください。',
-        installFromGit: 'Git からインストール',
-        reviewRepository: 'リポジトリを確認',
-        repoPlaceholder: 'https://github.com/owner/repo',
-        toolsConnected: n => `${n} 個のツールを接続しました`,
-        skillsReady: names =>
-          names.length === 1 ? `スキル ${names[0]} の準備ができました` : `${names.length} 個のスキルの準備ができました`,
-        nextChat: 'ほかのツールは次のチャットで使えます',
-        serverNotConnected: (server, reason) =>
-          `MCP サーバー ${server} は接続されていません${reason ? `: ${reason}` : '。'}`
-      }
-    },
+    plugins: jaPluginSettings.plugins,
     closeSettings: '設定を閉じる',
     exportConfig: '設定を書き出す',
     importConfig: '設定を読み込む',
@@ -462,6 +415,7 @@ export const ja = defineLocale({
     resetConfirm: 'すべての設定を Hermes のデフォルトに戻しますか？',
     exportFailed: '書き出しに失敗しました',
     resetFailed: 'リセットに失敗しました',
+    pluginPages: jaPluginSettings.pluginPages,
     nav: {
       providers: 'プロバイダー',
       providerAccounts: 'アカウント',
@@ -479,7 +433,8 @@ export const ja = defineLocale({
       about: '情報',
       billing: '請求',
       notifications: '通知',
-      vault: 'パスワードとログイン'
+      vault: 'パスワードとログイン',
+      plugins: 'プラグイン'
     },
     vault: {
       title: 'パスワードとログイン',
@@ -1242,6 +1197,8 @@ export const ja = defineLocale({
         'サポートされていないリモートプラットフォームです。Hermes Desktop の SSH モードは Linux、macOS、Windows のリモートホストに対応しています。',
       sshErrTimeout: 'SSH 接続がタイムアウトしました。ホストが到達不能、またはスリープ中の可能性があります。',
       sshErrUpdateRequired: 'Desktop SSH で接続する前に、リモートホストの Hermes を更新してください。',
+      sshErrInteractiveAuth:
+        'Tailscale SSH では対話的なブラウザー確認が必要です。ターミナルで `ssh <host> true` を実行して確認を完了し、再試行してください。Hermes は SSH を非対話的に実行します。',
       sshErrUnknown: 'SSH 接続に失敗しました。'
     },
     keys: {
@@ -1344,20 +1301,10 @@ export const ja = defineLocale({
       change: '変更',
       autoUseMain: '自動 · メインモデルを使用',
       inheritMainEffort: '継承 · メインモデルの推論強度',
+      inheritsFrom: task => `${task} を継承`,
+      followTask: task => `${task} に従う`,
       providerDefault: '(プロバイダーのデフォルト)',
-      tasks: {
-        vision: { label: 'ビジョン', hint: '画像分析' },
-        compression: { label: '圧縮', hint: 'コンテキストの圧縮' },
-        skills_hub: { label: 'スキルハブ', hint: 'スキル検索' },
-        approval: { label: '承認', hint: 'スマート自動承認' },
-        mcp: { label: 'MCP', hint: 'MCP ツールルーティング' },
-        title_generation: { label: 'タイトル生成', hint: 'セッションタイトル' },
-        review: { label: 'レビュー', hint: '/review レビューサブエージェント' },
-        triage_specifier: { label: 'トリアージ指定', hint: 'カンバン仕様の具体化' },
-        kanban_decomposer: { label: 'カンバン分解', hint: 'タスク分解' },
-        profile_describer: { label: 'プロファイル記述', hint: 'プロファイル概要の自動生成' },
-        curator: { label: 'キュレーター', hint: 'スキル使用レビュー' }
-      }
+      tasks: jaAuxTasks
     },
     localModels: {
       connectionChanged: 'ローカルモデルの接続が変更されました',
@@ -3350,22 +3297,7 @@ export const ja = defineLocale({
     windowControls: 'ウィンドウコントロール',
     paneControls: 'ペインコントロール',
     appControls: 'アプリコントロール',
-    modelMenu: {
-      search: 'モデルを検索',
-      noModels: 'モデルが見つかりません',
-      editModels: 'モデルを編集…',
-      followDefault: '設定のデフォルトを使用',
-      refreshModels: 'モデルを更新',
-      favorites: 'お気に入り',
-      addFavorite: 'お気に入りに追加',
-      removeFavorite: 'お気に入りから削除',
-      favoriteShortcut: '⇧ クリック',
-      fast: '高速',
-      free: '無料',
-      cacheRead: 'キャッシュ読み取り',
-      priceTitle: (input: string, output: string, cache: string) =>
-        `入力 ${input}/Mtok · 出力 ${output}/Mtok` + (cache ? ` · キャッシュ読み取り ${cache}/Mtok` : '')
-    },
+    modelMenu: jaModelMenu,
     modelOptions: {
       noOptions: 'このモデルにはオプションがありません',
       options: 'オプション',
@@ -3434,6 +3366,9 @@ export const ja = defineLocale({
       showTerminal: 'ターミナルを表示',
       hideTerminal: 'ターミナルを非表示',
       gateway: 'ゲートウェイ',
+      backend: 'バックエンド',
+      messagingStopped: 'メッセージング停止',
+      messagingDegraded: name => `${name} 停止`,
       gatewayReady: '準備完了',
       gatewayNeedsSetup: '設定が必要',
       gatewayUnavailable: '推論を利用できません',
@@ -4094,9 +4029,6 @@ export const ja = defineLocale({
     sessionUnavailable: 'セッションが利用できません',
     createSessionFailed: '新しいセッションを作成できませんでした',
     promptFailed: 'プロンプトに失敗しました',
-    staleSessionTitle: 'チャットが最新ではありません',
-    staleSessionBody:
-      'このウィンドウは同じチャットの別ビューより遅れています。最新のメッセージを読み込みました。送信する場合はもう一度送ってください。',
     providerCredentialRequired: '最初のメッセージを送信する前にプロバイダー認証情報を追加してください。',
     emptySlashCommand: '空のスラッシュコマンド',
     slashCommandIgnoredTitle: 'コマンドが送信されませんでした',

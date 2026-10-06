@@ -21,6 +21,7 @@ statements about one endpoint, not an ambient guess about the machine.
 from __future__ import annotations
 
 import logging
+import os
 import ssl
 import threading
 from pathlib import Path
@@ -110,8 +111,15 @@ def _shared_context(ca_path: str | None) -> ssl.SSLContext:
 
 
 def platform_ssl_context() -> ssl.SSLContext:
-    """The process-wide platform-trust client context (cheap after the first call)."""
+    """The process-wide client context (cheap after the first call).
+
+    An existing ``SSL_CERT_FILE`` bundle wins, as it did for httpx ``verify=True``;
+    a missing or stale path falls back to the platform store.
+    """
     install_truststore()
+    ca = os.environ.get("SSL_CERT_FILE", "").strip()
+    if ca and Path(ca).is_file():
+        return _shared_context(str(Path(ca).resolve()))
     return _shared_context(None)
 
 
@@ -154,8 +162,6 @@ def resolve_httpx_verify(
     # HTTPX reads CA env vars before the injected verifier gets control. Pass
     # the platform context directly so stale paths cannot break construction;
     # proxy environment handling remains enabled.
-    import os
-
     if os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
         return _shared_context(None)
     return True

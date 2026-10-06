@@ -378,6 +378,105 @@ def test_retirement_unshallows_grafted_divergence_before_refusing(tmp_path, monk
     assert any("--unshallow" in args for args in fetch_args)
 
 
+def test_retirement_recovers_on_first_attempt_after_initially_missing_target(tmp_path, monkeypatch):
+    """A target absent at entry is fetched by the pinned fetch, but a stale
+    depth-1 boundary (from an earlier check of an intermediate build) can still
+    disconnect the histories, so the post-fetch classification must refill the
+    grafted history before refusing — the first attempt proves the older
+    install instead of requiring a second invocation (#128305 F1)."""
+    from hermes_cli import source_releases
+
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    git(origin, "init", "--bare", "-b", "main")
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git(seed, "clone", str(origin), str(seed))
+    git(seed, "config", "user.name", "Release Fixture")
+    git(seed, "config", "user.email", "fixture@example.invalid")
+    labels = ("installed", "intermediate", "target")
+    commits = []
+    for label in labels:
+        (seed / "content.txt").write_text(label, encoding="utf-8")
+        git(seed, "add", "content.txt")
+        git(seed, "commit", "-m", label)
+        commits.append(git(seed, "rev-parse", "HEAD"))
+    installed, intermediate, target = commits
+    git(seed, "push", "origin", "HEAD:refs/heads/main")
+    git(seed, "push", "origin", installed + ":refs/heads/old")
+
+    fresh = tmp_path / "fresh"
+    # The installer shape: a depth-1 clone pinned at the OLDER commit.
+    git(tmp_path, "clone", "--depth=1", "--branch", "old", origin.as_uri(), str(fresh))
+    git(fresh, "checkout", "--detach")
+    # A previous depth-1 channel check while the remote sat at the intermediate
+    # build leaves a second shallow boundary on the checkout.
+    git(fresh, "fetch", "--depth=1", "origin", intermediate)
+    # The qualified target is initially absent locally.
+    assert subprocess.run(["git", "cat-file", "-e", target + "^{commit}"], cwd=fresh,
+                          capture_output=True).returncode != 0
+    request = {"commit": target, "sourceVersion": "1.0.0", "sequence": 1,
+               "repository": "NousResearch/hermes-agent"}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+    monkeypatch.setattr(source_releases, "_resolve_channel",
+                        lambda name, repository: SimpleNamespace(manifest=None))
+    # First attempt: fetch the pinned target, refill the surviving boundary,
+    # and prove the older install safe — no second invocation required.
+    assert source_releases._git_retirement_proof(request, terminal, ["git"], fresh, True) is True
+    assert git(fresh, "rev-parse", "HEAD") == installed
+
+
+def test_retirement_existing_target_refill_clears_stale_lock(tmp_path, monkeypatch):
+    """The grafted-history refill rides the same guarded preparation as the
+    pinned-target fetch: an abandoned ``shallow.lock`` (older than the age
+    floor, no live git) is cleared before the fetch instead of failing every
+    attempt with exit 128 (#128305 F2)."""
+    import os
+    import time as _time
+
+    from hermes_cli import source_releases
+
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    git(origin, "init", "--bare", "-b", "main")
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git(seed, "clone", str(origin), str(seed))
+    git(seed, "config", "user.name", "Release Fixture")
+    git(seed, "config", "user.email", "fixture@example.invalid")
+    labels = ("installed", "middle", "target")
+    commits = []
+    for label in labels:
+        (seed / "content.txt").write_text(label, encoding="utf-8")
+        git(seed, "add", "content.txt")
+        git(seed, "commit", "-m", label)
+        commits.append(git(seed, "rev-parse", "HEAD"))
+    installed, middle, target = commits
+    git(seed, "push", "origin", "HEAD:refs/heads/main")
+    git(seed, "push", "origin", installed + ":refs/heads/old")
+
+    fresh = tmp_path / "fresh"
+    git(tmp_path, "clone", "--depth=1", "--branch", "old", origin.as_uri(), str(fresh))
+    git(fresh, "fetch", "--depth=1", "origin", target)
+    git(fresh, "checkout", "--detach")
+    assert subprocess.run(["git", "cat-file", "-e", target + "^{commit}"], cwd=fresh,
+                          capture_output=True).returncode == 0
+    assert subprocess.run(["git", "cat-file", "-e", middle + "^{commit}"], cwd=fresh,
+                          capture_output=True).returncode != 0
+    # Abandoned lock debris: older than the guarded age floor, no live git.
+    lock = fresh / ".git" / "shallow.lock"
+    lock.write_text("", encoding="utf-8")
+    os.utime(lock, (_time.time() - 3600,) * 2)
+    request = {"commit": target, "sourceVersion": "1.0.0", "sequence": 1,
+               "repository": "NousResearch/hermes-agent"}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+    monkeypatch.setattr(source_releases, "_resolve_channel",
+                        lambda name, repository: SimpleNamespace(manifest=None))
+    assert source_releases._git_retirement_proof(request, terminal, ["git"], fresh, True) is True
+    assert not lock.exists()
+    assert git(fresh, "rev-parse", "HEAD") == installed
+
+
 def test_retirement_admits_install_sitting_on_the_qualified_target(tmp_path):
     """Equal-and-equal: an install already on the qualified build proves safe without a fetch."""
     from hermes_cli import source_releases

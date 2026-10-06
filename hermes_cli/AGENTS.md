@@ -92,7 +92,9 @@ set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_
   `atomic_config_replace` full-state path (→ `utils.atomic_roundtrip_yaml_save`, ruamel
   round-trip): comments, key order, quoting and blank lines survive, and the fail-closed unreadable-file
   guard runs first. Deliberate `pop()`/unset/migration paths use `atomic_config_replace`; additive
-  writers stay on `atomic_config_write`. Never call
+  writers stay on `atomic_config_write`. A caller that sends the whole file as text (the dashboard
+  YAML editor) passes `document_text` to `save_config` / `atomic_config_replace`, so the state lands
+  on the typed document and its comments and default-valued settings are kept, not the old file's. Never call
   `atomic_yaml_write` / `yaml.dump` / `yaml.safe_dump` on a config path — `scripts/check_config_yaml_writers.py`
   (CI lint) rejects it, and `tests/hermes_cli/test_config_yaml_comment_preservation.py` guards each
   path (#92554). The commented example blocks are appended only when the file is created.

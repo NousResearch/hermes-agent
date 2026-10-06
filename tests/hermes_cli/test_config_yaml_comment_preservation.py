@@ -114,6 +114,26 @@ class TestEveryWriterPreservesComments:
         data = _assert_preserved(home / "config.yaml")
         assert data["model"]["provider"] == "auto"
 
+    def test_dashboard_yaml_editor_saves_the_file_as_typed(self, home):
+        """The YAML editor sends the whole new file: the comments, order and settings in it are
+        the user's, even a setting typed at its default value (``language: en`` pins English;
+        absent, the desktop follows the OS)."""
+        from starlette.testclient import TestClient
+        from hermes_cli import web_server
+
+        client = TestClient(web_server.app)
+        client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+        typed = (
+            "# the user's own header\n"
+            "display:\n  language: en  # English even on a Japanese OS\n"
+            "model:\n  default: some-model\n  provider: test\n"
+        )
+
+        resp = client.put("/api/config/raw", json={"yaml_text": typed})
+
+        assert resp.status_code == 200, resp.text
+        assert (home / "config.yaml").read_text(encoding="utf-8") == typed
+
     def test_boilerplate_only_on_create(self, home):
         from hermes_cli.config import save_config
 

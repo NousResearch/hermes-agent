@@ -572,6 +572,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // Where to land after a prepend, in distance-from-bottom (survives the
   // height change). Shared by "Show earlier" and the budget backfill below.
   const restoreFromBottomRef = useRef<number | null>(null)
+  // A reader who moved the viewport themselves owns it: a re-armed restore loop
+  // must not drag them back to the remembered target (the turn-end jerk in
+  // #132776 / #108941). Cleared when they return to the bottom or switch session.
+  const readerOwnsViewportRef = useRef(false)
+  // A deliberate park recorded by anchorBeforePrepend: that growth is ABOVE the
+  // reader, so consuming it keeps the same content on screen and must still land.
+  const prependParkRef = useRef(false)
   // scrollHeight when the anchor was recorded. The restore effect below also
   // runs on commits that do not grow the content (the transcript arriving
   // under the first-paint budget; a "Show earlier" whose page comes from the
@@ -625,6 +632,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     restoreFromBottomRef.current =
       liveScrollStateRef.current.kind === 'bottom' ? el.clientHeight : el.scrollHeight - el.scrollTop
     anchorHeightRef.current = el.scrollHeight
+    prependParkRef.current = true
   }, [scrollRef])
 
   // Weights (part count + visible character cost) fold into the BUDGET only.
@@ -863,6 +871,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     const update = () => {
       previousResizeMetrics = resizeMetrics()
       liveScrollStateRef.current = threadScrollStateFromMetrics(el)
+
+      // Back at the bottom (or a fresh short transcript): the restore may drive again.
+      if (liveScrollStateRef.current.kind === 'bottom') {
+        readerOwnsViewportRef.current = false
+      }
     }
 
     const onResize = () => {
@@ -1033,7 +1046,18 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       applyTarget(el)
     }
 
-    applyRestoreRef.current()
+    // Yield to a reader who moved the viewport: this effect re-runs whenever the
+    // transcript re-arms (hasGroups / callback identity), and applying the
+    // remembered target here is what drags them back on open and at turn end.
+    const readerOwnsViewport = () =>
+      readerOwnsViewportRef.current &&
+      liveScrollStateRef.current.kind === 'offset' &&
+      !el.hasAttribute('data-editing')
+
+    if (!readerOwnsViewport()) {
+      applyRestoreRef.current()
+    }
+
     loadSettledRef.current = false
     // The rows are in and about to be glued to their target: theme CSS may
     // hide this phase (data-session-switching) so the jump never paints.
@@ -1045,6 +1069,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     if (sessionSwitched) {
       settleKeyRef.current = sessionKey
       restoreFromBottomRef.current = null
+      readerOwnsViewportRef.current = false
     }
 
     let frame = 0
@@ -1067,7 +1092,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
       stableFrames = height === lastHeight && !clamped ? stableFrames + 1 : 0
       lastHeight = height
-      applyTarget(node)
+
+      if (!readerOwnsViewport()) {
+        applyTarget(node)
+      }
 
       // Most session switches are synchronous and stabilize within 2 frames;
       // the old 90-frame ceiling was for slow async image loads. Cap at 15
@@ -1077,8 +1105,12 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
         if (target.kind === 'bottom') {
           // Hand back to use-stick-to-bottom locked, so late async growth
-          // (images, highlight) keeps following the bottom.
-          void scrollToBottomUnlessSelecting('instant')
+          // (images, highlight) keeps following the bottom — unless the reader
+          // has taken the viewport over.
+          if (!readerOwnsViewport()) {
+            void scrollToBottomUnlessSelecting('instant')
+          }
+
           loadSettledRef.current = true
         } else if (clamped) {
           // Content hasn't finished arriving (the backfill transition is still
@@ -1124,7 +1156,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // Once settled, only a transcript-row height change may re-pin — for a
       // bottom target too: a composer-only resize (every keystroke) used to
       // yank a view the user had moved away from the bottom back down.
-      if (!loadSettledRef.current || shouldReapplyFrozenThreadScrollOffset(target, true, previous, next)) {
+      if (
+        !readerOwnsViewport() &&
+        (!loadSettledRef.current || shouldReapplyFrozenThreadScrollOffset(target, true, previous, next))
+      ) {
         applyTarget(el)
         liveScrollStateRef.current = threadScrollStateFromMetrics(el)
       }
@@ -1178,6 +1213,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         return
       }
 
+      readerOwnsViewportRef.current = true
       cancelRestore()
     }
 
@@ -1449,11 +1485,18 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     if (
       el &&
       restoreFromBottom != null &&
+      // A deliberate prepend park still lands (growth above the reader keeps the
+      // same content on screen). Any other parked offset belongs to a reader who
+      // moved the viewport themselves: re-applying their distance-from-bottom
+      // against a taller transcript is what drags them down with growth below —
+      // the turn-end jerk.
+      (prependParkRef.current || !readerOwnsViewportRef.current) &&
       el.scrollHeight > (anchorHeightRef.current ?? 0) &&
       el.scrollHeight >= restoreFromBottom
     ) {
       el.scrollTop = el.scrollHeight - restoreFromBottom
       restoreFromBottomRef.current = null
+      prependParkRef.current = false
       // Consuming a parked offset (clamped-exit) means the view just landed at
       // its real reading position — the load is settled from here on.
       loadSettledRef.current = true

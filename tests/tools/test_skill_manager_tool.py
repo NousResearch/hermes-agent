@@ -366,6 +366,32 @@ class TestEditSkill:
         assert found is not None
         assert found["path"] == claimed
 
+    def test_find_skill_ambiguous_display_name_refuses_to_guess(self, tmp_path):
+        """Two distinct skills sharing a frontmatter display name (#61172).
+
+        The display-name fallback must not silently pick one of them — the
+        caller would mutate the wrong skill. Like skill_view's same-tier
+        collision refusal, the shared display name resolves to nothing while
+        a UNIQUE display name resolves and each skill stays reachable by its
+        directory name.
+        """
+        for dir_name in ("alpha-home", "beta-office"):
+            skill = tmp_path / dir_name
+            skill.mkdir()
+            (skill / "SKILL.md").write_text(MISMATCHED_NAME_CONTENT)
+        unique = tmp_path / "gamma-solo"
+        unique.mkdir()
+        (unique / "SKILL.md").write_text(
+            MISMATCHED_NAME_CONTENT.replace("keeta-eng-conduct", "solo-display"))
+        with _skill_dir(tmp_path):
+            assert _find_skill("keeta-eng-conduct") is None
+            assert _find_skill("solo-display")["path"] == unique
+            assert _find_skill("alpha-home")["path"] == tmp_path / "alpha-home"
+            assert _find_skill("beta-office")["path"] == tmp_path / "beta-office"
+            result = _edit_skill("keeta-eng-conduct", VALID_SKILL_CONTENT_2)
+        assert result["success"] is False
+        assert "not found" in result["error"]
+
     def test_edit_invalid_content_rejected(self, tmp_path):
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)

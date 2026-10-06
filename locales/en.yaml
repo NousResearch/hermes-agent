@@ -735,6 +735,7 @@ gateway:
     reject_goal: "Agent is running — use /goal status / pause / clear / wait mid-run, or /stop before setting a new goal."
     reject_loop: "Agent is running — use /loop status / pause / stop mid-run, or /stop before setting a new loop."
     draining_maintenance: "⏳ This agent is draining for a maintenance action and isn't accepting new turns right now. It'll be back in a moment — please resend shortly."
+    compressing_retry: "⏳ Context compression is running on this session, so your message wasn't processed — this protects the transcript. It usually finishes within a couple of minutes; please resend after that."
     another_turn_running: "⏳ Another turn is still running on this session. To protect the transcript, this message was not processed. Wait for the active turn to finish, then resend it."
     behavior_queue_short: "queues for next turn"
     behavior_queue_long: "Messages will be queued for the next turn while Hermes is busy."

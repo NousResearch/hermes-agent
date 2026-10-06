@@ -726,6 +726,7 @@ gateway:
     reject_goal: "代理正在运行——运行中可使用 /goal status / pause / clear / wait，或先 /stop 再设置新目标。"
     reject_loop: "代理正在运行——运行中可使用 /loop status / pause / stop，或先 /stop 再设置新循环。"
     draining_maintenance: "⏳ 此代理正在为维护操作排空任务，目前不接受新的回合。稍后即会恢复——请稍等片刻后重新发送。"
+    compressing_retry: "⏳ 此会话正在进行上下文压缩，为保护对话记录，这条消息未被处理。压缩通常在一两分钟内完成，之后请重新发送。"
     another_turn_running: "⏳ 此会话上还有另一回合仍在运行。为保护对话记录，这条消息未被处理。请等待当前回合结束后重新发送。"
     behavior_queue_short: "排队至下一回合"
     behavior_queue_long: "Hermes 忙碌时，消息将排队至下一回合处理。"

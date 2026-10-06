@@ -1337,6 +1337,17 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 logger.info("Refusing new turn for session %s — external drain active.", _quick_key)
                 return t("gateway.busy.draining_maintenance")
 
+        # Compression new-turn gate (#134239): a post-turn compression starts ~0.4 s after
+        # "Turn ended", i.e. while ``_is_session_running`` is already False, so a follow-up
+        # message reaches this fresh-turn path with the guard from #56391 never firing. The
+        # turn it starts reads the pre-rotation history and its own post-turn compression later
+        # commits a snapshot taken before the previous commit — double-compressing the
+        # transcript. The running-agent path already demotes for this; the fresh-turn path
+        # must refuse too. Lock is TTL-leased (~300 s), so a leaked lock can't wedge this.
+        if not is_internal and await self._session_has_compression_in_flight(_quick_key):
+            logger.info("Refusing new turn for session %s — context compression in flight.", _quick_key)
+            return t("gateway.busy.compressing_retry")
+
         # Claim this session before any await: many awaits sit between here and _run_agent
         # registering the real AIAgent; without this sentinel a second message during any of them
         # passes the "already running" guard and spins up a duplicate agent for the same session.

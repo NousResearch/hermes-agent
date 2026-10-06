@@ -726,6 +726,7 @@ gateway:
     reject_goal: "Agent läuft — verwenden Sie währenddessen /goal status / pause / clear / wait, oder /stop, bevor Sie ein neues Ziel setzen."
     reject_loop: "Agent läuft — verwenden Sie währenddessen /loop status / pause / stop, oder /stop, bevor Sie eine neue Schleife setzen."
     draining_maintenance: "⏳ Dieser Agent wird für eine Wartungsaktion geleert und nimmt gerade keine neuen Züge an. Er ist gleich wieder da — bitte senden Sie in Kürze erneut."
+    compressing_retry: "⏳ Für diese Sitzung läuft gerade eine Kontextkomprimierung — zum Schutz des Verlaufs wurde diese Nachricht nicht verarbeitet. Sie dauert meist ein bis zwei Minuten; bitte danach erneut senden."
     another_turn_running: "⏳ In dieser Sitzung läuft noch ein anderer Zug. Zum Schutz des Transkripts wurde diese Nachricht nicht verarbeitet. Warten Sie, bis der aktive Zug abgeschlossen ist, und senden Sie sie dann erneut."
     behavior_queue_short: "reiht für nächsten Zug ein"
     behavior_queue_long: "Nachrichten werden für den nächsten Zug eingereiht, während Hermes beschäftigt ist."

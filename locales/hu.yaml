@@ -736,6 +736,7 @@ gateway:
     reject_goal: "Az ügynök fut — futás közben a /goal status / pause / clear / wait használható, új cél megadása előtt pedig a /stop."
     reject_loop: "Az ügynök fut — futás közben a /loop status / pause / stop használható, új ciklus megadása előtt pedig a /stop."
     draining_maintenance: "⏳ Ez az ügynök egy karbantartási művelet miatt éppen leürül, és most nem fogad új köröket. Hamarosan visszatér — küldd el újra kis idő múlva."
+    compressing_retry: "⏳ Ez a munkamenet éppen kontextus-tömörít végez, ezért a leirat védelme érdekében ez az üzenet nem lett feldolgozva. A tömörítés általában egy-két perc alatt kész — küldd el újra utána."
     another_turn_running: "⏳ Ezen a munkameneten még fut egy másik kör. Az átirat védelmében ez az üzenet nem lett feldolgozva. Várd meg az aktív kör végét, majd küldd el újra."
     behavior_queue_short: "sorba áll a következő körre"
     behavior_queue_long: "Amíg a Hermes foglalt, az üzenetek a következő körre kerülnek sorba."

@@ -23,7 +23,6 @@ from agent.prompt_cache_boundary import (
     register_stable_prefix,
 )
 from agent.prompt_caching import (
-    _has_part_marker,
     apply_anthropic_cache_control,
     build_prompt_cache_plan,
     strip_anthropic_cache_control,
@@ -225,12 +224,26 @@ class TestRequestLocalSplit:
         original += [{"role": role, "content": f"turn {i}"} for i in range(4) for role in ("assistant", "user")]
 
         unmarked = apply_anthropic_cache_control(copy.deepcopy(original))
-        assert not _has_part_marker(unmarked[0]["content"])
+        assert all("cache_control" not in part for part in unmarked[0]["content"])
 
-        again = apply_anthropic_cache_control(copy.deepcopy(unmarked[:3]))
-        assert again == apply_anthropic_cache_control(copy.deepcopy(original[:3]))
+        again = apply_anthropic_cache_control(copy.deepcopy(unmarked[:1]))
+        assert again == apply_anthropic_cache_control(copy.deepcopy(original[:1]))
         assert again[0]["content"][0]["cache_control"] == MARKER
         assert "cache_control" not in again[0]["content"][1]
+
+    def test_direct_tool_cache_plan_keeps_the_split_outside_the_marker_window(self):
+        """The native tool-cache layout plans without apply_anthropic_cache_control, so it needs
+        the same unmarked split or its third request re-writes the scaffold."""
+        scaffold = "stable scaffold\n\n" + _SINGLE_SKILL_INSTRUCTION
+        register_stable_prefix(scaffold)
+        history = [{"role": "user", "content": scaffold + "ticket=one"}]
+        history += [{"role": role, "content": f"turn {i}"} for i in range(4) for role in ("assistant", "user")]
+        tools = [{"type": "function", "function": {"name": "terminal", "parameters": {}}}]
+
+        plan = build_prompt_cache_plan(history, tools, native_anthropic=True, direct_native_tool_cache=True)
+
+        assert plan.messages[0]["content"] == [{"type": "text", "text": scaffold}, {"type": "text", "text": "ticket=one"}]
+        assert isinstance(history[0]["content"], str)
 
     def test_strip_flattens_even_after_the_prefix_was_evicted(self):
         """Mid-turn failover re-decorates a request built many messages ago

@@ -99,6 +99,7 @@ import {
   TERMINAL_FONT_FAMILY,
 } from "@/lib/terminal-font-refit";
 import { loseWebglContexts } from "@/lib/xterm-webgl-release";
+import { scaledTerminalFontSize } from "@/lib/terminal-font-scale";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
@@ -157,16 +158,6 @@ function terminalTierWidthPx(host: HTMLElement | null): number {
   const vvw = vv?.width ?? inner;
   const layout = Math.min(inner, vvw, doc > 0 ? doc : inner);
   return Math.max(1, Math.round(layout));
-}
-
-function terminalFontSizeForWidth(layoutWidthPx: number): number {
-  if (layoutWidthPx < 300) return 7;
-  if (layoutWidthPx < 360) return 8;
-  if (layoutWidthPx < 420) return 9;
-  if (layoutWidthPx < 520) return 10;
-  if (layoutWidthPx < 720) return 11;
-  if (layoutWidthPx < 1024) return 12;
-  return 14;
 }
 
 function terminalLineHeightForWidth(layoutWidthPx: number): number {
@@ -392,6 +383,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // management profile (a phone remembers the repo it drives). The connect
   // effect reads storage directly, so changing the picker never respawns the
   // live PTY: it applies on the next "New chat".
+  const [terminalFontScale, setTerminalFontScale] = useState(1);
+  useEffect(() => {
+    (api.getConfig?.() ?? Promise.resolve({})).then((config) => {
+      const value = (config as { display?: { terminal_font_scale?: unknown } }).display?.terminal_font_scale;
+      if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+        setTerminalFontScale(value);
+      }
+    }).catch(() => {});
+  }, [scopedProfile]);
   const [workspaceCwd, setWorkspaceCwdState] = useState(() =>
     readStoredWorkspace(scopedProfile),
   );
@@ -584,7 +584,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       allowProposedApi: true,
       cursorBlink: true,
       fontFamily: TERMINAL_FONT_FAMILY,
-      fontSize: terminalFontSizeForWidth(tierW0),
+      fontSize: scaledTerminalFontSize(tierW0, terminalFontScale),
       lineHeight: terminalLineHeightForWidth(tierW0),
       letterSpacing: 0,
       fontWeight: "400",
@@ -986,7 +986,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         return;
       }
       const w = terminalTierWidthPx(host);
-      const nextSize = terminalFontSizeForWidth(w);
+      const nextSize = scaledTerminalFontSize(w, terminalFontScale);
       const nextLh = terminalLineHeightForWidth(w);
       const fontChanged =
         term.options.fontSize !== nextSize ||
@@ -1659,6 +1659,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     resumeParam,
     scopedProfile,
     reconnectNonce,
+    terminalFontScale,
   ]);
 
   // NS-434 follow-up: attach the visualViewport keyboard-inset listeners

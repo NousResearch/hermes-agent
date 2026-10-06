@@ -868,13 +868,6 @@ def _cmd_retry(rid, params, session, name, arg):
     return _ok(rid, {"type": "send", "message": content})
 
 
-def _tui_model_friction(signal, session, turns=1):
-    from hermes_cli.observability.shared_metrics_model import record_model_friction
-    record_model_friction(
-        signal, session_id=session.get("session_key"), agent=session.get("agent"),
-        hermes_home=session.get("profile_home"), turns=turns)
-
-
 def _cmd_steer(rid, params, session, name, arg):
     if not arg:
         return _err(rid, 4004, "usage: /steer <prompt>")

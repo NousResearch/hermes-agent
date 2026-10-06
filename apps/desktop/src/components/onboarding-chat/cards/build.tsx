@@ -1,9 +1,3 @@
-/**
- * The three build cards: choosing what to make, handing it to a session of its own, and reporting progress. Unlike the
- * setup cards these read the directive attrs, which the model writes, so each card validates the payload before it
- * renders.
- */
-
 import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo } from 'react'
@@ -14,42 +8,33 @@ import { quarantineHandoffReceipt } from '@/app/contrib/handoff-receipt'
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { CardProps } from '@/components/onboarding-chat/cards/frame'
 import { Chip } from '@/components/onboarding-chat/chip'
+import { readPersistedHandoff } from '@/components/onboarding-chat/persisted-handoff'
 import {
   $handoffError,
   $setupHandoff,
+  $setupSession,
   firstTaskTitle,
   guideHandoffReceiptKey,
   parseHandoffPlan,
   readGuideHandoffReceipt,
   requestSetupHandoff,
-  retrySetupHandoff,
-  SETUP_PROFILE
+  retrySetupHandoff
 } from '@/components/onboarding-chat/setup-profile'
 import { Button } from '@/components/ui/button'
 import { answeredAfter } from '@/lib/chat-messages/parts'
 import { segmentTranscriptDirectives } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
 import { $onboardingAnswers, markStepCommitted } from '@/store/onboarding-answers'
+import { $activeGatewayProfile } from '@/store/profile'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
 
-/** A tapped option is submitted as the user's own visible message rather than as a hidden [setup] note, so the
- *  model's next message answers a real turn. */
 const FALLBACK_OPTION = "Let's figure it out together"
 
-/**
- * The last question card before the handoff. The model asks what the user wants to build first, then places this card
- * with options it wrote from the conversation so far:
- * `::onboarding{step="first" options="A Discord bot|A habit tracker|…"}`.
- */
 export function FirstBuildCard({ attrs, locked }: CardProps) {
   const view = useSessionView()
   const storedId = useStore(view.$storedId)
   const target = view.kind === 'tile' ? `tile:${storedId}` : 'main'
-  // The pick lives with the other answers, not in component state: the
-  // visible submit rebuilds the transcript and a local flag came back null,
-  // leaving every chip clickable after one had already been sent. A typed
-  // reply in the composer closes the card the same way a chip does.
   const messageId = useAuiState(state => state.message.id)
 
   const answeredInComposer = answeredAfter(useStore(view.$messages), messageId)
@@ -61,9 +46,6 @@ export function FirstBuildCard({ attrs, locked }: CardProps) {
 
   const picked = committed ?? (answeredInComposer ? '' : null)
 
-  // The 60-character limit keeps an option on one chip. The dedupe is case-insensitive because models repeat
-  // themselves. Fewer than 2 usable options falls back to FALLBACK_OPTION, because the model's prose has already
-  // told the user to pick one below.
   const seen = new Set<string>()
 
   const parsed = (attrs.options ?? '')
@@ -105,15 +87,6 @@ export function FirstBuildCard({ attrs, locked }: CardProps) {
   )
 }
 
-/**
- * Moves the first build out of this chat. Setup emits
- * `::onboarding{step="handoff" task="…" brief="…"}` once the task is decided. This card sets the request atom, and
- * the wiring effect then creates a session on the user's default profile, seeds it, and moves the user there.
- *
- * The `first` step already settled what to build, so this card asks nothing and only reports the state of the handoff.
- * The request atom and the accepted receipt stop a re-parse, a re-mount, or a relaunch from starting a second handoff,
- * and a locked (replayed) transcript never starts one.
- */
 export function HandoffCard({ attrs, locked }: CardProps) {
   const view = useSessionView()
   const storedId = useStore(view.$storedId)
@@ -122,6 +95,7 @@ export function HandoffCard({ attrs, locked }: CardProps) {
   const brief = (attrs.brief ?? '').trim().slice(0, 240)
   const plan = parseHandoffPlan(attrs.plan)
   const state = useStore($setupHandoff)
+  const replyRunning = useAuiState(s => s.message.status?.type === 'running')
 
   const receipt = useMemo(() => {
     try {
@@ -138,22 +112,32 @@ export function HandoffCard({ attrs, locked }: CardProps) {
   const completed = receipt.completed
 
   useEffect(() => {
-    if (!task || !brief || locked || !storedId || !runtimeId || $setupHandoff.get() || completed) {
+    if (!task || !brief || locked || replyRunning || !storedId || !runtimeId || $setupHandoff.get() || completed) {
       return
     }
 
     let cancelled = false
     void resolveSessionOwner(storedId)
-      .then(owner => {
+      .then(async owner => {
         assertSessionOwnerResolved(owner, { method: 'onboarding.handoff', sessionId: storedId })
 
+        const connectionId = isSessionOwnerRoute(owner) ? owner.connectionId : null
+
+        const profile = isSessionOwnerRoute(owner)
+          ? owner.profile
+          : owner || $setupSession.get()?.profile || $activeGatewayProfile.get()
+
+        const persisted = await readPersistedHandoff(connectionId, profile, runtimeId).catch(() => null)
+        const persistedTask = (persisted?.task ?? '').trim().slice(0, 60)
+        const persistedBrief = (persisted?.brief ?? '').trim().slice(0, 240)
+
         if (!cancelled) {
-          requestSetupHandoff(task, brief, plan, {
-            storedId,
-            runtimeId,
-            connectionId: isSessionOwnerRoute(owner) ? owner.connectionId : null,
-            profile: isSessionOwnerRoute(owner) ? owner.profile : owner || SETUP_PROFILE
-          })
+          requestSetupHandoff(
+            persistedTask || task,
+            persistedBrief || brief,
+            persisted ? parseHandoffPlan(persisted.plan) : plan,
+            { storedId, runtimeId, connectionId, profile }
+          )
         }
       })
       .catch(error => {
@@ -166,7 +150,7 @@ export function HandoffCard({ attrs, locked }: CardProps) {
     return () => {
       cancelled = true
     }
-  }, [brief, locked, plan, task, storedId, runtimeId, completed])
+  }, [brief, locked, plan, replyRunning, task, storedId, runtimeId, completed])
 
   if (!task || !brief) {
     return null
@@ -195,7 +179,9 @@ export function HandoffCard({ attrs, locked }: CardProps) {
             storedId,
             runtimeId,
             connectionId: isSessionOwnerRoute(owner) ? owner.connectionId : null,
-            profile: isSessionOwnerRoute(owner) ? owner.profile : owner || SETUP_PROFILE
+            profile: isSessionOwnerRoute(owner)
+              ? owner.profile
+              : owner || $setupSession.get()?.profile || $activeGatewayProfile.get()
           }
         })
       }
@@ -225,7 +211,6 @@ export function HandoffCard({ attrs, locked }: CardProps) {
   )
 }
 
-/** The earlier steps are derived from this transcript on every render, so a re-mount cannot lose or repeat them. */
 export function ProgressCard({ attrs, locked }: CardProps) {
   const view = useSessionView()
   const messages = useStore(view.$messages)

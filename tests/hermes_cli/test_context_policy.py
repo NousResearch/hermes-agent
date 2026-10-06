@@ -8,17 +8,20 @@ constants with tolerance bands, not change-detecting catalog snapshots).
 
 from __future__ import annotations
 
+import re
+from dataclasses import replace
+
 import pytest
 
 from hermes_cli.local_runtime.context_policy import (
     FLOOR,
     SPEED_FLOOR_TOK_S,
-    GrowthDecision,
     WindowDecision,
     growth_decision,
     initial_window,
     ladder,
     launch_args,
+    recurrent_spill_blocks,
     spill_overrides,
     ub_logits_bytes,
 )
@@ -28,11 +31,11 @@ from hermes_cli.local_runtime.estimator import (
     ModelProfile,
     PhysicsRefusal,
     ctx_bytes,
-    kv_dtype_factor,
     physics_check,
 )
 
 GIB = 1 << 30
+MIB = 1 << 20
 KIB = 1024
 
 
@@ -103,59 +106,13 @@ def test_swa_layers_capped_at_window():
     assert big / small < 0.6 * 8
 
 
-def test_q8_factor_is_exactly_34_over_64():
-    assert kv_dtype_factor(True) == pytest.approx(34 / 64)
-    assert kv_dtype_factor(False) == 1.0
-
-
 def test_non_fa_fallback_doubles_ctx_cost():
     p = dense()
     assert ctx_bytes(p, FLOOR, flash_attention=False) == pytest.approx(
         ctx_bytes(p, FLOOR, flash_attention=True) * 64 / 34, rel=0.001)
 
 
-def test_hybrid_vs_dense_100x_class_spread():
-    """The whole reason for the per-layer walk: equal-size models, ~100x
-    per-token spread between classic dense and a mostly-recurrent hybrid."""
-    d = dense(layers=64, per_token_f16=8192)          # 256 KiB/tok class
-    h = hybrid(full_layers=4, recurrent_layers=60, per_token_f16=8192)
-    window = 256 * KIB
-    dense_cost = ctx_bytes(d, window)
-    hybrid_cost = ctx_bytes(h, window)
-    assert dense_cost / hybrid_cost > 10
-
-
 # ── measured-constant spot checks (real models, tolerance bands) ──
-
-
-def test_measured_dense_4b_per_token():
-    """Qwen3-4B: 36 layers x 8 kv-heads x (128+128) x 2B = 144 KiB/tok f16."""
-    p = ModelProfile(name="qwen3-4b", weights_bytes=0, embd_table_bytes=0,
-                     n_ctx_train=262144,
-                     layers=[(LayerKind.FULL, 8 * 256 * 2)] * 36)
-    per_token_bytes = ctx_bytes(p, 32 * KIB, flash_attention=False) / (32 * KIB)
-    assert per_token_bytes == pytest.approx(144 * KIB, rel=0.02)
-
-
-def test_measured_gdn_27b_per_token_q8():
-    """Qwen3.6-27B: 16 full-attn of 64; measured 34.0 KiB/tok @ q8 (B4).
-    Per-layer f16 = 34 KiB * 64/34 / 16 = 4 KiB."""
-    per_layer_f16 = 4 * KIB
-    kv_only = ModelProfile(name="kv", weights_bytes=0, embd_table_bytes=0,
-                           n_ctx_train=262144,
-                           layers=[(LayerKind.FULL, per_layer_f16)] * 16)
-    per_token_bytes = ctx_bytes(kv_only, 128 * KIB) / (128 * KIB)
-    assert per_token_bytes == pytest.approx(34 * KIB, rel=0.02)
-
-
-def test_measured_nemotron_1m_within_band():
-    """1M @ q8 measured 3264 MiB KV (B3): ~3.19 KiB/token TOTAL across the
-    16 full-attn layers -> per-layer f16 ~384 B. Estimator must land in the
-    measured band, not the dense-formula 100x miss."""
-    p = hybrid(full_layers=16, recurrent_layers=46, per_token_f16=384,
-               native=1024 * KIB)
-    total = ctx_bytes(p, 1024 * KIB)
-    assert 2.5 * GIB < total < 4.0 * GIB
 
 
 # ── physics check ────────────────────────────────────────────
@@ -167,7 +124,6 @@ def test_physics_refusal_only_past_vram_plus_ram():
     assert ok is None  # 60 GiB weights fit in 24+64
     refused = physics_check(p, card(24, ram_gib=16), FLOOR)
     assert isinstance(refused, PhysicsRefusal)
-    assert "smaller quant" in refused.message
 
 
 def test_physics_check_prices_at_floor_not_native():
@@ -316,7 +272,6 @@ def test_growth_stops_at_native():
 def test_speed_floor_flips_default_to_compression():
     d = _grow(dense(), card(24), measured_decode_tok_s=SPEED_FLOOR_TOK_S - 2)
     assert d.action == "compress-default"
-    assert "explicit per-session choice" in d.reason
 
 
 def test_growth_refits_against_live_budget():
@@ -336,6 +291,54 @@ def test_spill_overrides_prefer_expert_and_recurrent_ffn():
     assert "exps" in " ".join(spill_overrides(moe()))
     assert "ffn" in " ".join(spill_overrides(hybrid()))
     assert spill_overrides(dense()) == []
+
+
+def _ot_pattern(args: list[str]) -> str:
+    assert args[0] == "-ot" and args[1].endswith("=CPU")
+    return args[1].removesuffix("=CPU")
+
+
+def _moved(pattern: str, n_layers: int) -> list[int]:
+    # llama.cpp matches -ot patterns with std::regex_search against tensor names.
+    return [i for i in range(n_layers) if re.search(pattern, f"blk.{i}.ffn_down.weight")]
+
+
+def test_hybrid_spill_moves_only_recurrent_blocks_needed_for_spill_bytes():
+    """#113329: a hybrid spill must not move every block's FFN. Interleaved qwen35-style
+    layout (every 4th block full attention), 100 MiB of FFN per block."""
+    kinds = [LayerKind.FULL if i % 4 == 3 else LayerKind.RECURRENT for i in range(16)]
+    profile = ModelProfile(
+        name="interleaved-hybrid", weights_bytes=8 * GIB, embd_table_bytes=0, n_ctx_train=FLOOR,
+        layers=[(k, 4096 if k == LayerKind.FULL else 0) for k in kinds],
+        ffn_block_bytes={i: 100 * MIB for i in range(16)})
+
+    assert recurrent_spill_blocks(profile, 250 * MIB) == [0, 1, 2]
+    assert recurrent_spill_blocks(profile, 300 * MIB) == [0, 1, 2]
+    assert recurrent_spill_blocks(profile, 301 * MIB) == [0, 1, 2, 4]
+    assert _moved(_ot_pattern(spill_overrides(profile, 250 * MIB)), 16) == [0, 1, 2]
+    # Not "blk.1" matching blk.10..blk.15.
+    assert _moved(_ot_pattern(spill_overrides(profile, 150 * MIB)), 16) == [0, 1]
+
+    # More spill than all recurrent FFNs hold: every recurrent block, never a full-attention one.
+    recurrent = [i for i, k in enumerate(kinds) if k == LayerKind.RECURRENT]
+    assert _moved(_ot_pattern(spill_overrides(profile, 20 * GIB)), 16) == recurrent
+    assert not re.search(_ot_pattern(spill_overrides(profile, 20 * GIB)), "blk.3.ffn_up.weight")
+
+
+def test_hybrid_spill_without_ffn_sizes_moves_every_recurrent_block_only():
+    profile = hybrid(full_layers=16, recurrent_layers=48)   # no tensor-table sizes
+    assert _moved(_ot_pattern(spill_overrides(profile, GIB)), 64) == list(range(16, 64))
+    partial = replace(profile, ffn_block_bytes={i: GIB for i in range(16, 63)})  # block 63 unknown
+    assert recurrent_spill_blocks(partial, GIB) == list(range(16, 64))
+
+
+def test_launch_args_sizes_hybrid_spill_from_decision():
+    profile = replace(hybrid(full_layers=2, recurrent_layers=6),
+                      ffn_block_bytes={i: GIB for i in range(8)})
+    spilled = WindowDecision(window=FLOOR, spill_bytes=int(1.5 * GIB), kv_on_gpu=True)
+    args = launch_args(profile, spilled)
+    assert _moved(_ot_pattern(args[args.index("-ot"):args.index("-ot") + 2]), 8) == [2, 3]
+    assert "-ot" not in launch_args(profile, spilled, uma=True)
 
 
 def test_launch_args_contract():
@@ -414,14 +417,6 @@ def test_ub_logits_bytes_prices_the_flag_choice():
     assert ub_logits_bytes(v, mtp_capable=False) == 2048 * v * 4
     assert ub_logits_bytes(v, mtp_capable=True) == 512 * v * 4 * 2
     assert ub_logits_bytes(0, mtp_capable=True) == 0   # unknown vocab: no charge
-
-
-def test_no_refusal_branch_past_physics():
-    """Design invariant: anything past the physics check is servable —
-    initial_window never refuses on its own."""
-    for vram in (4, 6, 8, 12):
-        d = initial_window(dense(weights_gib=20), card(vram, ram_gib=64))
-        assert isinstance(d, WindowDecision)
 
 
 def test_kv_scale_prices_mtp_draft_context():

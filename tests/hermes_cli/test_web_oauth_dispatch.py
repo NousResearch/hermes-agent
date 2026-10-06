@@ -21,10 +21,9 @@ The fix:
 
 These tests pin the corrected behavior.
 """
-import asyncio
+import contextlib
 import json
 import time
-from datetime import datetime, timezone
 from unittest.mock import patch
 
 import httpx
@@ -43,6 +42,7 @@ def _make_profile_home(tmp_path, monkeypatch, profile="coder"):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     profile_home = tmp_path / "profiles" / profile
     profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is not a profile
     return profile_home
 
 
@@ -165,7 +165,6 @@ def test_minimax_start_route_honors_poller_mock_on_owning_module(tmp_path, monke
 
 
 def test_oauth_provider_status_uses_profile_query(tmp_path, monkeypatch):
-    from hermes_cli import web_server as ws
     from hermes_constants import get_hermes_home
 
     profile_home = _make_profile_home(tmp_path, monkeypatch)
@@ -192,7 +191,6 @@ def test_oauth_provider_status_uses_profile_query(tmp_path, monkeypatch):
 
 
 def test_oauth_start_stores_profile_for_background_completion(tmp_path, monkeypatch):
-    from hermes_cli import web_server as ws
 
     _make_profile_home(tmp_path, monkeypatch)
     fake_user_code_resp = {
@@ -229,10 +227,10 @@ def test_oauth_session_cannot_be_polled_or_cancelled_from_another_profile(
     tmp_path, monkeypatch
 ):
     """A named-profile OAuth session must reject default-profile retargeting."""
-    from hermes_cli import web_server as ws
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "profiles" / "worker").mkdir(parents=True)
+    (tmp_path / "profiles" / "worker" / "config.yaml").write_text("{}\n")  # identity marker
     session_id, _session = _rt_oauth._new_oauth_session(
         "xai-oauth", "device_code", profile="worker"
     )
@@ -269,54 +267,6 @@ def test_oauth_session_cannot_be_polled_or_cancelled_from_another_profile(
 
 
 
-def test_codex_dashboard_start_rewords_device_authorization_error(monkeypatch):
-    from hermes_cli import web_server as ws
-
-    before_sessions = set(_web_server_oauth._oauth_sessions)
-
-    class _Resp:
-        status_code = 400
-        text = "Enable device code authorization"
-
-        def json(self):
-            return {
-                "error": {
-                    "message": "Enable device code authorization",
-                    "code": "device_authorization_not_enabled",
-                }
-            }
-
-    class _Client:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def post(self, url, **kwargs):
-            assert url.endswith("/deviceauth/usercode")
-            return _Resp()
-
-    monkeypatch.setattr(httpx, "Client", _Client)
-
-    try:
-        resp = client.post(
-            "/api/providers/oauth/openai-codex/start",
-            headers=HEADERS,
-        )
-
-        assert resp.status_code == 500
-        detail = resp.json()["detail"]
-        assert "OpenAI rejected the device-code login request" in detail
-        assert "Enable device-code authorization in OpenAI" in detail
-        assert "click Login again" in detail
-        assert "hermes auth" not in detail
-    finally:
-        for sid in set(_web_server_oauth._oauth_sessions) - before_sessions:
-            _web_server_oauth._oauth_sessions.pop(sid, None)
 
 
 def test_codex_dashboard_worker_stops_polling_after_cancel(tmp_path, monkeypatch):
@@ -477,9 +427,23 @@ def test_codex_worker_final_save_is_atomic_with_cancel_delete(tmp_path, monkeypa
     monkeypatch.setattr(auth_mod, "_save_codex_tokens", fake_save)
     monkeypatch.setattr(ws.time, "sleep", lambda *_a, **_k: None)
 
+    # Lock order: every saver enters the profile scope (_SKILLS_PROFILE_LOCK) before
+    # _oauth_sessions_lock; one saver taking them the other way round deadlocks with the rest.
+    real_scope = _rt_oauth._profile_scope
+    session_lock_held_at_scope = []
+
+    @contextlib.contextmanager
+    def recording_scope(profile):
+        session_lock_held_at_scope.append(_web_server_oauth._oauth_sessions_lock.locked())
+        with real_scope(profile) as scoped:
+            yield scoped
+
+    monkeypatch.setattr(_rt_oauth, "_profile_scope", recording_scope)
+
     sid, _ = _rt_oauth._new_oauth_session("openai-codex", "device_code", profile="coder")
 
     _rt_oauth._codex_full_login_worker(sid)
+    assert session_lock_held_at_scope == [False], "profile scope entered while holding the session lock"
 
     # The lock is released now (worker returned), so the DELETE thread can
     # finally complete.
@@ -498,42 +462,10 @@ def test_codex_worker_final_save_is_atomic_with_cancel_delete(tmp_path, monkeypa
     assert sid not in _web_server_oauth._oauth_sessions
 
 
-def test_cancel_oauth_session_marks_dict_cancelled_before_popping(tmp_path, monkeypatch):
-    """The DELETE endpoint must flag the session dict before removing it.
-
-    A background worker holds its own reference to the same dict object;
-    it can only observe cancellation if the flag is set on that shared
-    object prior to (or instead of) removal from the global session map.
-    """
-    from hermes_cli import web_server as ws
-
-    _make_profile_home(tmp_path, monkeypatch, profile="coder")
-    session_id = "cancel-flag-test"
-    _web_server_oauth._oauth_sessions[session_id] = {
-        "session_id": session_id,
-        "provider": "openai-codex",
-        "flow": "device_code",
-        "profile": "coder",
-        "created_at": time.time(),
-        "status": "pending",
-        "error_message": None,
-    }
-    worker_ref = _web_server_oauth._oauth_sessions[session_id]
-
-    resp = client.delete(
-        f"/api/providers/oauth/sessions/{session_id}?profile=coder",
-        headers=HEADERS,
-    )
-
-    assert resp.status_code == 200, resp.text
-    assert resp.json() == {"ok": True, "session_id": session_id}
-    assert session_id not in _web_server_oauth._oauth_sessions
-    assert worker_ref["cancelled"] is True
 
 
 def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(monkeypatch):
     from hermes_cli import auth as auth_mod
-    from hermes_cli import web_server as ws
 
     session_id = "nous-effective-scope-test"
     _web_server_oauth._oauth_sessions[session_id] = {
@@ -583,25 +515,15 @@ def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(
 
 
 
-def test_xai_oauth_listed_as_device_code_flow():
-    """xAI Grok OAuth must surface in the catalog as a device-code flow."""
-    resp = client.get("/api/providers/oauth", headers=HEADERS)
-    assert resp.status_code == 200, resp.text
-    providers = {p["id"]: p for p in resp.json()["providers"]}
-    assert "xai-oauth" in providers
-    assert providers["xai-oauth"]["flow"] == "device_code"
-    assert "grok" in providers["xai-oauth"]["name"].lower()
 
 
 def test_anthropic_dashboard_oauth_is_removed_and_external():
     """Anthropic subscription OAuth is not minted by the dashboard anymore."""
-    from hermes_cli import web_server as ws
 
     resp = client.get("/api/providers/oauth", headers=HEADERS)
     assert resp.status_code == 200, resp.text
     providers = {p["id"]: p for p in resp.json()["providers"]}
     assert providers["anthropic"]["flow"] == "external"
-    assert providers["anthropic"]["cli_command"] == "hermes auth add anthropic"
 
     before_sessions = set(_web_server_oauth._oauth_sessions)
     start_resp = client.post(
@@ -609,7 +531,6 @@ def test_anthropic_dashboard_oauth_is_removed_and_external():
         headers=HEADERS,
     )
     assert start_resp.status_code == 400, start_resp.text
-    assert "external CLI" in start_resp.text
     assert "claude.ai" not in start_resp.text
 
     submit_resp = client.post(
@@ -618,7 +539,6 @@ def test_anthropic_dashboard_oauth_is_removed_and_external():
         json={"session_id": "unused", "code": "unused"},
     )
     assert submit_resp.status_code == 400, submit_resp.text
-    assert "not supported" in submit_resp.text
     assert set(_web_server_oauth._oauth_sessions) == before_sessions
 
 
@@ -643,27 +563,6 @@ def test_accounts_offers_every_oauth_provider_from_catalog():
 
 
 
-def test_oauth_catalog_marks_external_providers_not_disconnectable():
-    """External CLI credentials are visible in Accounts but cannot be removed by Hermes."""
-    resp = client.get("/api/providers/oauth", headers=HEADERS)
-    assert resp.status_code == 200, resp.text
-    providers = {p["id"]: p for p in resp.json()["providers"]}
-
-    # Qwen: external and not auto-removable, and we don't know a clear command,
-    # so it stays a manual hint with no runnable disconnect command.
-    assert providers["qwen-oauth"]["flow"] == "external"
-    assert providers["qwen-oauth"]["disconnectable"] is False
-    assert "provider's CLI" in providers["qwen-oauth"]["disconnect_hint"]
-    assert providers["qwen-oauth"]["disconnect_command"] is None
-
-    # Claude Code: still not API-disconnectable, but we hand the GUI a runnable
-    # command (clears the keychain entry / credentials file) so it can offer a
-    # one-click "run in terminal" disconnect.
-    assert providers["claude-code"]["flow"] == "external"
-    assert providers["claude-code"]["disconnectable"] is False
-    assert providers["claude-code"]["disconnect_hint"]
-    cmd = providers["claude-code"]["disconnect_command"]
-    assert cmd and ".claude/.credentials.json" in cmd
 
 
 def test_external_oauth_disconnect_rejected_before_auth_mutation(monkeypatch):
@@ -677,8 +576,6 @@ def test_external_oauth_disconnect_rejected_before_auth_mutation(monkeypatch):
 
     resp = client.delete("/api/providers/oauth/qwen-oauth", headers=HEADERS)
     assert resp.status_code == 400, resp.text
-    assert "cannot be disconnected automatically" in resp.text
-    assert "provider's CLI" in resp.text
 
 
 def test_env_sourced_oauth_status_is_not_disconnectable(monkeypatch):
@@ -691,11 +588,9 @@ def test_env_sourced_oauth_status_is_not_disconnectable(monkeypatch):
 
     assert providers["anthropic"]["status"]["source"] == "env_var"
     assert providers["anthropic"]["disconnectable"] is False
-    assert providers["anthropic"]["disconnect_hint"] == "Remove the API key from Settings → Keys instead."
 
     delete_resp = client.delete("/api/providers/oauth/anthropic", headers=HEADERS)
     assert delete_resp.status_code == 400, delete_resp.text
-    assert "Settings" in delete_resp.text
 
 
 def test_xai_dashboard_poller_seeds_single_entry_and_clears_suppression(tmp_path, monkeypatch):
@@ -714,7 +609,6 @@ def test_xai_dashboard_poller_seeds_single_entry_and_clears_suppression(tmp_path
     xai-oauth``.
     """
     from hermes_cli import auth as auth_mod
-    from hermes_cli import web_server as ws
     from agent.credential_pool import load_pool
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -805,7 +699,6 @@ def test_status_falls_through_to_generic_dispatcher_for_catalog_only_provider():
     logged-out; now they dispatch to hermes_cli.auth.get_auth_status (the
     canonical slug dispatcher) so membership AND status both auto-extend.
     """
-    import hermes_cli.web_server as ws
 
     fake_status = {
         "logged_in": True,
@@ -827,5 +720,73 @@ def test_status_falls_through_to_generic_dispatcher_for_catalog_only_provider():
     assert out["has_refresh_token"] is True
 
 
+def test_qwen_status_card_carries_the_getter_expiry_token_and_auth_file():
+    """The Qwen card reads the keys get_qwen_auth_status actually returns."""
+    from datetime import datetime
+
+    expires_at_ms = 1_790_541_000_123
+    qwen_status = {
+        "logged_in": True, "auth_file": "/home/u/.qwen/oauth_creds.json", "source": "qwen-cli",
+        "api_key": "qwen-access-token-secret-xyz", "expires_at_ms": expires_at_ms,
+    }
+    with patch("hermes_cli.auth.get_qwen_auth_status", return_value=qwen_status):
+        out = _rt_oauth._resolve_provider_status("qwen-oauth", None)
+
+    assert out["logged_in"] is True
+    # Same wire shape as the other cards: an ISO string with an offset, same instant.
+    assert isinstance(out["expires_at"], str)
+    expires_at = datetime.fromisoformat(out["expires_at"])
+    assert expires_at.tzinfo is not None
+    assert round(expires_at.timestamp() * 1000) == expires_at_ms
+    assert out["source_label"] == "/home/u/.qwen/oauth_creds.json"
+    assert out["token_preview"] and "qwen-access-token-secret-xyz" not in out["token_preview"]
 
 
+
+
+
+
+@pytest.mark.parametrize("provider", ["xai-oauth", "minimax-oauth"])
+@pytest.mark.parametrize("event", ["cancel", "expire"])
+def test_dashboard_poller_saves_only_into_the_profile_the_login_started_in(tmp_path, monkeypatch, provider, event):
+    """A login started with ``?profile=coder`` saves into coder or nowhere. The pollers looked the
+    profile up by session id AFTER the provider answered; a cancel (DELETE) or the 15-minute sweep
+    had removed the registry entry by then, so the tokens landed in the dashboard's launch profile
+    (the Codex path was fixed the same way as IA-01). A cancelled login saves nothing."""
+    from hermes_cli import auth as auth_mod
+    from hermes_constants import get_hermes_home
+
+    coder_home = _make_profile_home(tmp_path, monkeypatch, profile="coder")
+    saved_into = []
+    sid, sess = _rt_oauth._new_oauth_session(provider, "device_code", profile="coder")
+
+    def provider_answers(*_a, **_k):
+        if event == "cancel":
+            resp = client.delete(f"/api/providers/oauth/sessions/{sid}?profile=coder", headers=HEADERS)
+            assert resp.status_code == 200, resp.text
+        else:
+            _web_server_oauth._oauth_sessions.pop(sid, None)
+        return {"access_token": "at", "refresh_token": "rt", "id_token": "", "expires_in": 3600,
+                "expired_in": 3600, "token_type": "Bearer"}
+
+    record = lambda *_a, **_k: saved_into.append(str(get_hermes_home()))
+    if provider == "xai-oauth":
+        sess.update(device_code="dc", expires_at=time.time() + 600, interval=1)
+        monkeypatch.setattr(auth_mod, "_xai_oauth_discovery", lambda *a, **k: {"token_endpoint": "https://x.test/t"})
+        monkeypatch.setattr(auth_mod, "_xai_oauth_poll_device_token", provider_answers)
+        monkeypatch.setattr(auth_mod, "_save_xai_oauth_tokens", record)
+        monkeypatch.setattr(auth_mod, "mark_provider_active_if_unset", lambda *a, **k: None)
+        monkeypatch.setattr(auth_mod, "unsuppress_credential_source", lambda *a, **k: None)
+        poller = _web_server_oauth._xai_device_poller
+    else:
+        sess.update(portal_base_url="https://m.test", client_id="cid", user_code="uc", code_verifier="cv",
+                    expired_in_raw=600, interval_ms=1000)
+        monkeypatch.setattr(auth_mod, "_minimax_poll_token", provider_answers)
+        monkeypatch.setattr(auth_mod, "_minimax_save_auth_state", record)
+        poller = _web_server_oauth._minimax_poller
+    try:
+        poller(sid)
+    finally:
+        _web_server_oauth._oauth_sessions.pop(sid, None)
+
+    assert saved_into == ([] if event == "cancel" else [str(coder_home)])

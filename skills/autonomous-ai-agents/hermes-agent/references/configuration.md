@@ -54,7 +54,7 @@ Full enumeration: `TOOLSETS` dict in `toolsets.py` (`_HERMES_CORE_TOOLS` is the 
 | `kanban` | Multi-agent work-queue tools (gated to workers) |
 | `debugging` | Extra introspection tools (off by default) |
 | `safe` | Minimal low-risk toolset for locked-down sessions |
-| `spotify`, `homeassistant`, `discord`, `discord_admin`, `feishu_doc`, `feishu_drive`, `yuanbao` | Service integrations (gated on their credentials) |
+| `spotify`, `discord`, `discord_admin`, `feishu_doc`, `feishu_drive`, `yuanbao` | Service integrations (gated on their credentials). `homeassistant` (`ha_*` tools) is not built in: it comes from the `homeassistant` catalog plugin (`hermes plugins install homeassistant`) |
 
 Tool changes take effect on `/reset` (new session) — never mid-conversation, to preserve prompt caching.
 
@@ -72,7 +72,7 @@ stt:
     model: base     # tiny, base, small, medium, large-v3
 ```
 
-Auto-detect priority: local faster-whisper (`pip install faster-whisper`) → Groq (`GROQ_API_KEY`, free tier) → OpenAI (`VOICE_TOOLS_OPENAI_KEY`) → Mistral Voxtral (`MISTRAL_API_KEY`).
+Auto-detect priority: local faster-whisper (`python -c "import pm; pm.sync_venv(['stt-whisper'], explicit=True)"`) → Groq (`GROQ_API_KEY`, free tier) → OpenAI (`VOICE_TOOLS_OPENAI_KEY`) → Mistral Voxtral (`MISTRAL_API_KEY`).
 
 ### TTS (Text → Voice)
 

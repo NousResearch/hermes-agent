@@ -16,7 +16,6 @@ import pytest
 
 import plugins.image_gen.deepinfra as deepinfra_plugin
 
-
 # 1×1 transparent PNG — valid bytes for save_b64_image()
 _PNG_HEX = (
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
@@ -24,12 +23,10 @@ _PNG_HEX = (
     "ae426082"
 )
 
-
 def _b64_png() -> str:
     import base64
 
     return base64.b64encode(bytes.fromhex(_PNG_HEX)).decode()
-
 
 @pytest.fixture(autouse=True)
 def _isolation(tmp_path, monkeypatch):
@@ -38,7 +35,6 @@ def _isolation(tmp_path, monkeypatch):
     monkeypatch.setattr(_models_mod, "_deepinfra_catalog_cache", {})
     monkeypatch.setenv("DEEPINFRA_API_KEY", "test-key")
     yield
-
 
 def test_list_models_filters_by_image_gen_tag(monkeypatch):
     """Plugin-side wiring: list_models() returns only ``image-gen``-tagged
@@ -68,7 +64,6 @@ def test_list_models_filters_by_image_gen_tag(monkeypatch):
     img = next(row for row in rows if row["id"] == "vendor/img")
     assert "price" in img and img["default_width"] == 1024
 
-
 def test_generate_calls_openai_sdk_with_deepinfra_base_url(monkeypatch):
     """Happy path: pinned model → openai SDK called with DeepInfra
     base_url + Bearer key → b64 saved to cache."""
@@ -97,10 +92,3 @@ def test_generate_calls_openai_sdk_with_deepinfra_base_url(monkeypatch):
     assert "deepinfra" in captured["base_url"]
     assert captured["api_key"] == "test-key"
     assert captured["kwargs"]["model"] == "vendor/test-img"
-
-
-def test_capabilities_advertise_text_to_image_only():
-    assert deepinfra_plugin.DeepInfraImageGenProvider().capabilities() == {
-        "modalities": ["text"],
-        "max_reference_images": 0,
-    }

@@ -9,8 +9,10 @@
  * sitting in Hermes' own DOM, where `activeElement` is authoritative.
  */
 
-import { $rightRailActiveTabId } from '@/store/layout'
-import { $previewTabs } from '@/store/preview'
+import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
+import type { PreviewOwner } from '@/store/preview-ownership'
+
+import { activePreviewTabFor } from './preview-active-tab'
 
 /** Marks a live browser pane so a gesture can find the one holding focus. */
 export const PREVIEW_BROWSER_ATTR = 'data-preview-browser'
@@ -34,11 +36,12 @@ export function registerPreviewNav(tabId: string, handle: PreviewNavHandle): () 
   }
 }
 
-/** The ACTIVE preview tab's commands, for callers with no focus to key off —
- *  the agent's drive_preview, which runs while focus is in the composer. */
-export function activePreviewNav(): PreviewNavHandle | null {
-  const tabs = $previewTabs.get()
-  const tab = tabs.find(t => t.id === $rightRailActiveTabId.get()) ?? tabs[0]
+/** The ACTIVE preview tab's commands among those `owner` (the requesting
+ *  session's stored id; omitted = the focused session) may see, for callers
+ *  with no focus to key off — the agent's drive_preview, which runs while
+ *  focus is in the composer. */
+export function activePreviewNav(owner?: PreviewOwner): PreviewNavHandle | null {
+  const tab = activePreviewTabFor(owner)
 
   return (tab && handles.get(tab.id)) || null
 }
@@ -47,7 +50,9 @@ export function activePreviewNav(): PreviewNavHandle | null {
  *  elsewhere in the app, so the caller falls back to the app-level meaning. */
 export function commandFocusedPreview(command: keyof PreviewNavHandle): boolean {
   const host = document.activeElement?.closest(`[${PREVIEW_BROWSER_ATTR}]`)
-  const nav = host ? handles.get(host.getAttribute(PREVIEW_BROWSER_ATTR) || '') : undefined
+
+  const nav =
+    host && !isElementInHiddenPane(host) ? handles.get(host.getAttribute(PREVIEW_BROWSER_ATTR) || '') : undefined
 
   nav?.[command]()
 

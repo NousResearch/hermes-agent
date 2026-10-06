@@ -7,6 +7,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.i18n import t
 from gateway.platforms.base import SendResult
 
 logger = logging.getLogger("plugins.platforms.discord.adapter")
@@ -39,7 +40,9 @@ class DiscordMediaMixin:
                 return max(limit, _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES)
         return _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
 
-    async def _reject_oversized_upload(self, channel: Any, file_path: str, filename: str) -> Optional[SendResult]:
+    async def _reject_oversized_upload(
+        self, channel: Any, file_path: str, filename: str, *, caption: Optional[str] = None,
+    ) -> Optional[SendResult]:
         """Preflight ``file_path`` against the channel's upload cap (#50846): a doomed
         ``413`` round-trip is skipped and the user gets a notice naming the size and the
         limit. Returns the failed result, or ``None`` when the file may be uploaded."""
@@ -54,13 +57,21 @@ class DiscordMediaMixin:
         limit_mb = limit / (1024 * 1024)
         error = f"File too large for Discord upload: {filename} is {size_mb:.1f} MB (limit {limit_mb:.0f} MB)"
         logger.warning("[%s] %s", self.name, error)
-        notice = (
-            f"⚠️ Could not attach `{filename}` — {size_mb:.1f} MB exceeds Discord's "
-            f"{limit_mb:.0f} MB upload limit for this channel. Compress the file or share a link instead."
-        )
+        notice = t(
+            "platform.discord.media.upload_too_large",
+            filename=filename, size_mb=f"{size_mb:.1f}", limit_mb=f"{limit_mb:.0f}")
         try:
-            if not self._is_forum_parent(channel):
-                await channel.send(content=notice)
+            shown = self.warning_notifications_enabled()
+            if shown:
+                # Legacy: the notice is posted in-channel only (forum parents get no bare notice).
+                if not self._is_forum_parent(channel):
+                    await channel.send(content=notice)
+            elif caption:
+                # Hidden: the requested caption still travels, on the channel's native shape.
+                if self._is_forum_parent(channel):
+                    await self._send_to_forum(channel, caption)
+                else:
+                    await channel.send(content=caption)
         except Exception:
             logger.debug("[%s] Failed to send oversized-file notice for %s", self.name, filename, exc_info=True)
         return SendResult(success=False, error=error)
@@ -85,7 +96,7 @@ class DiscordMediaMixin:
         if not channel:
             return SendResult(success=False, error=f"Channel {chat_id} not found")
         filename = file_name or os.path.basename(file_path)
-        rejected = await self._reject_oversized_upload(channel, file_path, filename)
+        rejected = await self._reject_oversized_upload(channel, file_path, filename, caption=caption)
         if rejected is not None:
             return rejected
         logger.info(
@@ -180,11 +191,11 @@ class DiscordMediaMixin:
                                 self.name, os.path.basename(local_path),
                                 _img_size / (1024 * 1024), _img_limit / (1024 * 1024),
                             )
-                            skip_notices.append(
-                                f"⚠️ Skipped `{os.path.basename(local_path)}` — "
-                                f"{_img_size / (1024 * 1024):.1f} MB exceeds Discord's "
-                                f"{_img_limit / (1024 * 1024):.0f} MB upload limit."
-                            )
+                            skip_notices.append(t(
+                                "platform.discord.media.image_skipped_too_large",
+                                filename=os.path.basename(local_path),
+                                size_mb=f"{_img_size / (1024 * 1024):.1f}",
+                                limit_mb=f"{_img_limit / (1024 * 1024):.0f}"))
                             continue
                         files.append(_discord_mod.File(local_path, filename=os.path.basename(local_path)))
                     else:
@@ -217,7 +228,13 @@ class DiscordMediaMixin:
                 if not files:
                     # Everything in this chunk was skipped. Still surface any
                     # oversized-file notices so the drop is not silent.
-                    if skip_notices and not self._is_forum_parent(channel):
+                    shown = self.warning_notifications_enabled()
+                    if not shown and captions:
+                        if self._is_forum_parent(channel):
+                            await self._send_to_forum(channel, captions[0])
+                        else:
+                            await channel.send(content=captions[0])
+                    if skip_notices and shown and not self._is_forum_parent(channel):
                         try:
                             await channel.send(content="\n".join(skip_notices))
                         except Exception:
@@ -229,7 +246,7 @@ class DiscordMediaMixin:
                 # Use the first caption if any (Discord only has one message body for the group)
                 content = captions[0] if captions else None
                 if skip_notices:
-                    content = "\n".join(([content] if content else []) + skip_notices)
+                    content = self.warning_text("\n".join(([content] if content else []) + skip_notices), content)
                 logger.info(
                     "[%s] Sending %d image(s) as single Discord message (chunk %d/%d)",
                     self.name, len(files), chunk_idx + 1, len(chunks),
@@ -272,7 +289,7 @@ class DiscordMediaMixin:
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=f"Audio file not found: {audio_path}")
             filename = os.path.basename(audio_path)
-            rejected = await self._reject_oversized_upload(channel, audio_path, filename)
+            rejected = await self._reject_oversized_upload(channel, audio_path, filename, caption=caption)
             if rejected is not None:
                 return rejected
             reference = self._reply_reference_for_send(reply_to, channel)

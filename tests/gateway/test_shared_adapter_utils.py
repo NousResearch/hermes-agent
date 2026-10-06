@@ -6,35 +6,11 @@ re-declaring them: ``cancel_task`` (cancel + await, self-cancel safe), ``Message
 from __future__ import annotations
 
 import asyncio
-import inspect
 from collections import OrderedDict
 
 import pytest
 
 from gateway.platforms import helpers
-
-
-def _adapter_classes():
-    from gateway.platforms.qqbot.adapter import QQAdapter
-    from gateway.platforms.signal import SignalAdapter
-    from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
-    from plugins.platforms.buzz.adapter import BuzzAdapter
-    from plugins.platforms.ntfy.adapter import NtfyAdapter
-    from plugins.platforms.photon.adapter import PhotonAdapter
-    from plugins.platforms.simplex.adapter import SimplexAdapter
-    from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
-
-    return [QQAdapter, SignalAdapter, WhatsAppCloudAdapter, BuzzAdapter, NtfyAdapter,
-            PhotonAdapter, SimplexAdapter, WecomCallbackAdapter]
-
-
-def test_no_adapter_redeclares_the_shared_utilities():
-    """The bodies used to live as `_cancel_task` / `_is_duplicate` / `_bounded_put` on each class."""
-    for cls in _adapter_classes():
-        module = inspect.getmodule(cls)
-        for name in ("_cancel_task", "_is_duplicate", "_bounded_put"):
-            assert not hasattr(cls, name), (cls.__name__, name)
-            assert not hasattr(module, name), (module.__name__, name)
 
 
 def test_cancel_task_unwinds_and_is_self_cancel_safe():

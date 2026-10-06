@@ -243,19 +243,35 @@ def test_clear_command_starts_new_session_before_redrawing(tmp_path):
     assert cli.conversation_history == []
 
 
-def test_new_session_resets_token_counters(tmp_path):
-    """Regression test for #2099: /new must zero all token counters."""
-    cli = _prepare_cli_with_active_session(tmp_path)
 
-    # Verify counters are non-zero before reset
+
+def test_new_session_resets_token_counters(tmp_path):
+    """Regression test for #2099: /new must zero all token counters.
+
+    Drives the real ``AIAgent.reset_session_state`` (and the real context-engine
+    ``on_session_reset``) on the fake agent's attribute bag, so this guards both the
+    CLI wiring (/new must call the reset) and the reset itself.
+    """
+    import types
+
+    from agent.context_engine import ContextEngine
+    from run_agent import AIAgent
+
+    cli = _prepare_cli_with_active_session(tmp_path)
     agent = cli.agent
+    agent.reset_session_state = types.MethodType(AIAgent.reset_session_state, agent)
+    agent._transition_context_engine_session = types.MethodType(
+        AIAgent._transition_context_engine_session, agent
+    )
+    comp = agent.context_compressor
+    comp.on_session_reset = types.MethodType(ContextEngine.on_session_reset, comp)
+
     assert agent.session_total_tokens > 0
     assert agent.session_api_calls > 0
-    assert agent.context_compressor.compression_count > 0
+    assert comp.compression_count > 0
 
     cli.process_command("/new")
 
-    # All agent token counters must be zero
     assert agent.session_total_tokens == 0
     assert agent.session_input_tokens == 0
     assert agent.session_output_tokens == 0
@@ -269,13 +285,10 @@ def test_new_session_resets_token_counters(tmp_path):
     assert agent.session_cost_status == "unknown"
     assert agent.session_cost_source == "none"
 
-    # Context compressor counters must also be zero
-    comp = agent.context_compressor
     assert comp.last_prompt_tokens == 0
     assert comp.last_completion_tokens == 0
     assert comp.last_total_tokens == 0
     assert comp.compression_count == 0
-    assert comp._context_probed is False
 
 
 def test_new_session_with_title(capsys):

@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { runFreeTierChallenge } from '@/store/free-tier-challenge'
 import { onboardingSurfaceActive } from '@/store/onboarding-presence'
 import type { FreeTierStatus } from '@/types/hermes'
 
@@ -44,6 +45,9 @@ export async function refreshFreeTierStatus(requestGateway: FreeTierRequester): 
     }
 
     $freeTierStatus.set(status)
+    // A client that connected after the `free_tier.challenge` event still has
+    // a window to open; the run is de-duplicated per URL.
+    void runFreeTierChallenge(status.challenge, requestGateway)
 
     return status
   } catch {
@@ -153,7 +157,7 @@ export async function ackFreeTierNotice(requestGateway: FreeTierRequester): Prom
 }
 
 /**
- * Whether the SELECTED route runs on the free tier: `setup.runtime_check.free_tier`, keyed on the
+ * Whether the SELECTED route runs on the free tier: `setup.runtime_check.free_tier_route`, keyed on the
  * endpoint the backend resolved, not on profile state. `null` until a readiness round answers. A
  * free-tier identity beside the user's own key reads `false` here while `$freeTierStatus.available`
  * stays true — that split is what picks the intro's shape.

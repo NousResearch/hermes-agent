@@ -16,6 +16,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+from agent.i18n import t
 from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
 from agent.thread_scoped_output import thread_scoped_silence
 
@@ -98,18 +99,26 @@ def finish_background_review_run(agent: Any, run: Optional[_BackgroundReviewRun]
     run.request_done.set()
 
 
-def _interrupt_background_review(review_agent: Any) -> None:
+def _interrupt_background_review(
+    review_agent: Any,
+    *,
+    message: str = "superseded by a new live turn",
+    tool_reason: str = "background review superseded",
+) -> None:
     """Request abort off-thread so a wedged abort hook cannot stall the live turn (the bounded
-    ``request_done`` wait in the canceller relies on this returning fast)."""
+    ``request_done`` wait in the canceller relies on this returning fast).
+
+    ``message``/``tool_reason`` default to the original live-turn-preemption wording; callers
+    cancelling for a different reason (e.g. the owning session itself is ending, #102895) should
+    pass their own so logs/diagnostics describe what actually happened.
+    """
     def _interrupt() -> None:
         try:
             from agent.interrupt_compat import request_hard_interrupt
 
-            request_hard_interrupt(
-                review_agent, "superseded by a new live turn", tool_reason="background review superseded"
-            )
+            request_hard_interrupt(review_agent, message, tool_reason=tool_reason)
         except Exception:
-            logger.debug("Failed to cancel in-flight background review for a new turn", exc_info=True)
+            logger.debug("Failed to cancel in-flight background review (%s)", message, exc_info=True)
 
     try:
         threading.Thread(target=_interrupt, daemon=True, name="bg-review-cancel").start()
@@ -117,13 +126,27 @@ def _interrupt_background_review(review_agent: Any) -> None:
         logger.debug("Failed to start background-review cancellation thread", exc_info=True)
 
 
-def cancel_background_review_for_live_turn(agent: Any) -> None:
+def cancel_background_review_for_live_turn(
+    agent: Any,
+    *,
+    message: str = "superseded by a new live turn",
+    tool_reason: str = "background review superseded",
+) -> None:
     """Cancel the current review and await its request-phase acknowledgement. Foreground priority:
     past the bounded deadline, warn and let the live turn proceed — self-improvement work must
     never block a user-facing turn.
 
     Foreground priority is preserved: if the review does not acknowledge within the bounded deadline, a
     warning is logged and the live turn proceeds anyway. See #84423.
+
+    Despite the name, this is also the session-teardown/interrupt cancellation path
+    (``tui_gateway.session_lifecycle._finalize_session`` and ``_interrupt_session_turn``, #102895): a
+    session ending or being explicitly stopped while its background review is still running must
+    cancel that review the same way a new live turn preempts one — the review fork is invisible to
+    every other interrupt/teardown mechanism (not tracked on ``session["running"]``, not joined by
+    the run-thread wait), so this is the only thing that ever sets its ``_interrupt_requested``. Pass
+    a reason-appropriate ``message``/``tool_reason`` when the caller isn't the live-turn-preemption
+    path so diagnostics describe the real cause.
     """
     with _optional_lock(agent, "_background_review_lock"):
         run = getattr(agent, "_background_review_run", None)
@@ -133,14 +156,14 @@ def cancel_background_review_for_live_turn(agent: Any) -> None:
     # survive teardown. Placed in this finally so a fork that consumed tokens and THEN raised is still
     # attributed (issue #87250). Best-effort: the recorder never raises into the review thread.
     if review_agent is not None:
-        _interrupt_background_review(review_agent)
+        _interrupt_background_review(review_agent, message=message, tool_reason=tool_reason)
     if run is None:
         return
     if not run.request_done.wait(timeout=_BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS):
         logger.warning(
-            "Background review did not acknowledge cancellation within %.1fs; "
-            "proceeding with foreground live turn",
+            "Background review did not acknowledge cancellation within %.1fs; proceeding (%s)",
             _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS,
+            message,
         )
 
 
@@ -151,9 +174,12 @@ _REVIEW_MAX_ITERATIONS = 16
 # Aggregate INPUT-token budget for one review fork (checked in conversation_loop's
 # ``_review_input_budget_exhausted``). Request #1 replays the full snapshot as a warm cache read
 # (both compression gates deferred until the first response); compaction then bounds each
-# request, but nothing else caps the SUM across the tool loop. 2x the historical 300k foreground
-# trigger. Override via ``auxiliary.background_review.max_input_tokens``; <= 0 disables.
-_REVIEW_MAX_INPUT_TOKENS_DEFAULT = 600_000
+# request, but nothing else caps the SUM across the tool loop. The default leaves 25% of the
+# review model's context window available and never exceeds the historical cloud-scale ceiling.
+# Override via ``auxiliary.background_review.max_input_tokens``; <= 0 disables.
+_REVIEW_MAX_INPUT_TOKENS_CAP = 600_000
+_REVIEW_INPUT_CONTEXT_FRACTION = 0.75
+_REVIEW_MAX_INPUT_TOKENS_FALLBACK = 120_000
 
 
 def _task_block(cfg: Any) -> Dict[str, Any]:
@@ -175,13 +201,27 @@ def _background_review_task_config(task_cfg: Optional[Dict[str, Any]] = None) ->
         return {}
 
 
-def _review_input_token_budget(task_cfg: Optional[Dict[str, Any]] = None) -> Optional[int]:
-    """Aggregate input-token budget for one review fork (None = unlimited; <= 0 disables)."""
-    raw = _background_review_task_config(task_cfg).get("max_input_tokens", _REVIEW_MAX_INPUT_TOKENS_DEFAULT)
+def _context_derived_review_input_budget(review_agent: Any = None) -> int:
+    """Default budget: 75% of the review fork's resolved context window, capped at the historical
+    600k ceiling. The fork's ``context_compressor.context_length`` is already resolved by
+    ``AIAgent.__init__`` (config overrides, catalog, endpoint probe) — no second lookup here.
+    Unknown window → a conservative fixed fallback so unattended review work stays bounded."""
+    context_window = getattr(getattr(review_agent, "context_compressor", None), "context_length", None)
+    if not isinstance(context_window, int) or isinstance(context_window, bool) or context_window <= 0:
+        return _REVIEW_MAX_INPUT_TOKENS_FALLBACK
+    return min(_REVIEW_MAX_INPUT_TOKENS_CAP, max(1, int(context_window * _REVIEW_INPUT_CONTEXT_FRACTION)))
+
+
+def _review_input_token_budget(
+    task_cfg: Optional[Dict[str, Any]] = None, review_agent: Any = None,
+) -> Optional[int]:
+    """Aggregate input-token budget for one review fork (None = unlimited; <= 0 disables). Unset
+    or malformed ``max_input_tokens`` → derived from ``review_agent``'s context window."""
+    task = _background_review_task_config(task_cfg)
     try:
-        budget = int(raw)
-    except (TypeError, ValueError):
-        budget = _REVIEW_MAX_INPUT_TOKENS_DEFAULT
+        budget = int(task["max_input_tokens"])
+    except (KeyError, TypeError, ValueError):
+        return _context_derived_review_input_budget(review_agent)
     return budget if budget > 0 else None
 
 
@@ -239,8 +279,27 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
             "args": list(rp.get("args") or []), "routed": True,
         }
     except Exception as e:
-        logger.debug("background-review aux routing failed (%s); using main model", e)
+        _warn_review_routing_fallback(agent, task_provider, task_model, e)
         return parent
+
+
+def _warn_review_routing_fallback(agent: Any, task_provider: str, task_model: str, error: Exception) -> None:
+    """The configured review route could not be resolved, so the fork runs on the main model. That
+    was a debug-level line nobody saw (#116055): the misrouted model never ran and nothing said so.
+    User-visible notice once per agent (same rail as the reasoning_effort notice); log every time."""
+    error_line = str(error).splitlines()[0] if str(error) else ""
+    logger.warning(
+        "auxiliary.background_review.provider=%r (model %r) could not be resolved: %s — background reviews "
+        "run on the main model %s/%s instead.", task_provider, task_model, error_line, agent.provider, agent.model)
+    message = t("display.review.routing_fallback_warning", task_provider=task_provider, task_model=task_model,
+                error=error_line, provider=agent.provider, model=agent.model)
+    if getattr(agent, "_warned_bg_review_routing", False):
+        return
+    agent._warned_bg_review_routing = True
+    emit = getattr(agent, "_emit_warning", None)
+    if callable(emit):
+        with suppress(Exception):
+            emit(message)
 
 
 def _parent_can_emit_tool_calls(agent: Any) -> bool:
@@ -297,15 +356,27 @@ def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]
 
 # Review prompts. AIAgent exposes them as class attributes (``_MEMORY_REVIEW_PROMPT`` etc.) so
 # per-agent overrides work; the text lives here.
+# Shared by the memory-only and combined review prompts: the memory tool has two targets and the
+# fork must pick one per fact. Without this the reviewer wrote profile data into MEMORY.md and the
+# same lesson into both stores until both hit their size limits (#30220).
+_MEMORY_ROUTING_BLOCK = (
+    "TWO distinct stores — pick the right one for each fact:\n"
+    "  • USER.md (memory tool, target='user'): who the user is — persona, preferences, "
+    "communication and work style, personal details they revealed, and expectations about how you "
+    "should behave.\n"
+    "  • MEMORY.md (memory tool, target='memory'): facts about the ENVIRONMENT you operate in — "
+    "tool quirks, project conventions, config gotchas, paths and endpoints that matter.\n\n"
+    "One fact goes to ONE store, never both — writing it to both bloats both files until they hit "
+    "their size limits and crowds out the facts that matter; misrouting it puts it where the next "
+    "session won't look. If the tool schema lists only one "
+    "target, that store is the only one enabled — use it and skip the other.\n\n"
+)
+
 _MEMORY_REVIEW_PROMPT = (
     "Review the conversation above and consider saving to memory if appropriate.\n\n"
-    "Focus on:\n"
-    "1. Has the user revealed things about themselves — their persona, desires, preferences, or "
-    "personal details worth remembering?\n"
-    "2. Has the user expressed expectations about how you should behave, their work style, or ways "
-    "they want you to operate?\n\n"
-    "If something stands out, save it using the memory tool. If nothing is worth saving, just say "
-    "'Nothing to save.' and stop."
+    "Memory has " + _MEMORY_ROUTING_BLOCK +
+    "If something stands out, save it once, in the right store, using the memory tool with the "
+    "matching target. If nothing is worth saving, just say 'Nothing to save.' and stop."
 )
 
 # Shared shape contract for anything written into a skill. The failure mode this prevents is the
@@ -454,9 +525,7 @@ _SKILL_REVIEW_PROMPT = (
 
 _COMBINED_REVIEW_PROMPT = (
     "Review the conversation above and update two things:\n\n"
-    "**Memory**: who the user is. Did the user reveal persona, desires, preferences, personal "
-    "details, or expectations about how you should behave? Save facts about the user and durable "
-    "preferences with the memory tool.\n\n"
+    "**Memory**: " + _MEMORY_ROUTING_BLOCK +
     "**Skills**: how to do this class of task. Be ACTIVE — most sessions produce at least one "
     "skill update. A pass that does nothing is a missed learning opportunity, not a neutral "
     "outcome.\n\n"
@@ -494,9 +563,12 @@ _COMBINED_REVIEW_PROMPT = (
     "skill_view just returned. New skills and NEW supporting files need no prior read. On a "
     "read-before-write refusal: view the named target once, retry the write once, do not loop.\n\n"
     "User-preference embedding: when the user complains about how you handled a task, update the "
-    "skill that governs that task — memory alone isn't enough. Memory says 'who the user is and "
+    "skill that governs that task rather than memory. Memory says 'who the user is and "
     "what the current situation and state of your operations are'; skills say 'how to do this "
-    "class of task for this user'. Both should carry user-preference lessons when relevant.\n\n"
+    "class of task for this user'. A user-preference lesson lives in exactly ONE place: the skill "
+    "that governs the task when one exists, USER.md only for cross-cutting preferences no skill "
+    "owns — never both. Duplicating it is how a memory file ends up restating SKILL.md until both "
+    "hit their size limits.\n\n"
     "If you notice overlapping existing skills, mention it — the background curator handles "
     "consolidation.\n\n"
     "Protected skills (DO NOT edit these):\n"
@@ -532,7 +604,7 @@ def _memory_op_line(label: str, action: str, fields: Dict[str, str]) -> Optional
     """Verbose line for one memory add/replace/remove, or None when no preview text."""
     glyph, field_name, limit = _MEMORY_OP_FORMATS.get(action) or (None, "", 0)
     text = fields.get(field_name) or "" if glyph else ""
-    return f"{label} {glyph} {_preview(text, limit)}" if text else None
+    return t("display.review.memory_op_line", label=label, glyph=glyph, preview=_preview(text, limit)) if text else None
 
 
 def _verbose_skill_line(data: Dict, detail: Dict, message: str) -> str:
@@ -544,12 +616,13 @@ def _verbose_skill_line(data: Dict, detail: Dict, message: str) -> str:
     old_string = change.get("old", "") or detail.get("old_string", "")
     new_string = change.get("new", "") or detail.get("new_string", "")
     if action == "patch" and (old_string or new_string):
-        old_preview, new_preview = (_preview(t, 80).replace("\n", " ") for t in (old_string, new_string))
-        return f"📝 Skill '{skill_name}' patched: \"{old_preview}\" → \"{new_preview}\""
-    verb = {"create": "created", "edit": "rewritten"}.get(action)
-    if verb and change.get("description"):
-        return f"📝 Skill '{skill_name}' {verb}: {change['description']}"
-    return f"📝 {message}" if message else f"Skill {action}"
+        old_preview, new_preview = (_preview(text, 80).replace("\n", " ") for text in (old_string, new_string))
+        return t("display.review.skill_patched_verbose", name=skill_name, old=old_preview, new=new_preview)
+    verb_key = {"create": "created", "edit": "rewritten"}.get(action)
+    if verb_key and change.get("description"):
+        return t("display.review.skill_changed_verbose", name=skill_name, verb=t(f"display.review.skill_verb.{verb_key}"),
+                 description=change["description"])
+    return t("display.review.skill_message_verbose", message=message) if message else t("display.review.skill_action", action=action)
 
 
 def _verbose_memory_lines(label: str, detail: Dict) -> List[str]:
@@ -558,7 +631,7 @@ def _verbose_memory_lines(label: str, detail: Dict) -> List[str]:
     if isinstance(ops_raw, list) and ops_raw:
         lines = [_memory_op_line(label, op.get("action", ""), op) for op in ops_raw if isinstance(op, dict)]
         return [line for line in lines if line]
-    return [_memory_op_line(label, detail.get("action", ""), detail) or f"{label} updated"]
+    return [_memory_op_line(label, detail.get("action", ""), detail) or t("display.review.label_updated", label=label)]
 
 
 # Tool-call argument fields surfaced in action summaries, with their defaults.
@@ -632,10 +705,11 @@ def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
         for result in results:
             if not isinstance(result, dict) or result.get("success") is not True:
                 continue
-            verb = verbs.get(result.get("action"))
-            if verb and result.get("name"):
+            verb_key = verbs.get(result.get("action"))
+            if verb_key and result.get("name"):
                 path = f" ({result['file_path']})" if result.get("file_path") else ""
-                lines.append(f"Skill '{result['name']}' {verb}{path}")
+                lines.append(t("display.review.skill_result", name=result["name"],
+                               verb=t(f"display.review.skill_verb.{verb_key}"), path=path))
         return lines
     lower = message.lower()
     if not verbose and ("created" in lower or "updated" in lower or
@@ -643,11 +717,12 @@ def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
         return [message]
     if not is_skill and not target:
         return []
-    label = "Skill" if is_skill else {"memory": "Memory", "user": "User profile"}.get(target, target)
+    label_key = "skill" if is_skill else {"memory": "memory", "user": "user"}.get(target)
+    label = t(f"display.review.label.{label_key}") if label_key else target
     if verbose:
         return [_verbose_skill_line(data, detail, message)] if is_skill else _verbose_memory_lines(label, detail)
     hit = any(k in lower for k in ("added", "replaced", "removed", "applied")) or (target and "add" in lower)
-    return [f"{label} updated"] if hit else []
+    return [t("display.review.label_updated", label=label)] if hit else []
 
 
 def summarize_background_review_actions(
@@ -746,8 +821,12 @@ def _classify_review_result(actions: List[str]) -> str:
     ``📝 Skill …``, ``Memory …``, ``User profile …``), so a free-text line like ``Skipped: no
     skill worth saving`` stays ``none``."""
     lowers = [str(action).lstrip().removeprefix("📝").lstrip().lower() for action in actions or []]
-    has_skill = any(t.startswith("skill") for t in lowers)
-    has_memory = any(t.startswith(("memory", "user profile")) for t in lowers)
+    # Labels are localized (display.review.label.*); match the active language's labels and English.
+    skill_prefixes = ("skill", t("display.review.label.skill").lower())
+    memory_prefixes = ("memory", "user profile", t("display.review.label.memory").lower(),
+                       t("display.review.label.user").lower())
+    has_skill = any(line.startswith(skill_prefixes) for line in lowers)
+    has_memory = any(line.startswith(memory_prefixes) for line in lowers)
     return "+".join(kind for kind, hit in (("skill", has_skill), ("memory", has_memory)) if hit) or "none"
 
 
@@ -801,12 +880,7 @@ def _warn_ignored_reasoning_effort(agent: Any, task_cfg: Optional[Dict[str, Any]
     if not effort or getattr(agent, "_warned_bg_review_reasoning_effort", False):
         return
     agent._warned_bg_review_reasoning_effort = True
-    message = (
-        f"⚠ auxiliary.background_review.reasoning_effort='{effort}' has no effect while the review "
-        "runs on the main model: the fork inherits the conversation's reasoning effort to keep the "
-        "parent's prompt-cache prefix (see memory docs, same-model review reasoning). Route the "
-        "review elsewhere via auxiliary.background_review.provider/model to use a different effort."
-    )
+    message = t("display.review.reasoning_effort_warning", effort=effort)
     emit = getattr(agent, "_emit_warning", None)
     if callable(emit):
         with suppress(Exception):
@@ -931,6 +1005,10 @@ def build_cache_parity_fork(
         _warn_ignored_reasoning_effort(agent, task_cfg)
     review_agent = AIAgent(**_fork_init_kwargs(agent, _rt, _routed, max_iterations, task_cfg))
     review_agent._memory_write_origin = review_agent._memory_write_context = write_origin
+    # Fork-turn log tag: the fork shares the parent's session_id (and model on the
+    # same-model path), so its turn-start/turn-exit log lines are otherwise
+    # indistinguishable from live turns (#118693).
+    review_agent._turn_origin = write_origin
     review_agent._memory_store = agent._memory_store
     review_agent._memory_enabled = agent._memory_enabled
     review_agent._user_profile_enabled = agent._user_profile_enabled
@@ -970,6 +1048,11 @@ def build_cache_parity_fork(
         inherited_scope = resolve_prompt_cache_scope_safe(agent)
         if inherited_scope:
             review_agent._inherited_cache_scope = inherited_scope
+        # Slot-keyed caches (xAI): once the review's OWN compaction rewrites its transcript, its
+        # divergent stream would evict the parent's server slot, so the resolver then derives
+        # ``<scope>::review``. /btw never tags: one prefix-extension call cannot diverge.
+        if write_origin == "background_review":
+            review_agent._prompt_cache_fork_tag = "review"
         # Same reason for the Portal ``conversation=`` tag: with no DB the fork's own
         # _conversation_root_id() falls back to the parent's PHYSICAL id, so after a compression
         # rotation the review's usage was attributed to a different conversation than its parent.
@@ -978,7 +1061,7 @@ def build_cache_parity_fork(
     _detach_fork_compression(review_agent)
     # Compaction bounds a single request; this bounds the WHOLE review (checked in
     # conversation_loop via _review_input_budget_exhausted).
-    review_agent._review_input_token_budget = _review_input_token_budget(task_cfg)
+    review_agent._review_input_token_budget = _review_input_token_budget(task_cfg, review_agent)
     return review_agent, _rt, _routed
 
 
@@ -1147,10 +1230,10 @@ def _run_review_fork(
 
 def _publish_review_summary(agent: Any, actions: List[str]) -> None:
     summary = " · ".join(dict.fromkeys(actions))
-    agent._safe_print(f"  💾 Self-improvement review: {summary}")
+    agent._safe_print(t("display.review.summary_cli", summary=summary))
     if agent.background_review_callback:
         with suppress(Exception):
-            agent.background_review_callback(f"💾 Self-improvement review: {summary}")
+            agent.background_review_callback(t("display.review.summary_callback", summary=summary))
 
 
 def _run_review_in_thread(
@@ -1223,7 +1306,7 @@ def _run_review_in_thread(
         logger.warning("Background memory/skill review failed: %s", e)
         if st.review_usage:
             _log_review_completion(st.review_usage, "error")
-        agent._emit_auxiliary_failure("background review", e)
+        agent._emit_auxiliary_failure(t("display.review.aux_failure_label"), e)
     finally:
         # Safety net for the exception path (setup failures before the request-phase finally).
         # Both cleanups are identity-scoped and idempotent; re-enter thread-scoped silence so
@@ -1279,39 +1362,3 @@ __all__ = [
     "_MEMORY_REVIEW_PROMPT", "_SKILL_REVIEW_PROMPT", "_COMBINED_REVIEW_PROMPT", "load_background_review_settings",
     "spawn_background_review_thread", "summarize_background_review_actions", "build_memory_write_metadata",
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import Path  # noqa: F401,E402
-
-def is_background_review_enabled(
-    task_cfg: Optional[Dict[str, Any]] = None,
-) -> bool:
-    """Return whether automatic post-turn background review may spawn.
-
-    Controlled by ``auxiliary.background_review.enabled`` (default ``true``).
-    Explicit ``/refine`` (``focus`` set) bypasses this gate — same contract as
-    zeroing the nudge intervals, which stops automatic forks but leaves manual
-    refine working (issue #87250).
-
-    Prefer :func:`load_background_review_settings` at the spawn call site so
-    the task block is not re-read on the same turn.
-    """
-    if task_cfg is not None:
-        try:
-            from utils import is_truthy_value
-
-            return is_truthy_value(task_cfg.get("enabled"), default=True)
-        except Exception:
-            logger.warning(
-                "Failed to interpret background_review.enabled; leaving "
-                "automatic review enabled (fail-open)",
-                exc_info=True,
-            )
-            return True
-    enabled, _ = load_background_review_settings()
-    return enabled
-# ---- END PLUGIN-COMPAT ----

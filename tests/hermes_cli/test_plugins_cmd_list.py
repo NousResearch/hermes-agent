@@ -132,7 +132,29 @@ def test_declared_capabilities_for_entrypoint_uses_distribution_metadata(
     ]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
+def test_entrypoint_spec_does_not_abort_plugin_status(monkeypatch):
+    """An entry-point row stores ``module:attr`` in the path slot. Windows rejects that name
+    (WinError 123); status must not open it as a plugin directory and abort the whole list."""
+    from pathlib import Path
+
+    real_stat = Path.stat
+
+    def stat(self, *args, **kwargs):
+        if str(self).startswith("mnemosyne_hermes:register"):
+            err = OSError(22, "The filename, directory name, or volume label syntax is incorrect")
+            err.winerror = 123
+            raise err
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+
+    assert plugins_cmd._plugin_status(
+        "mnemosyne_hermes", set(), set(), key="mnemosyne_hermes",
+        source="entrypoint", dir_path="mnemosyne_hermes:register",
+    ) == "not enabled"
+
+
+@pytest.mark.platforms("posix")  # chmod is a no-op on Windows
 @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores file permissions")
 def test_unreadable_plugin_dir_is_skipped_by_every_manifest_scan(monkeypatch, tmp_path, caplog):
     """One plugin directory the process cannot stat() into (Windows WinError 5, POSIX mode 000)

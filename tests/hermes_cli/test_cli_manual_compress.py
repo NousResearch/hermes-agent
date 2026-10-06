@@ -38,6 +38,7 @@ class DummyAgent:
         focus_topic=None,
         force=False,
         defer_context_engine_notification=False,
+        task_id="default",
     ):
         self.calls.append(
             {

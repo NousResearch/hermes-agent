@@ -7,7 +7,7 @@ the model.
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -17,6 +17,7 @@ class ReadResult:
     total_lines: int = 0
     file_size: int = 0
     truncated: bool = False
+    truncated_lines: Optional[bool] = None
     hint: Optional[str] = None
     is_binary: bool = False
     is_image: bool = False
@@ -24,10 +25,17 @@ class ReadResult:
     mime_type: Optional[str] = None
     dimensions: Optional[str] = None  # For images: "WIDTHxHEIGHT"
     error: Optional[str] = None
+    #: True only when the path is genuinely absent. An error with this False is a read that
+    #: FAILED (transport down, no byte transport installed); callers deciding whether a path
+    #: is free must not read that as "absent". See patch_parser._apply_add.
+    not_found: bool = False
     similar_files: List[str] = field(default_factory=list)
+    _snapshot: Optional[tuple] = None
+    # sha256 of the exact on-disk bytes ``read_file_raw`` decoded (BOM included).
+    _content_sha256: Optional[str] = None
 
     def to_dict(self) -> dict:
-        return {k: v for k, v in self.__dict__.items() if v is not None and v != []}
+        return {k: v for k, v in self.__dict__.items() if not k.startswith("_") and v is not None and v != []}
 
 
 @dataclass
@@ -38,6 +46,7 @@ class WriteResult:
     # True when the on-disk sha256 matched the intended content; None when the
     # backend couldn't verify (no sha256sum). A mismatch is a hard error, never a flag.
     verified: Optional[bool] = None
+    _content_sha256: Optional[str] = None
     lint: Optional[Dict[str, Any]] = None
     # LSP semantic diagnostics, kept separate from ``lint`` (syntax) so the model
     # reads the two as independent signals. None when LSP is off/inapplicable.
@@ -46,7 +55,7 @@ class WriteResult:
     warning: Optional[str] = None
 
     def to_dict(self) -> dict:
-        return {k: v for k, v in self.__dict__.items() if v is not None}
+        return {k: v for k, v in self.__dict__.items() if not k.startswith("_") and v is not None}
 
 
 @dataclass
@@ -63,6 +72,10 @@ class PatchResult:
     # Success-shaped no-op: the edit was already present, nothing written; ``note`` says why.
     no_change: bool = False
     note: Optional[str] = None
+    # One ``(path, read_sha256, written_sha256)`` per file write, in order: the sha256 of the
+    # bytes the edit read ("" when it created the file, None when unknown) and of the bytes it
+    # wrote (None when unknown). patch_tool carries a task's full-file baseline across them.
+    _writes: List[Tuple[str, Optional[str], Optional[str]]] = field(default_factory=list)
 
     # Emission order is part of the output contract.
     _DICT_FIELDS: ClassVar[tuple] = (
@@ -175,6 +188,10 @@ class ExecuteResult:
     """Result from executing a shell command."""
     stdout: str = ""
     exit_code: int = 0
+    # Set when the backend's own ``builtin cd -- <cwd> || exit 126`` wrapper failed:
+    # the command never ran, so the verdict is about the working directory, not
+    # the requested path (callers must neither cache it nor blame the path).
+    cwd_error: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +200,18 @@ class ExecuteResult:
 
 _OSC_SEQUENCE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 _FENCE_MARKER_RE = re.compile(r"'?\x07?__HERMES_FENCE_[A-Za-z0-9]+__\x07?'?")
+
+
+_CONFLICT_OPEN = re.compile(r"^\s*\d+\|<<<<<<< ", re.M)
+_CONFLICT_CLOSE = re.compile(r"^\s*\d+\|>>>>>>> ", re.M)
+
+
+def count_conflict_blocks(formatted_content: str) -> int:
+    """Unresolved git merge-conflict blocks in a ``LINE|CONTENT`` read; 0 when the page has no
+    balanced ``<<<<<<< `` / ``>>>>>>> `` pair (a lone marker in prose or a test fixture is not a
+    conflict). Reported on read so the model resolves the conflict instead of editing around it."""
+    opens = len(_CONFLICT_OPEN.findall(formatted_content))
+    return min(opens, len(_CONFLICT_CLOSE.findall(formatted_content))) if opens else 0
 
 
 def _strip_terminal_fence_leaks(text: str) -> str:

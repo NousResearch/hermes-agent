@@ -93,7 +93,7 @@ A real user message always wins over both — wakeups only fire while the sessio
 
 ## Behavior details
 
-- **A wakeup is a normal user-role turn.** No system-prompt mutation, no toolset swap — prompt caching stays intact.
+- **A wakeup is a normal user-role turn.** No system-prompt mutation, no toolset swap — prompt caching stays intact. In the messaging gateway a wakeup is not a reply to the message that set the loop, so its output is posted to the chat/topic without quoting that message.
 - **Survives `/resume` and compression.** Loop state persists per session and migrates across context-compression boundaries, same as `/goal`.
 - **One loop per session.** Setting a new `/loop` replaces the old one. Run several loops by running several sessions (or use cron for a fleet of schedules).
 - **Interrupting a wakeup turn (Ctrl+C) pauses the loop** — recoverable with `/loop resume`, so cancel actually means cancel.

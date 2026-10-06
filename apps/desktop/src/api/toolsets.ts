@@ -7,7 +7,7 @@ import type {
   ToolsetModelsResponse
 } from '@/types/hermes'
 
-import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, scopedDialPriority } from './client'
+import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from './client'
 
 // The optional trailing `profile` on every capability fetcher below is the
 // Capabilities view's profile-scope override: it lets the Skills/Tools/MCP
@@ -17,7 +17,6 @@ import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, scopedDi
 export function getToolsets(profile?: ProfileScope): Promise<ToolsetInfo[]> {
   return window.hermesDesktop.api<ToolsetInfo[]>({
     ...capabilityScoped(profile),
-    ...scopedDialPriority(profile),
     path: '/api/tools/toolsets'
   })
 }
@@ -110,16 +109,19 @@ export function runToolsetPostSetup(
   })
 }
 
-export function getTerminalBackends(): Promise<TerminalBackendsResponse> {
-  return hermesApi<TerminalBackendsResponse>({
-    ...profileScoped(),
+export function getTerminalBackends(profile?: ProfileScope): Promise<TerminalBackendsResponse> {
+  return window.hermesDesktop.api<TerminalBackendsResponse>({
+    ...capabilityScoped(profile),
     path: '/api/tools/terminal/backends'
   })
 }
 
-export function selectTerminalBackend(backend: string): Promise<{ ok: boolean; backend: string }> {
-  return hermesApi<{ ok: boolean; backend: string }>({
-    ...profileScoped(),
+export function selectTerminalBackend(
+  backend: string,
+  profile?: ProfileScope
+): Promise<{ ok: boolean; backend: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; backend: string }>({
+    ...capabilityScoped(profile),
     path: '/api/tools/terminal/backend',
     method: 'PUT',
     body: { backend }

@@ -1,62 +1,30 @@
-"""Guard: every `hermes update` path that reports user-modified skills must
-also tell the user how to find them.
+"""Skill sync keeps user edits and tells the updater's user how to inspect them."""
 
-`hermes update` keeps (does not overwrite) bundled skills the user edited and
-prints a ``~ N user-modified (kept)`` count. There are two independent update
-code paths in ``hermes_cli/main.py`` that print this notice (the git-pull path
-in ``_cmd_update_impl`` and the unpack/install path). Both must point the user
-at ``hermes skills list-modified`` so the count is actionable — otherwise,
-depending on which path a user hits, they may never learn the discovery command
-exists.
-
-This is an *invariant* test (the two sibling notices must agree), not a literal
-snapshot: it asserts the relationship "count line ⇒ discovery hint", so it
-keeps holding if the wording is reworded, as long as both sites stay in sync.
-"""
-
-import re
-from pathlib import Path
-
-import hermes_cli.main as main_mod
-import hermes_cli.update_cmd as update_mod
-import hermes_cli.update_cmd_maint as update_maint_mod
-import hermes_cli.update_cmd_zip as update_zip_mod
+from tools import skills_sync
+from hermes_cli.update_cmd_maint import _print_bundled_skills_sync_report
 
 
-_COUNT_RE = re.compile(r"user-modified \(kept\)")
-_HINT_RE = re.compile(r"hermes skills list-modified")
+def test_kept_skill_edits_have_an_actionable_update_report(tmp_path, monkeypatch, capsys):
+    bundled = tmp_path / "bundled"
+    source = bundled / "example/SKILL.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("---\nname: example\ndescription: fixture\n---\nOriginal\n", encoding="utf-8")
+    installed = tmp_path / "skills"
+    monkeypatch.setattr(skills_sync, "SKILLS_DIR", installed)
+    monkeypatch.setattr(skills_sync, "MANIFEST_FILE", installed / ".manifest.json")
+    monkeypatch.setattr(skills_sync, "_get_bundled_dir", lambda: bundled)
+    monkeypatch.setattr(skills_sync, "_get_optional_dir", lambda: tmp_path / "optional")
+    monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [])
 
+    _print_bundled_skills_sync_report()
+    user_skill = installed / "example/SKILL.md"
+    assert user_skill.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
+    assert "list-modified" not in capsys.readouterr().out
+    user_skill.write_text("My local instructions\n", encoding="utf-8")
+    source.write_text(source.read_text(encoding="utf-8") + "Upstream revision\n", encoding="utf-8")
 
-def _source_lines() -> list[str]:
-    # The update pipeline was extracted to hermes_cli/update_cmd.py and then
-    # split into update_cmd_*.py; scan every home of the notice.
-    return [
-        line
-        for mod in (main_mod, update_mod, update_maint_mod, update_zip_mod)
-        for line in Path(mod.__file__).read_text(encoding="utf-8").splitlines()
-    ]
-
-
-def test_every_user_modified_notice_points_at_list_modified():
-    lines = _source_lines()
-    count_sites = [i for i, ln in enumerate(lines) if _COUNT_RE.search(ln)]
-
-    # The notice must exist somewhere (guard against it being deleted outright),
-    # but we deliberately do NOT assert a fixed *count* of sites: consolidating
-    # the duplicated print paths into a shared helper is a welcome refactor and
-    # must not fail this test. The invariant is per-site, not how many sites.
-    assert count_sites, (
-        "no 'user-modified (kept)' notice found in main.py — the update "
-        "summary that surfaces kept user edits appears to have been removed"
-    )
-
-    for idx in count_sites:
-        # The count print and its discovery hint sit on adjacent lines; allow a
-        # small window so wording/formatting tweaks don't break the check.
-        window = "\n".join(lines[idx : idx + 5])
-        assert _HINT_RE.search(window), (
-            "a 'user-modified (kept)' notice near line "
-            f"{idx + 1} of main.py does not point users at "
-            "`hermes skills list-modified` within the following lines — the "
-            "update paths have drifted apart again:\n" + window
-        )
+    _print_bundled_skills_sync_report()
+    out = capsys.readouterr().out
+    assert "1 user-modified (kept)" in out
+    assert "hermes skills list-modified" in out
+    assert user_skill.read_text(encoding="utf-8") == "My local instructions\n"

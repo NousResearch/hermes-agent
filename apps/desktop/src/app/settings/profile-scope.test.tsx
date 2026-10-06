@@ -22,10 +22,10 @@ vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
 const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
 const { $settingsScopeOverride } = await import('@/store/settings-scope')
-const { SettingsProfileScope } = await import('./profile-scope')
+const { ActiveProfileNote, SettingsProfileScope } = await import('./profile-scope')
 
-const profile = (name: string, isDefault = false): ProfileInfo =>
-  ({ has_env: false, is_default: isDefault, model: null, name }) as unknown as ProfileInfo
+const profile = (name: string, isDefault = false, extra: Partial<ProfileInfo> = {}): ProfileInfo =>
+  ({ has_env: false, is_default: isDefault, model: null, name, ...extra }) as ProfileInfo
 
 beforeEach(() => {
   $activeGatewayProfile.set('default')
@@ -41,17 +41,6 @@ describe('SettingsProfileScope', () => {
 
     const { container } = render(<SettingsProfileScope />)
     expect(container.textContent).toBe('')
-  })
-
-  it('shows one chip per profile with the active profile selected by default', () => {
-    $profiles.set([profile('default', true), profile('coder')])
-
-    render(<SettingsProfileScope />)
-
-    expect(screen.getByRole('button', { name: 'default' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'coder' })).toBeTruthy()
-    // Following the active profile → no override, no "applies to X" note.
-    expect($settingsScopeOverride.get()).toBeNull()
   })
 
   it('selecting another profile sets the shared override; re-selecting the active clears it', () => {
@@ -105,5 +94,53 @@ describe('SettingsProfileScope', () => {
     const note = document.querySelector('[role="status"]')
     expect(note).toBeTruthy()
     expect(note?.hasAttribute('data-scope-loud')).toBe(false)
+  })
+
+  it('labels chips with the bot title, else the display name, else the slug', () => {
+    $profiles.set([
+      profile('default', true, { bot_title: 'JordyV', display_name: 'JordieF' }),
+      profile('default-2', false, { display_name: 'Copy' }),
+      profile('weather-man')
+    ])
+
+    render(<SettingsProfileScope />)
+
+    // Bot Mode title wins over display_name and the slug — same identity the
+    // Bots roster shows.
+    expect(screen.getByRole('button', { name: 'JordyV' })).toBeTruthy()
+    // display_name (profile.yaml) when no Bot Mode title exists.
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy()
+    // Canonical slug when neither is set.
+    expect(screen.getByRole('button', { name: 'weather-man' })).toBeTruthy()
+  })
+
+  it('keeps selection keyed on the canonical name while showing the presentation label', () => {
+    $profiles.set([profile('default', true), profile('coder', false, { bot_title: 'JordyV' })])
+
+    render(<SettingsProfileScope />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'JordyV' }))
+    // The label changed, the identity did not: the override stores the slug.
+    expect($settingsScopeOverride.get()).toBe('coder')
+    // The "applies to" note names the target the way its chip does.
+    expect(document.querySelector('[role="status"]')?.textContent).toContain('JordyV')
+    expect(document.querySelector('[role="status"]')?.textContent).not.toContain('coder')
+  })
+})
+
+// Local Models sends unscoped requests, so it always edits the ACTIVE profile;
+// the note must say which one — and stay silent for single-profile users, like
+// the selector.
+describe('ActiveProfileNote', () => {
+  it('names the active profile (by its chip label) only with two or more profiles', () => {
+    $activeGatewayProfile.set('setup')
+    $profiles.set([profile('default', true)])
+    const { container, rerender } = render(<ActiveProfileNote />)
+    expect(container.textContent).toBe('')
+
+    $profiles.set([profile('default', true), profile('setup', false, { display_name: 'Setup box' })])
+    rerender(<ActiveProfileNote />)
+    expect(screen.getByRole('status').textContent).toContain('Setup box')
+    expect($settingsScopeOverride.get()).toBeNull()
   })
 })

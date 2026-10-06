@@ -1,240 +1,10 @@
-"""Tests for cron job inactivity-based timeout.
+"""Tests for the cron inactivity watchdog loop (runs on its own daemon thread)."""
 
-Tests cover:
-- Active agent runs indefinitely (no inactivity timeout)
-- Idle agent triggers inactivity timeout with diagnostic info
-- Unlimited timeout (HERMES_CRON_TIMEOUT=0)
-- Backward compat: HERMES_CRON_TIMEOUT env var still works
-- Error message includes activity summary
-"""
-
-import concurrent.futures
-import os
-import sys
 import threading
 import time
-from pathlib import Path
+from types import SimpleNamespace
 
-
-# Ensure project root is importable
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-
-class FakeAgent:
-    """Mock agent with controllable activity summary for timeout tests."""
-
-    def __init__(self, idle_seconds=0.0, activity_desc="tool_call",
-                 current_tool=None, api_call_count=5, max_iterations=90):
-        self._idle_seconds = idle_seconds
-        self._activity_desc = activity_desc
-        self._current_tool = current_tool
-        self._api_call_count = api_call_count
-        self._max_iterations = max_iterations
-        self._interrupted = False
-        self._interrupt_msg = None
-
-    def get_activity_summary(self):
-        return {
-            "last_activity_ts": time.time() - self._idle_seconds,
-            "last_activity_desc": self._activity_desc,
-            "seconds_since_activity": self._idle_seconds,
-            "current_tool": self._current_tool,
-            "api_call_count": self._api_call_count,
-            "max_iterations": self._max_iterations,
-        }
-
-    def interrupt(self, msg):
-        self._interrupted = True
-        self._interrupt_msg = msg
-
-    def run_conversation(self, prompt):
-        """Simulate a quick agent run that finishes immediately."""
-        return {"final_response": "Done", "messages": []}
-
-
-class SlowFakeAgent(FakeAgent):
-    """Agent that runs for a while, simulating active work then going idle."""
-
-    def __init__(self, run_duration=0.5, idle_after=None, **kwargs):
-        super().__init__(**kwargs)
-        self._run_duration = run_duration
-        self._idle_after = idle_after  # seconds before becoming idle
-        self._start_time = None
-
-    def get_activity_summary(self):
-        summary = super().get_activity_summary()
-        if self._idle_after is not None and self._start_time:
-            elapsed = time.time() - self._start_time
-            if elapsed > self._idle_after:
-                # Agent has gone idle
-                idle_time = elapsed - self._idle_after
-                summary["seconds_since_activity"] = idle_time
-                summary["last_activity_desc"] = "api_call_streaming"
-            else:
-                summary["seconds_since_activity"] = 0.0
-        return summary
-
-    def run_conversation(self, prompt):
-        self._start_time = time.time()
-        time.sleep(self._run_duration)
-        return {"final_response": "Completed after work", "messages": []}
-
-
-class TestInactivityTimeout:
-    """Test the inactivity-based timeout polling loop in cron scheduler."""
-
-    def test_active_agent_completes_normally(self):
-        """An agent that finishes quickly should return its result."""
-        agent = FakeAgent(idle_seconds=0.0)
-        _cron_inactivity_limit = 10.0
-        _POLL_INTERVAL = 0.1
-
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(agent.run_conversation, "test prompt")
-        _inactivity_timeout = False
-
-        result = None
-        while True:
-            done, _ = concurrent.futures.wait({future}, timeout=_POLL_INTERVAL)
-            if done:
-                result = future.result()
-                break
-            _idle_secs = 0.0
-            if hasattr(agent, "get_activity_summary"):
-                _act = agent.get_activity_summary()
-                _idle_secs = _act.get("seconds_since_activity", 0.0)
-            if _idle_secs >= _cron_inactivity_limit:
-                _inactivity_timeout = True
-                break
-
-        pool.shutdown(wait=False)
-        assert result is not None
-        assert result["final_response"] == "Done"
-        assert not _inactivity_timeout
-        assert not agent._interrupted
-
-    def test_idle_agent_triggers_timeout(self):
-        """An agent that goes idle should be detected and interrupted."""
-        # Agent will run for 0.3s, then become idle after 0.1s of that
-        agent = SlowFakeAgent(
-            run_duration=5.0,  # would run forever without timeout
-            idle_after=0.1,    # goes idle almost immediately
-            activity_desc="api_call_streaming",
-            current_tool="web_search",
-            api_call_count=3,
-            max_iterations=50,
-        )
-
-        _cron_inactivity_limit = 0.5  # 0.5s inactivity triggers timeout
-        _POLL_INTERVAL = 0.1
-
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(agent.run_conversation, "test prompt")
-        _inactivity_timeout = False
-
-        result = None
-        while True:
-            done, _ = concurrent.futures.wait({future}, timeout=_POLL_INTERVAL)
-            if done:
-                result = future.result()
-                break
-            _idle_secs = 0.0
-            if hasattr(agent, "get_activity_summary"):
-                try:
-                    _act = agent.get_activity_summary()
-                    _idle_secs = _act.get("seconds_since_activity", 0.0)
-                except Exception:
-                    pass
-            if _idle_secs >= _cron_inactivity_limit:
-                _inactivity_timeout = True
-                break
-
-        pool.shutdown(wait=False, cancel_futures=True)
-        assert _inactivity_timeout is True
-        assert result is None  # Never got a result — interrupted
-
-    def test_unlimited_timeout(self):
-        """HERMES_CRON_TIMEOUT=0 means no timeout at all."""
-        agent = FakeAgent(idle_seconds=0.0)
-        _cron_inactivity_limit = None  # unlimited
-
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(agent.run_conversation, "test prompt")
-
-        # With unlimited, we just await the result directly.
-        result = future.result()
-        pool.shutdown(wait=False)
-
-        assert result["final_response"] == "Done"
-
-    def _parse_cron_timeout(self, raw_value):
-        """Mirror the defensive parsing logic from cron/scheduler.py run_job()."""
-        if raw_value:
-            try:
-                return float(raw_value)
-            except (ValueError, TypeError):
-                return 600.0
-        return 600.0
-
-    def test_timeout_env_var_parsing(self, monkeypatch):
-        """HERMES_CRON_TIMEOUT env var is respected."""
-        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "1200")
-        raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
-        _cron_timeout = self._parse_cron_timeout(raw)
-        assert _cron_timeout == 1200.0
-
-        _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
-        assert _cron_inactivity_limit == 1200.0
-
-
-    def test_agent_without_activity_summary_uses_wallclock_fallback(self):
-        """If agent lacks get_activity_summary, idle_secs stays 0 (never times out).
-        
-        This ensures backward compat if somehow an old agent is used.
-        The polling loop will eventually complete when the task finishes.
-        """
-        class BareAgent:
-            def run_conversation(self, prompt):
-                return {"final_response": "no activity tracker", "messages": []}
-
-        agent = BareAgent()
-        _cron_inactivity_limit = 0.1  # tiny limit
-        _POLL_INTERVAL = 0.1
-
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(agent.run_conversation, "test")
-        _inactivity_timeout = False
-
-        while True:
-            done, _ = concurrent.futures.wait({future}, timeout=_POLL_INTERVAL)
-            if done:
-                result = future.result()
-                break
-            _idle_secs = 0.0
-            if hasattr(agent, "get_activity_summary"):
-                try:
-                    _act = agent.get_activity_summary()
-                    _idle_secs = _act.get("seconds_since_activity", 0.0)
-                except Exception:
-                    pass
-            if _idle_secs >= _cron_inactivity_limit:
-                _inactivity_timeout = True
-                break
-
-        pool.shutdown(wait=False)
-        # Should NOT have timed out — bare agent has no get_activity_summary
-        assert not _inactivity_timeout
-        assert result["final_response"] == "no activity tracker"
-
-
-class TestSysPathOrdering:
-    """Test that sys.path is set before repo-level imports."""
-
-    def test_hermes_time_importable(self):
-        """hermes_time should be importable when cron.scheduler loads."""
-        # This import would fail if sys.path.insert comes after the import
-        from cron.scheduler import _hermes_now
-        assert callable(_hermes_now)
+import pytest
 
 
 class TestInactivityWatchdogLoop:
@@ -306,3 +76,102 @@ class TestInactivityWatchdogLoop:
         assert result["fired"] is True
         assert not watcher.is_alive()
 
+
+
+class TestHostSleep:
+    """A sleeping host freezes the whole job, so the nap is not job inactivity."""
+
+    @pytest.mark.parametrize("during_sample", [False, True])
+    def test_sleep_is_not_idle_time_but_awake_idle_still_fires(self, monkeypatch, during_sample):
+        from agent import session_activity
+        from cron.scheduler import _inactivity_watchdog_loop
+
+        # Wall time keeps running while the host sleeps; monotonic time pauses (macOS, Linux).
+        clock = SimpleNamespace(wall=1_000_000.0, mono=50.0)
+        monkeypatch.setattr(
+            session_activity, "time", SimpleNamespace(time=lambda: clock.wall, monotonic=lambda: clock.mono))
+        last_activity_wall, start_mono = clock.wall, clock.mono
+        polls = []
+
+        class _Stop:
+            def wait(self, timeout):
+                polls.append(timeout)
+                clock.wall += timeout
+                clock.mono += timeout
+                if len(polls) == 3 and not during_sample:
+                    clock.wall += 900.0  # the laptop sleeps for 15 minutes mid-job
+                return len(polls) > 1000
+
+        def read_idle():
+            idle = clock.wall - last_activity_wall
+            if during_sample and len(polls) == 3:
+                clock.wall += 900.0  # suspend after the activity read, before meter clocks
+            return idle
+
+        fired = _inactivity_watchdog_loop(
+            get_idle_seconds=read_idle,
+            limit_s=600.0,
+            poll_s=5.0,
+            stop=_Stop(),
+            future_done=lambda: False,
+        )
+
+        assert fired is True
+        awake_idle = clock.mono - start_mono
+        assert 600.0 <= awake_idle < 605.0
+
+
+def test_sleep_before_watchdog_thread_starts(monkeypatch):
+    """The worker can record activity before the watchdog gets its first timeslice."""
+    from agent import activity_tracking, session_activity
+    from cron import scheduler
+
+    clock = SimpleNamespace(wall=1000.0, mono=1000.0)
+    timer = SimpleNamespace(time=lambda: clock.wall, monotonic=lambda: clock.mono)
+    started, finish = threading.Event(), threading.Event()
+    interrupted_at = []
+
+    class Agent(activity_tracking.ActivityTrackingMixin):
+        def run_conversation(self, *args, **kwargs):
+            self._touch_activity("starting new turn")
+            started.set()
+            finish.wait(20)
+            return {"final_response": "finished"}
+
+        def get_activity_summary(self):
+            return session_activity.build_activity_snapshot(
+                last_activity_at=self._last_activity_ts,
+                last_activity_description=self._last_activity_desc)
+
+        def interrupt(self, message, **kwargs):
+            interrupted_at.append(clock.mono - 1000.0)
+            finish.set()
+
+    original_start, original_wait = threading.Thread.start, threading.Event.wait
+
+    def start(thread):
+        if thread.name.startswith("cron-inactivity-"):
+            assert started.wait(5), "worker did not start"
+            clock.wall += 900
+        return original_start(thread)
+
+    def wait(event, timeout=None):
+        if threading.current_thread().name.startswith("cron-inactivity-") and timeout == 5.0:
+            clock.wall += timeout
+            clock.mono += timeout
+            return event.is_set()
+        return original_wait(event, timeout)
+
+    for module in (activity_tracking, session_activity, scheduler):
+        monkeypatch.setattr(module, "time", timer)
+    monkeypatch.setattr(threading.Thread, "start", start)
+    monkeypatch.setattr(threading.Event, "wait", wait)
+    monkeypatch.setattr(scheduler, "_cron_inactivity_seconds", lambda: 600.0)
+    try:
+        with pytest.raises(TimeoutError):
+            scheduler._run_agent_with_watchdog(
+                Agent(), "probe", {"schedule": {"kind": "every"}},
+                "probe", "probe", "probe", None)
+    finally:
+        finish.set()
+    assert interrupted_at and min(interrupted_at) >= 600.0

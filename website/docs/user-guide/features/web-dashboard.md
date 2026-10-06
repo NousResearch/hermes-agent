@@ -9,7 +9,7 @@ description: "Browser-based administration panel for managing configuration, API
 The web dashboard is a browser-based UI for managing your Hermes Agent installation. Instead of editing YAML files or running CLI commands, you can configure settings, manage API keys, and monitor sessions from a clean web interface.
 
 :::tip
-Hosted-mode auth uses Nous Portal OAuth; if you also want the dashboard to talk to a real backend, `hermes setup --portal` wires up the model and tool gateway too. See [Nous Portal](/integrations/nous-portal).
+Hosted-mode auth uses Nous Portal OAuth; if you also want the dashboard to talk to a real backend, `hermes setup --portal` wires up the model and tool gateway too. See [Nous Portal](../../integrations/nous-portal.md).
 :::
 
 ## Quick Start
@@ -64,6 +64,12 @@ worker dashboard
 # → not running:     starts the machine dashboard with "worker" preselected
 ```
 
+A dashboard started this way keeps `worker` as its fallback scope for the
+whole server lifetime: a deep link that omits `?profile=` (for example a
+`/chat?resume=<id>` link) still opens under `worker`, so the embedded chat
+sees that profile's MCP servers, model and skills. An explicit `?profile=`
+in the URL always wins.
+
 Pass `--isolated` to opt out and run a dedicated server scoped to that
 profile (the pre-unification behavior — useful if you deliberately expose
 different profiles' dashboards with different auth).
@@ -73,6 +79,11 @@ child with the selected profile's `HERMES_HOME`, so the conversation runs
 with that profile's model, skills, memory, and session history. Switching
 profiles starts a fresh terminal session.
 
+Hub actions (skill install/update/uninstall, MCP install, toolset setup)
+run with the target profile's own secret scope — its `.env` and configured
+secret sources — not the dashboard process's environment; this includes
+actions targeting the `default` profile from the machine dashboard.
+
 What stays per-profile and is *not* absorbed by the switcher: gateway
 processes (manage them via `hermes -p <name> gateway …`), each profile's
 session database, and cron schedulers (the Cron page already aggregates
@@ -80,13 +91,14 @@ across profiles with its own filter).
 
 ## Prerequisites
 
-The default `hermes-agent` install does not ship the HTTP stack or PTY helper — those are optional extras. The **web dashboard** needs FastAPI and Uvicorn (`web` extra). The **Chat** tab also needs `ptyprocess` to spawn the embedded TUI behind a pseudo-terminal (`pty` extra on POSIX). Install both with:
+FastAPI, Uvicorn, and the platform PTY helper are core Hermes dependencies.
+The `web` extra adds exact constraints for the HTTP stack. The `pty` extra is
+empty because its dependencies are already core. Standard PM setup includes
+`web` through `all`.
 
-```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"
-```
-
-The `web` extra pulls in FastAPI/Uvicorn; `pty` pulls in `ptyprocess` (POSIX) or `pywinpty` (native Windows — note that the embedded TUI itself still requires WSL). `cd ~/.hermes/hermes-agent && uv pip install -e ".[all]"` includes both extras and is the easiest path if you also want messaging/voice/etc.
+If these dependencies are damaged, run `hermes pm repair` and restart Hermes.
+For source setup, use the [PM developer workflow](../../reference/package-management.md#developer-workflow).
+Messaging and voice extras are separate requests, not implied by `all`.
 
 When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet and `npm` is available, it builds automatically on first launch.
 
@@ -142,10 +154,12 @@ The **Chat** tab embeds the full Hermes TUI (the same interface you get from `he
 
 **Session switcher (right rail):** the Chat tab carries its own ChatGPT-style conversation list in a thin right rail beside the terminal, so you can swap conversations without leaving the page. The rail stacks the model picker on top and the session list directly below it; the terminal takes up most of the screen. The list shows your most recent sessions for the active profile — title (falling back to a message preview), relative last-active time, message count, and the source channel for non-CLI sessions. Click any row to resume it in place (the terminal respawns with that conversation's history); the active session is highlighted. **New chat** starts a fresh session, and a refresh control re-pulls the list. The rail is read-only for switching — delete, rename, export, and bulk cleanup still live on the **Sessions** tab. On narrow screens it folds into a slide-over panel.
 
+**Workspace picker:** a fresh chat starts wherever the dashboard process was launched — useless when you are driving Hermes from a phone and want it in `~/code/foo`. The rail's **workspace** selector lists the same directories the Desktop sidebar knows: your explicit projects (`hermes projects`) and every discovered git repository (session-derived plus the `desktop.repo_scan_roots` scan), most recently active first, with an **Other path…** entry for anything else. The choice is remembered per profile and applies to the next **New chat** (a resumed session keeps its own working directory); the rescan button re-walks the discovery roots on the host, so a repo you just cloned over SSH shows up without a restart. A path that no longer exists is refused with an error instead of silently starting in the launch directory. Backed by `GET /api/chat/workspaces` and the `cwd` parameter of the `/api/pty` WebSocket.
+
 **Prerequisites:**
 
 - Node.js (same requirement as `hermes --tui`; the TUI bundle is built on first launch)
-- `ptyprocess` — installed by the `pty` extra (`cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"`, or `[all]` covers both)
+- `ptyprocess` — a core dependency on POSIX
 - POSIX kernel (Linux, macOS, or WSL2).  The `/chat` terminal pane specifically needs a POSIX PTY — native Windows Python has no equivalent, so on a native Windows install the rest of the dashboard (sessions, jobs, metrics, config editor) works but the `/chat` tab will show a banner telling you to use WSL2 for that feature.
 
 Close the browser tab and the PTY is reaped cleanly on the server. Re-opening spawns a fresh session.
@@ -174,7 +188,17 @@ Set a username and password, then run the dashboard bound to a reachable address
 EnvironmentFile=%h/.hermes/.env
 ExecStart=/path/to/venv/bin/python -m hermes_cli.main dashboard \
     --host 0.0.0.0 --port 9119 --no-open
+Restart=always
+RestartSec=10
+# Exit 78 (EX_CONFIG) is a deliberate refusal ("this host is already served by PID … on
+# another port"); parking on it beats an infinite restart loop with nothing listening.
+RestartPreventExitStatus=78
 ```
+
+One backend serves a whole host, so when `hermes dashboard` finds a live backend it cannot
+serve your typed `--host`/`--port` with, it refuses with exit 78 and names the owner. Stop that
+backend, or give the service its own dedicated server with `--isolated`. The Desktop app's own
+loopback backends never claim host ownership, so the two can coexist without either flag.
 
 with `~/.hermes/.env` containing:
 
@@ -341,7 +365,7 @@ prompt for them inline; the values go to `.env`. This is the same catalog
 
 ### Webhooks
 
-Manage dynamic [webhook subscriptions](/user-guide/messaging/webhooks). The
+Manage dynamic [webhook subscriptions](../messaging/webhooks.md). The
 webhook platform must be enabled in messaging settings first; the page shows a
 hint when it isn't.
 
@@ -424,7 +448,10 @@ The web dashboard exposes a REST API that the frontend consumes. You can also ca
 
 :::tip Profile-scoped endpoints
 The management endpoint families — `/api/config`, `/api/env`, `/api/skills`,
-`/api/tools/toolsets`, `/api/mcp`, and `/api/model/{info,options,auxiliary,set}` —
+`/api/tools/toolsets`, `/api/mcp`,
+`/api/model/{info,options,auxiliary,set,recommended-default}`,
+`/api/cron/{delivery-targets,blueprints}`, `/api/audio/voice-config`,
+`/api/ops/debug-share`, `/api/learning/{graph,node}`, and `/api/dashboard/plugins/hub` —
 accept an optional `?profile=<name>` query parameter (or `"profile"` in the
 JSON body for writes) that scopes the read/write to that profile's
 `HERMES_HOME`. Omitted = the dashboard's own profile. Unknown profile names
@@ -458,6 +485,10 @@ The response also carries two advisory resource blocks (they never affect the
 Both collectors are fail-safe: any sampling error degrades the block to
 `{"pressure": "unknown"}` instead of failing the status endpoint. The numbers
 are coarse (whole MB, whole-percent) since `/api/status` is public.
+
+### GET /api/chat/workspaces
+
+Directories a fresh Chat-tab session may start in: the profile's projects (with folders) and discovered git repositories (`root`, `label`, `sessions`, `last_active`), plus `default_cwd` (where a chat lands when nothing is picked) and `home`. `?scan=1` rescans `desktop.repo_scan_roots` on the host first. Pair with `/api/pty?cwd=<path>`, which fails closed on a missing directory.
 
 ### GET /api/sessions
 
@@ -505,7 +536,7 @@ Full-text search across message content. Query parameter: `q`. Returns matching 
 
 ### DELETE /api/sessions/\{session_id\}
 
-Deletes a session and its message history.
+Deletes a session and its message history. Returns `409 Conflict` if the session has an active turn lease or compression lock.
 
 ### GET /api/logs
 
@@ -659,6 +690,7 @@ The plugin reads from two surfaces, with the environment variable winning when s
 dashboard:
   oauth:
     client_id: agent:01HXYZ…             # required to engage the gate
+    token_leeway: 60                     # optional; seconds of clock-skew tolerance
 ```
 
 **Environment variables** — operator overrides:
@@ -670,6 +702,8 @@ dashboard:
 Per the Hermes Agent convention (`~/.hermes/.env` is for API keys / secrets only), **`config.yaml` is the recommended place to set these values** for local dev, on-prem, and any deployment you control directly. The environment-variable path exists so a hosting platform's secret injection can push per-deploy `client_id`s without anyone having to edit `config.yaml` inside the image — that's its primary purpose.
 
 Empty environment values are treated as unset, so a provisioned-but-not-populated platform secret can't accidentally shadow a valid `config.yaml` entry.
+
+`dashboard.oauth.token_leeway` (config.yaml only) is the clock-skew tolerance — in seconds — applied to the Portal access token's `exp`/`nbf`/`iat` claims during JWT verification. The default is `60` (RFC 7519 §4.1.4-4.1.6), so a host whose clock lags the Portal's doesn't fail login; `0` restores strict verification, and an invalid value (unparseable / negative / non-finite) fails closed to `0`. The self-hosted OIDC provider has the equivalent `dashboard.oauth.self_hosted.id_token_leeway` knob.
 
 If neither source provides a client_id, the plugin reports the specific reason and the dashboard's fail-closed bind error tells you exactly what to fix:
 
@@ -823,6 +857,7 @@ dashboard:
       issuer: https://auth.example.com/application/o/hermes/   # required
       client_id: hermes-dashboard                              # required
       scopes: "openid profile email"                           # optional (this is the default)
+      id_token_leeway: 60                                      # optional; seconds of clock-skew tolerance
 ```
 
 **Environment variables** — operator overrides (env wins over `config.yaml` when set non-empty; an empty value is treated as unset):
@@ -837,7 +872,7 @@ In your IDP, register a **public** application/client with the authorization-cod
 
 #### What it verifies
 
-The provider verifies the OpenID Connect **ID token** (RS256/ES256) against the discovered `jwks_uri`, with the `iss` and `aud` claims pinned to your configured `issuer` and `client_id`. Standard OIDC claims map onto the dashboard session:
+The provider verifies the OpenID Connect **ID token** (RS256/ES256) against the discovered `jwks_uri`, with the `iss` and `aud` claims pinned to your configured `issuer` and `client_id`. The time claims (`exp`/`nbf`/`iat`) are verified with a 60-second clock-skew leeway (RFC 7519 §4.1.4-4.1.6), so a dashboard host whose clock lags the IDP's doesn't fail login; tune it with `dashboard.oauth.self_hosted.id_token_leeway` in `config.yaml` (any value below `60` tightens it, `0` restores strict verification, and an invalid value fails closed to `0`). Standard OIDC claims map onto the dashboard session:
 
 | Session field | Claim(s) |
 |---------------|----------|
@@ -969,7 +1004,9 @@ Only listed peers may supply `X-Forwarded-Proto` and `X-Forwarded-For`.
 Hermes always preserves loopback trust and rejects `*`, `0.0.0.0/0`, and
 `::/0`. Trusting a network means every container or machine on that network
 can supply forwarding metadata, so prefer an exact proxy IP or a dedicated
-proxy-only network.
+proxy-only network. Without a trusted-proxy entry, clients behind that proxy
+share its password-login rate limit and native sign-in cap, and auth audit
+events record the proxy's address.
 
 ```bash
 # Backend remains reachable only on this machine.
@@ -1087,7 +1124,7 @@ The dashboard's React StatusPage shows the same fields under "Web server". A sid
 
 ## Connecting Hermes Desktop to a remote backend
 
-Hermes Desktop can drive a Hermes backend running on another machine (a VPS, a home server, a Mini behind Tailscale). In the app this lives under **Settings → Gateways → Remote gateway**, which asks for a **Remote URL** and a way to **Sign in**. (For the desktop app itself — install, settings, chat — see the [Hermes Desktop](/user-guide/desktop) page.)
+Hermes Desktop can drive a Hermes backend running on another machine (a VPS, a home server, a Mini behind Tailscale). In the app this lives under **Settings → Gateways → Remote gateway**, which asks for a **Remote URL** and a way to **Sign in**. (For the desktop app itself — install, settings, chat — see the [Hermes Desktop](../desktop.md) page.)
 
 You protect the remote dashboard with one of the bundled auth providers, and the desktop app signs in against whichever one the backend advertises. For a backend reachable beyond your own machine — a VPS, a public host, anything internet-facing — the recommended provider is **OAuth (Nous Portal)** (register it with [`hermes dashboard register`](#registering-a-dashboard) and sign in with *Sign in with Nous Research*). The bundled [username/password provider](#usernamepassword-provider-no-oauth-idp) is the quickest option when the backend is on a trusted LAN or reachable only over a VPN, but is **not suitable for direct public-internet exposure**. Binding the dashboard to a non-loopback address engages its auth gate; once signed in, Desktop reuses the session for the chat WebSocket automatically — there is no token to copy or paste.
 

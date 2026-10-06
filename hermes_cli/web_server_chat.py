@@ -14,9 +14,11 @@ import sys
 import tempfile
 import threading
 import urllib.request
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from pathlib import Path
 from typing import Optional
+
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from pathlib import Path
+from typing import Optional  # noqa: F811 — historical duplicate import kept
 from hermes_cli.pty_session import PtySessionRegistry
 
 # Same logger the code used before extraction (record parity).
@@ -181,10 +183,13 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     origin = ws.headers.get("origin", "")
     if not origin:
         return None
-    parsed = urllib.parse.urlparse(origin)
-    if parsed.scheme not in {"http", "https"}:
+    try:
+        parsed = urllib.parse.urlparse(origin)
+    except ValueError:  # malformed authority, e.g. "http://[::1" — fail closed
+        parsed = None
+    if parsed is not None and parsed.scheme not in {"http", "https"}:
         return None
-    if not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
+    if parsed is None or not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 
@@ -217,6 +222,31 @@ def _gateway_ws_ticket_from_subprotocol(ws: "WebSocket") -> tuple[str, str]:
     return (ticket, "ok") if ticket else ("", "invalid")
 
 
+def _ws_request_view(ws: "WebSocket") -> "Request":
+    """A ``Request`` facade over a ``WebSocket`` for the auth helpers.
+
+    ``_verify_access_token`` only touches ``request.headers`` (X-Forwarded-For
+    via ``client_ip``) and ``request.client`` on this path (``audit=False``,
+    no cookie/redirect work), so a lightweight duck-typed stand-in avoids
+    constructing a real ASGI request inside the upgrade. ``scan_session_providers``
+    itself never sees the request — only the provider callbacks do.
+    """
+    from fastapi import Request
+
+    return Request({
+        "type": "http",
+        "headers": [(k.lower().encode("latin-1"), v.encode("latin-1"))
+                    for k, v in getattr(ws.headers, "items", lambda: {})()],
+        "client": (ws.client.host, 0) if ws.client else None,
+        "server": None,
+        "scheme": "ws",
+        "method": "GET",
+        "path": ws.url.path,
+        "query_string": b"",
+        "root_path": "",
+    })
+
+
 def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     """Validate WS-upgrade auth; return ``(reason, credential)``.
 
@@ -227,8 +257,12 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     Loopback / ``--insecure``: legacy ``?token=`` (constant-time compared).
     Gated: ``?ticket=`` (browser-minted, single-use, 30s TTL) or ``?internal=``
     (process-lifetime, multi-use, only for server-spawned WS clients so the PTY
-    child can reconnect; never injected into the SPA).  The legacy token is
-    rejected in gated mode: a leaked ``_SESSION_TOKEN`` must not grant access.
+    child can reconnect; never injected into the SPA), or ``?token=`` holding a
+    user session access token (verified against the dashboard auth session
+    providers — the same ``verify_session`` seam the native bearer REST leg
+    uses — e.g. a token-mode Remote desktop connection). The legacy in-process
+    ``_SESSION_TOKEN`` is rejected in gated mode: a leaked ``_SESSION_TOKEN``
+    must not grant access.
     """
     from hermes_cli.web_server import _SESSION_TOKEN, app
     auth_required = bool(getattr(app.state, "auth_required", False))
@@ -266,21 +300,71 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         if protocol_reason == "invalid":
             return "ticket_invalid", "ticket-subprotocol"
         ticket = protocol_ticket or ws.query_params.get("ticket", "")
-        if not ticket:
-            return "no_credential", "none"
+        if ticket:
+            try:
+                info = consume_ticket(ticket)
+                if info.get("provider") == "bot-desktop":
+                    # A display ticket admits one RFB bridge on /api/display/ws (a watch-only
+                    # capability handed to a screen viewer); it must not double as a login here.
+                    raise TicketInvalid("display ticket presented as a gateway login")
+                _stamp_identity(info)
+                if protocol_ticket:
+                    # Select only the stable public protocol during accept. The
+                    # ticket-bearing protocol is a credential and must never be
+                    # reflected back to the browser or retained after admission.
+                    ws._hermes_ws_subprotocol = _GATEWAY_WS_PROTOCOL
+                    return None, "ticket-subprotocol"
+                return None, "ticket"
+            except TicketInvalid as exc:
+                _reject(str(exc))
+                return "ticket_invalid", "ticket"
 
-        try:
-            _stamp_identity(consume_ticket(ticket))
-            if protocol_ticket:
-                # Select only the stable public protocol during accept. The
-                # ticket-bearing protocol is a credential and must never be
-                # reflected back to the browser or retained after admission.
-                ws._hermes_ws_subprotocol = _GATEWAY_WS_PROTOCOL
-                return None, "ticket-subprotocol"
-            return None, "ticket"
-        except TicketInvalid as exc:
-            _reject(str(exc))
-            return "ticket_invalid", "ticket"
+        # A user session access token (``?token=``) is verified against the
+        # dashboard auth session providers — the SAME ``verify_session`` seam
+        # the native bearer REST leg uses (``_verify_access_token``). A
+        # token-mode Remote desktop connection bakes its stored session token
+        # into the WS URL (buildGatewayWsUrl), so before this leg existed the
+        # only credentials gated mode accepted were browser-minted tickets and
+        # the WS upgrade 403'd forever. The legacy in-process
+        # ``_SESSION_TOKEN`` never reaches this check: gated mode falls
+        # through to the explicit rejection below (leaked-constant safety),
+        # and a provider-verified token is accepted on identity merit.
+        token = ws.query_params.get("token", "")
+        if token:
+            from hermes_cli.dashboard_auth.base import ProviderError
+            from hermes_cli.dashboard_auth.middleware import _verify_access_token
+
+            try:
+                session = _verify_access_token(
+                    _ws_request_view(ws), access_token=token, audit=False)
+            except ProviderError as exc:
+                # All providers unreachable (IDP outage) — reject without
+                # crashing the upgrade; the REST bearer leg answers 503, and
+                # the WS accept path has no status channel, only close codes.
+                _reject(f"session token verify unavailable: {exc}")
+                return "token_unavailable", "token"
+            if session is not None:
+                _stamp_identity({
+                    "user_id": getattr(session, "user_id", None),
+                    "provider": getattr(session, "provider", None),
+                })
+                audit_log(
+                    AuditEvent.TOKEN_AUTH_SUCCESS,
+                    provider=getattr(session, "provider", None),
+                    user_id=getattr(session, "user_id", None),
+                    ip=(ws.client.host if ws.client else ""),
+                    path=ws.url.path,
+                )
+                return None, "token"
+            audit_log(
+                AuditEvent.TOKEN_AUTH_FAILURE,
+                reason="session_token_invalid",
+                ip=(ws.client.host if ws.client else ""),
+                path=ws.url.path,
+            )
+            return "token_invalid", "token"
+
+        return "no_credential", "none"
 
     token = ws.query_params.get("token", "")
     if not token:
@@ -297,7 +381,8 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
 
 def _resolve_chat_argv(
     resume: Optional[str] = None, sidecar_url: Optional[str] = None, profile: Optional[str] = None,
-    active_session_file: Optional[str] = None) -> tuple[list[str], Optional[str], Optional[dict]]:
+    active_session_file: Optional[str] = None,
+    workspace_cwd: Optional[str] = None) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY (what ``hermes --tui`` runs).
 
     Tests monkeypatch this with a tiny fake command.  Env contract: resume goes
@@ -306,7 +391,12 @@ def _resolve_chat_argv(
     in-memory gateway but is SKIPPED for profile-scoped chats (that gateway runs
     under the dashboard's own profile, so a scoped chat spawns its own);
     ``profile`` scopes the ENTIRE chat by pointing ``HERMES_HOME`` at the profile
-    dir, the same propagation ``hermes -p <name>`` performs.
+    dir, the same propagation ``hermes -p <name>`` performs. ``workspace_cwd``
+    (an already-validated host directory, ``chat_workspaces.resolve_chat_cwd``)
+    is the workspace the user picked for a FRESH chat: it becomes ``HERMES_CWD``
+    (where a self-spawned gateway starts) and ``HERMES_TUI_CWD`` (what the TUI
+    passes as the explicit ``cwd`` of ``session.create`` when attached to the
+    in-memory gateway, whose own cwd is the dashboard's launch dir).
     """
     from hermes_cli.web_server_profiles import _config_profile_scope, _resolve_profile_dir
     from hermes_cli.web_server_sessions import _open_session_db_for_profile, _session_latest_descendant
@@ -341,6 +431,9 @@ def _resolve_chat_argv(
             apply_terminal_config_to_env(env=env)
     except Exception:
         _log.warning("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
+    if workspace_cwd:
+        env["HERMES_CWD"] = workspace_cwd
+        env["HERMES_TUI_CWD"] = workspace_cwd
     _apply_tui_python_env(env)
     env.setdefault("NODE_ENV", "production")
     # Mouse tracking would swallow wheel events the browser needs for
@@ -430,13 +523,16 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
 
 async def _resolve_chat_argv_async(
     resume: Optional[str] = None, sidecar_url: Optional[str] = None, profile: Optional[str] = None,
-    active_session_file: Optional[str] = None) -> tuple[list[str], Optional[str], Optional[dict]]:
+    active_session_file: Optional[str] = None,
+    workspace_cwd: Optional[str] = None) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve chat argv off the event loop (it may run ``npm run build``); the
     async lock keeps one-build-at-a-time without parking worker threads."""
     from hermes_cli.web_server import _get_chat_argv_lock, app
     kwargs = {"resume": resume, "sidecar_url": sidecar_url, "profile": profile}
     if active_session_file is not None:
         kwargs["active_session_file"] = active_session_file
+    if workspace_cwd is not None:
+        kwargs["workspace_cwd"] = workspace_cwd
 
     async with _get_chat_argv_lock(app):
         return await asyncio.to_thread(_resolve_chat_argv, **kwargs)

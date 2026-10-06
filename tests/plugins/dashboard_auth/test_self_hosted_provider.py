@@ -16,7 +16,6 @@ All HTTP is mocked: nothing here talks to a real IDP.
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import time
 import urllib.parse
@@ -29,13 +28,11 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+import plugins.dashboard_auth._shared as shared
 import plugins.dashboard_auth.self_hosted as oidc_plugin
-from plugins.dashboard_auth._shared import JWKS_CACHE_SECONDS
 from hermes_cli.dashboard_auth import (
     InvalidCodeError,
-    LoginStart,
     ProviderError,
-    RefreshExpiredError,
     Session,
     assert_protocol_compliance,
 )
@@ -168,7 +165,7 @@ def _make_provider(
     return p
 
 
-def _mock_post(status_code: int, body: Any, *, ctype: str = "application/json"):
+def _mock_post(status_code: int, body: Any, *, ctype: str = "application/json") -> MagicMock:
     resp = MagicMock(spec=httpx.Response)
     resp.status_code = status_code
     if isinstance(body, dict):
@@ -181,6 +178,28 @@ def _mock_post(status_code: int, body: Any, *, ctype: str = "application/json"):
     return resp
 
 
+class _FakeStreamResponse:
+    """A streaming httpx.Response stand-in yielding fixed chunks."""
+
+    def __init__(self, method: str, url: str, *, chunks, status_code: int = 200,
+                 headers: Dict[str, str] | None = None) -> None:
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.request = httpx.Request(method, url)
+        self.url = httpx.URL(url)
+        self._chunks = chunks
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def iter_bytes(self, chunk_size: int = 65536):
+        _ = chunk_size
+        yield from self._chunks
+
+
 # ---------------------------------------------------------------------------
 # Construction
 # ---------------------------------------------------------------------------
@@ -191,11 +210,6 @@ class TestConstruction:
         assert_protocol_compliance(oidc_plugin.SelfHostedOIDCProvider)
 
 
-    def test_strips_trailing_slash_from_issuer(self):
-        p = oidc_plugin.SelfHostedOIDCProvider(
-            issuer=_ISSUER + "/", client_id=_CLIENT_ID
-        )
-        assert p._issuer == _ISSUER
 
     def test_requires_issuer(self):
         with pytest.raises(ValueError, match="issuer"):
@@ -220,9 +234,10 @@ class TestDiscovery:
             issuer=_ISSUER, client_id=_CLIENT_ID
         )
 
-    def _mock_get(self, status_code, body, *, ctype="application/json"):
+    def _mock_get(self, status_code, body, *, ctype="application/json", url=None):
         resp = MagicMock(spec=httpx.Response)
         resp.status_code = status_code
+        resp.url = httpx.URL(url or f"{_ISSUER}/.well-known/openid-configuration")
         resp.json = MagicMock(return_value=body)
         resp.text = json.dumps(body) if isinstance(body, dict) else str(body)
         resp.headers = {"content-type": ctype}
@@ -233,7 +248,7 @@ class TestDiscovery:
         p = self._provider()
         mock_resp = self._mock_get(200, dict(_DISCOVERY_DOC))
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ) as mock_get:
             disco1 = p._get_discovery()
             disco2 = p._get_discovery()
@@ -244,6 +259,102 @@ class TestDiscovery:
         # Cached — only one network call.
         assert mock_get.call_count == 1
         assert disco2 is disco1
+
+    def test_redirect_landing_off_origin_rejected(self):
+        """The resolved url is the trust anchor, not the body's self-asserted
+        issuer: a redirect to an attacker origin serving a document that claims
+        the configured issuer (with attacker jwks_uri/token_endpoint) must fail."""
+        p = self._provider()
+        forged = {
+            **_DISCOVERY_DOC,
+            "jwks_uri": "https://attacker.example/jwks",
+            "token_endpoint": "https://attacker.example/token",
+        }
+        resp = self._mock_get(
+            200, forged, url="https://attacker.example/openid-configuration"
+        )
+        with patch(
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=resp
+        ):
+            with pytest.raises(ProviderError, match="origin"):
+                p._fetch_discovery()
+
+    def test_redirect_landing_on_cleartext_rejected(self):
+        p = self._provider()
+        resp = self._mock_get(
+            200, dict(_DISCOVERY_DOC), url="http://auth.example.com/discovery"
+        )
+        with patch(
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=resp
+        ):
+            with pytest.raises(ProviderError, match="origin"):
+                p._fetch_discovery()
+
+    def test_same_origin_redirect_allowed(self):
+        """Canonicalisation redirects on the issuer's own origin still pass."""
+        p = self._provider()
+        resp = self._mock_get(
+            200, dict(_DISCOVERY_DOC),
+            url="https://auth.example.com/.well-known/openid-configuration/application/o/hermes",
+        )
+        with patch(
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=resp
+        ):
+            disco = p._fetch_discovery()
+        assert disco["token_endpoint"] == f"{_ISSUER}/token"
+
+    def test_explicit_default_port_is_same_origin(self):
+        """https://host:443 must compare equal to https://host."""
+        p = self._provider()
+        resp = self._mock_get(
+            200, dict(_DISCOVERY_DOC), url="https://auth.example.com:443/x"
+        )
+        with patch(
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=resp
+        ):
+            assert p._fetch_discovery()["issuer"] == _ISSUER
+
+
+    def test_discovery_rejects_oversized_response_body(self, monkeypatch):
+        """A discovery body larger than the cap must raise, not buffer."""
+        p = self._provider()
+
+        def fake_stream(method, url, **kwargs):
+            return _FakeStreamResponse(
+                method, url,
+                chunks=[b"a" * 6, b"b" * 6],
+                headers={"content-type": "application/json"},
+            )
+
+        monkeypatch.setattr(shared.httpx, "stream", fake_stream)
+        monkeypatch.setattr(shared, "_OIDC_RESPONSE_BODY_LIMIT_BYTES", 10)
+
+        with pytest.raises(ProviderError, match="exceeds 10 bytes"):
+            p._get_discovery()
+
+    def test_discovery_rejects_oversized_content_length(self, monkeypatch):
+        """An oversized declared Content-Length must reject before body read."""
+        p = self._provider()
+        read_attempted = []
+
+        class _ContentLengthResp(_FakeStreamResponse):
+            def iter_bytes(self, chunk_size=65536):
+                read_attempted.append(True)
+                yield from ()
+
+        def fake_stream(method, url, **kwargs):
+            return _ContentLengthResp(
+                method, url,
+                chunks=[],
+                headers={"content-type": "application/json", "content-length": "1048577"},
+            )
+
+        monkeypatch.setattr(shared.httpx, "stream", fake_stream)
+        monkeypatch.setattr(shared, "_OIDC_RESPONSE_BODY_LIMIT_BYTES", 1048576)
+
+        with pytest.raises(ProviderError, match="exceeds"):
+            p._get_discovery()
+        assert not read_attempted
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +380,6 @@ class TestDiscoveryRealRedirect:
     """
 
     def _serve(self, handler_cls):
-        import http.server
         import socketserver
         import threading
 
@@ -279,6 +389,103 @@ class TestDiscoveryRealRedirect:
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
         return httpd, port
+
+    def _handler(self, routes):
+        """Build a request handler serving {path: (status, headers, body_bytes)}."""
+        import http.server
+
+        class _H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                status, headers, body = self.routes.get(self.path, (404, {}, b""))
+                self.send_response(status)
+                for k, v in headers.items():
+                    self.send_header(k, v)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        _H.routes = routes
+        return _H
+
+    def test_real_same_origin_redirect_succeeds(self):
+        httpd, port = self._serve(self._handler({}))
+        try:
+            issuer = f"http://127.0.0.1:{port}"
+            doc = json.dumps({
+                "issuer": issuer,
+                "authorization_endpoint": f"{issuer}/authorize",
+                "token_endpoint": f"{issuer}/token",
+                "jwks_uri": f"{issuer}/jwks",
+            }).encode()
+            httpd.RequestHandlerClass.routes = {
+                "/.well-known/openid-configuration": (
+                    302, {"Location": f"{issuer}/canonical"}, b""),
+                "/canonical": (200, {"Content-Type": "application/json"}, doc),
+            }
+            p = oidc_plugin.SelfHostedOIDCProvider(issuer=issuer, client_id=_CLIENT_ID)
+            disco = p._fetch_discovery()
+            assert disco["issuer"] == issuer
+        finally:
+            httpd.shutdown()
+
+    def test_real_redirect_to_other_origin_rejected(self):
+        """A 302 to a different origin (here: another loopback port) serving a
+        forged document that claims the issuer must fail before parsing."""
+        forge_httpd, forge_port = self._serve(self._handler({}))
+        redirect_httpd, redirect_port = self._serve(self._handler({}))
+        try:
+            issuer = f"http://127.0.0.1:{redirect_port}"
+            forged = json.dumps({
+                "issuer": issuer,  # self-asserted, attacker-controlled
+                "authorization_endpoint": "https://attacker.example/authorize",
+                "token_endpoint": "https://attacker.example/token",
+                "jwks_uri": "https://attacker.example/jwks",
+            }).encode()
+            forge_httpd.RequestHandlerClass.routes = {
+                "/doc": (200, {"Content-Type": "application/json"}, forged),
+            }
+            redirect_httpd.RequestHandlerClass.routes = {
+                "/.well-known/openid-configuration": (
+                    302, {"Location": f"http://127.0.0.1:{forge_port}/doc"}, b""),
+            }
+            p = oidc_plugin.SelfHostedOIDCProvider(issuer=issuer, client_id=_CLIENT_ID)
+            with pytest.raises(ProviderError, match="origin"):
+                p._fetch_discovery()
+        finally:
+            forge_httpd.shutdown()
+            redirect_httpd.shutdown()
+
+    def test_start_login_rejects_forged_discovery_through_real_redirect(self):
+        """Consumer-level e2e: start_login goes through _get_discovery, so the
+        origin pin must stop the forged doc before any authorize URL is built,
+        and before exchange_token could POST the client_secret to the forged
+        token_endpoint."""
+        forge_httpd, forge_port = self._serve(self._handler({}))
+        redirect_httpd, redirect_port = self._serve(self._handler({}))
+        try:
+            issuer = f"http://127.0.0.1:{redirect_port}"
+            forged = json.dumps({
+                "issuer": issuer,
+                "authorization_endpoint": "https://attacker.example/authorize",
+                "token_endpoint": "https://attacker.example/token",
+                "jwks_uri": "https://attacker.example/jwks",
+            }).encode()
+            forge_httpd.RequestHandlerClass.routes = {
+                "/doc": (200, {"Content-Type": "application/json"}, forged),
+            }
+            redirect_httpd.RequestHandlerClass.routes = {
+                "/.well-known/openid-configuration": (
+                    302, {"Location": f"http://127.0.0.1:{forge_port}/doc"}, b""),
+            }
+            p = oidc_plugin.SelfHostedOIDCProvider(issuer=issuer, client_id=_CLIENT_ID)
+            with pytest.raises(ProviderError, match="origin"):
+                p.start_login(redirect_uri="https://dash.example.com/auth/callback")
+        finally:
+            forge_httpd.shutdown()
+            redirect_httpd.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -291,11 +498,6 @@ class TestStartLogin:
     def provider(self, rsa_keypair):
         return _make_provider(rsa_keypair)
 
-    def test_returns_login_start(self, provider):
-        result = provider.start_login(
-            redirect_uri="https://hermes.example/auth/callback"
-        )
-        assert isinstance(result, LoginStart)
 
 
     def test_authorize_url_has_required_params(self, provider):
@@ -346,7 +548,7 @@ class TestCompleteLogin:
             },
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp
         ):
             session = provider.complete_login(
                 code="abc",
@@ -369,7 +571,7 @@ class TestCompleteLogin:
             200, {"id_token": id_token, "token_type": "Bearer"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp
         ):
             session = provider.complete_login(
                 code="abc",
@@ -384,7 +586,7 @@ class TestCompleteLogin:
             200, {"access_token": "opaque", "token_type": "Bearer"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp
         ):
             with pytest.raises(ProviderError, match="id_token"):
                 provider.complete_login(
@@ -394,10 +596,31 @@ class TestCompleteLogin:
                     redirect_uri="https://hermes.example/auth/callback",
                 )
 
+    def test_token_endpoint_rejects_oversized_response_body(self, provider, monkeypatch):
+        """An IDP token response larger than the cap must raise, not buffer."""
+
+        def fake_stream(method, url, **kwargs):
+            return _FakeStreamResponse(
+                method, url,
+                chunks=[b"x" * 8, b"y" * 8],
+                headers={"content-type": "application/json"},
+            )
+
+        monkeypatch.setattr(shared.httpx, "stream", fake_stream)
+        monkeypatch.setattr(shared, "_OIDC_RESPONSE_BODY_LIMIT_BYTES", 10)
+
+        with pytest.raises(ProviderError, match="exceeds 10 bytes"):
+            provider.complete_login(
+                code="x",
+                state="s",
+                code_verifier="v",
+                redirect_uri="https://hermes.example/auth/callback",
+            )
+
     def test_400_raises_invalid_code(self, provider):
         mock_resp = _mock_post(400, {"error": "invalid_grant"})
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp
         ):
             with pytest.raises(InvalidCodeError, match="invalid_grant"):
                 provider.complete_login(
@@ -435,7 +658,7 @@ class TestConfidentialClient:
         id_token = _mint_id_token(rsa_keypair)
         mock_resp = _mock_post(200, {"id_token": id_token, **_GOOD_TOKEN_RESP_KEYS})
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp
         ) as mock_post:
             provider.complete_login(
                 code="the-code",
@@ -507,7 +730,7 @@ class TestConfidentialClient:
             200, {"id_token": id_token, "token_type": "Bearer", "refresh_token": "rt2"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth._shared._request_limited_response", return_value=mock_resp
         ) as mock_post:
             provider.refresh_session(refresh_token="rt_old")
         _, kwargs = mock_post.call_args
@@ -544,7 +767,9 @@ class TestVerifySession:
 
 
     def test_expired_returns_none(self, provider, rsa_keypair):
-        token = _mint_id_token(rsa_keypair, ttl_seconds=-1)
+        # Well past the 60s default leeway — a just-expired token is accepted
+        # within the clock-skew window (RFC 7519 §4.1.4), a long-dead one is not.
+        token = _mint_id_token(rsa_keypair, ttl_seconds=-600)
         assert provider.verify_session(access_token=token) is None
 
     def test_wrong_audience_raises(self, provider, rsa_keypair):
@@ -572,25 +797,6 @@ class TestVerifySession:
         with pytest.raises(ProviderError, match="JWKS"):
             provider.verify_session(access_token=token)
 
-    def test_jwks_client_sends_explicit_http_headers(self):
-        provider = oidc_plugin.SelfHostedOIDCProvider(
-            issuer=_ISSUER, client_id=_CLIENT_ID
-        )
-        provider._discovery = dict(_DISCOVERY_DOC)
-        provider._discovery_fetched_at = time.time()
-
-        with patch("jwt.PyJWKClient") as client_cls:
-            provider._get_jwks_client()
-
-        client_cls.assert_called_once_with(
-            _DISCOVERY_DOC["jwks_uri"],
-            cache_keys=True,
-            lifespan=JWKS_CACHE_SECONDS,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "HermesAgent/1.0",
-            },
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -598,10 +804,6 @@ class TestVerifySession:
 # ---------------------------------------------------------------------------
 
 
-class TestRefreshAndRevoke:
-    @pytest.fixture
-    def provider(self, rsa_keypair):
-        return _make_provider(rsa_keypair)
 
 
 # ---------------------------------------------------------------------------

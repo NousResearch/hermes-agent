@@ -30,7 +30,15 @@ from tools.browser_supervisor_frames import FrameInfo, FrameTrackingMixin
 if TYPE_CHECKING:
     from websockets.asyncio.client import ClientConnection
 
+    from tools.browser_supervisor_capture import CapturedCDP
+
 logger = logging.getLogger(__name__)
+
+# Browserbase can transiently drop a CDP socket while a short-lived client
+# reconnects.  A locally owned browser endpoint, however, is gone for good
+# once its process exits; leave enough room for the former without leaking a
+# supervisor thread and warnings forever for the latter.
+MAX_POST_ATTACH_RECONNECT_FAILURES = 5
 
 
 def _redact_cdp_error_text(exc: object) -> str:
@@ -346,12 +354,25 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             with contextlib.suppress(Exception):
                 await ws.close()
 
+    def _reconnect_budget_spent(self, failures: int, e: BaseException) -> bool:
+        """True once ``failures`` consecutive post-attach reconnects failed: log ONE final line
+        and drop this supervisor from the registry so a dead endpoint (its Chrome exited with
+        the task) leaves neither a retrying thread nor a stale registry entry behind. A later
+        browser call for the task starts a fresh supervisor via ``get_or_start``."""
+        if failures < MAX_POST_ATTACH_RECONNECT_FAILURES:
+            return False
+        logger.warning("CDP supervisor %s: stopped after %s failed reconnect attempts: %s",
+                       self.task_id, failures, _redact_cdp_error_text(e))
+        if SUPERVISOR_REGISTRY.get(self.task_id) is self:
+            SUPERVISOR_REGISTRY._pop(self.task_id)
+        return True
+
     async def _run(self) -> None:
         """Top-level reconnecting supervisor coroutine. Browserbase tears down the CDP
         socket whenever a short-lived client (agent-browser's per-command CDP client)
         disconnects, so on drop we reset per-session ids, re-attach, and keep going.
         A failure before the first successful attach is fatal for ``start()``."""
-        attempt, last_success_at, backoff = 0, 0.0, 0.5
+        reconnect_failures, last_success_at, backoff = 0, 0.0, 0.5
         import websockets  # deferred: only supervisors that connect pay the import
         from agent.proxy_bypass import loopback_connect_kwargs
         connect_kwargs = {"max_size": 50 * 1024 * 1024, **loopback_connect_kwargs(self.cdp_url)}
@@ -359,11 +380,14 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             try:
                 self._ws = await asyncio.wait_for(websockets.connect(self.cdp_url, **connect_kwargs), timeout=10.0)
             except Exception as e:
-                attempt += 1
                 if self._fail_start(e):
                     return
-                logger.warning("CDP supervisor %s: connect failed (attempt %s): %s",
-                               self.task_id, attempt, _redact_cdp_error_text(e))
+                reconnect_failures += 1
+                if self._reconnect_budget_spent(reconnect_failures, e):
+                    return
+                logger.warning("CDP supervisor %s: connect failed (attempt %s/%s): %s",
+                               self.task_id, reconnect_failures, MAX_POST_ATTACH_RECONNECT_FAILURES,
+                               _redact_cdp_error_text(e))
                 await asyncio.sleep(min(backoff, 10.0))
                 backoff = min(backoff * 2, 10.0)
                 continue
@@ -377,14 +401,19 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 await self._attach_initial_page()
                 self._set_active(True)
                 last_success_at = time.time()
+                reconnect_failures = 0
                 backoff = 0.5  # reset after a successful attach
                 self._ready_event.set()
                 await reader_task
             except BaseException as e:
                 if self._fail_start(e):
                     raise
-                logger.warning("CDP supervisor %s: session dropped after %.1fs: %s",
-                               self.task_id, time.time() - last_success_at, _redact_cdp_error_text(e))
+                reconnect_failures += 1
+                if self._reconnect_budget_spent(reconnect_failures, e):
+                    return
+                logger.warning("CDP supervisor %s: session dropped after %.1fs (attempt %s/%s): %s",
+                               self.task_id, time.time() - last_success_at, reconnect_failures,
+                               MAX_POST_ATTACH_RECONNECT_FAILURES, _redact_cdp_error_text(e))
             finally:
                 self._set_active(False)
                 if not reader_task.done():
@@ -395,6 +424,12 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                     handle.cancel()
                 self._dialog_watchdogs.clear()
                 await self._close_ws()
+                # Replies to calls still in flight died with the socket: fail them now
+                # instead of letting each caller sit out its full timeout.
+                for fut in self._pending_calls.values():
+                    if not fut.done():
+                        fut.set_exception(ConnectionError("CDP connection closed before reply"))
+                self._pending_calls.clear()
 
             if self._stop_requested:
                 return
@@ -478,6 +513,13 @@ class _SupervisorRegistry:
         with self._lock:
             return self._by_task.pop(task_id, None)
 
+    def capture(self, task_id: str, *, timeout: float = 10.0) -> "CapturedCDP":
+        """Public CDP seam for trusted in-process plugins: a handle pinned to this task's
+        current connection and default page session (``tools.browser_supervisor_capture``)."""
+        from tools.browser_supervisor_capture import capture
+
+        return capture(self, task_id, timeout=timeout)
+
     def get_or_start(self, task_id: str, cdp_url: str, *, dialog_policy: str = DEFAULT_DIALOG_POLICY,
                      dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S, start_timeout: float = 15.0) -> CDPSupervisor:
         """Idempotently ensure a supervisor runs for ``(task_id, cdp_url)``; one bound to a
@@ -523,42 +565,3 @@ SUPERVISOR_REGISTRY = _SupervisorRegistry()
 
 
 __all__ = ["CDPSupervisor", "SUPERVISOR_REGISTRY", "SupervisorSnapshot", "_SupervisorRegistry"]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-CONSOLE_HISTORY_MAX = 50
-
-@dataclass
-class ConsoleEvent:
-    """Ring buffer entry for console + exception traffic."""
-
-    ts: float
-    level: str  # "log" | "error" | "warning" | "exception"
-    text: str
-    url: Optional[str] = None
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DIALOG_BRIDGE_HOST': ('tools.browser_supervisor_dialogs', 'DIALOG_BRIDGE_HOST'),
-    'DIALOG_BRIDGE_URL_PATTERN': ('tools.browser_supervisor_dialogs', 'DIALOG_BRIDGE_URL_PATTERN'),
-    'DIALOG_POLICY_AUTO_ACCEPT': ('tools.browser_supervisor_dialogs', 'DIALOG_POLICY_AUTO_ACCEPT'),
-    'DIALOG_POLICY_AUTO_DISMISS': ('tools.browser_supervisor_dialogs', 'DIALOG_POLICY_AUTO_DISMISS'),
-    'DIALOG_POLICY_MUST_RESPOND': ('tools.browser_supervisor_dialogs', 'DIALOG_POLICY_MUST_RESPOND'),
-    'FRAME_TREE_MAX_ENTRIES': ('tools.browser_supervisor_frames', 'FRAME_TREE_MAX_ENTRIES'),
-    'FRAME_TREE_MAX_OOPIF_DEPTH': ('tools.browser_supervisor_frames', 'FRAME_TREE_MAX_OOPIF_DEPTH'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

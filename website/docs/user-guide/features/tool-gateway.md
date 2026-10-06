@@ -9,7 +9,7 @@ sidebar_position: 2
 
 **One subscription. Every tool built in.**
 
-The Tool Gateway is included with every paid [Nous Portal](https://portal.nousresearch.com) subscription. It routes Hermes' tool calls — web search, image generation, text-to-speech, and cloud browser automation — through infrastructure Nous already runs, so you don't have to sign up with Firecrawl, FAL, OpenAI, Browser Use, or anyone else just to make your agent useful.
+The Tool Gateway is included with every paid [Nous Portal](https://portal.nousresearch.com) subscription. It routes Hermes' tool calls — web search, image generation, text-to-speech, and cloud browser automation — through infrastructure Nous already runs, so you don't have to sign up with a web search vendor, FAL, OpenAI, Browser Use, or anyone else just to make your agent useful.
 
 <div style={{display: 'flex', gap: '1rem', flexWrap: 'wrap', margin: '1.5rem 0'}}>
   <a href="https://portal.nousresearch.com/manage-subscription" style={{background: 'var(--ifm-color-primary)', color: 'white', padding: '0.75rem 1.5rem', borderRadius: '6px', textDecoration: 'none', fontWeight: 'bold'}}>Start or manage subscription →</a>
@@ -19,8 +19,8 @@ The Tool Gateway is included with every paid [Nous Portal](https://portal.nousre
 
 | | Tool | What you get |
 |---|---|---|
-| 🔍 | **Web search & extract** | Agent-grade web search and full-page extraction via Firecrawl. No rate limits to worry about — the gateway handles scaling. |
-| 🎨 | **Image generation** | Nine models under one endpoint: **FLUX 2 Klein 9B**, **FLUX 2 Pro**, **Z-Image Turbo**, **Nano Banana Pro** (Gemini 3 Pro Image), **GPT Image 1.5**, **GPT Image 2**, **Ideogram V3**, **Recraft V4 Pro**, **Qwen Image**. Pick per-generation with a flag, or let Hermes default to FLUX 2 Klein. |
+| 🔍 | **Web search & extract** | Agent-grade web search and full-page extraction, managed by Nous. No rate limits to worry about — the gateway handles scaling. |
+| 🎨 | **Image generation** | One **Nous Subscription** row spanning the FAL catalog, the native Krea 2 models, and Nous Portal image models: **FLUX 2**, **GPT Image**, **Nano Banana**, **Seedream**, **Ideogram**, **Recraft**, **Qwen**, **Krea 2**, and more. Pick the model once in `hermes tools`, which shows the live list. |
 | 🔊 | **Text-to-speech** | OpenAI TTS voices wired into the `text_to_speech` tool. Drop voice notes into Telegram, generate audio for pipelines, narrate anything. |
 | 🌐 | **Cloud browser automation** | Headless Chromium sessions via Browser Use. `browser_navigate`, `browser_click`, `browser_type`, `browser_vision` — all the agent-driving primitives, no Browserbase account required. |
 
@@ -31,7 +31,7 @@ All four are pay-as-you-use billed against your Nous subscription. Use any combi
 Building an agent that can actually *do things* means stitching together 5+ API subscriptions — each with their own signup, rate limits, billing, and quirks. The gateway collapses that into one account:
 
 - **One bill.** Pay Nous; we handle the rest.
-- **One signup.** No Firecrawl, FAL, Browser Use, or OpenAI audio accounts to manage.
+- **One signup.** No web search, FAL, Browser Use, or OpenAI audio accounts to manage.
 - **One key.** Your Nous Portal OAuth covers every tool.
 - **Same quality.** Same backends the direct-key route uses — just fronted by us.
 
@@ -62,7 +62,7 @@ Check what's active at any time:
 ```bash
 hermes portal info        # Portal auth + Tool Gateway routing summary
 hermes portal tools       # Gateway catalog with current routing per tool
-hermes status             # Full system status (Tool Gateway is one section)
+hermes status --full      # Full system status (Tool Gateway is one section)
 ```
 
 `hermes portal info` shows a section like:
@@ -99,7 +99,7 @@ The gateway is per-tool. Turn it on for just what you want:
 
 - **All tools through Nous** — easiest; one subscription, done.
 - **Gateway for web + images, bring your own TTS** — keep your ElevenLabs voice, let Nous handle the rest.
-- **Gateway only for things you don't have keys for** — "I already pay for Browserbase, but I don't want a Firecrawl account" works fine.
+- **Gateway only for things you don't have keys for** — "I already pay for Browserbase, but I don't want a web search account" works fine.
 
 Switch any tool at any time via:
 
@@ -111,21 +111,13 @@ Select the tool, pick **Nous Subscription** as the provider (or any direct provi
 
 ## Using individual image models
 
-Image generation defaults to FLUX 2 Klein 9B for speed. Override per-call by passing the model ID to the `image_generate` tool:
+The model is chosen once, in `hermes tools` → Image Generation, and stored in `config.yaml` as `image_gen.model`. Every `image_generate` call uses that stored model — the tool has no model parameter, so there is no per-call override. Leave it unset and Hermes uses FLUX 2 Klein 9B.
 
-| Model | ID | Best for |
-|---|---|---|
-| FLUX 2 Klein 9B | `fal-ai/flux-2/klein/9b` | Fast, good default |
-| FLUX 2 Pro | `fal-ai/flux-2-pro` | Higher fidelity FLUX |
-| Z-Image Turbo | `fal-ai/z-image/turbo` | Stylized, fast |
-| Nano Banana Pro | `fal-ai/nano-banana-pro` | Google Gemini 3 Pro Image |
-| GPT Image 1.5 | `fal-ai/gpt-image-1.5` | OpenAI image gen, text+image |
-| GPT Image 2 | `fal-ai/gpt-image-2` | OpenAI latest |
-| Ideogram V3 | `fal-ai/ideogram/v3` | Strong prompt adherence + typography |
-| Recraft V4 Pro | `fal-ai/recraft/v4/pro/text-to-image` | Vector-style, graphic design |
-| Qwen Image | `fal-ai/qwen-image` | Alibaba multimodal |
+The **Nous Subscription** row has one model picker that lists every model once. The stored id decides which gateway serves the request: a native Krea id (`krea-2-medium`, `krea-2-large`, `krea-2-medium-turbo`) goes to the Krea gateway, a FAL catalog id goes to FAL, and any other id goes to Nous Portal. The selection is still just `image_gen.provider: nous` plus the model id.
 
-The set evolves — `hermes tools` → Image Generation shows the current live list.
+**Krea 2** (Medium, Large, Medium Turbo — up to 10 style-reference images, optional Enhance upscale) and the Nous Portal image models sit in that same picker rather than behind rows of their own. They need a paid subscription — the free tool pool funds the FAL models only. The Krea-via-FAL ids (`fal-ai/krea/v2/...`) stay on the direct FAL.ai row.
+
+Model ids, speeds, and prices live on the [Image Generation](./image-generation.md#supported-models) page. The set evolves — `hermes tools` → Image Generation shows the current live list.
 
 ---
 
@@ -174,6 +166,18 @@ Or set the selection key directly:
 web:
   backend: firecrawl   # Hermes now uses FIRECRAWL_API_KEY from .env
 ```
+
+### Mixing your own key and the gateway (web only)
+
+Web search and web extract can each choose their own route. In the desktop app, open **Capabilities → Tools → Web Search & Scraping**: **Use for Search** / **Use for Extract** on the **Nous Subscription** row sends that capability through the gateway, and the same buttons on a direct row (e.g. **Firecrawl**) send it through your own key. The **Search:** / **Extract:** pills at the top show which route each one takes right now. In `config.yaml` the managed choice is the value `nous` on the per-capability key:
+
+```yaml
+web:
+  search_backend: firecrawl   # your FIRECRAWL_API_KEY
+  extract_backend: nous       # the Nous Tool Gateway (managed Firecrawl)
+```
+
+Picking **Nous Subscription** for the whole tool (or running `hermes tools`) clears both per-capability keys, so search and extract both go back through the gateway.
 
 ### Legacy `use_gateway` flag (deprecated)
 

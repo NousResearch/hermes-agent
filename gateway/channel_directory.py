@@ -1,6 +1,6 @@
 """Channel directory -- cached map of reachable channels/contacts per platform.
 
-Built on gateway startup, refreshed every 5 min, saved to ~/.hermes/channel_directory.json.
+Built on gateway startup, refreshed every 5 min, saved to ``<HERMES_HOME>/channel_directory.json``.
 send_message reads it for action="list" and to resolve friendly channel names to IDs.
 """
 
@@ -46,7 +46,8 @@ def _aliases_path() -> Path:
 
 
 def _read_json(path: Path) -> Any:
-    with open(path, encoding="utf-8") as f:
+    # utf-8-sig: Windows editors may leave a BOM that plain utf-8 json.load rejects (pm-era fix).
+    with open(path, encoding="utf-8-sig") as f:
         return json.load(f)
 
 

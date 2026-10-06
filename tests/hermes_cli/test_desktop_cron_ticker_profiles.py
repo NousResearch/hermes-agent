@@ -114,7 +114,13 @@ def test_enumeration_failure_fails_open(monkeypatch, _providers):
 
     ws._start_desktop_cron_ticker(threading.Event(), interval=11)
 
-    assert builtin.start_kwargs == {"interval": 11}
+    from hermes_constants import get_hermes_home
+
+    # This backend's own store only, behind the per-tick gateway gate (see the stand-down tests).
+    assert set(builtin.start_kwargs) == {"interval", "profile_homes", "profile_gate"}
+    assert builtin.start_kwargs["interval"] == 11
+    [(_name, home)] = builtin.start_kwargs["profile_homes"]()
+    assert home == Path(get_hermes_home())
 
 
 def test_external_provider_never_gets_profile_homes(monkeypatch, tmp_path):
@@ -144,12 +150,13 @@ def test_desktop_ticker_serves_every_profile_and_yields_to_owning_gateway(monkey
     of its own, so the per-home liveness check alone lets both tickers race for its fires
     (#107485, #108428)."""
     import hermes_cli.profiles as profiles_mod
-    import yaml
+    import hermes_yaml as yaml
 
     _sp, builtin = _providers
     root = tmp_path / ".hermes"
     for name in ("worker", "guest", "solo"):
         (root / "profiles" / name).mkdir(parents=True)
+        (root / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker: served
     (root / "config.yaml").write_text(yaml.safe_dump({"gateway": {"multiplex_profiles": True}}))
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
     monkeypatch.setattr(profiles_mod, "_get_default_hermes_home", lambda: root)

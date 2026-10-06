@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react'
 
 import { getStatus } from '@/hermes'
+import { type I18nContextValue, useI18n } from '@/i18n'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { $setupReadyTick } from '@/store/live-sync'
+import { dismissNotification, notify } from '@/store/notifications'
+import { $desktopOnboarding } from '@/store/onboarding'
 import type { StatusResponse } from '@/types/hermes'
 
 // Statusbar health is ambient chrome, not live data — nothing the user acts on
@@ -16,14 +19,18 @@ type GatewayRequester = <T = unknown>(method: string, params?: Record<string, un
 export function useStatusSnapshot(
   gatewayState: string | undefined,
   requestGateway: GatewayRequester,
-  gatewayScope = ''
-) {
+  gatewayScope: string = ''
+): { inferenceStatus: RuntimeReadinessResult | null; statusSnapshot: StatusResponse | null } {
+  const { t }: I18nContextValue = useI18n()
+  const warningMessage: string = t.notifications.sharedProfileWarning
   const [statusSnapshot, setStatusSnapshot] = useState<StatusResponse | null>(null)
   const [inferenceStatus, setInferenceStatus] = useState<RuntimeReadinessResult | null>(null)
 
   useEffect(() => {
     let cancelled = false
     let timer: number | undefined
+    let sharedProfileWarning: boolean = false
+    let sharedProfileNoticeId: string | undefined
 
     // Status and inference readiness belong to one backend. A source switch
     // can keep gatewayState="open" throughout, so clear the previous source's
@@ -84,8 +91,8 @@ export function useStatusSnapshot(
       }
     }
 
-    const refresh = async ({ readiness }: { readiness: boolean }) => {
-      if (!isViewed()) {
+    const refresh = async ({ readiness, force = false }: { readiness: boolean; force?: boolean }) => {
+      if (!force && !isViewed()) {
         scheduleRefresh()
 
         return
@@ -106,7 +113,22 @@ export function useStatusSnapshot(
         }
 
         if (statusResult.status === 'fulfilled') {
-          setStatusSnapshot(statusResult.value)
+          const next = statusResult.value
+          // Preserve reference identity on a no-op: the 60s tick re-reads a
+          // usually-unchanged snapshot, and a fresh object for the same content
+          // re-renders every consumer for nothing.
+          setStatusSnapshot(previous => (JSON.stringify(previous) === JSON.stringify(next) ? previous : next))
+          const warning: boolean = Boolean(statusResult.value.shared_profile_warning)
+
+          // Keep dismissal until the conflict clears. A new overlap can warn again.
+          if (warning !== sharedProfileWarning) {
+            if (sharedProfileNoticeId) {
+              dismissNotification(sharedProfileNoticeId)
+            }
+
+            sharedProfileWarning = warning
+            sharedProfileNoticeId = warning ? notify({ kind: 'warning', message: warningMessage }) : undefined
+          }
         }
       } finally {
         scheduleRefresh()
@@ -129,21 +151,49 @@ export function useStatusSnapshot(
     // outside the status tick so it neither resets nor waits on the timer.
     const unsubscribeSetupReady = $setupReadyTick.listen(() => void refreshReadiness())
 
+    // An OAuth sign-in updates backend readiness, but ambient polling is
+    // skipped while the window is unfocused — so a stale credential failure can
+    // linger indefinitely if the user stays in the browser after completing the
+    // flow. Watch the onboarding store for the auth-success transition and force
+    // one readiness refresh that bypasses the focus gate. This does not resume
+    // background polling: the forced refresh reschedules the normal (focus-gated)
+    // cadence in its `finally`.
+    let lastFlowStatus = $desktopOnboarding.get().flow.status
+
+    const unsubscribeOnboarding = $desktopOnboarding.listen(state => {
+      const status = state.flow.status
+      const becameSuccess = status === 'success' && lastFlowStatus !== 'success'
+      lastFlowStatus = status
+
+      if (becameSuccess && !cancelled) {
+        if (timer !== undefined) {
+          window.clearTimeout(timer)
+        }
+
+        void refresh({ readiness: true, force: true })
+      }
+    })
+
     document.addEventListener('visibilitychange', onReturn)
     window.addEventListener('focus', onReturn)
     void refresh({ readiness: true })
 
     return () => {
       cancelled = true
+      unsubscribeOnboarding()
       unsubscribeSetupReady()
       document.removeEventListener('visibilitychange', onReturn)
       window.removeEventListener('focus', onReturn)
+
+      if (sharedProfileNoticeId) {
+        dismissNotification(sharedProfileNoticeId)
+      }
 
       if (timer !== undefined) {
         window.clearTimeout(timer)
       }
     }
-  }, [gatewayScope, gatewayState, requestGateway])
+  }, [gatewayScope, gatewayState, requestGateway, warningMessage])
 
   return { inferenceStatus, statusSnapshot }
 }

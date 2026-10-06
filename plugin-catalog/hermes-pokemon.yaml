@@ -1,7 +1,7 @@
 name: hermes-pokemon
 repo: https://github.com/sxuff/hermes-pokemon
-sha: c12cd880e2796886999eb1f8ee1a458da32090b7
-version: "0.6.1"
+sha: 5c461d9e87ed06a41c2f1694108426767e785c2d
+version: "0.6.2"
 title: Hermes Pokémon
 description: >-
   A cozy pixel-art companion garden for Hermes Desktop with three starters,
@@ -19,12 +19,12 @@ category: desktop
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/sxuff/hermes-pokemon#readme
 screenshots:
-  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/c12cd880e2796886999eb1f8ee1a458da32090b7/docs/images/habitat.png
-  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/c12cd880e2796886999eb1f8ee1a458da32090b7/docs/images/starters.png
-  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/c12cd880e2796886999eb1f8ee1a458da32090b7/docs/images/narrow.png
-  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/c12cd880e2796886999eb1f8ee1a458da32090b7/docs/images/evolution.png
-  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/c12cd880e2796886999eb1f8ee1a458da32090b7/docs/images/rain.png
-  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/c12cd880e2796886999eb1f8ee1a458da32090b7/docs/images/visitor.png
+  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/5c461d9e87ed06a41c2f1694108426767e785c2d/docs/images/habitat.png
+  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/5c461d9e87ed06a41c2f1694108426767e785c2d/docs/images/starters.png
+  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/5c461d9e87ed06a41c2f1694108426767e785c2d/docs/images/narrow.png
+  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/5c461d9e87ed06a41c2f1694108426767e785c2d/docs/images/evolution.png
+  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/5c461d9e87ed06a41c2f1694108426767e785c2d/docs/images/rain.png
+  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/5c461d9e87ed06a41c2f1694108426767e785c2d/docs/images/visitor.png
 readme: true
 platforms: []
 capabilities:

@@ -408,10 +408,12 @@ class GatewayBusySessionMixin:
             and MessageType.PHOTO in merge_types
             and merge_types <= {MessageType.TEXT, MessageType.PHOTO}
         ):
-            merge_pending_message_event(
+            merged = merge_pending_message_event(
                 adapter._pending_messages, session_key, event,
                 merge_text=event.message_type == MessageType.TEXT,
             )
+            if merged is False:
+                self._enqueue_fifo(session_key, event, adapter)
             event._gateway_accepted = True
             return
 
@@ -432,12 +434,29 @@ class GatewayBusySessionMixin:
         most once per message; on failure the caption (if any) is kept.
         """
         text = (event.text or "").strip()
+        if getattr(event, "voice_parts", None) is not None:
+            enriched_text, _ = await self._transcribe_and_echo_pending_voice(
+                event, self._delivery_adapter_for(event.source), event.source, text, log_context="Busy-steer",
+            )
+            return enriched_text
         if not self._pending_event_audio_paths(event):
             return text
         enriched_text, successful_transcripts = await self._transcribe_and_echo_pending_voice(
             event, self._delivery_adapter_for(event.source), event.source, text, log_context="Busy-steer"
         )
         return (enriched_text or text).strip() if successful_transcripts else text
+
+    @staticmethod
+    def _voice_event_is_steerable(event: MessageEvent) -> bool:
+        if event.message_type != MessageType.VOICE:
+            return False
+        parts = [p for p in event.voice_parts if p.kind == "audio"]
+        indices = {p.index for p in parts if p.index is not None}
+        for i in range(len(event.media_urls)):
+            mime = event.media_types[i] if i < len(event.media_types) else ""
+            if i not in indices or (mime and not mime.startswith("audio/")):
+                return False
+        return bool(parts) and all(p.text.strip() or (p.result and (p.result[0] or "").strip()) for p in parts)
 
     def _steer_text_with_origin(self, text: str, event: MessageEvent) -> str:
         """Keep event origin in this injection, never in the cached system prompt."""
@@ -613,6 +632,8 @@ class GatewayBusySessionMixin:
             _steer_all_voice = bool(_steer_media_urls) and (
                 len(self._pending_event_audio_paths(event)) == len(_steer_media_urls)
             )
+            if getattr(event, "voice_parts", None) is not None:
+                _steer_all_voice = self._voice_event_is_steerable(event)
             if steer_text and (plain_text or _steer_all_voice) and agent_live and hasattr(running_agent, "steer"):
                 steered = self._try_agent_verb(
                     running_agent, "steer", steer_text, session_key, event=event
@@ -694,7 +715,7 @@ class GatewayBusySessionMixin:
         try:
             _interrupt_text = event.text
             _media_urls = getattr(event, "media_urls", None) or []
-            if self._pending_event_audio_paths(event):
+            if getattr(event, "voice_parts", None) is not None or self._pending_event_audio_paths(event):
                 _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
                     event, adapter, event.source, event.text or "", log_context="Voice-busy-interrupt",
                 )

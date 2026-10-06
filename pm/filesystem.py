@@ -84,6 +84,24 @@ def durable_write_bytes(path: Path, data: bytes) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+#: A handle still open inside the tree. Windows reports antivirus and indexer scans of freshly
+#: written files this way (WinError 5 and 32 both surface as EACCES) and they clear in moments;
+#: a missing source or an occupied destination never does, so those raise at once.
+_HELD_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EBUSY})
+_HELD_RETRY_DELAYS = (0.1, 0.2, 0.4, 0.8, 1.6)
+
+
+def retry_held(operation):
+    """Run a rename-like mutation, riding out a transient Windows hold (~3s) before raising."""
+    for delay in (*_HELD_RETRY_DELAYS, None):
+        try:
+            return operation()
+        except OSError as error:
+            if delay is None or error.errno not in _HELD_ERRNOS:
+                raise
+            time.sleep(delay)
+
+
 def remove_tree(path: Path) -> None:
     """``shutil.rmtree`` that clears a Windows read-only attribute and retries that one unlink.
 

@@ -382,17 +382,17 @@ def clear_pending(home: Optional[Path] = None) -> None:
 
 
 def clear_route(provider: str, model: str, home: Optional[Path] = None) -> None:
-    """Mark one provider:model pair as recovered in a pending wall notice.
+    """Mark one provider's routes as recovered in a pending wall notice.
 
-    When the marker exists and lists *provider*:*model* as walled or cooling,
-    that route is set to AVAILABLE.  If *every* route is now available the
-    marker is removed entirely; otherwise the marker is re-written with the
-    updated route list and a fresh signature, so the gateway stops paging
+    When the marker exists and lists any route for *provider* as walled or cooling,
+    all routes for that provider are set to AVAILABLE.  If *every* route is now
+    available the marker is removed entirely; otherwise the marker is re-written
+    with the updated route list and a fresh signature, so the gateway stops paging
     the operator about a route that recovered.
 
-    A successful call on a route that was never walled leaves the marker
-    untouched — a working model must not silence the alarm for a different
-    model that is still down.
+    A successful call on a provider that was never walled leaves the marker
+    untouched — a working provider must not silence the alarm for a different
+    provider that is still down.
     """
     try:
         payload = read_pending(home)
@@ -402,7 +402,7 @@ def clear_route(provider: str, model: str, home: Optional[Path] = None) -> None:
         changed = False
         remaining_walled = False
         for route in routes:
-            if route.get("provider") == provider and route.get("model") == model:
+            if route.get("provider") == provider:
                 if route.get("status") in {WALLED, COOLING, UNKNOWN}:
                     route["status"] = AVAILABLE
                     route["detail"] = ""
@@ -435,8 +435,8 @@ def clear_route(provider: str, model: str, home: Optional[Path] = None) -> None:
         payload["updated_at"] = time.time()
         _write(payload, home)
         logger.info(
-            "Provider wall notice: route %s/%s recovered — %d route(s) still walled",
-            provider, model, sum(
+            "Provider wall notice: provider %s recovered — %d route(s) still walled",
+            provider, sum(
                 1 for r in routes if r.get("status") in {WALLED, COOLING, UNKNOWN}
             ),
         )
@@ -488,7 +488,7 @@ def record_provider_wall(
         previous = read_pending(home)
         resets = [row.reset_at for row in rows if row.reset_at]
         created_ts = _as_float((previous or {}).get("created_at")) or now
-        expires_ts = max(resets) if resets else now + MARKER_TTL_S
+        expires_ts = max(resets) if resets else created_ts + MARKER_TTL_S
         text = build_message(rows, profile=profile, created_at=created_ts, expires_at=expires_ts)
         delivered: list = []
         delivered_at: Optional[float] = None

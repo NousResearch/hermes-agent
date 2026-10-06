@@ -220,7 +220,7 @@ def check_api_response(
         from agent.provider_wall_notice import read_pending, clear_route
         if read_pending():
             clear_route(agent.provider, agent.model)
-            logger.info("Provider wall notice: route %s/%s recovered (successful API call)", agent.provider, agent.model)
+            logger.info("Provider wall notice: provider %s recovered (successful API call)", agent.provider)
     except Exception:
         pass
     return _verdict("break")

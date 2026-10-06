@@ -98,7 +98,9 @@ async def test_fire_is_retryable_and_never_claimed_when_startup_does_not_finish(
 
     resp = await _post_fire(adapter, runner)
 
-    assert resp.status == 503
+    # NAS classifies this refusal by the exact body string and honours Retry-After.
+    assert resp.status == 503 and resp.headers["Retry-After"] == "60"
+    assert (await resp.json())["error"] == "gateway unreachable; retry"
     assert provider.claimed == [] and provider.fired == []  # nothing durably claimed for a fire we refused
 
 

@@ -1682,7 +1682,7 @@ def _read_live_pid_marker(path: Path, ttl_s: int) -> Optional[tuple[dict[str, An
         return None
     target_pid = _pid_from_record(record, "target_pid")
     if target_pid is None or _marker_is_stale(record.get("written_at") or "", ttl_s):
-        if record.get("accepted") is not True:
+        if record.get("accepted") is not True or not _update_pause_on_disk():
             _unlink_quietly(path)
         return None
     return record, target_pid, record.get("target_start_time")
@@ -1961,17 +1961,45 @@ def write_planned_stop_marker(target_pid: int) -> bool:
 _PLANNED_STOP_MUTEX_WAIT_S = 2.0
 
 
+def _update_pause_on_disk() -> bool:
+    """A Windows update pause of this checkout is on disk (its record or a recovery's claim), or the
+    record directory cannot be listed. Only then does a consume need the pause lock and a checkpoint,
+    and only then can accepted-stop evidence beside a request still be owed: with none, every pause
+    was settled by recovery or the updater (or never made: every non-Windows host)."""
+    from hermes_cli import update_pause_record
+    record = update_pause_record.record_path()
+    try:
+        with os.scandir(record.parent) as entries:
+            return any(e.name == record.name or (e.name.startswith(record.name + ".") and e.name.endswith(".claim"))
+                       for e in entries)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+
+
+def _checkpoint_planned_stop(path: Path, record: dict[str, Any]) -> None:
+    """``on_consume``, decided after the request was read: an update writes its record before its
+    request, so a pause that appeared since the consumer first looked is checkpointed too."""
+    from hermes_cli import update_pause_record
+    if _update_pause_on_disk():
+        with update_pause_record._mutex(_PLANNED_STOP_MUTEX_WAIT_S):
+            update_pause_record.mark_stop_consumed(path, record)
+
+
 def consume_planned_stop_marker_for_self() -> bool:
     """Return True when the current process is being intentionally stopped."""
     from hermes_cli import update_pause_record
-    # Recovery must see either the request or its checkpoint, never the gap
-    # between validating/consuming the marker and scheduling asynchronous stop.
+    path = _get_planned_stop_marker_path()
     try:
-        with update_pause_record._mutex(_PLANNED_STOP_MUTEX_WAIT_S):
-            return _consume_pid_marker_for_self(
-                _get_planned_stop_marker_path(), ttl_s=_PLANNED_STOP_MARKER_TTL_S,
-                on_consume=update_pause_record.mark_stop_consumed,
-            )
+        paused = _update_pause_on_disk()
+        if not paused:  # an earlier drain's receipt: its debt is settled
+            _unlink_quietly(update_pause_record._accepted_path(path))
+        # With a pause on disk, recovery must see either the request or its checkpoint, never the
+        # gap between validating/consuming the marker and scheduling asynchronous stop.
+        with update_pause_record._mutex(_PLANNED_STOP_MUTEX_WAIT_S) if paused else contextlib.nullcontext():
+            return _consume_pid_marker_for_self(path, ttl_s=_PLANNED_STOP_MARKER_TTL_S,
+                                                on_consume=_checkpoint_planned_stop)
     except OSError as exc:
         # The pause bookkeeping (a busy mutex, a checkpoint that cannot be written) never decides
         # whether this stop was planned: classify without consuming, and leave a receipt beside the

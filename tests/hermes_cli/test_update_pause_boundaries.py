@@ -169,6 +169,7 @@ def test_failed_consumer_checkpoint_keeps_request_and_user_stop_is_not_update_de
 def test_a_busy_pause_mutex_never_turns_a_planned_stop_into_an_unplanned_one(cell):
     base, _, launch = cell
     holder = launch('''
+        r.write({"pause_id": "busy", "resume_needed": True})  # a pause on disk: the consume needs the mutex
         with r._mutex():
             Path(sys.argv[2]).touch()
             while not Path(sys.argv[3]).exists(): time.sleep(.05)

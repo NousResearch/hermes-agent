@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -80,3 +82,48 @@ def test_a_stamped_accepted_request_outlives_its_ttl_while_the_pause_is_owed(tmp
         assert status.planned_stop_marker_targets_self() is False
     assert marker.exists(), f"the {second_look} deleted the stamped accepted request"
     assert _owed(saved["pause_id"]) == {"p": os.getpid()}, "an accepted stop lost its restart debt"
+
+
+@pytest.mark.parametrize("home_writable", [True, False], ids=["receipt", "stamped_request"])
+def test_accepted_stop_evidence_is_removed_once_its_pause_is_settled_and_never_before(
+        tmp_path, monkeypatch, home_writable):
+    """``.accepted`` receipts and stamped requests are cleaned up by the next consume once no pause of
+    this checkout is on disk (recovery or the updater retired it), and kept while one still is."""
+    marker, saved = _accepted_unrecorded(tmp_path, monkeypatch, home_writable=home_writable)
+    evidence = pause_record._accepted_path(marker) if home_writable else marker
+    status.consume_planned_stop_marker_for_self()
+    assert evidence.exists(), "accepted-stop evidence removed while its pause is still owed"
+    pause_record.discharge(saved)
+    assert not pause_record.record_path().exists(), "premise: the pause is settled"
+    status.consume_planned_stop_marker_for_self()
+    assert not pause_record._accepted_path(marker).exists(), "a settled receipt was left behind"
+    assert not marker.exists(), "a settled stamped request was left behind"
+
+
+def test_with_no_pause_on_disk_the_consumer_never_waits_on_the_pause_lock(tmp_path, monkeypatch):
+    """No pause record (every non-Windows host, or a settled pause): a plain ``hermes gateway stop`` is
+    consumed without the pause lock, so another holder costs it no wait and leaves no request or
+    ``.accepted`` receipt behind."""
+    _home(tmp_path, monkeypatch)
+    held, release = threading.Event(), threading.Event()
+
+    def holder():
+        with pause_record._mutex():
+            held.set()
+            release.wait(10)
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    try:
+        assert held.wait(5), "premise: another thread holds the pause lock"
+        marker = status._get_planned_stop_marker_path()
+        assert status.write_planned_stop_marker(os.getpid())
+        started = time.monotonic()
+        assert status.consume_planned_stop_marker_for_self() is True
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        thread.join()
+    assert elapsed < 1.0, f"the consumer waited {elapsed:.2f}s on a pause lock no pause needed"
+    assert not marker.exists(), "the consumed request was left on disk"
+    assert not pause_record._accepted_path(marker).exists(), "an .accepted receipt was written with no pause"

@@ -274,10 +274,12 @@ class SessionTranscriptMixin:
 
         # DB write outside the retry lock so other sessions can append.
         while True:
-            # Spooled backlog (cap eviction or a stalled session) is older than ``msg``: replay it
-            # first so recovery keeps transcript order; a still-dead DB just fails both.
-            self._drain_spooled_drops(session_id)
             try:
+                # Spooled backlog (cap eviction, a stalled session, a boot hold-back) is older than
+                # ``msg``: replay it first. While any of it stays on disk ``msg`` stays queued, since
+                # writing it now would give it a lower row id than that backlog for good.
+                if self._drain_spooled_drops(session_id):
+                    raise RuntimeError(f"older spooled transcript rows for {session_id} still pending")
                 self._append_transcript_message(session_id, msg)
             except Exception as exc:
                 from hermes_state import StateDbCorruptError, StateDbReplacedError
@@ -371,12 +373,13 @@ class SessionTranscriptMixin:
                     self._dirty_transcripts.pop(queue_session_id, None)
         return spooled
 
-    def _drain_spooled_drops(self, session_id: str) -> None:
-        """Replay cap-dropped spooled transcript messages after DB recovery. Best-effort: replay
-        failures keep the spool files for the next successful flush; nothing here may raise."""
+    def _drain_spooled_drops(self, session_id: str) -> bool:
+        """Replay cap-dropped spooled transcript messages after DB recovery; True while some of them
+        are still on disk. Best-effort: replay failures keep the spool files for the next successful
+        flush; nothing here may raise."""
         spooled_sessions = getattr(self, "_spooled_drop_sessions", None)
         if not spooled_sessions or session_id not in spooled_sessions:
-            return
+            return False
         try:
             from gateway.shutdown_flush import drain_transcript_spool
             # Inside an outage the append that follows logs/escalates the same failure; the
@@ -389,8 +392,10 @@ class SessionTranscriptMixin:
             )
             if not remaining:
                 spooled_sessions.discard(session_id)
+            return bool(remaining)
         except Exception as exc:
             logger.warning("Failed to drain transcript spool for %s: %s", session_id, exc)
+            return False
 
     def spooled_drop_sessions(self) -> set:
         """The live set of sessions whose next transcript write drains the spool first. Boot recovery

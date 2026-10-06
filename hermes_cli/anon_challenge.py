@@ -324,12 +324,9 @@ def _announce(challenge: BrowserChallenge) -> bool:
     server = sys.modules.get("tui_gateway.server")
     if server is None:
         return False
-    try:
-        server._broadcast_global_event(CHALLENGE_EVENT, challenge.as_payload())
-        return True
-    except Exception as exc:
-        logger.debug("%s not broadcast: %s", CHALLENGE_EVENT, exc)
-        return False
+    # The broadcast contains a wedged peer itself (per-transport); anything else is a real bug.
+    server._broadcast_global_event(CHALLENGE_EVENT, challenge.as_payload())
+    return True
 
 
 def _present_in_terminal(challenge: BrowserChallenge) -> None:
@@ -340,13 +337,13 @@ def _present_in_terminal(challenge: BrowserChallenge) -> None:
     already_open = challenge.url in _opened_urls
     if (not already_open and client_surface() != "gateway"
             and not _is_remote_session() and _can_open_graphical_browser()):
+        import webbrowser
         try:
-            import webbrowser
             opened = bool(webbrowser.open(challenge.url))
-            if opened:
-                _opened_urls.add(challenge.url)
-        except Exception as exc:
+        except (webbrowser.Error, OSError) as exc:
             logger.debug("could not open the challenge in a browser: %s", exc)
+        if opened:
+            _opened_urls.add(challenge.url)
     print(f"\n{challenge.message}", file=sys.stderr)
     print(f"  Open: {challenge.url}", file=sys.stderr)
     print("  (Opened in your browser.)\n" if opened or already_open

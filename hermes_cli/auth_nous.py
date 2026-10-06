@@ -212,6 +212,25 @@ def _nous_portal_env_override() -> Optional[str]:
     return _optional_base_url(_scoped_operator_override("HERMES_PORTAL_BASE_URL", "NOUS_PORTAL_BASE_URL"))
 
 
+def _nous_portal_base_url(state: Dict[str, Any]) -> str:
+    """HERMES_PORTAL_BASE_URL / NOUS_PORTAL_BASE_URL is the trusted operator override and wins
+    OUTRIGHT, bypassing the host allowlist (which exists to reject an untrusted network-provided
+    value, not one the operator configured). Otherwise the stored/default value, allowlist-gated."""
+    env_portal_override = _nous_portal_env_override()
+    if env_portal_override:
+        return env_portal_override.rstrip("/")
+    from hermes_cli.auth import _NOUS_PORTAL_ALLOWED_HOSTS, _optional_base_url
+    portal_base_url = _optional_base_url(state.get("portal_base_url")) or DEFAULT_NOUS_PORTAL_URL
+    portal_base_url = portal_base_url.rstrip("/")
+    host = urlparse(portal_base_url).hostname
+    if host and host not in _NOUS_PORTAL_ALLOWED_HOSTS:
+        logger.warning(
+            "auth: ignoring invalid portal_base_url %r (host %r not in allowlist), using default",
+            portal_base_url, host)
+        return DEFAULT_NOUS_PORTAL_URL
+    return portal_base_url
+
+
 def _scope_values(raw_scope: Any) -> set[str]:
     # OAuth token responses return a space-separated string; collections are kept for JWT ``scp``
     # claims and older stored fixtures.

@@ -834,6 +834,9 @@ _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS = (
     ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".config", ".azure", ".gcloud",
     "Library/Keychains")
 
+# These HOME-root stores are also denied by agent.file_safety's write guard.
+_MEDIA_DELIVERY_DENIED_HOME_FILES = (".netrc", ".pgpass", ".npmrc", ".pypirc", ".git-credentials")
+
 def _sqlite_files(name: str) -> tuple[str, ...]:
     """A SQLite store plus its WAL/SHM/rollback-journal sidecars."""
     return (name, f"{name}-wal", f"{name}-shm", f"{name}-journal")
@@ -941,6 +944,7 @@ def _media_delivery_denied_paths() -> List[Path]:
     home = Path(os.path.expanduser("~"))
     return [*map(Path, _MEDIA_DELIVERY_DENIED_PREFIXES),
             *(home / sub for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS),
+            *(home / name for name in _MEDIA_DELIVERY_DENIED_HOME_FILES),
             *(r / rel for r in _credential_home_roots() for rel in _ROOT_CREDENTIAL_PATHS),
             *_kanban_board_db_paths()]
 
@@ -967,6 +971,25 @@ def _path_under_denied_prefix(resolved: Path) -> bool:
         hit = resolved == resolved_denied or _path_is_within(resolved, resolved_denied)
         if hit and resolved_denied != home:
             return True
+    return False
+
+
+def _matches_denied_home_credential_file(resolved: Path) -> bool:
+    """Exact HOME secret identities outrank cache/operator trust; no tree scans or cache."""
+    home = Path(os.path.expanduser("~"))
+    try:
+        candidate_stat = resolved.stat()
+    except OSError:
+        return True  # A file lost/inaccessible since resolution cannot be delivered safely.
+    for name in _MEDIA_DELIVERY_DENIED_HOME_FILES:
+        denied = home / name
+        if resolved == denied:
+            return True
+        try:
+            if os.path.samestat(candidate_stat, denied.stat()):
+                return True
+        except OSError:
+            continue  # Missing/inaccessible stores have no comparable filesystem identity.
     return False
 
 
@@ -1187,6 +1210,8 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
         resolved = _resolve_path(expanded, strict=True)
     if resolved is None or not resolved.is_file():
         return None
+    if _matches_denied_home_credential_file(resolved):
+        return None
     # Cache / operator allowlist is trusted unconditionally, regardless of mode.
     for root in _media_delivery_allowed_roots():
         resolved_root = _resolve_path(root, expand=True)
@@ -1222,7 +1247,8 @@ def _validated_delivery_path(raw_path, session_key: str, label: str,
     report the drop instead of booking a delivery that never happened (#115908)."""
     raw = str(raw_path)
     safe_path = validate_media_delivery_path(raw, session_key=session_key)
-    if not safe_path:
+    if not safe_path and not _existing_regular_file(_normalize_media_tag_path(raw)):
+        # Remote retry is for host-missing artifacts, not rejected host secrets.
         from gateway.media_fetch import fetch_remote_media
         safe_path = fetch_remote_media(raw)
     if not safe_path:

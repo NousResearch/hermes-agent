@@ -606,6 +606,46 @@ class TestSensitiveCopyMovePattern:
             assert dangerous is False, cmd
 
 
+class TestGitCredentialWriteProtection:
+    """Unique #99182 terminal scope; absolute /root folding belongs to the sibling repair."""
+
+    @pytest.mark.parametrize("home", ["/root", "/home/security-rework/alice"])
+    def test_git_credential_writes_require_same_approval_as_netrc(self, monkeypatch, home):
+        monkeypatch.setenv("HOME", home)
+        monkeypatch.setenv("USERPROFILE", home)
+        prefixes = ["~", "$HOME", "${HOME}"]
+        # Do not let this credential-family change depend on the sibling /root
+        # normalization fix. Multi-component absolute HOME already folds on main.
+        if home != "/root":
+            prefixes.append(home)
+        for prefix in prefixes:
+            for template in (
+                "echo placeholder > {path}", "echo placeholder >> {path}",
+                "echo placeholder | tee -a {path}", "cp input {path}",
+                "mv input {path}", "install -m600 input {path}",
+                "sed -i 's/a/b/' {path}", "sed --in-place 's/a/b/' {path}",
+                "perl -i -pe 's/a/b/' {path}",
+            ):
+                control = detect_dangerous_command(template.format(path=prefix + "/.netrc"))
+                assert control[0] is True and control[1], control
+                command = template.format(path=prefix + "/.git-credentials")
+                assert detect_dangerous_command(command) == control, command
+
+    @pytest.mark.parametrize("home", ["/root", "/home/security-rework/alice"])
+    def test_git_credential_read_copy_out_and_near_miss_stay_safe(self, monkeypatch, home):
+        monkeypatch.setenv("HOME", home)
+        monkeypatch.setenv("USERPROFILE", home)
+        for prefix in ("~", "$HOME", "${HOME}", home):
+            for command in (
+                f"cat {prefix}/.git-credentials",
+                f"cp {prefix}/.git-credentials output.txt",
+                f"sed 's/a/b/' {prefix}/.git-credentials",
+                f"echo placeholder > {prefix}/.git-credentialsbackup",
+                f"cp input {prefix}/.git-credentialsbackup",
+            ):
+                assert detect_dangerous_command(command) == (False, None, None), command
+
+
 class TestSensitiveInPlaceEditPattern:
     """Detect in-place edits to user startup and credential files."""
 

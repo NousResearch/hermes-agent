@@ -26,7 +26,8 @@ from pathlib import Path, PurePosixPath
 from typing import Optional
 
 from gateway.platforms.base import (
-    _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS, _MEDIA_DELIVERY_DENIED_PREFIXES, _ROOT_CREDENTIAL_PATHS)
+    _MEDIA_DELIVERY_DENIED_HOME_FILES, _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS,
+    _MEDIA_DELIVERY_DENIED_PREFIXES, _ROOT_CREDENTIAL_PATHS)
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,8 @@ _FETCH_MAX_BYTES = 50 * 1024 * 1024
 
 _DENIED_PREFIXES = tuple(PurePosixPath(p) for p in _MEDIA_DELIVERY_DENIED_PREFIXES)
 # Credential dirs under the sandbox home plus the Hermes stores, which live at ``~/.hermes`` there.
-_DENIED_HOME_RELATIVE = tuple(PurePosixPath(s) for s in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS) + tuple(
+_DENIED_HOME_RELATIVE = tuple(PurePosixPath(s) for s in (
+    *_MEDIA_DELIVERY_DENIED_HOME_SUBPATHS, *_MEDIA_DELIVERY_DENIED_HOME_FILES)) + tuple(
     PurePosixPath(".hermes", *PurePosixPath(rel.replace(os.sep, "/")).parts) for rel in _ROOT_CREDENTIAL_PATHS)
 
 

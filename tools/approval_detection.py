@@ -29,7 +29,8 @@ _HERMES_CONFIG_PATH = (
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
-_CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc)\b'
+# Git's credential store holds reusable tokens in plaintext, like .netrc.
+_CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc|git-credentials)\b'
 # Global flags before a subcommand, each with an optional value. Every flag has one parse ('-' plus
 # its possessive remainder, so '--x' and '--x=v' never split two ways) and a value cannot itself be a
 # flag, so a long run that never reaches the subcommand fails in linear time instead of holding the

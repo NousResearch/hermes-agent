@@ -4806,8 +4806,7 @@ def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_ba
 
 def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: bool) -> Tuple[Optional[Any], Optional[str]]:
     """AWS Bedrock: Claude → Anthropic Bedrock SDK (prompt caching, thinking); bare in-Region OpenAI IDs
-    → Bedrock Mantle's OpenAI Responses endpoint; everything else, including OpenAI ``us.``/``global.``
-    profile IDs (bedrock-runtime only), → Converse API."""
+    → Mantle Responses; everything else, incl. OpenAI ``us.``/``global.`` profiles, → Converse API."""
     try:
         from agent.bedrock_adapter import (
             has_aws_credentials, is_anthropic_bedrock_model, resolve_bedrock_runtime_region,

@@ -738,7 +738,7 @@ describe('planConfirmedReload (#133716)', () => {
         plan.truncateRowId,
         plan.sourceText,
         undefined,
-        plan.confirmDeepTruncate ?? false
+        plan.confirmDeepTruncate
       )
     }
 

@@ -281,9 +281,9 @@ export async function runRewindSubmit(
   truncateRowId?: number,
   sourceText?: string,
   rebindRowIds?: readonly number[],
-  // Restore/edit name their target explicitly; only regenerate (implicit
-  // target) passes false unless the user confirmed a deep cut (#133716).
-  confirmDeepTruncate = true
+  // Omitted never means confirmed: restore/edit (explicit target) and a
+  // confirmed deep regenerate pass true; tail regenerate passes false (#133716).
+  confirmDeepTruncate?: boolean
 ): Promise<SurvivorUserRowIds | undefined> {
   // Recovery may rebind the live id mid-flight; interrupt/submit must both
   // follow it rather than pinning the dead one.
@@ -492,8 +492,8 @@ export function appendMidTurnUserMessage<
 
 export interface ReloadPlan {
   branchGroupId: string
-  /** Set only after the user confirmed a reload that archives later user turns. */
-  confirmDeepTruncate?: boolean
+  /** True only after the user confirmed a reload that archives later user turns. */
+  confirmDeepTruncate: boolean
   /** Original persisted text of the turn — the durable-row-id content key. */
   sourceText: string
   text: string
@@ -533,6 +533,7 @@ export function planReload(messages: ChatMessage[], parentId: null | string): nu
 
   return {
     branchGroupId: targetAssistant?.branchGroupId ?? branchGroupForUser(userMessage),
+    confirmDeepTruncate: false,
     sourceText: text,
     text,
     truncateOrdinal: isFailedTurn ? undefined : visibleUserOrdinal(messages, userIndex),

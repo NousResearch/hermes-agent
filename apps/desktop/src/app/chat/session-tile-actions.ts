@@ -581,7 +581,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateRowId,
             plan.sourceText,
             durableRowIdsForRebind(messages),
-            plan.confirmDeepTruncate ?? false
+            plan.confirmDeepTruncate
           )
         )
       } catch (err) {
@@ -627,7 +627,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateMessageId,
             plan.truncateRowId,
             plan.sourceText,
-            durableRowIdsForRebind(messages)
+            durableRowIdsForRebind(messages),
+            true
           )
         )
       } catch (err) {
@@ -662,7 +663,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
                   retryPlan.truncateMessageId,
                   retryPlan.truncateRowId,
                   retryPlan.sourceText,
-                  durableRowIdsForRebind(freshMessages)
+                  durableRowIdsForRebind(freshMessages),
+                  true
                 )
               )
 
@@ -719,7 +721,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateMessageId,
             plan.truncateRowId,
             plan.sourceText,
-            durableRowIdsForRebind(messages)
+            durableRowIdsForRebind(messages),
+            true
           )
         )
       } catch (err) {

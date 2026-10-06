@@ -1029,7 +1029,7 @@ export function usePromptActions({
           plan.truncateRowId,
           plan.sourceText,
           durableRowIdsForRebind(messages),
-          plan.confirmDeepTruncate ?? false
+          plan.confirmDeepTruncate
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1104,7 +1104,8 @@ export function usePromptActions({
           interruptFirst,
           plan.truncateRowId,
           plan.sourceText,
-          durableRowIdsForRebind(messages)
+          durableRowIdsForRebind(messages),
+          true
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1140,7 +1141,8 @@ export function usePromptActions({
                 false,
                 retryPlan.truncateRowId,
                 retryPlan.sourceText,
-                durableRowIdsForRebind(refreshed)
+                durableRowIdsForRebind(refreshed),
+                true
               )
 
               applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1241,7 +1243,8 @@ export function usePromptActions({
           interruptFirst,
           plan.truncateRowId,
           plan.sourceText,
-          durableRowIdsForRebind(messages)
+          durableRowIdsForRebind(messages),
+          true
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1275,7 +1278,8 @@ export function usePromptActions({
                 false,
                 retryPlan.truncateRowId,
                 retryPlan.sourceText,
-                durableRowIdsForRebind(refreshed)
+                durableRowIdsForRebind(refreshed),
+                true
               )
 
               applySurvivorRowIds(sessionId, survivorRowIds)

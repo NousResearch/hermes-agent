@@ -1,5 +1,6 @@
 import type * as React from 'react'
 import { useCallback, useMemo, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -9,6 +10,7 @@ import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $gateway } from '@/store/gateway'
 import { OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
+import { setSettingsScope } from '@/store/settings-scope'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -16,6 +18,16 @@ import { PanelEmpty } from '../overlays/panel'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import type { InstalledBot } from './bots/bot-types'
+import { supportsLocalModelSetup } from './bots/bot-types'
+import { BotMarketplaceTab } from './bots/bots-tab'
+import {
+  invalidateBotRoster,
+  kickoffInstalledBot,
+  notifyBotMarketplace,
+  openInstalledBot,
+  requestBotMarketplace
+} from './bots/marketplace-actions'
 import { ConnectorsTab } from './connectors/connectors-tab'
 import { PluginsTab } from './plugins/plugins-tab'
 import { CapabilityScopeSelector, useCapabilityScope } from './scope-selector'
@@ -28,7 +40,7 @@ import { ToolsetsTab } from './toolsets/toolsets-tab'
 
 // Skills Hub browsing lives inside the Skills tab. Legacy `?tab=hub`
 // links fall back to 'skills' via useRouteEnumParam.
-const CAPABILITY_MODES = ['skills', 'toolsets', 'connectors', 'plugins'] as const
+const CAPABILITY_MODES = ['skills', 'toolsets', 'connectors', 'plugins', 'bots'] as const
 
 type CapabilityMode = (typeof CAPABILITY_MODES)[number]
 
@@ -63,6 +75,11 @@ export function CapabilitiesView({
   ...props
 }: CapabilitiesViewProps) {
   const { t } = useI18n()
+  const navigate = useNavigate()
+  const location = useLocation()
+  const routeParams = new URLSearchParams(location.search)
+  const routedProfile = routeParams.get('profile')?.trim() || undefined
+  const routedConnection = routeParams.get('connection')?.trim() || undefined
   // Both hooks run unconditionally (rules of hooks); embedded picks the local
   // one so tab clicks inside a dialog don't rewrite the page URL.
   const routeTab = useRouteEnumParam('tab', CAPABILITY_MODES, 'skills')
@@ -79,7 +96,69 @@ export function CapabilitiesView({
     setHubMounted(true)
   }
 
-  const scope = useCapabilityScope({ fixedConnection, fixedProfile })
+  const scope = useCapabilityScope({
+    fixedConnection: fixedConnection ?? routedConnection,
+    fixedProfile: fixedProfile ?? routedProfile
+  })
+
+  const handleBotSetupAction = useCallback(
+    async (action: string, id: string, bot: InstalledBot) => {
+      const profile = bot.profile.name
+      const connection = bot.scope && typeof bot.scope === 'object' ? bot.scope.connectionId : undefined
+      const scopedQuery = `profile=${encodeURIComponent(profile)}${connection ? `&connection=${encodeURIComponent(connection)}` : ''}`
+
+      if (action === 'tools') {
+        navigate(`/capabilities?tab=toolsets&${scopedQuery}`)
+
+        return
+      }
+
+      if (action === 'plugins') {
+        navigate(`/capabilities?tab=plugins&${scopedQuery}${id ? `&plugin=${encodeURIComponent(id)}` : ''}`)
+
+        return
+      }
+
+      if (action === 'connect') {
+        navigate(`/capabilities?tab=connectors&${scopedQuery}${id ? `&connector=${encodeURIComponent(id)}` : ''}`)
+
+        return
+      }
+
+      if (action === 'model') {
+        if (!supportsLocalModelSetup(bot.scope)) {
+          notifyBotMarketplace({
+            kind: 'warning',
+            title: t.skills.marketplace.setupFailed,
+            message: t.skills.marketplace.remoteModelUnsupported
+          })
+
+          return
+        }
+
+        // Opening first makes the bot profile the active local owner. The
+        // settings override then collapses to "follow active" instead of
+        // leaving a hidden pinned bot scope behind when the user returns.
+        await openInstalledBot(profile, bot.scope)
+        setSettingsScope(profile)
+        navigate('/settings?tab=config:model')
+
+        return
+      }
+
+      if (action === 'install_command') {
+        navigate('/command-center?section=system')
+
+        return
+      }
+
+      // Preserve the existing compatibility path for setup actions an older
+      // desktop does not recognize; known connector actions route above to the
+      // scoped Connectors UI instead of borrowing the source profile's chat.
+      void openInstalledBot(profile, bot.scope)
+    },
+    [navigate, t]
+  )
 
   // The two installed lists the tab pills count. They are fetched here, as a
   // pair, because the counts stay live for the tab the user is NOT on.
@@ -115,7 +194,7 @@ export function CapabilitiesView({
     return undefined
   }, [mode, skills, t, toolsets])
 
-  // MCP and Plugins load independently of the installed Skills/Tools lists.
+  // Connectors and Plugins load independently of the installed Skills/Tools lists.
   const gated = mode === 'toolsets' || mode === 'skills'
   const pending = gated && !(skills && toolsets)
 
@@ -135,6 +214,18 @@ export function CapabilitiesView({
   )
 
   const tabContent = {
+    bots: () => (
+      <BotMarketplaceTab
+        invalidateRoster={invalidateBotRoster}
+        key={`bots-${scope.key}`}
+        notify={notifyBotMarketplace}
+        onKickoff={kickoffInstalledBot}
+        onOpen={openInstalledBot}
+        onSetupAction={handleBotSetupAction}
+        request={requestBotMarketplace}
+        scope={scope.profile}
+      />
+    ),
     // The gateway instance backs ONLY the live `reload.mcp` RPC, and it is the
     // ACTIVE gateway's socket — for a scope pinned to a different backend that
     // (config edits still apply on that backend's next session).
@@ -175,8 +266,8 @@ export function CapabilitiesView({
       activeTab={mode}
       onSearchChange={setQuery}
       onTabChange={id => setMode(id as CapabilityMode)}
-      // The Connectors directory owns its search field; plugins has its own list.
-      searchHidden={mode === 'connectors' || mode === 'plugins'}
+      // Connectors owns its search field; plugins and bots own their lists.
+      searchHidden={mode === 'connectors' || mode === 'plugins' || mode === 'bots'}
       searchHints={searchHints}
       searchPlaceholder={mode === 'skills' ? t.skills.searchSkills : t.skills.searchToolsets}
       searchValue={query}
@@ -184,7 +275,8 @@ export function CapabilitiesView({
         { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
         { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null },
         { id: 'connectors', label: t.connectorsPage.title },
-        { id: 'plugins', label: t.skills.tabPlugins }
+        { id: 'plugins', label: t.skills.tabPlugins },
+        { id: 'bots', label: t.skills.marketplace.tab }
       ]}
     >
       <div className="flex h-full flex-col">

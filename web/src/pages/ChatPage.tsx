@@ -115,6 +115,7 @@ import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { errorMessage } from "@/lib/api-error";
+import { SGR_MOUSE_RE } from "@/lib/pty-mouse-report";
 
 // Per-tab keep-alive identity (`?attach=`): lives in pty-attach-token.ts so a
 // second tab — including a Chrome "Duplicate tab" — gets its own PTY instead of
@@ -649,6 +650,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const handleBrowserDropCleanup = attachChatImageDropListeners(
       host,
       uploadAndAttachImages,
+      (text) => term.paste(text),
     );
 
     term.attachCustomKeyEventHandler((ev) => {
@@ -1478,9 +1480,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // mouse reporting, so we drop SGR mouse reports entirely instead of
     // forwarding them into Hermes. Keyboard input, paste, and resize still
     // behave normally.
-      // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
-      const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
-      const forwardPtyData = (data: string, useMobileReplacement = true) => {
+    const forwardPtyData = (data: string, useMobileReplacement = true) => {
         // Mouse reports (scroll wheel etc.) are not typed input — swallow
         // them before the blocked-input check so scrolling a disconnected
         // terminal doesn't trip the "reconnecting" notice.

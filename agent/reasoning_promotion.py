@@ -58,8 +58,8 @@ def answer_in_reasoning_capability(agent: Any) -> bool:
     entries = list(_entries_for_route(base_url, custom_providers, None))
     live = [e for e in entries
             if custom_provider_slug(str(e.get("name") or ""), str(e.get("provider_key") or "")) in ids]
-    flags = {(e.get("capabilities") or {}).get(_ANSWER_IN_REASONING_CAPABILITY) for e in live or entries}
-    flags &= {True, False}
+    flags = {v for e in live or entries
+             if isinstance(v := (e.get("capabilities") or {}).get(_ANSWER_IN_REASONING_CAPABILITY), bool)}
     if flags:
         return flags == {True}
 

@@ -233,12 +233,23 @@ def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
     }, ctx)
 
 
+def _todo_list(agent, args: dict, ctx: InlineToolContext) -> Any:
+    """todo_tool with the same unknown-arg strictness as the registry handler: the generic
+    ``_tool`` mapping only forwards declared arg_specs, so a plausible-but-wrong call shape
+    ({action, list}) would have its keys dropped and silently degrade to a read (#126656)."""
+    from tools.todo_tool import _reject_unexpected_todo_args
+
+    rejection = _reject_unexpected_todo_args(args)
+    if rejection is not None:
+        return rejection
+    return _call_tool("tools.todo_tool", "todo_tool", args,
+                      (("todos", "todos"), ("merge", "merge", False)),
+                      store=agent._todo_store)
+
+
 # Order is the historical if/elif order of ``execute_tool_calls_sequential``.
 _RAW_INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
-    "todo_list": _tool(
-        "tools.todo_tool", "todo_tool", ("todos", "todos"), ("merge", "merge", False),
-        store=lambda agent, ctx: agent._todo_store,
-    ),
+    "todo_list": _todo_list,
     # Bot Mode teammate DM is injected, not registered: only a canonical Bot
     # Chat session carries the schema, and the tool re-gates on the title.
     "message_agent": _tool(

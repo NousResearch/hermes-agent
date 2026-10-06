@@ -129,6 +129,78 @@ class TestTodoToolFunction:
         result = json.loads(todo_tool())
         assert "error" in result
 
+    def test_write_and_read_report_mode(self):
+        store = TodoStore()
+        written = json.loads(todo_tool(
+            todos=[{"id": "1", "content": "Task", "status": "pending"}], store=store))
+        assert written["mode"] == "write"
+        read = json.loads(todo_tool(store=store))
+        assert read["mode"] == "read"
+
+    def test_empty_write_still_reports_write_mode(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Task", "status": "pending"}])
+        result = json.loads(todo_tool(todos=[], store=store))
+        assert result["mode"] == "write"
+        assert result["summary"]["total"] == 0
+        assert result["revision"] == 2
+
+class TestTodoDispatchStrictness:
+    """Unknown call shapes ({action, list}) used to have their keys dropped by the
+    dispatch wrapper, fall through to a read, and return an empty success-shaped
+    payload — the caller believed its plan had saved (#126656)."""
+
+    def test_unknown_params_are_rejected(self):
+        from tools.todo_tool import _todo_dispatch
+        result = json.loads(_todo_dispatch(
+            {"action": "add", "list": [{"content": "x"}]}, store=TodoStore()))
+        assert "error" in result
+        assert "action" in result["error"] and "list" in result["error"]
+        assert "todos" in result["error"]  # names the real parameter
+
+    def test_known_params_pass_through(self):
+        from tools.todo_tool import _todo_dispatch
+        store = TodoStore()
+        result = json.loads(_todo_dispatch(
+            {"todos": [{"id": "1", "content": "Task", "status": "pending"}]}, store=store))
+        assert result["mode"] == "write"
+        assert result["summary"]["total"] == 1
+
+    def test_no_params_reads(self):
+        from tools.todo_tool import _todo_dispatch
+        result = json.loads(_todo_dispatch({}, store=TodoStore()))
+        assert result["mode"] == "read"
+        assert result["summary"]["total"] == 0
+
+    @staticmethod
+    def _inline_call(args):
+        # The dispatch the model actually takes: agent paths short-circuit todo_list to the
+        # inline executor before the registry, so strictness must hold here too (#126656).
+        from unittest.mock import MagicMock
+
+        from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+
+        agent = MagicMock()
+        agent._todo_store = TodoStore()
+        return json.loads(INLINE_TOOL_EXECUTORS["todo_list"](
+            agent, args, InlineToolContext(effective_task_id="t1")))
+
+    def test_inline_dispatch_rejects_unknown_params(self):
+        result = self._inline_call({"action": "add", "list": [{"content": "x"}]})
+        assert "error" in result
+        assert "action" in result["error"] and "list" in result["error"]
+        assert "todos" in result["error"]
+
+    def test_inline_dispatch_known_params_pass_through(self):
+        result = self._inline_call({"todos": [{"id": "1", "content": "Task", "status": "pending"}]})
+        assert result["mode"] == "write"
+        assert result["summary"]["total"] == 1
+
+    def test_inline_dispatch_no_params_reads(self):
+        result = self._inline_call({})
+        assert result["mode"] == "read"
+        assert result["summary"]["total"] == 0
+
 class TestTodoStoreSnapshots:
     def test_revision_only_advances_when_state_changes(self):
         store = TodoStore()

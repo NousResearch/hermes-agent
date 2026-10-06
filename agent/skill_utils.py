@@ -273,6 +273,27 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     return disabled - ESSENTIAL_SKILLS
 
 
+SKILL_INDEX_DESCRIPTION_MODES = ("full", "names_only")
+_warned_index_description_values: Set[str] = set()
+
+
+def skill_index_names_only() -> bool:
+    """``skills.index_descriptions: names_only``: list every category of the always-on skill
+    index by name only (default ``full``). Skills still load via skill_view / skills_list.
+
+    An unrecognized value (``names-only``, ``names``, a typo) is rejected loudly — once per value —
+    and the index stays ``full``, instead of silently ignoring the setting."""
+    raw = _skills_cfg_get("index_descriptions")
+    mode = str(raw if raw is not None else "full").strip().lower()
+    if mode in SKILL_INDEX_DESCRIPTION_MODES:
+        return mode == "names_only"
+    if mode not in _warned_index_description_values:
+        _warned_index_description_values.add(mode)
+        logger.warning("skills.index_descriptions %r is not a valid value — set it to 'full' or 'names_only' "
+                       "in config.yaml; the skill index keeps its descriptions ('full') until then.", raw)
+    return False
+
+
 def parse_config_string_list(value) -> List[str]:
     """Normalize a config value that may hold a JSON-array string into a list.
     ``hermes config set`` stores lists as quoted JSON/Python-literal strings;

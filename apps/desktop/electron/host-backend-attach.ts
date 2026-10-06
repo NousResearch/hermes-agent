@@ -20,6 +20,14 @@ import {
 /** A gate held longer than this belongs to a spawner that never finished. */
 export const HOST_SPAWN_GATE_STALE_MS = 60_000
 
+/**
+ * How long a ready backend whose identity is unreadable is re-read before the
+ * token attach. A slow /api/health is ours far more often than not, so it gets
+ * a few retries, not the whole spawn-gate budget: a token-valid backend must
+ * not hold startup for a minute.
+ */
+export const HOST_IDENTITY_RETRY_MS = 3_000
+
 export interface AttachedBackend {
   baseUrl: string
   pid: number
@@ -210,14 +218,20 @@ export async function attachToHostBackend(
   options: { isolated: boolean; ledgerPath: string },
   deps: HostBackendAttachDeps
 ): Promise<AttachedBackend | null> {
-  const found = await findHostBackend(options, deps)
+  const found = await findHostBackend(options, deps, await expectedCommitFor(deps))
 
   return found === UNCONFIRMED ? null : found
+}
+
+/** Resolved once per attach call: `git rev-parse HEAD` must not run per retry round. */
+async function expectedCommitFor(deps: HostBackendAttachDeps): Promise<string | null> {
+  return nonemptyToken(await deps.expectedCodeIdentity?.().catch(() => null))
 }
 
 async function findHostBackend(
   { isolated, ledgerPath }: { isolated: boolean; ledgerPath: string },
   deps: HostBackendAttachDeps,
+  expectedCommit: string | null,
   unreadableIdentity: 'unconfirmed' | 'token-attach' = 'unconfirmed'
 ): Promise<AttachedBackend | null | typeof UNCONFIRMED> {
   const records = parseSpawnLedger(deps.readLedger(ledgerPath))
@@ -241,7 +255,6 @@ async function findHostBackend(
     )
   ]
 
-  const expectedCommit = nonemptyToken(await deps.expectedCodeIdentity?.().catch(() => null))
   let unconfirmed = false
 
   for (const record of ordered) {
@@ -293,7 +306,8 @@ export async function attachOrReserveSpawn(
   gate: HostSpawnGateDeps,
   { pollMs = 500, waitBudgetMs = HOST_SPAWN_GATE_STALE_MS }: { pollMs?: number; waitBudgetMs?: number } = {}
 ): Promise<{ attached: AttachedBackend } | { reservation: SpawnReservation }> {
-  let found = await findHostBackend(options, deps)
+  const expectedCommit = await expectedCommitFor(deps)
+  let found = await findHostBackend(options, deps, expectedCommit)
 
   if (found && found !== UNCONFIRMED) {
     return { attached: found }
@@ -304,8 +318,10 @@ export async function attachOrReserveSpawn(
   }
 
   const deadline = gate.now() + waitBudgetMs
+  // An unreadable identity gets its own short budget, counted from first sight.
+  let identityDeadline = found === UNCONFIRMED ? gate.now() + HOST_IDENTITY_RETRY_MS : Infinity
 
-  while (gate.now() < deadline) {
+  while (gate.now() < (found === UNCONFIRMED ? Math.min(deadline, identityDeadline) : deadline)) {
     const gateState = gate.read()
 
     // A ready backend we could not identify may well be ours: re-read it
@@ -331,17 +347,21 @@ export async function attachOrReserveSpawn(
     )
     await gate.sleep(pollMs)
 
-    found = await findHostBackend(options, deps)
+    found = await findHostBackend(options, deps, expectedCommit)
 
     if (found && found !== UNCONFIRMED) {
       return { attached: found }
     }
+
+    if (found === UNCONFIRMED) {
+      identityDeadline = Math.min(identityDeadline, gate.now() + HOST_IDENTITY_RETRY_MS)
+    }
   }
 
   // Only a definitive non-matching commit is a mismatch: a ready backend whose
-  // identity stayed unreadable for the whole budget keeps the token attach.
+  // identity stayed unreadable for its whole retry budget keeps the token attach.
   if (found === UNCONFIRMED) {
-    found = await findHostBackend(options, deps, 'token-attach')
+    found = await findHostBackend(options, deps, expectedCommit, 'token-attach')
 
     if (found && found !== UNCONFIRMED) {
       return { attached: found }

@@ -9,7 +9,7 @@ import { test } from 'vitest'
 
 import { spawnOrAttach } from './backend-discovery'
 import { resolveServedDashboardToken } from './dashboard-token'
-import { attachOrReserveSpawn, attachToHostBackend } from './host-backend-attach'
+import { attachOrReserveSpawn, attachToHostBackend, HOST_IDENTITY_RETRY_MS } from './host-backend-attach'
 import { claimHostSpawnGate } from './host-spawn-gate'
 import { runPrimaryBackendStartup } from './primary-backend-startup'
 
@@ -651,6 +651,37 @@ test('an identity unreadable for the whole budget keeps the token attach, never 
 
   assert.equal('attached' in outcome && outcome.attached.token, 'served-token')
   assert.equal(takes, 0, 'no spawn reservation may be taken beside a ready backend of unknown identity')
+})
+
+/**
+ * A token-valid ready backend with a persistently unreadable identity attaches
+ * within a few seconds, not the whole spawn-gate wait, and the local commit
+ * (`git rev-parse HEAD`) is resolved once per call, not once per retry round.
+ */
+test('a persistently unreadable identity attaches by token within its short retry budget', async () => {
+  let clock = 0
+  let headReads = 0
+  const ledger = JSON.stringify([{ host: '127.0.0.1', pid: 4711, port: 65_238, purpose: 'serve', registered_at: 1 }])
+
+  const outcome = await attachOrReserveSpawn(
+    { isolated: false, ledgerPath: '/ledger.json' },
+    {
+      ...attachDeps(ledger),
+      backendCodeIdentity: async () => {
+        throw new Error('The operation was aborted due to timeout')
+      },
+      expectedCodeIdentity: async () => {
+        headReads += 1
+
+        return NEW_COMMIT
+      }
+    },
+    { now: () => clock, read: () => null, take: () => () => {}, sleep: async ms => void (clock += ms) }
+  )
+
+  assert.equal('attached' in outcome && outcome.attached.token, 'served-token')
+  assert.ok(clock <= HOST_IDENTITY_RETRY_MS, `attached after ${clock} ms, budget ${HOST_IDENTITY_RETRY_MS} ms`)
+  assert.equal(headReads, 1, 'the expected commit is resolved once per attach call')
 })
 
 test('a definitive non-matching commit is still refused after the budget', async () => {

@@ -21,7 +21,7 @@ from agent.credential_pool import (  # custom_provider_pool_key_candidates is re
 )
 from agent.secret_scope import get_secret_str
 from hermes_cli.auth import (  # resolve_external_process_provider_credentials is read via origin by runtime_provider_backends
-    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
+    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AUTH_ERROR_CATEGORY_MISSING_CREDENTIAL, AuthError, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY, _agent_key_is_usable, _nous_inference_env_override, format_auth_error, resolve_provider,
     resolve_nous_runtime_credentials, resolve_codex_runtime_credentials, resolve_xai_oauth_runtime_credentials,
     resolve_qwen_runtime_credentials, resolve_api_key_provider_credentials,
@@ -357,7 +357,7 @@ def _anthropic_token_or_raise(*, model: str | None = None) -> str:
         if model and resolve_anthropic_token():
             raise AuthError(f"Anthropic credentials are rate-limited for {model}; "
                             "other Claude models remain available (see `hermes auth list`).")
-        raise AuthError(_NO_ANTHROPIC_CREDENTIALS_MSG)
+        raise AuthError(_NO_ANTHROPIC_CREDENTIALS_MSG, category=AUTH_ERROR_CATEGORY_MISSING_CREDENTIAL)
     return token
 
 
@@ -915,7 +915,8 @@ def _resolve_vertex_runtime(requested_provider: str) -> Dict[str, Any]:
         raise AuthError("Vertex AI credentials could not be resolved. Vertex uses OAuth2 (not a static API key): provide a "
                         "service-account JSON via GOOGLE_APPLICATION_CREDENTIALS (or VERTEX_CREDENTIALS_PATH) in ~/.hermes/.env, "
                         "or run 'gcloud auth application-default login' for ADC. Set the GCP project/region under vertex: in "
-                        "config.yaml if they aren't embedded in the credentials. Run `hermes setup` to install Vertex support.")
+                        "config.yaml if they aren't embedded in the credentials. Run `hermes setup` to install Vertex support.",
+                        category=AUTH_ERROR_CATEGORY_MISSING_CREDENTIAL)
     return _runtime("vertex", "chat_completions", base_url.rstrip("/"), token, source="vertex-oauth", requested_provider=requested_provider)
 
 
@@ -1041,6 +1042,17 @@ def _raise_for_credentialless_bare_custom(requested_provider: str, runtime: Dict
     )
 
 
+def _resolve_rung(requested_provider: str, resolve):
+    """Resolve one auto-ladder rung without turning absent credentials into paid fallback."""
+    try:
+        return resolve()
+    except AuthError as exc:
+        from hermes_cli.auth import should_try_fallback_on_auth_error
+        if requested_provider != "auto" or not should_try_fallback_on_auth_error(exc):
+            raise
+        return None
+
+
 def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model):
     """Ladder rungs 2-8, yielded lazily so each is evaluated only when the previous one returned
     nothing; the last rung (OpenRouter / bare-custom fallback) always yields a runtime."""
@@ -1065,7 +1077,8 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
         except AuthError as exc:
             # Auto-detected login with stale/revoked/benched credentials: fall through to the env-var
             # providers, but keep the error so a keyless fallback can still say what is wrong.
-            if requested_provider != "auto":
+            from hermes_cli.auth import should_try_fallback_on_auth_error
+            if requested_provider != "auto" or not should_try_fallback_on_auth_error(exc):
                 raise
             logger.info("%s; falling through to next provider.", _OAUTH_RUNTIME_PROVIDERS[provider].failure_msg)
             swallowed_auth_error = exc
@@ -1104,11 +1117,13 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
     re-raised: a fallback entry's failure is not what the operator configured first (#81209). The entry's
     ``model`` is the model the caller must send.
     """
-    from hermes_cli.auth import AuthError, primary_failure_wording
+    from hermes_cli.auth import AuthError, primary_failure_wording, should_try_fallback_on_auth_error
     try:
         return resolve_runtime_provider(requested=requested, target_model=target_model,
                                         explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None
     except AuthError as primary_exc:
+        if not should_try_fallback_on_auth_error(primary_exc):
+            raise
         from hermes_cli.fallback_config import effective_runtime_provider, get_fallback_chain, resolve_entry_api_key
         for entry in get_fallback_chain(config):
             provider = (entry.get("provider") or "").strip().lower()

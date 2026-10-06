@@ -109,6 +109,12 @@ def _shared_context(ca_path: str | None) -> ssl.SSLContext:
         return ctx
 
 
+def platform_ssl_context() -> ssl.SSLContext:
+    """The process-wide platform-trust client context (cheap after the first call)."""
+    install_truststore()
+    return _shared_context(None)
+
+
 def resolve_httpx_verify(
     *,
     ca_bundle: Optional[str] = None,

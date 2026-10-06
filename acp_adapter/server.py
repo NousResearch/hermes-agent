@@ -26,7 +26,9 @@ from acp.schema import (
 
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, detect_provider
 from acp_adapter.commands import SlashCommandsMixin, _estimate_tokens
-from acp_adapter.content import PromptBlock, _content_blocks_to_openai_user_content, _extract_text
+from acp_adapter.content import (
+    PromptBlock, _content_blocks_to_openai_user_content, _extract_text, _prompt_display_text,
+)
 from acp_adapter.events import (
     AssistantMessageIdAllocator, _build_plan_update_from_todo_result, _send_update, flush_open_tool_calls,
     make_message_cb, make_step_cb, make_thinking_cb, make_tool_progress_cb,
@@ -730,10 +732,14 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         return user_text, user_content
 
     def _claim_turn_or_queue(
-        self, state: SessionState, session_id: str, user_text: str, user_content: Any, text_only: bool
+        self, state: SessionState, session_id: str, prompt: list[PromptBlock], user_text: str, user_content: Any,
+        text_only: bool,
     ) -> str | None:
         """Mark the session running; if a turn is active, redirect it (text-only, supported
-        runtime) or queue it. Returns the client message when absorbed, else None."""
+        runtime) or queue it. Returns the client message when absorbed, else None.
+
+        The queue holds prompt blocks so images and attached files survive the wait. A text-only
+        prompt is queued as its (possibly interrupt-rewritten) text."""
         with state.runtime_lock:
             if not state.is_running and not state.command_op:
                 state.is_running = True
@@ -748,7 +754,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                         return "Redirected the active turn with your correction."
                 except Exception:
                     logger.debug("ACP active-turn redirect failed for %s", session_id, exc_info=True)
-            state.queued_prompts.append(user_text or "[Image attachment]")
+            state.queued_prompts.append([TextContentBlock(type="text", text=user_text)] if text_only else list(prompt))
             return f"Queued for the next turn. ({len(state.queued_prompts)} queued)"
 
     def _run_agent_turn(
@@ -825,6 +831,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         user_text = _extract_text(prompt).strip()
         user_content = _content_blocks_to_openai_user_content(prompt)
         text_only_prompt = all(isinstance(block, TextContentBlock) for block in prompt)
+        # A resource-only prompt has no text blocks, but its inlined file body is the turn's text.
+        if not user_text and isinstance(user_content, str):
+            user_text = user_content.strip()
         if not user_text and not (isinstance(user_content, list) and user_content):
             return PromptResponse(stop_reason="end_turn")
 
@@ -843,7 +852,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 await self._drain_queued_prompts(state, session_id, self._conn)
                 return PromptResponse(stop_reason="end_turn")
 
-        absorbed = self._claim_turn_or_queue(state, session_id, user_text, user_content, text_only_prompt)
+        absorbed = self._claim_turn_or_queue(state, session_id, prompt, user_text, user_content, text_only_prompt)
         if absorbed is not None:
             if self._conn:
                 await self._conn.session_update(session_id, acp.update_agent_message_text(absorbed))
@@ -1014,8 +1023,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                     return
                 next_prompt = state.queued_prompts.pop(0)
             if conn:
-                await conn.session_update(session_id, acp.update_user_message_text(next_prompt))
-            await self.prompt(prompt=[TextContentBlock(type="text", text=next_prompt)], session_id=session_id)
+                await conn.session_update(session_id, acp.update_user_message_text(_prompt_display_text(next_prompt)))
+            await self.prompt(prompt=next_prompt, session_id=session_id)
 
     # ---- Session settings (ACP protocol methods) -----------------------------
 

@@ -144,7 +144,7 @@ class SessionState:
     # a bare is_running check in the slash thread would leave a check-then-act window where
     # a prompt claims the turn mid-mutation.
     command_op: bool = False
-    queued_prompts: List[str] = field(default_factory=list)
+    queued_prompts: List[List[Any]] = field(default_factory=list)  # ACP prompt blocks per queued prompt
     runtime_lock: Any = field(default_factory=threading.Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""

@@ -219,9 +219,8 @@ class LogSnapshot:
 
 def _primary_log_path(log_name: str) -> Optional[Path]:
     """Where *log_name* would live if present. Doesn't check existence."""
-    from hermes_cli.logs import LOG_FILES
-    filename = LOG_FILES.get(log_name)
-    return (get_hermes_home() / "logs" / filename) if filename else None
+    from hermes_cli.logs import log_file_path
+    return log_file_path(log_name)  # update/handoff: the ROOT home's, whatever profile is active
 
 
 # Logs written by a client process, invisible to a remote/docker/SSH backend running `debug

@@ -336,6 +336,10 @@ CASES = {
         ["apps/desktop/electron/backend-child.ts"],
         _lanes(frontend=True, e2e_desktop_core=True),
     ),
+    "desktop session resume → desktop core": (
+        ["apps/desktop/src/app/session/hooks/use-session-actions/index.ts"],
+        _lanes(frontend=True, e2e_desktop_core=True),
+    ),
     "desktop core spec → desktop core": (
         ["apps/desktop/e2e/core/transcript-integrity.spec.ts"],
         _lanes(frontend=True, e2e_desktop_core=True),

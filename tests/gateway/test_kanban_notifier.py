@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 
 
 from gateway.config import Platform
@@ -796,3 +797,88 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+def test_gave_up_names_trigger_outcome(tmp_path, monkeypatch):
+    """The blocker names the failure class that tripped the breaker (#79399)."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "gave-up-trigger.db"))
+    kb.init_db()
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="keeps timing out", assignee="worker")
+        kbn.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+        )
+        kb._append_event(
+            conn,
+            tid,
+            "gave_up",
+            {
+                "failures": 2,
+                "error": "Iteration budget exhausted (20/20)",
+                "trigger_outcome": "timed_out",
+            },
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert "it failed 2 times in a row (timed_out)" in text
+
+
+@pytest.mark.parametrize(
+    ("status", "expects_retry"),
+    [("ready", True), ("todo", False), ("blocked", False)],
+)
+def test_timeout_retry_wording_matches_task_status(
+    tmp_path, monkeypatch, status, expects_retry,
+):
+    """Only a ready task can truthfully promise an automatic retry (#79399)."""
+    db_path = tmp_path / f"timeout-retry-{status}.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title=f"goal budget exhausted while {status}",
+            assignee="worker",
+            max_runtime_seconds=10_800,
+        )
+        kbn.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+        )
+        conn.execute("UPDATE tasks SET status=? WHERE id=?", (status, tid))
+        kb._append_event(
+            conn,
+            tid,
+            "timed_out",
+            {
+                "error": "Iteration budget exhausted (90/90)",
+                "failures": 1,
+                "budget_used": 90,
+                "budget_max": 90,
+            },
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert "iteration budget (90/90)" in text
+    assert ("retried automatically" in text) is expects_retry

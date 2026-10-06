@@ -1181,3 +1181,11 @@ def test_router_never_builds_a_child_handler_under_a_lock_logging_shutdown_takes
     assert shutdown_got_router_lock == [True], (
         "lock-order inversion: logging.shutdown (under logging._lock) could not take the router's "
         "lock while the router built a child handler (which needs logging._lock)")
+
+
+def test_quiet_noisy_loggers_covers_httpx2():
+    """mcp SDK >= 2.0 rides on ``httpx2``, whose INFO request lines interpolate the
+    full URL (query credentials included) — it must be pinned at WARNING like httpx
+    (issue #133713)."""
+    hermes_logging._quiet_noisy_loggers()
+    assert logging.getLogger("httpx2").level == logging.WARNING

@@ -261,6 +261,23 @@ def _run_file(directory: Path, data: dict[str, Any]) -> Path:
     return directory / f"update_{stamp[:8]}_{stamp[8:]}_{data.get('pid') or os.getpid()}_{data.get('update_id')}.json"
 
 
+def read_run_record(update_id: str) -> Optional[tuple[Path, dict[str, Any]]]:
+    """The run's own archive ``(path, record)`` in the root store, or None. Never raises.
+
+    The ONE lookup of a run's archive (named at begin, so its running and terminal records share
+    one file); never ``latest.json``, which another profile or run may have replaced since. A file
+    that cannot be read, is not a JSON object, or names another run is not this run's record:
+    callers treat all of those exactly like a missing archive.
+    """
+    with suppress(OSError):
+        for path in _receipt_dir().glob(f"update_*_{update_id}.json"):
+            with suppress(OSError, ValueError):
+                record = json.loads(path.read_text(encoding="utf-8-sig"))
+                if isinstance(record, dict) and record.get("update_id") == update_id:
+                    return path, record
+    return None
+
+
 def _persist_running(data: dict[str, Any]) -> None:
     """Write the open run to disk: a killed update still leaves its own record. Never raises."""
     with suppress(Exception):
@@ -271,10 +288,9 @@ def _persist_running(data: dict[str, Any]) -> None:
         path = _run_file(directory, data)
         # A completion child can finalize while its parent still holds the pre-child
         # context. That stale running snapshot must never undo the terminal receipt.
-        with suppress(OSError, ValueError):
-            stored = json.loads(path.read_text(encoding="utf-8-sig"))
-            if stored.get("update_id") == data.get("update_id") and stored.get("finished_at"):
-                return
+        stored = read_run_record(str(data.get("update_id")))
+        if stored is not None and stored[1].get("finished_at"):
+            return
         from hermes_cli.process_identity import _process_create_time
 
         payload = (json.dumps({**data, "writer_pid": os.getpid(),
@@ -428,19 +444,18 @@ def record_user_action(step: str, reason: str) -> None:
 
 def amend_terminal_followup(update_id: str, step: str, reason: str) -> None:
     """A follow-up that failed after the run's receipt was finalized lands on that receipt. Never raises."""
-    with suppress(Exception):
+    found = read_run_record(update_id)
+    if found is None:
+        return
+    path, record = found
+    record.setdefault("followups", []).append({"step": step, "reason": reason, "at": _utc_now_iso()})
+    payload = (json.dumps(record, indent=2, default=str) + "\n").encode("utf-8")
+    with suppress(Exception):  # an unwritable store: the printed follow-up line still names it
         from hermes_cli.runtime_state import _atomic_bytes
 
-        directory = _receipt_dir()
-        for path in directory.glob(f"update_*_{update_id}.json"):
-            record = json.loads(path.read_text(encoding="utf-8-sig"))
-            if record.get("update_id") != update_id:
-                continue
-            record.setdefault("followups", []).append({"step": step, "reason": reason, "at": _utc_now_iso()})
-            payload = (json.dumps(record, indent=2, default=str) + "\n").encode("utf-8")
-            _atomic_bytes(path, payload)
-            if (read_latest_receipt() or {}).get("update_id") == update_id:
-                _write_latest(payload)
+        _atomic_bytes(path, payload)
+        if (read_latest_receipt() or {}).get("update_id") == update_id:
+            _write_latest(payload)
 
 
 def owe_followup(update_id: Optional[str], step: str, reason: str, **retry: str) -> None:
@@ -710,11 +725,9 @@ def finalize_interrupted_update_receipt(stop_reason: str, *, exit_code: int = 13
     with suppress(Exception):
         clone = copy.copy(current)
         clone.data = copy.deepcopy(current.data)
-        on_disk: dict = {}
-        with suppress(Exception):
-            path = _run_file(_receipt_dir(), current.data)
-            on_disk = json.loads(path.read_text(encoding="utf-8-sig"))
-        if on_disk.get("update_id") == current.data.get("update_id"):
+        found = read_run_record(str(current.data.get("update_id")))
+        if found is not None:
+            path, on_disk = found
             if on_disk.get("finished_at"):  # the completion child already closed the run
                 _current.reset(current.current_token)
                 return path

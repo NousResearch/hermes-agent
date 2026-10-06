@@ -50,6 +50,11 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "project_id": None,
         "created_at": None,
         "archived": False,
+        # Per-board dispatch caps (FR #118116, t_8a2a1ebc): board.json may pin
+        # ``max_spawn`` / ``max_in_progress_per_profile`` for this board alone.
+        # ``None`` (absent) = defer to the global ``kanban.*`` config value.
+        "max_spawn": None,
+        "max_in_progress_per_profile": None,
     }
     try:
         p = board_metadata_path(slug)
@@ -70,10 +75,14 @@ def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    max_spawn: Optional[int] = None, max_in_progress_per_profile: Optional[int] = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
-    "" = clear (``project_id`` is not validated here)."""
+    "" = clear (``project_id`` is not validated here). ``max_spawn`` /
+    ``max_in_progress_per_profile``: per-board dispatch caps (FR #118116) —
+    ``None`` = unchanged, a positive int = pin that board, ``0`` = clear back to
+    the global ``kanban.*`` value (absent in board.json)."""
     _kb._assert_not_delegated_child_mutation()
     slug = _kb._slug_or_default(board)
     meta = read_board_metadata(slug)
@@ -89,6 +98,23 @@ def write_board_metadata(
     for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
         if value is not None:
             meta[key] = str(value) if value else None
+    # Per-board caps (FR #118116): None = leave as read (unchanged); a positive
+    # int pins the board; 0 clears back to the global ``kanban.*`` value.
+    if max_spawn is not None:
+        if max_spawn > 0:
+            meta["max_spawn"] = max_spawn
+        else:
+            meta.pop("max_spawn", None)
+    if max_in_progress_per_profile is not None:
+        if max_in_progress_per_profile > 0:
+            meta["max_in_progress_per_profile"] = max_in_progress_per_profile
+        else:
+            meta.pop("max_in_progress_per_profile", None)
+    # ``None`` caps mean "use the global config" and are never persisted — drop
+    # the keys so board.json stays clean of redundant nulls.
+    for key in ("max_spawn", "max_in_progress_per_profile"):
+        if meta.get(key) is None:
+            meta.pop(key, None)
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)

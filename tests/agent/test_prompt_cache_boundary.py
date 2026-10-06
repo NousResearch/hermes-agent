@@ -196,12 +196,18 @@ class TestRequestLocalSplit:
         assert plan.messages[0]["content"][0]["cache_control"] == MARKER
         assert "cache_control" not in plan.messages[0]["content"][1]
 
-    def test_strip_reconstructs_exact_string_and_redecorates_identically(self):
+    @pytest.mark.parametrize("later_turns", [0, 4], ids=["holds-a-marker", "outside-the-marker-window"])
+    def test_strip_reconstructs_exact_string_and_redecorates_identically(self, later_turns):
+        """Caches key on content, so the scaffold goes out as the same [scaffold, tail] parts on
+        every request, marked or not; the failover stripper must flatten either shape."""
         scaffold = "stable scaffold\n\n" + _SINGLE_SKILL_INSTRUCTION
         register_stable_prefix(scaffold)
         original = [{"role": "user", "content": scaffold + "ticket=one"}]
+        original += [{"role": role, "content": f"turn {i}"} for i in range(later_turns)
+                     for role in ("assistant", "user")]
 
         marked = apply_anthropic_cache_control(copy.deepcopy(original))
+        assert [p["text"] for p in marked[0]["content"]] == [scaffold, "ticket=one"]
         first_wire = copy.deepcopy(marked)
         stripped = strip_anthropic_cache_control(marked)
 

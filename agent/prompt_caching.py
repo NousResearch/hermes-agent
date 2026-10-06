@@ -55,8 +55,8 @@ def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = 
         if not (role in ("tool", "assistant") and not native_anthropic):
             msg["cache_control"] = cache_marker
     elif isinstance(content, str):
-        stable_prefix = find_stable_prefix(content) if role == "user" else None
-        if stable_prefix is not None and content[len(stable_prefix):].strip():
+        stable_prefix = _scaffold_prefix(msg)
+        if stable_prefix is not None:
             # Builder-declared boundary: the scaffold carries the breakpoint and the volatile
             # tail rides unmarked. Request-local only — the stored message stays a string.
             msg["content"] = [_text_part(stable_prefix, cache_marker), _text_part(content[len(stable_prefix):])]
@@ -64,6 +64,27 @@ def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = 
             msg["content"] = [_text_part(content, cache_marker)]
     elif isinstance(content, list) and content and isinstance(content[-1], dict):
         content[-1]["cache_control"] = cache_marker
+
+
+def _scaffold_prefix(msg: dict) -> str | None:
+    """The registered stable scaffold of a string user message (``find_stable_prefix`` keeps the tail non-blank)."""
+    content = msg.get("content")
+    return find_stable_prefix(content) if msg.get("role") == "user" and isinstance(content, str) else None
+
+
+def _split_unmarked_scaffolds(messages: List[Dict[str, Any]]) -> None:
+    """Send every registered scaffold message as [scaffold, tail] parts, marked or not (in place).
+
+    Provider caches key on content, and two text parts are different content from one string:
+    a skill message split while it held a breakpoint must keep the same parts after the rolling
+    marker window moves past it, or the next request re-writes the whole scaffold (#81867).
+    Each hit refreshes the scaffold's registry LRU slot, so a scaffold still in history stays
+    registered and the failover stripper can still recognise its split.
+    """
+    for i, msg in enumerate(messages):
+        prefix = _scaffold_prefix(msg) if isinstance(msg, dict) else None
+        if prefix is not None:
+            messages[i] = {**msg, "content": [_text_part(prefix), _text_part(msg["content"][len(prefix):])]}
 
 
 def _can_carry_marker(msg: dict, native_anthropic: bool, tool_part_markers: bool = True) -> bool:
@@ -189,8 +210,12 @@ def strip_anthropic_cache_control(api_messages: List[Dict[str, Any]]) -> List[Di
         role = msg.get("role")
         # The skill split is the only decoration marking the FIRST part of a user message,
         # so the shape alone identifies it even after the prefix registry evicted the entry.
-        skill_split_shape = (role == "user" and len(content) == 2 and all(isinstance(p, dict) for p in content)
-                             and "cache_control" in content[0] and "cache_control" not in content[1])
+        two_parts = role == "user" and len(content) == 2 and all(isinstance(p, dict) for p in content)
+        skill_split_shape = two_parts and "cache_control" not in content[1] and (
+            "cache_control" in content[0]
+            # Unmarked split (outside the marker window): only the registry can tell it from a
+            # genuine two-part user message.
+            or find_stable_prefix("".join(str(p.get("text", "")) for p in content)) == content[0].get("text"))
         if _has_part_marker(content):
             content = msg["content"] = [
                 {k: v for k, v in part.items() if k != "cache_control"}
@@ -289,6 +314,7 @@ def build_prompt_cache_plan(
     for endpoint in _completed_transaction_endpoint_indexes(messages, native_anthropic=True)[-2:]:
         messages[endpoint] = copy.deepcopy(messages[endpoint])
         _apply_cache_marker(messages[endpoint], marker, native_anthropic=True)
+    _split_unmarked_scaffolds(messages)
 
     return PromptCachePlan(messages=messages, tools=planned_tools)
 
@@ -331,5 +357,6 @@ def apply_anthropic_cache_control(
     for idx in non_sys[-(4 - breakpoints_used):]:
         messages[idx] = copy.deepcopy(messages[idx])
         _apply_cache_marker(messages[idx], marker, native_anthropic=native_anthropic, tool_part_markers=tool_part_markers)
+    _split_unmarked_scaffolds(messages)
 
     return messages

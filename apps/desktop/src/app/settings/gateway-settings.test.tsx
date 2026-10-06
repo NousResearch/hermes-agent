@@ -561,12 +561,12 @@ describe('GatewaySettings', () => {
     try {
       await waitFor(() =>
         expect($notifications.get()).toEqual(
-          expect.arrayContaining([expect.objectContaining({ kind: 'error', message: expect.stringContaining('ssh <host> true') })])
+          expect.arrayContaining([
+            expect.objectContaining({ kind: 'error', message: expect.stringContaining('ssh <host> true') })
+          ])
         )
       )
-      expect(
-        $notifications.get().some((n: { message?: string }) => n.message === 'SSH connection failed.')
-      ).toBe(false)
+      expect($notifications.get().some((n: { message?: string }) => n.message === 'SSH connection failed.')).toBe(false)
     } finally {
       $notifications.set([])
     }

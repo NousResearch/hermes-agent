@@ -601,7 +601,13 @@ def _memory_provider_generic(name: str) -> None:
     """Generic check for every other memory provider (openviking, honcho, hindsight, ...)."""
     from plugins.memory import load_memory_provider
     _provider = load_memory_provider(name)
-    if _provider and _provider.is_available():
+    _is_avail = False
+    if _provider:
+        try:
+            _is_avail = bool(_provider.is_available())
+        except (Exception, SystemExit):
+            _is_avail = False
+    if _is_avail:
         check_ok(f"{name} provider active")
     elif _provider:
         check_warn(f"{name} configured but not available", "run: hermes memory status")
@@ -628,7 +634,7 @@ def _check_memory_provider(should_fix: bool, f: Finding) -> None:
             check_warn(f"{label} check failed", str(_e))
         else:
             _fail_and_issue(*missing_row, missing_issue, f.issues)
-    except Exception as _e:
+    except (Exception, SystemExit) as _e:
         check_warn(f"{label} check failed", str(_e))
 
 

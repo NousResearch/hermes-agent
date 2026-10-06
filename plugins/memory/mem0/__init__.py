@@ -217,7 +217,7 @@ class Mem0MemoryProvider(MemoryProvider):
         """Background-path wrapper: run ``call`` under the breaker; on error log ``msg`` and return None."""
         try:
             result = call()
-        except Exception as e:
+        except (Exception, SystemExit) as e:
             self._record_failure()
             log(msg, e)
             return None
@@ -365,7 +365,7 @@ class Mem0MemoryProvider(MemoryProvider):
             return tool_error(f"Missing required parameter: {missing}")
         try:
             result = body(self, args)
-        except Exception as e:
+        except (Exception, SystemExit) as e:
             client = _is_client_error(e)
             if client and on_client_error == "not_found":
                 return tool_error(f"Memory not found: {args['memory_id']}")

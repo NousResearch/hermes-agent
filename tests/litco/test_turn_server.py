@@ -235,7 +235,9 @@ async def test_runner_error_is_classified(home):
         events = await _turn(client)
     types = [e["type"] for e in events]
     assert types == ["goal_accepted", "error_classified", "final"]
-    assert "provider exploded" in events[1]["message"]
+    # the exception's text stays in the host log; the app gets a code
+    assert events[1]["code"] == events[1]["message"] == "unknown"
+    assert "provider exploded" not in json.dumps(events)
 
 
 # ---------------------------------------------------------------------------
@@ -614,3 +616,64 @@ async def test_turn_grant_and_shared_memory_are_parsed(home):
         await _turn(client, _body(turnGrant="x" * 5000, sharedMemory={"firm": [f"rule {i}" for i in range(40)]}))
         req = runner.calls[-1].request
         assert req.turn_grant is None and len(req.shared_memory.firm) == 12
+
+
+# ---------------------------------------------------------------------------
+# LKP-1014: the product's model settings, progress, and the error contract
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_model_settings_reach_the_runner_and_malformed_ones_are_refused(home):
+    runner = FakeRunner()
+    async with TestClient(TestServer(_server(runner, home).build_app())) as client:
+        await _turn(client, _body(model="moonshotai/kimi-k3", fallbackModels=["anthropic/claude-sonnet-5"],
+                                  freshContext=True, progressAfterMs=60000))
+        req = runner.calls[-1].request
+        assert (req.model, req.fallback_models, req.fresh_context, req.progress_after_ms) == (
+            "moonshotai/kimi-k3", ("anthropic/claude-sonnet-5",), True, 60000)
+        await _turn(client)
+        req = runner.calls[-1].request
+        assert (req.model, req.fallback_models, req.fresh_context, req.progress_after_ms) == (None, None, False, None)
+        for field, value, code in (("model", "", "bad_model"), ("model", "kimi k3", "bad_model"),
+                                   ("model", "a/" + "x" * 200, "bad_model"), ("model", 7, "bad_model"),
+                                   ("fallbackModels", "anthropic/claude-sonnet-5", "bad_fallback_models"),
+                                   ("fallbackModels", [f"v/m{i}" for i in range(5)], "bad_fallback_models"),
+                                   ("fallbackModels", ["v/m", "not a slug"], "bad_fallback_models"),
+                                   ("freshContext", "yes", "bad_fresh_context"),
+                                   ("progressAfterMs", 0, "bad_progress"), ("progressAfterMs", True, "bad_progress")):
+            resp = await client.post("/turn", json=_body(**{field: value}), headers=_headers())
+            assert resp.status == 400, (field, value)
+            assert (await resp.json())["error"]["code"] == code
+
+
+@pytest.mark.asyncio
+async def test_turn_progress_reports_the_running_tool_until_final(home):
+    class Slow(FakeRunner):
+        def run(self, ctx):
+            ctx.emit("tool_started", call={"toolCallId": "c0", "name": "litkit_search"}, args={})
+            ctx.emit("tool_complete", call={"toolCallId": "c0", "name": "litkit_search"}, result={"status": "ok"})
+            ctx.emit("tool_started", call={"toolCallId": "c1", "name": "terminal"}, args={})
+            time.sleep(0.35)
+            return TurnOutcome(text="Done.")
+
+    async with TestClient(TestServer(_server(Slow(), home).build_app())) as client:
+        events = await _turn(client, _body(progressAfterMs=100))
+        quiet = await _turn(client, _body(sessionId="s2"))
+    progress = [e for e in events if e["type"] == "turn_progress"]
+    assert len(progress) >= 2 and events[-1]["type"] == "final"
+    assert all(e["stepId"] < events[-1]["stepId"] for e in progress)
+    assert progress[-1]["activeTool"] == "terminal" and progress[-1]["lastTool"] == "litkit_search"
+    assert progress[-1]["toolCalls"] == 2 and progress[-1]["elapsedMs"] >= 100
+    assert progress[0]["elapsedMs"] < progress[-1]["elapsedMs"]
+    assert not [e for e in quiet if e["type"] == "turn_progress"], "no progressAfterMs, no frames"
+
+
+@pytest.mark.asyncio
+async def test_final_reports_the_route_that_served_the_turn(home):
+    class FellBack(FakeRunner):
+        def run(self, ctx):
+            return TurnOutcome(text="Done.", model_used="anthropic/claude-sonnet-5", provider_used="openrouter")
+
+    async with TestClient(TestServer(_server(FellBack(), home).build_app())) as client:
+        final = (await _turn(client, _body(model="moonshotai/kimi-k3")))[-1]
+    assert (final["modelUsed"], final["providerUsed"]) == ("anthropic/claude-sonnet-5", "openrouter")

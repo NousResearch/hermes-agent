@@ -18,7 +18,15 @@ and in between ``assistant_delta`` / ``assistant_reset`` / ``tool_*`` / ``error_
 Sessions: one LitKit thread = one ``sessionId`` = one Hermes session. Turns on the same
 ``sessionId`` run one at a time in arrival order; turns on different ``sessionId``s run
 concurrently. There is no cumulative token ceiling; ``budgetMs`` (if given) interrupts the
-turn when the wall clock runs out.
+turn when the wall clock runs out. ``freshContext`` starts the thread over in a new Hermes session.
+
+Model (LKP-1014): the model and its fallbacks are product settings. LitKit sends ``model`` and
+``fallbackModels`` on each turn; the host never carries a fallback chain of its own
+(:mod:`litco.config_guard`). ``progressAfterMs`` asks for ``turn_progress`` frames while a turn runs.
+
+Errors: a turn that did not complete ends with ``error_classified{category, code, retryable}`` and
+``final.text == ""``. Runtime copy (Hermes's own notices) never leaves the host: text that reads like
+one is dropped here as a last line of defence (:func:`is_runtime_notice`).
 
 Drain (FIRM_AGENT_HOST 3.6): ``litco-agent-drain`` posts ``/drain`` and then polls ``/health``
 until ``activeTurns`` is 0. From the moment the flag is set, ``/turn`` answers
@@ -46,6 +54,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -75,6 +84,11 @@ TURN_GRANT_MAX = 4096
 SHARED_MEMORY_MAX_ITEMS = 12  # per scope (FIRM_AGENT_HOST 4.3)
 SHARED_MEMORY_MAX_CHARS = 3000  # per scope
 CRON_COUNT_TIMEOUT_SECONDS = 2.0  # /health must answer promptly; past this cronJobs is left out
+MODEL_SLUG_MAX = 200
+FALLBACK_MODELS_MAX = 4
+# OpenRouter-style ``vendor/model`` slug, with an optional ``:variant`` (``moonshotai/kimi-k3``).
+_MODEL_SLUG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~-]*(?:/[A-Za-z0-9._~@+-]+)+(?::[A-Za-z0-9._-]+)?$")
+_ERROR_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 CHANNELS = ("slack", "web", "telegram")
 KINDS = ("channel", "dm")
 KEEPALIVE_SECONDS = 15.0
@@ -109,6 +123,12 @@ class TurnRequest:
     # FIRM_AGENT_HOST 4.3: firm conventions and the acting lawyer's own notes, for this turn's
     # system prompt only (never the persisted session).
     shared_memory: Optional["SharedMemory"] = None
+    # LKP-1014: the product's model settings for this turn. ``model`` None = the profile's model;
+    # ``fallback_models`` None = no fallback at all (the host never has a chain of its own).
+    model: Optional[str] = None
+    fallback_models: Optional[Tuple[str, ...]] = None
+    fresh_context: bool = False
+    progress_after_ms: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -181,10 +201,13 @@ class TurnOutcome:
     cache_read_tokens: Optional[int] = None
     cache_write_tokens: Optional[int] = None
     model_used: Optional[str] = None
+    provider_used: Optional[str] = None
     halted: Optional[str] = None
     halted_explanation: Optional[str] = None
+    # A short machine code (``repetition``, ``rate_limit``…), never prose: it reaches the app as-is.
     error: Optional[str] = None
     error_category: str = "unknown"
+    error_retryable: bool = True
 
 
 class TurnContext:
@@ -263,9 +286,15 @@ class _Turn:
     done: bool = False
     task: Optional["asyncio.Task"] = None
     pending_interrupt: Optional[str] = None
+    progress_handle: Optional[asyncio.TimerHandle] = None
     events: List[str] = field(default_factory=list)
     # Runner-thread events wait here until the loop drains them; deque append/popleft are atomic.
     inbox: "deque" = field(default_factory=deque)
+    # Tool state as the frames went out (event-loop thread only), for ``turn_progress``.
+    open_tools: Dict[str, str] = field(default_factory=dict)  # toolCallId -> name
+    last_tool: Optional[str] = None
+    tool_calls: int = 0
+    notice_dropped: bool = False
 
 
 class TurnServer:
@@ -479,8 +508,23 @@ class TurnServer:
         if not text.strip() and not attachments:
             return None, self._error(400, "empty_turn", "text or attachments required")
         budget = body.get("budgetMs")
-        if budget is not None and (not isinstance(budget, (int, float)) or isinstance(budget, bool) or budget <= 0):
+        if budget is not None and not _positive_number(budget):
             return None, self._error(400, "bad_budget", "budgetMs must be a positive number")
+        model = body.get("model")
+        if model is not None and not _model_slug(model):
+            return None, self._error(400, "bad_model",
+                                     f"model must be a vendor/model slug of 1-{MODEL_SLUG_MAX} characters")
+        fallbacks = body.get("fallbackModels")
+        if fallbacks is not None and not (isinstance(fallbacks, list) and len(fallbacks) <= FALLBACK_MODELS_MAX
+                                          and all(_model_slug(m) for m in fallbacks)):
+            return None, self._error(400, "bad_fallback_models",
+                                     f"fallbackModels must be a list of at most {FALLBACK_MODELS_MAX} model slugs")
+        fresh = body.get("freshContext")
+        if fresh is not None and not isinstance(fresh, bool):
+            return None, self._error(400, "bad_fresh_context", "freshContext must be a boolean")
+        progress = body.get("progressAfterMs")
+        if progress is not None and not _positive_number(progress):
+            return None, self._error(400, "bad_progress", "progressAfterMs must be a positive number")
         return TurnRequest(matter_id=matter_id, user_id=user_id, session_id=session_id, text=text,
                            attachments=attachments, channel=channel, kind=kind,
                            budget_ms=int(budget) if budget is not None else None,
@@ -488,19 +532,52 @@ class TurnServer:
                            thread_context=parse_thread_context(body.get("threadContext")),
                            litkit_channel=parse_litkit_channel(body.get("litkitChannel")),
                            turn_grant=parse_turn_grant(body.get("turnGrant")),
-                           shared_memory=parse_shared_memory(body.get("sharedMemory"))), None
+                           shared_memory=parse_shared_memory(body.get("sharedMemory")),
+                           model=model.strip() if model is not None else None,
+                           fallback_models=tuple(m.strip() for m in fallbacks) if fallbacks is not None else None,
+                           fresh_context=bool(fresh),
+                           progress_after_ms=max(int(progress), 1) if progress is not None else None), None
 
     # -- event plumbing ----------------------------------------------------------
     def _push(self, turn: _Turn, event_type: str, fields: Dict[str, Any]) -> None:
         """Queue one SSE frame (event-loop thread only)."""
         if turn.done:
             return
+        if event_type == "assistant_delta" and is_runtime_notice(str(fields.get("delta") or "")):
+            # Never forwarded; the final frame carries the turn's verdict.
+            turn.notice_dropped = True
+            logger.warning("litco turn %s: dropped a runtime notice from the stream: %r",
+                           turn.turn_id, str(fields.get("delta") or "")[:200])
+            return
+        self._track_tools(turn, event_type, fields)
         turn.step += 1
         payload = {"type": event_type, "turnId": turn.turn_id, "stepId": turn.step,
                    "ts": int(time.time() * 1000), **fields}
         turn.events.append(event_type)
         data = json.dumps(payload, ensure_ascii=False, default=str)
         turn.queue.put_nowait(f"event: {event_type}\ndata: {data}\n\n".encode("utf-8"))
+
+    @staticmethod
+    def _track_tools(turn: _Turn, event_type: str, fields: Dict[str, Any]) -> None:
+        call = fields.get("call") if isinstance(fields.get("call"), dict) else {}
+        call_id, name = str(call.get("toolCallId") or ""), call.get("name")
+        if event_type == "tool_started":
+            turn.tool_calls += 1
+            turn.open_tools[call_id] = str(name or "")
+        elif event_type == "tool_complete":
+            turn.open_tools.pop(call_id, None)
+            turn.last_tool = str(name) if name else turn.last_tool
+
+    def _progress_tick(self, turn: _Turn, loop: asyncio.AbstractEventLoop, every: float) -> None:
+        """``turn_progress`` every ``progressAfterMs`` until ``final`` (event-loop thread only)."""
+        if turn.done:
+            return
+        self._drain(turn)  # report the tool state of every event the runner has emitted so far
+        active = next(reversed(turn.open_tools.values()), None) if turn.open_tools else None
+        self._push(turn, "turn_progress", {"elapsedMs": int((time.time() - turn.started_at) * 1000),
+                                           "activeTool": active or None, "lastTool": turn.last_tool,
+                                           "toolCalls": turn.tool_calls})
+        turn.progress_handle = loop.call_later(every, self._progress_tick, turn, loop, every)
 
     def _threadsafe_emitter(self, turn: _Turn, loop: asyncio.AbstractEventLoop) -> Callable[[str, Dict[str, Any]], None]:
         def emit(event_type: str, fields: Dict[str, Any]) -> None:
@@ -538,6 +615,9 @@ class TurnServer:
         outcome = TurnOutcome()
         deliverables: List[dict] = []
         budget_handle = None
+        if req.progress_after_ms:
+            every = req.progress_after_ms / 1000.0
+            turn.progress_handle = loop.call_later(every, self._progress_tick, turn, loop, every)
         lock = self._session_lock(req.session_id)
         try:
             async with lock:
@@ -559,18 +639,33 @@ class TurnServer:
                     deliverables = changed_deliverables(self.home, cwd, before, pop_registered(turn.turn_id))
         except Exception as exc:  # the runner should not raise; classify if it does
             logger.exception("litco turn %s failed", turn.turn_id)
-            outcome = TurnOutcome(error=_short(str(exc)) or exc.__class__.__name__, error_category="unknown")
+            outcome = TurnOutcome(error="unknown", error_category="unknown")
         finally:
             pop_registered(turn.turn_id)  # never leak a failed turn's registrations
             if budget_handle is not None:
                 budget_handle.cancel()
+            if turn.progress_handle is not None:
+                turn.progress_handle.cancel()
         self._finish(turn, outcome, deliverables)
 
     def _finish(self, turn: _Turn, outcome: TurnOutcome, deliverables: List[dict]) -> None:
         self._drain(turn)  # every runner event precedes the terminal frames, however the loop scheduled them
         ctx = turn.ctx
+        if not outcome.error and is_runtime_notice(outcome.text):
+            logger.warning("litco turn %s: runtime notice in the final text, failing the turn: %r",
+                           turn.turn_id, outcome.text[:200])
+            outcome.error, outcome.error_category, outcome.text = "runtime_notice", "unknown", ""
         if outcome.error:
-            self._push(turn, "error_classified", {"category": outcome.error_category, "message": outcome.error,
+            code = outcome.error if _ERROR_CODE.match(outcome.error) else outcome.error_category or "unknown"
+            if code != outcome.error:
+                logger.warning("litco turn %s: runner error was not a code, sent %r instead: %r",
+                               turn.turn_id, code, outcome.error[:200])
+            outcome.text = ""  # a failed turn has no answer; the app says what happened in its own words
+            logger.info("litco turn %s failed: code=%s model=%s elapsed=%.1fs toolCalls=%d", turn.turn_id, code,
+                        outcome.model_used or turn.request.model or "?", time.time() - turn.started_at,
+                        turn.tool_calls)
+            self._push(turn, "error_classified", {"category": outcome.error_category or "unknown", "code": code,
+                                                  "retryable": bool(outcome.error_retryable), "message": code,
                                                   "recovery": "surface"})
         halted = outcome.halted
         if not halted and ctx is not None and ctx.interrupted:
@@ -590,6 +685,8 @@ class TurnServer:
                                  "durationMs": int((time.time() - turn.started_at) * 1000)}
         if outcome.model_used:
             final["modelUsed"] = outcome.model_used
+        if outcome.provider_used:
+            final["providerUsed"] = outcome.provider_used
         if deliverables:
             final["deliverables"] = deliverables
         self._push(turn, "final", final)
@@ -656,6 +753,30 @@ class _suppress:
 
     def __exit__(self, *exc):
         return True
+
+
+def _positive_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+def _model_slug(value: Any) -> bool:
+    return (isinstance(value, str) and 0 < len(value.strip()) <= MODEL_SLUG_MAX
+            and bool(_MODEL_SLUG.match(value.strip())))
+
+
+# Hermes's user copy for runtime failures (agent/turn_truncation.py, agent/turn_failure_copy.py): written
+# for a CLI user, never for a lawyer. Any of these in text bound for LitKit means a leak.
+_RUNTIME_NOTICE_MARKERS = (
+    "`/model`", "Repetition Detected", "Thinking Budget", "Context window full", "/reasoning", "/compress",
+    "Your request was not processed", "This turn did not complete", "⚠️ **", "Stream stalled mid tool-call",
+)
+
+
+def is_runtime_notice(text: str) -> bool:
+    """True when ``text`` reads like Hermes runtime copy rather than Ana's answer."""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    return text.lstrip().startswith("⚠") or any(marker in text for marker in _RUNTIME_NOTICE_MARKERS)
 
 
 def _short(text: str, limit: int = 500) -> str:

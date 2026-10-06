@@ -419,3 +419,79 @@ def test_held_command_reaches_the_model_as_held_and_the_app_as_not_failed(tmp_pa
     m.progress("tool.completed", "terminal", None, None, duration=0.1, is_error=True, result=raw)
     m.tool_complete("c2", "terminal", {}, raw)
     assert events[-1][1]["result"]["status"] == "ok" and events[-1][1]["result"]["held"] is True
+
+
+# ---------------------------------------------------------------------------
+# LKP-1014: the product's model settings and the error contract
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def built_agents(monkeypatch, tmp_path):
+    """The real ``_build_agent`` with ``AIAgent`` and the gateway resolvers stubbed: what reaches the agent."""
+    import gateway.run as gateway_run
+    import run_agent
+    from hermes_cli import tools_config
+
+    built = []
+
+    class CapturingAgent:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            built.append(self)
+
+    monkeypatch.setattr(run_agent, "AIAgent", CapturingAgent)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs",
+                        lambda: {"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_key": "k"})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda *a, **k: "profile/model")
+    # a profile chain that must never be read for a litco_turn turn
+    monkeypatch.setattr(gateway_run.GatewayRunner, "_load_fallback_model",
+                        staticmethod(lambda: [{"provider": "custom", "model": "claude-max"}]))
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda cfg, platform: {"terminal"})
+    return built
+
+
+def test_turn_model_and_fallbacks_reach_the_agent_and_the_profile_chain_never_does(tmp_path, built_agents):
+    runner = HermesTurnRunner()
+    ctx, _ = _ctx(tmp_path, model="moonshotai/kimi-k3",
+                  fallback_models=("anthropic/claude-sonnet-5", "openai/gpt-6"))
+    runner._build_agent(ctx, "litco_s1", _EventMapper(ctx))
+    kwargs = built_agents[-1].kwargs
+    assert kwargs["model"] == "moonshotai/kimi-k3" and kwargs["provider"] == "openrouter"
+    assert kwargs["fallback_model"] == [{"provider": "openrouter", "model": "anthropic/claude-sonnet-5"},
+                                        {"provider": "openrouter", "model": "openai/gpt-6"}]
+    ctx, _ = _ctx(tmp_path)
+    runner._build_agent(ctx, "litco_s1", _EventMapper(ctx))
+    kwargs = built_agents[-1].kwargs
+    assert kwargs["model"] == "profile/model" and kwargs["fallback_model"] is None
+
+
+def test_fresh_context_starts_a_new_session_that_later_turns_continue(runner, tmp_path, monkeypatch):
+    agents = []
+
+    def build(ctx, sid, mapper):
+        agent = FakeAgent(mapper)
+        agent.session_id = sid
+        agents.append(agent)
+        return agent
+
+    monkeypatch.setattr(runner, "_build_agent", build)
+    runner.run(_ctx(tmp_path)[0])
+    assert agents[-1].seen["task_id"] == "litco_s1" and agents[-1].seen["history"]
+    runner.run(_ctx(tmp_path, fresh_context=True)[0])
+    fresh = agents[-1].seen["task_id"]
+    assert fresh != "litco_s1" and fresh.startswith("litco_s1") and agents[-1].seen["history"] == []
+    runner.run(_ctx(tmp_path)[0])
+    assert agents[-1].seen["task_id"] == fresh
+    assert agents[-1].seen["history"] == [{"role": "user", "content": f"earlier in {fresh}"}]
+
+
+def test_serving_route_is_reported_after_a_fallback(runner, tmp_path, monkeypatch):
+    class FellBack(FakeAgent):
+        def run_conversation(self, user_message, conversation_history, task_id):
+            self.model, self.provider = "anthropic/claude-sonnet-5", "openrouter"  # _try_activate_fallback
+            return {"final_response": "answer", "completed": True}
+
+    monkeypatch.setattr(runner, "_build_agent", lambda ctx, sid, mapper: FellBack(mapper))
+    outcome = runner.run(_ctx(tmp_path, model="moonshotai/kimi-k3")[0])
+    assert (outcome.model_used, outcome.provider_used) == ("anthropic/claude-sonnet-5", "openrouter")

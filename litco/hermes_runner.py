@@ -1,9 +1,12 @@
 """Production :class:`~litco.turn_server.TurnRunner`: one turn of a Hermes ``AIAgent``.
 
 Agent construction follows the API-server adapter (``gateway/platforms/api_server.py``
-``_create_agent``): runtime provider and model from the gateway config, toolsets from
-``platform_toolsets.litco_turn``, the profile's SessionDB, fallback chain and reasoning
-config. The difference is the event mapping, which targets LitKit's agent2 frames:
+``_create_agent``): runtime provider from the gateway config, toolsets from
+``platform_toolsets.litco_turn``, the profile's SessionDB and reasoning config. The model is the
+product's (LKP-1014): the turn's ``model`` when LitKit sends one, else the profile's, and the
+fallback chain is exactly the turn's ``fallbackModels`` on the profile's provider. A profile
+``fallback_providers`` chain is never read. The difference is the event mapping, which targets
+LitKit's agent2 frames:
 
 ========================================  ===========================================
 Hermes callback                           Turn-server event
@@ -13,8 +16,13 @@ Hermes callback                           Turn-server event
 ``tool_start_callback(id, name, args)``   ``tool_started{call, args}``
 ``tool_progress_callback("subagent.*")``  ``tool_progress{call, message}``
 ``tool_complete_callback(id, name, …)``   ``tool_complete{call, result{status,summary}}``
-result ``interrupted`` / ``failed``       ``loop_halted`` / ``error_classified``
+result ``interrupted``                    ``loop_halted``
+result not completed (see below)          ``error_classified{category, code, retryable}``
 ========================================  ===========================================
+
+A result that did not complete (``partial``, ``failed``, a ``failure_reason``, or no answer) never
+hands its ``final_response`` on: that is Hermes's own user copy ("Switch to a different model with
+``/model``"), written for a CLI user. The outcome carries a machine code instead (:func:`failure_code`).
 
 Hermes has no plan events, so ``plan_*`` frames are never emitted.
 
@@ -37,6 +45,7 @@ import json
 import logging
 import threading
 import time
+import uuid
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Deque, Dict, Optional, Tuple
@@ -71,6 +80,12 @@ class _SessionMap:
     def get(self, session_id: str) -> str:
         with self._lock:
             return self._load().get(session_id) or f"litco_{safe_segment(session_id)}"
+
+    def fresh(self, session_id: str) -> str:
+        """Allocate and map a new Hermes session for ``session_id`` (``freshContext``)."""
+        hermes_id = f"litco_{safe_segment(session_id)}__r{uuid.uuid4().hex[:8]}"
+        self.set(session_id, hermes_id)
+        return hermes_id
 
     def set(self, session_id: str, hermes_id: str) -> None:
         with self._lock:
@@ -316,10 +331,11 @@ class HermesTurnRunner:
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
-        model = runtime_kwargs.pop("model", None) or _resolve_gateway_model()
+        req = ctx.request
+        profile_model = runtime_kwargs.pop("model", None) or _resolve_gateway_model()
+        model = req.model or profile_model
         runtime_kwargs.pop("_fallback_notice", None)
         user_config = _load_gateway_config()
-        req = ctx.request
         return AIAgent(
             model=model, **runtime_kwargs, **_checkpoint_agent_kwargs(user_config),
             max_iterations=_current_max_iterations(), quiet_mode=True, verbose_logging=False,
@@ -329,7 +345,8 @@ class HermesTurnRunner:
             stream_delta_callback=mapper.delta, tool_progress_callback=mapper.progress,
             tool_start_callback=mapper.tool_start, tool_complete_callback=mapper.tool_complete,
             interim_assistant_callback=mapper.commentary,
-            session_db=self._session_db(), fallback_model=GatewayRunner._load_fallback_model(),
+            session_db=self._session_db(),
+            fallback_model=product_fallback_chain(req.fallback_models, runtime_kwargs.get("provider")),
             reasoning_config=GatewayRunner._load_reasoning_config(model),
             gateway_session_key=_session_key(req))
 
@@ -340,7 +357,8 @@ class HermesTurnRunner:
 
         req = ctx.request
         sessions = self._sessions()
-        hermes_sid = sessions.get(req.session_id)
+        # freshContext: the new id is mapped before the run, so later turns continue it.
+        hermes_sid = sessions.fresh(req.session_id) if req.fresh_context else sessions.get(req.session_id)
         mapper = _EventMapper(ctx)
         tokens = set_session_vars(
             platform=self.platform, chat_id=req.session_id, chat_type=req.kind, thread_id=req.session_id,
@@ -353,7 +371,8 @@ class HermesTurnRunner:
         agent = None
         try:
             db = self._session_db()
-            history = db.get_messages_as_conversation(hermes_sid) if db is not None else []
+            history = (db.get_messages_as_conversation(hermes_sid)
+                       if db is not None and not req.fresh_context else [])
             agent = self._build_agent(ctx, hermes_sid, mapper)
             # Before the first prompt is assembled: MEMORY.md / USER.md come from this thread's folder.
             scope_agent_memory(agent, memory_dir(ctx.home, req.kind, req.user_id))
@@ -363,17 +382,26 @@ class HermesTurnRunner:
             result = agent.run_conversation(user_message=build_user_message(ctx), conversation_history=history,
                                             task_id=hermes_sid)
             result = result if isinstance(result, dict) else {}
+            # After the run ``agent.model``/``provider`` name the route that served it: fallback
+            # activation swaps them in place and the primary is only restored at the next turn's start.
             outcome = TurnOutcome(
                 text=str(result.get("final_response") or ""),
                 input_tokens=int(getattr(agent, "session_prompt_tokens", 0) or 0),
                 output_tokens=int(getattr(agent, "session_completion_tokens", 0) or 0),
                 cache_read_tokens=getattr(agent, "session_cache_read_tokens", None),
                 cache_write_tokens=getattr(agent, "session_cache_write_tokens", None),
-                model_used=str(getattr(agent, "model", "") or "") or None)
+                model_used=str(getattr(agent, "model", "") or "") or None,
+                provider_used=str(getattr(agent, "provider", "") or "") or None)
+            failure = failure_code(result)
             if result.get("interrupted") or ctx.interrupted:
                 outcome.halted = ctx.interrupt_reason or "interrupted"
-            elif result.get("failed"):
-                outcome.error = str(result.get("error") or result.get("turn_exit_reason") or "the turn failed")[:500]
+                if failure is not None:
+                    outcome.text = ""
+            elif failure is not None:
+                outcome.text = ""
+                outcome.error, outcome.error_category, outcome.error_retryable = failure
+                logger.info("litco turn %s did not complete: code=%s model=%s detail=%r", ctx.turn_id,
+                            outcome.error, outcome.model_used, str(result.get("error") or "")[:200])
             new_sid = getattr(agent, "session_id", None)
             if isinstance(new_sid, str) and new_sid and new_sid != hermes_sid:
                 sessions.set(req.session_id, new_sid)
@@ -382,7 +410,8 @@ class HermesTurnRunner:
             return outcome
         except Exception as exc:
             logger.exception("litco hermes turn failed (session %s)", req.session_id)
-            return TurnOutcome(error=str(exc)[:500] or exc.__class__.__name__, error_category=_classify(exc))
+            category = _classify(exc)
+            return TurnOutcome(error=category, error_category=category, error_retryable=category != "auth")
         finally:
             reset_turn(turn_token)
             clear_task_env_overrides(hermes_sid)
@@ -446,8 +475,67 @@ def _session_key(req) -> str:
     return f"{_session_key_namespace(profile)}:{PLATFORM}:{req.kind}:{req.session_id}"
 
 
-def _classify(exc: BaseException) -> str:
-    text = f"{exc.__class__.__name__} {exc}".lower()
+def product_fallback_chain(models, provider) -> Optional[list]:
+    """The turn's ``fallbackModels`` as Hermes fallback entries on the profile's provider.
+
+    Same entry shape as ``hermes_cli.fallback_config.get_fallback_chain`` (``{provider, model}``).
+    None (no fallback) when the turn sends none: the product owns the chain, not the profile.
+    """
+    provider = str(provider or "").strip()
+    chain = [{"provider": provider, "model": m} for m in (models or ()) if provider and m]
+    return chain or None
+
+
+# failure_reason (a FailoverReason value or a turn_failure_copy site code) -> the app's taxonomy.
+_REASON_CATEGORY = {
+    "repetition": "repetition", "truncated": "truncated",
+    "context_overflow": "context_overflow", "payload_too_large": "context_overflow",
+    "timeout": "timeout",
+    "auth": "auth", "auth_permanent": "auth", "billing": "auth", "billing_unverified": "auth",
+    "rate_limit": "provider_outage", "upstream_rate_limit": "provider_outage", "overloaded": "provider_outage",
+    "server_error": "provider_outage", "invalid_response": "provider_outage", "empty_response": "provider_outage",
+    "model_not_found": "provider_outage", "upstream_blocked": "provider_outage",
+}
+
+
+def _category_from_text(text: str) -> str:
+    text = text.lower()
+    if "repetition" in text:
+        return "repetition"
+    if "reasoning" in text and ("output token" in text or "budget" in text):
+        return "thinking_exhausted"
+    if "context window" in text or "context_overflow" in text or "context length" in text:
+        return "context_overflow"
+    if "truncat" in text or "cut off" in text:
+        return "truncated"
+    if "closed the stream" in text or "stream ended" in text or "connection" in text and "lost" in text:
+        return "stream_closed"
+    return _classify_text(text)
+
+
+def failure_code(result: Any) -> Optional[Tuple[str, str, bool]]:
+    """``(code, category, retryable)`` for a turn result that did not complete, else None.
+
+    Not completed = empty result, ``partial`` or ``failed``, a ``failure_reason``, or no answer text.
+    ``code`` is the ``failure_reason`` when Hermes stamped one, else the category read from the error.
+    """
+    if not isinstance(result, dict) or not result:
+        return "unknown", "unknown", True
+    reason = str(result.get("failure_reason") or "").strip()
+    answer = str(result.get("final_response") or "").strip()
+    if not (result.get("partial") or result.get("failed") or reason or not answer):
+        return None
+    retryable = result.get("failure_retryable")
+    retryable = True if retryable is None else bool(retryable)
+    detail = f"{result.get('error') or ''} {result.get('turn_exit_reason') or ''}"
+    by_text = _category_from_text(detail)
+    if reason:
+        category = by_text if by_text in ("repetition", "thinking_exhausted") else _REASON_CATEGORY.get(reason, by_text)
+        return reason, category, retryable
+    return by_text, by_text, retryable
+
+
+def _classify_text(text: str) -> str:
     if "auth" in text or "api key" in text or "401" in text:
         return "auth"
     if "timeout" in text or "timed out" in text:
@@ -455,3 +543,7 @@ def _classify(exc: BaseException) -> str:
     if "rate" in text and "limit" in text or "overloaded" in text or "503" in text:
         return "provider_outage"
     return "unknown"
+
+
+def _classify(exc: BaseException) -> str:
+    return _classify_text(f"{exc.__class__.__name__} {exc}".lower())

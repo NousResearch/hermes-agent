@@ -58,3 +58,43 @@ def test_managed_row_active_for_a_nous_capability_pin(monkeypatch):
     assert _is_provider_active(nous, split) is True
     assert _is_provider_active(_row("firecrawl"), split) is True
     assert _is_provider_active(nous, {"web": {"search_backend": "firecrawl", "extract_backend": "tavily"}}) is False
+
+
+def _web_rows():
+    from hermes_cli.tools_config import TOOL_CATEGORIES, _visible_providers
+
+    return {p["name"]: p for p in _visible_providers(TOOL_CATEGORIES["web"], {"web": {}})}
+
+
+@pytest.mark.parametrize("env,active", [
+    ({"FIRECRAWL_API_KEY": "fc-x"}, {"Firecrawl"}),
+    ({"FIRECRAWL_API_URL": "http://localhost:3002"}, {"Firecrawl Self-Hosted"}),
+    ({}, {"Firecrawl"}),  # explicit selection, no credentials: anonymous cloud
+])
+def test_firecrawl_rows_split_by_the_credential_set(monkeypatch, env, active):
+    """Cloud and Self-Hosted rows share ``web_backend: firecrawl``; only the one whose env var is set
+    is the configured provider (#112022), so the picker cursor does not land on an unconfigured row."""
+    import hermes_cli.tools_config as tools_config
+
+    monkeypatch.setattr(tools_config, "get_env_value", env.get)
+    rows = _web_rows()
+    config = {"web": {"backend": "firecrawl"}}
+    lit = {name for name in ("Firecrawl", "Firecrawl Self-Hosted") if _is_provider_active(rows[name], config)}
+    assert lit == active
+
+
+def test_keyless_row_readiness_follows_registry_availability(monkeypatch):
+    """No-key rows used to read "ready" vacuously (#132526): OpenAI Native needs an openai-codex login,
+    while free-tier keyless rows really run on the public ring."""
+    import plugins.web.openai_native.provider as native
+    from hermes_cli.tools_config_providers import provider_readiness_status
+
+    rows = _web_rows()
+    native_row = next(p for name, p in rows.items() if p.get("web_backend") == "openai-native")
+    free_rows = [p for p in rows.values() if p.get("web_tier") == "free"]
+    assert free_rows
+    monkeypatch.setattr(native, "has_codex_credentials", lambda: False)
+    assert provider_readiness_status(native_row, {"web": {}}) == "needs_auth"
+    assert {provider_readiness_status(p, {"web": {}}) for p in free_rows} == {"ready"}
+    monkeypatch.setattr(native, "has_codex_credentials", lambda: True)
+    assert provider_readiness_status(native_row, {"web": {}}) == "ready"

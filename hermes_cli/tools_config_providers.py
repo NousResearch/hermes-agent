@@ -212,7 +212,20 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
             is_active = _is_provider_active(provider, config)
         return "ready" if is_active else "needs_setup"
 
-    return "ready"
+    return _web_registry_readiness(provider)
+
+
+def _web_registry_readiness(provider: dict) -> str:
+    """Keyless, untiered web rows are ready only when their registry provider is available: the only such
+    row's ``is_available()`` is an account login (OpenAI Native = openai-codex), hence ``needs_auth``.
+    Free-tier rows are exempt: they run on the public keyless ring, which ``is_available()`` ignores."""
+    backend = provider.get("web_backend")
+    if not backend or provider.get("web_tier"):
+        return "ready"
+    from agent.web_search_registry import get_provider
+
+    registered = get_provider(backend)
+    return "ready" if registered is None or registered.is_available() else "needs_auth"
 
 
 def _toolset_needs_configuration_prompt(ts_key: str, config: dict, *, force_fresh: bool = False) -> bool:
@@ -372,7 +385,18 @@ def _web_backend_active(provider: dict, config: dict) -> bool:
     and a shared vendor shadowed by both overrides serves nothing. Managed Nous rows never reach
     here — they answer in ``_managed_provider_active``."""
     backend = provider.get("web_backend")
-    return bool(backend) and backend in _web_serving_backends(config) and _web_tier_matches(provider, config)
+    if not (backend and backend in _web_serving_backends(config) and _web_tier_matches(provider, config)):
+        return False
+    # Rows sharing one backend name (cloud "Firecrawl" vs the "Firecrawl Self-Hosted" setup row) differ only in
+    # the env var they configure, and the one whose var is set is what serves the call. A setup row needs its
+    # var; the registry row also stays active keyless (explicit ``firecrawl`` with no key = anonymous cloud)
+    # unless a sibling setup row's var is set instead.
+    from hermes_cli.tools_config import TOOL_CATEGORIES, _provider_env_ready
+    if not provider.get("env_vars") or _provider_env_ready(provider):
+        return True
+    return bool(provider.get("web_search_plugin_name")) and not any(
+        row.get("web_backend") == backend and row.get("env_vars") and _provider_env_ready(row)
+        for row in TOOL_CATEGORIES["web"]["providers"])
 
 
 # Managed-row marker -> (config section, key) the pick writes, in check order.

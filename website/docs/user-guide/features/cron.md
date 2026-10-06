@@ -359,7 +359,7 @@ When the cron store (`~/.hermes/cron/`, or the profile's own `cron/` directory) 
 - The gateway posts one notice to the profile's home channels when the store becomes unwritable and one when it recovers. Both respect `display.suppress_warning_notifications`.
 - Monitoring exports `hermes.cron.store.writable` (0/1) and `hermes.cron.store.skipped_runs`.
 
-To fix it, free disk space on the filesystem holding the store, remount it read-write, or fix the ownership and permissions of the store directory so the gateway user can write it. You don't need to restart anything. On the next tick that can write, each job that stayed due fires **once** under the normal [misfire catch-up](#misfire-catch-up) rules, not once per missed tick. A one-shot that came due during the outage fires once instead of expiring.
+To fix it, free disk space on the filesystem holding the store, remount it read-write, or fix the ownership and permissions of the store directory so the gateway user can write it. You don't need to restart anything. On the next tick that can write, each job that stayed due fires **once** under the normal [misfire catch-up](#misfire-catch-up) rules, not once per missed tick. A one-shot that came due during the outage fires once instead of expiring (unless the gateway restarts while the store is unwritable).
 
 ### Gateway scheduler behavior
 

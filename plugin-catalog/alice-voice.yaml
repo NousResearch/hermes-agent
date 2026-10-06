@@ -1,0 +1,27 @@
+name: alice-voice
+repo: https://github.com/bablobanov/hermes-alice-voice
+sha: e31f2c8e65bb861c6806bd19e8f57a1e89726450
+subdir: plugins/alice-voice
+description: Private Yandex Alice voice input for Hermes, with replies in Telegram.
+maintainer: bablobanov
+tier: community
+category: voice
+requires_hermes: ">=0.21.3"
+version: "0.3.0"
+title: "Alice Voice Input"
+image: https://raw.githubusercontent.com/bablobanov/hermes-alice-voice/e31f2c8e65bb861c6806bd19e8f57a1e89726450/assets/hero.png
+docs_url: https://github.com/bablobanov/hermes-alice-voice/blob/e31f2c8e65bb861c6806bd19e8f57a1e89726450/README.md
+readme: true
+platforms: [linux, macos, windows]
+onboarding: false
+known_issues:
+  - "Default profile and one existing authorized Telegram DM session only; a private Alice skill and operator-controlled HTTPS reverse proxy are required."
+  - "Requires in-process plugin execution: the Telegram connect factory receives the native Application and is not supported by plugins.isolation: host."
+  - "The webhook URL contains a bearer secret. Yandex request signatures are not verified; body skill/account IDs are not cryptographic authentication."
+  - "Alice acknowledges asynchronous scheduling, not completion or delivery. Replies are sent to Telegram, not spoken by Alice."
+  - "Deduplication is bounded and memory-only; no durable queue, exactly-once guarantee, or built-in global rate limiter."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [ALICE_WEBHOOK_SECRET]

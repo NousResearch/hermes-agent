@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { type ResolvedOwner, resolveOwnerNow } from '@/api/client'
+import { MemorySetupConfirmation, waitMemoryProviderOperation } from '@/api/system'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -88,6 +90,7 @@ function FeedbackNotice({ feedback }: { feedback: Feedback }) {
 
 export function ProviderManagedConfigModal({
   config,
+  owner: ownerProp,
   profile = null,
   provider,
   open,
@@ -95,23 +98,35 @@ export function ProviderManagedConfigModal({
   onSaved
 }: {
   config: MemoryProviderConfig
+  owner?: ResolvedOwner
   profile?: null | string
   provider: string
   open: boolean
   onOpenChange: (open: boolean) => void
   onSaved: () => Promise<void> | void
 }) {
+  const [owner] = useState(() => ownerProp ?? { ...resolveOwnerNow(), profile })
+  const request = useRef(new AbortController())
+  const [progress, setProgress] = useState('')
+  const confirmations = useRef<Record<string, boolean>>({})
+  const [confirmation, setConfirmation] = useState<{ key: string; message: string } | null>(null)
+  // eslint-disable-next-line no-restricted-syntax -- owns request/form lifecycle; does not mirror an atom
+  useEffect(() => {
+    request.current = new AbortController()
+
+    return () => request.current.abort()
+  }, [])
   const [values, setValues] = useState<Record<string, string>>({})
   const [options, setOptions] = useState<Record<string, MemoryProviderField['options']>>({})
   const [saving, setSaving] = useState(false)
   const [runningAction, setRunningAction] = useState('')
   const [feedback, setFeedback] = useState<Feedback | null>(null)
   const [invalidFields, setInvalidFields] = useState<Set<string>>(new Set())
-  const [confirmOverwrite, setConfirmOverwrite] = useState(false)
   const [initialized, setInitialized] = useState(false)
   const actionInFlight = useRef(false)
   const saveInFlight = useRef(false)
 
+  // eslint-disable-next-line no-restricted-syntax -- owns request/form lifecycle; does not mirror an atom
   useEffect(() => {
     if (!open) {
       setInitialized(false)
@@ -127,9 +142,56 @@ export function ProviderManagedConfigModal({
     setOptions(Object.fromEntries(config.fields.map(field => [field.key, field.options])))
     setFeedback(null)
     setInvalidFields(new Set())
-    setConfirmOverwrite(false)
+    setConfirmation(null)
+    confirmations.current = {}
     setInitialized(true)
   }, [config, initialized, open])
+
+  // eslint-disable-next-line no-restricted-syntax -- owns request/form lifecycle; does not mirror an atom
+  useEffect(() => {
+    const operation = config.operation
+
+    if (!open || operation?.status !== 'running') {
+      return
+    }
+
+    const controller = new AbortController()
+    actionInFlight.current = true
+    setRunningAction(operation.action || 'setup')
+    void waitMemoryProviderOperation(provider, operation, owner, {
+      signal: controller.signal,
+      onProgress: next => setProgress(next.progress?.message ?? '')
+    })
+      .then(async () => {
+        if (controller.signal.aborted) {
+          return
+        }
+
+        actionInFlight.current = false
+        setRunningAction('')
+        setProgress('')
+        await onSaved()
+        setInitialized(false)
+        setFeedback({ message: 'Setup completed.', tone: 'success' })
+      })
+      .catch(error => {
+        if (!controller.signal.aborted) {
+          setFeedback({ message: errorMessage(error), tone: 'error' })
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          actionInFlight.current = false
+          setRunningAction('')
+        }
+      })
+
+    return () => {
+      controller.abort()
+      actionInFlight.current = false
+      setRunningAction('')
+    }
+  }, [config.operation, open, owner, provider, onSaved])
 
   const fields = useMemo(
     () =>
@@ -151,7 +213,7 @@ export function ProviderManagedConfigModal({
     setFeedback(null)
 
     try {
-      const next = await getMemoryProviderConfig(provider, profile)
+      const next = await getMemoryProviderConfig(provider, profile, owner)
 
       setOptions(Object.fromEntries(next.fields.map(field => [field.key, field.options])))
       setValues(current => {
@@ -188,7 +250,12 @@ export function ProviderManagedConfigModal({
         provider,
         action.name,
         payload,
-        profile
+        profile,
+        {
+          owner,
+          signal: request.current.signal,
+          onProgress: operation => setProgress(operation.progress?.message ?? '')
+        }
       )
 
       if (result.ok === false) {
@@ -210,7 +277,7 @@ export function ProviderManagedConfigModal({
     }
   }
 
-  async function save(overwrite = false) {
+  async function save(confirmed?: string) {
     if (saveInFlight.current || actionInFlight.current || !config.submit_action) {
       return
     }
@@ -232,24 +299,45 @@ export function ProviderManagedConfigModal({
     setFeedback(null)
 
     try {
-      await runMemoryProviderAction(provider, config.submit_action, { overwrite, values }, profile)
+      if (confirmed) {
+        confirmations.current[confirmed] = true
+      }
+
+      const result = await runMemoryProviderAction<{ message?: string }>(
+        provider,
+        config.submit_action,
+        { overwrite: Boolean(confirmations.current.overwrite), confirmations: confirmations.current, values },
+        profile,
+        {
+          owner,
+          signal: request.current.signal,
+          onProgress: operation => setProgress(operation.progress?.message ?? '')
+        }
+      )
 
       notify({
         kind: 'success',
         title: `${config.label} setup saved`,
-        message: 'This setup is active now. New messages in existing and new chats will use it.'
+        message: result?.message || 'Settings saved. Start a new chat to use the updated configuration.'
       })
 
       await onSaved()
-      setConfirmOverwrite(false)
+      setConfirmation(null)
       onOpenChange(false)
     } catch (error) {
-      if (isConflict(error) && !overwrite) {
-        setConfirmOverwrite(true)
+      if (request.current.signal.aborted) {
+        return
+      }
+
+      if (error instanceof MemorySetupConfirmation || (isConflict(error) && !confirmed)) {
+        setConfirmation({
+          key: error instanceof MemorySetupConfirmation ? error.confirmation : 'overwrite',
+          message: errorMessage(error)
+        })
       } else {
         setFeedback({ message: errorMessage(error), tone: 'error' })
 
-        if (overwrite) {
+        if (confirmed) {
           throw new Error(errorMessage(error))
         }
       }
@@ -261,7 +349,7 @@ export function ProviderManagedConfigModal({
 
   return (
     <>
-      <Dialog onOpenChange={value => !busy && onOpenChange(value)} open={open}>
+      <Dialog onOpenChange={onOpenChange} open={open}>
         <DialogContent bodyClassName="grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden" className="max-w-2xl">
           <DialogHeader>
             <DialogTitle icon={SlidersHorizontal}>Configure {config.label}</DialogTitle>
@@ -278,7 +366,9 @@ export function ProviderManagedConfigModal({
                 )
 
                 const selectedOption =
-                  field.kind === 'select' ? field.options.find(option => option.value === values[field.key]) : undefined
+                  field.kind === 'select' || field.kind === 'segmented'
+                    ? field.options.find(option => option.value === values[field.key])
+                    : undefined
 
                 const title = (
                   <div className="flex min-w-0 items-center justify-between gap-3">
@@ -293,9 +383,11 @@ export function ProviderManagedConfigModal({
                   <div className="grid min-w-0 gap-2">
                     <FieldControl
                       controlId={field.key}
-                      field={field}
+                      field={{ ...field, read_only: field.read_only || busy }}
                       invalid={invalidFields.has(field.key)}
                       onChange={value => {
+                        confirmations.current = {}
+                        setConfirmation(null)
                         setValues(current => ({ ...current, [field.key]: value }))
                         setFeedback(null)
 
@@ -309,10 +401,7 @@ export function ProviderManagedConfigModal({
                       value={values[field.key] ?? ''}
                     />
                     {selectedOption?.description ? (
-                      <div
-                        className="truncate font-mono text-[0.68rem] text-muted-foreground/60"
-                        title={selectedOption.description}
-                      >
+                      <div className="text-xs leading-5 text-muted-foreground" title={selectedOption.description}>
                         {selectedOption.description}
                       </div>
                     ) : null}
@@ -378,13 +467,18 @@ export function ProviderManagedConfigModal({
               })}
             </div>
 
+            {busy && progress ? (
+              <div className="py-2 text-sm text-muted-foreground" role="status">
+                {progress} You can close this window; setup will continue.
+              </div>
+            ) : null}
             {feedback ? <FeedbackNotice feedback={feedback} /> : null}
           </div>
 
           <DialogFooter>
             <DialogClose asChild>
-              <Button disabled={busy} size="sm" type="button" variant="ghost">
-                Cancel
+              <Button size="sm" type="button" variant="ghost">
+                {busy ? 'Close' : 'Cancel'}
               </Button>
             </DialogClose>
             <Button disabled={busy} onClick={() => void save()} size="sm">
@@ -396,14 +490,14 @@ export function ProviderManagedConfigModal({
       </Dialog>
 
       <ConfirmDialog
-        busyLabel="Replacing..."
-        confirmLabel="Replace profile"
-        description="A saved profile with this name has different settings. Replace it with the values in this form?"
-        doneLabel="Replaced"
-        onClose={() => setConfirmOverwrite(false)}
-        onConfirm={() => save(true)}
-        open={confirmOverwrite}
-        title={`${config.label} profile already exists`}
+        busyLabel="Applying..."
+        confirmLabel="Continue"
+        description={confirmation?.message ?? ''}
+        doneLabel="Applied"
+        onClose={() => setConfirmation(null)}
+        onConfirm={() => save(confirmation?.key)}
+        open={Boolean(confirmation)}
+        title={`Confirm ${config.label} setup`}
       />
     </>
   )

@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
+import type { ResolvedOwner } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -49,6 +50,7 @@ export function ProviderConfigModal({
   ...props
 }: {
   config: MemoryProviderConfig
+  owner?: ResolvedOwner
   profile?: null | string
   provider: string
   open: boolean
@@ -71,6 +73,7 @@ function StoredProviderConfigModal({
   onSaved
 }: {
   config: MemoryProviderConfig
+  owner?: ResolvedOwner
   profile?: null | string
   provider: string
   open: boolean

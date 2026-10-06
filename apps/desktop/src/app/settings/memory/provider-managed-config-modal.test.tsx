@@ -1,7 +1,14 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as SystemApi from '@/api/system'
 import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
+
+const { waitOperation } = vi.hoisted(() => ({ waitOperation: vi.fn() }))
+vi.mock('@/api/system', async importOriginal => ({
+  ...(await importOriginal<typeof SystemApi>()),
+  waitMemoryProviderOperation: waitOperation
+}))
 
 const getMemoryProviderConfig = vi.fn()
 const notify = vi.fn()
@@ -218,6 +225,7 @@ describe('ProviderManagedConfigModal', () => {
       'example',
       'save',
       {
+        confirmations: {},
         overwrite: false,
         values: expect.objectContaining({ api_key: 'secret', setup_type: 'service' })
       },
@@ -230,7 +238,7 @@ describe('ProviderManagedConfigModal', () => {
     expect(onOpenChange).toHaveBeenCalledWith(false)
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({
-        message: 'This setup is active now. New messages in existing and new chats will use it.'
+        message: 'Settings saved. Start a new chat to use the updated configuration.'
       })
     )
   })
@@ -242,8 +250,8 @@ describe('ProviderManagedConfigModal', () => {
     fireEvent.change(await screen.findByLabelText('API key'), { target: { value: 'secret' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save setup' }))
 
-    expect(await screen.findByText('Example Memory profile already exists')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Replace profile' }))
+    expect(await screen.findByText('Confirm Example Memory setup')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
 
     await waitFor(() => expect(runMemoryProviderAction).toHaveBeenCalledTimes(2))
     expect(runMemoryProviderAction).toHaveBeenLastCalledWith(
@@ -309,4 +317,32 @@ describe('ProviderManagedConfigModal', () => {
       )
     )
   })
+})
+
+it('restores the saved form after a resumed operation completes', async () => {
+  const { ProviderManagedConfigModal } = await import('./provider-managed-config-modal')
+  let finish!: (result: unknown) => void
+  waitOperation.mockReturnValue(
+    new Promise(resolve => {
+      finish = resolve
+    })
+  )
+  const initial = { ...schema(), operation: { id: 'in-flight', status: 'running' as const, action: 'save' } }
+  const saved = { ...schema(), fields: [field({ key: 'name', kind: 'text', value: 'saved-name' })] }
+
+  const onSaved = vi.fn(async () => {
+    view.rerender(
+      <ProviderManagedConfigModal config={saved} onOpenChange={vi.fn()} onSaved={onSaved} open provider="example" />
+    )
+  })
+
+  const view = render(
+    <ProviderManagedConfigModal config={initial} onOpenChange={vi.fn()} onSaved={onSaved} open provider="example" />
+  )
+
+  await waitFor(() => expect(waitOperation).toHaveBeenCalled())
+  expect((screen.getByRole('button', { name: 'Save setup' }) as HTMLButtonElement).disabled).toBe(true)
+  finish({ ok: true })
+  await waitFor(() => expect((screen.getByLabelText('name') as HTMLInputElement).value).toBe('saved-name'))
+  expect((screen.getByRole('button', { name: 'Save setup' }) as HTMLButtonElement).disabled).toBe(false)
 })

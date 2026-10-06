@@ -28,9 +28,10 @@ from hermes_cli.web_models import (
     MemoryProviderConfigUpdate,
     MemoryProviderSetupRequest,
 )
-from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, scoped_to_thread
+from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, scoped_to_thread, config_scoped_to_thread
 from plugins.memory.config_schema import (
     STORAGE_HONCHO_HOST_BLOCK,
+    STORAGE_PROVIDER_MANAGED,
     ProviderConfigAction,
     ProviderConfigSchema,
     ProviderField,
@@ -336,6 +337,7 @@ def _declared_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]
             "status_action": provider.status_action,
             "actions": [_provider_action_entry(action) for action in provider.actions],
             "summary": state.get("summary") if isinstance(state.get("summary"), dict) else None,
+            "operation": plugin.get_desktop_config_operation(hermes_home=str(get_hermes_home())),
             "fields": fields,
         }
 
@@ -609,7 +611,7 @@ def _require_valid_memory_provider_name(name: str) -> None:
 
 
 @router.get("/api/memory/providers/{name}/config")
-async def get_memory_provider_config(name: str, surface: Optional[str] = None, profile: Optional[str] = None):
+async def get_memory_provider_config(name: str, surface: Optional[str] = None, profile: Optional[str] = None, setup_api: int = 0):
     _require_valid_memory_provider_name(name)
 
     def _run():
@@ -619,13 +621,15 @@ async def get_memory_provider_config(name: str, surface: Optional[str] = None, p
             declared = get_provider_config_schema(name)
             if declared is None:
                 return {"name": name, "label": name, "docs_url": "", "fields": []}
+            if declared.storage == STORAGE_PROVIDER_MANAGED and setup_api < 1:
+                return {"name": name, "label": declared.label, "docs_url": declared.docs_url, "fields": []}
             return _declared_provider_payload(declared)
         provider = _load_memory_provider(name)
         if provider is None:
             return {"name": name, "label": name, "fields": [], "setup": _memory_provider_setup_info(name)}
         return _memory_provider_payload(name, provider)
 
-    return await scoped_to_thread(profile, _run)
+    return await config_scoped_to_thread(profile, _run)
 
 
 @router.post("/api/memory/providers/{name}/setup")
@@ -642,6 +646,9 @@ async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest,
             # installed yet — that's the setup use case.)
             raise _unknown_provider(name)
         if provider is not None and body.values:
+            declared = get_provider_config_schema(name)
+            if declared is not None and (declared.storage == STORAGE_PROVIDER_MANAGED or declared.submit_action):
+                raise HTTPException(status_code=405, detail="Use this provider's declared setup action.")
             with _value_errors_as_http("Failed to persist memory provider setup values for %s", name,
                                        passthrough_http=False):
                 _write_memory_provider_config_values(name, provider, body.values)
@@ -676,7 +683,12 @@ async def run_memory_provider_action(
         provider = _load_memory_provider(name)
         if provider is None:
             raise _unknown_provider(name)
-        return provider.handle_desktop_config_action(
+        if action == declared.status_action:
+            # A bounded, read-only status probe must not replace a setup job or
+            # prevent Apply while the panel refreshes its health indicator.
+            return {"status": "completed", "result": provider.handle_desktop_config_action(
+                action, dict(body.payload or {}), hermes_home=str(get_hermes_home()))}
+        return provider.start_desktop_config_action(
             action,
             dict(body.payload or {}),
             hermes_home=str(get_hermes_home()),
@@ -703,6 +715,19 @@ async def run_memory_provider_action(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@router.get("/api/memory/providers/{name}/operations/{operation_id}")
+async def memory_provider_operation(name: str, operation_id: str, profile: Optional[str] = None):
+    _require_valid_memory_provider_name(name)
+
+    def read():
+        provider = _load_memory_provider(name)
+        if provider is None:
+            raise _unknown_provider(name)
+        return provider.get_desktop_config_operation(hermes_home=str(get_hermes_home()), operation_id=operation_id)
+
+    return await config_scoped_to_thread(profile, read)
+
+
 @router.put("/api/memory/providers/{name}/config")
 async def update_memory_provider_config(
     name: str, body: MemoryProviderConfigUpdate, surface: Optional[str] = None, profile: Optional[str] = None
@@ -715,7 +740,7 @@ async def update_memory_provider_config(
             declared = get_provider_config_schema(name)
             if declared is None:
                 raise _unknown_provider(name)
-            if declared.submit_action:
+            if declared.storage == STORAGE_PROVIDER_MANAGED or declared.submit_action:
                 raise HTTPException(
                     status_code=405,
                     detail=f"{declared.label} configuration must use its registered submit action.",
@@ -723,6 +748,9 @@ async def update_memory_provider_config(
             _update_memory_provider_config(declared, {k: _stringify_submitted(v) for k, v in values.items()})
             _invalidate_plugins_hub_cache()
             return {"ok": True}
+        declared = get_provider_config_schema(name)
+        if declared is not None and (declared.storage == STORAGE_PROVIDER_MANAGED or declared.submit_action):
+            raise HTTPException(status_code=405, detail="Use the provider's registered submit action.")
         provider = _load_memory_provider(name)
         if provider is None:
             raise _unknown_provider(name)

@@ -181,7 +181,7 @@ describe('ProviderConfigPanel', () => {
     fireEvent.blur(baseUrl)
 
     await waitFor(() =>
-      expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { baseUrl: 'http://localhost:8000' }, undefined)
+      expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { baseUrl: 'http://localhost:8000' }, null)
     )
     expect(saveMemoryProviderConfig).toHaveBeenCalledTimes(1)
   })
@@ -207,7 +207,7 @@ describe('ProviderConfigPanel', () => {
     fireEvent.blur(apiKey)
 
     await waitFor(() =>
-      expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { apiKey: 'hch-new-key' }, undefined)
+      expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { apiKey: 'hch-new-key' }, null)
     )
     await waitFor(() => expect((apiKey as HTMLInputElement).value).toBe(''))
   })
@@ -255,7 +255,7 @@ describe('ProviderConfigPanel', () => {
 
     const { container } = await renderPanel('builtin')
 
-    await waitFor(() => expect(getMemoryProviderConfig).toHaveBeenCalledWith('builtin', undefined))
+    await waitFor(() => expect(getMemoryProviderConfig).toHaveBeenCalledWith('builtin', null))
     expect(container.querySelector('section')).toBeNull()
   })
 

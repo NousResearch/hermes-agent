@@ -1,5 +1,7 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { $apiRequestScope, type ResolvedOwner } from '@/api/client'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -21,6 +23,15 @@ function seedValues(config: MemoryProviderConfig): Record<string, string> {
 }
 
 export function ProviderConfigPanel({ profile, provider }: { profile?: string; provider: string }) {
+  const scope = useStore($apiRequestScope)
+  const owner = { connectionId: scope.connectionId, profile: profile ?? scope.profile }
+
+  return <ScopedProviderConfigPanel key={JSON.stringify([owner, provider])} owner={owner} provider={provider} />
+}
+
+function ScopedProviderConfigPanel({ owner: ownerProp, provider }: { owner: ResolvedOwner; provider: string }) {
+  const [owner] = useState(ownerProp)
+  const profile = owner.profile
   const [config, setConfig] = useState<MemoryProviderConfig | null>(null)
   const [loadError, setLoadError] = useState<null | string>(null)
   const [values, setValues] = useState<Record<string, string>>({})
@@ -35,7 +46,7 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
       const generation = ++refreshGeneration.current
 
       try {
-        const next = await getMemoryProviderConfig(provider, profile)
+        const next = await getMemoryProviderConfig(provider, profile, owner)
 
         if (generation !== refreshGeneration.current) {
           return
@@ -61,8 +72,10 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
         setLoadError(err instanceof Error ? err.message : 'Memory provider settings failed to load')
       }
     },
-    [profile, provider]
+    [profile, provider, owner]
   )
+
+  const handleSaved = useCallback(() => refresh(true), [refresh])
 
   // eslint-disable-next-line no-restricted-syntax -- request generation cleanup, not an atom mirror
   useEffect(() => {
@@ -83,7 +96,7 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
 
     let cancelled = false
 
-    void runMemoryProviderAction<NonNullable<MemoryProviderSummary['status']>>(provider, action, {}, profile)
+    void runMemoryProviderAction<NonNullable<MemoryProviderSummary['status']>>(provider, action, {}, profile, { owner })
       .then(status => {
         if (cancelled) {
           return
@@ -123,7 +136,7 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
     return () => {
       cancelled = true
     }
-  }, [config?.status_action, profile, provider, statusRevision])
+  }, [config?.status_action, profile, provider, statusRevision, owner])
 
   // Autosave, matching the settings page around the panel: one-key partial PUT
   // on commit, silent on success, no full refresh (it would reset sibling drafts).
@@ -229,6 +242,7 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
               ))}
               {status ? (
                 <button
+                  aria-label={status.message || undefined}
                   className="min-w-0 text-left @2xl:text-right"
                   disabled={!status.message || status.state === 'healthy' || status.state === 'checking'}
                   onClick={() =>
@@ -238,7 +252,6 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
                       message: status.message
                     })
                   }
-                  title={status.message || undefined}
                   type="button"
                 >
                   <div className="text-[0.65rem] font-medium uppercase text-muted-foreground">Status</div>
@@ -255,8 +268,9 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
         <ProviderConfigModal
           config={config}
           onOpenChange={setShowModal}
-          onSaved={() => refresh(true)}
+          onSaved={handleSaved}
           open={showModal}
+          owner={owner}
           profile={profile}
           provider={provider}
         />
@@ -316,6 +330,7 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
           onOpenChange={setShowModal}
           onSaved={refresh}
           open={showModal}
+          owner={owner}
           profile={profile}
           provider={provider}
         />

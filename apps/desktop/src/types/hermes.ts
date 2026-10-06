@@ -281,7 +281,18 @@ export interface MemoryProviderSummary {
   }
 }
 
+export interface MemorySetupOperation {
+  id?: string
+  status: 'running' | 'completed' | 'confirmation_required' | 'failed' | 'busy' | 'unavailable'
+  action?: string
+  progress?: { stage: string; message: string }
+  result?: unknown
+  confirmation?: string
+  message?: string
+}
+
 export interface MemoryProviderConfig {
+  operation?: MemorySetupOperation
   actions?: MemoryProviderConfigAction[]
   description?: string
   docs_url: string

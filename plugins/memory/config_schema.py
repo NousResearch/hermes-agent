@@ -24,6 +24,8 @@ KIND_JSON = "json"
 KIND_SEGMENTED = "segmented"
 
 # Storage backends understood by web_server (see its read/write dispatch).
+PROVIDER_SETUP_API_VERSION = 1
+STORAGE_PROVIDER_MANAGED = "provider_managed"
 STORAGE_FLAT_JSON = "flat_json"
 STORAGE_HONCHO_HOST_BLOCK = "honcho_host_block"
 
@@ -163,9 +165,15 @@ def _schema_from_record(record) -> ProviderConfigSchema | None:
     """Rebuild a schema that crossed the plugin-host boundary as plain data."""
     if not record:
         return None
+    def conditions(items):
+        return tuple(ProviderFieldCondition(**{**item, "values": tuple(item.get("values") or ())}) for item in items or ())
+
     fields = tuple(
         ProviderField(**{**f, "options": tuple(ProviderFieldOption(**o) for o in f.get("options") or ()),
                          "aliases": tuple(f.get("aliases") or ()),
+                         "visible_when": conditions(f.get("visible_when")),
                          "env_fallbacks": tuple(f.get("env_fallbacks") or ())})
         for f in record.get("fields") or ())
-    return ProviderConfigSchema(**{**record, "fields": fields})
+    actions = tuple(ProviderConfigAction(**{**a, "payload_fields": tuple(a.get("payload_fields") or ()),
+                         "visible_when": conditions(a.get("visible_when"))}) for a in record.get("actions") or ())
+    return ProviderConfigSchema(**{**record, "fields": fields, "actions": actions})

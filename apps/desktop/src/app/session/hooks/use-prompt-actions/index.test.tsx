@@ -6130,9 +6130,11 @@ describe('usePromptActions reloadFromMessage failed-submit rollback (#95745)', (
     setMessages(seed as never)
 
     let latest: Record<string, unknown> | undefined
+    const submits: Record<string, unknown>[] = []
 
-    const requestGateway = vi.fn(async (method: string) => {
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'prompt.submit') {
+        submits.push(params ?? {})
         throw new JsonRpcGatewayError('target user message is no longer in session history', {
           code: 4018,
           data: {
@@ -6163,10 +6165,27 @@ describe('usePromptActions reloadFromMessage failed-submit rollback (#95745)', (
       />
     )
 
-    // Regenerating u1 archives the later u2 turn: accept the deep-cut confirm (#133716).
-    const stopConfirming = $confirmRequest.listen(request => request && settleConfirm(true))
+    // Regenerating u1 archives the later u2 turn: it asks first; a decline sends nothing (#133716).
+    let answer = false
+    let asked = 0
+
+    const stopConfirming = $confirmRequest.listen(request => {
+      if (request) {
+        asked += 1
+        settleConfirm(answer)
+      }
+    })
+
+    await handle!.reloadFromMessage('u1')
+    expect(asked).toBe(1)
+    expect(submits).toEqual([])
+
+    answer = true
     await handle!.reloadFromMessage('u1')
     stopConfirming()
+    expect(asked).toBe(2)
+    expect(submits).toHaveLength(1)
+    expect(submits[0]).toMatchObject({ confirm_deep_truncate: true })
 
     const rolledBack = latest?.messages as Array<{ hidden?: boolean; id: string }> | undefined
 

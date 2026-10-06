@@ -32,10 +32,7 @@ export function SharedMetricsConsentStrip() {
   const reask = useStore($sharedMetricsConsent)?.reask === true
   const [saving, setSaving] = useState(false)
 
-  const scopedRequest = useMemo(
-    () => sharedMetricsProfileRequester(requestGateway, profile),
-    [profile, requestGateway]
-  )
+  const scopedRequest = useMemo(() => sharedMetricsProfileRequester(requestGateway, profile), [profile, requestGateway])
 
   const choose = async (choice: SharedMetricsChoice) => {
     setSaving(true)

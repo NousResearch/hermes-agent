@@ -97,7 +97,9 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   const parsed = JSON.parse(lines[lines.length - 1] || 'null')
 
   if (!parsed?.os || !parsed?.arch) {
-    throw new Error(`Windows probe did not return the expected platform JSON: ${String(lines[lines.length - 1] ?? '').slice(0, 200)}`)
+    throw new Error(
+      `Windows probe did not return the expected platform JSON: ${String(lines[lines.length - 1] ?? '').slice(0, 200)}`
+    )
   }
 
   return parsed

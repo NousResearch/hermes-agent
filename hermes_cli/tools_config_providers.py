@@ -348,41 +348,37 @@ def _web_tier_matches(provider: dict, config: dict) -> bool:
     return row_tier == ("paid" if has_key else "free")
 
 
-def _web_backend_active(provider: dict, config: dict) -> bool:
-    """True when a web row's ``web_backend`` serves either capability as configured.
-
-    ``web_search``/``web_extract`` resolve their own ``web.search_backend`` /
-    ``web.extract_backend`` override first and only then fall back to the shared
-    ``web.backend`` (``tools/web_tools.py``: ``_get_search_backend`` /
-    ``_get_extract_backend``), so a vendor serving one capability through its
-    override is in use even when the shared key names a different one. An override
-    shadows the shared key for its own capability only, so the shared key still
-    serves whichever capability was left without one. Managed Nous rows never reach
-    here — they answer in ``_managed_provider_active``.
-    """
-    backend = provider.get("web_backend")
-    if not backend:
-        return False
+def _web_serving_backends(config: dict) -> set:
+    """Backend names serving web search / extract as configured: each capability's own
+    ``web.<cap>_backend`` override first, else the shared ``web.backend`` (``tools/web_tools.py``
+    dispatch order; legacy ``use_gateway: true`` reads as the managed ``nous`` selection).
+    Lower-cased and stripped like the dispatchers."""
     raw_web_cfg = config.get("web")
     web_cfg = raw_web_cfg if isinstance(raw_web_cfg, dict) else {}
-    # Dispatch lower-cases and strips the configured name; compare the same way.
+
     def _name(key: str) -> str:
         value = web_cfg.get(key)
         return value.lower().strip() if isinstance(value, str) else ""
 
-    shared = _name("backend")
-    serving = {
-        _name(key) or shared  # per-capability override wins, else the shared key
-        for key in ("search_backend", "extract_backend")
-    }
+    shared = NOUS_MANAGED_PROVIDER if is_truthy_value(web_cfg.get("use_gateway"), default=False) else _name("backend")
+    serving = {_name(key) or shared for key in ("search_backend", "extract_backend")}
     serving.discard("")
-    return backend in serving and _web_tier_matches(provider, config)
+    return serving
+
+
+def _web_backend_active(provider: dict, config: dict) -> bool:
+    """True when a web row's ``web_backend`` serves either capability as configured: a vendor serving
+    one capability through its override is in use even when the shared key names a different one,
+    and a shared vendor shadowed by both overrides serves nothing. Managed Nous rows never reach
+    here — they answer in ``_managed_provider_active``."""
+    backend = provider.get("web_backend")
+    return bool(backend) and backend in _web_serving_backends(config) and _web_tier_matches(provider, config)
 
 
 # Managed-row marker -> (config section, key) the pick writes, in check order.
 _MANAGED_SELECTION_KEYS: tuple[tuple[str, str, str], ...] = (
     ("tts_provider", "tts", "provider"), ("stt_provider", "stt", "provider"),
-    ("browser_provider", "browser", "cloud_provider"), ("web_backend", "web", "backend"))
+    ("browser_provider", "browser", "cloud_provider"))
 
 
 def _has_marker(provider: dict, marker: str) -> bool:
@@ -413,13 +409,14 @@ def _managed_provider_active(provider: dict, config: dict, managed_feature: str,
         return feature.managed_by_nous
     # Browser Use mode is a driver on top of the provider (attaches to its CDP endpoint), so the browser
     # provider row stays active alongside the Browser Use row.
+    if _has_marker(provider, "web_backend"):
+        # Search and extract pick their route separately: the managed row serves whichever one
+        # resolves to the gateway (a ``nous`` override, or the shared ``nous`` selection).
+        return feature.managed_by_nous and NOUS_MANAGED_PROVIDER in _web_serving_backends(config)
     for marker, section, key in _MANAGED_SELECTION_KEYS:
         if _has_marker(provider, marker):
             current = cfg_get(config, section, key)
-            selected = current in {provider[marker], NOUS_MANAGED_PROVIDER}
-            if marker == "web_backend":
-                selected = selected and _web_tier_matches(provider, config)
-            return feature.managed_by_nous and selected
+            return feature.managed_by_nous and current in {provider[marker], NOUS_MANAGED_PROVIDER}
     return feature.managed_by_nous
 
 

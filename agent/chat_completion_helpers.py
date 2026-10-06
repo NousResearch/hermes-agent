@@ -1960,9 +1960,11 @@ def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
     return until is None or until - time.time() > 600
 
 
-def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:
+def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set,
+                                    failure_scope=None) -> bool:
     """True when the entry is already unavailable, malformed, locally unusable, or resolves
-    to the backend that just failed (falling back to it would loop the failure)."""
+    to the backend that just failed (falling back to it would loop the failure). ``failure_scope``
+    (a ``FailureScope``, default MODEL) is the identity axis the failure invalidated."""
     if fb_key in unavailable:
         logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
         return True
@@ -1984,11 +1986,11 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
     # are owned by agent.backend_identity — do not re-implement comparisons here.
     # Skip entries that resolve to the same backend that just failed — falling back to it loops the failure.
     # See #22548, #62984, #70893.
-    from agent.backend_identity import BackendIdentity, should_skip_candidate
+    from agent.backend_identity import BackendIdentity, FailureScope, should_skip_candidate
     current_ident = BackendIdentity.build(provider=getattr(agent, "provider", ""),
         model=getattr(agent, "model", ""), base_url=str(getattr(agent, "base_url", "") or ""))
     fb_ident = BackendIdentity.build(provider=fb_provider, model=fb_model, base_url=(fb.get("base_url") or ""))
-    if should_skip_candidate(fb_ident, current_ident):
+    if should_skip_candidate(fb_ident, current_ident, failure_scope or FailureScope.MODEL):
         logger.warning(
             "Fallback skip: chain entry %s/%s resolves to the same backend as the current one (%s)",
             fb_provider, fb_model, current_ident.base_url or current_ident.provider)
@@ -2071,10 +2073,12 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
-def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_at=None) -> bool:
+def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_at=None, failure_scope=None) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
-    construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
+    construction goes through resolve_provider_client (no duplicated provider→key mappings).
+    ``failure_scope`` widens the same-backend skip (``FailureScope.ENDPOINT``: an endpoint-wide
+    503 also skips sibling models behind the same endpoint)."""
     from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
@@ -2090,7 +2094,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
         unavailable = agent._unavailable_fallback_keys
         fb_provider = (fb.get("provider") or "").strip().lower()
         fb_model = (fb.get("model") or "").strip()
-        if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable):
+        if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable, failure_scope):
             continue
 
         try:

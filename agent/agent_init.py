@@ -1474,6 +1474,11 @@ def _apply_agent_section(agent, _agent_cfg):
         agent._auto_recovery_cycles = max(int(_agent_section.get("auto_recovery_cycles", 5)), 0)
     except (TypeError, ValueError):
         agent._auto_recovery_cycles = 5
+    # Wall-clock budget for waiting out a 503 + Retry-After on the same model (turn_recovery).
+    try:
+        agent._unavailable_wait_s = max(float(_agent_section.get("unavailable_wait_seconds", 120)), 0.0)
+    except (TypeError, ValueError):
+        agent._unavailable_wait_s = 120.0
 
 
 def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:

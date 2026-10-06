@@ -46,6 +46,8 @@ class TurnRetryState:
     auth_failover_attempted: bool = False
     # Post-exhaustion auto-recovery cycles spent on this API call (agent.auto_recovery_cycles caps it).
     auto_recovery_cycles_used: int = 0
+    # monotonic() of the first 503 + Retry-After this attempt waited out (agent.unavailable_wait_seconds caps it).
+    unavailable_wait_started_at: float | None = None
 
     # Restart signals (read by the outer loop after the attempt)
     restart_with_compressed_messages: bool = False

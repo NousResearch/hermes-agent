@@ -1784,6 +1784,18 @@ def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context:
     return _genuine
 
 
+def _unavailable_retry_after(agent: Any, api_error: Exception, classified: Any, status_code: Any) -> Optional[float]:
+    """The Retry-After seconds of a retryable 503 when the same-model wait is enabled, else None."""
+    if status_code != 503 or classified.reason not in (FailoverReason.overloaded, FailoverReason.server_error):
+        return None
+    if float(getattr(agent, "_unavailable_wait_s", 0) or 0) <= 0:
+        return None
+    from agent.retry_utils import parse_retry_after_seconds
+
+    seconds = parse_retry_after_seconds(getattr(getattr(api_error, "response", None), "headers", None))
+    return seconds if seconds is not None and seconds > 0 else None
+
+
 def route_classified_error(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *, error_msg: str,
     error_context: Any, recovered_with_pool: bool, base_url: Any, model: Any,
@@ -1886,6 +1898,61 @@ def route_classified_error(
                 _retry.restart_with_compressed_messages = True
                 return _verdict("break")
         # Compression exhausted or didn't help: fall through to normal error handling.
+
+    # A 503 + Retry-After names when the endpoint is back (deploy drain, maintenance window):
+    # every model behind it answers alike, so the eager fallback below would only pick a sibling
+    # model on the same endpoint. Wait on the SAME model instead, within the wall-clock budget
+    # ``agent.unavailable_wait_seconds``; the waits are not attempts. Budget spent (or the server
+    # asks for longer than is left) -> fall back, skipping every entry on this endpoint.
+    _unavailable = _unavailable_retry_after(agent, api_error, classified, status_code)
+    if _unavailable is not None:
+        from agent.backend_identity import FailureScope
+        from agent.retry_utils import unavailable_retry_wait
+
+        _budget = float(getattr(agent, "_unavailable_wait_s", 0) or 0)
+        _now = time.monotonic()
+        if _retry.unavailable_wait_started_at is None:
+            _retry.unavailable_wait_started_at = _now
+        _waited = _now - _retry.unavailable_wait_started_at
+        _wait = unavailable_retry_wait(_unavailable, waited_s=_waited, budget_s=_budget)
+        if _wait is not None:
+            if _waited == 0:
+                agent._buffer_diagnostic_status(
+                    f"⏳ Provider unavailable (HTTP 503); waiting up to {_budget:.0f}s as its "
+                    f"Retry-After asks, then retrying {model}..."
+                )
+            agent._emit_diagnostic_wait(
+                f"⏳ provider unavailable (HTTP 503) — retrying {model} in {_wait:.0f}s "
+                f"(waited {_waited:.0f}s of {_budget:.0f}s)"
+            )
+            logger.warning(
+                "HTTP 503 with Retry-After: retrying the same model in %.1fs (waited %.0fs of %.0fs) %s",
+                _wait, _waited, _budget, agent._client_log_context(),
+            )
+            _interrupted = interruptible_backoff_sleep(
+                agent, _wait, _retry, messages=messages, conversation_history=conversation_history,
+                api_call_count=api_call_count,
+                abort_message="Interrupt detected while waiting out an HTTP 503, aborting.",
+                interrupt_text="Operation interrupted: waiting for the provider to come back (HTTP 503).",
+                activity_label="waiting out HTTP 503 Retry-After",
+            )
+            if _interrupted is not None:
+                return _verdict("return", _interrupted)
+            # Not an attempt: the server refused before serving anything.
+            retry_count = max(retry_count - 1, 0)
+            if _retry.restart_with_redirected_messages:
+                return _verdict("break")
+            return _verdict("continue")
+        logger.warning(
+            "HTTP 503 outlived the %.0fs Retry-After budget (waited %.0fs): endpoint-scoped fallback %s",
+            _budget, _waited, agent._client_log_context(),
+        )
+        if agent._fallback_index < len(agent._fallback_chain):
+            agent._buffer_diagnostic_status(
+                "⚠️ Provider still unavailable (HTTP 503) — trying a fallback on another endpoint..."
+            )
+            if agent._try_activate_fallback(reason=classified.reason, failure_scope=FailureScope.ENDPOINT):
+                return _fallback_break()
 
     # Eager fallback: rate-limit/billing switch immediately (primary won't recover in
     # the retry window); transport errors get 1 retry first.

@@ -443,6 +443,15 @@ def amend_terminal_followup(update_id: str, step: str, reason: str) -> None:
                 _write_latest(payload)
 
 
+def owe_followup(update_id: Optional[str], step: str, reason: str, **retry: str) -> None:
+    """A post-commit step failed: record it on the run while its receipt is open, else amend the
+    run's closed receipt. Amending an OPEN run would append a second copy beside the one
+    ``record_followup`` just persisted. Never raises."""
+    record_followup(step, reason, **retry)
+    if _current.get() is None and update_id:
+        amend_terminal_followup(update_id, step, reason)
+
+
 def _record(method: str, what: str, *args: Any, **kwargs: Any) -> None:
     """Invoke ``method`` on the active receipt; no-op when none, never raises.
 

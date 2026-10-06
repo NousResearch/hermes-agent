@@ -63,10 +63,7 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
         _verify_fleet_after_update(restarted, _pre_update_plan=plan, _windows_gateway_resume=windows_resume,
                                   update_complete=bool(runtime_safe) and not tail_owed)
     except (Exception, SystemExit) as exc:  # health: allow BLE001 -- the code is committed (C3): the fleet obligation stays armed
-        reason = str(exc) or type(exc).__name__
-        record_followup("gateway_restart", reason)
-        if update_receipt._current.get() is None and update_id:  # verification already finalized the run
-            update_receipt.amend_terminal_followup(update_id, "gateway_restart", reason)
+        update_receipt.owe_followup(update_id, "gateway_restart", str(exc) or type(exc).__name__)
 
 
 def _restore_plan(data):
@@ -187,10 +184,7 @@ def main(context: Path, result: Path) -> int:
                 resume(token)
             except Exception as exc:  # noqa: BLE001 — a restart failure is owed, never the exit status (C3)
                 attempted = True
-                reason = f"Windows gateway recovery failed: {exc}"
-                update_receipt.record_followup("windows_resume", reason)
-                if update_receipt._current.get() is None:  # the run already finalized its receipt
-                    update_receipt.amend_terminal_followup(request["update_id"], "windows_resume", reason)
+                update_receipt.owe_followup(request["update_id"], "windows_resume", f"Windows gateway recovery failed: {exc}")
         handled = cli_started or (begun and update_receipt._current.get() is None)
         written = update_receipt.finalize_pending_update_receipt(code, "historical takeover completion")
         result.write_text(json.dumps({

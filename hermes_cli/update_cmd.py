@@ -748,12 +748,10 @@ def _resume_paused_gateways_at_exit(token: dict | None, request: dict | None) ->
     try:
         _m()._resume_windows_gateways_after_update(token)
     except Exception as exc:  # health: allow BLE001 -- a restart failure is owed, not the update's status
-        from hermes_cli.update_receipt import _current, amend_terminal_followup, record_followup
+        from hermes_cli.update_receipt import owe_followup
 
-        reason = f"Windows gateway recovery failed: {exc}"
-        record_followup("windows_resume", reason)
-        if _current.get() is None and request:  # the run already finalized its receipt
-            amend_terminal_followup(request["receipt"]["update_id"], "windows_resume", reason)
+        owe_followup(request["receipt"]["update_id"] if request else None, "windows_resume",
+                     f"Windows gateway recovery failed: {exc}")
 
 
 def _complete_source_update(request: dict | None) -> None:
@@ -812,11 +810,9 @@ def _complete_source_update(request: dict | None) -> None:
         try:
             _m()._resume_windows_gateways_after_update(token)
         except Exception as exc:  # health: allow BLE001 -- the code is committed (C3)
-            from hermes_cli.update_receipt import amend_terminal_followup, record_followup
+            from hermes_cli.update_receipt import owe_followup
 
-            reason = f"Windows gateway recovery failed: {exc}"
-            record_followup("windows_resume", reason)
-            amend_terminal_followup(request["receipt"]["update_id"], "windows_resume", reason)
+            owe_followup(request["receipt"]["update_id"], "windows_resume", f"Windows gateway recovery failed: {exc}")
         _settle_windows_resume(request)
     if result["exit_code"]:
         raise SystemExit(result["exit_code"])
@@ -826,11 +822,10 @@ def _complete_source_update(request: dict | None) -> None:
         if adopt_retired_channel(request):
             print(f"→ Source subscription moved to {request['channel_retirement']['destination']}")
     except Exception as exc:  # health: allow BLE001 -- the code is committed (C3); the next update re-adopts
-        from hermes_cli.update_receipt import amend_terminal_followup, record_followup
+        from hermes_cli.update_receipt import owe_followup
 
-        reason = str(exc) or type(exc).__name__
-        record_followup("channel_adoption", reason, retry="the next `hermes update` adopts it again")
-        amend_terminal_followup(request["receipt"]["update_id"], "channel_adoption", reason)
+        owe_followup(request["receipt"]["update_id"], "channel_adoption", str(exc) or type(exc).__name__,
+                     retry="the next `hermes update` adopts it again")
 
 
 def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_ref=None) -> None:

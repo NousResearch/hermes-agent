@@ -462,10 +462,8 @@ def _finish(request: dict, result_path: Path) -> int:
             from hermes_cli.update_cmd import _resume_windows_gateways_after_update
             _resume_windows_gateways_after_update(request["windows_resume"])
         except Exception as exc:
-            step_reason = f"Windows gateway recovery failed: {exc}"
-            update_receipt.record_followup("windows_resume", step_reason)
-            if update_receipt._current.get() is None:  # verification already finalized this run
-                update_receipt.amend_terminal_followup(request["receipt"]["update_id"], "windows_resume", step_reason)
+            update_receipt.owe_followup(request["receipt"]["update_id"], "windows_resume",
+                                        f"Windows gateway recovery failed: {exc}")
         update_receipt.finalize_pending_update_receipt(code, reason)
         terminal_receipt = _read_terminal_receipt(request)
         if terminal_receipt and terminal_receipt.get("outcome") == "success":

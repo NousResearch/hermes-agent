@@ -44,7 +44,7 @@ def _request_limited_response(method: str, url: str, **kwargs: Any) -> httpx.Res
 
     Content-Length is prechecked when declared; the streamed body is capped
     chunk-by-chunk either way (a lying/absent header cannot bypass the bound).
-    Returns a fully-read ``httpx.Response`` with the same status/headers.
+    Returns a fully-read response with headers describing the decoded body.
     """
     with httpx.stream(method, url, **kwargs) as response:
         declared = response.headers.get("content-length")
@@ -69,9 +69,14 @@ def _request_limited_response(method: str, url: str, **kwargs: Any) -> httpx.Res
                 )
             chunks.append(chunk)
 
+        # iter_bytes already decoded the wire body; do not decode it again.
+        headers = httpx.Headers(response.headers)
+        headers.pop("content-encoding", None)
+        headers.pop("content-length", None)
+        headers.pop("transfer-encoding", None)
         return httpx.Response(
             status_code=response.status_code,
-            headers=response.headers,
+            headers=headers,
             content=b"".join(chunks),
             request=response.request,
         )

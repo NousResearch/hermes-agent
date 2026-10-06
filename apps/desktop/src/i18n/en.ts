@@ -1221,6 +1221,24 @@ export const en: Translations = {
         'The system tray is unavailable. Windows will minimize and close normally. Turn this off and on to retry.',
       none: 'None',
       noneParen: '(none)',
+      // Display names for the built-in personalities; the config values stay the
+      // lowercase ids. A custom personality has no entry and keeps its prettified id.
+      personalityNames: {
+        helpful: 'Helpful',
+        concise: 'Concise',
+        technical: 'Technical',
+        creative: 'Creative',
+        teacher: 'Teacher',
+        kawaii: 'Kawaii',
+        catgirl: 'Catgirl',
+        pirate: 'Pirate',
+        shakespeare: 'Shakespeare',
+        surfer: 'Surfer',
+        noir: 'Noir',
+        uwu: 'UwU',
+        philosopher: 'Philosopher',
+        hype: 'Hype'
+      },
       builtinOnly: 'Built-in only',
       notSet: 'Not set',
       commaSeparated: 'comma-separated values',

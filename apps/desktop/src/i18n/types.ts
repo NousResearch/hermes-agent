@@ -1007,6 +1007,8 @@ export interface Translations extends NoticeTranslations {
       minimizeToTrayUnavailable: string
       none: string
       noneParen: string
+      /** Display names for the built-in personalities, keyed by config id. */
+      personalityNames: Record<string, string>
       builtinOnly: string
       notSet: string
       commaSeparated: string

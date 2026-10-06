@@ -182,6 +182,48 @@ def _write_bridge_pidfile(session_path: Path, pid: int, port: Optional[int] = No
         (session_path / "bridge.pid").write_text(text, encoding="utf-8")
 
 
+def _bridge_config_fingerprint(bridge_env: dict) -> str:
+    """16-hex digest over the bridge-consumed keys of a spawn env: identifies the config a bridge bakes in at startup."""
+    import hashlib
+    digest = hashlib.sha256()
+    for key in _BRIDGE_CONSUMED_ENV:
+        digest.update(key.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(str(bridge_env.get(key, "")).encode("utf-8"))
+        digest.update(b"\x00")
+    return digest.hexdigest()[:16]
+
+
+def _write_bridge_fingerprint(session_path: Path, fingerprint: str) -> None:
+    """Record the spawn config of the bridge next to ``bridge.pid``; adoption compares against it.
+
+    Deliberately NOT removed by ``disconnect()`` or the pidfile reaper: an adopted bridge keeps
+    running with the recorded config, and the next gateway start needs the record to tell a
+    matching bridge from one serving a stale policy/allowlist (#126824). A missing record just
+    makes adoption fail closed (treated as stale, like a missing ``scriptHash``).
+    """
+    with suppress(OSError):
+        (session_path / _BRIDGE_FINGERPRINT_FILE).write_text(fingerprint, encoding="utf-8")
+
+
+def _fmt_uptime(seconds) -> str:
+    """Compact ``2d 16h``-style rendering of bridge uptime seconds ('' when unknown)."""
+    try:
+        secs = int(float(seconds))
+    except (TypeError, ValueError):
+        return ""
+    days, rem = divmod(max(secs, 0), 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m"
+    return f"{rem}s"
+
+
 def _terminate_bridge_process(proc, *, force: bool = False) -> None:
     """Terminate the bridge process using process-tree semantics where possible."""
     action = "kill" if force else "terminate"
@@ -316,6 +358,14 @@ _BRIDGE_PASSTHROUGH_ENV = (
     "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_MAX_MESSAGE_LENGTH",
     "WHATSAPP_CHUNK_DELAY_MS", "WHATSAPP_SEND_TIMEOUT_MS",
 )
+# Everything a bridge bakes in at startup and never re-reads: the passthrough env plus the keys
+# _bridge_env() resolves itself (mode mirrors the --mode argv). Adoption must verify all of it,
+# or a policy/allowlist edit lands only after the bridge is killed by hand (#126824).
+_BRIDGE_CONSUMED_ENV = _BRIDGE_PASSTHROUGH_ENV + (
+    "WHATSAPP_MODE", "WHATSAPP_REPLY_PREFIX", "WHATSAPP_SEND_READ_RECEIPTS",
+    "HERMES_IMAGE_CACHE_DIR", "HERMES_AUDIO_CACHE_DIR", "HERMES_DOCUMENT_CACHE_DIR",
+)
+_BRIDGE_FINGERPRINT_FILE = "bridge.env-fingerprint"
 _TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
 _MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Telegram/Discord/Slack
 _NATIVE_MEDIA_TYPES = {"location": MessageType.LOCATION, "live_location": MessageType.LOCATION, "sticker": MessageType.STICKER}
@@ -456,8 +506,21 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._http_session = aiohttp.ClientSession()
         self._poll_task = asyncio.create_task(self._poll_messages())
 
+    def _adopted_config_matches(self) -> bool:
+        """Adopt only a bridge spawned with the env this adapter would use now.
+
+        bridge.js reads its policy/allowlist env once at startup, so a config edit reaches a
+        running bridge only through a restart; without this check an adopted bridge keeps gating
+        DMs with the allowlist it was spawned with (#126824). A missing record is stale by
+        definition — the same policy as a missing ``scriptHash``.
+        """
+        recorded = ""
+        with suppress(OSError):
+            recorded = (self._session_path / _BRIDGE_FINGERPRINT_FILE).read_text(encoding="utf-8-sig").strip()
+        return bool(recorded) and recorded == _bridge_config_fingerprint(self._bridge_env())
+
     async def _reuse_running_bridge(self, bridge_path: Path) -> bool:
-        """Adopt a connected bridge serving the on-disk bridge.js + same read-receipt config; else say why it restarts."""
+        """Adopt a connected bridge serving the on-disk bridge.js + the spawn config it was launched with; else say why it restarts."""
         self._foreign_bridge_session = None
         self._bridge_probe_timed_out = False
         try:
@@ -477,13 +540,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
                 return False
             running_hash, disk_hash = data.get("scriptHash", ""), _file_content_hash(bridge_path)
-            if running_hash and disk_hash and running_hash == disk_hash and bool(data.get("sendReadReceipts", False)) == self._send_read_receipts:
-                print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
+            receipts_match = bool(data.get("sendReadReceipts", False)) == self._send_read_receipts
+            if running_hash and disk_hash and running_hash == disk_hash and receipts_match and self._adopted_config_matches():
+                print(f"[{self.name}] Using existing bridge (status: {bridge_status}, uptime: {_fmt_uptime(data.get('uptime')) or 'unknown'})")
                 self._mark_connected()
                 self._attach_to_bridge(None)  # Not managed by us
                 self._wire_plugin_handlers(None)
                 return True
-            stale_reason = f"running={running_hash or 'unversioned'}, disk={disk_hash}" if running_hash != disk_hash else "send_read_receipts config changed"
+            if running_hash != disk_hash or not (running_hash and disk_hash):
+                stale_reason = f"running={running_hash or 'unversioned'}, disk={disk_hash}"
+            elif not receipts_match:
+                stale_reason = "send_read_receipts config changed"
+            else:
+                stale_reason = "config changed"  # policy/allowlist/env the running bridge baked in at spawn
             print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
         except asyncio.TimeoutError:
             self._bridge_probe_timed_out = True  # something holds the port but gave no identity; connect() leaves it
@@ -684,10 +753,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             node = find_node_executable("node")
             if node is None:
                 raise RuntimeError("Node.js is no longer available; run `hermes pm install`")
+            bridge_env = self._bridge_env()
             self._bridge_process = subprocess.Popen(
                 [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
-                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
+                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdout=bridge_log_fh, stderr=bridge_log_fh, env=bridge_env, **windows_detach_popen_kwargs())
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid, self._bridge_port)
+            _write_bridge_fingerprint(self._session_path, _bridge_config_fingerprint(bridge_env))
             if not await self._wait_for_bridge():
                 return False
             self._attach_to_bridge(self._bridge_process)

@@ -3674,7 +3674,7 @@ tips:
   t197: "Gabhann sábháil trajectóirí (--save-trajectories) rianta iomlána úsáide uirlisí le haghaidh oiliúna samhlacha."
   t198: "Trí chineál breiseáin: ginearálta (uirlisí/crúcaí), soláthraithe cuimhne, agus innill chomhthéacs."
   t199: "Suiteálann hermes plugins install owner/repo breiseáin go díreach ó GitHub."
-  t200: "Soláthraithe cuimhne seachtracha: OpenViking, Mem0 cuachta; Honcho, Hindsight agus tuilleadh trí hermes plugins install."
+  t200: "Soláthraithe cuimhne seachtracha: OpenViking cuachta; Honcho, Hindsight, Mem0 agus tuilleadh trí hermes plugins install."
   t201: "I measc crúcaí breiseán tá pre/post_tool_call, pre/post_llm_call, agus transform_terminal_output le haghaidh canónú aschuir."
   t202: "Laghdaíonn taisceadh leideanna (Anthropic) costais trí réimíreanna taiscthe leid an chórais a athúsáid."
   t203: "Gineann an gníomhaire teidil seisiún go huathoibríoch i snáithe cúlra — gan aon tionchar ar aga freagartha."

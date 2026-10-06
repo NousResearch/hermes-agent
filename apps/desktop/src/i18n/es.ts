@@ -1,6 +1,8 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { esAuxTasks } from './es_aux_tasks'
+import { esModelMenu } from './es_model_menu'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
@@ -869,6 +871,15 @@ export const esOverrides = {
     resetConfirm: '¿Restablecer toda la configuración a los valores predeterminados de Hermes?',
     exportFailed: 'Falló la exportación',
     resetFailed: 'Falló el restablecimiento',
+    pluginPages: {
+      blurb:
+        'Opciones que añaden los plugins instalados. Cada plugin tiene su propia página y algunos añaden subpáginas.',
+      empty: 'Ningún plugin tiene ajustes todavía.',
+      manage: 'Gestionar plugins',
+      agentSettings: 'Ajustes del agente',
+      pageCount: (n: number) => (n === 1 ? '1 página' : `${n} páginas`),
+      missing: 'Este plugin no tiene página de ajustes. Puede que esté desactivado o desinstalado.'
+    },
     nav: {
       providers: 'Proveedores',
       providerAccounts: 'Cuentas',
@@ -890,24 +901,15 @@ export const esOverrides = {
     },
     plugins: {
       title: 'Plugins de escritorio',
-      blurb:
-        'Amplía esta app, no un agente: se instala una sola vez para toda la app, sea cual sea el perfil, gateway o equipo al que te conectes. Incluidos o copiados en la carpeta desktop-plugins; los interruptores se aplican al instante.',
-      count: n => `${n} instalados`,
       openFolder: 'Abrir la carpeta de plugins de escritorio',
       rescan: 'Volver a buscar',
       reveal: 'Mostrar en el gestor de archivos',
-      enable: 'Activar',
-      disable: 'Desactivar',
       failed: 'falló',
-      empty: 'Aún no hay plugins de escritorio instalados.',
       kinds: {
         bundled: 'incluido',
         disk: 'en disco',
         runtime: 'en ejecución'
       },
-      agentHalfMissing: 'falta la parte del agente aquí',
-      agentHalfMissingTip:
-        'Esta es la parte de escritorio de un plugin incluido, pero su parte del agente no está instalada en el backend o perfil conectado. Instálala desde Capacidades → Plugins.',
       installModal: {
         installFromGit: 'Instalar desde Git',
         reviewRepository: 'Revisar repositorio',
@@ -2008,6 +2010,8 @@ export const esOverrides = {
         'Plataforma remota no compatible. El modo SSH de Hermes Desktop admite hosts remotos Linux, macOS y Windows.',
       sshErrTimeout: 'La conexión SSH agotó el tiempo de espera. Es posible que el host no responda o esté en reposo.',
       sshErrUpdateRequired: 'Actualiza Hermes en el host remoto antes de conectarte con Desktop SSH.',
+      sshErrInteractiveAuth:
+        'Tailscale SSH requiere una comprobación interactiva del navegador. Ejecuta `ssh <host> true` en la terminal, completa la comprobación y vuelve a intentarlo; Hermes ejecuta SSH de forma no interactiva.',
       sshErrUnknown: 'Falló la conexión SSH.'
     },
     keys: {
@@ -2116,6 +2120,8 @@ export const esOverrides = {
       change: 'Cambiar',
       autoUseMain: 'auto · usar modelo principal',
       inheritMainEffort: 'heredar · esfuerzo del modelo principal',
+      inheritsFrom: task => `hereda de ${task}`,
+      followTask: task => `Seguir ${task}`,
       providerDefault: '(predeterminado del proveedor)',
       fallbackAdd: 'Añadir respaldo',
       fallbackEmpty: 'No hay modelos de respaldo; se usa el modelo predeterminado salvo que falle.',
@@ -2127,52 +2133,7 @@ export const esOverrides = {
       moaAggregator: 'Agregador',
       moaAggregatorBilled: 'modelo que actúa · se factura por la ejecución',
       moaReferenceHint: 'asesora una vez por turno por defecto',
-      tasks: {
-        vision: {
-          label: 'Visión',
-          hint: 'Análisis de imágenes'
-        },
-        compression: {
-          label: 'Compresión',
-          hint: 'Compactación de contexto'
-        },
-        skills_hub: {
-          label: 'Hub de skills',
-          hint: 'Búsqueda de skills'
-        },
-        approval: {
-          label: 'Aprobación',
-          hint: 'Aprobación automática inteligente'
-        },
-        mcp: {
-          label: 'MCP',
-          hint: 'Enrutamiento de herramientas MCP'
-        },
-        title_generation: {
-          label: 'Generación de títulos',
-          hint: 'Títulos de sesión'
-        },
-        review: {
-          label: 'Revisión',
-          hint: 'subagente revisor de /review'
-        },
-        triage_specifier: {
-          label: 'Especificador de triaje',
-          hint: 'Detalle de especificaciones de Kanban'
-        },
-        kanban_decomposer: {
-          label: 'Descomponedor de Kanban',
-          hint: 'Descomposición de tareas'
-        },
-        profile_describer: {
-          label: 'Descriptor de perfiles',
-          hint: 'Descripciones automáticas de perfiles'
-        },
-        curator: {
-          label: 'Curador',
-          hint: 'Revisión de uso de skills'
-        }
-      }
+      tasks: esAuxTasks
     },
     localModels: {
       connectionChanged: 'Cambió la conexión de los modelos locales',
@@ -2905,7 +2866,7 @@ export const esOverrides = {
         save: 'Guardar configuración',
         saved: (name: string) => `Configuración de ${name} guardada.`,
         saveFailed: (name: string) => `No se pudo guardar la configuración de ${name}`,
-        optional: '(opcional)',
+        required: 'Obligatorio',
         secretSet: '•••••••• (configurado)',
         secretStoredAs: (env: string) =>
           `Se guarda en el .env del perfil como ${env}, nunca en config.yaml; déjalo en blanco para conservar el valor actual.`
@@ -5041,22 +5002,7 @@ export const esOverrides = {
     windowControls: 'Controles de ventana',
     paneControls: 'Controles de panel',
     appControls: 'Controles de app',
-    modelMenu: {
-      search: 'Buscar modelos',
-      noModels: 'No se encontraron modelos',
-      editModels: 'Editar modelos…',
-      followDefault: 'Usar el predeterminado de Ajustes',
-      refreshModels: 'Actualizar modelos',
-      favorites: 'Favoritos',
-      addFavorite: 'Añadir a favoritos',
-      removeFavorite: 'Quitar de favoritos',
-      favoriteShortcut: '⇧ Clic',
-      fast: 'Rápido',
-      free: 'gratis',
-      cacheRead: 'lectura en caché',
-      priceTitle: (input: string, output: string, cache: string) =>
-        `Entrada ${input}/Mtok · Salida ${output}/Mtok` + (cache ? ` · Lectura en caché ${cache}/Mtok` : '')
-    },
+    modelMenu: esModelMenu,
     modelOptions: {
       noOptions: 'No hay opciones para este modelo',
       options: 'Opciones',
@@ -6018,9 +5964,6 @@ export const esOverrides = {
     sessionUnavailable: 'Sesión no disponible',
     createSessionFailed: 'No se pudo crear una sesión nueva',
     promptFailed: 'Falló el prompt',
-    staleSessionTitle: 'Chat desactualizado',
-    staleSessionBody:
-      'Esta ventana estaba detrás de otra vista del mismo chat. Se cargaron los mensajes más recientes. Envía de nuevo si aún quieres.',
     providerCredentialRequired: 'Añade una credencial de proveedor antes de enviar tu primer mensaje.',
     emptySlashCommand: 'comando slash vacío',
     desktopCommands: 'Comandos de escritorio',

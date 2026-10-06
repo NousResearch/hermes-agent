@@ -837,7 +837,9 @@ class _ChildRun:
         via a Future done-callback (``close_deferred=True``) — closing here would race its still-unwinding finally
         path.
         """
-        from tools.delegate_tool import (_get_child_timeout, _get_subagent_approval_callback, _set_subagent_approval_cb)
+        from tools.delegate_tool import (
+            _STALE_RESULT_GRACE_SECONDS, _get_child_timeout, _get_subagent_approval_callback, _set_subagent_approval_cb,
+        )
         from tools.daemon_pool import DaemonThreadPoolExecutor
         child, task_index = self.child, self.task_index
         child_timeout = _get_child_timeout()
@@ -871,7 +873,31 @@ class _ChildRun:
             self.wait_liveness_aware(settled, future, child_timeout)
             if not future.done():
                 stale_after = getattr(self.heartbeat, "stale_threshold_seconds", None)
-                raise FuturesTimeoutError()
+                if stale_after is None:
+                    # A configured inactivity cap elapsing keeps its teeth: the user armed a
+                    # budget, the fingerprint never moved, abandon now (#116001 contract).
+                    raise FuturesTimeoutError()
+                # Grace collection (#113222): the heartbeat's stale verdict ended the wait
+                # while the worker was still pending — a child that already wrote its final
+                # answer often lands its result moments later, and that real result must be
+                # collected instead of a synthesized timeout that strands a finished batch
+                # as `running`. Signal the cooperative stop (a stoppable worker can then
+                # unwind inside the window), poll the future for the grace period, and only
+                # fall through to the timeout path if nothing lands. Steering stays OPEN
+                # here on purpose: the success path's `_merge_late_steer` (or the failure
+                # path below) is the linearization boundary, so a concurrent steer is never
+                # lost either way.
+                _signal_child_stop(child)
+                grace = _STALE_RESULT_GRACE_SECONDS
+                grace_done = threading.Event()
+                future.add_done_callback(lambda _f: grace_done.set())
+                if not grace_done.wait(timeout=grace) or not future.done():
+                    raise FuturesTimeoutError()
+                logger.info(
+                    "Subagent %d settled inside the %.1fs stale-result grace window — collecting its real result",
+                    task_index, grace,
+                )
+                return future.result(), None, False
             return future.result(), None, False
         except Exception as wait_exc:
             exc: BaseException = wait_exc  # ``as`` targets are unbound after the except block

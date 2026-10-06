@@ -1,0 +1,22 @@
+name: alans-way
+repo: https://github.com/capthvnsen/alans-way-agents
+sha: 01f9e638260cb830e386226a63c4f04edb29ddd2
+subdir: alans-way
+version: "0.4.1"
+title: "Alan's Way"
+description: Proactive primary bot for Hermes. After install, the workspace-setup skill walks the agent through a separate Mac app and Tailscale setup.
+maintainer: capthvnsen
+tier: community
+category: automation
+requires_hermes: ">=0.21"
+docs_url: https://github.com/capthvnsen/alans-way
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "The Mac app is not part of this plugin. Ask the agent to set up Alan's Way; the workspace-setup skill fetches the app repo and walks through it."
+capabilities:
+  provides_tools:
+    - proactive_control
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

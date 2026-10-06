@@ -49,6 +49,10 @@ export function shellExec(
       failure.stderr = stderr
       reject(failure)
     })
+    // A command that exits without reading stdin (the spawn fixtures never do)
+    // closes the pipe under this write; the `close` verdict above is the result,
+    // so an EPIPE here must not surface as an unhandled error.
+    child.stdin.once('error', () => {})
     child.stdin.end(stdinData ?? '')
   })
 }

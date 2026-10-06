@@ -367,13 +367,25 @@ describe('useSessionTileActions reloadFromMessage failed-submit rollback (#95745
     })
 
     const { result } = renderTileActions()
+    let asked = 0
+
     // Regenerating u1 archives the later u2 turn: accept the deep-cut confirm (#133716).
-    const stopConfirming = $confirmRequest.listen(request => request && settleConfirm(true))
+    const stopConfirming = $confirmRequest.listen(request => {
+      if (request) {
+        asked += 1
+        settleConfirm(true)
+      }
+    })
 
     await act(async () => {
       await result.current.reloadFromMessage('u1')
     })
     stopConfirming()
+
+    expect(asked).toBe(1)
+    expect(requestGatewayMock.mock.calls.find(([method]) => method === 'prompt.submit')?.[1]).toMatchObject({
+      confirm_deep_truncate: true
+    })
 
     const rolledBack = $sessionStates.get()[RUNTIME_SESSION_ID]?.messages
 

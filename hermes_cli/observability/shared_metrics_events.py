@@ -65,6 +65,14 @@ def record_compression(
 # began on another thread. An attempt begins and emits on one thread (the pool worker or the caller).
 _compression_attempt = threading.local()
 
+# Attempts that ended before anything could fail: another path held the lock, the transcript had
+# nothing summarizable (no LLM call was made), the user stopped it, or a newer attempt replaced it.
+# Counting these as ``failed`` made a session that is simply all protected tail read as broken.
+_SKIPPED_COMPRESSION_CLASSES = frozenset({
+    "lock_contended", "insufficient_messages", "no_compressible_window", "empty_post_handoff_window",
+    "explicit_interrupt", "attempt_superseded", "snapshot_stale",
+})
+
 
 def begin_compression_attempt(trigger: str, tokens_before: Any) -> None:
     _compression_attempt.pending = (trigger, tokens_before)
@@ -77,7 +85,10 @@ def finish_compression_attempt(
     pending, _compression_attempt.pending = getattr(_compression_attempt, "pending", None), None
     if not pending:
         return
-    outcome = "success" if commit_status == "committed" else "skipped" if failure_class == "lock_contended" else "failed"
+    outcome = (
+        "success" if commit_status == "committed"
+        else "skipped" if failure_class in _SKIPPED_COMPRESSION_CLASSES else "failed"
+    )
     record_compression(trigger=pending[0], outcome=outcome, tokens_before=pending[1], context_length=context_length)
     if outcome == "success" and agent is not None:
         from .shared_metrics_efficiency import record_cache_break

@@ -1,6 +1,7 @@
 // health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { conversationSearchCopy } from './conversation-search'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaBoot } from './ja_boot'
@@ -34,6 +35,7 @@ export const jaOverrides = {
     lookupFailed: "ゲートウェイでこのグループを検索できませんでした。もう一度お試しください。",
     missing: "このグループチャットはもう存在しません。"
   },
+  conversationSearch: conversationSearchCopy['ja'],
   catalog: jaCatalog,
   connectors: jaConnectors.connectors,
   externalOpenFailed: {

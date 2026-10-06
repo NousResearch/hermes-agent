@@ -1,3 +1,4 @@
+import { conversationSearchCopy } from './conversation-search'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZhHant } from './intro-zh-hant'
 import { zhHantArtifacts } from './zh-hant_artifacts'
@@ -19,6 +20,7 @@ export const zhHantOverrides = {
     lookupFailed: "無法在閘道上查找此群組，請重試。",
     missing: "此群組聊天已不存在。"
   },
+  conversationSearch: conversationSearchCopy['zh-hant'],
 
   catalog: {
     add: '新增',

@@ -16,6 +16,7 @@ export const HISTORY_WINDOW_LIMIT = 120
 /** The around route is intentionally isolated from tail/backfill bookkeeping. */
 export interface HistoryWindowResponse extends SessionMessagesResponse {
   pagination: NonNullable<SessionMessagesResponse['pagination']> & {
+    row_id?: number
     has_older: boolean
     has_newer: boolean
   }
@@ -27,13 +28,15 @@ interface HistoryPage {
   newerAvailable: boolean
   /** Display rows before this page's first row; how two pages prove they touch. */
   offset: number
+  rowId: number
 }
 
 export async function fetchHistoryWindow(
   storedId: string,
   rowId: number,
   scope: ProfileScope,
-  signal: AbortSignal
+  signal: AbortSignal,
+  kind?: 'match'
 ): Promise<HistoryPage> {
   signal.throwIfAborted()
 
@@ -57,7 +60,7 @@ export async function fetchHistoryWindow(
   const response = await hermesApi<HistoryWindowResponse>({
     ...route,
     method: 'GET',
-    path: `/api/sessions/${encodeURIComponent(storedId)}/messages/around?${query}`
+    path: `/api/sessions/${encodeURIComponent(storedId)}/messages/${kind ?? 'around'}?${query}`
   })
 
   signal.throwIfAborted()
@@ -68,6 +71,7 @@ export async function fetchHistoryWindow(
 
   return {
     messages: toChatMessages(response.messages),
+    rowId: Number(response.pagination.row_id) || rowId,
     olderAvailable: response.pagination.has_older === true,
     newerAvailable: response.pagination.has_newer === true,
     offset: Math.max(0, Number(response.pagination.offset) || 0)
@@ -105,7 +109,7 @@ export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: Histo
   }, [cancel])
 
   const revealRow = useCallback(
-    async (rowId: number, signal: AbortSignal): Promise<string | null> => {
+    async (rowId: number, signal: AbortSignal, kind?: 'match'): Promise<string | null> => {
       cancel()
 
       if (signal.aborted || !Number.isSafeInteger(rowId) || rowId <= 0) {
@@ -131,7 +135,7 @@ export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: Histo
 
       try {
         const next = await Promise.race([
-          fetchHistoryWindow(captured.storedId, rowId, captured.scope, controller.signal),
+          fetchHistoryWindow(captured.storedId, rowId, captured.scope, controller.signal, kind),
           aborted
         ])
 
@@ -144,7 +148,9 @@ export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: Histo
           return null
         }
 
-        const target = next.messages.find(message => message.rowId === rowId)
+        const target =
+          next.messages.find(message => message.rowId === next.rowId) ??
+          (kind === 'match' ? next.messages[0] : undefined)
 
         if (!target) {
           return null

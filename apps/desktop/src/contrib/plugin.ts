@@ -19,6 +19,9 @@ import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } 
 
 import { type GatewayEventListener, onGatewayEvent } from './events'
 import { registry } from './registry'
+import { type PluginSettingsPage, settingsPageContribution } from './settings-pages'
+
+export type { PluginSettingsPage, PluginSettingsSubpage } from './settings-pages'
 import type { Contribution } from './types'
 
 export type { PluginRestOptions } from '@/hermes'
@@ -80,6 +83,10 @@ export interface PluginContext {
   register: (c: PluginContribution) => () => void
   /** Register several at once; the returned disposer removes all of them. */
   registerMany: (cs: PluginContribution[]) => () => void
+  /** Add this plugin's page (and optional sub-pages) to Settings ▸ Plugins.
+   *  Removed with the plugin on disable/unload. Feature-detect on older hosts:
+   *  `ctx.registerSettingsPage?.(...)`. */
+  registerSettingsPage: (page: PluginSettingsPage) => () => void
   /** Register an arbitrary cleanup to run on unload/disable — for side effects
    *  that aren't contributions or sockets (store subscriptions, timers). Runs
    *  alongside every other disposer when the plugin deactivates. */
@@ -286,6 +293,7 @@ export function createPluginContext(pluginId: string, onDispose?: (dispose: () =
     source,
     register: c => track(registry.register(scope(c))),
     registerMany: cs => track(registry.registerMany(cs.map(scope))),
+    registerSettingsPage: page => track(registry.register(scope(settingsPageContribution(page)))),
     onDispose: fn => void track(fn),
     onEvent: (type, listener) => track(onGatewayEvent(type, listener)),
     ...createPluginLifetime(track),

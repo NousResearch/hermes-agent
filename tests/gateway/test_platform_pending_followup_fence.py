@@ -1,9 +1,10 @@
 """Platform-surface pending-slot writes publish to background-review admission.
 
 The base adapter and the gateway runner fence every accepted follow-up already
-(``test_background_review_followup_admission.py``). Three surfaces write the pending slot
-directly instead: raft's busy-session wake merge, yuanbao's message-recall interrupt, and the
-runner's /stop, /new, /reset tail that re-parks an internal wake (#114456). Each write IS the
+(``test_background_review_followup_admission.py``). Four surfaces write the pending slot
+directly instead: raft's busy-session wake merge, yuanbao's message-recall interrupt, the
+runner's /stop, /new, /reset tail that re-parks an internal wake (#114456), and the runner's
+post-turn drain restoring a dequeued event behind a leftover /steer (#131644). Each write IS the
 next live turn, so an automatic review that sampled "no follow-up" a moment earlier must not get
 its full-transcript request onto the wire beside it. Rejected and no-op events must leave
 admission untouched, or a dropped message would suppress learning forever.
@@ -289,3 +290,29 @@ async def test_interrupt_without_a_new_slot_write_leaves_admission_untouched(
     assert (adapter._pending_messages.get(key) is parked) is parked_internal
     assert fenced_under_admission == []
     assert state.epoch == 0
+
+
+@pytest.mark.asyncio
+async def test_leftover_steer_restoring_a_dequeued_event_publishes_the_followup_fence():
+    """A /steer that arrived after the last tool batch runs as the next turn and the event the
+    post-turn drain had just dequeued goes back to the head of the queue (#131644). That restore
+    is an accepted-follow-up slot write like any other — it IS the turn after the steer — so it
+    publishes through the fence: a review that sampled the slot empty between the dequeue and the
+    restore is fenced here, never left to run beside the restored turn."""
+    adapter, runner, source, key = _command_gateway()
+    runner._draining = False
+    queued = _accepted(source, "queued while busy", internal=False)
+    adapter._pending_messages[key] = queued
+    state, fenced_under_admission = _watch_admission(adapter, key)
+
+    event, text = await runner._run_agent_drain_pending(
+        {"final_response": "done", "pending_steer": "accepted correction"},
+        adapter,
+        source,
+        key,
+    )
+
+    assert (event, text) == (None, "accepted correction")
+    assert adapter._pending_messages[key] is queued
+    assert fenced_under_admission == [True]
+    assert state.epoch == 1

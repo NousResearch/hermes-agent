@@ -153,6 +153,36 @@ class GatewayBusySessionMixin:
         self._apply_followup_queue_mutation(adapter, session_key, _promote)
         return promoted[0]
 
+    def _restore_dequeued_event(
+        self, session_key: str, adapter: Any, pending_event: "MessageEvent"
+    ) -> None:
+        """Put a just-dequeued event back at the head of the queue (a leftover /steer runs first).
+
+        A slot the promotion already re-staged moves to the overflow head so arrival order holds.
+        The write is an accepted follow-up like any other — it IS the turn after the steer — so it
+        publishes through the admission fence: a review that sampled the slot empty between the
+        dequeue and this restore is fenced here, never left to run beside the restored turn.
+        """
+
+        def _queue_head_insert(event: "MessageEvent") -> None:
+            overflow = self._overflow_queue(session_key)
+            if overflow is None:
+                overflow = self._session_state(session_key).conversation.queued_events
+            overflow.insert(0, event)
+
+        def _restore() -> bool:
+            pending_slot = getattr(adapter, "_pending_messages", None)
+            if not isinstance(pending_slot, dict):
+                _queue_head_insert(pending_event)
+                return True
+            promoted = pending_slot.get(session_key)
+            if promoted is not None:
+                _queue_head_insert(promoted)
+            pending_slot[session_key] = pending_event
+            return True
+
+        self._apply_followup_queue_mutation(adapter, session_key, _restore)
+
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""
         depth = len(self._overflow_queue(session_key) or ())

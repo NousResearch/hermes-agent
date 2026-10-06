@@ -293,6 +293,55 @@ def test_prune_records_removals_and_kills_in_scratch_prune_log(tmp_path: Path) -
     assert f"could not fully remove {stuck}" in log and f"removed {stuck}" not in log
 
 
+@pytest.mark.platforms("linux")  # macOS and Windows filesystems reject non-UTF-8 names
+def test_prune_log_keeps_record_of_non_utf8_name(tmp_path: Path) -> None:
+    """A legal POSIX name that is not UTF-8 is written escaped, not dropped with its record."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    raw = os.fsencode(scratch) + b"/old-\xff"
+    with open(raw, "wb") as out:
+        out.write(b"x")
+    ancient = time.time() - 30 * 3600
+    os.utime(raw, (ancient, ancient))
+    assert prune_scratch_dir(scratch) == 1
+    log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
+    assert "removed " in log and "old-\\udcff" in log
+
+
+@pytest.mark.platforms("posix")  # POSIX rename semantics
+def test_prune_log_keeps_record_when_another_prune_rotated_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two prunes of one home can both reach rollover: the other one renames
+    ``scratch-prune.log`` between this one's existence check and its rename. The rotation is
+    already done, so the record goes to the new file instead of being dropped."""
+    import hermes_constants_scratch
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "idle-lane"
+    entry.write_text("x", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    os.utime(entry, (ancient, ancient))
+    log = tmp_path / "logs" / "scratch-prune.log"
+    log.parent.mkdir()
+    log.write_bytes(b"x" * 200)
+    monkeypatch.setattr(hermes_constants_scratch, "_PRUNE_LOG_MAX_BYTES", 100)
+    real_rename = os.rename
+    raced: list[str] = []
+
+    def rename(src: str, dst: str, *args: object, **kwargs: object) -> None:
+        if os.fspath(src) == str(log) and not raced:
+            raced.append(dst)
+            real_rename(src, dst)  # the other prune's rename lands first
+        real_rename(src, dst)
+
+    monkeypatch.setattr(os, "rename", rename)
+    assert prune_scratch_dir(scratch) == 1
+    assert raced
+    records = "".join(p.read_text(encoding="utf-8-sig", errors="replace")
+                      for p in log.parent.glob("scratch-prune.log*"))
+    assert f"removed {entry} (" in records
+
+
 def test_prune_releases_git_worktree_registration_of_idle_entry(tmp_path):
     """Deleting a scratch entry that held a linked worktree leaves the repo with no
     dangling registration (10 sat in one repo's ``git worktree list`` after cleanup)."""

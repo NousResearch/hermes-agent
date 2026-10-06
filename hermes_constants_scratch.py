@@ -7,6 +7,7 @@ someone runs ``git worktree prune``. Both are reaped here, right before ``rmtree
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import shutil
@@ -27,6 +28,17 @@ _PRUNE_LOG_MAX_BYTES = 5 * 1024 * 1024
 _PRUNE_LOG_BACKUPS = 3
 
 
+class _PruneLogHandler(RotatingFileHandler):
+    """Rollover that tolerates a concurrent prune of the same home rotating first: its rename
+    of ``scratch-prune.log`` can land between this handler's existence check and its own
+    rename. The rotation is then already done, so the record goes to the new file instead of
+    being dropped with a FileNotFoundError."""
+
+    def doRollover(self) -> None:
+        with contextlib.suppress(FileNotFoundError):
+            super().doRollover()
+
+
 def _open_prune_log(log_file: Path | None) -> logging.Logger:
     """Logger for one prune's records, with its own RotatingFileHandler on *log_file*, so a
     prune that runs at boot (before ``setup_logging()``) still leaves them on disk. Records also
@@ -45,8 +57,11 @@ def _open_prune_log(log_file: Path | None) -> logging.Logger:
         return logger
     audit = logging.Logger(logger.name, logging.INFO)
     audit.parent = logger
-    handler = RotatingFileHandler(
-        log_file, maxBytes=_PRUNE_LOG_MAX_BYTES, backupCount=_PRUNE_LOG_BACKUPS, encoding="utf-8", delay=True,
+    # backslashreplace: a legal POSIX name that is not UTF-8 is written escaped instead of
+    # dropping the whole record.
+    handler = _PruneLogHandler(
+        log_file, maxBytes=_PRUNE_LOG_MAX_BYTES, backupCount=_PRUNE_LOG_BACKUPS, encoding="utf-8",
+        errors="backslashreplace", delay=True,
     )
     handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
     audit.addHandler(handler)

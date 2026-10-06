@@ -260,9 +260,10 @@ def browser_vault_list() -> str:
 
 
 def browser_vault_unlock(backend_name: str) -> str:
-    """Ask the user (via the surface's masked prompt) to unlock an external manager for this session."""
+    """Unlock an external manager for this session: the manager's own desktop approval first (Bitwarden
+    biometrics, no master password typed), then the surface's masked master-password prompt."""
     from agent.vault_backends import enabled_backends
-    from agent.vault_backends.unlock import can_prompt_here, get_unlock_prompt_callback
+    from agent.vault_backends.unlock import can_prompt_here, get_unlock_prompt_callback, secretless_unlock
 
     backend = next((b for b in enabled_backends() if b.name == backend_name and b.needs_unlock), None)
     if backend is None:
@@ -274,6 +275,8 @@ def browser_vault_unlock(backend_name: str) -> str:
                            "error": (f"{backend.display_name} is locked and this session cannot prompt for the "
                                      "master password (headless/cron/API). Unlock it from an interactive Hermes "
                                      "session or the Desktop app first.")})
+    if secretless_unlock(backend):
+        return json.dumps({"success": True, "backend": backend.name, "unlocked_with": "desktop_app_approval"})
     prompt = get_unlock_prompt_callback()
     master = prompt(backend.name, backend.display_name) if prompt else ""
     if not master:

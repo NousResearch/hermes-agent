@@ -9,12 +9,18 @@ namespaced by ``prefix`` so ``backend_for_handle`` needs no lookup table.
 
 from __future__ import annotations
 
+import logging
+import os
+import signal
 import subprocess
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Optional, Sequence
 
 from agent.vault_store import VaultItemMeta
+
+logger = logging.getLogger(__name__)
 
 
 class UnlockRequired(Exception):
@@ -36,6 +42,13 @@ class LoginBackend(ABC):
 
     def is_unlocked(self) -> bool:
         return True
+
+    def try_secretless_unlock(self) -> bool:
+        """Unlock without a typed secret by letting the manager's own desktop UI approve it (``bw``'s
+        Touch ID / Windows Hello path). Returns True once a session token is stored. The base returns
+        False, so the surface prompts for the master password as before. Only ever reached where a
+        human can answer — see ``unlock.can_prompt_here``."""
+        return False
 
     @abstractmethod
     def list_items(self) -> list[VaultItemMeta]:
@@ -86,6 +99,80 @@ def run_with_secret_env(argv: Sequence[str], *, env: dict[str, str], secret_env:
         raise RuntimeError(f"{label} unlock timed out after {timeout:.0f}s") from exc
     except OSError as exc:
         raise RuntimeError(f"failed to invoke {label}: {exc}") from exc
+
+
+_CLEANUP_TIMEOUT_S = 5.0
+
+
+def _kill_process_tree(proc: subprocess.Popen, pgid: Optional[int]) -> bool:
+    """Kill a manager CLI and the helpers it spawned; True when nothing survived.
+
+    ``bw`` starts a ``desktop_proxy`` child to reach the desktop app. Walking the tree after the fact
+    is not enough on its own: if the CLI exited first, its helper is reparented and disappears from
+    that tree, so the process group captured at spawn is the additional guarantee on POSIX. The CLI is
+    always signalled directly, and reaped through its own handle, because a bare ``communicate()``
+    blocks while a grandchild holds the pipe. One deadline covers the whole cleanup, so a probe cannot
+    quietly outlive its cap through two sequential waits.
+    """
+    import psutil  # lazy, like the rest of the tree; psutil is a pinned core dependency
+
+    deadline = time.monotonic() + _CLEANUP_TIMEOUT_S
+    if pgid is not None:
+        try:
+            # The probe owns its session, so this group holds the CLI and every helper it spawned,
+            # including one already reparented away from it.
+            # windows-footgun: ok -- pgid is captured only on POSIX (os.getpgid in the runner)
+            os.killpg(pgid, getattr(signal, "SIGKILL", signal.SIGTERM))
+        except OSError:
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+    try:
+        parent = psutil.Process(proc.pid)
+        victims = [*parent.children(recursive=True), parent]
+    except psutil.Error:
+        victims = []
+    alive = []
+    if victims:
+        _gone, alive = psutil.wait_procs(victims, timeout=max(0.0, deadline - time.monotonic()))
+    try:
+        proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        return False
+    return not alive
+
+
+def run_for_secretless_unlock(argv: Sequence[str], *, env: dict[str, str], timeout: float,
+                              label: str) -> Optional[subprocess.CompletedProcess]:
+    """Run a manager CLI that mints a session token from a desktop-app approval instead of a secret we
+    hand it. stdin is closed, so a CLI falling back to its own password prompt fails fast instead of
+    hanging; a timeout or spawn failure returns None and the caller prompts as usual. The child gets
+    its own process group, and a timed-out probe is killed with that group before we move on."""
+    try:
+        proc = subprocess.Popen(  # argv list, no shell
+            list(argv), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+            start_new_session=True)  # its own group, so a timeout can kill the whole probe
+    except OSError as exc:
+        logger.debug("%s secretless unlock could not start: %s", label, exc)
+        return None
+    pgid: Optional[int] = None
+    if os.name == "posix":
+        try:
+            pgid = os.getpgid(proc.pid)
+        except OSError:
+            pgid = None
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if not _kill_process_tree(proc, pgid):
+            logger.warning("%s approval probe left a process behind after timing out; continuing", label)
+        logger.debug("%s secretless unlock timed out after %.0fs; prompting instead", label, timeout)
+        return None
+    return subprocess.CompletedProcess(list(argv), proc.returncode, out, err)
 
 
 def _cfg() -> dict:

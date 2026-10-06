@@ -34,6 +34,7 @@ def flush_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "gateway.shutdown_flush._get_flush_dir", lambda: directory
     )
+    monkeypatch.setattr("gateway.shutdown_flush._REPLAYED_UNREMOVABLE", set())
     return directory
 
 
@@ -103,6 +104,18 @@ def _write_spool(
 
 def _contents(mock_db) -> list:
     return [c.kwargs["content"] for c in mock_db.append_message.call_args_list]
+
+
+def _fail_unlink_for(monkeypatch, name: str) -> None:
+    """Make deleting the spool file *name* fail, as on a directory that stopped being writable."""
+    real_unlink = Path.unlink
+
+    def unlink(self, missing_ok=False):
+        if self.name == name:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
 
 
 def test_replays_in_drop_order_not_file_name_order(flush_dir):
@@ -354,6 +367,46 @@ def test_transient_no_more_rows_error_keeps_the_row_for_retry(flush_dir, make_st
     assert _contents(mock_db) == ["old", "old", "old", "live", "live-2"]
     assert not list(flush_dir.iterdir())
     assert not store._dirty_transcripts
+
+
+def test_a_replayed_file_that_cannot_be_deleted_is_not_replayed_again(flush_dir, make_store, monkeypatch):
+    """Its row is already written, so replaying it before the next live write duplicates that row.
+    The files after it are still older than the live row, so they must land first."""
+    _write_spool(flush_dir, "pending-aaa.json", "sess-1",
+                 {"role": "user", "content": "old0"}, ts=100, seq=0)
+    second = _write_spool(flush_dir, "pending-bbb.json", "sess-1",
+                          {"role": "user", "content": "old1"}, ts=100, seq=1)
+    _fail_unlink_for(monkeypatch, "pending-aaa.json")
+    mock_db = MagicMock()
+    store = make_store(mock_db)
+    store.mark_spooled_drop_sessions({"sess-1"})
+
+    store.append_to_transcript("sess-1", {"role": "user", "content": "live"})
+    store.mark_spooled_drop_sessions({"sess-1"})
+    store.append_to_transcript("sess-1", {"role": "user", "content": "live-2"})
+
+    assert _contents(mock_db) == ["old0", "old1", "live", "live-2"]
+    assert not second.exists()
+    assert not store._dirty_transcripts
+
+
+def test_boot_recovery_counts_and_never_repeats_a_file_it_could_not_delete(
+        flush_dir, make_store, boot_db, monkeypatch):
+    """Boot recovery wrote the row, so it is recovered; the live drain must not write it again."""
+    _write_spool(flush_dir, "pending-aaa.json", "sess-1",
+                 {"role": "user", "content": "old0"}, ts=100, seq=0)
+    _write_spool(flush_dir, "pending-bbb.json", "sess-1",
+                 {"role": "user", "content": "old1"}, ts=100, seq=1)
+    _fail_unlink_for(monkeypatch, "pending-aaa.json")
+    mock_db = MagicMock()
+    boot_db(mock_db)
+    store = make_store(mock_db)
+
+    assert _boot(store) == 2
+    store.mark_spooled_drop_sessions({"sess-1"})
+    store.append_to_transcript("sess-1", {"role": "user", "content": "live"})
+
+    assert _contents(mock_db) == ["old0", "old1", "live"]
 
 
 def test_repairable_spool_replay_failure_still_reaches_fts_rebuild(flush_dir, make_store):

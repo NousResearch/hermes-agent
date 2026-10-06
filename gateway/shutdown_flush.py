@@ -35,6 +35,9 @@ AGENT_HISTORY_REASON = "shutdown-with-unpersisted-agent-history"
 QUARANTINE_SUFFIX = ".bad"
 # Monotonic tiebreaker so same-second spool files replay in drop order.
 _TRANSCRIPT_SPOOL_SEQ = itertools.count()
+# Spool files whose row was written but which could not be deleted. Replaying one again would write
+# its row twice, so both replay passes skip it for the rest of this process.
+_REPLAYED_UNREMOVABLE: set[Path] = set()
 
 
 def _get_flush_dir():
@@ -155,6 +158,8 @@ def drain_transcript_spool(session_id: str, replay, *, db_known_failing: bool = 
         return 0, 0
     entries = []
     for path in candidates:
+        if path in _REPLAYED_UNREMOVABLE:
+            continue
         try:
             payload = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
@@ -184,7 +189,7 @@ def drain_transcript_spool(session_id: str, replay, *, db_known_failing: bool = 
                 "keeping spool file for retry: %s", path, session_id, exc)
             remaining = len(ordered) - idx
             break
-        path.unlink(missing_ok=True)
+        _remove_replayed(path, session_id)
         replayed += 1
     if replayed:
         logger.info("Replayed %d spooled transcript message(s) for %s after DB recovery", replayed,
@@ -258,6 +263,18 @@ def is_row_rejection(exc: BaseException) -> bool:
     return isinstance(exc, (TypeError, ValueError, AttributeError, OverflowError))
 
 
+def _remove_replayed(path: Path, session_id: str) -> None:
+    """Delete a spool file whose row was just written. If it cannot be deleted, this process never
+    replays it again, and replay goes on with the files after it, which are still older than any
+    live row. Nothing on disk marks it, so a restart writes the row a second time."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        _REPLAYED_UNREMOVABLE.add(path)
+        logger.error("Spooled transcript row for %s was written, but %s could not be deleted (%s); "
+                     "delete it by hand, or the next start writes that row again", session_id, path, exc)
+
+
 def _quarantine_spool_file(path: Path, session_id: str, exc: BaseException) -> None:
     """Move a spool file whose row the database rejected out of every replay, so it cannot hold its
     session's later rows back on every write and every restart. It stays on disk for manual recovery."""
@@ -327,6 +344,8 @@ def recover_pending_spool(session_db=None, *, session_resolver=None) -> tuple[in
     blocked_sessions: Dict[str, int] = {}
     try:
         for path in flush_files:
+            if path in _REPLAYED_UNREMOVABLE:
+                continue
             # One unparseable payload or rejected append must only skip THIS file: the file is
             # never unlinked, so aborting the pass would re-poison every later boot.
             try:
@@ -340,7 +359,7 @@ def recover_pending_spool(session_db=None, *, session_resolver=None) -> tuple[in
                                         session_resolver=session_resolver,
                                         blocked_sessions=blocked_sessions):
                     recovered += 1
-                    path.unlink(missing_ok=True)
+                    _remove_replayed(path, payload.get("session_key", ""))
             # health: allow BLE001 -- per-file boundary moved unchanged from recover_pending_to_db; a traceback per locked-DB file would only add noise
             except Exception as exc:
                 logger.warning("Failed to recover pending message from %s: %s", path, exc)

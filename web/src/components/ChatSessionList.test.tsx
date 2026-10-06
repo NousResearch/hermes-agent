@@ -7,9 +7,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ChatSessionList } from './ChatSessionList'
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true
+// act() reads this flag. Cast rather than declared, matching the sibling suites
+// (ChatPage, SessionsPage, SystemActions, ...): the repo compiles with
+// noImplicitAny and globalThis carries no index signature.
+;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const { getSessions } = vi.hoisted(() => ({ getSessions: vi.fn() }))
+
+// The mock replaces that module, so it has to describe the props the real Button
+// accepts: plain ButtonHTMLAttributes plus the cva variants (ghost/outlined/size)
+// and the prefix/suffix nodes. Annotating it as ButtonHTMLAttributes alone makes
+// every variant destructured below a "property does not exist" error.
+type MockButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  ghost?: boolean
+  outlined?: boolean
+  prefix?: React.ReactNode
+  size?: 'default' | 'icon' | 'sm' | 'xs'
+}
 
 vi.mock('@nous-research/ui/ui/components/button', () => ({
   Button: ({
@@ -20,7 +34,7 @@ vi.mock('@nous-research/ui/ui/components/button', () => ({
     prefix,
     size,
     ...props
-  }: React.ButtonHTMLAttributes<HTMLButtonElement>) => {
+  }: MockButtonProps) => {
     void ghost
     void outlined
     void prefix

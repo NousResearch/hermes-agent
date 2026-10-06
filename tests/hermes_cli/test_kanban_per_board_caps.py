@@ -159,6 +159,21 @@ def test_resolve_board_caps_invalid_board_value_falls_through(kanban_home, monke
     assert spawn == 7
 
 
+def test_resolve_board_caps_env_pin_routes_to_active_board(kanban_home, monkeypatch):
+    """A ``HERMES_KANBAN_BOARD`` pin (the dispatch connect path) routes the cap
+    lookup to that board — not the hardcoded default (spawn env consistency)."""
+    monkeypatch.setattr(
+        hermes_config, "load_config",
+        lambda *a, **k: {"kanban": {"max_spawn": 8}},
+    )
+    kb.create_board("tight")
+    kb.write_board_metadata("tight", max_spawn=3)
+    # default board has no cap → global value would be 8 if routing is wrong.
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "tight")
+    spawn, _ = kanban_ops.resolve_board_caps(None, cli_max=None)
+    assert spawn == 3
+
+
 # ---------------------------------------------------------------------------
 # 3. Gateway per-board resolution (_board_dispatch_caps)
 # ---------------------------------------------------------------------------

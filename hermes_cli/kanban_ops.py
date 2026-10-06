@@ -41,8 +41,15 @@ def resolve_board_caps(board=None, *, cli_max=None):
     source sets it (cap off), so the caller keeps its current unbounded default.
     The global value here is the raw ``kanban.*`` setting — NOT the memory-derived
     ``max_in_progress`` default, which resolves elsewhere and stays untouched.
-    ``board=None`` targets the current board (same resolution as the connect).
+    ``board=None`` targets the active board — same resolution as the dispatch
+    connect path (``HERMES_KANBAN_DB`` env pin / ``HERMES_KANBAN_BOARD`` /
+    ``boards switch`` symlink → ``default``), never a hardcoded default slug.
     """
+    if board is None:
+        try:
+            board = kb.get_current_board()
+        except Exception:
+            board = None
     cfg = _kanban_config()
     try:
         meta = kb.read_board_metadata(board)

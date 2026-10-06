@@ -848,8 +848,8 @@ gateway:
     db_then_restart: "{action} Ardından `hermes {profile_arg}gateway restart` çalıştırın."
     db_unavailable: "⚠️ Oturum veritabanı kullanılamıyor — mesajlar kaydedilmeyebilir ve /resume boş olacak. Neden: {cause}. {action}"
   cron_store:
-    unwritable: "⚠️ Cron store {store} is not writable ({error}) since {since}. Scheduled jobs are being skipped until it accepts writes again. Fix: {fix}."
-    recovered: "✅ Cron store {store} is writable again; {skipped} skipped run(s), catching up once per job."
+    unwritable: "⚠️ Cron deposu {store} {since} tarihinden beri yazılamıyor ({error}). Yeniden yazma kabul edene kadar zamanlanmış işler atlanıyor. Çözüm: {fix}."
+    recovered: "✅ Cron deposu {store} yeniden yazılabilir; {skipped} atlanan çalıştırma, her iş bir kez telafi edilecek."
   whoami:
     scope_dm: "DM"
     scope_group: "grup/kanal"

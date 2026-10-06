@@ -848,8 +848,8 @@ gateway:
     db_then_restart: "{action} Em seguida, `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ Banco de dados de sessões indisponível — as mensagens podem não ser salvas e /resume ficará vazio. Causa: {cause}. {action}"
   cron_store:
-    unwritable: "⚠️ Cron store {store} is not writable ({error}) since {since}. Scheduled jobs are being skipped until it accepts writes again. Fix: {fix}."
-    recovered: "✅ Cron store {store} is writable again; {skipped} skipped run(s), catching up once per job."
+    unwritable: "⚠️ O armazenamento do cron {store} não aceita gravação ({error}) desde {since}. Os trabalhos agendados estão sendo ignorados até que volte a aceitar gravações. Correção: {fix}."
+    recovered: "✅ O armazenamento do cron {store} voltou a aceitar gravação; {skipped} execução(ões) ignorada(s), cada trabalho será recuperado uma vez."
   whoami:
     scope_dm: "DM"
     scope_group: "grupo/canal"

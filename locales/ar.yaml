@@ -848,8 +848,8 @@ gateway:
     db_then_restart: "{action} ثم `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ قاعدة بيانات الجلسات غير متاحة — قد لا تُحفظ الرسائل وسيكون /resume فارغًا. السبب: {cause}. {action}"
   cron_store:
-    unwritable: "⚠️ Cron store {store} is not writable ({error}) since {since}. Scheduled jobs are being skipped until it accepts writes again. Fix: {fix}."
-    recovered: "✅ Cron store {store} is writable again; {skipped} skipped run(s), catching up once per job."
+    unwritable: "⚠️ مخزن cron ‏{store} غير قابل للكتابة ({error}) منذ {since}. يتم تخطي المهام المجدولة حتى يقبل الكتابة مجددًا. الحل: {fix}."
+    recovered: "✅ مخزن cron ‏{store} قابل للكتابة مجددًا؛ {skipped} تشغيل/تشغيلات متخطاة، وستُعوَّض كل مهمة مرة واحدة."
   whoami:
     scope_dm: "رسالة خاصة"
     scope_group: "مجموعة/قناة"

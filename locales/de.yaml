@@ -848,8 +848,8 @@ gateway:
     db_then_restart: "{action} Danach `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ Sitzungsdatenbank nicht verfügbar — Nachrichten werden möglicherweise nicht gespeichert und /resume bleibt leer. Ursache: {cause}. {action}"
   cron_store:
-    unwritable: "⚠️ Cron store {store} is not writable ({error}) since {since}. Scheduled jobs are being skipped until it accepts writes again. Fix: {fix}."
-    recovered: "✅ Cron store {store} is writable again; {skipped} skipped run(s), catching up once per job."
+    unwritable: "⚠️ Cron-Speicher {store} ist seit {since} nicht beschreibbar ({error}). Geplante Jobs werden übersprungen, bis er wieder Schreibzugriffe annimmt. Lösung: {fix}."
+    recovered: "✅ Cron-Speicher {store} ist wieder beschreibbar; {skipped} übersprungene Ausführung(en), jeder Job wird einmal nachgeholt."
   whoami:
     scope_dm: "Direktnachricht"
     scope_group: "Gruppe/Kanal"

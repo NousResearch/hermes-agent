@@ -848,8 +848,8 @@ gateway:
     db_then_restart: "{action} 그런 다음 `hermes {profile_arg}gateway restart`를 실행하세요."
     db_unavailable: "⚠️ 세션 데이터베이스를 사용할 수 없어요 — 메시지가 저장되지 않을 수 있고 /resume이 비어 있을 거예요. 원인: {cause}. {action}"
   cron_store:
-    unwritable: "⚠️ Cron store {store} is not writable ({error}) since {since}. Scheduled jobs are being skipped until it accepts writes again. Fix: {fix}."
-    recovered: "✅ Cron store {store} is writable again; {skipped} skipped run(s), catching up once per job."
+    unwritable: "⚠️ cron 저장소 {store}에 {since}부터 쓸 수 없습니다 ({error}). 다시 쓸 수 있을 때까지 예약된 작업을 건너뜁니다. 해결: {fix}."
+    recovered: "✅ cron 저장소 {store}에 다시 쓸 수 있습니다. 건너뛴 실행 {skipped}건, 작업마다 한 번씩 따라잡습니다."
   whoami:
     scope_dm: "DM"
     scope_group: "그룹/채널"

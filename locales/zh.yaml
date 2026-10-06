@@ -848,8 +848,8 @@ gateway:
     db_then_restart: "{action} 然后执行 `hermes {profile_arg}gateway restart`。"
     db_unavailable: "⚠️ 会话数据库不可用——消息可能无法保存，/resume 将为空。原因：{cause}。{action}"
   cron_store:
-    unwritable: "⚠️ Cron store {store} is not writable ({error}) since {since}. Scheduled jobs are being skipped until it accepts writes again. Fix: {fix}."
-    recovered: "✅ Cron store {store} is writable again; {skipped} skipped run(s), catching up once per job."
+    unwritable: "⚠️ Cron 存储 {store} 自 {since} 起无法写入（{error}）。在恢复可写之前，计划任务将被跳过。修复方法：{fix}。"
+    recovered: "✅ Cron 存储 {store} 已恢复可写；跳过了 {skipped} 次运行，每个任务将补跑一次。"
   whoami:
     scope_dm: "私聊"
     scope_group: "群组/频道"

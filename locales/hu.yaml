@@ -860,8 +860,8 @@ gateway:
     db_then_restart: "{action} Ezután: `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ A munkamenet-adatbázis nem érhető el — az üzenetek mentése sikertelen lehet, és a /resume üres lesz. Ok: {cause}. {action}"
   cron_store:
-    unwritable: "⚠️ Cron store {store} is not writable ({error}) since {since}. Scheduled jobs are being skipped until it accepts writes again. Fix: {fix}."
-    recovered: "✅ Cron store {store} is writable again; {skipped} skipped run(s), catching up once per job."
+    unwritable: "⚠️ A(z) {store} cron tároló {since} óta nem írható ({error}). Az ütemezett feladatok kimaradnak, amíg újra el nem fogadja az írást. Javítás: {fix}."
+    recovered: "✅ A(z) {store} cron tároló újra írható; {skipped} kihagyott futás, minden feladat egyszer pótlódik."
   whoami:
     scope_dm: "DM"
     scope_group: "csoport/csatorna"

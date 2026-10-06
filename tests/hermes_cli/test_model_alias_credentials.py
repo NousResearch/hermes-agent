@@ -756,3 +756,79 @@ class TestOneshotPassesAliasCredential:
 
         assert captured["explicit_base_url"] == ALIAS_HOST
         assert captured["explicit_api_key"] == "sk-theta-ALIAS"
+
+
+# ---------------------------------------------------------------------------
+# Built-in provider alias with its own key and NO base_url (second account)
+# ---------------------------------------------------------------------------
+
+DEFAULT_ANTHROPIC_SECRET = "sk-ant-api03-DEFAULT-ACCOUNT"
+
+
+def _switch_to_anthropic_alias(monkeypatch, alias_entry):
+    """``/model personal`` from a session already on the default Anthropic account."""
+    cfg = {
+        "model": {"default": "claude-opus-5-5", "provider": "anthropic"},
+        "model_aliases": {"personal": alias_entry},
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: cfg)
+    monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda *a, **k: cfg)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", DEFAULT_ANTHROPIC_SECRET)
+
+    probed = {}
+
+    def _fake_validate(model_name, provider, *, api_key=None, base_url=None,
+                       api_mode=None, **_kwargs):
+        probed["api_key"] = api_key
+        return {"accepted": True, "persist": True, "recognized": True, "message": ""}
+
+    monkeypatch.setattr(
+        "hermes_cli.models_validate.validate_requested_model", _fake_validate
+    )
+
+    import hermes_cli.model_switch as ms
+
+    monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
+    result = ms.switch_model(
+        raw_input="personal",
+        current_provider="anthropic",
+        current_model="claude-opus-5-5",
+        current_base_url="https://api.anthropic.com",
+        current_api_key=DEFAULT_ANTHROPIC_SECRET,
+    )
+    return result, probed
+
+
+class TestBuiltinProviderAliasOwnCredential:
+    def test_key_env_is_used_without_base_url(self, monkeypatch):
+        """The alias's own key wins even though it has no base_url (was ignored)."""
+        monkeypatch.setenv("ANTHROPIC_PERSONAL_TOKEN", "sk-ant-oat01-PERSONAL")
+        result, probed = _switch_to_anthropic_alias(
+            monkeypatch,
+            {"model": "claude-opus-5-5", "provider": "anthropic",
+             "key_env": "ANTHROPIC_PERSONAL_TOKEN"},
+        )
+        assert result.success, result.error_message
+        assert result.api_key == "sk-ant-oat01-PERSONAL"
+        assert probed["api_key"] == "sk-ant-oat01-PERSONAL"
+
+    def test_unset_key_env_fails_closed(self, monkeypatch):
+        """A declared-but-empty key must not silently bill the default account."""
+        monkeypatch.delenv("ANTHROPIC_PERSONAL_TOKEN", raising=False)
+        result, probed = _switch_to_anthropic_alias(
+            monkeypatch,
+            {"model": "claude-opus-5-5", "provider": "anthropic",
+             "key_env": "ANTHROPIC_PERSONAL_TOKEN"},
+        )
+        assert not result.success
+        assert "ANTHROPIC_PERSONAL_TOKEN" in result.error_message
+        assert probed.get("api_key") != DEFAULT_ANTHROPIC_SECRET
+
+    def test_alias_without_own_key_keeps_default_credential(self, monkeypatch):
+        """Unchanged behavior: an alias that declares no key uses the provider's."""
+        result, _ = _switch_to_anthropic_alias(
+            monkeypatch,
+            {"model": "claude-opus-5-5", "provider": "anthropic"},
+        )
+        assert result.success, result.error_message
+        assert result.api_key == DEFAULT_ANTHROPIC_SECRET

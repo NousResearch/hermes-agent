@@ -22,28 +22,23 @@ logger = logging.getLogger("agent.conversation_loop")
 
 
 def _ensure_request_fits_window(agent: Any, api_messages: list, tools_for_api: Any) -> list:
-    """Never send a request the model cannot accept (fix A).
+    """Never send a request the model cannot accept (fix A). Runs at send time, after the
+    preflight gate fell through (compression retried or exhausted).
 
-    The preflight threshold estimate under-counts the wire payload (tool schemas, cache
-    markers, wire overhead), so a session can sit "under" the window by estimate yet 400
-    non-retryably at the provider ("prompt leaves no room to answer"). Measure the ASSEMBLED
-    payload with the wire-aware estimator plus the output reservation; when it cannot fit,
-    deterministically clear the OLDEST tool outputs with the existing _PRUNED_TOOL_PLACEHOLDER
-    until it does. The system prompt and the latest user message are never touched; only
-    role=="tool" rows shrink, oldest first. No-op when the request already fits.
+    Measures the assembled payload with the SAME shared measure the preflight / post-tool
+    forced-compression decision uses (``wire_request_tokens`` vs ``request_input_budget``), so
+    the two can never disagree. When it cannot fit, deterministically clear the OLDEST tool
+    outputs with the existing _PRUNED_TOOL_PLACEHOLDER until it does. The system prompt and the
+    latest user message are never touched; only role=="tool" rows shrink, oldest first. No-op
+    when the request already fits or the window is unknown.
     """
-    from agent.chat_completion_helpers import estimate_request_context_tokens
-    from agent.context_compressor import (
-        ContextCompressor, _PRUNED_TOOL_PLACEHOLDER,
-    )
+    from agent.context_compressor import _PRUNED_TOOL_PLACEHOLDER
+    from agent.conversation_compression import request_input_budget, wire_request_tokens
 
-    compressor = getattr(agent, "context_compressor", None)
-    window = getattr(compressor, "context_length", None)
-    if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
+    budget = request_input_budget(agent)
+    if budget is None or not isinstance(api_messages, list):
         return api_messages
-    budget = ContextCompressor._effective_input_window(window, getattr(agent, "max_tokens", None))
-    payload = {"messages": api_messages, "tools": tools_for_api} if tools_for_api else api_messages
-    estimate = estimate_request_context_tokens(payload)
+    estimate = wire_request_tokens(agent, api_messages, tools_for_api)
     if estimate <= budget:
         return api_messages
     cleared = 0
@@ -51,21 +46,20 @@ def _ensure_request_fits_window(agent: Any, api_messages: list, tools_for_api: A
         if not isinstance(msg, dict) or msg.get("role") != "tool":
             continue
         content = msg.get("content")
-        if not isinstance(content, str) or not content or content == _PRUNED_TOOL_PLACEHOLDER:
+        if not content or content == _PRUNED_TOOL_PLACEHOLDER or not isinstance(content, (str, list)):
             continue
         msg["content"] = _PRUNED_TOOL_PLACEHOLDER
         cleared += 1
-        payload = {"messages": api_messages, "tools": tools_for_api} if tools_for_api else api_messages
-        estimate = estimate_request_context_tokens(payload)
+        estimate = wire_request_tokens(agent, api_messages, tools_for_api)
         if estimate <= budget:
             break
-    if cleared:
-        logger.warning(
-            "Request would not fit the model window (~%s tokens incl. output reservation vs %s budget); "
-            "cleared %s oldest tool outputs with the pruned placeholder (deterministic fallback, "
-            "system prompt and latest user message untouched)",
-            f"{estimate:,}", f"{budget:,}", cleared,
-        )
+    logger.warning(
+        "Request would not fit the model window (~%s tokens vs %s input budget); cleared %s "
+        "oldest tool outputs with the pruned placeholder (deterministic fallback, system prompt "
+        "and latest user message untouched)%s",
+        f"{estimate:,}", f"{budget:,}", cleared,
+        "" if estimate <= budget else "; still over budget",
+    )
     return api_messages
 
 

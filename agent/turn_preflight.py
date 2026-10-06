@@ -18,7 +18,7 @@ from agent.conversation_compression import (
     PRE_API_COMPRESSION_STATUS_TEMPLATE, _reset_read_dedup_caches, compression_blocked_transiently,
     compression_skipped_due_to_lock, context_compression_timed_out,
     conversation_history_after_compression, ensure_compression_feasibility_checked,
-    request_exceeds_model_window, wire_request_cannot_fit,
+    wire_request_cannot_fit,
 )
 from agent.turn_context import _review_fork_first_request_pending
 from agent.turn_context_compaction import (
@@ -59,6 +59,7 @@ def run_preflight_compression(
     agent: Any, v: PreflightGateVerdict, *, compressor: Any, request_pressure_tokens: int,
     provider_overflow_preflight: bool, defer_preflight: Any, moa_prepared_request: Any,
     system_message: Any, user_message: Any, max_compression_attempts: int, effective_task_id: Any,
+    api_messages: Any = None, tools_for_api: Any = None,
 ) -> PreflightGateVerdict:
     """Mirror of the turn-prologue guard chain (defer on noisy estimate → skip in failure
     cooldown → ``should_compress``), rebinding the loop locals on ``v`` and setting
@@ -90,11 +91,19 @@ def run_preflight_compression(
     # ASSEMBLED wire payload provably cannot fit the model window (the provider would 400
     # non-retryably), the cooldown must not suppress re-entry — retry compression
     # (bypass_cooldown runs one real attempt while the cooldown stays armed), and the
-    # deterministic placeholder fallback in the request assembly covers the case where
+    # deterministic placeholder fallback at send time covers the case where
     # retries are exhausted. The threshold estimate under-counts the wire payload, so the
     # fit check here is the wire-aware one, not the threshold figure. Only a True verdict
     # forces re-entry; unknown/False keep the cooldown defer behaviour.
-    _wire_overflow = wire_request_cannot_fit(agent, v.messages, getattr(agent, "tools", None))
+    # Measure the assembled request (``api_messages``/``tools_for_api``) when the loop supplies
+    # it — the same shared measure the send-time fallback uses — else its wire shape from
+    # ``v.messages``. Raw rows carry stale thinking + bookkeeping that never reach the wire.
+    if isinstance(api_messages, list) and api_messages:
+        _wire_overflow = wire_request_cannot_fit(agent, api_messages, tools_for_api)
+    else:
+        _wire_overflow = wire_request_cannot_fit(
+            agent, v.messages, getattr(agent, "tools", None), system_prompt=v.active_system_prompt,
+        )
     if _compression_cooldown and _wire_overflow is True:
         logger.info(
             "Compression cooldown active but the wire request cannot fit the model "
@@ -325,9 +334,11 @@ def compress_after_tool_results(
     # A failed/aborted compression must NOT give up for the rest of the run: when the wire
     # payload provably cannot fit the model window, force re-entry even while should_compress
     # is blocked by the summary-failure cooldown (bypass_cooldown runs one real attempt with
-    # the cooldown armed). The deterministic placeholder fallback in the request assembly
+    # the cooldown armed). The deterministic placeholder fallback at send time
     # covers the case where retries are exhausted.
-    _wire_overflow = wire_request_cannot_fit(agent, messages, getattr(agent, "tools", None))
+    _wire_overflow = wire_request_cannot_fit(
+        agent, messages, getattr(agent, "tools", None), system_prompt=active_system_prompt,
+    )
     if (
         agent.compression_enabled
         and compression_attempts < max_compression_attempts

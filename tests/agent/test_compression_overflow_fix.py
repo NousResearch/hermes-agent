@@ -204,3 +204,90 @@ def test_fitting_request_untouched():
     ]
     assert _ensure_request_fits_window(agent, msgs, tools_for_api=None) is msgs
     assert all(m["content"] for m in msgs)
+
+
+# ---------------------------------------------------------------------------
+# Regression: reasoning-heavy 15-65K conversation must NOT look "un-fittable"
+# ---------------------------------------------------------------------------
+
+
+def _realistic_reasoning_session(n_rounds: int = 30):
+    """A custom-provider session as persisted in memory: every assistant row carries
+    ``reasoning`` AND ``reasoning_content`` (~7.6K chars each, as in run_1f2d6ad9…),
+    plus api_content/display bookkeeping. None of that stale thinking reaches the wire."""
+    msgs = [{"role": "user", "content": "TASK: review the Bluetooth trading code " + "t" * 2000,
+             "api_content": "TASK: review the Bluetooth trading code " + "t" * 2000,
+             "timestamp": 1.0}]
+    for i in range(n_rounds):
+        think = f"thinking {i} " + "r" * 7600
+        msgs.append({
+            "role": "assistant", "content": "", "reasoning": think, "reasoning_content": think,
+            "finish_reason": "tool_calls", "timestamp": 2.0 + i,
+            "tool_calls": [{"id": f"c{i}", "type": "function",
+                            "function": {"name": "read_file", "arguments": '{"path": "a.kt"}'}}],
+        })
+        msgs.append({"role": "tool", "tool_call_id": f"c{i}", "content": "k" * 5000,
+                     "timestamp": 2.5 + i})
+    return msgs
+
+
+def _realistic_tools(n: int = 30):
+    return [{"type": "function", "function": {
+        "name": f"tool_{i}", "description": "d" * 400,
+        "parameters": {"type": "object", "properties": {"path": {"type": "string",
+                                                                  "description": "p" * 200}}},
+    }} for i in range(n)]
+
+
+def _custom_provider_agent(calls: list):
+    agent = _fake_agent_for_reentry(window=131_072, cooldown_blocked=True, calls=calls)
+    agent.max_tokens = None  # no max_tokens in the config
+    agent.tools = _realistic_tools()
+    agent.api_mode, agent.provider = "chat_completions", "custom"
+    agent.model, agent.base_url = "qwen3.8-flash-next-iq2_xs", "http://127.0.0.1:8082/v1"
+    return agent
+
+
+def test_reasoning_heavy_session_under_window_does_not_force_compression():
+    """False positive seen live: a ~25K-token wire request (131K window, no max_tokens) was
+    judged 'cannot fit' because stale reasoning/bookkeeping fields were priced, forcing
+    cooldown-bypassing compressions over and over. It must NOT force re-entry."""
+    from agent.conversation_compression import wire_request_cannot_fit
+    from agent.model_metadata import estimate_request_tokens_rough
+
+    calls: list = []
+    agent = _custom_provider_agent(calls)
+    messages = _realistic_reasoning_session()
+    wire_like = estimate_request_tokens_rough(
+        messages, tools=agent.tools, charge_stale_thinking=False)
+    assert 15_000 <= wire_like <= 65_000, wire_like  # realistic size class
+    assert wire_request_cannot_fit(agent, messages, agent.tools, system_prompt="s" * 8000) is False
+    compress_after_tool_results(
+        agent, messages=messages, system_message="s" * 8000, user_message="go",
+        active_system_prompt="s" * 8000, conversation_history=[], compression_attempts=0,
+        max_compression_attempts=3, effective_task_id="t", final_response=None,
+        turn_exit_reason=None, current_turn_user_idx=0,
+    )
+    assert calls == [], "a request that fits must not force cooldown-bypassing compression"
+    # Same verdict from the assembly-time fallback: nothing is cleared.
+    tool_contents = [m["content"] for m in messages if m["role"] == "tool"]
+    _ensure_request_fits_window(agent, messages, agent.tools)
+    assert [m["content"] for m in messages if m["role"] == "tool"] == tool_contents
+
+
+def test_reasoning_heavy_session_truly_over_window_still_forces_compression():
+    """The original intent holds: once the WIRE payload really exceeds the window, an aborted
+    compression is retried (bypass_cooldown) despite the cooldown."""
+    calls: list = []
+    agent = _custom_provider_agent(calls)
+    messages = _realistic_reasoning_session()
+    for m in messages:
+        if m["role"] == "tool":
+            m["content"] = "k" * 20_000  # 30 x 20K chars ~ 150K wire tokens > 131K
+    compress_after_tool_results(
+        agent, messages=messages, system_message="sys", user_message="go",
+        active_system_prompt="sys", conversation_history=[], compression_attempts=0,
+        max_compression_attempts=3, effective_task_id="t", final_response=None,
+        turn_exit_reason=None, current_turn_user_idx=0,
+    )
+    assert len(calls) == 1 and calls[0]["bypass_cooldown"] is True

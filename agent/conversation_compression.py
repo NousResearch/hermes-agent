@@ -923,22 +923,94 @@ def request_exceeds_model_window(agent: Any, request_tokens: Any) -> Optional[bo
     return request_tokens > window
 
 
-def wire_request_cannot_fit(agent: Any, messages: Any, tools: Any = None) -> Optional[bool]:
-    """True when the ASSEMBLED wire payload (wire-aware estimate incl. tool schemas and wire
-    overhead) plus the output reservation exceeds the model window — the provider would 400
-    non-retryably ("prompt leaves no room to answer"). ``None`` when the window is unknown.
-    Unlike the threshold estimate (which under-counts the wire and let a doomed request through),
-    this measures the payload as it will actually be sent, so cooldown/retry decisions and the
-    deterministic fallback stop under-counting."""
-    window = getattr(getattr(agent, "context_compressor", None), "context_length", None)
+# Keys that live on in-memory/persisted rows but never reach the provider: ``reasoning`` is
+# trajectory-only (build_api_messages pops it after copying it to ``reasoning_content``),
+# ``finish_reason`` and the length-continuation marks are popped there too.
+_NON_WIRE_MESSAGE_KEYS = frozenset(
+    {"api_content", "reasoning", "finish_reason", "_length_continuation_fragment",
+     "_length_continuation_nudge"}
+)
+
+
+def _wire_shape_for_estimate(agent: Any, messages: Any) -> list:
+    """Shallow copies of ``messages`` reduced to what the provider receives, for sizing only.
+
+    Accepts raw ``messages`` (persisted rows) or assembled ``api_messages``: replays the
+    ``api_content`` sidecar as content (the exact bytes sent), drops persistence-only and
+    trajectory-only keys, and — on routes that do not replay stale thinking — drops
+    ``reasoning``/``reasoning_content`` of every assistant row but the newest, exactly like the
+    compaction-trigger estimator. Without this a reasoning-heavy session prices every turn's
+    thinking twice (``reasoning`` + ``reasoning_content``) and looks 2-5x its wire size."""
+    from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
+    from agent.model_metadata import _strip_stale_thinking_for_estimate
+    from agent.turn_context import _agent_stale_thinking_on_wire
+
+    shaped = []
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            shaped.append(msg)
+            continue
+        out = {k: v for k, v in msg.items()
+               if k not in _NON_WIRE_MESSAGE_KEYS and k not in PERSISTENCE_ONLY_MESSAGE_FIELDS}
+        api_content = msg.get("api_content")
+        if isinstance(api_content, str) and api_content and msg.get("role") in ("user", "assistant"):
+            out["content"] = api_content
+        if msg.get("role") == "assistant" and msg.get("reasoning") and not msg.get("reasoning_content"):
+            out["reasoning_content"] = msg["reasoning"]  # mirrors _copy_reasoning_content_for_api
+        shaped.append(out)
+    if not _agent_stale_thinking_on_wire(agent):
+        shaped = _strip_stale_thinking_for_estimate(shaped)
+    return shaped
+
+
+def wire_request_tokens(
+    agent: Any, messages: Any, tools: Any = None, *, system_prompt: Any = None,
+) -> int:
+    """Estimated size of the request as it goes on the wire: the wire shape of ``messages``
+    (see ``_wire_shape_for_estimate``), the system prompt when ``messages`` does not already
+    lead with one, and the tool schemas. The single measure shared by the preflight / post-tool
+    forced-compression decision and the assembly-time fallback, so they cannot disagree."""
+    from agent.chat_completion_helpers import estimate_request_context_tokens
+
+    shaped = _wire_shape_for_estimate(agent, messages)
+    if (
+        isinstance(system_prompt, str) and system_prompt
+        and not (shaped and isinstance(shaped[0], dict) and shaped[0].get("role") == "system")
+    ):
+        shaped = [{"role": "system", "content": system_prompt}] + shaped
+    return estimate_request_context_tokens({"messages": shaped, "tools": tools} if tools else shaped)
+
+
+def request_input_budget(agent: Any) -> Optional[int]:
+    """Usable input budget (window minus output reservation), ``None`` when the window is
+    unknown. The reservation is ``agent.max_tokens``, else the compressor's (which carries
+    adapter defaults such as native Gemini's), so it matches the compaction threshold's."""
+    compressor = getattr(agent, "context_compressor", None)
+    window = getattr(compressor, "context_length", None)
     if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
         return None
-    from agent.chat_completion_helpers import estimate_request_context_tokens
     from agent.context_compressor import ContextCompressor
 
-    budget = ContextCompressor._effective_input_window(window, getattr(agent, "max_tokens", None))
-    payload = {"messages": messages, "tools": tools} if tools else messages
-    return estimate_request_context_tokens(payload) > budget
+    reserve = getattr(agent, "max_tokens", None)
+    if reserve is None:
+        reserve = getattr(compressor, "max_tokens", None)
+    if isinstance(reserve, bool) or not isinstance(reserve, int):
+        reserve = None
+    return ContextCompressor._effective_input_window(window, reserve)
+
+
+def wire_request_cannot_fit(
+    agent: Any, messages: Any, tools: Any = None, *, system_prompt: Any = None,
+) -> Optional[bool]:
+    """True when the wire request (``wire_request_tokens``) exceeds the input budget (window
+    minus output reservation) — the provider would 400 non-retryably ("prompt leaves no room to
+    answer"). ``None`` when the window is unknown. Only this verdict may bypass the
+    summary-failure cooldown; it measures what is actually sent, never stale thinking or
+    bookkeeping fields the wire drops."""
+    budget = request_input_budget(agent)
+    if budget is None:
+        return None
+    return wire_request_tokens(agent, messages, tools, system_prompt=system_prompt) > budget
 
 
 def _retry_compression_on_fallback_chain(

@@ -86,7 +86,8 @@ import {
   toggleCronDeliveryTarget,
   validateCronEditor
 } from './cron-job-model'
-import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT } from './job-state'
+import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT, truncateText } from './job-state'
+import { openCronRun, reconcileCronRunVerdicts } from './open-cron-run'
 
 const DEFAULT_DELIVER = 'local'
 
@@ -100,6 +101,13 @@ const CUSTOM_TEMPLATE = 'custom'
 
 function cronProfileForScope(scope: string): string {
   return scope === ALL_PROFILES ? 'all' : scope
+}
+
+// A blueprint writes a real per-profile job, and "all" is not a writable target —
+// collapse it to 'default', matching the manual create path in handleEditorSave.
+// The catalog is fetched for the same profile: plugin blueprints are per profile.
+function blueprintProfileForScope(scope: string): string {
+  return scope === ALL_PROFILES ? 'default' : scope
 }
 
 const SCHEDULE_OPTIONS: ReadonlyArray<ScheduleOption> = [
@@ -122,7 +130,7 @@ const STATE_TONE: Record<string, PanelPillTone> = {
   completed: 'muted'
 }
 
-const truncate = (value: string, max = 80): string => (value.length > max ? `${value.slice(0, max)}…` : value)
+const truncate = (value: string, max = 80): string => truncateText(value, max)
 
 function jobName(job: CronJob): string {
   return asText(job.name).trim()
@@ -295,7 +303,7 @@ function matchesQuery(job: CronJob, q: string): boolean {
 
 interface CronViewProps extends React.ComponentProps<'section'> {
   onClose: () => void
-  onOpenSession?: (sessionId: string) => void
+  onOpenSession?: (sessionId: string, session?: SessionInfo) => void
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
 
@@ -406,9 +414,11 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   // Blueprint recipes render in the same list rail, below the jobs — clicking
   // one opens the create dialog pre-seeded to that recipe. Same query key as
   // the dialog's "Start from" dropdown, so the catalog is fetched once.
+  const blueprintProfile = blueprintProfileForScope(profileScope)
+
   const blueprintsQuery = useQuery({
-    queryKey: ['cron-blueprints'],
-    queryFn: async () => (await getAutomationBlueprints()).blueprints
+    queryKey: ['cron-blueprints', blueprintProfile],
+    queryFn: async () => (await getAutomationBlueprints(blueprintProfile)).blueprints
   })
 
   const visibleBlueprints = useMemo(() => {
@@ -608,11 +618,9 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
   // Blueprint instantiation is a distinct backend path (fills typed slots, then
   // creates the job) so it can't share the raw-cron onSave contract. Merge the
-  // created job into $cronJobs like every other create path. A blueprint writes a
-  // real per-profile job, and "all" is not a writable target — collapse it to
-  // 'default', matching the manual create path in handleEditorSave.
+  // created job into $cronJobs like every other create path.
   async function handleBlueprintCreate(blueprint: AutomationBlueprint, values: Record<string, string>) {
-    const writableProfile = profileScope === ALL_PROFILES ? 'default' : profileScope
+    const writableProfile = blueprintProfile
 
     const {
       value: job,
@@ -691,6 +699,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
                     active={false}
                     icon="rocket"
                     key={item.key}
+                    meta={item.plugin || undefined}
                     onSelect={() => setEditor({ blueprintKey: item.key, mode: 'create' })}
                     rowKey={`blueprint-${item.key}`}
                     title={item.title}
@@ -717,6 +726,13 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
             // No selection and no search — "Try a broader search query" here
             // just confused people staring at an empty panel with zero jobs.
             <PanelEmpty
+              action={
+                jobs.length === 0 ? (
+                  <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
+                    {c.newCron}
+                  </Button>
+                ) : undefined
+              }
               description={c.emptyDescNew}
               icon="watch"
               title={jobs.length === 0 ? c.emptyTitleNew : undefined}
@@ -726,6 +742,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
       )}
 
       <CronEditorDialog
+        blueprintProfile={blueprintProfile}
         editor={editor}
         onBlueprintCreate={handleBlueprintCreate}
         onClose={() => setEditor({ mode: 'closed' })}
@@ -787,7 +804,7 @@ interface CronJobDetailProps {
   c: Translations['cron']
   job: CronJob
   onEdit: () => void
-  onOpenSession?: (sessionId: string) => void
+  onOpenSession?: (sessionId: string, session?: SessionInfo) => void
   onPauseResume: () => void
   onTrigger: () => void
 }
@@ -896,7 +913,7 @@ function CronJobRuns({
 }: {
   c: Translations['cron']
   jobId: string
-  onOpenSession?: (sessionId: string) => void
+  onOpenSession?: (sessionId: string, session?: SessionInfo) => void
 }) {
   const [runs, setRuns] = useState<null | SessionInfo[]>(null)
   const changeEventsAvailable = useStore($changeEventsAvailable)
@@ -908,6 +925,9 @@ function CronJobRuns({
     const load = () =>
       getCronJobRuns(jobId)
         .then(result => {
+          // A fresh poll re-evaluates every run already opened (#88443).
+          reconcileCronRunVerdicts(result)
+
           if (!cancelled) {
             setRuns(result)
           }
@@ -972,10 +992,12 @@ function CronJobRuns({
                 </span>
               </div>
             ) : (
+              // One click to the run's transcript; a run the scheduler never
+              // closed opens view-only (see `openCronRun`, #88443).
               <button
                 className="row-hover flex items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                 key={run.id}
-                onClick={() => onOpenSession?.(run.id)}
+                onClick={onOpenSession ? () => openCronRun(run, onOpenSession) : undefined}
                 type="button"
               >
                 <span className="truncate text-foreground/85">
@@ -1056,11 +1078,13 @@ export function DeliverCheckboxes({
 }
 
 function CronEditorDialog({
+  blueprintProfile,
   editor,
   onBlueprintCreate,
   onClose,
   onSave
 }: {
+  blueprintProfile: string
   editor: EditorState
   onBlueprintCreate: (blueprint: AutomationBlueprint, values: Record<string, string>) => Promise<void>
   onClose: () => void
@@ -1094,8 +1118,8 @@ function CronEditorDialog({
   // The blueprint catalog powers the create dialog's "Start from" dropdown; it's
   // meaningless when editing an existing job, so skip the fetch there.
   const blueprintsQuery = useQuery({
-    queryKey: ['cron-blueprints'],
-    queryFn: async () => (await getAutomationBlueprints()).blueprints,
+    queryKey: ['cron-blueprints', blueprintProfile],
+    queryFn: async () => (await getAutomationBlueprints(blueprintProfile)).blueprints,
     enabled: open && !isEdit
   })
 
@@ -1264,6 +1288,7 @@ function CronEditorDialog({
                 {blueprintList.map(item => (
                   <SelectItem key={item.key} value={item.key}>
                     {item.title}
+                    {item.plugin && <span className="ml-1.5 text-muted-foreground">· {item.plugin}</span>}
                   </SelectItem>
                 ))}
               </SelectContent>

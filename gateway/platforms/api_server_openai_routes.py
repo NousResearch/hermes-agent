@@ -15,6 +15,8 @@ import uuid
 from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
+from agent.i18n import t
+
 try:
     from aiohttp import web
 except ImportError:  # pragma: no cover - mirrors api_server's optional import
@@ -82,7 +84,8 @@ def _hermes_extras(completed, is_partial, is_failed, err_msg, finish_reason: str
         "error_code": "output_truncated" if finish_reason == "length" else "agent_error"}
 
 
-_TRANSFORMED_NOTICE = "\n\n[Response transformed after streaming]\n"
+def _transformed_notice() -> str:
+    return t("platform.api_server.transformed_notice")
 
 
 def _post_stream_transform(result: Any) -> tuple:
@@ -633,7 +636,7 @@ class OpenAICompatRoutesMixin:
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         from gateway.platforms.api_server import (
-            ThreadSafeAsyncQueue, _chat_usage_payload, _coerce_request_bool,
+            ThreadSafeAsyncQueue, _api_request_profile, _chat_usage_payload, _coerce_request_bool,
             _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
             _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content,
             _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
@@ -712,10 +715,10 @@ class OpenAICompatRoutesMixin:
                 history = []
         else:
             # Stable id from the conversation fingerprint so Open WebUI-style clients map onto
-            # one Hermes session.
+            # one Hermes session; namespaced by the routed profile (#123989).
             first_user = next(
                 (cm.get("content", "") for cm in conversation_messages if cm.get("role") == "user"), "")
-            session_id = _derive_chat_session_id(system_prompt, first_user)
+            session_id = _derive_chat_session_id(system_prompt, first_user, _api_request_profile.get())
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
         created = int(time.time())
@@ -949,7 +952,7 @@ class OpenAICompatRoutesMixin:
                 # Chat chunks can only append: a non-append rewrite follows the streamed text (as in the CLI).
                 tail, appended = _post_stream_transform(result)
                 if tail:
-                    await response.write(_sse_frame(_chunk({"content": tail if appended else _TRANSFORMED_NOTICE + tail})))
+                    await response.write(_sse_frame(_chunk({"content": tail if appended else _transformed_notice() + tail})))
             if finish_reason != "stop":
                 if err_msg and not presentation_muted:
                     finish_chunk["error"] = {

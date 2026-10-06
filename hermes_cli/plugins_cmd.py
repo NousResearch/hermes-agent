@@ -39,7 +39,7 @@ from hermes_cli.plugins_cmd_install import (  # noqa: F401
     _read_manifest_for_install, cmd_install, dashboard_install_plugin,
 )
 from hermes_cli.plugins_cmd_listing import (  # noqa: F401
-    _filter_plugin_entries, cmd_compat, cmd_list, cmd_show,
+    _filter_plugin_entries, cmd_list, cmd_show,
 )
 from hermes_cli.plugins_cmd_remove import (  # noqa: F401
     _remove_plugin_core, cmd_remove, dashboard_remove_user_plugin,
@@ -647,7 +647,8 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         if plugin in LEGACY_RELAY_PLUGIN_KEYS:
             _fail(console, (
                 f"[red]Plugin '{plugin}' was removed.[/red] Relay lifecycle is owned "
-                f"by Hermes core; configure {RELAY_PLUGINS_CONFIG_ENV} instead."))
+                "by Hermes core; configure a standard user or system Relay plugins.toml, or use "
+                f"{RELAY_PLUGINS_CONFIG_ENV} for an explicit user-file override."))
 
     _refuse_legacy_relay(name)
     resolved = _resolve_plugin_key_and_source(name)
@@ -737,17 +738,35 @@ def _is_portable_plugin_dir(dir_path) -> bool:
 _BUNDLED_DEFAULT_ON_KINDS = frozenset({"backend", "platform", "model-provider"})
 
 
-def _bundled_default_on(dir_path) -> bool:
-    """True when a bundled plugin is active without a ``plugins.enabled`` entry (portable
-    ``plugin.json`` packages have no kind, so never)."""
-    manifest_file = _native_manifest_file(Path(dir_path))
+def _default_on(dir_path, source: str) -> bool:
+    """True when a plugin is active without a ``plugins.enabled`` entry (portable ``plugin.json``
+    packages have no kind, so never). Bundled default-on kinds always; a user model provider only
+    where providers/ discovery loads it (``providers._scan_home_layer``): a
+    ``plugins/model-providers/<name>/`` child whose kind is model-provider, or a flat
+    ``plugins/<name>/`` child declaring exactly ``kind: model-provider``. Discovery imports any other
+    ``model-providers/`` child too, but nothing calls its ``register(ctx)``, so it is not on.
+
+    Entry-point rows store ``module:attr`` in the path slot. That string is not a directory;
+    opening it as one is WinError 123 on Windows and aborts the whole plugin list.
+    """
+    path = Path(dir_path)
+    if not path.is_dir():
+        return False
+    if source != "bundled":
+        from providers import _declares_model_provider_kind
+        root = _plugins_dir()
+        if path.name.startswith(("_", ".")) or path.parent not in (root, root / "model-providers"):
+            return False
+        if path.parent == root:
+            return _declares_model_provider_kind(path)
+    manifest_file = _native_manifest_file(path)
     if manifest_file is None:
         return False
     try:
         kind = str(_load_yaml_manifest(manifest_file).get("kind", "standalone")).strip().lower()
-        return kind in _BUNDLED_DEFAULT_ON_KINDS
     except Exception:
         return False
+    return kind == "model-provider" or (source == "bundled" and kind in _BUNDLED_DEFAULT_ON_KINDS)
 
 
 def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: int, seen: dict) -> None:
@@ -785,11 +804,11 @@ def _discover_all_plugins() -> list:
     in ``PluginManager.discover_and_load`` order: bundled, user, then entry points — which never
     displace a directory plugin of the same key (see ``PluginManager._discover_and_load_inner``)."""
     seen: dict = {}
-    # memory/, context_engine/ and model-providers/ load through dedicated registries, not the
+    # memory/, context_engine/, computer_use/ and model-providers/ load through dedicated registries, not the
     # PluginManager opt-in surface, so listing them as toggleable plugins would mislead.
     from hermes_cli.plugins import discover_entrypoint_manifests, get_bundled_plugins_dir
     for base, source, skip in (
-        (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "model-providers"}),
+        (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "computer_use", "model-providers"}),
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)
@@ -809,14 +828,14 @@ def _plugin_status(name: str, enabled: set, disabled: set, key: str = "", *, sou
                    dir_path=None, active: "frozenset | set" = frozenset()) -> str:
     """User-facing activation state for a plugin name or key. Mirrors ``gate_manifest``: an explicit
     disable wins, then the allow-list, then the activations that need no list entry — bundled
-    backends/platforms/model providers (*source* + *dir_path*) and category-selected providers
+    backends/platforms and model providers from any source (*source* + *dir_path*) and category-selected providers
     (*active*, see :func:`_category_active_names`)."""
     names = {name, key}
     if names & disabled:
         return "disabled"
     if names & enabled or names & active:
         return "enabled"
-    if source == "bundled" and dir_path is not None and _bundled_default_on(dir_path):
+    if dir_path is not None and _default_on(dir_path, source):
         return "enabled"
     return "not enabled"
 
@@ -967,7 +986,8 @@ _PLUGIN_ACTIONS = {
         enable=_tri_state_flag(args, "enable", "no_enable"),
         ref=getattr(args, "ref", None),
         allow_removed=getattr(args, "allow_removed", False),
-        no_deps=getattr(args, "no_deps", False)),
+        no_deps=getattr(args, "no_deps", False),
+        yes_deps=getattr(args, "yes_deps", False)),
     "search": lambda args: _catalog().cmd_search(
         getattr(args, "term", "") or "", json_output=getattr(args, "json", False)),
     "browse": lambda args: _catalog().cmd_search(""),
@@ -989,7 +1009,6 @@ _PLUGIN_ACTIONS = {
     "list": lambda args: cmd_list(args),
     "ls": lambda args: cmd_list(args),
     "doctor": lambda args: cmd_plugin_doctor(args.target, ci=getattr(args, "ci", False)),
-    "compat": lambda args: cmd_compat(args),
     "pack": _action_pack,
     "show": lambda args: cmd_show(args.name),
     "info": lambda args: _catalog().cmd_info(args.name),
@@ -1004,11 +1023,3 @@ def plugins_command(args) -> None:
     if handler is None:
         _fail(_console(), f"[red]Unknown plugins action: {action}[/red]")
     handler(args)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import importlib.metadata  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

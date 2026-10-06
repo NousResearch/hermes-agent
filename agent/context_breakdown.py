@@ -11,21 +11,46 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from agent.i18n import t
+
 _SKILLS_BLOCK_RE = re.compile(r"<available_skills>.*?</available_skills>", re.DOTALL)
 _SUBAGENT_TOOL_NAMES = frozenset({"delegate_task"})
 
-# id -> (label, dashboard color, /context glyph); declaration order is display order.
+# A category at zero tokens is dropped from the payload, which reads as "not
+# configured" - true for MCP, memory and skills, and false for the
+# conversation. Every session has one, so hiding the row at zero makes an empty
+# transcript indistinguishable from a breakdown that never measured it (#87903).
+#
+# The membership rule, stated so a later addition argues from the same
+# principle rather than from "this one felt important": a category belongs
+# here when zero is a MEASUREMENT of something every session has, not the
+# ABSENCE of something optional. "conversation" qualifies because a session
+# cannot not have a transcript, so zero means "nothing said yet" and is worth
+# showing. "mcp", "memory", "skills" and "subagent_definitions" do not: zero
+# there means the user configured none, which is what dropping the row already
+# communicates, and a permanent 0-token row would be noise on most hosts.
+# "system_prompt" and "tool_definitions" are always present too but are never
+# zero in practice, so adding them would buy nothing.
+_ALWAYS_REPORTED = frozenset({"conversation"})
+
+# id -> (dashboard color, /context glyph); declaration order is display order. The label is
+# ``gateway.context.category.<id>`` resolved when the payload is built (never at import).
 _CATEGORIES = {
-    "system_prompt": ("System prompt", "var(--context-usage-system)", "■"),
-    "tool_definitions": ("Tool definitions", "var(--context-usage-tools)", "▣"),
-    "rules": ("Rules", "var(--context-usage-rules)", "▩"),
-    "skills": ("Skills", "var(--context-usage-skills)", "▤"),
-    "mcp": ("MCP", "var(--context-usage-mcp)", "▥"),
-    "subagent_definitions": ("Subagent definitions", "var(--context-usage-subagents)", "▦"),
-    "memory": ("Memory", "var(--context-usage-memory)", "▧"),
-    "conversation": ("Conversation", "var(--context-usage-conversation)", "▨"),
+    "system_prompt": ("var(--context-usage-system)", "■"),
+    "tool_definitions": ("var(--context-usage-tools)", "▣"),
+    "rules": ("var(--context-usage-rules)", "▩"),
+    "skills": ("var(--context-usage-skills)", "▤"),
+    "mcp": ("var(--context-usage-mcp)", "▥"),
+    "subagent_definitions": ("var(--context-usage-subagents)", "▦"),
+    "memory": ("var(--context-usage-memory)", "▧"),
+    "conversation": ("var(--context-usage-conversation)", "▨"),
 }
+
+
+def _category_label(category_id: str) -> str:
+    return t(f"gateway.context.category.{category_id}")
 _FREE_GLYPH = "·"
+_CONTEXT_SOURCES = frozenset({"local_estimate", "provider_usage", "provider_usage_plus_estimate"})
 _GRID_COLUMNS = 20
 _GRID_ROWS = 5  # 100 cells → 1 cell per percent of the context window
 _DETAILS_TABLE_LIMIT = 15  # display cap only; the underlying data keeps everything
@@ -88,7 +113,7 @@ def _join(*parts: str) -> str:
 
 
 def _glyph(cat: Dict[str, Any]) -> str:
-    return _CATEGORIES.get(str(cat.get("id") or ""), (None, None, "▪"))[2]
+    return _CATEGORIES.get(str(cat.get("id") or ""), (None, "▪"))[1]
 
 
 def context_display_source(compressor: Any) -> str:
@@ -170,9 +195,9 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]]
 
     return {
         "categories": [
-            {"color": color, "id": category_id, "label": label, "tokens": tokens_by_id[category_id]}
-            for category_id, (label, color, _glyph_) in _CATEGORIES.items()
-            if tokens_by_id[category_id] > 0
+            {"color": color, "id": category_id, "label": _category_label(category_id), "tokens": tokens_by_id[category_id]}
+            for category_id, (color, _glyph_) in _CATEGORIES.items()
+            if tokens_by_id[category_id] > 0 or category_id in _ALWAYS_REPORTED
         ],
         "context_max": context_max,
         "context_percent": max(0, min(100, round(context_used / context_max * 100))) if context_max else 0,
@@ -244,21 +269,25 @@ def render_context_category_lines(payload: Dict[str, Any]) -> List[str]:
     estimated_total = int(payload.get("estimated_total") or 0)
     denom = context_max or estimated_total
 
-    lines = ["Estimated usage by category"]
+    lines = [t("gateway.context.category_header")]
     if not categories:
-        return [*lines, "  (no data yet — send a message first)"]
-    width = max(len("Free space"), *(len(str(cat.get("label") or "")) for cat in categories))
+        return [*lines, t("gateway.context.no_data_yet")]
+    free_label = t("gateway.context.free_space")
+    width = max(len(free_label), *(len(str(cat.get("label") or "")) for cat in categories))
     for cat in categories:
         tokens, label = int(cat.get("tokens") or 0), str(cat.get("label") or cat.get("id") or "")
-        lines.append(f"{_glyph(cat)} {label:<{width}} ~{tokens:>9,} tokens ~{tokens / denom * 100 if denom else 0.0:>5.1f}%")
+        lines.append(t("gateway.context.category_row", glyph=_glyph(cat), label=f"{label:<{width}}",
+                       tokens=f"{tokens:>9,}", pct=f"{tokens / denom * 100 if denom else 0.0:>5.1f}"))
     if context_max > 0:
         free = max(0, context_max - estimated_total)
-        lines.append(f"{_FREE_GLYPH} {'Free space':<{width}} ~{free:>9,} tokens ~{free / context_max * 100:>5.1f}%")
+        lines.append(t("gateway.context.category_row", glyph=_FREE_GLYPH, label=f"{free_label:<{width}}",
+                       tokens=f"{free:>9,}", pct=f"{free / context_max * 100:>5.1f}"))
     return lines
 
 
 def _toolset_row(group: Dict[str, Any]) -> str:
-    return f"  {group['toolset']:<24} {group['tool_count']:>3} tools ~{group['schema_tokens']:>8,} tokens"
+    return t("gateway.context.toolset_row", toolset=f"{group['toolset']:<24}", count=f"{group['tool_count']:>3}",
+             tokens=f"{group['schema_tokens']:>8,}")
 
 
 def _skill_row(entry: Dict[str, Any]) -> str:
@@ -266,8 +295,8 @@ def _skill_row(entry: Dict[str, Any]) -> str:
     if len(name) > 28:
         name = name[:27] + "…"
     md = entry.get("skill_md_tokens")
-    md_str = f"~{md:>8,}" if md is not None else f"{'n/a':>8}"
-    return f"  {name:<28} index ~{entry['index_tokens']:>6,}  SKILL.md {md_str} tokens"
+    md_str = f"~{md:>8,}" if md is not None else f"{t('gateway.context.not_available'):>8}"
+    return t("gateway.context.skill_row", name=f"{name:<28}", index_tokens=f"{entry['index_tokens']:>6,}", md_tokens=md_str)
 
 
 def _table(lines: List[str], title: str, rows: List[Dict[str, Any]], fmt) -> None:
@@ -279,14 +308,14 @@ def _table(lines: List[str], title: str, rows: List[Dict[str, Any]], fmt) -> Non
     lines.append(title)
     lines.extend(fmt(row) for row in rows[:_DETAILS_TABLE_LIMIT])
     if len(rows) > _DETAILS_TABLE_LIMIT:
-        lines.append(f"  … and {len(rows) - _DETAILS_TABLE_LIMIT} more")
+        lines.append(t("gateway.context.and_more", count=len(rows) - _DETAILS_TABLE_LIMIT))
 
 
 def render_context_details_lines(details: Dict[str, Any]) -> List[str]:
     """Render the expanded ``/context all`` per-skill / per-toolset tables."""
     lines: List[str] = []
-    _table(lines, "Toolsets by schema cost (largest first)", details.get("toolsets") or [], _toolset_row)
-    _table(lines, "Skills by cost (index = always-on; SKILL.md = cost when loaded)", details.get("skills") or [], _skill_row)
+    _table(lines, t("gateway.context.toolsets_title"), details.get("toolsets") or [], _toolset_row)
+    _table(lines, t("gateway.context.skills_title"), details.get("skills") or [], _skill_row)
     return lines
 
 
@@ -305,15 +334,14 @@ def render_context_breakdown_lines(
     if context_max > 0:
         used, pct = int(payload.get("context_used") or 0), int(payload.get("context_percent") or 0)
         mark = "~" if payload.get("context_estimated") else ""
-        lines.extend(["", f"Context window: {mark}{used:,} / {context_max:,} tokens ({mark}{pct}%)"])
+        lines.extend(["", t("gateway.context.window_line", mark=mark, used=f"{used:,}", max=f"{context_max:,}", pct=pct)])
         source = payload.get("context_source")
         if source:
-            labels = {"local_estimate": "local estimate", "provider_usage": "provider usage",
-                      "provider_usage_plus_estimate": "provider usage + estimated new messages"}
-            lines.append(f"Source: {labels.get(source, source)}; category counts are local estimates.")
+            source_label = t(f"gateway.context.source.{source}") if source in _CONTEXT_SOURCES else source
+            lines.append(t("gateway.context.source_line", source=source_label))
 
     if details is None:
-        lines.extend(["", "Use /context all for per-skill and per-toolset costs."])
+        lines.extend(["", t("gateway.context.hint_all")])
     elif detail_lines := render_context_details_lines(details):
         lines.extend(["", *detail_lines])
     return lines

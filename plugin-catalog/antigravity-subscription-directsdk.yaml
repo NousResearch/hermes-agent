@@ -1,22 +1,13 @@
 name: antigravity-subscription-directsdk
 repo: https://github.com/soyelmismo/hermes-antigravity-subscription
-sha: 17734a4049d24f5f705b4451c57ae40cc3fb4d57
-description: >-
-  Run Hermes on an Antigravity / Gemini subscription via the official agy CLI (DirectSDK path).
-  Streams tokens progressively, maps thinking effort, runs from a private temp directory, and aborts
-  reported native tool steps. Disclosure — routes inference through Google's official agy CLI using
-  your Antigravity/Gemini subscription; a symlink to your antigravity-oauth-token is placed in a
-  per-session private temp HOME; usage counts against that subscription. Disclosure — v1.0.3 also
-  probes the OS keyring for agy's credential (Linux Secret Service via secret-tool/secretstorage,
-  macOS security, Windows cmdkey), reading presence metadata only and never the secret, and on macOS
-  symlinks your ~/Library/Keychains directory into agy's private HOME so the CLI can reuse its
-  existing login-keychain session; the plugin never writes to any vendor credential store.
+sha: f848f777145d69b7f417d6cc86a48821bd85bc77
+description: "Run Hermes on an Antigravity / Gemini subscription via the official agy CLI (DirectSDK path). Streams tokens progressively, maps thinking effort, bounds context to 200k tokens with tool output pruning, reports subscription quota in /usage, and aborts native tool steps. Disclosure — routes inference and /usage quota reads through Google's official agy CLI under your subscription (usage counts against it); links (symlink, else hardlink/copy) the antigravity-oauth-token into a per-session private temp HOME deleted on close; probes OS keyring presence (Linux Secret Service, macOS Keychain, Windows Credential Manager) without reading secrets; on macOS symlinks ~/Library/Keychains for CLI session reuse; never writes to vendor credential stores. Disclosure — the opt-in ANTIGRAVITY_DEBUG_PROMPT_DIR env var writes every outgoing prompt (full conversation text) to that directory."
 maintainer: soyelmismo
 tier: community
 category: models
 requires_hermes: ">=0.21.0"
 docs_url: https://github.com/soyelmismo/hermes-antigravity-subscription#readme
-version: "1.0.4"
+version: "1.0.10"
 readme: true
 platforms:
   - linux

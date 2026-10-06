@@ -95,6 +95,13 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
     # that graph to the new source inputs before normal bootstrap checks it.
     facts = next((home / "installs").glob("*/facts.json"))
     first_stamp = json.loads(facts.read_text())["packages"]["venv"]["stamp"]
+    generations = facts.parent / "environments"
+    first_generations = {path.resolve() for path in generations.iterdir() if path.is_dir()}
+    assert first_generations
+    for generation in first_generations:
+        marker = generation / ".lease-managed"
+        assert marker.is_file()
+        os.utime(marker, (0, 0))
     (facts.parent / ".repair-incomplete").write_text("{}", encoding="utf-8")
     with (root / "uv.lock").open("a", encoding="utf-8") as changed:
         changed.write("\n# changed source inputs\n")
@@ -102,6 +109,8 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
                               env=env, cwd=tmp_path, capture_output=True, text=True, timeout=120)
     assert repaired.returncode == 0, repaired.stdout + repaired.stderr
     assert json.loads(facts.read_text())["packages"]["venv"]["stamp"] != first_stamp
+    remaining_generations = {path.resolve() for path in generations.iterdir() if path.is_dir()}
+    assert first_generations.isdisjoint(remaining_generations)
     assert not (facts.parent / ".repair-incomplete").exists()
 
     # A child which dies before acknowledging receipt ownership must not

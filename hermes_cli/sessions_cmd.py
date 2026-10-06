@@ -16,6 +16,7 @@ from pathlib import Path
 
 from hermes_cli.cli_output import print_truncated
 from hermes_cli.sessions_cmd_browse import _relative_time, _session_browse_picker
+from hermes_state_errors import SessionActiveWriteGuardError
 
 
 def get_hermes_home():
@@ -327,8 +328,11 @@ def _cmd_export(db, args):
         except ValueError as e:
             print(f"Error: {e}")
             return
-        # Unlike prune/archive, export includes archived sessions.
+        # A backup includes protected rows; prune's keep rules must not omit them.
         filters["archived"] = None
+        filters["include_pinned"] = True
+    if args.session_id and not db.resolve_session_id(args.session_id):
+        return _not_found(args.session_id)
 
     def _redact(data):
         if not args.redact or data is None:
@@ -336,16 +340,38 @@ def _cmd_export(db, args):
         from hermes_cli.session_export_md import redact_session_data
         return redact_session_data(data)
 
-    from hermes_cli.session_export import SAVE_TRANSCRIPT_FORMATS
+    from hermes_cli.session_export import SAVE_TRANSCRIPT_FORMATS, export_projection
     # --only is a transcript view too (md/jsonl of what the user saw); md/qmd without --only go to _export_markdown.
     shown = args.format in SAVE_TRANSCRIPT_FORMATS or bool(getattr(args, "only", None))
+    projection = export_projection(shown)
+
+    def _too_large(session_ids=None) -> bool:
+        """The transfer projection holds every stored row in memory: the console export's per-session
+        ``sessions.max_export_messages`` guard (0 disables) runs before any is loaded. ``None`` = the
+        sessions a bare export loads."""
+        from hermes_state import SessionExportTooLargeError, resolved_max_export_messages
+        if shown:
+            return False
+        limit = resolved_max_export_messages()
+        if limit == 0:
+            return False  # resolved before the bare-path scan: a disabled guard costs nothing
+        if session_ids is None:
+            session_ids = [s["id"] for s in db.search_sessions(source=None, limit=100000)]
+        try:
+            db.assert_exports_safe(session_ids, max_messages=limit)
+        except SessionExportTooLargeError as exc:
+            print(f"Error: {exc}")
+            return True
+        return False
 
     def _collect_sessions():
         """--session-id / filters / bare export -> redacted session dicts, or None after printing an error."""
         def _one(session_id):
-            return _redact(db.export_session(session_id, include_compacted=shown))
+            return _redact(db.export_session(session_id, **projection))
         if args.session_id:
             resolved = db.resolve_session_id(args.session_id)
+            if resolved and _too_large([resolved]):
+                return None
             data = _one(resolved) if resolved else None
             if not data:
                 _not_found(args.session_id)
@@ -355,10 +381,14 @@ def _cmd_export(db, args):
             candidates = db.list_prune_candidates(**filters)
             if args.dry_run:
                 return _print_dry_run_preview(candidates, filters)
+            if _too_large([row["id"] for row in candidates]):
+                return None
             return [s for s in (_one(row["id"]) for row in candidates) if s]
         if args.dry_run:
             return print("--dry-run requires at least one filter.")
-        return [_redact(s) for s in db.export_all(source=None, include_compacted=shown)]
+        if _too_large():
+            return None
+        return [_redact(s) for s in db.export_all(source=None, **projection)]
     if getattr(args, "only", None):
         return _export_flat("only", args, _collect_sessions)
     if args.format == "trace":
@@ -424,9 +454,6 @@ def _export_trace(db, args, filters):
         if not session_id:
             print("No session found to export. Pass --session-id.")
             return
-    if session_id and not db.resolve_session_id(session_id):
-        _not_found(session_id)
-        return
     from agent.trace_upload import TraceRedactionError, build_trace_jsonl, upload_session_trace
     redact_trace = not getattr(args, "no_redact", False)
     if getattr(args, "upload", False):
@@ -528,9 +555,6 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
     """--session-id markdown export, optionally + verified delete of it and its delegates."""
     from hermes_cli.session_export_md import verify_export_file
     resolved_session_id = db.resolve_session_id(args.session_id)
-    if not resolved_session_id:
-        _not_found(args.session_id)
-        return
     delete_target_ids = (
         db.get_session_delete_targets(resolved_session_id) if args.delete_after_verified else [resolved_session_id]
     )
@@ -562,12 +586,16 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
             print(f"Export verification failed; not deleting session '{data.get('id')}': {reason}")
             return
         expected_messages.update(snapshots)
-    if not db.delete_session(
-        resolved_session_id, sessions_dir=_sessions_dir(), expected_delete_ids=delete_target_ids,
-        expected_display_messages=expected_messages,
-    ):
-        print(f"Exported, but session '{resolved_session_id}' was not deleted because its history or delegate set "
-              "changed after export.")
+    try:
+        if not db.delete_session(
+            resolved_session_id, sessions_dir=_sessions_dir(), expected_delete_ids=delete_target_ids,
+            expected_display_messages=expected_messages, exclude_active_write_guards=True,
+        ):
+            print(f"Exported, but session '{resolved_session_id}' was not deleted because its history or delegate set "
+                  "changed after export.")
+            return
+    except SessionActiveWriteGuardError as exc:
+        print(f"Exported, but not deleted: {exc}")
         return
     delegates = len(delete_target_ids) - 1
     delegate_suffix = f" and {delegates} delegate session{'' if delegates == 1 else 's'}" if delegates else ""
@@ -588,8 +616,12 @@ def _cmd_delete(db, args):
             return
     elif _pinned_note:
         print(f"Warning: deleting a pinned session '{resolved_session_id}'.")
-    if not db.delete_session(resolved_session_id, sessions_dir=_sessions_dir()):
-        return _not_found(args.session_id)
+    try:
+        if not db.delete_session(resolved_session_id, sessions_dir=_sessions_dir(), exclude_active_write_guards=True):
+            return _not_found(args.session_id)
+    except SessionActiveWriteGuardError as exc:
+        print(f"Cannot delete active session: {exc}")
+        return 1
     print(f"Deleted session '{resolved_session_id}'.")
 
 
@@ -633,20 +665,20 @@ def _prune_never_active_keyed(db, args):
     if not args.yes and not _confirm_prompt(f"Delete {len(candidates)} session(s)? [y/N] "):
         print("Aborted.")
         return
-    deleted, routing_deleted = db.prune_never_active_keyed_sessions(
+    deleted, routing_deleted, skipped = db.prune_never_active_keyed_sessions(
         older_than_days=days, sessions_dir=_sessions_dir()
     )
     print(f"Deleted {deleted} never-active session(s) and {routing_deleted} stale routing entr(ies).")
+    if skipped:
+        print(f"Skipped {skipped} session(s) with a live turn or compression lock.")
 
 
 def _note_pinned_skipped(db, filters, action):
     """Tell the user how many pinned rows bulk prune/archive spared (pin = durable keep; only
     `prune --include-pinned` opts in, archive always spares them)."""
-    _base = {k: v for k, v in filters.items() if k != "include_pinned"}
-    # Count matching pinned rows only: whole-lineage selection would also drop the unpinned
-    # ancestors a pinned tip spares, and report them as pinned.
-    with_pinned, without = (int(db.count_prune_matches(**_base, include_pinned=flag)) for flag in (True, False))
-    skipped = max(with_pinned - without, 0)
+    # Count matching pinned rows only: neither the unpinned ancestors a pinned tip spares nor the
+    # unpinned continuations a pinned segment protects carry the pin.
+    skipped = int(db.count_prune_matches(**filters, pinned_only=True))
     if not skipped:
         return
     suffix = "" if skipped == 1 else "s"
@@ -722,7 +754,7 @@ def _cmd_prune_or_archive(db, args, action):
         print("Cancelled.")
         return
     if prune:
-        print(f"Pruned {db.prune_sessions(sessions_dir=_sessions_dir(), **filters)} session(s).")
+        print(f"Pruned {db.prune_sessions(sessions_dir=_sessions_dir(), exclude_active_write_guards=True, **filters)} session(s).")
     else:
         print(f"Archived {db.archive_sessions(**filters)} session(s). They're hidden from listings "
               "but fully recoverable (nothing was deleted).")

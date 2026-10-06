@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { BrandMark } from '@/components/brand-mark'
 import { SyncStatusCard } from '@/components/sync-status-card'
 import { Button } from '@/components/ui/button'
-import { writeClipboardText } from '@/components/ui/copy-button'
+import { CopyButton, writeClipboardText } from '@/components/ui/copy-button'
 import {
   Dialog,
   DialogContent,
@@ -25,7 +25,7 @@ import type {
   UpdaterMechanismClient
 } from '@/global'
 import { useI18n } from '@/i18n'
-import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
+import { buildCommitChangelog, type CommitGroup, formatFullChangelogText } from '@/lib/commit-changelog'
 import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
 import { cn } from '@/lib/utils'
@@ -295,6 +295,8 @@ function IdleView({
     copy: u
   })
 
+  const handleCopyFullLog = () => formatFullChangelogText(commits, behind, status.branch)
+
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
@@ -305,9 +307,22 @@ function IdleView({
       </div>
 
       <div className="grid gap-3">
-        {groups.map(group => (
+        {groups.map((group, index) => (
           <div key={group.id}>
-            <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
+              {index === 0 && commits.length > 0 && (
+                <CopyButton
+                  appearance="icon"
+                  buttonSize="icon-xs"
+                  className="-my-1 size-5 shrink-0 text-muted-foreground/70 hover:text-foreground"
+                  iconClassName="size-3"
+                  label={u.copyFullLog}
+                  side="left"
+                  text={handleCopyFullLog}
+                />
+              )}
+            </div>
             <ul className="mt-1.5 grid gap-1.5 text-xs text-foreground">
               {group.items.map(item => (
                 <li className="flex items-start gap-2" key={item}>

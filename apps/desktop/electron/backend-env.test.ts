@@ -10,9 +10,11 @@ import {
   buildDesktopBackendEnv,
   normalizeHermesHomeRoot,
   pathEnvKey,
+  pooledProfileBackendEnv,
   POSIX_SANE_PATH_ENTRIES,
   profileBackendParentEnv
 } from './backend-env'
+import { applyLoginShellPath } from './shell-path'
 
 test('backend env scrubs PYTHONPATH and PYTHONHOME', () => {
   const env = buildDesktopBackendEnv({
@@ -41,6 +43,55 @@ test('POSIX backend PATH keeps the inherited PATH first and appends missing sane
   for (const expected of POSIX_SANE_PATH_ENTRIES) {
     assert.ok(entries.includes(expected), `${expected} should be present`)
   }
+})
+
+test('backend runs the store toolchain even after the login-shell PATH is merged in front of it', async () => {
+  // `hermes desktop` hands Electron a PATH with the PM store first; the
+  // login-shell merge then puts nvm/Homebrew ahead of it in process.env.
+  const env: Record<string, string> = {
+    PATH: '/Users/u/.hermes/tools/node-26.7.0-darwin-arm64/bin:/Users/u/.hermes/tools/uv-0.12.3-darwin-arm64:/usr/bin:/bin'
+  }
+
+  const loginPath = '/Users/u/.nvm/versions/node/v20.0.0/bin:/opt/homebrew/bin:/usr/bin'
+
+  const execFileFn = (_file, _args, _options, callback) => {
+    queueMicrotask(() => callback(null, `__HERMES_LOGIN_PATH_START__${loginPath}__HERMES_LOGIN_PATH_END__`, ''))
+
+    return { stdin: { end() {} } }
+  }
+
+  await applyLoginShellPath({ env, platform: 'darwin', execFileFn })
+  assert.equal(env.PATH.split(':')[0], '/Users/u/.nvm/versions/node/v20.0.0/bin', 'user-facing env keeps login order')
+
+  const backend = buildDesktopBackendEnv({ currentEnv: env, platform: 'darwin', homedir: '/Users/u' })
+
+  assert.deepEqual(backend.PATH.split(':').slice(0, 5), [
+    '/Users/u/.hermes/tools/node-26.7.0-darwin-arm64/bin',
+    '/Users/u/.hermes/tools/uv-0.12.3-darwin-arm64',
+    '/Users/u/.nvm/versions/node/v20.0.0/bin',
+    '/opt/homebrew/bin',
+    '/usr/bin'
+  ])
+})
+
+test('HERMES_RUNTIME_DIR names the store; look-alike prefixes are not Hermes-owned', () => {
+  const store = '/Applications/Hermes.app/Contents/Resources/agent-payload/tools'
+
+  const backend = buildDesktopBackendEnv({
+    currentEnv: {
+      HERMES_RUNTIME_DIR: store,
+      PATH: `/opt/homebrew/bin:/Users/u/.hermes/tools-old/bin:${store}/npm-12.0.2-darwin-arm64/bin:/usr/bin`
+    },
+    platform: 'darwin',
+    homedir: '/Users/u'
+  })
+
+  assert.deepEqual(backend.PATH.split(':').slice(0, 4), [
+    `${store}/npm-12.0.2-darwin-arm64/bin`,
+    '/opt/homebrew/bin',
+    '/Users/u/.hermes/tools-old/bin',
+    '/usr/bin'
+  ])
 })
 
 test('Windows PATH casing and delimiter are preserved without POSIX sane entries', () => {
@@ -223,4 +274,59 @@ test('Windows matches profile homes and dotenv names case-insensitively', () => 
 
   assert.deepEqual(scoped('default'), currentEnv)
   assert.deepEqual(scoped('urbot'), { HERMES_HOME: currentEnv.HERMES_HOME, Path: 'C:\\Windows' })
+})
+
+test('a pooled profile backend drops the launch profile TERMINAL_CWD (#87584)', () => {
+  withHermesRoot(ROOT_SCOPE_FILES, root => {
+    // The Desktop env carries the app-global cwd (resolveHermesCwd) and the
+    // runtime may add its own; both name the LAUNCH profile's workspace.
+    const env = pooledProfileBackendEnv({
+      hermesHome: root,
+      profile: 'urbot',
+      currentEnv: { ...ROOT_LAUNCHED_ENV, TERMINAL_CWD: '/source/launch-workspace' },
+      backendEnv: { TERMINAL_CWD: '/stale/runtime-workspace', KEEP_BACKEND: '1' },
+      platform: 'linux'
+    })
+
+    assert.equal(env.TERMINAL_CWD, undefined)
+    assert.equal(env.HERMES_HOME, root, 'the child resolves --profile under the Desktop-resolved root')
+    assert.equal(env.KEEP_BACKEND, '1')
+    // The named-profile dotenv scrub (#68367) still applies on top.
+    assert.equal(env.TLON_SHIP_CODE, undefined)
+    assert.equal(env.OP_SERVICE_ACCOUNT_TOKEN, undefined)
+    assert.equal(env.OPENROUTER_API_KEY, 'shell-key')
+  })
+})
+
+test('a pooled backend removes case-insensitive TERMINAL_CWD on Windows', () => {
+  withHermesRoot(ROOT_SCOPE_FILES, root => {
+    const env = pooledProfileBackendEnv({
+      hermesHome: root,
+      profile: 'urbot',
+      currentEnv: { Path: 'C:\\Windows', Terminal_Cwd: 'C:\\source\\workspace' },
+      backendEnv: { terminal_cwd: 'C:\\backend' },
+      platform: 'win32'
+    })
+
+    assert.equal(env.Terminal_Cwd, undefined)
+    assert.equal(env.terminal_cwd, undefined)
+    assert.equal(env.Path, 'C:\\Windows')
+  })
+})
+
+test('the launch profile pooled backend keeps its TERMINAL_CWD', () => {
+  withHermesRoot(ROOT_SCOPE_FILES, root => {
+    // profile 'default' targets the root home: no dotenv scrub, and the pin
+    // survives only when the caller (main.ts) provides it — the pooled helper
+    // itself never stamps one, it only strips inherited/global values.
+    const env = pooledProfileBackendEnv({
+      hermesHome: root,
+      profile: 'default',
+      currentEnv: { TERMINAL_CWD: '/launch-workspace', PATH: '/usr/bin' },
+      platform: 'linux'
+    })
+
+    assert.equal(env.TERMINAL_CWD, undefined, 'the pooled helper never carries the global pin; main.ts owns that decision')
+    assert.equal(env.PATH, '/usr/bin')
+  })
 })

@@ -7,6 +7,7 @@ serialisation so we never leak refresh tokens or JWTs to disk.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import pytest
 
 from hermes_cli.dashboard_auth.audit import audit_log, AuditEvent
@@ -21,6 +22,28 @@ def profile_home(tmp_path, monkeypatch):
     # Some code paths fall back to Path.home() — patch that too.
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     return home
+
+
+@pytest.mark.parametrize("non_native", [False, True])
+def test_audit_bounds_string_values(profile_home: Path, non_native: bool) -> None:
+    oversized = 'value"\n' * 1000
+    audit_log(
+        AuditEvent.LOGIN_FAILURE, provider=oversized,
+        details={"values": [oversized]}, extra=Path(oversized) if non_native else oversized,
+        reason="invalid_credentials", attempts=3, allowed=False,
+        access_token=oversized,
+    )
+    lines = (profile_home / "logs" / "dashboard-auth.log").read_text().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    for value in (entry["provider"], entry["details"]["values"][0], entry["extra"]):
+        assert len(value) <= 256
+        assert value.endswith("...[truncated]")
+    assert oversized.startswith(entry["provider"].removesuffix("...[truncated]"))
+    assert entry["reason"] == "invalid_credentials"
+    assert entry["attempts"] == 3
+    assert entry["allowed"] is False
+    assert "access_token" not in entry
 
 
 def test_audit_writes_jsonlines(profile_home):

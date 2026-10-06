@@ -9,10 +9,12 @@ import {
   $activeSessionId,
   $currentModel,
   $currentProvider,
+  $currentReasoningEffortWire,
   getCurrentModelSource,
   setCurrentModel,
   setCurrentModelSource,
-  setCurrentProvider
+  setCurrentProvider,
+  setCurrentReasoningEffortWire
 } from '@/store/session'
 import * as SessionStates from '@/store/session-states'
 
@@ -21,6 +23,7 @@ import { deferred } from '../../../test/deferred'
 import { useModelControls } from './use-model-controls'
 
 const setGlobalModel = vi.fn()
+const tile = vi.hoisted(() => ({ delegate: null as unknown }))
 const confirmMock = vi.fn()
 const notify = vi.fn()
 const notifyError = vi.fn()
@@ -37,7 +40,7 @@ vi.mock('@/store/session-states', async importOriginal => {
 
   return {
     ...actual,
-    sessionTileDelegate: () => null
+    sessionTileDelegate: () => tile.delegate
   }
 })
 
@@ -431,6 +434,7 @@ describe('useModelControls', () => {
     $activeSessionId.set('session-1')
     setCurrentModel('fable-5')
     setCurrentProvider('nous')
+    setCurrentReasoningEffortWire('max')
 
     const requestGateway = vi.fn(async () => {
       throw new Error('no such model')
@@ -444,6 +448,8 @@ describe('useModelControls', () => {
 
     expect($currentModel.get()).toBe('fable-5')
     expect($currentProvider.get()).toBe('nous')
+    // The old route's clamp is true again once the switch is undone.
+    expect($currentReasoningEffortWire.get()).toBe('max')
     expect(notifyError).toHaveBeenCalled()
   })
 
@@ -714,6 +720,32 @@ describe('useModelControls', () => {
     })
   })
 
+  it("withdraws the old route's wire stamp when a tile switches model", async () => {
+    let tileState: Record<string, unknown> = {
+      model: 'gpt-6.1-sol',
+      provider: 'openai-codex',
+      reasoningEffortWire: 'max'
+    }
+
+    tile.delegate = {
+      updateSession: (_id: string, update: (state: Record<string, unknown>) => Record<string, unknown>) => {
+        tileState = update(tileState)
+      }
+    }
+    $activeSessionId.set('runtime-a')
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'gpt-6.1-luna' }) as never)
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    try {
+      await result.current.selectModel({ model: 'gpt-6.1-luna', provider: 'openai-codex', sessionId: 'runtime-b' })
+    } finally {
+      tile.delegate = null
+    }
+
+    // Until session.info re-stamps it, the tile pill must not present the old route's clamp.
+    expect(tileState).toMatchObject({ model: 'gpt-6.1-luna', reasoningEffortWire: '' })
+  })
+
   it('rolls a failed focused-B selection back only in B cache', async () => {
     const queryClient = new QueryClient()
     const ownerBKey = modelOptionsQueryKey('profile-b', 'runtime-b', 'connection-b')
@@ -856,5 +888,62 @@ describe('useModelControls', () => {
     expect($currentModel.get()).toBe('my-own-slug')
     expect($currentProvider.get()).toBe('custom')
     expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  // ── Stale native pick superseded by a custom default (#81922) ─────────────
+  // `nvidia` -> `custom:nvidia` in config.yaml: the bare slug is the
+  // pre-migration spelling of the SAME endpoint (#87035 aliases the two for one
+  // catalog row), but shipping it builds the NATIVE provider and silently drops
+  // the custom entry's `extra_body` (e.g. `thinking: {type: adaptive}`). The
+  // bare slug must yield to the configured default.
+  it('reseeds a sticky manual pick the profile default migrated to its custom-provider form (#81922)', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'z-ai/glm-5.2', provider: 'custom:nvidia' })
+    setCurrentModel('z-ai/glm-5.2')
+    setCurrentProvider('nvidia')
+    setCurrentModelSource('manual')
+
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn() }))
+
+    await act(() => result.current.refreshCurrentModel())
+
+    expect($currentProvider.get()).toBe('custom:nvidia')
+    expect($currentModel.get()).toBe('z-ai/glm-5.2')
+    // 'default' means the next session.create omits the override entirely, so
+    // the gateway resolves config.yaml's custom entry (with its extra_body).
+    expect(getCurrentModelSource()).toBe('default')
+  })
+
+  it('keeps a manual pick of a different provider while the default is a custom entry', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'z-ai/glm-5.2', provider: 'custom:nvidia' })
+    setCurrentModel('claude-sonnet-4-6')
+    setCurrentProvider('anthropic')
+    setCurrentModelSource('manual')
+
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn() }))
+
+    await act(() => result.current.refreshCurrentModel())
+
+    expect($currentModel.get()).toBe('claude-sonnet-4-6')
+    expect($currentProvider.get()).toBe('anthropic')
+    expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  it('keeps a manual custom:* pick without consulting the profile default', async () => {
+    setCurrentModel('deepseek-v4-flash')
+    setCurrentProvider('custom:relay')
+    setCurrentModelSource('manual')
+    // getGlobalModelInfo is a shared module mock; count only this test's calls.
+    vi.mocked(getGlobalModelInfo).mockClear()
+
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn() }))
+
+    await act(() => result.current.refreshCurrentModel())
+
+    expect($currentModel.get()).toBe('deepseek-v4-flash')
+    expect($currentProvider.get()).toBe('custom:relay')
+    expect(getCurrentModelSource()).toBe('manual')
+    // A provider-class pick can never be shadowed by a custom:<key> default, so
+    // the sticky path must not pay for a /api/model/info round trip.
+    expect(getGlobalModelInfo).not.toHaveBeenCalled()
   })
 })

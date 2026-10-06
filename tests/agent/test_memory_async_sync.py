@@ -82,6 +82,50 @@ def test_background_work_still_completes():
     assert p.prefetch_done is True
 
 
+def test_background_hook_timeout_does_not_stall_queue_and_surfaces_repeated_failure():
+    started = threading.Event()
+    release = threading.Event()
+    warnings = []
+
+    class _WedgedProvider(_SlowProvider):
+        def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None):
+            started.set()
+            release.wait(timeout=2)
+
+    mgr = MemoryManager(external_hook_timeout=0.05, warning_callback=warnings.append)
+    mgr.add_provider(_WedgedProvider(delay=0))
+
+    mgr.sync_all("turn-1", "response")
+    assert started.wait(timeout=1)
+    mgr.sync_all("turn-2", "response")
+
+    assert mgr.flush_pending(timeout=1) is True
+    assert len(warnings) == 1
+    assert "failed 2 consecutive background hooks" in warnings[0]
+    assert "Memory writes may be stale" in warnings[0]
+    release.set()
+
+
+def test_session_switch_async_returns_before_blocking_provider_hook():
+    started = threading.Event()
+    release = threading.Event()
+
+    class _BlockingSwitchProvider(_SlowProvider):
+        def on_session_switch(self, new_session_id, **kwargs):
+            started.set()
+            release.wait(timeout=2)
+
+    mgr = MemoryManager(external_hook_timeout=0.1)
+    mgr.add_provider(_BlockingSwitchProvider(delay=0))
+
+    mgr.on_session_switch_async("new-session", reason="compression")
+
+    assert started.wait(timeout=1)
+    assert any(not future.done() for future in mgr._background_futures)
+    release.set()
+    assert mgr.flush_pending(timeout=1) is True
+
+
 
 
 

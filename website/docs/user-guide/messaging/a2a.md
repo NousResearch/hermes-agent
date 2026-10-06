@@ -127,4 +127,5 @@ curl -X POST http://your-host:9900/ \
 - **Peers can't reach the card URL** — the card was advertising your bind address; set `A2A_PUBLIC_URL` to the externally routable URL.
 - **`401 Unauthorized`** — token mismatch; check `A2A_PEER_TOKENS`/`A2A_BEARER_TOKEN` on the server and the peer's `auth:` block.
 - **Server won't bind non-localhost** — by design: set a bearer token first, then `A2A_HOST=0.0.0.0`.
+- **`403` "Host must be localhost…" with no token** — without a token the server answers only requests addressed to `localhost`, `127.0.0.1` or `[::1]`, so a web page on another hostname that resolves to your machine cannot read the card or the served-agent list. Call it by one of those names, or configure a token.
 - **Replies time out on long tasks** — raise `A2A_REPLY_TIMEOUT` (the orphan sweep follows it, so a late reply is stored, not discarded), or have the caller register a push-notification config and poll `GetTask`.

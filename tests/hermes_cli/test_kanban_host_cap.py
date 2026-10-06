@@ -619,3 +619,146 @@ def test_host_cap_bucket_excludes_guarded_rows(kanban_home, all_assignees_spawna
     assert res.skipped_host_capped == [plain]
     out = kbd.describe_suppression([res])
     assert "recent_success=1" in out and "host_capped=1" in out
+
+
+# ---------------------------------------------------------------------------
+# 5. #124392 follow-up round 2: the per-tick ``--max N`` cap must NOT be
+#    reported as "host max_in_progress reached" on the CLI surface. The
+#    dispatch layer aliases the held-back rows into ``skipped_host_capped``
+#    (both caps bind before the rows are enumerated), so an operator running
+#    ``hermes kanban dispatch --max 1`` saw the host-level wording for a limit
+#    they set themselves — the same misdirection #124392 exists to remove,
+#    one layer up.
+# ---------------------------------------------------------------------------
+
+
+def _kanban_cli_caps_dispatch(monkeypatch, *, max_spawn, host_cap):
+    """Wire ``hermes kanban dispatch`` to a host-cap-deferred tick.
+
+    Returns the namespace ``_cmd_dispatch`` receives, with the tick result
+    built by the REAL dispatcher so both caps bind as they would in prod.
+    """
+    import argparse
+
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import config as kb_config
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(
+        kb_config, "load_config",
+        lambda: {"kanban": {
+            "max_in_progress": host_cap,
+            "max_spawn": max_spawn,
+            "default_assignee": None,
+            "max_in_progress_per_profile": None,
+        }},
+    )
+    # The daemon resolves both caps every tick; mirror that resolution so
+    # the test drives exactly the entry point an operator reaches.
+    monkeypatch.setattr(
+        kb_cli, "_resolve_max_in_progress", lambda *a, **k: host_cap,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        kb_cli, "_resolve_max_spawn", lambda *a, **k: max_spawn,
+        raising=False,
+    )
+    return argparse.Namespace(dry_run=True, max=max_spawn, failure_limit=3, json=False)
+
+
+def test_cli_text_output_names_per_tick_cap_not_host_cap(
+    kanban_home, all_assignees_spawnable, monkeypatch, capsys,
+):
+    """``--max 1`` binding must print the per-tick wording, never "host
+    max_in_progress reached" — an operator must not be sent to look at a
+    host-wide concurrency cap they never configured."""
+    from hermes_cli import kanban as kb_cli
+
+    spawns: list = []
+    with kbc.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        assert kb.claim_task(conn, running) is not None
+        kb.create_task(conn, title="ready-0", assignee="alice")
+
+    args = _kanban_cli_caps_dispatch(monkeypatch, max_spawn=1, host_cap=5)
+    rc = kb_cli._cmd_dispatch(args)
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    # The per-tick cap is named...
+    assert "per-tick --max reached" in out
+    # ...and the host-level wording the bug printed is gone.
+    assert "host max_in_progress reached" not in out
+
+
+def test_cli_host_cap_binding_still_prints_host_wording(
+    kanban_home, all_assignees_spawnable, monkeypatch, capsys,
+):
+    """Control: when the HOST cap really is what bound, the host-level
+    wording still appears — the fix must not silence the legimitate case."""
+    from hermes_cli import config as kb_config
+
+    monkeypatch.setattr(
+        kb_config, "load_config",
+        lambda: {"kanban": {
+            "max_in_progress": 1,
+            "max_spawn": None,
+            "default_assignee": None,
+            "max_in_progress_per_profile": None,
+        }},
+    )
+    with kbc.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        assert kb.claim_task(conn, running) is not None
+        kb.create_task(conn, title="ready-0", assignee="alice")
+
+    import argparse
+    args = argparse.Namespace(dry_run=True, max=None, failure_limit=3, json=False)
+    from hermes_cli import kanban as kb_cli
+    rc = kb_cli._cmd_dispatch(args)
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "host max_in_progress reached" in out
+    assert "per-tick --max reached" not in out
+
+
+def test_cli_json_output_reports_both_caps_separately(
+    kanban_home, all_assignees_spawnable, monkeypatch, capsys,
+):
+    """``--json`` consumers must be able to tell WHICH cap bound: the
+    aliased row list, plus the two cause flags, are all required to
+    distinguish "host is at capacity" from "operator capped this tick"."""
+    import argparse
+    import json as _json
+
+    from hermes_cli import config as kb_config
+    from hermes_cli import kanban as kb_cli
+
+    monkeypatch.setattr(
+        kb_config, "load_config",
+        lambda: {"kanban": {
+            "max_in_progress": 5,
+            "max_spawn": 1,
+            "default_assignee": None,
+            "max_in_progress_per_profile": None,
+        }},
+    )
+    spawns: list = []
+    with kbc.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        assert kb.claim_task(conn, running) is not None
+        ready_id = kb.create_task(conn, title="ready-0", assignee="alice")
+
+    args = argparse.Namespace(
+        dry_run=True, max=1, failure_limit=3, json=True,
+    )
+    rc = kb_cli._cmd_dispatch(args)
+    payload = _json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert payload["skipped_max_spawn"] == [ready_id]
+    assert payload["skipped_max_spawn_deferred"] is True
+    assert payload["skipped_host_capped_deferred"] is False
+    # The rows are the same ones, aliased for the host bucket's consumers.
+    assert payload["skipped_host_capped"] == [ready_id]

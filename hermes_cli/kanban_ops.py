@@ -106,6 +106,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "skipped_host_capped": res.skipped_host_capped,
+            "skipped_max_spawn": res.skipped_max_spawn,
+            "skipped_host_capped_deferred": res.skipped_host_capped_deferred,
+            "skipped_max_spawn_deferred": res.skipped_max_spawn_deferred,
             "auto_assigned_default": res.auto_assigned_default,
             "respawn_guarded": [
                 {"task_id": tid, "reason": reason}
@@ -142,7 +145,17 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
     for tid, who, current in res.skipped_per_profile_capped:
         print(f"Deferred ({who} at per-profile cap, {current} running): {tid}")
-    if res.skipped_host_capped:
+    if res.skipped_max_spawn_deferred:
+        # The per-tick ``--max N`` cap aliased its rows into
+        # skipped_host_capped (same fill, binds before row enumeration);
+        # report it under its own name so an operator is not told the
+        # host-level concurrency cap is busy when they asked for a
+        # per-tick limit (#124392's misdirection, one layer up).
+        print(
+            f"Deferred (per-tick --max reached, {len(res.skipped_max_spawn)} "
+            f"tasks waiting): {', '.join(res.skipped_max_spawn)}"
+        )
+    elif res.skipped_host_capped:
         print(
             f"Deferred (host max_in_progress reached, {len(res.skipped_host_capped)} "
             f"tasks waiting): {', '.join(res.skipped_host_capped)}"

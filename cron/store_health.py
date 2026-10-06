@@ -101,7 +101,9 @@ def note_unwritable(cron_dir: Path, exc: OSError, consequence: str, site: str,
             record = _degraded[store] = StoreDegraded(store, time.time(), describe_error(exc))
         new_site = site not in record.sites
         record.sites.add(site)
-        if site in _DISPATCH_SITES:  # a dispatch write failed: throttle the next attempt from here
+        # A failed dispatch write throttles the next attempt; once dispatch has been tried, a failed
+        # scan save is this tick's write attempt too, so the re-probe does not add a second one.
+        if site in _DISPATCH_SITES or record.last_probe is not None:
             record.last_probe = time.monotonic()
         record.error = describe_error(exc)
         record.skipped |= _run_keys(skipped_jobs)

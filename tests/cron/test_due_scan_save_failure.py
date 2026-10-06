@@ -172,8 +172,8 @@ def test_dispatch_failure_after_receipt_never_leaves_it_claimed(
 
 
 def test_unwritable_store_degrades_once_throttles_and_catches_up_once(cron_store, monkeypatch):
-    """One degraded state per outage: entered once, advance/claim skipped between minute-throttled
-    re-probes, cleared by the first save that lands; then the recurring job and the one-shot that
+    """One degraded state per outage: entered once, advance/claim skipped while the scan's save
+    keeps failing (one write attempt per tick), cleared by the first save that lands; then the recurring job and the one-shot that
     stayed due across 5 ticks each fire ONCE, and the one-shot keeps a single ``failed`` row."""
     from cron import executions, scheduler
 
@@ -209,8 +209,9 @@ def test_unwritable_store_degrades_once_throttles_and_catches_up_once(cron_store
         before = len(writes)
         assert scheduler.tick(verbose=False, sync=True) == 0
         per_tick.append(len(writes) - before)
-    assert ran == [] and len(probes) == 2
-    assert per_tick[0] == 3 and per_tick[1:] == [1, 1, 1, 1]  # only the scan's save after entry
+    # The scan's failing save after entry is each tick's one write attempt: no extra re-probe.
+    assert ran == [] and len(probes) == 0
+    assert per_tick[0] == 3 and per_tick[1:] == [1, 1, 1, 1]
     assert events == [("unwritable", 0)]
     # Distinct (job, due instant): the unpersisted fast-forward keeps both on one instant each.
     assert store_health.degraded_record(cron_store / "cron").skipped_runs == 2

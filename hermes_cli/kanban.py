@@ -1421,6 +1421,9 @@ def run_slash(rest: str) -> str:
     except argparse.ArgumentError as exc:
         return f"⚠ /kanban usage error\n{_usage_for_error()}\n{exc}"
 
+    if getattr(args, "kanban_action", None) == "create" and getattr(args, "body_file", None) is not None:
+        return "⚠ /kanban --body-file is for the local CLI only"
+
     with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
         try:
             kanban_command(args)

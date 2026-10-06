@@ -64,3 +64,13 @@ def test_body_file_dash_reads_stdin(kanban_home, monkeypatch, capsys):
     assert _create(["PROBE", "--body-file", "-"], monkeypatch, stdin=BODY) == 0
     capsys.readouterr()
     assert _latest_body().body == BODY
+
+
+def test_slash_cannot_read_body_file(kanban_home, tmp_path):
+    source = tmp_path / "body.md"
+    source.write_text(BODY, encoding="utf-8")
+    assert "--body-file is for the local CLI only" in kc.run_slash(
+        f"create PROBE --body-file {source}"
+    )
+    with kbc.connect_closing() as conn:
+        assert kb.list_tasks(conn) == []

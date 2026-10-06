@@ -72,7 +72,7 @@ from pathlib import Path
 import psutil
 import pytest
 
-from hermes_cli.update_lock import UPDATE_MARKER_MAX_AGE_SECONDS
+from hermes_cli import update_lock
 from tests.e2e.core._pending_fixes import known_failure
 
 from tests.e2e.core.windows._helpers import _decode
@@ -409,58 +409,19 @@ def _tree_moved(proc, machine, target) -> str | None:
 
 # -- marker (contract C1, line format) -----------------------------------------------
 
-CT_TOLERANCE = 1.0  # seconds; writers round ct to 3 decimals
-
-
-def _parse_marker(text: str) -> dict:
-    """``<pid>\\n<started_at>\\n[ct:<ct>\\n][delegate:<pid> ct:<ct>\\n]`` (positional)."""
-    lines = text.lstrip("\ufeff").splitlines()
-
-    def num(index: int, cast):
-        try:
-            return cast(lines[index].strip())
-        except (IndexError, ValueError):
-            return None
-
-    def ct(field: str):
-        field = field.strip()
-        try:
-            return float(field[3:]) if field.startswith("ct:") else None
-        except ValueError:
-            return None
-
-    delegate = delegate_ct = None
-    if len(lines) > 3 and lines[3].startswith("delegate:"):
-        head, _, tail = lines[3][len("delegate:"):].partition(" ")
-        delegate, delegate_ct = (int(head) if head.strip().isdigit() else None), ct(tail)
-    return {"pid": num(0, int), "started_at": num(1, float),
-            "ct": ct(lines[2]) if len(lines) > 2 else None,
-            "delegate": delegate, "delegate_ct": delegate_ct}
-
-
-def _identity_live(pid: int | None, ct: float | None, age: float) -> bool:
-    """update_lock's C1 verdict for one identity of a marker ``age`` seconds old."""
-    if not pid or pid <= 0:
-        return False
-    try:
-        proc = psutil.Process(pid)
-        if not proc.is_running():
-            return False
-        if ct is None:  # v1 / no creation time: the pid may be reused, so only the age ceiling bounds it
-            return age <= UPDATE_MARKER_MAX_AGE_SECONDS
-        return abs(proc.create_time() - ct) <= CT_TOLERANCE
-    except psutil.Error:
-        return False
-
-
 def _marker_live(text: str) -> str | None:
-    """Who keeps the marker LIVE (``"owner <pid>"`` / ``"delegate <pid>"``), or None."""
-    m = _parse_marker(text)
-    age = time.time() - (m["started_at"] or 0.0)
-    if _identity_live(m["pid"], m["ct"], age):
-        return f"owner {m['pid']}"
-    if _identity_live(m["delegate"], m["delegate_ct"], age):
-        return f"delegate {m['delegate']}"
+    """Who keeps the marker LIVE (``"owner <pid>"`` / ``"delegate <pid>"``), or None.
+
+    The updater's own judge (``update_lock``), not a copy: a second parser drifted from it
+    (float started_at, create-time tolerance, a ``run:`` line before ``delegate:``) and graded
+    the orphaned update against rules the product does not follow. This process runs on the
+    host the marker's pids live on, so the product's process table reads them as the updater does.
+    """
+    marker = update_lock._parse_marker(text.encode("utf-8"))
+    if marker.owner_live():
+        return f"owner {marker.pid}"
+    if marker.delegate_live():
+        return f"delegate {marker.delegate_pid}"
     return None
 
 
@@ -477,7 +438,7 @@ def _marker_text(machine) -> str:
     text = _read_marker(machine)
     if text is None:
         return "<absent>"
-    return f"{text!r} parsed={_parse_marker(text)} live={_marker_live(text)}"
+    return f"{text!r} judge={update_lock.judge_marker(text.encode('utf-8'))} live={_marker_live(text)}"
 
 
 # -- orphaned update: only the hand-off script dies --------------------------------

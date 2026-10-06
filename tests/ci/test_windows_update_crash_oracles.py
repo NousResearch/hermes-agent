@@ -7,6 +7,7 @@ import inspect
 import os
 import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ import pytest
 from _pytest.mark.expression import Expression
 
 import tests.e2e.core.windows_update.test_crash_cells as crash
+from hermes_cli import update_lock
 
 _REPO = Path(__file__).resolve().parents[2]
 _SUITE = "tests/e2e/core/windows_update"
@@ -105,16 +107,39 @@ def test_kill_point_counts_only_an_update_killed_while_running(
             crash._kill_when(_Machine(tmp_path), proc, "cell", point, "t")
 
 
-@pytest.mark.parametrize("age,with_ct,live", [
-    (60, False, True),  # v1 marker inside update_lock's 20-minute ceiling
-    (1260, False, False),  # v1 past the ceiling: the product reads it DEAD (the pid may be reused)
-    (1260, True, True),  # a matching creation time is live at any age
-])
-def test_marker_oracle_reads_a_marker_live_exactly_when_update_lock_does(age, with_ct, live):
-    pid = os.getpid()
-    ct = f"ct:{psutil.Process(pid).create_time():.3f}\n" if with_ct else ""
-    text = f"{pid}\n{time.time() - age}\n{ct}"
-    assert crash._marker_live(text) == (f"owner {pid}" if live else None)
+@pytest.fixture(scope="module")
+def other_process():
+    """A live process that is not this one: the judge reads its own pid by exact incarnation."""
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    try:
+        yield proc.pid, update_lock.process_create_time(proc.pid)
+    finally:
+        proc.kill()
+        proc.wait(timeout=60)
+
+
+# (lines after "<pid>\n<started_at>\n" given (pid, ct, now), the oracle's expected reading)
+_MARKERS = {
+    "v1-inside-ceiling": (lambda p, ct, now: f"{now - 60}\n", "owner"),
+    "v1-past-ceiling": (lambda p, ct, now: f"{now - 1260}\n", None),  # the pid may be reused
+    "ct-match-any-age": (lambda p, ct, now: f"{now - 1260}\nct:{ct:.3f}\n", "owner"),
+    # Review K132346-oracle-judge: the three rows a hand copy of the judge got wrong.
+    "float-started-at": (lambda p, ct, now: f"{now - 60}.5\nct:{ct:.3f}\n", None),  # malformed
+    "ct-off-by-1.5s": (lambda p, ct, now: f"{now - 60}\nct:{ct + 1.5:.3f}\n", "owner"),
+    "run-before-delegate": (lambda p, ct, now: f"{now - 60}\nct:{ct - 100:.3f}\nrun:abc\n"
+                                               f"delegate:{p} ct:{ct:.3f}\n", "delegate"),
+}
+
+
+@pytest.mark.parametrize("case", list(_MARKERS))
+def test_marker_oracle_reads_a_marker_live_exactly_when_update_lock_does(other_process, case):
+    pid, ct = other_process
+    assert ct is not None, "the product cannot read a creation time on this host"
+    tail, expected = _MARKERS[case]
+    text = f"{pid}\n" + tail(pid, ct, int(time.time()))
+    verdict, owner, _ = update_lock.judge_marker(text.encode("utf-8"))
+    assert crash._marker_live(text) == (f"{expected} {pid}" if expected else None)
+    assert (verdict == "live", owner) == ((True, pid) if expected else (False, None)), verdict
 
 
 class _Journey:

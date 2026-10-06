@@ -266,7 +266,11 @@ test('Windows probe tolerates CLIXML progress-stream pollution around the probe 
 
 test('Windows probe still rejects output that is not platform JSON', async () => {
   await assert.rejects(probeWindowsRemote(sshWith(async () => 'hermes is not installed on this host')))
-  await assert.rejects(probeWindowsRemote(sshWith(async () => JSON.stringify({ os: 'Windows' })+'\n'+JSON.stringify({unrelated:true}) )))
+  await assert.rejects(
+    probeWindowsRemote(
+      sshWith(async () => JSON.stringify({ os: 'Windows' }) + '\n' + JSON.stringify({ unrelated: true }))
+    )
+  )
 })
 
 test('the update marker gate stays CLEAR when CLIXML lands after the final Write-Output', async () => {
@@ -279,12 +283,18 @@ test('the update marker gate stays CLEAR when CLIXML lands after the final Write
     `${CLIXML_PROGRESS}\r\nCLEAR`,
     `\uFEFFCLEAR\r\n${CLIXML_PROGRESS}\r\n${CLIXML_PROGRESS}`
   ]) {
-    await assertWindowsRemoteInstallUpdateClear(sshWith(async () => observation), 'C:\\h')
+    await assertWindowsRemoteInstallUpdateClear(
+      sshWith(async () => observation),
+      'C:\\h'
+    )
   }
 
   // The verdict itself is untouched: a LIVE marker still pauses startup.
   await assert.rejects(
-    assertWindowsRemoteInstallUpdateClear(sshWith(async () => `LIVE:4242\r\n${CLIXML_PROGRESS}`), 'C:\\h'),
+    assertWindowsRemoteInstallUpdateClear(
+      sshWith(async () => `LIVE:4242\r\n${CLIXML_PROGRESS}`),
+      'C:\\h'
+    ),
     (err: any) => err.kind === 'update-in-progress' && /4242/.test(err.message)
   )
 })

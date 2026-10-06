@@ -1,11 +1,11 @@
-
 export const esSharedMetrics = {
   consentTitle: '¿Nos ayudas a mejorar Hermes?',
   consentBody:
     'Las métricas compartidas solo contienen contadores acotados. Nunca prompts, archivos, rutas ni textos de error. La recopilación es local. Enviarlas a Nous es una aceptación aparte.',
   whatIsCollected: 'Qué se recopila',
   collectedIntro: 'Solo contadores acotados:',
-  collectedActivity: 'Actividad, duración de sesiones, resultados y clases de error, incluido un motivo de una lista fija cuando una escritura en memoria o una compresión de contexto se rechaza, falla o se omite',
+  collectedActivity:
+    'Actividad, duración de sesiones, resultados y clases de error, incluido un motivo de una lista fija cuando una escritura en memoria o una compresión de contexto se rechaza, falla o se omite',
   collectedModels: 'Rutas de modelo y totales de tokens',
   collectedNames: 'Nombres de herramientas, comandos y elementos del catálogo integrados',
   collectedMilestones: 'Recuentos de configuración agrupados',
@@ -26,14 +26,14 @@ export const esSharedMetrics = {
   changeLater: 'Puedes cambiarlo cuando quieras en Ajustes → Seguridad.',
   saveFailed: 'No se pudo guardar tu elección',
   collectLabel: 'Recopilar estadísticas de uso',
-  collectDesc:
-    'Contadores acotados guardados en este dispositivo. Nunca prompts, archivos, rutas ni textos de error.',
+  collectDesc: 'Contadores acotados guardados en este dispositivo. Nunca prompts, archivos, rutas ni textos de error.',
   sendLabel: 'Enviar estadísticas de uso a Nous',
   sendDesc:
     'Sube cada paquete diario al servicio de telemetría de Nous. Solo se envían datos de una ventana de consentimiento. Requiere la recopilación activada.',
   unavailable: 'Actualiza el backend de Hermes para cambiar este ajuste.',
   stripBody: 'Solo contadores acotados, nunca prompts ni archivos.',
-  stripReaskBody: 'Te lo preguntamos de nuevo: una versión anterior podía guardar «No, gracias» antes de que vieras esta pregunta.',
+  stripReaskBody:
+    'Te lo preguntamos de nuevo: una versión anterior podía guardar «No, gracias» antes de que vieras esta pregunta.',
   stripChoices: { share: 'Enviar a Nous', local: 'Solo local', off: 'No, gracias' },
   stripDetails: 'Detalles'
 }

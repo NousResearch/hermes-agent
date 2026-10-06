@@ -1,11 +1,11 @@
-
 export const jaSharedMetrics = {
   consentTitle: 'Hermes の改善に協力しますか？',
   consentBody:
     '共有メトリクスは上限付きのカウンターだけです。プロンプト、ファイル、パス、エラーテキストは含みません。収集はローカルで行われ、Nous への送信は別途オプトインです。',
   whatIsCollected: '収集される内容',
   collectedIntro: '上限付きのカウンターのみ：',
-  collectedActivity: 'アクティビティ、セッションの長さ、結果、エラーの分類（メモリへの書き込みやコンテキスト圧縮が拒否・失敗・スキップされたときの、固定リストから選ばれた理由を含む）',
+  collectedActivity:
+    'アクティビティ、セッションの長さ、結果、エラーの分類（メモリへの書き込みやコンテキスト圧縮が拒否・失敗・スキップされたときの、固定リストから選ばれた理由を含む）',
   collectedModels: 'モデルのルートとトークン合計',
   collectedNames: '組み込みツール、コマンド、カタログの名前',
   collectedMilestones: '区分けされたセットアップの件数',
@@ -33,7 +33,8 @@ export const jaSharedMetrics = {
     '日次パッケージを Nous のテレメトリサービスにアップロードします。同意期間内のデータだけが送信されます。収集がオンである必要があります。',
   unavailable: 'この設定を変更するには Hermes バックエンドを更新してください。',
   stripBody: '上限付きのカウンターのみ。プロンプトやファイルは含みません。',
-  stripReaskBody: '改めてお尋ねします：以前のバージョンでは、この質問が表示される前に「今はしない」が保存されることがありました。',
+  stripReaskBody:
+    '改めてお尋ねします：以前のバージョンでは、この質問が表示される前に「今はしない」が保存されることがありました。',
   stripChoices: { share: 'Nous に送信', local: 'ローカルのみ', off: '今はしない' },
   stripDetails: '詳細'
 }

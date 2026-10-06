@@ -1988,7 +1988,7 @@ export const frOverrides = {
       sshErrTimeout: "Expiration de la connexion SSH. L'hôte peut être inaccessible ou en veille.",
       sshErrUpdateRequired: "Mettez à jour Hermes sur l'hôte distant avant de vous connecter avec Desktop SSH.",
       sshErrInteractiveAuth:
-        "Tailscale SSH exige une vérification interactive dans le navigateur. Exécutez `ssh <host> true` dans le terminal, terminez la vérification, puis réessayez — Hermes exécute SSH de façon non interactive.",
+        'Tailscale SSH exige une vérification interactive dans le navigateur. Exécutez `ssh <host> true` dans le terminal, terminez la vérification, puis réessayez — Hermes exécute SSH de façon non interactive.',
       sshErrUnknown: 'Échec de la connexion SSH.'
     },
     keys: {

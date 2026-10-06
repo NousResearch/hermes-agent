@@ -128,12 +128,15 @@ def _cache_mcp_image_block(block) -> str:
 _MCP_NATIVE_IMAGE_MAX = 4  # images attached natively from one tool result; the rest stay MEDIA: paths
 
 
-def _mcp_native_image_part(path: str) -> Optional[Dict[str, Any]]:
-    """``image_url`` part for one cached MCP image, sized like every other native embed (the result is
-    re-sent each later turn: ``vision.embed_target_bytes``, 1568 px long edge, JPEG) and normalized to a
-    provider-accepted format (BMP and friends → PNG). None when the file cannot be embedded."""
+def _mcp_native_image_part(path: str) -> Optional[Tuple[Dict[str, Any], Optional[str]]]:
+    """``(image_url part, scale note)`` for one cached MCP image, sized like every other native embed (the
+    result is re-sent each later turn: ``vision.embed_target_bytes``, 1568 px long edge, JPEG) and normalized
+    to a provider-accepted format (BMP and friends → PNG). None when the file cannot be embedded safely. The
+    note maps embedded coordinates back to the original image (a screenshot's pixels are the screen's)."""
     from pathlib import Path
-    from tools.vision_tools import _EMBED_MAX_DIMENSION, _MAX_BASE64_BYTES, _resize_image_for_vision
+    from PIL import Image
+    from tools.vision_tools import (_EMBED_MAX_DIMENSION, _MAX_BASE64_BYTES, _build_scale_note,
+                                    _resize_image_for_vision)
     from tools.vision_tools_history_budget import resolve_embed_target_bytes
     from tools.vision_tools_image_prep import (_detect_image_mime_type_from_bytes, _normalize_to_supported_image,
                                                _validate_raster_image_decodable)
@@ -144,17 +147,26 @@ def _mcp_native_image_part(path: str) -> Optional[Dict[str, Any]]:
     normalized, mime, err = _normalize_to_supported_image(src, mime)
     if err or normalized is None:
         return None
+    scale: Dict[str, int] = {}
     try:
         # A valid header over a truncated pixel stream passes the sniff and the cache; one undecodable
         # part makes the provider reject the whole request, so decode every frame first (as vision_analyze).
         if _validate_raster_image_decodable(normalized):
             return None
+        with Image.open(normalized) as image:
+            dims = image.size
         url = _resize_image_for_vision(normalized, mime_type=mime, max_base64_bytes=resolve_embed_target_bytes(),
-                                       max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
+                                       max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True, scale_out=scale)
     finally:
         if normalized != src:
             normalized.unlink(missing_ok=True)
-    return {"type": "image_url", "image_url": {"url": url}} if len(url) <= _MAX_BASE64_BYTES else None
+    # The resizer is best-effort (a 64 px short-edge floor keeps a 60000x64 strip at 60000 px): never attach
+    # what it could not bring under both caps, since the part rides history and providers reject it per turn.
+    if max(scale.get("new_width", dims[0]), scale.get("new_height", dims[1])) > _EMBED_MAX_DIMENSION:
+        return None
+    if len(url) > _MAX_BASE64_BYTES:
+        return None
+    return {"type": "image_url", "image_url": {"url": url}}, _build_scale_note(scale or None, None)
 
 
 def _mcp_result_with_native_images(text: str, image_paths: List[str]) -> Any:
@@ -169,14 +181,17 @@ def _mcp_result_with_native_images(text: str, image_paths: List[str]) -> Any:
         from tools.vision_tools import _should_use_native_vision_fast_path
         if not _should_use_native_vision_fast_path():
             return text
-        parts = [p for p in map(_mcp_native_image_part, image_paths[:_MCP_NATIVE_IMAGE_MAX]) if p]
+        attached = [(p, r) for p, r in ((p, _mcp_native_image_part(p)) for p in image_paths[:_MCP_NATIVE_IMAGE_MAX]) if r]
     except Exception:  # deliberate boundary: the MEDIA: paths already carry the images, so any failure keeps the text
         logger.debug("MCP native image attach failed, keeping MEDIA: paths", exc_info=True)
         return text
-    if not parts:
+    if not attached:
         return text
-    attached = text + "\n\nThe image(s) from this call are attached — inspect them with your native vision."
-    return {"_multimodal": True, "content": [{"type": "text", "text": attached}, *parts], "text_summary": text}
+    notes = "".join(f"\n- MEDIA:{p}: {note}" for p, (_part, note) in attached if note)
+    header = "\n\nThe image(s) from this call are attached — inspect them with your native vision."
+    return {"_multimodal": True,
+            "content": [{"type": "text", "text": text + header + notes}, *(part for _p, (part, _n) in attached)],
+            "text_summary": text}
 
 
 def _cache_mcp_audio_block(block) -> str:

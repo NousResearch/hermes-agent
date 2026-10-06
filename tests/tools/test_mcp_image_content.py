@@ -171,14 +171,22 @@ class TestNativeImageAttach:
         from tools.vision_tools_history_budget import resolve_embed_target_bytes
         assert url.startswith("data:image/jpeg;base64,") and len(url) <= resolve_embed_target_bytes()
         assert "MEDIA:" in out["text_summary"]
+        # Screenshot pixels are screen coordinates: the model is told how to map the embed back.
+        assert "downscaled from 3000x2000 to 1500x1000" in out["content"][0]["text"]
+        assert "multiply any coordinates you report by 2.00" in out["content"][0]["text"]
 
-    def test_image_input_mode_text_or_an_undecodable_image_keeps_the_string_result(self, tmp_path, monkeypatch):
+    def test_text_mode_an_undecodable_or_an_unshrinkable_image_keeps_the_string_result(self, tmp_path, monkeypatch):
         assert "MEDIA:" in self._call(monkeypatch, tmp_path, {"agent": {"image_input_mode": "text"}})
-        # A valid JPEG header over a truncated pixel stream passes the cache's and the sniff's header checks.
         import io
         from PIL import Image
+        # A valid JPEG header over a truncated pixel stream passes the cache's and the sniff's header checks.
         buf = io.BytesIO()
         Image.effect_noise((256, 256), 64).convert("RGB").save(buf, "JPEG")
         truncated = self._call(monkeypatch, tmp_path, {}, image=buf.getvalue()[: len(buf.getvalue()) // 2],
                                mime="image/jpeg")
         assert isinstance(truncated, str) and "MEDIA:" in truncated
+        # A 60000x64 strip: the resizer's 64 px short-edge floor cannot bring the long edge under 1568.
+        buf = io.BytesIO()
+        Image.new("RGB", (60000, 64), (20, 90, 200)).save(buf, "PNG")
+        strip = self._call(monkeypatch, tmp_path, {}, image=buf.getvalue())
+        assert isinstance(strip, str) and "MEDIA:" in strip

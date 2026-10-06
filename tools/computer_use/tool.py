@@ -83,9 +83,6 @@ _backends: Dict[str, ComputerUseBackend] = {}
 _backend_call_locks: Dict[str, threading.RLock] = {}
 _backend_permission_modes: Dict[str, str] = {}
 _backend_displays: Dict[str, str] = {}  # DISPLAY the cached backend was spawned against (Bot Desktop rebind)
-# (home key, provider, model) → bool. The decision reads the active profile's config (auxiliary.vision
-# override, declared supports_vision), so a multiplexed process must not serve profile A's verdict to B.
-_AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str, str], bool] = {}
 # Approval grants live in the shared store (``tools.approval``: session set + permanent allowlist), keyed by the
 # gate's session key, so a computer_use "always" is one allowlist entry like any terminal pattern. Only the
 # once-per-session escalation warning is tracked here.
@@ -291,7 +288,6 @@ def _shutdown_backend_atexit() -> None:
 
 def reset_backend_for_tests() -> None:  # pragma: no cover — tear down the cached backend and per-session state
     _shutdown_backend_atexit()
-    _AUX_VISION_ROUTE_CACHE.clear()
     _reset_screenshot_dedup()
 
 def _noop_stub(name: str, *params: str, result: Any = None):
@@ -892,20 +888,17 @@ def _shrink_capture_for_vision(raw: bytes, ext: str, max_dim: int = _MAX_VISION_
 
 def _should_route_through_aux_vision() -> bool:
     """True when ``_capture_response`` should hand the PNG to aux vision. Any failure returns False (fail open) so a
-    broken config never silently drops the screenshot for vision-capable main models."""
+    broken config never silently drops the screenshot for vision-capable main models. Decided per capture (the
+    config read is the signature-cached ``load_config_readonly``), so ``/model``, a profile switch or an
+    ``image_input_mode`` edit applies to the next screenshot instead of a stale verdict."""
     stage = "import"
     try:
         from agent.auxiliary_client import _read_main_model, _read_main_provider
-        from hermes_cli.config import load_config
-        from hermes_constants import hermes_home_key
+        from hermes_cli.config import load_config_readonly
         from tools.computer_use.vision_routing import should_route_capture_to_aux_vision
-        stage = "config read"
-        provider, model = _read_main_provider() or "", _read_main_model() or ""
-        if (cached := _AUX_VISION_ROUTE_CACHE.get(key := (hermes_home_key(), str(provider), str(model)))) is not None:
-            return cached
         stage = "decision"
-        _AUX_VISION_ROUTE_CACHE[key] = decision = bool(should_route_capture_to_aux_vision(provider, model, load_config()))
-        return decision
+        provider, model = _read_main_provider() or "", _read_main_model() or ""
+        return bool(should_route_capture_to_aux_vision(provider, model, load_config_readonly()))
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("computer_use: aux-vision routing %s failed: %s", stage, exc)
         return False

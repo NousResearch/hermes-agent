@@ -129,6 +129,18 @@ class TestKillProcessTree:
             assert "/PID" in argv
             assert str(4321) in argv
 
+    @pytest.mark.platforms("windows")
+    def test_tree_is_taskkilled_before_the_root_dies(self):
+        # taskkill /T walks the tree from a live root; killing the root first strands it.
+        calls = []
+        proc = self._proc()
+        proc.kill.side_effect = lambda: calls.append("kill")
+        with mock.patch.object(
+            _subprocess_compat.subprocess, "run", side_effect=lambda *a, **k: calls.append("taskkill")
+        ):
+            _subprocess_compat._legacy_kill_process_tree(proc)
+        assert calls == ["taskkill", "kill"]
+
 
 # taskkill dispatch must execute on Windows, not under a fake sys.platform.
 @pytest.mark.platforms("windows")

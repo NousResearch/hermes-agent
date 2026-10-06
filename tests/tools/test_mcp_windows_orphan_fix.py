@@ -118,9 +118,10 @@ class TestWindowsTreeKillHelpers:
         fake_psutil.Process = FakeProc
         fake_psutil.wait_procs = lambda procs, timeout: ([], [])  # all exited gracefully
         monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+        monkeypatch.setattr(lifecycle.os, "kill", lambda pid, sig: None)  # never signal real pid 1
 
         lifecycle._kill_windows_process_tree(1, 15)
-        # SIGTERM pass: descendants only — the direct child was already signalled by the caller.
+        # SIGTERM pass: descendants are terminated (the root goes through os.kill).
         assert sorted(terminated) == [2, 3]
         assert killed == []
 
@@ -128,6 +129,50 @@ class TestWindowsTreeKillHelpers:
         fake_psutil.wait_procs = lambda procs, timeout: ([], list(procs))
         lifecycle._kill_windows_process_tree(1, 9)
         assert sorted(killed) == [2, 3]
+
+    def test_tree_kill_snapshots_descendants_before_signalling_root(self, monkeypatch):
+        """#108084: on Windows ``os.kill`` is TerminateProcess, and a dead root's tree can no
+        longer be walked — so the descendants must be enumerated BEFORE the root is signalled,
+        and still be terminated afterwards."""
+        import tools.mcp_tool_lifecycle as lifecycle
+
+        events = []
+        root_alive = {"value": True}
+
+        class NoSuchProcess(Exception):
+            pass
+
+        class FakeProc:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def children(self, recursive=True):
+                if not root_alive["value"]:  # what psutil does once the wrapper is gone
+                    raise NoSuchProcess(self.pid)
+                events.append("enumerate")
+                return [FakeProc(4242)]
+
+            def terminate(self):
+                events.append(f"terminate:{self.pid}")
+
+            def kill(self):
+                events.append(f"kill:{self.pid}")
+
+        def fake_kill(pid, sig):
+            events.append(f"signal-root:{pid}")
+            root_alive["value"] = False
+
+        fake_psutil = MagicMock()
+        fake_psutil.Process = FakeProc
+        fake_psutil.NoSuchProcess = NoSuchProcess
+        fake_psutil.AccessDenied = PermissionError
+        fake_psutil.wait_procs = lambda procs, timeout: ([], [])
+        monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+        monkeypatch.setattr(lifecycle.os, "kill", fake_kill)
+
+        lifecycle._kill_windows_process_tree(4141, 15)
+
+        assert events == ["enumerate", "signal-root:4141", "terminate:4242"]
 
     def test_ledger_tree_kill_helper_swallows_errors(self):
         """_kill_process_tree_windows never raises, even for a vanished process."""

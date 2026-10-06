@@ -36,7 +36,7 @@
 //   - POST /send-poll   -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "title": "...", "options": ["...", "..."]}
 //       Sends a native poll (orange iMessage poll bubble). A tap streams
-//       back inbound as a `poll_option` event ({title, selected}).
+//       back inbound as a `poll_option` event ({title, selected, pollId, tally, voters}).
 //   - POST /send-effect -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "text": "...", "effect": "confetti" | ...}
 //   - POST /typing      -> {"ok": true}
@@ -67,6 +67,7 @@ import crypto from "node:crypto";
 import { once } from "node:events";
 import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
+import { PollVoteTracker } from "./poll-votes.mjs";
 import {
   classifyProbeRejection,
   createProbeMessageId,
@@ -516,7 +517,9 @@ function reactionTargetText(target) {
     : text;
 }
 
-async function normalizeContent(content) {
+const pollVotes = new PollVoteTracker();
+
+async function normalizeContent(content, message = {}) {
   if (!content || typeof content !== "object") {
     return { type: "unknown" };
   }
@@ -541,7 +544,7 @@ async function normalizeContent(content) {
     for (const item of Array.isArray(content.items) ? content.items : []) {
       items.push({
         id: item && typeof item === "object" ? item.id ?? null : null,
-        content: await normalizeContent(item?.content),
+        content: await normalizeContent(item?.content, { ...message, id: item?.id ?? message.id }),
       });
     }
     return { type: "group", items };
@@ -572,17 +575,9 @@ async function normalizeContent(content) {
       targetText: reactionTargetText(target),
     };
   }
-  // A user tapping a poll choice arrives as `poll_option` carrying the chosen
-  // option title + whether it was selected (true) or deselected (false). This
-  // is how a native iMessage poll's vote streams back — Python turns a
-  // selection into the answer that resolves a pending `clarify`.
+  // Keep poll identity and observed totals so Python can bind the vote to its prompt.
   if (content.type === "poll_option") {
-    return {
-      type: "poll_option",
-      title: content.option?.title ?? content.title ?? "",
-      selected: content.selected !== false,
-      pollTitle: content.poll?.title ?? null,
-    };
+    return pollVotes.normalize(content, message);
   }
   // The poll message itself (its creation) — surfaced for completeness so the
   // agent isn't told "content type not handled" if it sees the echo.
@@ -635,7 +630,7 @@ async function normalizeEvent(space, message) {
         phone: space.phone ?? msgSpace.phone ?? null,
       },
       sender: { id: message.sender ? message.sender.id : null },
-      content: await normalizeContent(message.content),
+      content: await normalizeContent(message.content, message),
       timestamp:
         ts instanceof Date ? ts.toISOString() : ts ? String(ts) : null,
     };

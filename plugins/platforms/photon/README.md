@@ -170,6 +170,9 @@ All env vars are documented in `plugin.yaml`. The most important:
   `PHOTON_READ_RECEIPTS=false` to keep messages at `Delivered`.
 - **Native polls are supported.** Hermes posts poll content through
   `spectrum-ts`' `poll(...)` builder via the sidecar's `/send-poll` endpoint.
+  Clarify sends the question in a text bubble first because Photon drops native
+  poll titles. Votes answer only their matching prompt; group messages include
+  observed totals. Tallies cover up to 200 recent polls and reset on sidecar restart.
 - **Message effects are supported.** Text can be sent with native iMessage
   bubble/screen effects through `spectrum-ts`' iMessage `effect(...)` builder
   via the sidecar's `/send-effect` endpoint.

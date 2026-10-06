@@ -579,6 +579,7 @@ class PhotonAdapter(BasePlatformAdapter):
         self._recent_richlinks_by_chat: Dict[str, float] = {}  # coalesce preview-art attachments
         self._typing_last_sent: Dict[str, float] = {}
         self._pending_fffc: Dict[str, tuple[float, Any]] = {}  # chat_key → (timestamp, asyncio.Task)
+        self._clarify_polls: Dict[str, tuple[str, str, str]] = {}  # poll id → (clarify id, chat id, question)
         # Group-chat mention gating (parity with BlueBubbles); DMs are never gated.
         require_mention = extra.get("require_mention")
         if require_mention is None:
@@ -846,16 +847,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # gate: reacting to a non-wake-word group message is valid.
         self._record_last_inbound(space_id, message_id)
         if ctype == "poll_option":
-            # Native poll vote: a selection is forwarded as if typed (the gateway's
-            # pending-clarify intercept resolves it); a deselection is dropped.
-            if content.get("selected") is False:
-                logger.debug("[photon] ignoring poll deselection")
-                return
-            choice = (content.get("title") or "").strip()
-            if not choice:
-                logger.debug("[photon] ignoring poll vote with empty title")
-                return
-            await self.handle_message(_event(choice))
+            await self._dispatch_poll_vote(content, space_id, chat_type, _event)
             return
         # Mention gate BEFORE normalising: _normalize_content persists inline attachment
         # bytes to the media cache, and a dropped group message must not leave files behind.
@@ -872,6 +864,37 @@ class PhotonAdapter(BasePlatformAdapter):
             text = self._clean_mention_text(text)
         self._record_recent_richlink(space_id, _richlink_url_from_content(content) or text)
         await self.handle_message(_event(text, mtype, media_urls=media_urls, media_types=media_types))
+
+    async def _dispatch_poll_vote(self, content: Dict[str, Any], chat_id: str, chat_type: str,
+                                  make_event: Callable[..., MessageEvent]) -> None:
+        choice = (content.get("title") or "").strip()
+        if not choice:
+            logger.debug("[photon] ignoring poll vote with empty title")
+            return
+        selected = content.get("selected") is not False
+        binding = self._clarify_polls.get(content.get("pollId"))
+        if binding and binding[1] != chat_id:
+            binding = None
+        vote_event = make_event("", allow_gateway_control=False)
+        source = vote_event.source
+        resolved = False
+        if (binding and selected and not getattr(source, "profile_route_rejected", False)
+                and self._is_sender_authorized(source.user_id, chat_type, chat_id) is True):
+            from tools.clarify_gateway import resolve_gateway_clarify
+            resolved = resolve_gateway_clarify(binding[0], choice)
+        if chat_type != "group" and (resolved or not selected):
+            return
+        question = binding[2] if binding else content.get("pollTitle") or content.get("pollId") or "unknown"
+        action = "poll vote" if selected else "poll vote removed"
+        text = f"[{action}] {choice} (poll: {question})"
+        tally = content.get("tally")
+        if chat_type == "group" and isinstance(tally, dict) and tally:
+            totals = ", ".join(f"{title}: {count}" for title, count in tally.items())
+            text += f"\nTotals: {totals} ({content.get('voters', 0)} voters)"
+        # Informational votes remain useful after a prompt ends. Disable gateway control
+        # so stale/unknown polls and vote changes cannot answer a newer clarify.
+        vote_event.text = text
+        await self.handle_message(vote_event)
 
     # -- Sidecar lifecycle ---------------------------------------------------------
 
@@ -1212,19 +1235,28 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
                            session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Multiple-choice renders as a native poll; the vote comes back as a `poll_option`
-        event that _dispatch_inbound turns into plain text, so the clarify is flipped into
-        text-capture mode like the base fallback."""
+        """Send the visible question before a native poll and bind votes to this clarify."""
         if not choices:  # open-ended: base plain-text behaviour is right
             return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
         from tools.clarify_gateway import mark_awaiting_text
         mark_awaiting_text(clarify_id)
+        question_result = await self.send(chat_id, question, metadata=metadata)
+        if not question_result.success:
+            return question_result
         result = await self._sidecar_send_poll(chat_id, question, list(choices))
         if not result.success:
-            # Old sidecar without /send-poll or a send error: numbered-text clarify fallback
-            # (base also calls mark_awaiting_text; harmless).
+            # The question bubble already arrived; reuse the numbered fallback without it.
             logger.warning("[photon] poll clarify failed (%s); falling back to text list", result.error)
-            return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
+            from agent.i18n import t
+            from tools import clarify_gateway as cg
+            with cg._lock:
+                multi_select = bool(getattr(cg._entries.get(clarify_id), "multi_select", False))
+            numbered = [t("gateway.clarify.option_line", index=i, choice=choice)
+                        for i, choice in enumerate(choices, start=1)]
+            hint = t("gateway.clarify.hint_multi" if multi_select else "gateway.clarify.hint_single")
+            return await self.send(chat_id, "\n".join([*numbered, "", hint]), metadata=metadata)
+        if result.message_id:
+            bounded_put(self._clarify_polls, result.message_id, (clarify_id, chat_id, question), 200)
         return result
 
     # -- Outbound media (parity with BlueBubbles): URL-based helpers cache to a local path

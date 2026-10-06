@@ -32,7 +32,7 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-def _write_sidecar_fixture(tmp_path: Path, *, sdk_available: bool) -> Path:
+def _write_sidecar_fixture(tmp_path: Path, *, sdk_available: bool, messages=None) -> Path:
     sidecar = tmp_path / "sidecar"
     sidecar.mkdir()
     shutil.copyfile("plugins/platforms/photon/sidecar/index.mjs", sidecar / "index.mjs")
@@ -70,7 +70,10 @@ def _write_sidecar_fixture(tmp_path: Path, *, sdk_available: bool) -> Path:
             """
             export async function Spectrum() {
               return {
-                messages: { [Symbol.asyncIterator]() { return { next: () => new Promise(() => {}) }; } },
+                messages: (async function*() {
+                  for (const message of fixtureMessages) yield [message.space, message];
+                  await new Promise(() => {});
+                })(),
                 stop: async () => undefined,
               };
             }
@@ -80,7 +83,7 @@ def _write_sidecar_fixture(tmp_path: Path, *, sdk_available: bool) -> Path:
             export const markdown = value => value;
             export const typing = value => value;
             """
-        ).lstrip(),
+        ).lstrip() + f"\nconst fixtureMessages = {json.dumps(messages or [])};\n",
         encoding="utf-8",
     )
     (package / "providers" / "imessage.js").write_text(
@@ -127,6 +130,47 @@ def test_sidecar_patch_failure_still_reaches_health_endpoint(tmp_path: Path) -> 
         _, stderr = proc.communicate(timeout=5)
 
     assert "forced patch failure" in stderr
+
+
+def test_sidecar_forwards_poll_identity_and_tallies(tmp_path: Path) -> None:
+    messages = [
+        {
+            "id": f"poll-guid:{sender}:option:{'selected' if selected else 'deselected'}:{timestamp}",
+            "sender": {"id": sender}, "direction": "inbound", "platform": "iMessage",
+            "space": {"id": "group-1", "type": "group"},
+            "content": {"type": "poll_option", "option": {"title": "Route"},
+                        "poll": {"title": "", "options": [{"title": "Route"}, {"title": "Calendar"}]},
+                        "selected": selected},
+        }
+        for sender, selected, timestamp in [("alice", True, 1), ("bob", True, 2), ("alice", False, 3)]
+    ]
+    sidecar = _write_sidecar_fixture(tmp_path, sdk_available=True, messages=messages)
+    port = _free_port()
+    proc = subprocess.Popen(["node", "index.mjs"], cwd=sidecar, env=_sidecar_env(port),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    request = urllib.request.Request(f"http://127.0.0.1:{port}/inbound",
+                                     headers={"X-Hermes-Sidecar-Token": "test-token"})
+    try:
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                response = urllib.request.urlopen(request, timeout=2)
+                break
+            except OSError:
+                if proc.poll() is not None or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
+        with response:
+            events = [json.loads(response.readline()) for _ in messages]
+        assert [event["content"]["pollId"] for event in events] == ["poll-guid"] * 3
+        assert [event["content"]["tally"] for event in events] == [
+            {"Route": 1, "Calendar": 0}, {"Route": 2, "Calendar": 0}, {"Route": 1, "Calendar": 0},
+        ]
+        assert [event["content"]["voters"] for event in events] == [1, 2, 1]
+        assert [event["content"]["selected"] for event in events] == [True, True, False]
+    finally:
+        proc.terminate()
+        proc.communicate(timeout=5)
 
 
 def _tabify(src: str) -> str:

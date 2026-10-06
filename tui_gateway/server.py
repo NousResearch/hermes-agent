@@ -37,6 +37,8 @@ from agent.compaction_display import project_compaction_message_for_display  # n
 from agent.skill_commands import describe_skill_invocation  # noqa: F401
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: F401
 from tui_gateway import git_probe
+from tui_gateway.checkpoints import (_load_checkpoints_enabled, _resolve_checkpoint_hash,
+                                     resolve_checkpoints_enabled as _resolve_checkpoints_enabled)  # noqa: F401
 from tui_gateway._env import env_float, env_int
 from tui_gateway.turn_marker import clear_turn_marker, marker_writer_state, read_turn_marker, record_turn_start  # noqa: F401
 from tui_gateway.contracts import registry as _contracts
@@ -2683,7 +2685,7 @@ def _make_agent(
         # Builds that run before the record exists (branch, eager resume, compute host) pass it explicitly.
         user_id=auth_user_id if auth_user_id is not None else _session_auth_user_id(session),
         session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
-        checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
+        checkpoints_enabled=_resolve_checkpoints_enabled(cfg),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
         # The resolved provider's request body (a custom entry's extra_body), as the CLI/cron/gateway pass it.
@@ -2812,17 +2814,6 @@ def _any_live_session_claims_key(target: str) -> bool:
 
 def _with_checkpoints(session, fn):
     return fn(session["agent"]._checkpoint_mgr, _session_cwd(session))
-
-
-def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
-    try:
-        checkpoints = mgr.list_checkpoints(cwd)
-        idx = int(ref) - 1
-    except ValueError:
-        return ref
-    if 0 <= idx < len(checkpoints):
-        return checkpoints[idx].get("hash", ref)
-    raise ValueError(f"Invalid checkpoint number. Use 1-{len(checkpoints)}.")
 
 
 # ── Methods: session ─────────────────────────────────────────────────

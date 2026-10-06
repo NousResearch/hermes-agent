@@ -268,9 +268,14 @@ test('Windows gates keep a dead marker while the checkout lock or a lease byte i
   }
 
   const deleteAt = spawnScript.indexOf('[IO.File]::Delete($marker)')
-  const guardAt = spawnScript.indexOf('if($verdict -eq "CLEAR" -and (Test-CheckoutLockHeld $checkoutRoots)){$verdict="HELD"}')
+  const guardAt = spawnScript.indexOf(
+    'if($verdict -eq "CLEAR" -and (Test-CheckoutLockHeld $checkoutRoots)){$verdict="HELD"}'
+  )
   assert.ok(guardAt > 0 && guardAt < deleteAt, 'the checkout probe must precede the dead-marker delete')
-  assert.match(probeScript, /if\(\$result -eq "CLEAR" -and \(Test-CheckoutLockHeld \$checkoutRoots\)\)\{\$result="HELD"\}/)
+  assert.match(
+    probeScript,
+    /if\(\$result -eq "CLEAR" -and \(Test-CheckoutLockHeld \$checkoutRoots\)\)\{\$result="HELD"\}/
+  )
 })
 
 test('Windows relaunch gate uses strict install-wide marker parsing and fail-closed PID probing', async () => {
@@ -439,7 +444,6 @@ test('every parsed Windows PowerShell script silences the progress stream', asyn
   }
 })
 
-
 test('helper parsing ignores CLIXML progress blocks around its JSON line', async () => {
   const payload = JSON.stringify({ supported: true, version: '1.2.3' })
 
@@ -601,7 +605,8 @@ test.skipIf(process.platform !== 'win32')('Windows platform probe executes in re
     assert.equal(result.python, path.join(tempDir, 'python.exe'))
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true })
-  }})
+  }
+})
 
 test('platform detection preserves POSIX and falls back to Windows PowerShell', async () => {
   assert.deepEqual(await detectRemotePlatform(sshWith(async () => 'Linux\nx86_64\n')), { os: 'Linux', arch: 'x86_64' })

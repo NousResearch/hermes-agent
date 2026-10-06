@@ -4639,19 +4639,6 @@ def _housekeeping_channel_directory(adapters, loop) -> None:
             fut.result(timeout=30)
 
 
-def _housekeeping_bot_desktop_idle() -> None:
-    """Stop this profile's Bot Desktop once it has been idle past ``bot_desktop.idle_stop_minutes``.
-
-    ``runtime.stop_if_idle`` holds the rules (never while a human holds the screen). The only other
-    caller is the ``hermes serve`` lease watcher, which runs only after a client connects and visits
-    only the launch home plus profiles a client has addressed since that process started. A screen
-    auto-started by a cron or messaging turn for a profile nobody opened in Desktop therefore never
-    stopped (~150 MB idle, ~700 MB with a page open). Screens are host-level files and processes, so
-    this also stops idle screens started by ``hermes serve`` or the CLI; ``stop()`` is lock-guarded."""
-    from tools.bot_desktop import runtime as _bd_runtime
-    _bd_runtime.stop_if_idle()
-
-
 def _housekeeping_media_caches() -> None:
     """Every platform media cache prunes on the same hourly cadence (24h max age)."""
     from gateway.platforms.base import (
@@ -4690,12 +4677,6 @@ def _housekeeping_misfire_catch_up(cron_provider, adapters, loop) -> None:
     caught_up = fire_overdue_jobs(cron_provider, adapters=adapters, loop=loop)
     if caught_up:
         logger.info("Misfire catch-up: fired %d overdue job(s)", caught_up)
-
-
-def _housekeeping_curator() -> None:
-    """maybe_run_curator() is gated by config.interval_hours (7 days default); this is the poll."""
-    from agent.curator import maybe_run_curator
-    maybe_run_curator(idle_for_seconds=float("inf"), on_summary=lambda msg: logger.info("curator: %s", msg))
 
 
 def _housekeeping_plugin_update_check() -> None:
@@ -4831,6 +4812,7 @@ def _start_gateway_housekeeping(
     Cadences are ticks of ``interval``; inner gates own the real cadence."""
     from gateway.run_delivery_queue_watch import DRAIN_LABEL, DeliveryQueueWatch, wait_for_next_tick
     from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
+    from gateway.run_profile_chores import _housekeeping_bot_desktop_idle, _housekeeping_curator
     chores: list[tuple[int, str, Any]] = [
         # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.
         # ``hermes gateway status`` / ``/api/status`` warn when it ages past 2x ``interval`` with the
@@ -4864,7 +4846,6 @@ def _start_gateway_housekeeping(
         # Per served profile: plugins dir, last-run marker and plugins.auto_apply are all the
         # profile's own (get_hermes_home()/load_config_readonly() bind to the scope).
         (1, "Plugin update check", profile_scoped_chore(runner, _housekeeping_plugin_update_check)),
-        # Per served profile: each profile has its own Bot Desktop, idle stamp and idle_stop_minutes.
         (1, "Bot Desktop idle stop", profile_scoped_chore(runner, _housekeeping_bot_desktop_idle)),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),

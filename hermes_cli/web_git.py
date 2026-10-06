@@ -124,8 +124,11 @@ def _numstat(cwd: str, args: list[str]) -> dict[str, tuple[int, int]]:
 
 def _untracked_insertions(cwd: str, rel: str) -> int:
     """Line count of an untracked file (+N for new files in the review tree). Binary/oversized → 0."""
+    root = _repo_root(cwd)
+    if not root:
+        return 0
     try:
-        target = Path(cwd) / rel
+        target = Path(root) / rel
         if not os.path.isfile(target) or target.stat().st_size > _UNTRACKED_LINE_MAX_BYTES:
             return 0
         data = target.read_bytes()
@@ -283,52 +286,71 @@ def review_list(cwd: str, scope: str, base_ref: str | None) -> dict:
     return _review_result(cwd, files, None)
 
 
+def _repo_root(cwd: str) -> str | None:
+    """Return the git repository root for the given path, or None if not in a repo."""
+    root = _git_line(cwd, ["rev-parse", "--show-toplevel"])
+    return root if root else None
+
+
 def _all_add_diff(cwd: str, file_path: str) -> str:
     """Synthesized all-add diff for an untracked file (``--no-index`` exits non-zero by design)."""
     return _git(cwd, ["diff", "--no-index", "--", os.devnull, file_path])[1]
 
 
 def review_diff(cwd: str, file_path: str, scope: str, base_ref: str | None, staged: bool) -> str:
-    if not _is_dir(cwd):
+    root = _repo_root(cwd)
+    if not root:
         return ""
+    # file_path is already relative to repo root (from git status), so use root as cwd
     if scope == "branch":
-        base = _branch_base(cwd)
-        return _git_out(cwd, ["diff", f"{base}...HEAD", "--", file_path]) if base else ""
+        base = _branch_base(root)
+        return _git_out(root, ["diff", f"{base}...HEAD", "--", file_path]) if base else ""
     if scope == "lastTurn":
-        return _git_out(cwd, ["diff", base_ref, "--", file_path]) if base_ref else ""
+        return _git_out(root, ["diff", base_ref, "--", file_path]) if base_ref else ""
     if staged:
-        return _git_out(cwd, ["diff", "--cached", "--", file_path])
-    worktree = _git_out(cwd, ["diff", "--", file_path])
-    return worktree if worktree.strip() else _all_add_diff(cwd, file_path)
+        return _git_out(root, ["diff", "--cached", "--", file_path])
+    worktree = _git_out(root, ["diff", "--", file_path])
+    return worktree if worktree.strip() else _all_add_diff(root, file_path)
 
 
 def file_diff_vs_head(cwd: str, file_path: str) -> str:
     """Working-tree-vs-HEAD diff for one file (the preview's diff view). Unlike
     review_diff, never all-adds a clean tracked file; only a genuinely untracked one."""
-    if not _is_dir(cwd):
+    root = _repo_root(cwd)
+    if not root:
         return ""
-    head = _git_out(cwd, ["diff", "HEAD", "--", file_path])
+    head = _git_out(root, ["diff", "HEAD", "--", file_path])
     if head.strip():
         return head
-    status = _git_out(cwd, ["status", "--porcelain", "--", file_path])
-    return _all_add_diff(cwd, file_path) if status.strip().startswith("??") else ""
+    status = _git_out(root, ["status", "--porcelain", "--", file_path])
+    return _all_add_diff(root, file_path) if status.strip().startswith("??") else ""
 
 
 def review_stage(cwd: str, file_path: str | None) -> dict:
-    _git_ok(cwd, ["add", "--", file_path] if file_path else ["add", "-A"])
+    root = _repo_root(cwd)
+    if not root:
+        return {"ok": True}
+    _git_ok(root, ["add", "--", file_path] if file_path else ["add", "-A"])
     return {"ok": True}
 
 
 def review_unstage(cwd: str, file_path: str | None) -> dict:
-    _git_ok(cwd, ["reset", "-q", "HEAD", *(["--", file_path] if file_path else [])])
+    root = _repo_root(cwd)
+    if not root:
+        return {"ok": True}
+    _git_ok(root, ["reset", "-q", "HEAD", *("--", file_path)] if file_path else ["reset", "-q", "HEAD"])
     return {"ok": True}
 
 
 def review_revert(cwd: str, file_path: str | None) -> dict:
     """Discard changes back to the committed state (restore tracked, remove untracked)."""
+    root = _repo_root(cwd)
+    if not root:
+        return {"ok": True}
+    # file_path is repo-root-relative; run from repo root
     target = ["--", file_path or "."]
-    _git(cwd, ["checkout", "HEAD", *target])
-    _git(cwd, ["clean", "-fd", *target])
+    _git(root, ["checkout", "HEAD", *target])
+    _git(root, ["clean", "-fd", *target])
     return {"ok": True}
 
 

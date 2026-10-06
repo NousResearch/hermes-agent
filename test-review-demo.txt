@@ -1,0 +1,11 @@
+# Test file for review tab diff demo
+
+This file will be used to demonstrate the review tab diff functionality.
+It contains multiple lines so we can see context in the diff.
+
+Line 1: Initial content
+Line 2: More content
+Line 3: Even more content - MODIFIED
+Line 4: Final line
+Line 5: NEW LINE ADDED
+

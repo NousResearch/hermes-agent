@@ -72,7 +72,14 @@ def transition(tmp_path):
         "    from hermes_cli.probe import event\n"
         "    event('activate')\n"
     )
-    (root / "hermes_constants.py").write_text("")
+    (root / "hermes_constants.py").write_text(
+        # source_completion's update lock resolves the process home through
+        # hermes_constants (never a profile override), like the Rust updater does.
+        "import os\n"
+        "from pathlib import Path\n"
+        "def get_process_hermes_home():\n"
+        "    return Path(os.environ['HERMES_HOME'])\n"
+    )
     (package / "venv_sync.py").write_text(
         "from hermes_cli.probe import event\n"
         "publish_launchers = lambda root: event('launchers')\n"
@@ -95,9 +102,20 @@ def transition(tmp_path):
         "from hermes_cli.probe import event\n"
         "write_source_stamp = lambda root: event('stamp')\n"
     )
-    # The shared completion tail is part of the NEW tree the child runs from.
+    # The shared completion tail is part of the NEW tree the child runs from, and so are the
+    # modules its imports reach: update_lock (the tail claims the shared update lock) and
+    # _subprocess_compat (it exposes PM's git for the builds) — neither exists in the OLD
+    # tree, and a bare copy of source_completion.py would die on ModuleNotFoundError.
     shutil.copy2(Path(update_completion.__file__).with_name("source_completion.py"),
                  package / "source_completion.py")
+    shutil.copy2(Path(update_completion.__file__).with_name("update_lock.py"),
+                 package / "update_lock.py")
+    shutil.copy2(Path(update_completion.__file__).with_name("_subprocess_compat.py"),
+                 package / "_subprocess_compat.py")
+    (package / "gitlock.py").write_text(
+        "from hermes_cli.probe import event\n"
+        "convert_treeless_checkout_first = lambda root: event('convert')\n"
+    )
     (package / "main.py").write_text("")
     (package / "update_cmd_config.py").write_text("_LAST_SIBLING_SNAPSHOTS = {}\n")
     (package / "update_inventory.py").write_text(
@@ -136,6 +154,7 @@ def transition(tmp_path):
         "import contextvars, json, os, pathlib\n"
         "_current = contextvars.ContextVar('receipt', default=None)\n"
         "class UpdateReceipt: pass\n"
+        "def record_stage(*args, **kwargs): pass\n"
         "def finalize_pending_update_receipt(code, reason):\n"
         "    r = _current.get()\n"
         "    if r is None: return\n"
@@ -203,6 +222,10 @@ def test_old_process_new_git_tree_completes_in_fresh_python(transition, tmp_path
     by_name = {event["name"]: event for event in events}
     assert by_name["activate"]["pid"] == by_name["build"]["pid"]
     assert by_name["prepare"]["pid"] != by_name["build"]["pid"]
+    # A treeless checkout converts before the dependency work, where a pre-fix Desktop's history
+    # walks filled disks (#129514).
+    names = [e["name"] for e in events]
+    assert by_name["convert"]["pid"] == by_name["prepare"]["pid"] and names.index("convert") < names.index("tools")
     assert Path(by_name["build"]["python"]).is_relative_to(root.parent / "selected-python")
     assert by_name["build"]["pid"] == by_name["maintenance"]["pid"] == by_name["restart"]["pid"]
     assert by_name["maintenance"]["snapshots"] == {"work": "work-before"}

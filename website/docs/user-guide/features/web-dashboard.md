@@ -79,6 +79,11 @@ child with the selected profile's `HERMES_HOME`, so the conversation runs
 with that profile's model, skills, memory, and session history. Switching
 profiles starts a fresh terminal session.
 
+Hub actions (skill install/update/uninstall, MCP install, toolset setup)
+run with the target profile's own secret scope — its `.env` and configured
+secret sources — not the dashboard process's environment; this includes
+actions targeting the `default` profile from the machine dashboard.
+
 What stays per-profile and is *not* absorbed by the switcher: gateway
 processes (manage them via `hermes -p <name> gateway …`), each profile's
 session database, and cron schedulers (the Cron page already aggregates
@@ -443,7 +448,10 @@ The web dashboard exposes a REST API that the frontend consumes. You can also ca
 
 :::tip Profile-scoped endpoints
 The management endpoint families — `/api/config`, `/api/env`, `/api/skills`,
-`/api/tools/toolsets`, `/api/mcp`, and `/api/model/{info,options,auxiliary,set}` —
+`/api/tools/toolsets`, `/api/mcp`,
+`/api/model/{info,options,auxiliary,set,recommended-default}`,
+`/api/cron/{delivery-targets,blueprints}`, `/api/audio/voice-config`,
+`/api/ops/debug-share`, `/api/learning/{graph,node}`, and `/api/dashboard/plugins/hub` —
 accept an optional `?profile=<name>` query parameter (or `"profile"` in the
 JSON body for writes) that scopes the read/write to that profile's
 `HERMES_HOME`. Omitted = the dashboard's own profile. Unknown profile names
@@ -992,7 +1000,9 @@ Only listed peers may supply `X-Forwarded-Proto` and `X-Forwarded-For`.
 Hermes always preserves loopback trust and rejects `*`, `0.0.0.0/0`, and
 `::/0`. Trusting a network means every container or machine on that network
 can supply forwarding metadata, so prefer an exact proxy IP or a dedicated
-proxy-only network.
+proxy-only network. Without a trusted-proxy entry, clients behind that proxy
+share its password-login rate limit and native sign-in cap, and auth audit
+events record the proxy's address.
 
 ```bash
 # Backend remains reachable only on this machine.

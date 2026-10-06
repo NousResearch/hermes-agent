@@ -382,7 +382,9 @@ def test_live_turn_does_not_enter_conversation_loop_until_review_acknowledges(
 
     run.request_done = ControlledCompletion()
     monkeypatch.setattr(
-        background_review_module, "_interrupt_background_review", lambda _fork: None
+        background_review_module,
+        "_interrupt_background_review",
+        lambda _fork, **_kwargs: None,
     )
 
     def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
@@ -930,7 +932,9 @@ def test_cancellation_logs_owner_and_reason_once(
     agent = _bare_agent("raw-session-id-must-not-be-logged")
     profile_key = review_admission.current_profile_key()
     monkeypatch.setattr(
-        background_review_module, "_interrupt_background_review", lambda _fork: None
+        background_review_module,
+        "_interrupt_background_review",
+        lambda _fork, **_kwargs: None,
     )
     run = background_review_module.prepare_background_review_run(
         agent, session_id=agent.session_id, profile_key=profile_key
@@ -998,7 +1002,9 @@ def test_explicit_refine_has_no_automatic_aggregate_input_budget(
 def test_queue_side_fence_does_not_cancel_explicit_refine(monkeypatch):
     agent = _bare_agent()
     monkeypatch.setattr(
-        background_review_module, "_interrupt_background_review", lambda _agent: None
+        background_review_module,
+        "_interrupt_background_review",
+        lambda _agent, **_kwargs: None,
     )
     run = background_review_module.prepare_background_review_run(
         agent, followup_cancellable=False
@@ -1046,7 +1052,7 @@ def test_cancel_after_provider_phase_returns_does_not_requeue_completed_review(
     monkeypatch.setattr(
         background_review_module,
         "_interrupt_background_review",
-        lambda review_agent: interrupts.append(review_agent),
+        lambda review_agent, **_kwargs: interrupts.append(review_agent),
     )
     # Land the live-turn cancel inside the post-return window of the fork's finally.
     monkeypatch.setattr(

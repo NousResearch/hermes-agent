@@ -7,7 +7,7 @@
 # Schema version of this file. The installers copy it to seed config.yaml, and
 # `hermes update` uses it to know which one-time migrations the file already
 # has. Hermes manages it: do not copy it into another config.
-_config_version: 48
+_config_version: 49
 
 # =============================================================================
 # Database Configuration
@@ -576,6 +576,21 @@ terminal:
 #   # disable the gate; add fnmatch patterns on the basename to protect more files.
 #   protected_instruction_files: true
 #   protected_instruction_extra_patterns: []
+
+# =============================================================================
+# LSP Diagnostics (post-write lint for write_file / patch)
+# =============================================================================
+# lsp:
+#   enabled: true
+#   # Language servers only load code a project ships (its .venv interpreter,
+#   # node_modules TypeScript, svelte.config.js, cargo/Gradle/mix build files)
+#   # in the git worktree of the directory you launched Hermes in or opened
+#   # the session in (hermes -w, a Desktop project, terminal.cwd), or under a
+#   # directory listed here. In other checkouts, such as a repository the agent
+#   # cloned, only servers that run no project code start (pinned to
+#   # Hermes-side tools) and the npx tsc / rustfmt lint fallbacks are skipped.
+#   trusted_workspaces:
+#     - ~/code/my-app
 
 # =============================================================================
 # Browser Tool Configuration
@@ -1206,23 +1221,27 @@ agent:
   # window on /restart, and keep it well under systemd's TimeoutStopSec.
   # restart_drain_timeout: 0
 
-  # Cron-only floor under the same drain (seconds). Default 30.
+  # Floor under the same drain for cron jobs and api_server (/v1) runs
+  # (seconds). Default 30.
   # restart_drain_timeout above is written for chat turns, which are cheap to
   # interrupt: the user is told the gateway is restarting and the session
   # resumes on their next message. A cron run has no such safety net — it is
   # recorded in jobs.json as a permanent failure, nobody is waiting on it, and
   # a recurring job simply skips to its next schedule. So in-flight cron work
-  # gets its own grace window instead of inheriting the 0 above.
+  # gets its own grace window instead of inheriting the 0 above, and so do
+  # api_server (/v1) runs: an interrupted /v1 run fails its waiting caller.
   # Clamped at runtime to the shutdown-watchdog leash (restart_drain_timeout
   # + 60s) minus teardown headroom, so values past ~50s need a matching
-  # TimeoutStopSec bump to take effect. Set 0 to opt out and drain cron on
-  # restart_drain_timeout like before.
+  # TimeoutStopSec bump to take effect. Set 0 to opt out and drain cron and
+  # /v1 runs on restart_drain_timeout like before.
   # cron_drain_timeout: 30
 
   # In-band restart wait (seconds) for active turns to finish BEFORE stop()
   # begins. /restart and SIGUSR1 refuse new work, then wait up to this cap for
   # in-flight agent, cron and API runs to complete so the requesting turn is
   # not cut off by restart_drain_timeout. 0 = enter stop()/drain immediately.
+  # Excluded from the wait: wedged runs, and cron runs already handed to a
+  # worker in its own restart-safe systemd scope (they outlive the restart).
   # The default (30 min) is a safety valve for wedged agents, not a target
   # latency; raise it for long unattended turns. Env: HERMES_RESTART_AFTER_TURN_TIMEOUT.
   # restart_after_turn_timeout: 1800
@@ -1389,7 +1408,6 @@ gateway:
 #   whatsapp:      hermes-whatsapp       (same as telegram)
 #   slack:         hermes-slack          (same as telegram)
 #   signal:        hermes-signal         (same as telegram)
-#   homeassistant: hermes-homeassistant  (same as telegram)
 #   qqbot:            hermes-qqbot            (same as telegram)
 #   teams:            hermes-teams            (same as telegram)
 #   google_chat:      hermes-google_chat      (same as telegram)
@@ -1401,7 +1419,6 @@ platform_toolsets:
   whatsapp: [hermes-whatsapp]
   slack: [hermes-slack]
   signal: [hermes-signal]
-  homeassistant: [hermes-homeassistant]
   qqbot: [hermes-qqbot]
   yuanbao: [hermes-yuanbao]
   teams: [hermes-teams]
@@ -1591,6 +1608,7 @@ platform_toolsets:
 #       max_rpm: 10             # max requests per minute
 #       allowed_models: []      # model whitelist (empty = all)
 #       max_tool_rounds: 5      # tool loop limit (0 = disable)
+#       expose_client_tools: false # advertise extended sampling.tools capability
 #       log_level: "info"       # audit verbosity
 
 # =============================================================================
@@ -1693,6 +1711,15 @@ stt:
   #   # by the `stt` surface tag — leave `model` blank to take the first
   #   # live result. Pin only when you need a specific Whisper variant.
   #   model: ""
+  # Custom command providers (stt.providers.<name>: type: command) can
+  # normalize browser WebM/Opus and other input formats to 16 kHz mono m4a
+  # before substituting {input_path}. This is opt-in so CLIs that already
+  # accept arbitrary containers (e.g. whisper.cpp) remain unchanged.
+  # providers:
+  #   custom-asr:
+  #     type: "command"
+  #     command: "custom-asr --input {input_path} --output {output_path}"
+  #     normalize: true  # requires ffmpeg; default false
 
 # Text-to-speech. Only the deepinfra block is documented here — the
 # remaining providers (edge, openai, xai, minimax, mistral, gemini,
@@ -1809,7 +1836,7 @@ delegation:
 # Builds a deeper understanding of the user across sessions and tools.
 # Runs alongside USER.md — additive, not a replacement.
 #
-# Requires: pip install honcho-ai
+# Requires: hermes plugins install honcho (Plastic Labs' plugin from the catalog)
 # Config: ~/.honcho/config.json (shared with Claude Code, Cursor, etc.)
 # API key: HONCHO_API_KEY in ~/.hermes/.env or ~/.honcho/config.json
 #
@@ -1825,13 +1852,16 @@ display:
   #   false: Full ASCII banner with tool/skill summary (default)
   compact: false
 
-  # Tool progress display level (CLI and gateway)
+  # Tool progress display level (CLI, gateway, and the TUI/Desktop tool feed)
   #   off:     Silent — no tool activity shown, just the final response
   #   new:     Show a tool indicator only when the tool changes (skip repeats)
   #   all:     Show every tool call with a short preview (default)
   #   verbose: Full args, results, and debug logs (same as /verbose)
   #   log:     Silent in chat; append every tool call to ~/.hermes/logs/tool_calls.log (gateway only)
   # Toggle at runtime with /verbose in the CLI
+  # Independent of show_reasoning: hiding reasoning never hides tool rows.
+  # Answer-only (just the final response) is show_reasoning: false plus
+  # tool_progress: off.
   # tool_progress: all
 
   # tool_progress, interim_assistant_messages, long_running_notifications,

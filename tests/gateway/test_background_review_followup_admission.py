@@ -194,7 +194,7 @@ async def test_gateway_owns_review_admission_from_prepare_through_delivery(monke
     assert review_run is not None
     assert review_run.begin_request(object()) is True
 
-    def _interrupt_and_ack(_review_agent):
+    def _interrupt_and_ack(_review_agent, **_kwargs):
         background_review.finish_background_review_run(parent, review_run)
 
     monkeypatch.setattr(
@@ -248,7 +248,7 @@ async def test_gateway_review_cancellation_wait_does_not_block_event_loop(monkey
     monkeypatch.setattr(
         background_review,
         "_interrupt_background_review",
-        lambda _review_agent: cancel_seen.set(),
+        lambda _review_agent, **_kwargs: cancel_seen.set(),
     )
 
     def _ack_after_loop_progress():
@@ -501,7 +501,9 @@ async def test_queue_mutation_and_review_cancellation_are_one_critical_section(
     """A request contender reaches admission while queue insertion owns the shared lock."""
     monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
     monkeypatch.setattr(
-        background_review, "_interrupt_background_review", lambda _agent: None
+        background_review,
+        "_interrupt_background_review",
+        lambda _agent, **_kwargs: None,
     )
     adapter = object.__new__(BasePlatformAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -739,7 +741,9 @@ async def test_runner_busy_queue_mutations_share_review_admission_lock(
     """Force request admission against real busy-handler FIFO/media paths without sleeps."""
     monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
     monkeypatch.setattr(
-        background_review, "_interrupt_background_review", lambda _agent: None
+        background_review,
+        "_interrupt_background_review",
+        lambda _agent, **_kwargs: None,
     )
     monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
     adapter = BasePlatformAdapter(
@@ -1175,7 +1179,9 @@ def test_stale_probe_state_and_fresh_fence_state_cannot_deadlock(monkeypatch):
     """
     monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
     monkeypatch.setattr(
-        background_review, "_interrupt_background_review", lambda _agent: None
+        background_review,
+        "_interrupt_background_review",
+        lambda _agent, **_kwargs: None,
     )
     adapter = BasePlatformAdapter(
         PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM

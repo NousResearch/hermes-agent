@@ -69,7 +69,10 @@ def _agent_with_db(db, *, session_id="stale-parent", platform="desktop"):
     return agent
 
 
-def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
+@pytest.mark.parametrize("signal", ["on_wait", "on_contended"])
+def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch, signal):
+    """A lease wait and a busy-database retry both reload after admission (the busy writer may
+    be the previous holder's final flush); only a real holder is announced to the user."""
     db = _DB()
     agent = _agent_with_db(db)
     status_events = []
@@ -88,12 +91,9 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
         observed["relay_cwd_session_id"] = session_id
         return "", ""
 
-    # Simulate a contended wait so the resume status path is covered.
     def acquire_with_wait(session_id, holder, **kwargs):
         db.events.append(("acquire", session_id, holder))
-        on_wait = kwargs.get("on_wait")
-        if on_wait is not None:
-            on_wait(0.0)
+        kwargs[signal](*((0.0,) if signal == "on_wait" else ()))
         return True
 
     db.acquire_session_turn_lease = acquire_with_wait
@@ -122,7 +122,9 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
         "repair_alternation": True,
         "include_row_ids": True,
     }
-    assert any(kind == "lifecycle" and text for kind, text in status_events)
+    texts = [text or "" for _kind, text in status_events]
+    for notice in ("Another Hermes process", "Session is free"):
+        assert any(notice in text for text in texts) is (signal == "on_wait"), notice
 
 
 def test_post_turn_review_starts_only_after_durable_lease_release(monkeypatch):
@@ -246,7 +248,7 @@ def test_durable_resume_waits_for_the_rotated_sessions_review_before_the_loop(mo
 
     run.request_done = ControlledCompletion()
     monkeypatch.setattr(
-        background_review, "_interrupt_background_review", lambda _fork: None
+        background_review, "_interrupt_background_review", lambda _fork, **_kwargs: None
     )
 
     def acquire_with_wait(session_id, holder, **kwargs):

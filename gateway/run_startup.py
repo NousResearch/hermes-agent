@@ -18,6 +18,7 @@ import time
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from pathlib import Path
+from agent.i18n import t
 from gateway.config import Platform
 from gateway.delivery import looks_like_telegram_private_chat_id
 from gateway.platforms.base import BasePlatformAdapter
@@ -35,6 +36,29 @@ from typing import Any, Dict, Optional, Tuple
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> None:
+    """Install the catalog plugin of every feature that left core (Home Assistant) *home* uses, in
+    *home*'s runtime scope (its config, secrets and allow_lazy_installs); once per process per home.
+    Blocking: call it off the event loop."""
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.left_core_migration import recover_at_startup
+    with _profile_runtime_scope(Path(home), hydrate_secrets=hydrate_secrets):
+        recover_at_startup()
+
+
+def recover_left_core_at_gateway_start() -> None:
+    """Left-core migration for the homes whose platform config the runner loads first: the launch
+    home and the default root (the multiplex primary; a named launcher is then served as a
+    secondary). Every secondary runs :func:`recover_left_core_in` before its plugins are discovered,
+    so a platform plugin it gets starts its adapter in the same gateway start."""
+    from hermes_cli.left_core_migration import recover_at_startup
+    from hermes_constants import get_default_hermes_root, get_hermes_home
+    recover_at_startup()
+    root = Path(get_default_hermes_root())
+    if root.resolve() != Path(get_hermes_home()).resolve():
+        recover_left_core_in(root)
 
 
 class GatewayStartupMixin:
@@ -771,7 +795,7 @@ class GatewayStartupMixin:
             is_intentional_silence_response, is_machinery_display_kind, silence_allowed,
         )
         from gateway.run import _sanitize_gateway_final_response
-        from gateway.run_turn import _UNEXPECTED_SILENCE_REPLY
+        from gateway.run_turn import _unexpected_silence_reply
         from gateway.warning_notifications import diagnostic_turn_muted
         from hermes_cli.timefmt import coerce_epoch
         visible = [m for m in history if m.get("role") not in ("session_meta", "system")]
@@ -792,7 +816,7 @@ class GatewayStartupMixin:
         if is_intentional_silence_response(last["content"]):
             silent_ok = silence_allowed(
                 prompt.get("display_kind"), (prompt.get("display_metadata") or {}).get("reply_expected"))
-            return "" if silent_ok else _UNEXPECTED_SILENCE_REPLY
+            return "" if silent_ok else _unexpected_silence_reply()
         return _strip_media_directives(_sanitize_gateway_final_response(origin.platform, last["content"])).strip() or None
 
     @staticmethod
@@ -1162,6 +1186,7 @@ class GatewayStartupMixin:
         """Create + wire an adapter per enabled platform (no connects). Returns
         (aborted, enabled_platform_count, multiplex_skipped_platforms, pending_connects)."""
         from gateway.run import _platform_has_bot_credential
+        from gateway.run_adapters import _adapter_unavailable_message
         enabled_platform_count = 0
         _multiplex_on = self._multiplex_on()
         _multiplex_skipped_platforms: list[Platform] = []
@@ -1196,6 +1221,17 @@ class GatewayStartupMixin:
                         "No adapter for '%s' -- is the plugin installed? "
                         "(platform is enabled in config.yaml but no plugin registered it)", platform.value,
                     )
+                # Only a platform that can heal on its own is queued for the reconnect watcher; either way
+                # flag it so the unserved enabled platform is visible.
+                heals = self._adapter_may_heal(platform, platform_config)
+                self._update_platform_runtime_status(
+                    platform.value, platform_state="retrying" if heals else "fatal",
+                    error_code="adapter_unavailable",
+                    error_message=_adapter_unavailable_message(platform, retrying=heals),
+                    needs_attention=True,
+                )
+                if heals:
+                    self._failed_platforms[platform] = self._startup_retry_entry(platform, None, platform_config)
                 continue
             # Under multiplexing the default profile needs the same whole-handler runtime scope as a
             # secondary (authorization and prompt rendering run before the agent-turn scope).
@@ -1418,7 +1454,7 @@ class GatewayStartupMixin:
             # All retryable: stay alive (cron runs, watcher recovers) rather than systemd restart-loop.
             logger.warning(
                 "Gateway started with no connected platforms — %d platform(s) queued for retry: %s",
-                len(self._failed_platforms), "; ".join(startup_retryable_errors),
+                len(startup_retryable_errors), "; ".join(startup_retryable_errors),
             )
             _write_runtime_status_quiet(gateway_state="degraded", exit_reason=None)
         # No adapter for any enabled platform: fleet nodes share one config.yaml but hold a subset of
@@ -1430,7 +1466,8 @@ class GatewayStartupMixin:
             # (#5196).
             "No adapter could be created for any of the %d configured platform(s). "
             "Check that required dependencies are installed and credentials are set. "
-            "Gateway will continue for cron job execution.", enabled_platform_count,
+            "Gateway will continue for cron job execution; platforms whose plugin may still register "
+            "are queued for background retry.", enabled_platform_count,
         )
         return False
 
@@ -1631,6 +1668,8 @@ class GatewayStartupMixin:
         self._update_runtime_status(self._serving_state())
         await self._start_finish_wiring(connected_count)
         self._start_spawn_background_watchers()
+        from hermes_cli.observability.shared_metrics_startup import record_process_ready
+        record_process_ready("gateway_boot", background=True)
         logger.info("Press Ctrl+C to stop")
         return True
 
@@ -1694,7 +1733,7 @@ class GatewayStartupMixin:
         cli_title = row.get("title") or cli_session_id[:8]
         try:
             new_thread_id = await transport.adapter.create_handoff_thread(
-                home_chat_id, f"Hermes — {cli_title}",
+                home_chat_id, t("gateway.startup.handoff_thread_title", title=cli_title),
             )
         except Exception as exc:
             logger.debug("Handoff: create_handoff_thread raised on %s: %s", platform_name, exc, exc_info=True)

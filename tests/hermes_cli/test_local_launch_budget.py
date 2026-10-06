@@ -32,7 +32,7 @@ def hermes_home(tmp_path, monkeypatch):
 
 def _card(monkeypatch, others_gib: float, *, total: int = CARD_TOTAL):
     monkeypatch.setattr(hardware, "_nvidia_vram",
-                        lambda: (total, total - int(others_gib * GIB), "NVIDIA GeForce RTX 5090"))
+                        lambda: (total, total - int(others_gib * GIB), "NVIDIA GeForce RTX 5090", None))
 
 
 @pytest.fixture
@@ -60,6 +60,26 @@ def test_launch_budget_subtracts_other_programs_plus_headroom(monkeypatch):
     budget = hardware.launch_budget(CARD_CAPACITY)
     assert budget.usable_vram_bytes == CARD_TOTAL - int(5.4 * GIB) - hardware._LAUNCH_HEADROOM
     assert budget.total_device_bytes == CARD_TOTAL and budget.uma is False
+
+
+def test_launch_budget_reads_free_memory_on_a_vulkan_card(monkeypatch, tmp_path):
+    """Behind Vulkan/HIP (no nvidia-smi) the engine's own device probe reports free memory, and each
+    launch asks again: the cached capacity probe predates programs that started since."""
+    import hermes_cli.local_runtime.devices as devices
+
+    held_gib = [0.0]
+    monkeypatch.setattr(hardware, "_nvidia_vram", lambda: None)
+    monkeypatch.setattr(hardware, "_configured_engine",
+                        lambda: SimpleNamespace(backend="vulkan", binary=tmp_path / "llama-server"))
+    monkeypatch.setattr(hardware, "_accelerator_cache", {})
+    monkeypatch.setattr(devices, "probe_devices", lambda directory, backend: [{
+        "description": "AMD Radeon RX 9060 XT", "type": 1, "total": CARD_TOTAL,
+        "free": CARD_TOTAL - int(held_gib[0] * GIB)}])
+    hardware._accelerator_device()  # capacity cache warmed while the card was idle
+    held_gib[0] = 5.4
+
+    budget = hardware.launch_budget(CARD_CAPACITY)
+    assert budget.usable_vram_bytes == CARD_TOTAL - int(5.4 * GIB) - hardware._LAUNCH_HEADROOM
 
 
 def test_launch_budget_never_exceeds_capacity(monkeypatch):

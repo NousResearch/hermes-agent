@@ -6,9 +6,12 @@ any dependency from that environment has been imported.
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
+import re
+import shlex
 from pathlib import Path
 
 from hermes_constants import get_default_hermes_root, project_venv_dir
@@ -35,17 +38,81 @@ def install_state_dir(project_root: Path) -> Path:
     return installs_root() / install_key(project_root)
 
 
+def owning_home_root(project_root: Path) -> Path | None:
+    """The data root that owns this checkout when the active root only borrows it, else ``None``.
+
+    Dependency state is scoped per data root (``<root>/installs/<install_key>``), but a source
+    checkout -- its launchers, product builds and install stamp -- exists once. A launch under
+    another root (a test's temporary ``HERMES_HOME``, a per-task home, a CI service home) borrows
+    it: the root that installed it already holds committed state for it, under the root the
+    checkout sits in (``<root>/hermes-agent``) or else the platform default root. ``None`` when
+    the active root's state is that state (the owner itself, or one of its profiles), and when no
+    such root has state for this checkout -- a fresh install, or a custom root that owns its own
+    tree -- so those keep today's behaviour (#123238).
+
+    A borrowing launch's own sync leaves ``facts.json`` under the borrower too, so state alone
+    cannot name the owner. The checkout's ``hermes`` launcher can: only the owner publishes it,
+    and it execs the owner's store Python. With no live launcher to ask, the root the checkout
+    sits in outranks the platform default.
+    """
+    from hermes_constants import _get_platform_default_hermes_home
+
+    root = Path(project_root).resolve()
+    key = install_key(root)
+    candidates = [candidate for candidate in dict.fromkeys((root.parent, _get_platform_default_hermes_home()))
+                  if (candidate / "installs" / key / "facts.json").is_file()]
+    if not candidates:
+        return None
+    owner = _launcher_bound_root(root, candidates) or candidates[0]
+    try:
+        if (owner / "installs" / key).resolve() == install_state_dir(root).resolve():
+            return None
+    except OSError:
+        pass
+    return owner
+
+
+def _launcher_bound_root(project_root: Path, candidates: list[Path]) -> Path | None:
+    """The candidate whose ``tools/`` holds the live interpreter the checkout's launcher execs."""
+    from hermes_cli._launchers import _launcher_python
+
+    local = project_root / ".hermes" / "bin"
+    for name in (("hermes.exe", "hermes.cmd") if os.name == "nt" else ("hermes",)):
+        python = _launcher_python(local / name)
+        if python is None or not python.is_file():
+            continue
+        for candidate in candidates:
+            try:
+                store = (candidate / "tools").resolve()
+                if any(parent.resolve() == store for parent in python.parents):
+                    return candidate
+            except (OSError, RuntimeError, ValueError):
+                continue
+    return None
+
+
+def install_state_permission_message(project_root: Path, exc: PermissionError) -> str | None:
+    """Describe an access failure inside this install's dependency state."""
+    if not exc.filename:
+        return None
+    denied = Path(exc.filename).resolve()
+    if not denied.is_relative_to(install_state_dir(project_root).resolve()):
+        return None
+    return (f"install state is not writable by this user ({denied}); "
+            "run as the install owner or grant write access")
+
+
 def runtime_facts_path(project_root: Path) -> Path:
     return install_state_dir(project_root) / "facts.json"
 
 
-# The files that decide the dependency set. `scripts/_hermes-python` re-activates
+# The files that decide the dependency set. `scripts/run-in-hermes-env` re-syncs
 # when any of them differs in mtime from its stamp under activation_inputs_dir.
 ACTIVATION_INPUTS = ("uv.lock", "pyproject.toml", "pm/lock.json")
 
 
 def activation_inputs_dir(project_root: Path) -> Path:
-    """Beside facts.json, so the prologue finds it from ``$__HERMES_ACTIVATED``."""
+    """Beside facts.json, so the runner finds it from ``$__HERMES_ACTIVATED``."""
     return install_state_dir(project_root) / "inputs"
 
 
@@ -61,7 +128,7 @@ def record_activation_inputs(stamps: Path, mtimes: dict[str, int], project_root:
 
     Recorded on every successful install, including no-op syncs: a checkout that
     rewrites an input without changing it moves the mtime, and only this record
-    brings the stamp back to equal. The prologue compares for equality, not order,
+    brings the stamp back to equal. The runner compares for equality, not order,
     because switching branches can move an input's mtime in either direction.
     """
     import shutil
@@ -98,11 +165,19 @@ def base_venv(project_root: Path) -> Path:
     return payload_venv(project_root) or project_venv_dir(Path(project_root).resolve()) or Path(project_root).resolve() / "venv"
 
 
-def store_root(project_root: Path) -> Path:
-    """Resolve a payload-relative or stamped store before PM imports."""
-    override = os.environ.get("HERMES_RUNTIME_DIR")
-    if override:
-        return Path(override).resolve()
+def store_root(project_root: Path, *, honor_runtime_override: bool = True) -> Path:
+    """Resolve a payload-relative or stamped store before PM imports.
+
+    ``HERMES_RUNTIME_DIR`` exists so a running process can point PM at a
+    non-default runtime location. Publication paths must pass
+    ``honor_runtime_override=False``: a persisted artifact (an installed
+    launcher) has to bind the store of the tree it serves, never a runtime
+    directory inherited through the environment.
+    """
+    if honor_runtime_override:
+        override = os.environ.get("HERMES_RUNTIME_DIR")
+        if override:
+            return Path(override).resolve()
     root = Path(project_root).resolve()
     manifest_path = root.parent / "manifest.json"
     if manifest_path.is_file():
@@ -120,10 +195,21 @@ def store_root(project_root: Path) -> Path:
             try:
                 data = json.loads(stamp.read_text(encoding="utf-8-sig"))
             except (OSError, ValueError):
-                return get_default_hermes_root() / "tools"
+                return _unstamped_store(root)
             value = data.get("runtimeDir") if isinstance(data, dict) else None
-            return Path(value).resolve() if value else get_default_hermes_root() / "tools"
+            return Path(value).resolve() if value else _unstamped_store(root)
     return get_default_hermes_root() / "tools"
+
+
+def _unstamped_store(project_root: Path) -> Path:
+    """The store of a stamp that names none (source stamps never do): the owning root's.
+
+    The data root's ``tools/`` is the default, but a borrowing root's would be a new store per
+    temporary home -- a full tool download on its first launch, and an interpreter that dies
+    with the home. The checkout's own launchers exec the owner's interpreter, so a borrowing
+    launch resolves the same one (#123238).
+    """
+    return (owning_home_root(project_root) or get_default_hermes_root()) / "tools"
 
 
 def flush_before_selecting() -> None:
@@ -369,7 +455,7 @@ def activation_environment(project_root: Path) -> dict[str, str]:
     # environment was composed against, so a consumer learns that it inherited
     # an activated shell and which checkout/profile that shell came from. Its
     # directory also holds activation_inputs_dir, the input-mtime stamps
-    # `scripts/_hermes-python` compares against to decide staleness.
+    # `scripts/_activation.sh` compares against to decide staleness.
     env["__HERMES_ACTIVATED"] = str(runtime_facts_path(project_root))
     # The suite's interpreter (pm.testenv): an isolated side environment, so it
     # never appears on PYTHONPATH/PATH above. scripts/run_tests.sh reads it.
@@ -381,5 +467,46 @@ def activation_environment(project_root: Path) -> dict[str, str]:
     return env
 
 
+def _fish_quote(value: str) -> str:
+    """Inside fish single quotes only backslash and the quote itself are special."""
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+# fish refuses to assign these, and each is either inherited unchanged from the
+# invoking shell (PWD, SHLVL, _) or fish's own state, so skipping loses nothing.
+_FISH_READ_ONLY = frozenset({
+    "PWD", "SHLVL", "_", "status", "version", "hostname", "fish_pid", "history",
+    "pipestatus", "status_generation", "umask", "FISH_VERSION",
+})
+
+# dialect -> (export statement, names the shell cannot assign). fish splits
+# values of variables named *PATH on colons when they are set from a single
+# word, so PATH stays a list.
+_SHELL_DIALECTS = {
+    "sh": (lambda name, value: f"export {name}={shlex.quote(value)}", frozenset()),
+    "fish": (lambda name, value: f"set -gx {name} {_fish_quote(value)}", _FISH_READ_ONLY),
+}
+_SHELL_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def shell_exports(env: dict[str, str], dialect: str) -> str:
+    """The composed environment as a script a shell of ``dialect`` can evaluate.
+
+    Windows carries names like ``ProgramFiles(ARM)`` that no shell can assign;
+    they pass through untouched instead of failing the whole script.
+    """
+    statement, read_only = _SHELL_DIALECTS[dialect]
+    return "\n".join(statement(name, str(value)) for name, value in env.items()
+                     if _SHELL_IDENTIFIER.fullmatch(name) and name not in read_only)
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Print the composed activation environment.")
+    parser.add_argument("--format", choices=["json", *_SHELL_DIALECTS], default="json")
+    options = parser.parse_args(argv)
+    env = activation_environment(Path(__file__).resolve().parents[1])
+    print(json.dumps(env) if options.format == "json" else shell_exports(env, options.format))
+
+
 if __name__ == "__main__":
-    print(json.dumps(activation_environment(Path(__file__).resolve().parents[1])))
+    main()

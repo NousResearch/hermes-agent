@@ -12,15 +12,15 @@
  * clarify.request event → renderer, against the mock inference server.
  */
 
-import { expect, test } from './test'
-
-import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
 import {
   BATCH_CLARIFY_QUESTIONS,
   BATCH_CLARIFY_TRIGGER,
   SINGLE_BATCH_CLARIFY_QUESTIONS,
   SINGLE_BATCH_CLARIFY_TRIGGER
 } from '../../../tests-js/scripts/mock-server'
+
+import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
+import { expect, test } from './test'
 
 let fixture: MockBackendFixture | null = null
 
@@ -68,7 +68,7 @@ test.describe('batch clarify card', () => {
     await expect(confirmButton).toBeDisabled()
 
     await batchCard.getByRole('button', { name: /Coffee/ }).click()
-    await expect(confirmButton).toBeDisabled()
+    await expect(confirmButton).toBeEnabled()
 
     await batchCard.getByRole('button', { name: /Morning/ }).click()
     await expect(confirmButton).toBeEnabled()

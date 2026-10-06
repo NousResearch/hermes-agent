@@ -327,13 +327,13 @@ def _discord_platform_notes(context: SessionContext) -> List[str]:
             lines.append(f"  - Thread: `{src.thread_id}` (use as `channel_id` for fetch_messages etc.)")
         else:
             lines.append(f"  - Channel: `{src.chat_id}`")
-        if src.message_id:
-            # The volatile per-turn message id must stay OUT of this cached block (it would bust the
-            # agent-cache signature every message); run.py injects it into the user message instead.
-            lines.append(
-                "  - Triggering message: provided per-turn in the incoming user message (use it as "
-                "`message_id` for reply/react/pin)"
-            )
+        # Neither the volatile id nor its presence belongs in this pinned block: slash and voice
+        # turns have no triggering message, so a presence-gated line flips the prompt between them
+        # and typed turns. run.py injects the real id into the user message when there is one.
+        lines.append(
+            "  - Triggering message: when available, its ID is provided per-turn in the incoming "
+            "user message (use it as `message_id` for reply/react/pin)"
+        )
     else:
         lines = ["", (
             "**Platform notes:** You are running inside Discord. You do NOT have access to "
@@ -1272,6 +1272,9 @@ class SessionStore(
                 log=lambda e: logger.debug("Session DB end_session failed: %s", e),
             )
         if self._db_for_key(session_key):
+            # An explicit /resume/handoff/branch repoint is real user activity: the row is
+            # reopened (a repoint onto a finalized row must resume it, not write into a dead row).
+            # Mount-time reads (TUI session.resume) no longer reopen (#85303) — only this path does.
             self._reopen_session_row(
                 session_key, target_session_id, log_prefix="Session DB reopen_session failed"
             )
@@ -1335,32 +1338,3 @@ def build_session_context(
         context.session_id = session_entry.session_id
         context.created_at, context.updated_at = session_entry.created_at, session_entry.updated_at
     return context
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from dataclasses import replace  # noqa: F401,E402
-import uuid  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'SessionResetPolicy': ('gateway.config', 'SessionResetPolicy'),
-    'TranscriptReadError': ('gateway.session_transcript', 'TranscriptReadError'),
-    'atomic_replace': ('utils', 'atomic_replace'),
-    'auto_continue_freshness_window': ('gateway.session_lifecycle', 'auto_continue_freshness_window'),
-    'extract_api_content_sidecar': ('agent.turn_context', 'extract_api_content_sidecar'),
-    'normalize_whatsapp_identifier': ('gateway.whatsapp_identity', 'normalize_whatsapp_identifier'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

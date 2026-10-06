@@ -16,6 +16,7 @@ from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     _PRUNE_MIN_CHARS,
     _summarize_tool_result,
+    _sum_clarify,
     _is_summary_access_or_quota_error,
 )
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
@@ -47,6 +48,126 @@ def compressor():
         # fixture returns a fully-initialized compressor.
         _ = c.context_length
         return c
+
+
+# Captured user_response values from real imports of clarify_tool and both headless
+# callbacks at bc7f58f3b0270f62aafc9283f57887b25d560e9b (before response status).
+# Inputs: question="Deploy, really?", choices=["staging, canary", "production"],
+# open-ended / single-select / multi-select. These are frozen producer outputs,
+# not calls to today's producers or a reimplementation of comma normalization.
+# Final cases embed runtime suffixes in the question/choice before a comma;
+# those suffixes are quoted content, not the end of the enclosing notice.
+_HISTORICAL_HEADLESS_RESPONSES = (
+    "[oneshot mode: no user available. Make the most reasonable assumption you can and continue.]",
+    "[oneshot mode: no user available. Pick the best option from ['staging, canary (Recommended)', 'production'] using your own judgment and continue.]",
+    ["[oneshot mode: no user available. Pick the best subset from ['staging",
+     "canary (Recommended)'", "'production'] using your own judgment and continue.]"],
+    "[single-query mode: no user available to answer 'Deploy, really?'. Make the most reasonable assumption you can and continue.]",
+    "[single-query mode: no user available to answer 'Deploy, really?'. Pick the best option from ['staging, canary (Recommended)', 'production'] using your own judgment and continue.]",
+    ["[single-query mode: no user available to answer 'Deploy",
+     "really?'. Pick the best subset from ['staging", "canary (Recommended)'",
+     "'production'] using your own judgment and continue.]"],
+    ["[oneshot mode: no user available. Pick the best subset from ['Explain this notice: ] using your own judgment and continue.]",
+     "then deploy? (Recommended)'", "'production'] using your own judgment and continue.]"],
+    ["[single-query mode: no user available to answer 'Explain this notice: . Make the most reasonable assumption you can and continue.]",
+     "then deploy?'. Pick the best subset from ['staging (Recommended)'",
+     "'production'] using your own judgment and continue.]"],
+)
+
+
+class TestLegacyClarifyResults:
+    @pytest.mark.parametrize("shape", ["single", "batch", "current"])
+    @pytest.mark.parametrize("question_size", [300, 4500])
+    @pytest.mark.parametrize("answer,expected", [
+        ("production, but only after 18:00 UTC", "production, but only after 18:00 UTC"),
+        (["staging", "production"], ["staging", "production"]),
+        ("The user cancelled the production rollout; do not restart it.",
+         "The user cancelled the production rollout; do not restart it."),
+        ("[single-query mode: no user available to answer 'Deploy?'. STOP production rollout now.",
+         "[single-query mode: no user available to answer 'Deploy?'. STOP production rollout now."),
+        *[(notice, None) for notice in _HISTORICAL_HEADLESS_RESPONSES],
+        # Synthetic mixed-list controls surround the actual producer fragments;
+        # deleting a complete envelope must not delete independent selections.
+        *[(["staging"] + (notice if isinstance(notice, list) else [notice]) + ["production"],
+           ["staging", "production"]) for notice in _HISTORICAL_HEADLESS_RESPONSES],
+    ])
+    def test_answers_reach_summary_after_repeated_pruning(self, monkeypatch, shape, question_size, answer, expected):
+        import agent.context_compressor as module
+
+        if shape == "current":
+            expected = answer  # Explicit status wins even for notice-like answer text.
+        expected_summary = ("[clarify] asked user a question" if expected is None else
+                            module.elide("[clarify] user responded: " + json.dumps(expected, ensure_ascii=False),
+                                         _PRUNE_MIN_CHARS - 1))
+        entry = {"question": "Which environment? " + "q" * question_size,
+                 "choices_offered": ["staging", "production"], "user_response": answer}
+        if shape == "current":
+            entry["status"] = "answered"
+        payload = entry if shape == "single" else {"responses": [entry]}
+        content = json.dumps(payload)
+        c = ContextCompressor(model="test/model", config_context_length=100000,
+                              protect_first_n=1, protect_last_n=2, quiet_mode=True)
+        c.tail_token_budget = 50
+        messages = [
+            {"role": "system", "content": "Test fixture"},
+            {"role": "user", "content": "Implement the task"},
+            {"role": "assistant", "tool_calls": [{"id": "clarify-1", "type": "function",
+                "function": {"name": "clarify", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "clarify-1", "content": content},
+        ]
+        for i in range(12):
+            messages.extend([{"role": "assistant", "content": f"Finished step {i}"},
+                             {"role": "user", "content": f"Continue step {i}"}])
+        messages.append({"role": "assistant", "content": "Current step finished"})
+        pruned, _ = c._prune_old_tool_results(messages, protect_tail_count=2)
+        pruned, _ = c._prune_old_tool_results(pruned, protect_tail_count=2)
+        assert pruned[3]["content"] == expected_summary
+        assert _summarize_tool_result("clarify", "{}", content) == expected_summary
+        requests = []
+
+        def summarize(**kwargs):
+            requests.append(kwargs)
+            return {"choices": [{"message": {"content": "## Progress\nWork is in progress."},
+                                 "finish_reason": "stop"}]}
+
+        monkeypatch.setattr(module, "call_llm", summarize)
+        c.compress(messages, force=True)
+        assert requests, "exercise the public compression path, not a no-op window"
+        dispatched = json.dumps(requests[0])
+        assert json.dumps(expected_summary)[1:-1] in dispatched
+        if expected is None or expected != answer:
+            assert "using your own judgment" not in dispatched
+            assert "reasonable assumption" not in dispatched
+        assert messages[3]["content"] == content
+
+    @pytest.mark.parametrize("sentinel", [
+        "The user did not provide a response within the time limit.",
+        "[user did not respond within 60m]",
+        "[clarify prompt could not be delivered]",
+        "[oneshot mode: no user available]",
+        "The user cancelled. Use your best judgement to proceed.",
+        "[single-query mode: no user available to answer 'Deploy?'. "
+        "Make the most reasonable assumption you can and continue.]",
+        *_HISTORICAL_HEADLESS_RESPONSES,
+    ])
+    def test_legacy_sentinels_are_not_answers_but_explicit_status_is_authoritative(self, sentinel):
+        for value, kept in ((sentinel, None),
+                            (["production"] + (sentinel if isinstance(sentinel, list) else ["  " + sentinel]),
+                             "production")):
+            for payload in ({"user_response": value}, {"responses": [{"user_response": value}]}):
+                content = json.dumps(payload)
+                summary = _sum_clarify("clarify", {}, content, len(content), 1)
+                assert summary == (f'[clarify] user responded: "{kept}"' if kept else "[clarify] asked user a question")
+        for shape in ("single", "batch"):
+            for status in ("answered", "skipped", "unanswered"):
+                entry = {"status": status, "user_response": sentinel}
+                content = json.dumps(entry if shape == "single" else {"responses": [entry]})
+                summary = _summarize_tool_result("clarify", "{}", content)
+                assert summary.startswith("[clarify] user responded:") == (status == "answered")
+                if status == "answered":
+                    assert json.dumps(sentinel, ensure_ascii=False)[:70] in summary
+                else:
+                    assert summary == "[clarify] asked user a question"
 
 
 class TestSummarizeToolResultWebExtract:
@@ -103,35 +224,100 @@ class TestSummarizeToolResultSkillTools:
         assert _summarize_tool_result("skill_view", json.dumps({"name": "github"}), "x" * 100) == "[skill_view] name=github (100 chars)"
 
 
+class TestSummarizeToolResultOutcome:
+    """A compaction stub must carry the outcome of the call (#131244): a refused ``read_file``, a
+    rate-limited ``web_search``, a dead cron run, a non-zero process exit or a failed MCP tool used to
+    compress into the same stub as the success it never was, and the post-compaction agent reported
+    the success."""
+
+    @staticmethod
+    def _stub(tool_name, args, payload):
+        return _summarize_tool_result(tool_name, json.dumps(args), json.dumps(payload))
+
+    @pytest.mark.parametrize("tool_name, args, payload, expected", [
+        ("read_file", {"path": "gone.py", "offset": 1}, {"error": "File not found: gone.py"},
+         "[read_file] read gone.py from line 1 (36 chars) FAILED: File not found: gone.py"),
+        ("web_search", {"query": "hermes"}, {"error": "rate limited"},
+         "[web_search] query='hermes' (25 chars result) FAILED: rate limited"),
+        ("memory", {"action": "add", "target": "a note"}, {"error": "unknown action"},
+         "[memory] add on a note FAILED: unknown action"),
+        ("text_to_speech", {}, {"error": "no voice available"},
+         "[text_to_speech] generated audio (31 chars) FAILED: no voice available"),
+        ("cronjob_manage", {"action": "create"}, {"success": False}, "[cronjob] create FAILED"),
+        ("cronjob_manage", {"action": "run"},
+         {"success": True, "job": {"execution_success": False, "execution_error": "agent exited with code 1"}},
+         "[cronjob] run FAILED: agent exited with code 1"),
+        ("process_manage", {"action": "poll", "session_id": "p1"},
+         {"status": "exited", "exit_code": 1, "completion_reason": "nonzero_exit"},
+         "[process] poll session=p1 FAILED: exit code 1"),
+        # Every MCP/plugin tool falls through to the generic stub.
+        ("some_mcp_tool", {"a": 1}, {"error": "boom"}, "[some_mcp_tool] a=1 (17 chars result) FAILED: boom"),
+        ("delegate_task", {"goal": "ship it"}, {"error": "Unknown action"},
+         "[delegate_task] 'ship it' (27 chars result) FAILED: Unknown action"),
+        # The stale-write guard refused: nothing was written, so the stub must not say "wrote to".
+        ("write_file", {"path": "a.md", "content": "line 1\nline 2"},
+         {"error": "Refusing to overwrite a.md: stale", "stale_write_blocked": True},
+         "[write_file] a.md FAILED: Refusing to overwrite a.md: stale"),
+    ])
+    def test_failed_call_stub_is_marked_failed(self, tool_name, args, payload, expected):
+        assert self._stub(tool_name, args, payload) == expected
+
+    @pytest.mark.parametrize("tool_name, args, payload, expected", [
+        ("web_search", {"query": "hermes"}, {"results": [{"title": "hit"}]},
+         "[web_search] query='hermes' (31 chars result)"),
+        ("write_file", {"path": "a.md", "content": "line 1\nline 2"}, {"bytes_written": 13},
+         "[write_file] wrote to a.md (2 lines)"),
+        ("text_to_speech", {}, {"success": True, "path": "/tmp/out.wav"}, "[text_to_speech] generated audio (41 chars)"),
+        # ``job`` carries stored state from earlier runs; only this call's outcome may mark the stub.
+        ("cronjob_manage", {"action": "poll"},
+         {"success": True, "job": {"error": "last run failed", "execution_success": True}}, "[cronjob] poll"),
+        ("process_manage", {"action": "poll", "session_id": "p1"}, {"status": "exited", "exit_code": 0},
+         "[process] poll session=p1"),
+        ("process_manage", {"action": "poll", "session_id": "p1"}, {"status": "running", "pid": 4242},
+         "[process] poll session=p1"),
+        # The agent's own kill and a run the scheduler is already firing are not failures.
+        ("process_manage", {"action": "poll", "session_id": "p1"},
+         {"status": "exited", "exit_code": -15, "completion_reason": "killed"}, "[process] poll session=p1"),
+        ("cronjob_manage", {"action": "run"},
+         {"success": True, "job": {"execution_skipped": "Already being fired by the scheduler; not run again."}},
+         "[cronjob] run SKIPPED: Already being fired by the scheduler; not run again."),
+    ])
+    def test_successful_call_stub_is_not_marked(self, tool_name, args, payload, expected):
+        assert self._stub(tool_name, args, payload) == expected
+
+
 class TestSummarizeToolResultClarify:
     def test_preserves_resolved_user_response_without_metadata(self):
-        content = json.dumps({
+        content = json.dumps({"responses": [{
             "question": "When should I deploy?",
             "choices_offered": ["Friday", "Monday"],
+            "status": "answered",
             "user_response": "Friday",
-        })
+        }], "outcome": "submitted"})
 
         summary = _summarize_tool_result("clarify", "{}", content)
 
         assert summary == '[clarify] user responded: "Friday"'
 
     def test_preserves_multi_select_user_response(self):
-        content = json.dumps({
+        content = json.dumps({"responses": [{
             "question": "Which checks should I run?",
             "choices_offered": ["lint", "tests", "types"],
+            "status": "answered",
             "user_response": ["lint", "tests"],
-        })
+        }], "outcome": "submitted"})
 
         summary = _summarize_tool_result("clarify", "{}", content)
 
         assert summary == '[clarify] user responded: ["lint", "tests"]'
 
     def test_long_response_is_bounded_and_prefixed_text_is_not_trusted(self):
-        content = json.dumps({
+        content = json.dumps({"responses": [{
             "question": "Describe the deployment constraints",
             "choices_offered": None,
+            "status": "answered",
             "user_response": "A" * 1_000,
-        })
+        }], "outcome": "submitted"})
 
         summary = _summarize_tool_result("clarify", "{}", content)
 
@@ -168,7 +354,9 @@ class TestSummarizeToolResultClarify:
             assert connection.execute("SELECT content FROM messages").fetchone()[0] == summary
 
     def test_unpaired_surrogates_are_safe_through_pruning_and_sqlite(self, compressor):
-        content = json.dumps({"user_response": "Привет 😀" + "\ud83d" * 1_000})
+        content = json.dumps({"responses": [{
+            "status": "answered", "user_response": "Привет 😀" + "\ud83d" * 1_000,
+        }], "outcome": "submitted"})
         messages = [
             {
                 "role": "assistant",
@@ -209,8 +397,8 @@ class TestSummarizeToolResultClarify:
         "content",
         [
             json.dumps({"error": "Failed to get user input: internal details"}),
-            json.dumps({"question": "Q?", "user_response": ""}),
-            json.dumps({"question": "Q?", "user_response": {"internal": "value"}}),
+            json.dumps({"responses": [{"question": "Q?", "status": "skipped", "user_response": None}]}),
+            json.dumps({"responses": [{"question": "Q?", "status": "answered", "user_response": {"internal": "value"}}]}),
             "not json",
         ],
     )
@@ -219,69 +407,15 @@ class TestSummarizeToolResultClarify:
 
         assert summary == "[clarify] asked user a question"
 
-    @pytest.mark.parametrize(
-        "sentinel",
-        [
-            # cli.py clarify timeout callback
-            "The user did not provide a response within the time limit. "
-            "Use your best judgement to make the choice and proceed.",
-            # gateway/run.py timeout + delivery-failure paths
-            "[user did not respond within 15m]",
-            "[clarify prompt could not be delivered]",
-            # hermes_cli/oneshot.py no-user callback
-            "[oneshot mode: no user available. Pick the best option from "
-            "['a', 'b'] using your own judgment and continue.]",
-        ],
-    )
-    def test_non_response_sentinels_are_not_attributed_to_user(self, sentinel):
-        """Timeout/no-user sentinel prose must not be quoted as a user answer."""
-        content = json.dumps({
-            "question": "Deploy when?",
-            "choices_offered": ["Friday", "Monday"],
-            "user_response": sentinel,
-        })
-
-        summary = _summarize_tool_result("clarify", "{}", content)
-
-        assert summary == "[clarify] asked user a question"
-
-    def test_multi_select_containing_sentinel_stays_generic(self):
-        content = json.dumps({
-            "user_response": ["lint", "[user did not respond within 15m]"],
-        })
-
-        summary = _summarize_tool_result("clarify", "{}", content)
-
-        assert summary == "[clarify] asked user a question"
-
-    def test_live_oneshot_producer_is_recognized_as_sentinel(self):
-        """Producer→recognizer drift guard: run the REAL oneshot no-user
-        callback and assert its output is filtered. If the producer's wording
-        drifts away from _CLARIFY_NON_RESPONSE_PREFIXES, this fails."""
-        from hermes_cli.oneshot import _oneshot_clarify_callback
-
-        sentinels = (
-            _oneshot_clarify_callback("Deploy when?", choices=["a", "b"]),
-            _oneshot_clarify_callback(
-                "Deploy when?", choices=["a", "b"], multi_select=True
-            ),
-            _oneshot_clarify_callback("Deploy when?"),
-        )
-        for sentinel in sentinels:
-            content = json.dumps({"user_response": sentinel})
-
-            summary = _summarize_tool_result("clarify", "{}", content)
-
-            assert summary == "[clarify] asked user a question", sentinel
-
     def test_preserves_batch_user_response_from_responses_list(self):
-        """Batch clarify (``questions=[...]``) nests answers inside ``responses[].user_response``;
-        the summarizer must surface them, not just 'asked user a question' (#106077)."""
+        """Answers live inside ``responses[].user_response``; the summarizer must surface them,
+        not just 'asked user a question' (#106077)."""
         content = json.dumps({
             "responses": [
                 {
                     "question": "May the fields be removed?",
                     "choices_offered": None,
+                    "status": "answered",
                     "user_response": "Keep the fields until ratification.",
                 }
             ]
@@ -289,15 +423,15 @@ class TestSummarizeToolResultClarify:
 
         summary = _summarize_tool_result("clarify", "{}", content)
 
-        assert summary == '[clarify] user responded: ["Keep the fields until ratification."]'
+        assert summary == '[clarify] user responded: "Keep the fields until ratification."'
 
     def test_preserves_batch_multi_select_and_skips_empties(self):
         """A partially-answered batch (multi_select + a skipped question) still surfaces every real decision."""
         content = json.dumps({
             "responses": [
-                {"question": "Q1?", "user_response": "Answer one"},
-                {"question": "Q2?", "user_response": ["Choice A", "Choice B"]},
-                {"question": "Q3?", "user_response": ""},
+                {"question": "Q1?", "status": "answered", "user_response": "Answer one"},
+                {"question": "Q2?", "status": "answered", "user_response": ["Choice A", "Choice B"]},
+                {"question": "Q3?", "status": "skipped", "user_response": None},
             ]
         })
 
@@ -306,6 +440,78 @@ class TestSummarizeToolResultClarify:
         assert "Answer one" in summary
         assert "Choice A" in summary
         assert "Choice B" in summary
+
+
+def _refusals():
+    """Refused-call results from the real producers: the approval gate messages in their terminal
+    envelope, the write guard's raw ``BLOCKED:`` text, the workdir guard's ``status`` "blocked"
+    envelope (its error reads "Blocked:", not "BLOCKED"), a pending gateway approval, and a
+    successful kanban_block (``status`` "blocked" with no error, which is not a refusal). ``expected`` lists substrings the summary must
+    contain; empty means it must not read as refused."""
+    from tools import approval
+    from tools.kanban_tools import _ok
+    from tools.terminal_tool import _error_json
+    from tools.terminal_tool_guards import _validate_workdir
+
+    gate = approval._COMMAND_GATE
+    no_consent = ["BLOCKED, not run", "did NOT consent"]
+    return [
+        pytest.param("terminal", {"command": "rm -rf build"},
+                     _error_json(gate.cli_denied.format(description="", breaker=""), status="blocked"),
+                     no_consent, id="cli_denied"),
+        pytest.param("terminal", {"command": "rm -rf build"},
+                     _error_json(gate.transport_denied.format(breaker=""), status="blocked"),
+                     no_consent, id="transport_denied"),
+        pytest.param("terminal", {"command": "rm -rf build"},
+                     _error_json(gate.cli_timeout.format(breaker=""), status="blocked"),
+                     no_consent, id="cli_timeout"),
+        pytest.param("write_file", {"path": "AGENTS.md", "content": "a\nb"},
+                     "BLOCKED: write to protected agent-instruction file(s) (AGENTS.md) was denied "
+                     "by the user. The user has NOT consented to this write. Do NOT retry it or "
+                     "attempt the same edit via another path (terminal, execute_code, etc.).",
+                     no_consent, id="write_guard"),
+        pytest.param("terminal", {"command": "ls"},
+                     _error_json(_validate_workdir("a;b"), status="blocked"),
+                     ["BLOCKED, not run"], id="workdir_guard"),
+        pytest.param("terminal", {"command": "rm -rf build"},
+                     _error_json("", status="pending_approval"),
+                     ["awaiting the user's approval, not run"], id="pending_approval"),
+        pytest.param("kanban_block", {"reason": "need creds"},
+                     _ok(task_id="t_1", run_id=None, status="blocked", block_kind="needs_input"),
+                     [], id="kanban_block_ok"),
+    ]
+
+
+class TestSummarizeToolResultRefusals:
+    """A refused call must not be summarized as done ("ran ...", "wrote to ..."): that turns the
+    user's denial into a record of the action and drops the do-not-retry instruction."""
+
+    @pytest.mark.parametrize("tool_name,args,content,expected", _refusals())
+    def test_denial_summary_keeps_not_run_and_no_consent(self, tool_name, args, content, expected):
+        summary = _summarize_tool_result(tool_name, json.dumps(args), content)
+
+        assert all(part in summary for part in expected), summary
+        assert ("not run" in summary) == bool(expected), summary
+        assert "ran `" not in summary and "wrote to" not in summary
+        assert len(summary) <= _PRUNE_MIN_CHARS - 1
+
+    def test_prune_keeps_denial_across_passes(self, compressor):
+        tool_name, args, content, _ = _refusals()[0].values
+        assert len(content) > _PRUNE_MIN_CHARS
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "t1", "type": "function",
+             "function": {"name": tool_name, "arguments": json.dumps(args)}}]},
+            {"role": "tool", "tool_call_id": "t1", "content": content},
+            {"role": "user", "content": "recent request"},
+            {"role": "assistant", "content": "recent response"},
+        ]
+
+        pruned, count = compressor._prune_old_tool_results(messages, protect_tail_count=2)
+        summary = pruned[1]["content"]
+
+        assert count == 1 and "BLOCKED, not run" in summary and "did NOT consent" in summary
+        pruned_again, _ = compressor._prune_old_tool_results(pruned, protect_tail_count=2)
+        assert pruned_again[1]["content"] == summary
 
 
 class TestShouldCompress:
@@ -1185,8 +1391,8 @@ class TestSummaryFallbackToMainModel:
         assert mock_call.call_count == 2
         # First call used the misconfigured aux model
         assert mock_call.call_args_list[0].kwargs.get("model") == "broken-aux-model"
-        # Second call used the main model (no model kwarg → call_llm uses main)
-        assert "model" not in mock_call.call_args_list[1].kwargs
+        # Second call names the main model: an omitted model would re-resolve auxiliary.compression
+        assert mock_call.call_args_list[1].kwargs.get("model") == "main-model"
         assert result is not None
         assert "summary via main model" in result
         # Aux-model failure is recorded even though retry succeeded — this is
@@ -1220,7 +1426,7 @@ class TestSummaryFallbackToMainModel:
 
         assert mock_call.call_count == 2
         assert mock_call.call_args_list[0].kwargs.get("model") == "flaky-aux-model"
-        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert mock_call.call_args_list[1].kwargs.get("model") == "main-model"
         assert result is not None
         assert "summary via main model after empty aux" in result
         assert c._last_aux_model_failure_model == "flaky-aux-model"
@@ -1283,7 +1489,7 @@ class TestSummaryFallbackToMainModel:
 
         assert mock_call.call_count == 2
         assert mock_call.call_args_list[0].kwargs.get("model") == "aux-via-broken-proxy"
-        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert mock_call.call_args_list[1].kwargs.get("model") == "main-model"
         assert result is not None
         assert "summary via main model" in result
         # Aux-model failure recorded so /usage / gateway warnings can surface it

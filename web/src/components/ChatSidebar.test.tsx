@@ -3,7 +3,7 @@ import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { EVENTS_CONNECT_TIMEOUT_MS } from '@/lib/events-reconnect'
+import { EVENTS_CONNECT_TIMEOUT_MS, EVENTS_MAX_RECONNECT_ATTEMPTS } from '@/lib/events-reconnect'
 
 const apiMocks = vi.hoisted(() => ({
   buildWsUrl: vi.fn(async () => 'ws://localhost/api/events?channel=chat-1'),
@@ -411,7 +411,7 @@ describe('ChatSidebar event socket reconnect', () => {
     expect(FakeWebSocket.instances).toHaveLength(2)
   })
 
-  it('resets the backoff after a successful reconnect', async () => {
+  it('resets the backoff after a connection stays open past the grace window', async () => {
     await renderSidebar()
 
     await act(async () => {
@@ -420,13 +420,53 @@ describe('ChatSidebar event socket reconnect', () => {
     await advance(1_000)
     expect(FakeWebSocket.instances).toHaveLength(2)
 
-    // Reconnected — the next drop should start from 1s again, not 2s.
+    // Reconnected and stable — the next drop should start from 1s again, not 2s.
+    await act(async () => {
+      FakeWebSocket.instances[1].emit('open', {})
+    })
+    await advance(10_000)
+    await act(async () => {
+      FakeWebSocket.instances[1].emit('close', { code: 1006 })
+    })
+    await advance(1_000)
+    expect(FakeWebSocket.instances).toHaveLength(3)
+  })
+
+  it('does not reset the backoff when a connection opens only briefly', async () => {
+    await renderSidebar()
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit('close', { code: 1006 })
+    })
+    await advance(1_000)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+
+    // Open → immediate close is a flap: the ladder continues at 2s, not 1s.
     await act(async () => {
       FakeWebSocket.instances[1].emit('open', {})
       FakeWebSocket.instances[1].emit('close', { code: 1006 })
     })
     await advance(1_000)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    await advance(1_000)
     expect(FakeWebSocket.instances).toHaveLength(3)
+  })
+
+  it('gives up after the attempt cap even when every socket opens briefly first', async () => {
+    await renderSidebar()
+
+    for (let i = 0; i < 40; i++) {
+      const socket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1]
+      await act(async () => {
+        socket.emit('open', {})
+        socket.emit('close', { code: 1006 })
+      })
+      await advance(30_000)
+    }
+
+    // A flapping socket must not refill the ladder: 15 retries + the initial connection.
+    expect(FakeWebSocket.instances.length).toBeLessThanOrEqual(EVENTS_MAX_RECONNECT_ATTEMPTS + 1)
+    expect(container.textContent).toContain('stopped after')
   })
 
   it('does not retry auth rejections', async () => {
@@ -615,7 +655,8 @@ describe('ChatSidebar event socket reconnect', () => {
       FakeWebSocket.instances[1].emit('close', { code: 1006 })
     })
     expect(vi.getTimerCount()).toBeGreaterThan(0)
-    await advance(1_000)
+    // The brief open did not refill the ladder, so this retry is the 2s rung.
+    await advance(2_000)
     expect(FakeWebSocket.instances).toHaveLength(3)
 
     await act(async () => root.unmount())

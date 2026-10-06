@@ -16,7 +16,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
+from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env, user_global_git_config
 
 _GIT_TIMEOUT = 30
 _GH_TIMEOUT = 30
@@ -340,11 +340,32 @@ def _has_staged(raw: str) -> bool:
     return any(_entry_staged(tag, xy) for tag, xy, _ in _walk_entries(raw))
 
 
+def _commit_identity_args(cwd: str) -> list[str]:
+    """``-c`` argv carrying the user's *global* git identity into a commit, per missing key.
+
+    ``noninteractive_git_env()`` blanks the global config, which is also the only place most
+    users define ``user.name``/``user.email`` -- so a review-pane commit failed "Author identity
+    unknown" on a box whose interactive git committed fine (#126947). Identity is not behavior,
+    so the global value is carried over -- but only for a key this repo cannot already supply:
+    the effective value is probed first (repo-local config survives the blanking), so a repo that
+    pins its own identity keeps it. With no global identity either, nothing is injected and the
+    user still sees git's own actionable error rather than a wrong author.
+    """
+    args: list[str] = []
+    for key in ("user.name", "user.email"):
+        if _git_line(cwd, ["config", "--get", key]):
+            continue
+        value = user_global_git_config(key)
+        if value:
+            args += ["-c", f"{key}={value}"]
+    return args
+
+
 def review_commit(cwd: str, message: str, push: bool) -> dict:
     """Commit the working tree; stage everything first when nothing is staged."""
     if not _has_staged(_status_z(cwd)[1]):
         _git_ok(cwd, ["add", "-A"])
-    _git_ok(cwd, ["commit", "-m", message])
+    _git_ok(cwd, [*_commit_identity_args(cwd), "commit", "-m", message])
     if push:
         _review_push(cwd)
     return {"ok": True}

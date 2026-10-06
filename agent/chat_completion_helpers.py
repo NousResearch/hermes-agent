@@ -50,7 +50,8 @@ from agent.reasoning_summaries import (
     append_streamed_reasoning_detail, separate_glued_reasoning_blocks,
     streamed_reasoning_detail_text,
 )
-from agent.repetition_guard import is_repetition_dominated
+from agent.repetition_guard import (MID_STREAM_CHECK_CHARS, is_repetition_dominated, is_runaway_repetition,
+    repetition_excerpt)
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -2441,7 +2442,8 @@ def cleanup_task_resources(agent, task_id: str) -> None:
 
 
 def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, *,
-    dropped_tool_names=None, overflow_terminal=False, api_mode=None, clean_eof=False):
+    dropped_tool_names=None, overflow_terminal=False, api_mode=None, clean_eof=False,
+    repetition_terminated=False):
     """Stub for an SSE stream that ended without ``finish_reason`` after
     delivering content. Tagged ``PARTIAL_STREAM_STUB_ID`` + ``FINISH_REASON_LENGTH``
     so the loop enters its continuation/retry path instead of accepting
@@ -2463,6 +2465,9 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
     clean-EOF sites in ``_finish_chat_stream`` pass True; the stub built after a
     real transport exception keeps False so the loop can word the two failure
     modes differently (#102766).
+
+    ``repetition_terminated``: Hermes itself stopped reading a stream whose text had become a
+    runaway repetition loop; ``recover_from_truncation`` escalates it to the fallback chain.
     """
     if api_mode == "anthropic_messages":
         return SimpleNamespace(
@@ -2477,6 +2482,7 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
             _dropped_tool_names=dropped_tool_names or None,
             _overflow_terminal=overflow_terminal,
             _clean_eof=clean_eof,
+            _repetition_terminated=repetition_terminated,
         )
     return SimpleNamespace(
         id=PARTIAL_STREAM_STUB_ID,
@@ -2491,6 +2497,7 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
         _dropped_tool_names=dropped_tool_names or None,
         _overflow_terminal=overflow_terminal,
         _clean_eof=clean_eof,
+        _repetition_terminated=repetition_terminated,
     )
 
 
@@ -3168,6 +3175,7 @@ class _StreamingCall(StreamingWaitMonitor):
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
         from agent.chat_completion_helpers_relay import RelayChatAccumulator
         relay_response = RelayChatAccumulator()
+        content_chars, next_repetition_check = 0, MID_STREAM_CHECK_CHARS
 
         def _open_stream(next_api_kwargs: dict[str, Any]):
             timeout = _httpx.Timeout(connect=conn_cap, read=read_timeout, write=base_timeout, pool=conn_cap)
@@ -3278,6 +3286,15 @@ class _StreamingCall(StreamingWaitMonitor):
             delta_content = flatten_message_text(getattr(delta, "content", None), sep="")
             if delta_content:
                 content_parts.append(delta_content)
+                content_chars += len(delta_content)
+                if content_chars >= next_repetition_check and not tool_calls_acc:
+                    # LKP-1014: a degenerate loop never sends finish_reason; stop reading at the
+                    # first threshold where it is unmistakable instead of when the provider gives up.
+                    next_repetition_check = (content_chars // MID_STREAM_CHECK_CHARS + 1) * MID_STREAM_CHECK_CHARS
+                    looped = "".join(content_parts)
+                    if is_runaway_repetition(looped):
+                        return self._stop_repetition_loop(stream, role, looped, reasoning_parts, model_name,
+                                                          usage_obj, tool_calls)
                 if tool_calls_acc:
                     self._route_suppressed_text(delta_content)
                 elif (pending_text_parts or _provider_stream_text_may_be_sse(delta_content)
@@ -3313,6 +3330,23 @@ class _StreamingCall(StreamingWaitMonitor):
             finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
             response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
             refusal_parts=refusal_parts)
+
+    def _stop_repetition_loop(self, stream, role, looped, reasoning_parts, model_name, usage_obj, tool_calls):
+        """Close a stream caught in a repetition loop and hand the loop a stub flagged
+        ``_repetition_terminated`` (the length-truncated stub path), so the turn moves to the
+        fallback chain instead of waiting out the loop."""
+        logger.warning("repetition loop detected mid-stream after %d chars (model=%s provider=%s); closing the "
+                       "stream: %s", len(looped), self.agent.model, self.agent.provider, repetition_excerpt(looped))
+        try:
+            stream.close()  # same pool hygiene as the interrupt break in the chunk loop
+        except Exception:
+            if self._attempt_request_client is not None:
+                self.agent._abort_request_openai_client(self._attempt_request_client,
+                                                        reason="repetition_stream_close_failed")
+        tool_calls.materialize()
+        self._close_managed_stream()
+        return _build_partial_stream_stub(role, looped, "".join(reasoning_parts) or None, model_name, usage_obj,
+                                          repetition_terminated=True)
 
     def _adopt_final_response(self, final_response):
         """Adapter returned a completed response for ``stream=True``: switch the

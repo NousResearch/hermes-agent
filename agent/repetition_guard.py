@@ -40,6 +40,11 @@ _MAX_ANCHOR_MATCHES = 8
 # scan, but every line is distinct; a loop re-emits the same line(s).
 _RUNAWAY_DISTINCT_LINE_RATIO = 0.5
 
+# Streaming checks ``is_runaway_repetition`` each time the visible text crosses another multiple of
+# this, so a loop is cut within ~12k chars instead of running until the provider closes the socket
+# (a 38-minute, 138k-char kimi-k3 stream, LKP-1014). A multiple keeps the cost to a few linear scans.
+MID_STREAM_CHECK_CHARS = 12_000
+
 # The finish_reason="stop" path discards a COMPLETED answer, so it only aborts at runaway scale:
 # real stop-path loops (#100716) run 80k-350k chars, while asked-for repeats ("say X 50 times",
 # identical table rows, templated YAML) stay in the low KB and must be delivered.
@@ -154,3 +159,12 @@ def _line_repetition_dominated(text: str, n: int) -> bool:
     """True when a single normalized line covers half the fragment via repeats."""
     counts = Counter(norm for norm in (line.strip() for line in text.splitlines()) if norm)
     return any(c >= _MIN_REPEAT_COUNT and c * len(line) >= n * _DOMINANCE_RATIO for line, c in counts.items())
+
+
+def repetition_excerpt(text: str, width: int = 160) -> str:
+    """Redacted head and tail of a looped fragment, for the log line that names the loop."""
+    from agent.redact import redact_sensitive_text
+
+    text = text if isinstance(text, str) else ""
+    head, tail = text[:width], text[-width:] if len(text) > width else ""
+    return f"head={redact_sensitive_text(head, force=True)!r} tail={redact_sensitive_text(tail, force=True)!r}"

@@ -464,6 +464,12 @@ class _UpdateOutputStream:
         if self._log is not None:
             with contextlib.suppress(Exception):
                 self._log.write(data)
+                # Flush every write, not just newline-terminated ones: without
+                # this, progress output lacking a trailing newline sits in the
+                # stdio buffer for the whole run, leaving update.log (and the
+                # desktop update window tailing it) empty until exit (#130460).
+                # _log_only_write already flushes for the same reason.
+                self._log.flush()
         if not self._original_broken:
             try:
                 return self._original.write(data)

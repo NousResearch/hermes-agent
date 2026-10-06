@@ -845,7 +845,7 @@ platforms:
 
 - **Bot API 9.4（2026 年 2 月）：** 私聊话题——机器人可以通过 `createForumTopic` 在一对一私聊中创建论坛话题。Hermes 将此用于两个不同功能：运营商策划的[私聊话题](#private-chat-topics-bot-api-94)（配置驱动，固定话题列表）和用户驱动的[多会话私聊模式](#multi-session-dm-mode-topic)（通过 `/topic` 激活，用户创建的无限话题）。
 - **隐私政策：** Telegram 现在要求机器人有隐私政策。通过 BotFather 的 `/setprivacy_policy` 设置，或 Telegram 可能自动生成占位符。如果你的机器人面向公众，这一点尤为重要。
-- **Bot API 9.5（2026 年 3 月）：通过 `sendMessageDraft` 实现原生流式传输。** Hermes 支持 Telegram 的原生流式草稿 API，作为私聊的可选传输方式。默认仍使用旧版 `editMessageText` 路径，因为草稿预览在某些 Telegram 客户端上可能出现明显的折叠和重新渲染。
+- **Bot API 9.5（2026 年 3 月）：通过 `sendMessageDraft` 实现原生流式传输。** Hermes 支持 Telegram 的私聊原生流式草稿 API。部分 Telegram 客户端可能出现草稿折叠或重新渲染；如果你的客户端出现这种情况，可以选择 `transport: edit`。
 
 ### 流式传输（`gateway.streaming.transport`）
 
@@ -853,7 +853,7 @@ platforms:
 
 | 值 | 行为 |
 |---|---|
-| `auto`（默认） | 在支持的聊天（目前为 Telegram 私聊）上使用原生草稿流式传输；否则使用旧版基于编辑的路径。如果草稿帧失败，会优雅回退。 |
+| `auto`（默认） | 在支持的聊天（目前为 Telegram 私聊）上使用原生草稿流式传输；否则使用旧版基于编辑的路径。草稿接口不可用或请求被拒绝时会回退。 |
 | `draft` | 强制使用原生草稿。如果聊天不支持草稿（例如群组/话题），记录降级日志并回退到编辑方式。 |
 | `edit` | 对所有聊天类型使用旧版渐进式 `editMessageText` 轮询。 |
 | `off` | 完全禁用流式传输（仅最终回复，无渐进更新）。 |
@@ -861,23 +861,27 @@ platforms:
 在 `~/.hermes/config.yaml` 中：
 
 ```yaml
-gateway:
-  streaming:
-    enabled: true
-    transport: auto    # auto | draft | edit | off
+streaming:
+  enabled: true
+  transport: draft    # auto | draft | edit | off
+  edit_interval: 0.8
 ```
 
-**使用 `edit` 传输时私聊中的效果** — gateway 发送一条普通预览消息，并通过 `editMessageText` 渐进更新，避免 Telegram 草稿预览折叠/回滚效果。
+也支持嵌套的 `gateway.streaming` 写法；同时存在时，顶层 `streaming` 优先。修改流式输出或 Telegram 渲染设置后，运行 `hermes gateway restart`，也可以由网关管理员在聊天中发送 `/restart`。这会重启负责收发 Telegram 消息的后台程序，让它读取新设置，不会重启你的 Telegram 客户端。
 
-**使用 `auto` 或 `draft` 时私聊中的效果** — Telegram 显示逐 token 更新的动画草稿预览。回复完成后，它作为普通消息投递，草稿预览在客户端自然清除。草稿没有消息 ID，因此最终答案才是保留在聊天历史中的内容。
+**使用 `edit` 传输时私聊中的效果**——网关发送一条普通预览消息，并通过 `editMessageText` 渐进更新，避免 Telegram 草稿预览折叠或回滚。
+
+**使用 `auto` 或 `draft` 时私聊中的效果**——Hermes 用累计文字更新同一条临时草稿。默认的 `rich_drafts: false` 会追加原始纯文本，不会反复格式化尚未写完的 Markdown，也不会添加光标。草稿预览受 Telegram 文字长度上限限制；完整答案仍按正常的 MarkdownV2 或选择启用的富消息格式送达，必要时拆分长消息，并保留在聊天记录中。预览合并不会改变模型、提示词或最终答案。
+
+**更新频率和文字动画是两件事。** `edit_interval` 决定 Hermes 多久提交一次预览，不决定 Telegram 逐字显示的速度。两次更新之间收到的文字会合并，下一次预览直接包含最新内容，不会按固定字数慢慢回放。新增文字的动画由 Telegram 客户端控制，不同客户端的连贯程度可能不同。Hermes 也会遵守每个聊天中草稿和「正在输入」共同使用的额度：每 5 秒 20 次、每 30 秒 40 次。因此，调低 `edit_interval` 不能让更新次数无限增加。参见 [Telegram 流式输出说明](https://core.telegram.org/api/bots/ai)。
 
 **群组、超级群组、论坛话题怎么办？** Telegram 将 `sendMessageDraft` 限制为私聊（私信）。gateway 对其他所有内容透明地回退到基于编辑的路径——与之前的用户体验相同。
 
-**如果草稿帧失败怎么办？** 任何失败（瞬时网络错误、服务器端拒绝、旧版 python-telegram-bot 安装）都会将该响应的剩余流切换回基于编辑的路径。下一个响应会重新尝试。
+**如果草稿更新失败怎么办？** 本地额度不足时跳过这次预览，下一次允许更新时发送最新文字。Telegram 返回 `RetryAfter` 时会暂时停止草稿更新，随后继续使用原生草稿。接口不可用或草稿请求被拒绝时，这条回复的剩余部分回退为编辑普通消息；下一条回复会重新尝试。即使中间预览被跳过，完整答案仍通过原有的最终消息流程送达。
 
 ## 渲染：富消息、表格和链接预览
 
-**富消息（Bot API 10.1）。** 最终回复中那些会被旧版 MarkdownV2 路径降级的结构——表格、任务列表、可折叠的 `<details>` 以及块级数学公式——会通过 Telegram 原生的 [`sendRichMessage`](https://core.telegram.org/bots/api#sendrichmessage) 发送，使用 Agent 的**原始 markdown**，从而原生渲染、无需客户端展平。在流式传输过程中，最终答案通过 `editMessageText` 的 `rich_message` 参数**就地编辑现有预览**来交付——不发第二条消息、不删除，因此一轮结束时不会出现重复投递的闪烁。在私聊中，实时流式预览也使用 `sendRichMessageDraft`，因此动画草稿与最终的富消息保持一致。普通回复（纯文本、粗体/斜体、简单列表）仍走 MarkdownV2 路径，以在各客户端保持一致的字重和间距。
+**富消息（Bot API 10.1）。** 最终回复中那些会被旧版 MarkdownV2 路径降级的结构——表格、任务列表、可折叠的 `<details>` 以及块级数学公式——会通过 Telegram 原生的 [`sendRichMessage`](https://core.telegram.org/bots/api#sendrichmessage) 发送，使用 Agent 的**原始 Markdown**，从而原生渲染，无需客户端展平。私聊中默认的 `rich_drafts: false` 会让临时预览保持原始纯文本，完成后再通过 `sendRichMessage` 送达完整答案。设置 `rich_drafts: true` 才会同时用 `sendRichMessageDraft` 渲染实时预览。使用普通消息编辑的流式回复，可以通过 `editMessageText` 的 `rich_message` 参数就地送达富消息格式的最终答案。普通回复（纯文本、粗体、斜体、简单列表）仍走 MarkdownV2 路径，以在各客户端保持一致的字重和间距。
 
 当内容超过 32,768 字符的富文本上限时，富消息路径会自动跳过；Telegram 的任何拒绝（较旧 `python-telegram-bot` 不支持该端点、解析错误、块/列过多）都会**透明回退**到 MarkdownV2 路径——消息绝不会丢失。瞬时/网络错误**不会**被静默重发（不会产生重复的最终消息）。
 

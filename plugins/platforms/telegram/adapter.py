@@ -178,6 +178,7 @@ _MEDIA_KIND_KEYS = {
     "video file": "platform.telegram.media.kind_video"}
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from plugins.platforms.telegram.telegram_drafts import TelegramDraftMixin
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
@@ -511,7 +512,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramDraftMixin, TelegramHeldInboundMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -1566,27 +1567,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             and not getattr(self, "_rich_send_disabled", False)
             and not getattr(self, "_rich_draft_disabled", False)
             and self._rich_content_ok(content))
-
-    async def _try_send_rich_draft(self, chat_id: str, draft_id: int, content: str, metadata: Optional[Dict[str, Any]]) -> bool:
-        """Emit one ``sendRichMessageDraft`` frame; True on success. Frames are ephemeral, so any failure
-        returns False and the caller renders the legacy draft; capability failures latch off."""
-        payload: Dict[str, Any] = {
-            "chat_id": normalize_telegram_chat_id(chat_id), "draft_id": int(draft_id), "rich_message": self._rich_message_payload(content)}
-        payload.update(self._thread_kwargs_for_draft(chat_id, metadata))
-        try:
-            return bool(await _await_with_thread_deadline(
-                self._bot.do_api_request("sendRichMessageDraft", api_kwargs=payload),
-                timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False))
-        except Exception as exc:
-            if self._is_rich_capability_error(exc):
-                self._rich_draft_disabled = True
-                logger.debug(
-                    "[%s] sendRichMessageDraft unsupported (%s) — using legacy drafts", self.name, _redact_telegram_error_text(exc))
-            else:
-                logger.debug(
-                    "[%s] sendRichMessageDraft transient failure (%s) — legacy draft this frame", self.name,
-                    _redact_telegram_error_text(exc))
-            return False
 
     async def _drain_polling_connections(self) -> None:
         """Reset the httpx pool used for getUpdates polling before a reconnect.
@@ -4071,49 +4051,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return False
         return (chat_type or "").lower() in {"dm", "private"}
 
-    async def send_draft(self, chat_id: str, draft_id: int, content: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Stream a partial message via ``sendRichMessageDraft`` (when rich is enabled and supported) else
-        ``sendMessageDraft``; reusing ``draft_id`` animates the preview. The caller sends the final text."""
-        if not self._bot:
-            return SendResult(success=False, error="not_connected")
-        # Rich draft fast-path; any failure degrades to the plain draft below. Drafts have no message_id.
-        if self._should_attempt_rich_draft(content) and await self._try_send_rich_draft(chat_id, draft_id, content, metadata):
-            return SendResult(success=True, message_id=None)
-        if not hasattr(self._bot, "send_message_draft"):
-            return SendResult(success=False, error="api_unavailable")
-        # Drafts share the regular-send UTF-16 length contract.
-        text = content if len(
-            content) <= self.MAX_MESSAGE_LENGTH else self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)[0]
-        # Same MarkdownV2 conversion as ``send`` (MarkdownV2 then plain) so the draft doesn't snap at the end. Exception: a Rich
-        # final with rich drafts disabled previews raw — the legacy formatter would turn pipe tables into bullets.
-        plain_rich_preview = bool(
-            getattr(self, "_rich_messages_enabled", False) and not getattr(self, "_rich_drafts_enabled", False)
-            and self._needs_rich_rendering(text))
-        draft_thread_kwargs = self._thread_kwargs_for_draft(chat_id, metadata)
-        for use_markdown in ((False,) if plain_rich_preview else (True, False)):
-            kwargs: Dict[str, Any] = {
-                "chat_id": normalize_telegram_chat_id(chat_id), "draft_id": int(draft_id),
-                "text": self.format_message(text) if use_markdown else text}
-            if use_markdown:
-                kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
-            kwargs.update(draft_thread_kwargs)
-            try:
-                if await _await_with_thread_deadline(
-                    self._bot.send_message_draft(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False):
-                    return SendResult(success=True, message_id=None)
-                return SendResult(success=False, error="draft_rejected")
-            except Exception as e:
-                # MarkdownV2 parse failure → retry once as plain text; anything else returns to the caller,
-                # which falls back to edit-based streaming for this response.
-                if use_markdown and self._is_bad_request_error(e):
-                    logger.debug(
-                        "[%s] sendMessageDraft MarkdownV2 rejected, retrying as plain text (chat=%s draft_id=%s): %s",
-                        self.name, chat_id, draft_id, _redact_telegram_error_text(e))
-                    continue
-                logger.debug("[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s", self.name, chat_id, draft_id, e)
-                return SendResult(success=False, error=_redact_telegram_error_text(e))
-        return SendResult(success=False, error="draft_rejected")
-
     async def _send_message_with_thread_fallback(self, **kwargs):
         """Send a control-style message (approval prompts, pickers), retrying once without
         message_thread_id on 'Message thread not found' (stale thread_id); ``send`` has its own.
@@ -5467,23 +5404,23 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         """Suppress Telegram typing refreshes for this chat after transient failures."""
         if not hasattr(self, "_telegram_typing_cooldown_until"):
             self._telegram_typing_cooldown_until = {}
-        retry_after = getattr(exc, "retry_after", None)
+        retry_after = self._record_ai_action_cooldown(chat_id, exc)
         try:
             delay = float(retry_after) if retry_after is not None else self._telegram_typing_cooldown_seconds
         except (TypeError, ValueError):
             delay = self._telegram_typing_cooldown_seconds
-        self._telegram_typing_cooldown_until[str(chat_id)] = asyncio.get_running_loop().time() + max(1.0, min(delay, 300.0))
+        self._telegram_typing_cooldown_until[str(normalize_telegram_chat_id(chat_id))] = asyncio.get_running_loop().time() + max(1.0, min(delay, 300.0))
 
     def _typing_in_cooldown(self, chat_id: str) -> bool:
         if not hasattr(self, "_telegram_typing_cooldown_until"):
             self._telegram_typing_cooldown_until = {}
             self._telegram_typing_cooldown_seconds = 30.0
-        until = self._telegram_typing_cooldown_until.get(str(chat_id))
+        until = self._telegram_typing_cooldown_until.get(str(normalize_telegram_chat_id(chat_id)))
         if until is None:
             return False
         if asyncio.get_running_loop().time() < until:
             return True
-        self._telegram_typing_cooldown_until.pop(str(chat_id), None)
+        self._telegram_typing_cooldown_until.pop(str(normalize_telegram_chat_id(chat_id)), None)
         return False
 
     # --- per-chat send ordering + flood cooldown (#114396) ---------------------------------------------
@@ -5561,14 +5498,16 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send typing indicator."""
-        if not self._bot or self._typing_in_cooldown(chat_id):
+        if not self._bot or self._typing_in_cooldown(chat_id) or self._native_draft_recent(chat_id):
             return
         _is_dm_topic: bool = False
         message_thread_id: Optional[int] = None
 
         async def _action(**kw) -> None:
+            if self._claim_ai_action_slot(chat_id):
+                return
             await self._bot.send_chat_action(chat_id=normalize_telegram_chat_id(chat_id), action="typing", **kw)
-            self._telegram_typing_cooldown_until.pop(str(chat_id), None)
+            self._telegram_typing_cooldown_until.pop(str(normalize_telegram_chat_id(chat_id)), None)
         try:
             _is_dm_topic = self._dm_topic_fallback(metadata)
             message_thread_id = self._message_thread_id_for_typing(self._metadata_thread_id(metadata))
@@ -5576,15 +5515,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         except Exception as e:
             # DM topic lanes: Telegram may reject message_thread_id — retry without it so the indicator at
             # least appears in the main DM view.
-            if _is_dm_topic and message_thread_id is not None:
+            if self._is_transient_typing_error(e):
+                self._record_typing_cooldown(chat_id, e)
+            elif _is_dm_topic and message_thread_id is not None:
                 try:
                     await _action()
                     return
                 except Exception as fallback_exc:
                     if self._is_transient_typing_error(fallback_exc):
                         self._record_typing_cooldown(chat_id, fallback_exc)
-            elif self._is_transient_typing_error(e):
-                self._record_typing_cooldown(chat_id, e)
             logger.debug("[%s] Failed to send Telegram typing indicator: %s", self.name, _redact_telegram_error_text(e), exc_info=True)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

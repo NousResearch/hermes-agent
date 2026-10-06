@@ -212,3 +212,107 @@ def test_clean_exit_log_that_merely_mentions_the_words_stays_a_violation(kanban_
         assert run["outcome"] == "crashed"
         assert kb._json_dict(run["metadata"]).get("protocol_violation") is True
         assert kbd._protocol_violation_streak(conn, tid) == 1
+
+
+def test_stale_wall_from_an_earlier_run_does_not_requeue_later_runs(kanban_home):
+    """The worker log is append-mode across re-runs (size-rotated only): run 1 hit a
+    real 429 and was requeued; run 2 worked, genuinely skipped the terminal board
+    call and exited 0. Run 2's tail still holds run 1's wall line, so only the
+    CURRENT run's segment — after the previous trailer — may be scanned: run 2
+    books the protocol violation, not another rate-limit requeue (#133795)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="stale", assignee="a")
+        _dead_worker_with_log(
+            conn,
+            tid,
+            70061,
+            0,
+            log_text=(
+                "Error code: 429 - {'type': 'rate_limit_error', 'msg': 'Too many requests'}\n\n"
+                f"{KANBAN_WORKER_EXIT_TRAILER}0\n"
+            ),
+        )
+        kbd.detect_crashed_workers(conn)
+        run1 = conn.execute(
+            "SELECT outcome FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert run1["outcome"] == "rate_limited"
+
+        _dead_worker_with_log(
+            conn,
+            tid,
+            70062,
+            0,
+            log_text=(
+                "did the work, forgot the board call\n\n"
+                f"{KANBAN_WORKER_EXIT_TRAILER}0\n"
+            ),
+        )
+        kbd.detect_crashed_workers(conn)
+        run2 = conn.execute(
+            "SELECT outcome, metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert run2["outcome"] == "crashed"
+        assert kb._json_dict(run2["metadata"]).get("protocol_violation") is True
+
+
+def test_recovered_midturn_wall_stays_a_violation(kanban_home):
+    """A 429 the SDK retried past is followed by the rest of the turn's output, so
+    the wall sits far from the trailer: only the tail of the current run's segment
+    is scanned, and a recovered wall does not buy the neutral requeue (#133795)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="recovered", assignee="a")
+        _dead_worker_with_log(
+            conn,
+            tid,
+            70080,
+            0,
+            log_text=(
+                "Error code: 429 - retrying\n"
+                + "ordinary output line\n" * (kbd._TRANSIENT_EXIT_TAIL_LINES + 5)
+                + f"{KANBAN_WORKER_EXIT_TRAILER}0\n"
+            ),
+        )
+
+        kbd.detect_crashed_workers(conn)
+
+        run = conn.execute(
+            "SELECT outcome, metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert run["outcome"] == "crashed"
+        assert kb._json_dict(run["metadata"]).get("protocol_violation") is True
+
+
+def test_transient_wall_backstop_charges_violation_after_budget(kanban_home):
+    """``rate_limited`` is neutral for both streaks and the breaker, so a log-based
+    transient booking that keeps misreading would cycle one task through the
+    rate-limit cooldown forever. Once the trailing streak of transient requeues
+    reaches the protocol-violation budget, the next transient-looking clean exit
+    is charged as a counted, operator-visible protocol violation (#133795)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="loop", assignee="a")
+        wall = (
+            "Error code: 429 - {'type': 'rate_limit_error', 'msg': 'Too many requests'}\n\n"
+            f"{KANBAN_WORKER_EXIT_TRAILER}0\n"
+        )
+        for i in range(kbd._PROTOCOL_VIOLATION_FAILURE_LIMIT):
+            _dead_worker_with_log(conn, tid, 70070 + i, 0, log_text=wall)
+            kbd.detect_crashed_workers(conn)
+            run = conn.execute(
+                "SELECT outcome FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                (tid,),
+            ).fetchone()
+            assert run["outcome"] == "rate_limited"
+
+        # Budget spent: the same 429-looking exit now books a counted violation.
+        _dead_worker_with_log(conn, tid, 70074, 0, log_text=wall)
+        kbd.detect_crashed_workers(conn)
+        run = conn.execute(
+            "SELECT outcome, metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert run["outcome"] == "crashed"
+        assert kb._json_dict(run["metadata"]).get("protocol_violation") is True

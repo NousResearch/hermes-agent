@@ -495,3 +495,63 @@ def test_serving_route_is_reported_after_a_fallback(runner, tmp_path, monkeypatc
     monkeypatch.setattr(runner, "_build_agent", lambda ctx, sid, mapper: FellBack(mapper))
     outcome = runner.run(_ctx(tmp_path, model="moonshotai/kimi-k3")[0])
     assert (outcome.model_used, outcome.provider_used) == ("anthropic/claude-sonnet-5", "openrouter")
+
+
+# What Hermes returned on 2026-10-06 (agent/turn_truncation.py::_REPETITION_DOMINATED via end_turn).
+_REPETITION_RESULT = {
+    "final_response": "⚠️ **Response Stopped — Repetition Detected**\n\nThe model fell into a repetition loop "
+                      "while writing this response…\n\n→ Switch to a different model with `/model`",
+    "completed": False, "partial": True,
+    "error": "Model output entered a repetition loop and was truncated mid-loop; refusing to continue a "
+             "degenerate response.",
+    "failure_reason": "repetition", "failure_retryable": True,
+}
+
+
+@pytest.mark.parametrize("result, code, category, retryable", [
+    (_REPETITION_RESULT, "repetition", "repetition", True),
+    # the same copy before Hermes stamped repetition: the error text still says what happened
+    ({**_REPETITION_RESULT, "failure_reason": "truncated"}, "truncated", "repetition", True),
+    ({"final_response": "⚠️ **Context window full.** …", "partial": True, "error": "x",
+      "failure_reason": "context_overflow", "failure_retryable": False}, "context_overflow", "context_overflow", False),
+    ({"final_response": "OpenRouter rate-limited every one of 3 attempts", "failed": True, "error": "429",
+      "failure_reason": "rate_limit", "failure_retryable": True}, "rate_limit", "provider_outage", True),
+    ({"final_response": "Your request was not processed.", "failed": True, "error": "timed out"},
+     "timeout", "timeout", True),
+    ({"final_response": "   ", "completed": True}, "unknown", "unknown", True),
+    ({}, "unknown", "unknown", True),
+])
+def test_a_turn_that_did_not_complete_is_a_code_never_hermes_copy(runner, tmp_path, monkeypatch,
+                                                                  result, code, category, retryable):
+    class Failing(FakeAgent):
+        def run_conversation(self, user_message, conversation_history, task_id):
+            return dict(result)
+
+    monkeypatch.setattr(runner, "_build_agent", lambda ctx, sid, mapper: Failing(mapper))
+    outcome = runner.run(_ctx(tmp_path)[0])
+    assert outcome.text == ""
+    assert (outcome.error, outcome.error_category, outcome.error_retryable) == (code, category, retryable)
+
+
+def test_a_completed_answer_and_a_max_iterations_summary_pass_through(runner, tmp_path, monkeypatch):
+    results = iter([{"final_response": "The deposition is on 10/9.", "completed": True},
+                    {"final_response": "Summary so far: …", "completed": False,
+                     "turn_exit_reason": "max_iterations_reached(90/90)"}])
+
+    class Done(FakeAgent):
+        def run_conversation(self, user_message, conversation_history, task_id):
+            return next(results)
+
+    monkeypatch.setattr(runner, "_build_agent", lambda ctx, sid, mapper: Done(mapper))
+    for text in ("The deposition is on 10/9.", "Summary so far: …"):
+        outcome = runner.run(_ctx(tmp_path)[0])
+        assert outcome.text == text and outcome.error is None
+
+
+def test_exception_text_stays_on_the_host(runner, tmp_path, monkeypatch):
+    def build(ctx, sid, mapper):
+        raise RuntimeError("Connection to https://santacruz.tail999258.ts.net:8317 timed out")
+
+    monkeypatch.setattr(runner, "_build_agent", build)
+    outcome = runner.run(_ctx(tmp_path)[0])
+    assert outcome.error == outcome.error_category == "timeout" and "santacruz" not in repr(outcome)

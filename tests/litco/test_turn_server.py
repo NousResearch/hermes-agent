@@ -677,3 +677,56 @@ async def test_final_reports_the_route_that_served_the_turn(home):
     async with TestClient(TestServer(_server(FellBack(), home).build_app())) as client:
         final = (await _turn(client, _body(model="moonshotai/kimi-k3")))[-1]
     assert (final["modelUsed"], final["providerUsed"]) == ("anthropic/claude-sonnet-5", "openrouter")
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_sends_a_code_and_no_text(home):
+    class Failed(FakeRunner):
+        def run(self, ctx):
+            ctx.emit("assistant_delta", delta="Looking into it")
+            return TurnOutcome(text="", error="repetition", error_category="repetition", error_retryable=True,
+                               model_used="moonshotai/kimi-k3")
+
+    async with TestClient(TestServer(_server(Failed(), home).build_app())) as client:
+        events = await _turn(client)
+    err = next(e for e in events if e["type"] == "error_classified")
+    assert {k: err[k] for k in ("category", "code", "retryable", "message")} == {
+        "category": "repetition", "code": "repetition", "retryable": True, "message": "repetition"}
+    assert events[-1]["type"] == "final" and events[-1]["text"] == ""
+    assert "⚠" not in json.dumps(events, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("leak", [
+    "⚠️ **Response Stopped — Repetition Detected**\n\n→ Switch to a different model with `/model`",
+    "Here is the memo.\n\n→ Lower reasoning effort: `/reasoning low`",
+    "Your request was not processed. Send it again if you still want me to carry it out.",
+])
+async def test_hermes_notice_that_leaks_past_the_runner_never_reaches_litkit(home, leak, caplog):
+    class Leaky(FakeRunner):
+        def run(self, ctx):
+            ctx.emit("assistant_delta", delta="The answer is 42.")
+            ctx.emit("assistant_delta", delta=leak)
+            return TurnOutcome(text=leak)
+
+    async with TestClient(TestServer(_server(Leaky(), home).build_app())) as client:
+        events = await _turn(client)
+    raw = json.dumps(events, ensure_ascii=False)
+    assert leak[:20] not in raw
+    assert [e["delta"] for e in events if e["type"] == "assistant_delta"] == ["The answer is 42."]
+    err = next(e for e in events if e["type"] == "error_classified")
+    assert err["code"] == "runtime_notice" and events[-1]["text"] == ""
+    assert "runtime notice" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_runner_prose_error_is_replaced_by_its_category(home):
+    class Prose(FakeRunner):
+        def run(self, ctx):
+            return TurnOutcome(error="⚠️ OpenRouter rate-limited every attempt. Switch models with /model.",
+                               error_category="provider_outage")
+
+    async with TestClient(TestServer(_server(Prose(), home).build_app())) as client:
+        events = await _turn(client)
+    err = next(e for e in events if e["type"] == "error_classified")
+    assert err["code"] == err["message"] == "provider_outage" and "/model" not in json.dumps(events)

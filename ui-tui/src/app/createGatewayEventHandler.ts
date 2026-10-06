@@ -35,6 +35,7 @@ import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { getOverlayState, patchOverlayState, SENSITIVE_PROMPTS } from './overlayStore.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
+import { isForeignSessionEvent } from './sessionEventFilter.js'
 import { reportStartupLatency } from './startupLatency.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
@@ -794,7 +795,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   return (ev: AnyGatewayEvent) => {
     const sid = getUiState().sid
 
-    if (ev.session_id && sid && ev.session_id !== sid && !ev.type.startsWith('gateway.')) {
+    if (isForeignSessionEvent(ev, sid)) {
       return
     }
 

@@ -380,6 +380,38 @@ def test_ignores_conversational_future_offers():
     )
 
 
+def test_detects_trailing_cjk_action_announcements():
+    # CJK action-announcement tails from a local-model stall: the model announces work
+    # (现在/同时/并行/继续 + verb) and stops without tool calls.
+    for tail in (
+        "三件事并行推进：",
+        "抱歉，刚才在跑浏览器登录和搜索，没汇报。现在立刻三件事一起推进：",
+        "浏览器会话已重置（about:blank），重新导航登录 GitHub，同时继续推进：",
+        "先并行查下载源 + 确认 Fable 是否完整。",
+        "WeKnora 容器在启动中（后台 `docker compose up -d`），同时查 Fable 入库状态。",
+        "继续推进，稍等。",
+    ):
+        assert trailing_continue_intent(tail), tail
+
+
+def test_detects_trailing_cjk_self_plans():
+    for tail in (
+        "让我确认一下：",
+        "先查 docker-compose.yml 和容器状态，再一起启动 WeKnora。",
+    ):
+        assert trailing_continue_intent(tail), tail
+
+
+def test_cjk_controls_do_not_fire():
+    for tail in (
+        "让我先看下。答案是 42。",
+        "现在几点？",
+        "数据处理已经完成，结果全部写入报告。",
+        "上面就是完整的部署流程说明，请确认。",
+    ):
+        assert not trailing_continue_intent(tail), tail
+
+
 # ── batch-cycle loop breaker (port of can1357/oh-my-pi#10521) ───────────────
 
 
@@ -483,5 +515,28 @@ def test_promoted_reasoning_detector_ignores_thai_stated_answers():
         "คำตอบคือ 42 ครับ",  # "the answer is 42"
         "ตรวจสอบแล้ว. คำตอบคือ 42 ครับ",
         "พรุ่งนี้จะฝนตกทั่วประเทศ",  # "tomorrow it will rain" — not a first-person action verb
+    ):
+        assert not promoted_reasoning_announces_action(text), text
+
+
+def test_promoted_reasoning_detector_catches_cjk_plan_tails():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    # Reasoning-only stalls in Chinese: same announcement shapes as the visible detector.
+    for tail in (
+        "现在同时推进三件事：",
+        "状况已确认。同时推进这两个任务：",
+        "先跑一遍检查，再对比配置。",
+        "嗯，就这样。继续推进：",
+    ):
+        assert promoted_reasoning_announces_action(tail), tail
+
+
+def test_promoted_reasoning_detector_ignores_cjk_stated_answers():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    for text in (
+        "答案就是 42，检查完毕。",
+        "数据处理已经完成，结果全部写入了报告文件。",
     ):
         assert not promoted_reasoning_announces_action(text), text

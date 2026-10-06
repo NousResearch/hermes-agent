@@ -811,6 +811,16 @@ def _windows_cold_start_plan() -> dict | None:
     return None
 
 
+class ServicePauseFailed(RuntimeError):
+    """A gateway service could not be stopped; ``rollback_failures`` lists what the in-line
+    rollback could not restart. Empty = everything stopped was restarted, so the pause is void;
+    otherwise its record must stay, since gateways are still down."""
+
+    def __init__(self, detail: str, rollback_failures: list[str]):
+        super().__init__(detail)
+        self.rollback_failures = rollback_failures
+
+
 def _pause_windows_gateway_services(service_gateways, token: dict, profiles: dict, unmapped: list) -> dict:
     """Stop each SCM gateway service, recording them on *token*; roll everything back on failure.
 
@@ -848,7 +858,7 @@ def _pause_windows_gateway_services(service_gateways, token: dict, profiles: dic
         detail = f"Could not stop Windows gateway service {current_service_name or 'unknown'}: {exc}"
         if rollback_failures:
             detail += "; rollback failures: " + "; ".join(rollback_failures)
-        raise RuntimeError(detail) from exc
+        raise ServicePauseFailed(detail, rollback_failures) from exc
 
 
 def _owned_gateway_pids(pids, *, keep=(), quiet: bool = True) -> list[int]:
@@ -993,8 +1003,8 @@ def _pause_windows_gateways_for_update() -> dict | None:
     _record_attested_cold_start_profiles(token, running_profiles)
     try:
         token = _pause_windows_gateway_services(service_gateways, token, profiles, unmapped)
-    except RuntimeError as exc:
-        if "rollback failures" not in str(exc):  # everything stopped was restarted in-line
+    except ServicePauseFailed as exc:
+        if not exc.rollback_failures:  # everything stopped was restarted in-line
             pause_record.abandon_pause(intended, adopted)
         raise
     return pause_record.finish_pause(token, intended, adopted)

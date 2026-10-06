@@ -61,15 +61,18 @@ export function sameOperation(a: LocalRuntimeJob, b: LocalRuntimeJob): boolean {
 
 /** Whether `job` (an error) has been superseded by a strictly newer `done`
  * job of the same operation — a completed retry that repaired the failure.
- * Ordering is `started_at` (the backend registry's own clock); a missing
- * `started_at` (older gateway) degrades to "never superseded" so a stale
- * error stays visible rather than silently vanishing (#102616). */
+ * Ordering is `started_at` (the backend registry's own clock), and BOTH
+ * sides must carry one: a missing `started_at` (older gateway) cannot be
+ * ordered against the other row, so it degrades to "never superseded" and
+ * the error stays visible rather than silently vanishing (#102616). */
 export function supersededByDone(jobs: readonly LocalRuntimeJob[], job: LocalRuntimeJob): boolean {
   return jobs.some(
     o =>
       o.status === 'done' &&
       sameOperation(o, job) &&
-      (o.started_at ?? 0) > (job.started_at ?? 0)
+      o.started_at != null &&
+      job.started_at != null &&
+      o.started_at > job.started_at
   )
 }
 

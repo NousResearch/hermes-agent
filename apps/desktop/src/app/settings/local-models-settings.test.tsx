@@ -621,6 +621,49 @@ describe('LocalModelsSettings', () => {
 
     expect(screen.queryByText(/model A download broke/)).toBeNull()
   })
+
+  it('keeps an error visible when its started_at is missing, even against a timestamped done', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      runtime_backend: 'cuda'
+    })
+    // Graceful degrade: an older gateway's registry row has no started_at,
+    // so the pair cannot be ordered — the error must stay visible instead
+    // of losing to the done job on a fabricated zero timestamp.
+    queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
+      {
+        job_id: 'ok-a',
+        kind: 'model-download',
+        target: 'Qwen3.6 27B',
+        model_id: FITTING_MODEL.id,
+        status: 'done',
+        phase: 'done',
+        detail: '',
+        total_bytes: null,
+        done_bytes: 0,
+        error: null,
+        started_at: 2000
+      },
+      {
+        job_id: 'bad-a',
+        kind: 'model-download',
+        target: 'Qwen3.6 27B',
+        model_id: FITTING_MODEL.id,
+        status: 'error',
+        phase: 'verifying',
+        detail: '',
+        total_bytes: null,
+        done_bytes: 0,
+        error: 'model A download broke — try again'
+      }
+    ])
+
+    await renderFullPane()
+    await screen.findByText('Qwen3.6 27B')
+
+    expect(await screen.findByText(/model A download broke/)).toBeTruthy()
+  })
 })
 
 describe('quickstart', () => {

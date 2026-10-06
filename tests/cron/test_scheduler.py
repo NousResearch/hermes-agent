@@ -2668,3 +2668,25 @@ class TestCronHandoffThreadTitleCarriesRunDate:
         with patch.object(scheduler_delivery, "_cron_thread_date", return_value="2026-09-29"):
             self._open(job, created=created)
         assert created[0][1] != created[1][1]
+
+    def test_date_survives_the_sink_title_caps_for_an_unbounded_job_name(self):
+        """Job names have no upper bound (``create_job``/``update_job`` store an explicit
+        ``name=`` verbatim) and every thread sink caps the title it is handed: Discord
+        ``[:80]``, Slack ``[:80]``, relay ``[:100]``. A trailing stamp is sliced off — or cut
+        to a half-date that reads identically on two different days. The stamp must stay
+        wholly visible after each real cap."""
+        from cron import scheduler_delivery
+
+        stamp = "2026-09-28"
+        long_name = "Weekly cross-team dependency review covering every open blocker across all squads"
+        assert len(long_name) > 80  # the cap genuinely bites
+        created = []
+        with patch.object(scheduler_delivery, "_cron_thread_date", return_value=stamp):
+            self._open({"id": "j1", "name": long_name}, created=created)
+        title = created[0][1]
+        # The slice expressions as the adapters write them.
+        discord = (title or "handoff").strip()[:80] or "handoff"
+        slack = (title or "session").strip()[:80]
+        relay = ((title or "").strip() or "handoff")[:100]
+        for sink_title in (discord, slack, relay):
+            assert stamp in sink_title

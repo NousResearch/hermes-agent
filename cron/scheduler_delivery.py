@@ -268,7 +268,11 @@ def _open_continuable_cron_thread(job: dict, adapter, chat_id: str, loop) -> Opt
     create_thread = getattr(adapter, "create_handoff_thread", None)
     if not callable(create_thread) or loop is None:
         return None
-    thread_name = f"Hermes — {_cron_display_name(job)} ({_cron_thread_date()})"
+    # Date BEFORE the name: every thread sink caps the title (Discord/Slack ``[:80]``,
+    # relay ``[:100]``) and job names have no upper bound, so a trailing stamp is silently
+    # sliced off — or worse, cut to a half-date that reads the same on two different days.
+    # Leading it means a cap can only ever eat trailing name characters.
+    thread_name = f"Hermes {_cron_thread_date()} — {_cron_display_name(job)}"
     try:
         from agent.async_utils import safe_schedule_threadsafe
         coro = create_thread(str(chat_id), thread_name)

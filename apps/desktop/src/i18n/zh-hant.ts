@@ -73,6 +73,7 @@ export const zhHant = defineLocale({
   boot: zhHantBoot.boot,
   notifications: zhHantDiagnostics.notifications,
   remoteDisplayBanner: zhHantBoot.remoteDisplayBanner,
+  butterbar: zhHantBoot.butterbar,
   billingBlock: zhHantCommon.billingBlock,
   sendDiagnostics: zhHantDiagnostics.sendDiagnostics,
   titlebar: zhHantChrome.titlebar,

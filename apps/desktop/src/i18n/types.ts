@@ -11,6 +11,7 @@ import type { TipId } from '@/lib/tips/catalog'
 import type { AuxTaskCopyMap } from './types_aux_tasks'
 import type { BootTranslations } from './types_boot'
 import type { ModelMenuTranslations } from './types_model_menu'
+import type { NoticeTranslations } from './types_notices'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
 
 /** The locales compiled into the app (`TRANSLATIONS`). */
@@ -65,7 +66,7 @@ interface ModeOptionCopy {
   description: string
 }
 
-export interface Translations {
+export interface Translations extends NoticeTranslations {
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: SharedMetricsTranslations
   externalOpenFailed: {
@@ -532,10 +533,6 @@ export interface Translations {
       backgroundFailedTitle: string
       creditsTitle: string
     }
-  }
-
-  remoteDisplayBanner: {
-    message: (reason: string) => string
   }
 
   billingBlock: {

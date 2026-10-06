@@ -4,6 +4,7 @@ import { defineLocale } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaAuxTasks } from './ja_aux_tasks'
 import { jaModelMenu } from './ja_model_menu'
+import { jaNotices } from './ja_notices'
 import { jaPluginSettings } from './ja_plugins'
 import { jaSharedMetrics } from './ja_shared_metrics'
 
@@ -259,10 +260,7 @@ export const ja = defineLocale({
     }
   },
 
-  remoteDisplayBanner: {
-    message: reason =>
-      `ソフトウェアレンダリングが有効です — リモートディスプレイを検出しました（${reason}）。ちらつきを防ぐため GPU アクセラレーションは無効化されています。`
-  },
+  ...jaNotices,
 
   billingBlock: {
     titleNous: 'Nous クレジットが不足しています',

@@ -4,6 +4,7 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { esAuxTasks } from './es_aux_tasks'
 import { esBoot } from './es_boot'
 import { esModelMenu } from './es_model_menu'
+import { esNotices } from './es_notices'
 import { esSharedMetrics } from './es_shared_metrics'
 import { introEs } from './intro-es'
 
@@ -512,10 +513,7 @@ export const esOverrides = {
       creditsTitle: 'Créditos'
     }
   },
-  remoteDisplayBanner: {
-    message: reason =>
-      `Renderizado por software activo — se detectó una pantalla remota (${reason}). Se desactivó la aceleración por GPU para evitar parpadeos.`
-  },
+  ...esNotices,
   billingBlock: {
     titleNous: 'Sin créditos de Nous',
     titleProvider: provider => `Sin créditos — ${provider}`,

@@ -4,6 +4,7 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
 import { frModelMenu } from './fr_model_menu'
+import { frNotices } from './fr_notices'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { introFr } from './intro-fr'
 
@@ -509,10 +510,7 @@ export const frOverrides = {
       creditsTitle: 'Crédits'
     }
   },
-  remoteDisplayBanner: {
-    message: reason =>
-      `Rendu logiciel actif — affichage distant détecté (${reason}). L'accélération GPU est désactivée pour éviter les scintillements.`
-  },
+  ...frNotices,
   billingBlock: {
     titleNous: 'Plus de crédits Nous',
     titleProvider: provider => `Plus de crédits — ${provider}`,

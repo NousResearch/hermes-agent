@@ -11,7 +11,7 @@ from typing import Any, Dict
 
 from agent.gemini_native_adapter import GeminiAPIError, GeminiNativeClient, gemini_http_error
 
-INFERENCE_BASE_URL = "https://generativelanguage.googleapis.com/v1alpha"
+from .constants import INFERENCE_BASE_URL
 
 
 class SolsticeClient(GeminiNativeClient):

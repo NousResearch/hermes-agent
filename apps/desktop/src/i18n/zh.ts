@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 import { introZh } from './intro-zh'
 import { zhAuxTasks } from './zh_aux_tasks'
+import { zhMessagingGateway } from './zh_messaging_gateway'
 import { zhModelMenu } from './zh_model_menu'
 import { zhSharedMetrics } from './zh_shared_metrics'
 
@@ -2650,6 +2651,7 @@ export const zh = defineLocale({
   },
 
   messaging: {
+    ...zhMessagingGateway,
     search: '搜索消息平台…',
     statusFilter: {
       all: '全部',
@@ -2674,7 +2676,6 @@ export const zh = defineLocale({
     unknown: '未知',
     hintPendingRestart: '在状态栏重启网关以应用此更改。',
     sharedListenerUrl: '通过共享网关监听器提供，地址为',
-    hintGatewayStopped: '在状态栏启动网关以建立连接。',
     credentialsSet: '凭据已设置',
     needsSetup: '需要设置',
     gatewayStopped: '消息网关已停止',
@@ -2727,10 +2728,6 @@ export const zh = defineLocale({
     failedRevoke: name => `撤销 ${name} 失败`,
     pairingLockedOut: '批准失败次数过多，该平台已被暂时锁定，请稍后再试。',
     waitingSince: minutes => (minutes < 1 ? '刚刚' : `${minutes} 分钟前`),
-    restartNeeded: '已保存。请重启消息网关以应用新设置。',
-    restartNow: '立即重启',
-    restarting: '正在重启…',
-    restartFailedManual: '网关重启失败 — 请手动重启并检查网关日志。',
     telegramQr: {
       title: '选择连接 Telegram 机器人的方式',
       subtitle: '两种方式都会连接一个由你控制的机器人，凭据仅保存在此 Hermes 安装中。',
@@ -4288,7 +4285,7 @@ export const zh = defineLocale({
       fastFailed: '快速模式更新失败'
     },
     gatewayMenu: {
-      gateway: '网关',
+      gateway: '后端',
       connected: '已连接',
       connecting: '连接中',
       offline: '离线',

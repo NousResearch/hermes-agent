@@ -300,7 +300,7 @@ export const zhHantChrome = {
       fastFailed: '快速模式更新失敗'
     },
     gatewayMenu: {
-      gateway: '閘道',
+      gateway: '後端',
       connected: '已連線',
       connecting: '連線中',
       offline: '離線',

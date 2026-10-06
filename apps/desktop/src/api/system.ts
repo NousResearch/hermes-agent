@@ -145,7 +145,23 @@ export function runCurator(): Promise<ActionResponse> {
   })
 }
 
-export function restartGateway(): Promise<ActionResponse> {
+export function startGateway(owner?: ResolvedOwner): Promise<ActionResponse> {
+  if (owner) {
+    return hermesApiAs<ActionResponse>(owner, { path: '/api/gateway/start', method: 'POST' })
+  }
+
+  return hermesApi<ActionResponse>({
+    ...profileScoped(),
+    path: '/api/gateway/start',
+    method: 'POST'
+  })
+}
+
+export function restartGateway(owner?: ResolvedOwner): Promise<ActionResponse> {
+  if (owner) {
+    return hermesApiAs<ActionResponse>(owner, { path: '/api/gateway/restart', method: 'POST' })
+  }
+
   return hermesApi<ActionResponse>({
     ...profileScoped(),
     path: '/api/gateway/restart',

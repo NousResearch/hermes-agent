@@ -9,6 +9,7 @@ import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
 import type { AuxTaskCopyMap } from './types_aux_tasks'
+import type { MessagingGatewayTranslations } from './types_messaging_gateway'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
 
@@ -2443,7 +2444,7 @@ export interface Translations {
     }
   }
 
-  messaging: {
+  messaging: MessagingGatewayTranslations & {
     search: string
     statusFilter: Record<'all' | 'bad' | 'good' | 'muted' | 'warn', string>
     loading: string
@@ -2452,7 +2453,6 @@ export interface Translations {
     unknown: string
     hintPendingRestart: string
     sharedListenerUrl: string
-    hintGatewayStopped: string
     credentialsSet: string
     needsSetup: string
     gatewayStopped: string
@@ -2505,11 +2505,6 @@ export interface Translations {
     failedRevoke: (name: string) => string
     pairingLockedOut: string
     waitingSince: (minutes: number) => string
-    restartNeeded: string
-    restartNow: string
-    restarting: string
-    restartFailedManual: string
-    restartFailedManualDetail: string
     restartAgain: string
     openLogs: string
     telegramQr: {

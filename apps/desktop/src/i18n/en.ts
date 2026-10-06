@@ -1,6 +1,7 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
 import { enAuxTasks } from './en_aux_tasks'
+import { enMessagingGateway } from './en_messaging_gateway'
 import { enModelMenu } from './en_model_menu'
 import { enSharedMetrics } from './en_shared_metrics'
 import type { Translations } from './types'
@@ -2851,6 +2852,7 @@ export const en: Translations = {
   },
 
   messaging: {
+    ...enMessagingGateway,
     search: 'Search messaging...',
     statusFilter: {
       all: 'All',
@@ -2875,7 +2877,6 @@ export const en: Translations = {
     unknown: 'Unknown',
     hintPendingRestart: 'Restart the gateway from the status bar to apply this change.',
     sharedListenerUrl: 'Served on the shared gateway listener at',
-    hintGatewayStopped: 'Start the gateway from the status bar to connect.',
     credentialsSet: 'Credentials set',
     needsSetup: 'Needs setup',
     gatewayStopped: 'Messaging gateway stopped',
@@ -2928,11 +2929,6 @@ export const en: Translations = {
     failedRevoke: name => `Failed to revoke ${name}`,
     pairingLockedOut: 'Too many failed approvals — this platform is locked out. Try again later.',
     waitingSince: minutes => (minutes < 1 ? 'just now' : `${minutes}m ago`),
-    restartNeeded: 'Saved. Restart the messaging gateway so the new settings take effect.',
-    restartNow: 'Restart now',
-    restarting: 'Restarting…',
-    restartFailedManual: "Hermes couldn't restart to apply your messaging settings",
-    restartFailedManualDetail: 'Try Restart again; if it still fails, open the logs and send diagnostics.',
     restartAgain: 'Restart again',
     openLogs: 'Open logs',
     telegramQr: {
@@ -4593,7 +4589,7 @@ export const en: Translations = {
       fastFailed: 'Fast mode update failed'
     },
     gatewayMenu: {
-      gateway: 'Gateway',
+      gateway: 'Backend',
       connected: 'Connected',
       connecting: 'Connecting',
       offline: 'Offline',
@@ -4652,7 +4648,7 @@ export const en: Translations = {
       gatewayConnecting: 'connecting',
       gatewayOffline: 'offline',
       gatewayRestarting: 'restarting…',
-      gatewayTitle: 'Gateway',
+      gatewayTitle: 'Backend',
       customizeTitle: 'Show in status bar',
       hideStatusbar: 'Hide status bar',
       resetStatusbar: 'Reset to defaults',

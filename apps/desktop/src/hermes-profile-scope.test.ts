@@ -10,6 +10,7 @@ import {
   saveMemoryProviderConfig,
   setApiRequestProfile,
   speakText,
+  startGateway,
   transcribeAudio,
   updateHermes
 } from './hermes'
@@ -54,6 +55,7 @@ describe('backend action helpers are profile-scoped', () => {
 
     void getStatus()
     void restartGateway()
+    void startGateway()
     void updateHermes()
     void checkHermesUpdate()
     void getActionStatus('gateway-restart')
@@ -61,6 +63,20 @@ describe('backend action helpers are profile-scoped', () => {
     for (const call of api.mock.calls) {
       expect(call[0].profile).toBe('coder')
     }
+  })
+
+  it('starts the active profile with the dedicated POST lifecycle endpoint', () => {
+    setApiRequestProfile('coder')
+
+    void startGateway()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/gateway/start',
+        method: 'POST',
+        profile: 'coder'
+      })
+    )
   })
 
   // Audio endpoints (transcribe / speak / voices) write to the active

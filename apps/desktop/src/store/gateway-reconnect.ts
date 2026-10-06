@@ -12,6 +12,8 @@ export interface GatewayReconnectOptions {
    * so the handler probes first instead of force-closing a healthy socket.
    */
   source?: GatewayReconnectSource
+  /** Recheck an initiating operation's authority immediately before dispatch. */
+  isCurrent?: () => boolean
 }
 
 type GatewayReconnectHandler = (options?: GatewayReconnectOptions) => Promise<void> | void
@@ -41,7 +43,11 @@ export function reconnectGateway(options?: GatewayReconnectOptions): Promise<voi
   }
 
   inFlight = Promise.resolve()
-    .then(() => handler(options))
+    .then(() => {
+      if (!options?.isCurrent || options.isCurrent()) {
+        return handler(options)
+      }
+    })
     .finally(() => {
       inFlight = null
     })

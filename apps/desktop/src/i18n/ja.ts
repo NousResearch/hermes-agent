@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaAuxTasks } from './ja_aux_tasks'
+import { jaMessagingGateway } from './ja_messaging_gateway'
 import { jaModelMenu } from './ja_model_menu'
 import { jaPluginSettings } from './ja_plugins'
 import { jaSharedMetrics } from './ja_shared_metrics'
@@ -1854,6 +1855,7 @@ export const ja = defineLocale({
   },
 
   messaging: {
+    ...jaMessagingGateway,
     search: 'メッセージングを検索...',
     statusFilter: {
       all: 'すべて',
@@ -1878,11 +1880,6 @@ export const ja = defineLocale({
     unknown: '不明',
     hintPendingRestart: 'この変更を適用するにはステータスバーからゲートウェイを再起動してください。',
     sharedListenerUrl: '共有ゲートウェイのリスナーで提供中:',
-    hintGatewayStopped: 'ステータスバーからゲートウェイを起動して接続してください。',
-    restartNeeded: '保存しました。新しい設定を反映するにはメッセージングゲートウェイを再起動してください。',
-    restartNow: '今すぐ再起動',
-    restarting: '再起動中…',
-    restartFailedManual: 'ゲートウェイの再起動に失敗しました。手動で再起動し、ゲートウェイのログを確認してください。',
     telegramQr: {
       title: 'Telegram ボットの接続方法を選択',
       subtitle: 'どちらの方法でも、あなたが管理するボットを接続し、資格情報はこの Hermes にのみ保存されます。',
@@ -3318,7 +3315,7 @@ export const ja = defineLocale({
       fastFailed: '高速モードの更新に失敗しました'
     },
     gatewayMenu: {
-      gateway: 'ゲートウェイ',
+      gateway: 'バックエンド',
       connected: '接続済み',
       connecting: '接続中',
       offline: 'オフライン',

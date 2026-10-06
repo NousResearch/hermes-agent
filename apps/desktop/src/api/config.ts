@@ -14,7 +14,15 @@ import type {
   StatusResponse
 } from '@/types/hermes'
 
-import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_REQUEST_TIMEOUT_MS } from './client'
+import {
+  capabilityScoped,
+  hermesApi,
+  hermesApiAs,
+  type ProfileScope,
+  profileScoped,
+  type ResolvedOwner,
+  STARTUP_REQUEST_TIMEOUT_MS
+} from './client'
 
 type ConfigReadOrigin = { connectionId?: string; priority?: 'foreground'; profile?: string }
 
@@ -84,7 +92,11 @@ export function resolveConfigWriteScope(
   return capabilityScoped(requestScope)
 }
 
-export function getStatus(): Promise<StatusResponse> {
+export function getStatus(owner?: ResolvedOwner): Promise<StatusResponse> {
+  if (owner) {
+    return hermesApiAs<StatusResponse>(owner, { path: '/api/status' })
+  }
+
   return hermesApi<StatusResponse>({
     ...profileScoped(),
     path: '/api/status'

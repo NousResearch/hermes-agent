@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
+import { ruMessagingGateway } from './ru_messaging_gateway'
 import { ruModelMenu } from './ru_model_menu'
 import { ruPluginSettings } from './ru_plugins'
 import { ruSharedMetrics } from './ru_shared_metrics'
@@ -1964,6 +1965,7 @@ export const ru = defineLocale({
     }
   },
   messaging: {
+    ...ruMessagingGateway,
     search: 'Поиск в сообщениях...',
     statusFilter: {
       all: 'Все',
@@ -1988,7 +1990,6 @@ export const ru = defineLocale({
     unknown: 'Неизвестно',
     hintPendingRestart: 'Перезапустите шлюз из строки состояния, чтобы применить это изменение.',
     sharedListenerUrl: 'Обслуживается общим слушателем шлюза по адресу',
-    hintGatewayStopped: 'Запустите шлюз из строки состояния для подключения.',
     credentialsSet: 'Учётные данные заданы',
     needsSetup: 'Нужна настройка',
     gatewayStopped: 'Шлюз сообщений остановлен',
@@ -2042,10 +2043,6 @@ export const ru = defineLocale({
     failedRevoke: name => `Не удалось отозвать ${name}`,
     pairingLockedOut: 'Слишком много неудачных одобрений — эта платформа заблокирована. Попробуйте позже.',
     waitingSince: minutes => (minutes < 1 ? 'только что' : `${minutes}м назад`),
-    restartNeeded: 'Сохранено. Перезапустите шлюз сообщений, чтобы применить новые настройки.',
-    restartNow: 'Перезапустить',
-    restarting: 'Перезапуск…',
-    restartFailedManual: 'Не удалось перезапустить шлюз — перезапустите его вручную и проверьте журналы.',
     telegramQr: {
       title: 'Выберите способ подключения Telegram-бота',
       subtitle:
@@ -3501,7 +3498,7 @@ export const ru = defineLocale({
       fastFailed: 'Не удалось обновить быстрый режим'
     },
     gatewayMenu: {
-      gateway: 'Шлюз',
+      gateway: 'Бэкенд',
       connected: 'Подключён',
       connecting: 'Подключение',
       offline: 'Недоступен',

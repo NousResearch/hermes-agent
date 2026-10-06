@@ -398,7 +398,7 @@ export const arChrome = {
       fastFailed: 'فشل تحديث الوضع السريع'
     },
     gatewayMenu: {
-      gateway: 'البوابة',
+      gateway: 'الواجهة الخلفية',
       connected: 'متصل',
       connecting: 'جار الاتصال',
       offline: 'غير متصل',

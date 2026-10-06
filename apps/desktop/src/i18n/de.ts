@@ -1,6 +1,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { deAuxTasks } from './de_aux_tasks'
+import { deMessagingGateway } from './de_messaging_gateway'
 import { deModelMenu } from './de_model_menu'
 import { deSharedMetrics } from './de_shared_metrics'
 import { defineLocale, type TranslationOverrides } from './define-locale'
@@ -3194,6 +3195,7 @@ export const deOverrides = {
     }
   },
   messaging: {
+    ...deMessagingGateway,
     search: 'Messaging durchsuchen...',
     statusFilter: {
       all: 'Alle',
@@ -3218,7 +3220,6 @@ export const deOverrides = {
     unknown: 'Unbekannt',
     hintPendingRestart: 'Starten Sie das Gateway über die Statusleiste neu, um diese Änderung zu übernehmen.',
     sharedListenerUrl: 'Erreichbar über den gemeinsamen Gateway-Listener unter',
-    hintGatewayStopped: 'Starten Sie das Gateway über die Statusleiste, um die Verbindung herzustellen.',
     credentialsSet: 'Zugangsdaten gesetzt',
     needsSetup: 'Einrichtung nötig',
     gatewayStopped: 'Messaging-Gateway gestoppt',
@@ -3274,13 +3275,6 @@ export const deOverrides = {
     pairingLockedOut:
       'Zu viele fehlgeschlagene Freigaben – diese Plattform ist gesperrt. Versuchen Sie es später erneut.',
     waitingSince: minutes => (minutes < 1 ? 'gerade eben' : `${minutes} Min. her`),
-    restartNeeded: 'Gespeichert. Starten Sie das Messaging-Gateway neu, damit die neuen Einstellungen wirksam werden.',
-    restartNow: 'Jetzt neu starten',
-    restarting: 'Wird neu gestartet…',
-    restartFailedManual:
-      'Gateway-Neustart fehlgeschlagen – starten Sie es manuell neu und prüfen Sie die Gateway-Logs.',
-    restartFailedManualDetail:
-      'Versuchen Sie den Neustart erneut; wenn er weiterhin fehlschlägt, öffnen Sie die Logs und senden Sie Diagnosedaten.',
     restartAgain: 'Erneut neu starten',
     openLogs: 'Logs öffnen',
     telegramQr: {

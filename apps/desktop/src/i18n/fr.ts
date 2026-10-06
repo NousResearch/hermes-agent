@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frAuxTasks } from './fr_aux_tasks'
+import { frMessagingGateway } from './fr_messaging_gateway'
 import { frModelMenu } from './fr_model_menu'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { introFr } from './intro-fr'
@@ -3206,6 +3207,7 @@ export const frOverrides = {
     }
   },
   messaging: {
+    ...frMessagingGateway,
     search: 'Rechercher dans la messagerie...',
     statusFilter: {
       all: 'Tous',
@@ -3230,7 +3232,6 @@ export const frOverrides = {
     unknown: 'Inconnu',
     hintPendingRestart: "Redémarrez le gateway depuis la barre d'état pour appliquer ce changement.",
     sharedListenerUrl: 'Servi sur le listener partagé du gateway à',
-    hintGatewayStopped: "Démarrez le gateway depuis la barre d'état pour vous connecter.",
     credentialsSet: 'Identifiants définis',
     needsSetup: 'Nécessite une configuration',
     gatewayStopped: 'Gateway de messagerie arrêté',
@@ -3286,12 +3287,6 @@ export const frOverrides = {
     pairingLockedOut:
       "Trop d'échecs d'approbation — cette plateforme est temporairement verrouillée. Réessayez plus tard.",
     waitingSince: minutes => (minutes < 1 ? "à l'instant" : `il y a ${minutes} min`),
-    restartNeeded: 'Enregistré. Redémarrez le gateway de messagerie pour appliquer les nouveaux paramètres.',
-    restartNow: 'Redémarrer maintenant',
-    restarting: 'Redémarrage…',
-    restartFailedManual: 'Le redémarrage du gateway a échoué — redémarrez-le manuellement et consultez ses journaux.',
-    restartFailedManualDetail:
-      'Réessayez le redémarrage ; si le problème persiste, ouvrez les journaux et envoyez les diagnostics.',
     restartAgain: 'Redémarrer à nouveau',
     openLogs: 'Ouvrir les journaux',
     telegramQr: {

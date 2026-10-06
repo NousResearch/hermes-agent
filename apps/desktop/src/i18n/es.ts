@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { esAuxTasks } from './es_aux_tasks'
+import { esMessagingGateway } from './es_messaging_gateway'
 import { esModelMenu } from './es_model_menu'
 import { esSharedMetrics } from './es_shared_metrics'
 import { introEs } from './intro-es'
@@ -3188,6 +3189,7 @@ export const esOverrides = {
     }
   },
   messaging: {
+    ...esMessagingGateway,
     search: 'Buscar mensajería...',
     statusFilter: {
       all: 'Todos',
@@ -3212,7 +3214,6 @@ export const esOverrides = {
     unknown: 'Desconocido',
     hintPendingRestart: 'Reinicia el gateway desde la barra de estado para aplicar este cambio.',
     sharedListenerUrl: 'Servido en el listener del gateway compartido en',
-    hintGatewayStopped: 'Inicia el gateway desde la barra de estado para conectar.',
     credentialsSet: 'Credenciales definidas',
     needsSetup: 'Necesita configuración',
     gatewayStopped: 'Gateway de mensajería detenido',
@@ -3267,12 +3268,6 @@ export const esOverrides = {
     failedRevoke: name => `No se pudo revocar a ${name}`,
     pairingLockedOut: 'Demasiados fallos de aprobación — esta plataforma está bloqueada. Inténtalo de nuevo más tarde.',
     waitingSince: minutes => (minutes < 1 ? 'justo ahora' : `hace ${minutes}m`),
-    restartNeeded: 'Guardado. Reinicia el gateway de mensajería para que la nueva configuración surta efecto.',
-    restartNow: 'Reiniciar ahora',
-    restarting: 'Reiniciando…',
-    restartFailedManual: 'Hermes no pudo reiniciarse para aplicar tu configuración de mensajería',
-    restartFailedManualDetail:
-      'Vuelve a pulsar Reiniciar; si sigue fallando, abre los registros y envía un diagnóstico.',
     restartAgain: 'Reiniciar de nuevo',
     openLogs: 'Abrir registros',
     telegramQr: {

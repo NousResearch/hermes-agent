@@ -1610,13 +1610,13 @@ class TestMacOSTCCGrants:
         assert "stable" not in out
 
 
-@pytest.mark.parametrize("probe_error,free,expected,issue", [
-    (None, 50 << 30, "store is writable", None),
-    (OSError(28, "No space left on device"), 50 << 30, "NOT writable (ENOSPC", "is not writable"),
-    (None, 10 << 20, "free — cron jobs stop when it fills", "Free disk space"),
+@pytest.mark.parametrize("probe_error,free,expected,issues", [
+    (None, 50 << 30, "store is writable", []),
+    (OSError(28, "No space left on device"), 50 << 30, "NOT writable (ENOSPC", ["is not writable"]),
+    (None, 10 << 20, "free — cron jobs stop when it fills", ["Free disk space"]),
 ])
 def test_cron_store_check_reports_writability_and_low_space(
-        monkeypatch, tmp_path, capsys, probe_error, free, expected, issue):
+        monkeypatch, tmp_path, capsys, probe_error, free, expected, issues):
     from cron import store_health
 
     (tmp_path / "cron").mkdir()
@@ -1625,4 +1625,4 @@ def test_cron_store_check_reports_writability_and_low_space(
     monkeypatch.setattr(store_health, "free_bytes", lambda _d: free)
     finding = doctor_state._check_cron_store(False)
     assert expected in capsys.readouterr().out
-    assert [i for i in finding.issues if issue in i] == finding.issues != [] if issue else not finding.issues
+    assert len(finding.issues) == len(issues) and all(any(s in i for i in finding.issues) for s in issues)

@@ -273,9 +273,10 @@ providers:
 ```
 
 To opt in every model on a provider, put the flag in a provider-level
-`capabilities:` block (`capabilities: {answer_in_reasoning: true}`); the
-gateway passes that block to the agent. The opt-in only applies to that
-provider's route: a fallback provider does not inherit it, and OpenRouter
+`capabilities:` block (`capabilities: {answer_in_reasoning: true}`). Hermes
+re-reads the opt-in on the active route on every turn, in the CLI, TUI and
+gateway alike, so it survives a `/model` switch to another model on the same
+provider. A fallback or any other provider does not inherit it, and OpenRouter
 routes are never trusted, even with the flag set.
 
 :::note Legacy format

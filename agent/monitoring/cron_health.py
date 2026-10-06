@@ -18,6 +18,7 @@ from cron.jobs import (
 )
 from cron.occurrences import get_catch_up_occurrence_count
 from cron.scheduler import get_running_job_ids
+from cron.store_health import degraded_record
 from hermes_time import now as _now
 
 logger = logging.getLogger(__name__)
@@ -151,6 +152,9 @@ _METRIC_GROUPS: tuple[tuple[Callable[[list[GatewayMetric]], None], str], ...] = 
     (_single_metric("hermes.cron.scheduler.catch_up_occurrences", lambda: get_catch_up_occurrence_count()), "cron catch-up metric unavailable"),
     (_job_metrics, "cron job metrics unavailable"),
     (_single_metric("hermes.cron.jobs.running", lambda: len(get_running_job_ids())), "cron running-job metric unavailable"),
+    (_single_metric("hermes.cron.store.writable", lambda: int(degraded_record() is None)), "cron store metric unavailable"),
+    (_single_metric("hermes.cron.store.skipped_runs", lambda: getattr(degraded_record(), "skipped_runs", 0)),
+     "cron store metric unavailable"),
 )
 
 

@@ -152,13 +152,13 @@ def firecrawl_scrape_client(monkeypatch):
     from plugins.web.firecrawl import provider as fc_provider
 
     client = _CapturingFirecrawlClient()
-    monkeypatch.setattr(fc_provider, "_get_firecrawl_client", lambda: client)
+    monkeypatch.setattr(fc_provider, "_get_firecrawl_client", lambda capability=None: client)
     monkeypatch.setattr(fc_provider, "check_website_access", lambda url: None)
     monkeypatch.setattr(fc_provider, "is_safe_url", lambda url: True)
     # Force the keyed SDK path: without credentials the provider now short-
     # circuits into the keyless failover ring (which never touches the SDK
     # ``scrape`` seam these tests pin), so disable it here.
-    monkeypatch.setattr(fc_provider, "_use_keyless_ring", lambda: False)
+    monkeypatch.setattr(fc_provider, "_use_keyless_ring", lambda capability=None: False)
     return client
 
 

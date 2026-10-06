@@ -737,6 +737,11 @@ opentelemetry-sdk = false
 packaging = false
 parallel-web = false
 pathspec = false
+# pilk: the silk extra's exact pin is a 2023 upload that PyPI's simple index no
+# longer dates reliably, so the cutoff filters its only satisfiable version
+# (uv drops ==0.2.4 as "no publish time") and every pm lock / update
+# dependency-sync goes unsatisfiable.
+pilk = false
 pillow = false
 piper-tts = "2026-09-04T16:47:32Z"
 prompt-toolkit = false

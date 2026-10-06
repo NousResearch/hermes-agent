@@ -400,31 +400,42 @@ venv and the checkout, never the home directory.
 
 ### Dependency security policy
 
-Hermes quarantines **its own** dependencies: the checkout's `[tool.uv] exclude-newer = "14 days"`
-keeps a freshly published release of any package Hermes itself depends on out of `hermes update`
-and the built-in lazy installs for two weeks, so a hijacked upload is caught upstream before it
-reaches users. **That quarantine does not apply to your plugin's dependencies.** When Hermes
-resolves your plugin into its environment, the cutoff stays on the packages Hermes itself locks
-and nowhere else, so a plugin can floor on a release published yesterday and install today — and the
-plugin's author, not Hermes, is responsible for what that pulls in. (A plugin that needs a newer
-version of a package Hermes itself depends on still waits out that package's window.)
+Hermes quarantines dependency releases for two weeks: the checkout's
+`[tool.uv] exclude-newer = "14 days"` keeps a freshly published release out of `hermes update`,
+plugin installs and the built-in lazy installs, so a hijacked upload is caught upstream before it
+reaches users. **The quarantine applies to your plugin's dependencies too**, transitive ones
+included.
 
-Set your own policy and hold yourself to it. Strongly recommended:
+To ship against a release younger than 14 days (typically your own SDK, published alongside the
+plugin), exact-pin it and exempt it in your plugin's `pyproject.toml`, the same way Hermes exempts
+its own direct dependencies:
 
-- **Upper bounds on every dependency** — `>=floor,<next_major` for stable packages,
+```toml
+[project]
+dependencies = ["my-plugin-sdk==1.4.0", "httpx>=0.27,<1"]
+
+[tool.uv.exclude-newer-package]
+my-plugin-sdk = false
+```
+
+Hermes honours an exemption only as `false` on an **exact `==` direct dependency** that Hermes
+itself does not lock. Anything else is ignored at install time and fails
+`hermes plugins validate`. A dependency Hermes also uses must accept the version Hermes locks; it
+cannot move Hermes onto a newer release. Manifest-only plugins (`python_dependencies` in
+`plugin.yaml`) have nowhere to put an exemption; add a `pyproject.toml` if you need one.
+
+Recommended on top:
+
+- **Upper bounds on every non-exempt dependency** — `>=floor,<next_major` for stable packages,
   `>=0.29,<0.32` for pre-1.0 ones. A bare `>=X.Y` adopts every future release unreviewed.
-- **Floor on the oldest API-compatible version**, not the release of the week. A floor on a
-  fresh wheel forces every installer onto it the day it appears; `>=old,!=broken,<next` keeps the
-  wide range and skips the one bad release.
-- **Adopt a new-release quarantine of your own** — wait ~14 days before floors move to a new
-  release, and resolve with `uv --exclude-newer "14 days"` (or `UV_EXCLUDE_NEWER`) in your own CI so
-  the lock you test is the one users get.
+- **Floor on the oldest API-compatible version**, not the release of the week. `>=old,!=broken,<next`
+  keeps the range wide and skips the one bad release, and keeps you clear of the quarantine.
 - **Pin your lock, review your bumps.** Treat a dependency bump as a code change: read the
   upstream diff, then re-pin.
 
-The plugin catalog review reads your dependency list at the pinned SHA (`plugin.yaml` or
-`pyproject.toml`) and flags bare floors and missing bounds; an entry is not held for a floor that
-is merely recent.
+Catalog CI validates your dependencies at the pinned SHA and locks every catalog plugin together
+with Hermes core; an entry that cannot resolve, or that conflicts with an already-listed plugin,
+is held until it does.
 
 ## Step 3: Write the tool schemas
 

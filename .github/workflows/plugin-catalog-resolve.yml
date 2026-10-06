@@ -1,0 +1,51 @@
+name: Plugin Catalog Resolve
+
+# Locks every catalog plugin together with Hermes core (scripts/ci/catalog_resolve_all.py),
+# exactly as an install resolves them: the 14-day release quarantine, plugin exemptions,
+# core's lock as the seed. A plugin that cannot install, or that conflicts with another
+# listed plugin, fails here.
+#
+# Called from ci.yaml on pull requests whose diff touches catalog entries, core's
+# dependency manifests or the check itself (the `plugin_catalog` lane). Every failure
+# blocks, including already-broken entries. A resolving subset is not a passing catalog.
+#
+# This executes pinned third-party build backends (uv builds metadata for buildable
+# members): read-only token, no persisted credentials.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GIT_TERMINAL_PROMPT: "0"
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prepare Hermes from this checkout
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: python
+          extras: '[]'
+
+      - name: Resolve this catalog
+        run: |
+          set -euo pipefail
+          scripts/run-in-hermes-env python3 scripts/ci/catalog_resolve_all.py \
+            --cache "$RUNNER_TEMP/clones" --report "$RUNNER_TEMP/head.json"
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: catalog-resolve-reports
+          path: ${{ runner.temp }}/head.json
+          if-no-files-found: ignore

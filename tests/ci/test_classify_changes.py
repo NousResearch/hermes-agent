@@ -44,6 +44,7 @@ DEFAULT = {
     "deps": True,
     "uv_lock": True,
     "npm_lock": True,
+    "plugin_catalog": True,
     "bootstrap": True,
     "desktop_updater": True,
     "rust": True,
@@ -52,7 +53,7 @@ DEFAULT = {
 SLOW_LANES = {"docker", "nix", "e2e", "e2e_upgrade", "e2e_desktop_core", "e2e_desktop_update"}
 
 
-def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, bootstrap=False, desktop_updater=False, rust=False, docker_meta=False, python_prod=None, nix=False, docker=None, e2e=False, e2e_upgrade=False, e2e_desktop_core=False, e2e_desktop_update=False) -> dict[str, bool]:
+def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, plugin_catalog=False, bootstrap=False, desktop_updater=False, rust=False, docker_meta=False, python_prod=None, nix=False, docker=None, e2e=False, e2e_upgrade=False, e2e_desktop_core=False, e2e_desktop_update=False) -> dict[str, bool]:
     # python_prod tracks python except for tests-only diffs; default it to
     # python so the majority of cases don't need to spell it out.
     #
@@ -77,6 +78,7 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_
         "deps": deps,
         "uv_lock": uv_lock,
         "npm_lock": npm_lock,
+        "plugin_catalog": plugin_catalog,
         "bootstrap": bootstrap,
         "desktop_updater": desktop_updater,
         "rust": rust,
@@ -94,9 +96,14 @@ CASES = {
     # install, so they start those slow lanes on the PR itself.
     "dep manifest → python": (
         ["pyproject.toml"],
-        _lanes(python=True, scan=True, deps=True, uv_lock=True, desktop_updater=True, docker=True, nix=True, e2e_upgrade=True),
+        _lanes(python=True, scan=True, deps=True, uv_lock=True, plugin_catalog=True, desktop_updater=True, docker=True,
+               nix=True, e2e_upgrade=True),
     ),
-    "uv.lock → python": (["uv.lock"], _lanes(python=True, uv_lock=True, docker=True, nix=True, e2e_upgrade=True)),
+    "uv.lock → python": (["uv.lock"], _lanes(python=True, uv_lock=True, plugin_catalog=True, docker=True, nix=True,
+                                             e2e_upgrade=True)),
+    # Locking the whole catalog clones every listed repo, so only an entry
+    # change (or core's manifests above) starts it.
+    "catalog entry → plugin_catalog": (["plugin-catalog/qdrant.yaml"], _lanes(python=True, plugin_catalog=True)),
     "ts package → frontend": (["apps/desktop/src/app.tsx"], _lanes(frontend=True)),
     "ui-tui → frontend": (["ui-tui/src/entry.ts"], _lanes(frontend=True)),
     # Lockfile bump shifts every TS package's tree, but not the Python suite.

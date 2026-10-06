@@ -592,6 +592,36 @@ def _check_python_dependencies(report: ValidationReport, plugin_dir: Path) -> No
     source = "pyproject" if decl.pyproject is not None else "manifest"
     detail = f"{len(installable)} requirements from {source}" if decl.requirements else "none declared"
     report.add("python dependencies", True, detail)
+    _check_dependency_quarantine(report, decl)
+
+
+def _check_dependency_quarantine(report: ValidationReport, decl) -> None:
+    """Plugin deps install under Hermes's 14-day release quarantine, so the pin a reviewer
+    approves must resolve under it: every ``exclude-newer-package`` exemption has to be one PM
+    honours (``false`` on an exact-pinned direct dep core does not lock), and a dep core already
+    locks must admit core's version, or the plugin can only install by moving core."""
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    from pm import paths
+    from pm.plugin_declarations import locked_versions, quarantine_exemptions
+
+    lock = paths.repo_root() / "uv.lock"
+    if not decl.install_requirements or not lock.is_file():
+        return
+    core = locked_versions(lock)
+    problems = []
+    for spec in decl.install_requirements:
+        requirement = Requirement(spec)
+        version = core.get(canonicalize_name(requirement.name))
+        if version and not requirement.specifier.contains(version, prereleases=True):
+            problems.append(f"{spec} excludes Hermes core's {requirement.name}=={version}")
+    if decl.pyproject is not None:
+        _honoured, refused = quarantine_exemptions(decl.pyproject, set(core))
+        problems += [f"exclude-newer-package exemption for {name} needs `false` on an exact `==` direct "
+                     "dependency that Hermes core does not lock" for name in refused]
+    report.add("dependency quarantine", not problems, "; ".join(problems) or
+               "exemptions honoured; core-shared deps admit core's locked versions")
 
 
 

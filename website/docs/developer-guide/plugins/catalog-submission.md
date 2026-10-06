@@ -125,16 +125,18 @@ the gallery. There is no separate listing to maintain.
    can break both. `hermes plugins validate` refuses these at admission (`no
    core override` check). If the hook you need does not exist, open an issue
    describing it: we would rather add the seam than list a patch.
-10. **Dependency security policy is the plugin's.** Hermes's 14-day
-   `exclude-newer` quarantine covers Hermes's own dependencies only; a plugin's
-   `python_dependencies` / `pyproject.toml` install under the plugin's policy
-   (no quarantine, still inside Hermes's core constraints). Reviewers read the
-   dependency list at the pinned SHA: bare floors (`>=X` with no upper bound)
-   and floors on the newest release get a request for the oldest
-   API-compatible floor plus an upper bound, and authors are strongly
-   recommended to run their own release quarantine (`uv --exclude-newer` in
-   their CI) — see the developer guide's *Dependency security policy*. A
-   recent floor alone is not grounds to hold an entry.
+10. **Dependencies wait out the release quarantine.** Hermes's 14-day
+   `exclude-newer` quarantine covers plugin dependencies too, transitive ones
+   included. A plugin that needs a fresher release (usually its own SDK)
+   exact-pins it and exempts it in its `pyproject.toml` with
+   `[tool.uv] exclude-newer-package = { name = false }`, the same way Hermes
+   exempts its own direct dependencies. Hermes honours only `false` on an exact
+   `==` direct dependency that Hermes itself does not lock, and a dependency
+   Hermes also uses must accept Hermes's locked version. `hermes plugins
+   validate` fails anything else (`dependency quarantine` check), and catalog CI
+   locks every listed plugin together with Hermes core: an entry that cannot
+   resolve, or that conflicts with one already listed, is held. See the
+   developer guide's *Dependency security policy*.
 
 11. **Credentials stay with their owner.** A plugin reads the credentials it is
    configured with: the env vars in `requires_env` and its own `config_schema`

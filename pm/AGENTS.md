@@ -18,11 +18,13 @@ Use `pm.build_environment` for fresh build outputs and `pm.ensure_environment` f
 isolated tool environments. Callers receive an interpreter or tool path, not uv.
 Nix's declarative uv2nix builds and unrelated user projects remain independently owned.
 
-The `[tool.uv] exclude-newer = "14 days"` quarantine covers **Hermes's own dependencies only**
-(every registry package in core's `uv.lock`). Plugin `python_dependencies` follow the plugin's own
-policy: when PM generates the plugin workspace (`pm/workspace.py::_core_release_quarantine`) the
-global cutoff moves onto each core-locked package, so plugin-only packages are not filtered and a
-plugin still cannot drag a core package past the window. Teknium's ruling: "plugins dont have to
-abide by our 14 day rule … Only hermes' dependencies themselves have to." We recommend (not require)
-plugin authors adopt their own quarantine — the developer guide and `plugin-catalog/README.md` carry
-that guidance.
+The `[tool.uv] exclude-newer = "14 days"` quarantine covers core **and plugin** dependencies, one
+policy for both: exact-pin a fresh direct dependency and exempt it with
+`[tool.uv] exclude-newer-package = { name = false }` (core does this for its own direct deps);
+everything else, transitive deps included, waits out the window. uv reads that table only at the
+workspace root, so `pm/workspace.py::_release_quarantine` lifts each plugin's exemptions into the
+generated root, filtered by `pm/plugin_declarations.py::quarantine_exemptions`: `false` on an
+exact-pinned direct dependency that core's lock does not hold. A plugin can let its own fresh
+release through; it cannot loosen a core package or a transitive one. `hermes plugins validate`
+fails exemptions PM would ignore (`dependency quarantine` check), and
+`scripts/ci/catalog_resolve_all.py` locks every catalog entry together with core.

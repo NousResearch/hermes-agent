@@ -129,7 +129,7 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         import tomli_w
 
         document = tomllib.loads(core_text)
-        _core_release_quarantine(document, source / "uv.lock")
+        _release_quarantine(document, source / "uv.lock", [root / member for member in members])
         document.setdefault("tool", {}).setdefault("uv", {})["workspace"] = {"members": sorted(members)}
         text = tomli_w.dumps(document)
     else:
@@ -140,32 +140,35 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     target.write_text(text, encoding="utf-8")
 
 
-def _core_release_quarantine(document: dict, core_lock: Path) -> None:
-    """Scope core's ``exclude-newer`` to the packages in core's own lock.
+def _release_quarantine(document: dict, core_lock: Path, members: list[Path]) -> None:
+    """Apply core's ``exclude-newer`` to plugin deps too, honouring plugin exemptions.
 
-    The quarantine covers Hermes's own dependencies only; a plugin's dependencies
-    follow the plugin's own policy, so a catalog pin floored on a fresh release still
-    installs. A global cutoff would filter plugin-only packages too, so it moves onto
-    every registry package core locks. A plugin still cannot drag one of those past
-    the window, and core's own ``= false`` exemptions stay as written.
+    Plugins follow the same policy as core: exact-pin a fresh direct dependency and
+    exempt it with ``[tool.uv] exclude-newer-package = { name = false }``; everything
+    else, transitive deps included, waits out the window. uv reads that table only at
+    the workspace root, so each member's exemptions are lifted here, filtered by
+    ``quarantine_exemptions`` so one plugin cannot loosen a package core holds.
     """
-    import re
-    import tomllib
+    import logging
+
+    from packaging.utils import canonicalize_name
+
+    from pm.plugin_declarations import locked_versions, quarantine_exemptions
 
     settings = document.get("tool", {}).get("uv", {})
-    cutoff = settings.pop("exclude-newer", None)
-    if cutoff is None:
+    if "exclude-newer" not in settings:
         return
-
-    def normalized(name: str) -> str:
-        return re.sub(r"[-_.]+", "-", name).lower()
-
-    per_package = {normalized(name): value
-                   for name, value in settings.get("exclude-newer-package", {}).items()}
-    for package in tomllib.loads(core_lock.read_text(encoding="utf-8-sig")).get("package", []):
-        if "registry" in package.get("source", {}):
-            per_package.setdefault(normalized(package["name"]), cutoff)
-    settings["exclude-newer-package"] = per_package
+    per_package = dict(settings.get("exclude-newer-package", {}))
+    held = set(locked_versions(core_lock)) | {canonicalize_name(name) for name in per_package}
+    for member in members:
+        honoured, refused = quarantine_exemptions(member / "pyproject.toml", held)
+        per_package.update(dict.fromkeys(honoured, False))
+        for name in refused:
+            logging.getLogger(__name__).warning(
+                "plugin %s: quarantine exemption for %s ignored (only `false` on an exact-pinned direct "
+                "dependency Hermes core does not lock)", member.name, name)
+    if per_package:
+        settings["exclude-newer-package"] = per_package
 
 
 def _is_member_candidate(plugin_dir: Path) -> bool:
@@ -245,6 +248,25 @@ def _member_key(identity: Path) -> str:
     return f"{name}-{digest}"
 
 
+def _installable_project(document: dict) -> bool:
+    """Drop what Hermes never installs from a plugin's pyproject; True when it changed.
+
+    Hermes never installs a plugin's extras, and uv syncs a member's default ``dev``
+    group into Hermes's own environment. Resolving them anyway made a plugin's
+    pytest/ruff pins conflict with core's.
+    """
+    project = document.get("project", {})
+    changed = False
+    if "optional-dependencies" in project and "optional-dependencies" not in project.get("dynamic", []):
+        del project["optional-dependencies"]
+        changed = True
+    for table, key in ((document, "dependency-groups"), (document.get("tool", {}).get("uv", {}), "dev-dependencies")):
+        if key in table:
+            del table[key]
+            changed = True
+    return changed
+
+
 def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
     """Keep workspace members with their generation, not a temporary install clone."""
     import json
@@ -269,6 +291,7 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
         changed = declaration.install_requirements != declaration.requirements
         if changed:
             document["project"]["dependencies"] = list(declaration.install_requirements)
+        changed = _installable_project(document) or changed
         for sources in document.get("tool", {}).get("uv", {}).get("sources", {}).values():
             for spec in sources if isinstance(sources, list) else [sources]:
                 if not isinstance(spec, dict) or "path" not in spec:

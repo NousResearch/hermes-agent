@@ -787,6 +787,28 @@ uvicorn = false
 vercel = false
 websockets = false
 youtube-transcript-api = false
+# Catalog plugins floored on a release younger than the 14-day window
+# (temporary). Each cutoff is the upload time of the OLDEST release the
+# plugin accepts, so exactly that release gets through and anything newer
+# still waits. A line is dead once its date is 14 days old: delete it then.
+# The lasting fix is upstream (exact pin + the plugin's own exemption, see
+# the developer guide's "Dependency security policy").
+# birkin-mnemosyne 0.4.0: catalog birkin-mnemosyne; dead after 2026-10-14
+birkin-mnemosyne = "2026-09-30T10:47:28Z"
+# cortexlayer 0.1.2: catalog cortexlayer; dead after 2026-10-09
+cortexlayer = "2026-09-25T14:28:59Z"
+# evalroute 0.9.0: catalog evalroute; dead after 2026-10-19
+evalroute = "2026-10-05T04:51:25Z"
+# gonogo-eval 0.3.0: catalog gonogo, thomas; dead after 2026-10-12
+gonogo-eval = "2026-09-28T21:07:00Z"
+# hermes-mnemostack 1.0.3: catalog mnemostack; dead after 2026-10-11
+hermes-mnemostack = "2026-09-27T19:26:09Z"
+# loreconvo 0.10.15: catalog loreconvo; dead after 2026-10-18
+loreconvo = "2026-10-04T17:35:24Z"
+# mnemosyne-hermes 0.7.3: catalog mnemosyne; dead after 2026-10-07
+mnemosyne-hermes = "2026-09-23T23:42:51Z"
+# mnemosyne-memory 4.0.0b3: catalog mnemosyne; dead after 2026-10-07
+mnemosyne-memory = "2026-09-23T23:41:58Z"
 
 [tool.setuptools]
 # Root single-file modules are derived by setup.py at build time from the

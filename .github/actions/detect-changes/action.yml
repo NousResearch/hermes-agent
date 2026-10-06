@@ -57,6 +57,9 @@ outputs:
   npm_lock:
     description: Post/update the semantic package-lock.json diff PR comment.
     value: ${{ steps.classify.outputs.npm_lock }}
+  plugin_catalog:
+    description: Lock every plugin catalog entry together with core (catalog entries, pyproject.toml, uv.lock).
+    value: ${{ steps.classify.outputs.plugin_catalog }}
   bootstrap:
     description: Run the bootstrap installer lane (install.sh sandbox + stamp verification).
     value: ${{ steps.classify.outputs.bootstrap }}

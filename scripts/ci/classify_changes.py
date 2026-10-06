@@ -28,6 +28,10 @@ Lanes:
   PyPI, so a diff that touches neither ``pyproject.toml`` nor ``uv.lock``
   must not run it.
 * ``npm_lock``    — semantic package-lock.json diff PR comment.
+* ``plugin_catalog`` — lock every catalog plugin together with core
+  (``scripts/ci/catalog_resolve_all.py``). Clones every listed repo and takes
+  minutes, so only catalog entries, core's dependency manifests and the check
+  itself start it.
 * ``bootstrap``   — the bootstrap installer lane: install.sh sandbox install,
   pin-fragment drift check, and shipped version-stamp verification.
 * ``desktop_updater`` — the Windows desktop-update hand-off script and the
@@ -312,6 +316,9 @@ def _slow_lanes(files: list[str]) -> dict[str, bool]:
     return lanes
 
 
+_PLUGIN_CATALOG_PATHS = ("plugin-catalog/", "pyproject.toml", "uv.lock", "scripts/ci/catalog_resolve_all.py")
+
+
 def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
     """Map changed paths to ``{lane: should_run}``.
 
@@ -341,6 +348,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
         "deps": deps,
         "uv_lock": any(f in ("pyproject.toml", "uv.lock") for f in files),
         "npm_lock": npm_lock,
+        "plugin_catalog": any(f.startswith(_PLUGIN_CATALOG_PATHS) for f in files),
         "bootstrap": any(
             f.startswith(_BOOTSTRAP_PATHS) or f in _BOOTSTRAP_FILES for f in files
         ),
@@ -358,6 +366,7 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
         ret["deps"] = True
         ret["uv_lock"] = True
         ret["npm_lock"] = True
+        ret["plugin_catalog"] = True
         ret["bootstrap"] = True
         ret["desktop_updater"] = True
         ret["rust"] = True

@@ -108,6 +108,46 @@ def test_config_schema_admits_every_type_the_loader_and_renderer_accept(tmp_path
     assert [ok for n, ok, _ in bad.checks if n == "config schema"] == [False], bad.checks
 
 
+def _pyproject_plugin(tmp_path: Path, name: str, dependencies: list, exempt: tuple = ()) -> Path:
+    d = _make_plugin(tmp_path, manifest=dict(BASE_MANIFEST, name=name))
+    table = "".join(f"{package} = false\n" for package in exempt)
+    (d / "pyproject.toml").write_text(
+        f'[project]\nname = "{name}"\nversion = "1"\ndependencies = {json.dumps(dependencies)}\n'
+        + (f"[tool.uv.exclude-newer-package]\n{table}" if exempt else ""), encoding="utf-8")
+    return d
+
+
+def _core_locked(name: str) -> str:
+    from pm import paths
+    from pm.plugin_declarations import locked_versions
+
+    return locked_versions(paths.repo_root() / "uv.lock")[name]
+
+
+def test_quarantine_check_admits_core_policy_shaped_dependencies(tmp_path):
+    """The shape core itself uses passes: an exact-pinned, exempted plugin-only package plus a
+    core-shared dependency whose range admits core's locked version."""
+    httpx = _core_locked("httpx")
+    d = _pyproject_plugin(tmp_path, "shaped", ["plugin-only-sdk==1.0", f"httpx>={httpx}"],
+                          exempt=("plugin-only-sdk",))
+    assert dict((n, ok) for n, ok, _ in validate_plugin_dir(d).checks)["dependency quarantine"] is True
+
+
+def test_quarantine_check_refuses_what_pm_would_not_honour(tmp_path):
+    """Each refusal mirrors a case PM ignores or cannot resolve: an exemption on a floating
+    range, an exemption on a package core locks, and a range that excludes core's version."""
+    httpx = _core_locked("httpx")
+    cases = {
+        "floating": (["plugin-only-sdk>=1.0"], ("plugin-only-sdk",)),
+        "core-exempt": ([f"httpx=={httpx}"], ("httpx",)),
+        "core-excluded": ([f"httpx!={httpx}"], ()),
+    }
+    for name, (deps, exempt) in cases.items():
+        report = validate_plugin_dir(_pyproject_plugin(tmp_path, name, deps, exempt))
+        assert dict((n, ok) for n, ok, _ in report.checks)["dependency quarantine"] is False, name
+        assert report.exit_code != 0, name
+
+
 def test_admission_runs_the_install_scanner(tmp_path):
     """Admission and install must agree: a tree the installer would hard-block (dangerous) fails
     validation; caution findings are surfaced to the reviewer as warnings without failing."""

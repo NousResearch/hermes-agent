@@ -1330,10 +1330,7 @@ class SessionSearchMixin:
                         self._conn.rollback()
                         logger.warning("FTS rebuild failed for %s: %s", tbl, exc)
                     except sqlite3.DatabaseError as exc:
-                        # SQLITE_CORRUPT ("database disk image is malformed") is a DatabaseError,
-                        # not an OperationalError — the corruption class this recovery exists for.
-                        # Without this arm the error escaped the loop un-rolled-back and callers
-                        # lost the 0-means-no-progress signal they route on (#133375).
+                        # SQLITE_CORRUPT is a DatabaseError, not an OperationalError (#133375).
                         self._conn.rollback()
                         logger.error(
                             "FTS rebuild failed with a corruption-class error for %s: %s; "

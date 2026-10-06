@@ -144,6 +144,11 @@ store object and identity revision for that creation record. Attachment retries
 cannot refresh this witness. A removed/replaced engine, changed revision (even
 if the segment ID changes back), changed engine/store scope, failed/interrupted
 turn or unready/unproven engine refuses. Compute-host-owned records remain unsupported.
+An unbuilt record configured to dispatch its next turn to the compute host also
+refuses. The parent marks any attempted child lifetime permanently ineligible,
+even after a failed send, child replacement, mirror lag or an away/back key change.
+It never queries, starts, resumes or interrupts a child to manufacture activation
+proof. A ready local engine stays local under the existing routing policy.
 An accepted prompt still waiting for its engine turn lease is not certified as a
 healthy running engine.
 
@@ -164,10 +169,10 @@ receipt capture. A busy engine transition refuses instead of waiting on callback
 that might need gateway locks. A healthy turn continues on its existing worker
 and lease, with existing subscribers retained; activation starts no execution.
 
-This is local runtime membership qualification. Actual WebSocket authentication,
-compute-host identity, cross-process store/lease proof, later-operation fencing
-and complete recovery remain separate gates. Method presence or a receipt alone
-must not be interpreted as writable recovery support.
+This is a qualified local execution scope, not a parent-mirror certificate for
+compute-host identity. Complete recovery, durable request outcomes and downstream
+supported-release/pin qualification remain separate gates. Method presence or a
+subscription receipt alone must not be interpreted as writable recovery support.
 
 For a supported record, registry object membership, creator, requested and current
 resolved store, original exact stored segment, incarnation and scope are compared
@@ -181,10 +186,67 @@ subscriber membership and starts no execution.
 Success returns `{attached: true, accepted_binding: {...}}`, captured within that
 comparison/subscription boundary. It contains no mutable history, inflight state
 or pending requests. The receipt certifies that historical cut, not future
-connection liveness, complete recovery or input authority. Engine-side identity
-fencing and fencing subsequent session-targeted operations remain prerequisites
-for writable recovery. Never automatically replay prompts or responses or fall
+connection liveness, complete recovery or input authority. Conditional operations
+below revalidate identity independently at use. Never automatically replay prompts or responses or fall
 back to legacy activation/cold resume after refusal or a lost receipt.
+
+### Conditional local operations
+
+After accepting `session.activate_bound`, the connection enters conditional mode.
+`session.invoke_bound` requires `{session_id, expected_binding, profile?, operation}`
+and a live subscription installed for that exact binding on the calling peer.
+Its closed, discriminated operation catalog is:
+
+```json
+{"method":"prompt.submit","text":"a deliberate new prompt"}
+{"method":"session.interrupt"}
+{"method":"request.answer","id":"srq-...","result":{"answer":"reviewed answer"}}
+{"method":"clarify.lock","request_id":"srq-...","question_id":"q1","answer":"chosen"}
+```
+
+The envelope returns `{operation_result: ...}` with the underlying operation's
+result. Missing, malformed, oversized or unsupported operation fields return
+`4000`. Identity, owner, scope, incarnation, engine revision/store, subscription
+or pending-request ownership mismatch returns `4007` before mutation; there is
+no discovery, durable-ID fallback, host dispatch or replay. Unreadable durable
+lineage is refused, using the strict form of the existing resume-tip lookup.
+Expired/missing request IDs also refuse; absence is not evidence an earlier answer
+was accepted. Request identity lookup and settlement share the request registry
+lock. This does not add revision-CAS for editable request params or outcome lookup.
+
+Only an original ready local engine can execute an operation. Prompts are plain
+text deliberate new **idle** turns without staged attachments; busy input returns
+`4009` and cannot steer, interrupt, queue or persist a follow-up. Rewinds, media
+staging, slash commands, subagent controls and other mutators are outside this
+catalog. Conditional mode is sticky for the connection, including after removal
+or replacement of its runtime. Legacy mutators and raw JSON-RPC response frames
+cannot bypass the envelope. The gateway permits the documented informational
+history/replay/list reads, creation and capability/heartbeat calls; their data does
+not grant authority. Other clients retaining their legacy mode keep their behavior.
+
+The operation holds the gateway comparison guards and a nonblocking engine guard
+through the existing immediate handler's mutation. Creation-record history and
+resume locks are reentrant so those handlers participate in this cut. The envelope
+runs in the RPC pool; it never waits for an engine build, a model turn or a host RPC
+under the cut. A prompt's worker carries an immutable engine/store/revision witness
+across both worker hops and the durable lease wait. After durable admission, the
+engine checks that witness and exact readable stored tip before adoption/execution;
+it releases a newly acquired lease on refusal and cannot carry that unadmitted input
+into a later turn. Successful admission consumes the witness before model work or
+background threads, so legitimate delegated engines do not inherit the parent pin. The model loop may compress normally within a turn already
+admitted against the original identity. Later operations must still refuse the
+old binding after rotation. Admission is not a delivery/completion guarantee: a
+prompt accepted before worker refusal can retain its original submit row/error;
+never retry it automatically or infer a provider executed it.
+
+Compute-host support needs a child-authoritative identity/subscription and operation
+admission protocol tied to child lifetime and engine revision. Asynchronous parent
+mirrors and supervisor liveness alone cannot hold a child identity transaction
+through a parent subscription cut. This candidate provides enforceable refusal
+for that topology, not positive host reattachment or a cross-process ownership proof.
+A reconnecting client must qualify the supported contract and quarantine superseded
+connection generations before consuming this bounded local API. Full recovery and
+request/outcome settlement requirements remain unchanged.
 
 ### Rebuilding the in-flight turn on reconnect
 

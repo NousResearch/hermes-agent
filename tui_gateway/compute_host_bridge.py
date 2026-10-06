@@ -270,6 +270,10 @@ def _submit_prompt_to_compute_host(
     queued_prompt_generation: int | None = None, display_kind: str | None = None,
     display_metadata: dict | None = None) -> dict:
     cfg = _load_dashboard_process_isolation_config()
+    with session["history_lock"]:
+        # Never recertify a local witness after a child lifetime, even if dispatch
+        # failed, the parent mirror returns to the old key, or the child restarts.
+        session["_compute_host_ever_owned"] = True
     frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
                                      queued_prompt_generation=queued_prompt_generation,
                                      display_kind=display_kind, display_metadata=display_metadata)

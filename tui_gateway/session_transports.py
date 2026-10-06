@@ -109,6 +109,7 @@ def _detach_session_transport(session: dict | None, transport) -> bool:
         return False
     with _session_transport_lock:
         (session.get("viewers") or {}).pop(transport, None)
+        (session.get("bound_subscribers") or {}).pop(transport, None)
         existing = session.get("transport")
         if isinstance(existing, FanoutTransport):
             existing.detach(transport)

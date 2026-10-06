@@ -6,6 +6,9 @@ Gateway activation should try the guard and refuse a settling transition instead
 from __future__ import annotations
 
 import contextlib
+import contextvars
+from dataclasses import dataclass
+from typing import Callable
 import os
 import threading
 from functools import wraps
@@ -65,3 +68,53 @@ def _rebind_session_context(session_id: str) -> None:
     with contextlib.suppress(Exception):
         from hermes_logging import set_session_context
         set_session_context(session_id)
+
+
+# The hosting adapter carries an immutable admission witness across its worker
+# handoff and a potentially long durable lease wait. It is not a global engine pin:
+# compression within a turn already admitted against this identity remains legal.
+
+@dataclass(frozen=True)
+class ExpectedTurnIdentity:
+    engine: object
+    database: object
+    revision: int
+    session_id: str
+    runtime_is_current: Callable[[], bool]
+
+
+_expected_turn_identity = contextvars.ContextVar("expected_turn_identity", default=None)
+
+
+@contextlib.contextmanager
+def expected_turn_identity(engine, database, revision: int, session_id: str, runtime_is_current):
+    token = _expected_turn_identity.set(ExpectedTurnIdentity(engine, database, revision, session_id, runtime_is_current))
+    try:
+        yield
+    finally:
+        _expected_turn_identity.reset(token)
+
+
+_UNREAD_TIP = object()
+
+
+def check_expected_turn_identity(agent, db, latest_session_id=_UNREAD_TIP) -> None:
+    expected = _expected_turn_identity.get()
+    if expected is None:
+        return
+    if (agent is not expected.engine or db is not expected.database
+            or agent.session_identity_revision != expected.revision
+            or agent.session_id != expected.session_id
+            or (latest_session_id is not _UNREAD_TIP and latest_session_id != expected.session_id)
+            or not expected.runtime_is_current()):
+        raise ValueError("Conditional turn identity changed before admission; input was not executed")
+
+
+def conditional_turn_pending() -> bool:
+    return _expected_turn_identity.get() is not None
+
+
+def consume_expected_turn_identity() -> None:
+    # Admission has finished. Delegated engines and later background work inherit
+    # the profile context, but must not inherit this parent's one-turn witness.
+    _expected_turn_identity.set(None)

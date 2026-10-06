@@ -3203,6 +3203,33 @@ export interface SessionActivateBoundResult {
   attached: boolean
   accepted_binding: SessionCreationBinding
 }
+export interface SessionInvokeBoundParams {
+  session_id: string
+  profile?: string | null
+  expected_binding: SessionCreationBinding
+  operation: BoundPrompt | BoundInterrupt | BoundAnswer | BoundClarifyLock
+}
+export interface BoundPrompt {
+  method: 'prompt.submit'
+  text: string
+}
+export interface BoundInterrupt {
+  method: 'session.interrupt'
+}
+export interface BoundAnswer {
+  method: 'request.answer'
+  id: string
+  result: Record<string, unknown>
+}
+export interface BoundClarifyLock {
+  method: 'clarify.lock'
+  request_id: string
+  question_id: string
+  answer?: string | null
+}
+export interface SessionInvokeBoundResult {
+  operation_result: Record<string, unknown>
+}
 export interface SessionListParams {
   profile?: string | null
   title?: string | null
@@ -5400,6 +5427,8 @@ export interface RpcMethods {
   'session.history': { params: SessionHistoryParams; result: SessionHistoryResult }
   /** Stop the running turn (and streaming TTS); retires the crash-recovery marker. */
   'session.interrupt': { params: SessionInterruptParams; result: SessionInterruptResult }
+  /** Revalidate subscribed local identity before prompt/interrupt/answer/clarify; never replay or fall back. */
+  'session.invoke_bound': { params: SessionInvokeBoundParams; result: SessionInvokeBoundResult }
   /** Human-facing stored sessions, most recent first (sub-agent / kanban sources denied). */
   'session.list': { params: SessionListParams; result: SessionListResult }
   /** Most recent human-facing session; errors fold into a null session_id. */
@@ -5726,6 +5755,7 @@ export const RPC_METHODS = [
   'session.foreign.preview',
   'session.history',
   'session.interrupt',
+  'session.invoke_bound',
   'session.list',
   'session.most_recent',
   'session.redirect',

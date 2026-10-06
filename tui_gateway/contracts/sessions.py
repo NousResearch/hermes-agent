@@ -6,6 +6,8 @@ listing/browsing stored rows, spawn-tree snapshots, event replay and the statele
 
 from __future__ import annotations
 
+from typing import Annotated, Literal
+
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
@@ -240,6 +242,40 @@ class SessionActivateBoundResult(Result):
 
 method("session.activate_bound", params=SessionActivateBoundParams, result=SessionActivateBoundResult,
        doc="Conditionally subscribe to an exact authenticated creation binding; receipt is not recovery.")
+
+
+class BoundPrompt(Params):
+    method: Literal["prompt.submit"]
+    text: str = Field(strict=True, min_length=1, max_length=100_000)
+
+
+class BoundInterrupt(Params):
+    method: Literal["session.interrupt"]
+
+
+class BoundAnswer(Params):
+    method: Literal["request.answer"]
+    id: str = Field(strict=True, min_length=1, max_length=256)
+    result: dict[str, JsonValue]
+
+
+class BoundClarifyLock(Params):
+    method: Literal["clarify.lock"]
+    request_id: str = Field(strict=True, min_length=1, max_length=256)
+    question_id: str = Field(strict=True, min_length=1, max_length=256)
+    answer: str | None = Field(default="", strict=True)
+
+
+class SessionInvokeBoundParams(SessionActivateBoundParams):
+    operation: Annotated[BoundPrompt | BoundInterrupt | BoundAnswer | BoundClarifyLock, Field(discriminator="method")]
+
+
+class SessionInvokeBoundResult(Result):
+    operation_result: dict[str, JsonValue]
+
+
+method("session.invoke_bound", params=SessionInvokeBoundParams, result=SessionInvokeBoundResult,
+       doc="Revalidate subscribed local identity before prompt/interrupt/answer/clarify; never replay or fall back.")
 
 
 # ── listing ───────────────────────────────────────────────────────────────────────────────────

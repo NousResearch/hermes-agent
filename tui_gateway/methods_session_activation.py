@@ -92,7 +92,8 @@ def _creation_retry_result(rid, sid: str, session: dict, profile, profile_home, 
 def _bound_activation_receipt(session: dict, sid: str, owner: str, store_path: str, expected: dict) -> dict | None:
     from .session_creation_binding import CreationBinding
 
-    if session.get("_compute_host_active") or session.get("_compute_host_turn_id"):
+    if (session.get("_compute_host_active") or session.get("_compute_host_turn_id")
+            or session.get("_compute_host_ever_owned")):
         return None
     turn = session.get("inflight_turn")
     if turn is not None and (not isinstance(turn, dict) or turn.get("error")
@@ -107,6 +108,11 @@ def _bound_activation_receipt(session: dict, sid: str, owner: str, store_path: s
             or session.get("session_key") != origin.stored_session_id
             or session.get("auth_user_id") != owner):
         return None
+    # Route qualification is profile-owned; an unbound config read would certify
+    # a secondary destined for a child using the launch profile's local policy.
+    with _session_profile_runtime_scope(session, hydrate_secrets=False):
+        if _session_uses_compute_host(session):
+            return None
     if any(session.get(flag) for flag in (
         "_closing", "_finalized", "_client_gone_interrupt_requested", "_turn_cancel_requested",
         "resume_hydrating", "agent_error",
@@ -150,6 +156,10 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4007, "Conditional activation refused")
             if not _attach_session_transport(session, peer):
                 return _err(rid, 4007, "Conditional activation refused")
+            session.setdefault("bound_subscribers", {})[peer] = dict(receipt)
+            # Sticky per-connection mode: runtime replacement/removal cannot restore
+            # the legacy mutation/response path on a connection that opted into CAS.
+            peer._conditional_session_mode = True
             session.setdefault("viewers", {})[peer] = time.time()
             _cancel_ws_orphan_reap(sid)
             # Receipt was captured inside the comparison/subscription cut. Never turn

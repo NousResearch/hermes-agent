@@ -3481,6 +3481,24 @@
       }
     },
     {
+      "name": "session.invoke_bound",
+      "summary": "Revalidate subscribed local identity before prompt/interrupt/answer/clarify; never replay or fall back.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionInvokeBoundParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionInvokeBoundResult"
+        }
+      }
+    },
+    {
       "name": "session.list",
       "summary": "Human-facing stored sessions, most recent first (sub-agent / kanban sources denied).",
       "params": [
@@ -7240,6 +7258,112 @@
           "count"
         ],
         "title": "BotRelayRosterSyncResult",
+        "type": "object"
+      },
+      "BoundAnswer": {
+        "additionalProperties": false,
+        "properties": {
+          "method": {
+            "const": "request.answer",
+            "title": "Method",
+            "type": "string"
+          },
+          "id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "result": {
+            "additionalProperties": true,
+            "title": "Result",
+            "type": "object"
+          }
+        },
+        "required": [
+          "method",
+          "id",
+          "result"
+        ],
+        "title": "BoundAnswer",
+        "type": "object"
+      },
+      "BoundClarifyLock": {
+        "additionalProperties": false,
+        "properties": {
+          "method": {
+            "const": "clarify.lock",
+            "title": "Method",
+            "type": "string"
+          },
+          "request_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "question_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Question Id",
+            "type": "string"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "",
+            "title": "Answer"
+          }
+        },
+        "required": [
+          "method",
+          "request_id",
+          "question_id"
+        ],
+        "title": "BoundClarifyLock",
+        "type": "object"
+      },
+      "BoundInterrupt": {
+        "additionalProperties": false,
+        "properties": {
+          "method": {
+            "const": "session.interrupt",
+            "title": "Method",
+            "type": "string"
+          }
+        },
+        "required": [
+          "method"
+        ],
+        "title": "BoundInterrupt",
+        "type": "object"
+      },
+      "BoundPrompt": {
+        "additionalProperties": false,
+        "properties": {
+          "method": {
+            "const": "prompt.submit",
+            "title": "Method",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "method",
+          "text"
+        ],
+        "title": "BoundPrompt",
         "type": "object"
       },
       "BrowserAction": {
@@ -31284,6 +31408,80 @@
           "status"
         ],
         "title": "SessionInterruptResult",
+        "type": "object"
+      },
+      "SessionInvokeBoundParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "expected_binding": {
+            "$ref": "#/components/schemas/SessionCreationBinding"
+          },
+          "operation": {
+            "discriminator": {
+              "mapping": {
+                "clarify.lock": "#/components/schemas/BoundClarifyLock",
+                "prompt.submit": "#/components/schemas/BoundPrompt",
+                "request.answer": "#/components/schemas/BoundAnswer",
+                "session.interrupt": "#/components/schemas/BoundInterrupt"
+              },
+              "propertyName": "method"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BoundPrompt"
+              },
+              {
+                "$ref": "#/components/schemas/BoundInterrupt"
+              },
+              {
+                "$ref": "#/components/schemas/BoundAnswer"
+              },
+              {
+                "$ref": "#/components/schemas/BoundClarifyLock"
+              }
+            ],
+            "title": "Operation"
+          }
+        },
+        "required": [
+          "session_id",
+          "expected_binding",
+          "operation"
+        ],
+        "title": "SessionInvokeBoundParams",
+        "type": "object"
+      },
+      "SessionInvokeBoundResult": {
+        "additionalProperties": false,
+        "properties": {
+          "operation_result": {
+            "additionalProperties": true,
+            "title": "Operation Result",
+            "type": "object"
+          }
+        },
+        "required": [
+          "operation_result"
+        ],
+        "title": "SessionInvokeBoundResult",
         "type": "object"
       },
       "SessionListParams": {

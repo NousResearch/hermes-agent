@@ -175,10 +175,9 @@ class _PluginPCMStreamer(StreamingTTSProvider):
     """A plugin ``TTSProvider`` that opted into raw PCM (``streams_pcm``; see
     ``tools.tts_tool_plugins._plugin_pcm_streaming_provider``) behind this ABC."""
 
-    def __init__(self, provider: Any, tts_config: Dict):
+    def __init__(self, provider: Any, sample_rate: int, tts_config: Dict):
         super().__init__(tts_config, tts_config.get(provider.name) or {})
-        self._provider = provider
-        self.sample_rate = int(provider.stream_sample_rate)
+        self._provider, self.sample_rate = provider, sample_rate
 
     @staticmethod
     def available() -> bool:
@@ -191,8 +190,8 @@ class _PluginPCMStreamer(StreamingTTSProvider):
 
 
 def _plugin_streamer(name: str, tts_config: Dict) -> Optional[StreamingTTSProvider]:
-    provider = _plugin_pcm_streaming_provider(name, tts_config)
-    return _PluginPCMStreamer(provider, tts_config) if provider is not None else None
+    found = _plugin_pcm_streaming_provider(name, tts_config)
+    return _PluginPCMStreamer(*found, tts_config) if found is not None else None
 
 
 def resolve_streaming_provider(

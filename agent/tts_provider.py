@@ -34,7 +34,10 @@ class TTSProvider(CatalogProviderBase):
     and make ``stream(text, format="pcm", ...)`` yield raw int16 little-endian mono
     PCM at that rate. Both are read (with :meth:`is_available`) each time a reply
     resolves its streamer, so they may be properties reflecting live state; a
-    missing rate falls back to per-sentence :meth:`synthesize`.
+    missing rate falls back to per-sentence :meth:`synthesize`. Unlike
+    :meth:`synthesize`, ``stream()`` may run concurrently for consecutive
+    sentences of one reply (the speaker prefetches up to 3), so it must be
+    thread-safe.
     """
 
     streams_pcm: bool = False

@@ -268,6 +268,8 @@ def test_opted_in_plugin_streams_pcm_in_the_configured_voice(monkeypatch, stream
     (_PCMPlugin(streams_pcm=False), {}),
     (_PCMPlugin(rate=None), {}),
     (_PCMPlugin(rate=0), {}),
+    (_PCMPlugin(rate=0.5), {}),
+    (_PCMPlugin(rate=float("nan")), {}),
     (_PCMPlugin(available=False), {}),
     (_PCMPlugin(), {"providers": {"fake-pcm": {"type": "command", "command": "say {input_path}"}}}),
 ])

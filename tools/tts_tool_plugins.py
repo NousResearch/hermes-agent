@@ -7,11 +7,13 @@ tool module stays importable without the plugin machinery).
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+import math
+from typing import Any, Dict, Optional, Tuple
 
 from tools.tts_command_provider import (
     BUILTIN_TTS_PROVIDERS, DEFAULT_COMMAND_TTS_OUTPUT_FORMAT, _get_named_provider_config,
     _is_command_provider_config)
+from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
 
 logger = logging.getLogger("tools.tts_tool")
 
@@ -35,7 +37,7 @@ def _plugin_route_key(provider: str, tts_config: Dict[str, Any]) -> Optional[str
     """Normalized *provider* when a plugin may service it, else None: built-in names never reach the
     registry and a same-named ``type: command`` provider wins (config is more local than a plugin)."""
     key = (provider or "").lower().strip()
-    if not key or key in BUILTIN_TTS_PROVIDERS:
+    if not key or key in BUILTIN_TTS_PROVIDERS or key == NOUS_MANAGED_PROVIDER:  # nous = the openai path
         return None
     if _is_command_provider_config(_get_named_provider_config(tts_config, key)):
         return None
@@ -52,12 +54,12 @@ def _plugin_voice_kwargs(tts_config: Dict[str, Any]) -> Dict[str, Any]:
             "speed": float(speed) if isinstance(speed, (int, float)) else None}
 
 
-def _plugin_pcm_streaming_provider(provider: str, tts_config: Dict[str, Any]):
-    """The plugin that services *provider* when it opted into raw-PCM streaming, else None.
+def _plugin_pcm_streaming_provider(provider: str, tts_config: Dict[str, Any]) -> Optional[Tuple[Any, int]]:
+    """``(plugin, sample_rate)`` when the plugin servicing *provider* opted into raw-PCM streaming.
 
-    Opt-in = ``streams_pcm`` truthy AND a positive ``stream_sample_rate`` AND ``is_available()`` —
-    all read at resolve time, so per-profile state (key present, user opted out) belongs there.
-    A missing rate is refused loudly: PCM played at a guessed rate garbles speech.
+    Opt-in = ``streams_pcm`` truthy AND ``stream_sample_rate`` a finite number >= 1 Hz AND
+    ``is_available()`` — read once per resolve, so per-profile state (key present, user opted out)
+    belongs there. A bad rate is refused loudly: PCM played at a guessed rate garbles speech.
     """
     key = _plugin_route_key(provider, tts_config)
     if key is None:
@@ -67,14 +69,14 @@ def _plugin_pcm_streaming_provider(provider: str, tts_config: Dict[str, Any]):
         if plugin is None or not plugin.streams_pcm or not plugin.is_available():
             return None
         rate = plugin.stream_sample_rate
-    except Exception as exc:  # noqa: BLE001 — a broken plugin falls back to per-sentence synthesis
-        logger.debug("plugin TTS streaming lookup failed for '%s': %s", key, exc)
+    except Exception:  # third-party plugin code: a broken plugin falls back to per-sentence synthesis
+        logger.debug("plugin TTS streaming lookup failed for '%s'", key, exc_info=True)
         return None
-    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or rate <= 0:
-        logger.warning("TTS provider '%s' sets streams_pcm without a positive stream_sample_rate; "
-                       "using per-sentence synthesis instead", key)
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not math.isfinite(rate) or rate < 1:
+        logger.warning("TTS provider '%s' sets streams_pcm without a valid stream_sample_rate (%r); "
+                       "using per-sentence synthesis instead", key, rate)
         return None
-    return plugin
+    return plugin, int(rate)
 
 
 def _dispatch_to_plugin_provider(text: str, output_path: str, provider: str, tts_config: Dict[str, Any]) -> Optional[str]:

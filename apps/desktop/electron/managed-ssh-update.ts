@@ -15,6 +15,7 @@
  */
 
 import { expandRemotePath, shq } from './remote-lifecycle'
+import { REMOTE_MARKER_JUDGE_PY } from './remote-update-marker-programs'
 import { encodedPowerShell, powerShellCommand, psLiteral } from './windows-remote-lifecycle'
 
 const UPDATE_EXIT_INDEPENDENT_HANDOFF = 75
@@ -331,6 +332,7 @@ function buildWindowsManagedUpdateLaunch(target: RemoteUpdateTarget, correlation
 const OBSERVATION_SCRIPT = String.raw`
 import ctypes,json,os,re,sys
 from pathlib import Path
+${REMOTE_MARKER_JUDGE_PY}
 
 home=Path(os.path.expanduser(sys.argv[1]))
 correlation=sys.argv[2]
@@ -407,20 +409,11 @@ def marker_state():
     try:raw=marker_path.read_bytes()
     except FileNotFoundError:return {'state':'absent'}
     except OSError:return {'state':'unavailable'}
-    # v1 is "<pid>\n<started_at>\n"; v2 adds a creation-time line 3 and tagged lines 4+
-    # (the first well-formed "delegate:<pid> ct:<ct>" names a second live holder).
-    lines=[line[:-1] if line.endswith(b'\r') else line for line in raw.split(b'\n')]
-    if lines[-1]==b'':lines.pop()
-    if len(lines)<2 or not re.fullmatch(rb'[1-9][0-9]*',lines[0]) or not re.fullmatch(rb'[0-9]+',lines[1]):
-        return {'state':'malformed'}
-    delegates=[re.fullmatch(rb'delegate:([1-9][0-9]*) ct:[0-9]+(?:\.[0-9]+)?',line) for line in lines[3:]]
-    holders=[int(lines[0])]+[int(match.group(1)) for match in delegates if match][:1]
-    if any(pid>4294967295 for pid in holders) or int(lines[1])>9007199254740991:return {'state':'malformed'}
-    for pid in holders:
-        live=pid_alive(pid)
-        if live is None:return {'state':'unavailable','pid':pid}
-        if live:return {'state':'live','pid':pid}
-    return {'state':'dead','pid':holders[0]}
+    # update_lock.judge_marker's parser and identity rule (owner or delegate, pid + creation time).
+    verdict=marker_verdict(raw)
+    if verdict=='UNCERTAIN':return {'state':'malformed'}
+    if verdict=='CLEAR':return {'state':'dead'}
+    return {'state':'live','pid':int(verdict[5:])}
 
 def terminal_code():
     try:raw=status_path.read_bytes()

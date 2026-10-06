@@ -30,6 +30,7 @@ import crypto from 'node:crypto'
 import { READY_IN_MERGED_OUTPUT_RE } from './backend-ready'
 import { parseRemoteProfileListing } from './connection-registry'
 import { backendProfileArg } from './profile-id-guard'
+import { REMOTE_MARKER_JUDGE_PY } from './remote-update-marker-programs'
 import { assertBootstrapNotSuperseded, withRemoteTimeout } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -319,8 +320,10 @@ async function probeRemoteHermesHome(ssh) {
   }
 }
 
-const REMOTE_UPDATE_MARKER_PROBE = String.raw`
-import errno,fcntl,os,re,sys
+// The relaunch gate: REMOTE_MARKER_JUDGE_PY (update_lock.judge_marker's parser and identity rule)
+// judges the marker; a dead claim is deleted under the updaters' marker lock.
+const REMOTE_UPDATE_MARKER_PROBE = `${REMOTE_MARKER_JUDGE_PY}${String.raw`
+import fcntl
 from pathlib import Path
 
 home=Path(os.path.expanduser(sys.argv[1]))
@@ -340,51 +343,30 @@ def clear():
         except OSError:uncertain()
         try:
             with marker.open('rb') as stream:
-                if stream.read(257)!=raw:uncertain()
+                if stream.read(4097)!=raw:uncertain()
             marker.unlink()
         except FileNotFoundError:pass
         except OSError:uncertain()
     finally:os.close(fd)
     print('CLEAR');raise SystemExit
 try:
-    with marker.open('rb') as stream:raw=stream.read(257)
+    with marker.open('rb') as stream:raw=stream.read(4097)
 except FileNotFoundError:
     print('CLEAR');raise SystemExit
 except OSError:
     uncertain()
-if len(raw)>256:
-    uncertain()
-# v1 is "<pid>\n<started_at>\n"; v2 adds a creation-time line 3 and tagged lines 4+
-# (the first well-formed "delegate:<pid> ct:<ct>" names a second live holder).
-lines=[line[:-1] if line.endswith(b'\r') else line for line in raw.split(b'\n')]
-if lines[-1]==b'':lines.pop()
-if len(lines)<2 or not re.fullmatch(rb'[1-9][0-9]*',lines[0]) or not re.fullmatch(rb'[0-9]+',lines[1]):
-    uncertain()
-delegates=[re.fullmatch(rb'delegate:([1-9][0-9]*) ct:[0-9]+(?:\.[0-9]+)?',line) for line in lines[3:]]
-holders=[int(lines[0])]+[int(match.group(1)) for match in delegates if match][:1]
-if any(pid>4294967295 for pid in holders) or int(lines[1])>9007199254740991:
-    uncertain()
-def live(pid):
-    try:
-        os.kill(pid,0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError as error:
-        if error.errno==errno.ESRCH:return False
-        if error.errno==errno.EPERM:return True
-        uncertain()
-    try:
-        cmd=open('/proc/%d/cmdline'%pid,'rb').read().replace(b'\0',b' ')
-    except OSError:
-        cmd=b''
-    return not cmd or b'update' in cmd
-for pid in holders:
-    if live(pid):
-        print('LIVE:'+str(pid));raise SystemExit
-clear()
-`
+verdict=marker_verdict(raw)
+if verdict=='CLEAR':clear()
+print(verdict)
+`}`
+
+// The spawn recheck: the same judgement, read-only (the relaunch gate above already reclaimed).
+const REMOTE_MARKER_VERDICT_PY = `${REMOTE_MARKER_JUDGE_PY}${String.raw`
+try:
+    with open(sys.argv[1],'rb') as stream:raw=stream.read(4097)
+except FileNotFoundError:raw=None
+print(marker_verdict(raw))
+`}`
 
 /**
  * Refuse normal SSH reuse/spawn while the remote install is being mutated.
@@ -1204,9 +1186,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   // owning remote shell is dead.
   const markerClear =
     `marker_clear() { if [ ! -e ${marker} ]; then return 0; fi; ` +
-    `if [ ! -r ${marker} ]; then return 1; fi; ` +
-    `owner=$(IFS= read -r owner < ${marker} && printf '%s' "$owner"); ` +
-    `case "$owner" in ''|*[!0-9]*) return 1;; esac; if kill -0 "$owner" 2>/dev/null; then return 1; fi; return 0; }`
+    `[ "$(python3 -c ${shq(REMOTE_MARKER_VERDICT_PY)} ${marker} 2>/dev/null)" = CLEAR ]; }`
 
   const dashCmd =
     `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +

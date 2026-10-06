@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { exec as execCallback, spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -7,6 +8,7 @@ import { promisify } from 'node:util'
 
 import { test } from 'vitest'
 
+import { buildRemoteUpdateObservationCommand, parseRemoteUpdateObservation } from './managed-ssh-update'
 import { assertRemoteInstallUpdateClear } from './remote-lifecycle'
 
 const exec = promisify(execCallback)
@@ -63,5 +65,65 @@ test.runIf(process.platform === 'linux')(
     }
   },
   // A held marker mutex makes the gate wait out its 10 s acquisition window before refusing.
+  30_000
+)
+
+// The shapes update_lock._parse_marker accepts (tests/fixtures/update_marker_corpus.json) through
+// the real relaunch gate and managed observer: a dead claim is dead whatever its padding, and the
+// first in-range delegate names the live holder (the embedded readers used to say UNCERTAIN).
+test.runIf(process.platform === 'linux')(
+  'POSIX relaunch gate and managed observer read every corpus marker shape like update_lock',
+  async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-v2-shapes-'))
+    const marker = path.join(home, '.hermes-update-in-progress')
+    const ssh = { exec: async (command: string) => (await exec(command, { shell: 'sh' })).stdout }
+    const target = { ssh, platform: 'Linux', hermesPath: '/opt/hermes/hermes', hermesHome: home }
+    const correlation = randomUUID()
+
+    const observe = async () =>
+      parseRemoteUpdateObservation(
+        await ssh.exec(buildRemoteUpdateObservationCommand(target as any, correlation)),
+        correlation
+      )
+
+    const exited = spawn(process.execPath, ['-e', ''])
+    await new Promise(resolve => exited.once('exit', resolve))
+    const dead = exited.pid
+    const now = Math.floor(Date.now() / 1000)
+
+    const holder = spawn('python3', ['-c', 'import time;print(time.time(),flush=True);time.sleep(30)'], {
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+
+    try {
+      const holderCt = await new Promise<string>(resolve =>
+        holder.stdout!.once('data', chunk => resolve(String(chunk).trim()))
+      )
+
+      for (const claim of [
+        `\ufeff${dead}\r\n${now}\r\nct:1700000000.125\r\n`,
+        ` ${dead} \t\n\t${now}  \nct:1700000000.125\n`,
+        `0000${dead}\n${now}\nct:1700000000.125\n`,
+        `${dead}\n18446744073709551615\nct:1700000000.125\n`
+      ]) {
+        await writeFile(marker, claim)
+        assert.equal((await observe()).marker, 'dead', JSON.stringify(claim))
+        await assertRemoteInstallUpdateClear(ssh, home)
+        await assert.rejects(readFile(marker), `a dead claim is reclaimed: ${JSON.stringify(claim)}`)
+      }
+
+      const delegated = `${dead}\n${now}\nct:1700000000.125\ndelegate:4294967296 ct:1\ndelegate:${holder.pid} ct:${holderCt}\n`
+      await writeFile(marker, delegated)
+      assert.deepEqual(await observe().then(o => [o.marker, o.markerPid]), ['live', holder.pid])
+      await assert.rejects(
+        () => assertRemoteInstallUpdateClear(ssh, home),
+        new RegExp(`process ${holder.pid} is still running`)
+      )
+      assert.equal(await readFile(marker, 'utf8'), delegated)
+    } finally {
+      holder.kill()
+      await rm(home, { force: true, recursive: true })
+    }
+  },
   30_000
 )

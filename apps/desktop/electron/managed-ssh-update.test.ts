@@ -656,7 +656,10 @@ test.runIf(process.platform !== 'win32')(
 
     try {
       await mkdir(profileHome, { recursive: true })
-      await writeFile(path.join(root, '.hermes-update-in-progress'), `${process.pid}\n1\n`)
+      await writeFile(
+        path.join(root, '.hermes-update-in-progress'),
+        `${process.pid}\n${Math.floor(Date.now() / 1000)}\n`
+      )
 
       const command = buildRemoteUpdateObservationCommand(
         {

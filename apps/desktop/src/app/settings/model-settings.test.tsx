@@ -420,9 +420,13 @@ describe('ModelSettings', () => {
 
     fireEvent.click(follow[0])
     await waitFor(() =>
-      expect(setModelAssignment).toHaveBeenCalledWith(
-        { model: '', provider: 'auto', reasoning_effort: null, scope: 'auxiliary', task: 'pinned_task' }
-      )
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: '',
+        provider: 'auto',
+        reasoning_effort: null,
+        scope: 'auxiliary',
+        task: 'pinned_task'
+      })
     )
   })
 

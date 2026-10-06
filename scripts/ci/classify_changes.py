@@ -209,6 +209,10 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "apps/shared/src/",
         "apps/desktop/src/store/session",
         "apps/desktop/src/store/transcript",
+        # Every core spec drives open/resume/switch; #132017 changed resume
+        # without running them and main sat red on remote-secondary.
+        "apps/desktop/src/app/session/",
+        "apps/desktop/src/app/open-session",
         # fleet-condensed-default.spec.ts: the profile rail's doors per gateway.
         "apps/desktop/src/app/chat/sidebar/profile-switcher",
         "apps/desktop/src/app/chat/sidebar/fleet-",

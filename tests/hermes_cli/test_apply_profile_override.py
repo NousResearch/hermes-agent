@@ -271,6 +271,22 @@ class TestGeneralizedSupervisorMarkers:
         )
         assert result == str(hermes_root)
 
+    def test_gateway_module_entrypoint_skips_active_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """The stock ``python -m gateway.run`` entrypoint has no argv-level
+        ``gateway run`` marker, but it is still the root multiplex supervisor.
+        A sticky named profile must not redirect its process environment."""
+        hermes_root = self._root_home(tmp_path)
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(hermes_root),
+            active_profile="telegram_nick",
+            argv=[str(tmp_path / "install" / "gateway" / "run.py")],
+        )
+        assert result == str(hermes_root)
+
     def test_desktop_ssh_serve_child_skips_active_profile(self, tmp_path, monkeypatch):
         """A Desktop-owned `serve --ssh-session-token-file` child names its profile explicitly
         (or none for the root home); the remote host's sticky active_profile must not re-home

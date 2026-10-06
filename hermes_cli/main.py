@@ -562,6 +562,14 @@ def _under_gateway_supervisor(argv: list) -> bool:
     opt-in). XPC_SERVICE_NAME is deliberately NOT consulted: interactive macOS
     terminals set it too.
     """
+    # ``python -m gateway.run`` is the canonical stock entrypoint used by external
+    # systemd/supervisor units.  It imports this module as a bootstrap step, but has
+    # no ``gateway run`` argv for the legacy marker checks below.  Treat the module
+    # entrypoint itself as a supervisor launch so a sticky ``active_profile`` cannot
+    # re-home the default multiplex gateway before adapters are initialized.
+    entrypoint = Path(sys.argv[0]).resolve()
+    if entrypoint.name == "run.py" and entrypoint.parent.name == "gateway":
+        return True
     if os.environ.get("HERMES_SUPERVISED_CHILD") or os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
         return True
     is_gateway_cmd = next((a for a in argv if not a.startswith("-")), None) == "gateway"

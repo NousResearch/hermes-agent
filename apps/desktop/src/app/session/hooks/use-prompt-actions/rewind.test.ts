@@ -747,7 +747,12 @@ describe('planConfirmedReload (#133716)', () => {
 
   it('confirms a stale/deep regenerate before archiving later user turns; tail regenerate is unchanged', async () => {
     let asked = 0
-    const askAndDecline = async () => (asked += 1) < 0
+
+    const askAndDecline = async () => {
+      asked += 1
+
+      return false
+    }
 
     expect(await submitPlan(await planConfirmedReload(transcript, 'a1', askAndDecline))).toBeUndefined()
     expect(asked).toBe(1)

@@ -17,7 +17,9 @@
 // Protocol (all requests require `X-Hermes-Sidecar-Token: ${TOKEN}`):
 //   - GET  /inbound    -> 200 NDJSON stream; one JSON event per line, blank
 //                         lines are heartbeats. One consumer at a time.
-//   - POST /healthz     -> {"ok": true}
+//   - POST /healthz     -> {"ok": true, "stream": {...}, "patches": {name: state}}
+//       patches: Spectrum SDK compatibility patches, each "applied",
+//       "not-needed", "missing" or "failed" (see patch-spectrum-mixed-attachments.mjs).
 //   - POST /send        -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "text": "...",
 //              "format": "text" | "markdown" (default "text")}
@@ -61,6 +63,8 @@
 //                          detection so a dead gateway can't orphan us)
 //   PHOTON_TELEMETRY       enable Spectrum SDK telemetry ("true"/"1"/"on"/"yes";
 //                          default off — toggle with `hermes photon telemetry`)
+//   PHOTON_POLL_STATE_FILE JSON file for send-time poll option identifiers
+//                          (set by the adapter under HERMES_HOME; unset = memory only)
 
 import http from "node:http";
 import crypto from "node:crypto";
@@ -68,6 +72,7 @@ import { once } from "node:events";
 import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
 import { PollVoteTracker } from "./poll-votes.mjs";
+import { PollSeedStore } from "./poll-seeds.mjs";
 import {
   classifyProbeRejection,
   createProbeMessageId,
@@ -279,24 +284,42 @@ if (!projectId || !projectSecret || !sharedToken) {
   process.exit(2);
 }
 
+// The patched SDK reads send-time poll identifiers through this global.
+globalThis.__hermesPhotonPollSeeds = new PollSeedStore(
+  process.env.PHOTON_POLL_STATE_FILE
+).load();
+
 // Lazy-load spectrum-ts so a missing install fails with a clear message
 // instead of a cryptic module-resolution error during import. Apply Hermes'
 // pinned-sdk compatibility patch first so existing installs self-heal at
 // runtime, not only during npm postinstall.
+let spectrumPatches = {};
 try {
   const patchResult = patchSpectrumTs();
+  spectrumPatches = patchResult.patches ?? {};
   if (patchResult.patched) {
     console.error(
-      `photon-sidecar: spectrum mixed attachment patch applied: ${patchResult.file}`
+      `photon-sidecar: spectrum patch applied: ${patchResult.file}`
     );
   }
 } catch (e) {
+  spectrumPatches = e?.patches ?? { spectrum: "failed" };
   console.error(
-    "photon-sidecar: spectrum mixed attachment patch failed. " +
+    "photon-sidecar: WARNING spectrum patch failed. " +
       "Run `npm install` inside plugins/platforms/photon/sidecar/ or " +
       "upgrade the Photon sidecar patch for the pinned spectrum-ts version. " +
       "Original error: " +
       (e && e.stack ? e.stack : String(e))
+  );
+}
+const unappliedPollPatches = Object.entries(spectrumPatches)
+  .filter(([name, state]) => (name.startsWith("poll") || name === "spectrum") &&
+    state !== "applied" && state !== "not-needed")
+  .map(([name, state]) => `${name}=${state}`);
+if (unappliedPollPatches.length) {
+  console.error(
+    `photon-sidecar: WARNING poll vote patch not applied (${unappliedPollPatches.join(", ")}); ` +
+      "native poll votes may be dropped"
   );
 }
 let Spectrum,
@@ -582,6 +605,7 @@ async function normalizeContent(content, message = {}) {
   // The poll message itself (its creation) — surfaced for completeness so the
   // agent isn't told "content type not handled" if it sees the echo.
   if (content.type === "poll") {
+    pollVotes.noteCreated(message.id);
     return {
       type: "poll",
       title: content.title ?? "",
@@ -1012,7 +1036,7 @@ const server = http.createServer(async (req, res) => {
   }
   try {
     if (req.url === "/healthz") {
-      return ok(res, { stream: streamHealthSnapshot() });
+      return ok(res, { stream: streamHealthSnapshot(), patches: spectrumPatches });
     }
     if (req.url === "/probe") {
       // Upstream liveness probe. Drives a cheap unary read over the SAME gRPC
@@ -1180,6 +1204,7 @@ const server = http.createServer(async (req, res) => {
       }
       const space = await resolveSpace(spaceId);
       const result = await space.send(spectrumPoll(title.trim(), choices));
+      pollVotes.noteCreated(result?.id);
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-effect") {

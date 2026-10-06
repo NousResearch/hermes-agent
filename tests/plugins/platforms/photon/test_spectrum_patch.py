@@ -124,12 +124,45 @@ def test_sidecar_patch_failure_still_reaches_health_endpoint(tmp_path: Path) -> 
                 time.sleep(0.05)
 
         assert payload["ok"] is True
+        # The failure is visible to the adapter, not only in the sidecar log.
+        assert payload["patches"] == {"spectrum": "failed"}
         assert proc.poll() is None
     finally:
         proc.terminate()
         _, stderr = proc.communicate(timeout=5)
 
     assert "forced patch failure" in stderr
+    assert "WARNING poll vote patch not applied (spectrum=failed)" in stderr
+
+
+def test_adapter_warns_when_poll_patch_is_not_applied(caplog) -> None:
+    import logging
+
+    from plugins.platforms.photon import adapter as photon_adapter
+
+    class Health:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    with caplog.at_level(logging.WARNING, logger=photon_adapter.logger.name):
+        photon_adapter._warn_unapplied_poll_patch(Health({"patches": {
+            "mixedAttachments": "not-needed", "pollEmptyTitle": "applied",
+            "pollMetadataCache": "applied", "pollVoteRecovery": "applied"}}))
+        photon_adapter._warn_unapplied_poll_patch(Health({"ok": True}))
+        assert caplog.records == []
+        photon_adapter._warn_unapplied_poll_patch(Health({"patches": {
+            "pollEmptyTitle": "missing", "pollVoteRecovery": "applied"}}))
+    assert "poll vote patch not applied (pollEmptyTitle=missing)" in caplog.text
+
+
+def test_poll_state_file_lives_under_hermes_home(tmp_path, monkeypatch) -> None:
+    from plugins.platforms.photon import adapter as photon_adapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert photon_adapter._poll_state_path() == tmp_path / "photon" / "poll-seeds.json"
 
 
 def test_sidecar_forwards_poll_identity_and_tallies(tmp_path: Path) -> None:
@@ -475,6 +508,195 @@ def test_spectrum_patch_rewrites_the_imessage_mapper(tmp_path: Path) -> None:
     )
     assert again.returncode == 0, again.stderr
     assert chunk.read_text(encoding="utf-8") == patched
+
+
+_SEEDS = Path("plugins/platforms/photon/sidecar/poll-seeds.mjs").resolve()
+
+
+def _patch(root: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(["node", str(_PATCHER), str(root)], cwd=Path.cwd(), text=True,
+                          capture_output=True, check=False)
+
+
+def _probe(chunk: Path, script: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["node", "--input-type=module", "-e",
+         f"import * as sdk from {json.dumps(chunk.as_uri())};"
+         f"import {{PollSeedStore}} from {json.dumps(_SEEDS.as_uri())};" + script],
+        text=True, capture_output=True, check=False,
+    )
+
+
+def test_partial_option_metadata_merges_known_identifiers(tmp_path: Path) -> None:
+    """Ported from the adversarial run: optionAdded carrying fewer identifiers must not drop A."""
+    chunk = _write_fixture(tmp_path)
+    assert _patch(tmp_path).returncode == 0
+    probe = _probe(chunk, """
+      const cache=sdk.getPollCache({});
+      const remote={polls:{get:async()=>{throw new Error('no refresh expected');}}};
+      sdk.cachePollEvent(cache,{pollMessageGuid:'p',delta:{type:'created',title:'Which?',
+        options:[{text:'Route',optionIdentifier:'A'},{text:'Calendar',optionIdentifier:'B'}]}});
+      sdk.cachePollEvent(cache,{pollMessageGuid:'p',delta:{type:'optionAdded',title:'',
+        options:[{text:'Route'},{text:'Calendar',optionIdentifier:'B'},{text:'Other',optionIdentifier:'C'}]}});
+      const titles=[];
+      for(const id of ['A','B','C']){
+        const [vote]=await sdk.toPollOptionMessage(remote,cache,{pollMessageGuid:'p',
+          delta:{type:'voted',optionIdentifier:id}});
+        titles.push(vote.content.option.title);
+      }
+      console.log(JSON.stringify({titles,poll:cache.get('p').poll.title}));
+    """)
+    assert probe.returncode == 0, probe.stderr
+    assert json.loads(probe.stdout) == {"titles": ["Route", "Calendar", "Other"], "poll": "Which?"}
+
+
+def test_send_time_identifiers_survive_sidecar_restart(tmp_path: Path) -> None:
+    """A restart between send and vote used to lose the only identifier map."""
+    chunk = _write_fixture(tmp_path)
+    assert _patch(tmp_path).returncode == 0
+    state = tmp_path / "home" / "photon" / "poll-seeds.json"
+    options = "[{text:'Route',optionIdentifier:'choice-1'},{text:'Calendar',optionIdentifier:'choice-2'}]"
+    sent = _probe(chunk, f"""
+      globalThis.__hermesPhotonPollSeeds=new PollSeedStore({json.dumps(str(state))});
+      const remote={{polls:{{create:async()=>({{pollMessageGuid:'poll-1',title:'',options:{options}}})}}}};
+      await sdk.send(remote,'space-1',{{type:'poll',title:'Which?',options:[{{title:'Route'}},{{title:'Calendar'}}]}});
+      console.log('{{}}');
+    """)
+    assert sent.returncode == 0, sent.stderr
+    assert state.exists()
+
+    # New process: empty SDK cache; Photon's created delta and get() omit identifiers.
+    restarted = _probe(chunk, f"""
+      globalThis.__hermesPhotonPollSeeds=new PollSeedStore({json.dumps(str(state))}).load();
+      const bare={{pollMessageGuid:'poll-1',title:'',options:[{{text:'Route'}},{{text:'Calendar'}}]}};
+      const remote={{polls:{{get:async()=>bare}}}};
+      const cache=sdk.getPollCache({{}});
+      sdk.cachePollEvent(cache,{{pollMessageGuid:'poll-1',delta:{{type:'created',...bare}}}});
+      const [vote]=await sdk.toPollOptionMessage(remote,cache,{{pollMessageGuid:'poll-1',
+        delta:{{type:'voted',optionIdentifier:'choice-2'}}}});
+      const unknown=await sdk.toPollOptionMessage(remote,cache,{{pollMessageGuid:'poll-1',
+        delta:{{type:'voted',optionIdentifier:'choice-9'}}}});
+      console.log(JSON.stringify({{title:vote.content.option.title,poll:vote.content.poll.title,
+        unknown:unknown.length}}));
+    """)
+    assert restarted.returncode == 0, restarted.stderr
+    assert json.loads(restarted.stdout) == {"title": "Calendar", "poll": "Which?", "unknown": 0}
+    assert "WARNING poll vote dropped: unknown option identifier for poll poll-1" in restarted.stderr
+
+
+def test_renamed_poll_mapper_fails_loudly_without_writes(tmp_path: Path) -> None:
+    """Ported from the adversarial run: a renamed `toCachedPoll` used to exit 0 unpatched."""
+    chunk = _write_fixture(tmp_path)
+    renamed = chunk.read_text(encoding="utf-8").replace("toCachedPoll", "toCachedPollVNext")
+    chunk.write_text(renamed, encoding="utf-8")
+    result = _patch(tmp_path)
+    assert result.returncode == 1
+    assert "poll vote patch missing (pollEmptyTitle, pollMetadataCache, pollVoteRecovery)" in result.stderr
+    assert '"pollEmptyTitle":"missing"' in result.stderr
+    assert chunk.read_text(encoding="utf-8") == renamed
+
+
+def test_patch_reports_states_and_leaves_no_temp_files(tmp_path: Path) -> None:
+    chunk = _write_fixture(tmp_path)
+    result = _patch(tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert '"mixedAttachments":"applied","pollEmptyTitle":"applied"' in result.stderr
+    assert '"pollMetadataCache":"applied","pollVoteRecovery":"applied"' in result.stderr
+    assert sorted(path.name for path in chunk.parent.iterdir()) == ["index.js"]
+    source = Path("plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs").read_text(encoding="utf-8")
+    assert "fs.renameSync(temp, file)" in source  # temp + rename, never an in-place truncating write
+
+
+_REAL_SIDECAR = Path("plugins/platforms/photon/sidecar")
+
+
+def _copy_installed_sdk(tmp_path: Path) -> Path:
+    """Mirror the installed node_modules with symlinks, copying only the package we patch."""
+    import pytest
+
+    real = _REAL_SIDECAR / "node_modules"
+    package = real / "@spectrum-ts" / "imessage" / "package.json"
+    if not package.exists() or json.loads(package.read_text(encoding="utf-8")).get("version") != "12.7.0":
+        pytest.skip("installed @spectrum-ts/imessage 12.7.0 not present")
+    root = tmp_path / "sidecar"
+    scoped = root / "node_modules" / "@spectrum-ts"
+    scoped.mkdir(parents=True)
+    try:
+        for entry in real.iterdir():
+            if entry.name != "@spectrum-ts":
+                (root / "node_modules" / entry.name).symlink_to(entry.resolve())
+        for entry in (real / "@spectrum-ts").iterdir():
+            if entry.name == "imessage":
+                shutil.copytree(entry, scoped / "imessage", symlinks=True)
+            else:
+                (scoped / entry.name).symlink_to(entry.resolve())
+    except OSError as exc:
+        pytest.skip(f"cannot mirror node_modules: {exc}")
+    return root
+
+
+def test_patch_against_installed_spectrum_sdk(tmp_path: Path) -> None:
+    """Run the patch on a copy of the real installed 12.7.0 SDK (pristine or already patched by
+    an older Hermes) and drive its actual poll stream and cache code."""
+    root = _copy_installed_sdk(tmp_path)
+    chunk = root / "node_modules" / "@spectrum-ts" / "imessage" / "dist" / "index.js"
+    first = _patch(root)
+    assert first.returncode == 0, first.stderr
+    patched = chunk.read_text(encoding="utf-8")
+    again = _patch(root)
+    assert again.returncode == 0, again.stderr
+    assert chunk.read_text(encoding="utf-8") == patched
+    for name in ("pollEmptyTitle", "pollMetadataCache", "pollVoteRecovery"):
+        assert f'"{name}":"applied"' in again.stderr
+
+    chunk.write_text(patched + "\nexport {cachePollEvent, cachePollInfo, getPollCache, "
+                     "toPollOptionMessage, sendContent, pollStream};\n", encoding="utf-8")
+    votes = Path("plugins/platforms/photon/sidecar/poll-votes.mjs").resolve().as_uri()
+    probe = _probe(chunk, f"""
+      import('{votes}').then(async({{PollVoteTracker}})=>{{
+      const state={json.dumps(str(tmp_path / "seeds.json"))};
+      globalThis.__hermesPhotonPollSeeds=new PollSeedStore(state);
+      const pollId='spc-msg-poll',chat='any;-;+15551234567',phone='+15559990000';
+      const ids=[{{text:'Route',optionIdentifier:'A'}},{{text:'Calendar',optionIdentifier:'B'}}];
+      const bare=ids.map(({{text}})=>({{text}}));
+      const remote={{polls:{{create:async()=>({{pollMessageGuid:pollId,title:'',options:ids}}),
+        get:async()=>({{pollMessageGuid:pollId,title:'',options:bare}})}}}};
+      const sent=await sdk.sendContent(remote,chat,chat,{{type:'poll',title:'Which?',
+        options:[{{title:'Route'}},{{title:'Calendar'}}]}});
+      const event=(type,optionIdentifier,sequence,time,actor=chat)=>({{type:'poll.changed',
+        pollMessageGuid:pollId,chatGuid:chat,actor:{{address:actor,service:'iMessage'}},isFromMe:false,
+        sequence,occurredAt:new Date(time),
+        delta:type==='optionAdded'?{{type,title:'',options:[bare[0],ids[1],{{text:'Other',optionIdentifier:'C'}}]}}
+          :{{type,optionIdentifier}}}});
+      // Restarted sidecar: a fresh client cache, identifiers only in the persisted seeds.
+      globalThis.__hermesPhotonPollSeeds=new PollSeedStore(state).load();
+      const fresh={{polls:{{...remote.polls}}}};
+      const events=[event('optionAdded',null,20,900),event('voted','A',21,1000),
+        event('unvoted','A',22,1000),event('voted','A',21,1000),event('voted','C',23,2000,'mailto:bob@example.test')];
+      let release,done;const closed=new Promise(r=>{{release=r;}});const finished=new Promise(r=>{{done=r;}});
+      fresh.polls.subscribeEvents=()=>({{async *[Symbol.asyncIterator](){{for(const e of events)yield e;done();await closed;}},
+        close:async()=>release()}});
+      const stream=sdk.pollStream(fresh,sdk.getPollCache(fresh),phone);
+      const tracker=new PollVoteTracker(),observed=[];
+      const reader=(async()=>{{for await(const msg of stream)observed.push(tracker.normalize(msg.content,msg));}})();
+      await Promise.race([finished,new Promise((_,reject)=>setTimeout(()=>reject(new Error('stream timeout')),5000))]);
+      await new Promise(r=>setTimeout(r,50));
+      await stream.close();await reader;
+      console.log(JSON.stringify({{sent:sent.id,observed:observed.map(v=>[v.title,v.selected,v.tally,v.voters,v.partial])}}));
+      }});
+    """)
+    assert probe.returncode == 0, probe.stderr
+    result = json.loads(probe.stdout)
+    assert result["sent"] == "spc-msg-poll"
+    none = {"Route": 0, "Calendar": 0, "Other": 0}
+    # Seeds map A after the restart; the same-millisecond replay of seq 21 is a no-op; the
+    # partial optionAdded keeps A and adds C. Totals are partial: the tally began after restart.
+    assert result["observed"] == [
+        ["Route", True, {**none, "Route": 1}, 1, True],
+        ["Route", False, none, 0, True],
+        ["Route", True, none, 0, True],
+        ["Other", True, {**none, "Other": 1}, 1, True],
+    ]
 
 
 def test_spectrum_patch_rejects_unknown_poll_mapper_without_partial_writes(

@@ -16,10 +16,22 @@ export function parsePollVoteId(messageId, senderId) {
   return pollId ? { pollId, eventTime: Number(match[4]) } : null;
 }
 
+// Event ids remembered per poll so a reconnect replay is a no-op.
+const SEEN_EVENTS_PER_POLL = 512;
+
 export class PollVoteTracker {
   constructor(limit = 200) {
     this.limit = limit;
     this.polls = new Map();
+    // Polls this process saw from creation; their totals are complete.
+    this.complete = new Set();
+  }
+
+  noteCreated(pollId) {
+    if (!nonempty(pollId)) return;
+    this.complete.delete(pollId);
+    this.complete.add(pollId);
+    while (this.complete.size > this.limit) this.complete.delete(this.complete.keys().next().value);
   }
 
   normalize(content, message = {}) {
@@ -36,10 +48,12 @@ export class PollVoteTracker {
       pollId,
       tally: {},
       voters: 0,
+      partial: true,
     };
     if (!pollId) return vote;
+    vote.partial = !this.complete.has(pollId);
     let poll = this.polls.get(pollId);
-    if (!poll) poll = { voters: new Map(), updates: new Map(), options: new Set() };
+    if (!poll) poll = { voters: new Map(), updates: new Map(), options: new Set(), seen: new Set() };
     this.polls.delete(pollId);
     this.polls.set(pollId, poll);
     while (this.polls.size > this.limit) this.polls.delete(this.polls.keys().next().value);
@@ -48,12 +62,21 @@ export class PollVoteTracker {
     }
     if (nonempty(vote.title)) poll.options.add(vote.title);
     const voter = nonempty(message.sender?.id);
-    if (voter && nonempty(vote.title)) {
+    const eventId = nonempty(message.id);
+    // A replayed event id was already applied. Re-applying it after a later
+    // deselection in the same millisecond would restore the removed vote.
+    const replay = eventId !== null && poll.seen.has(eventId);
+    if (eventId && !replay) {
+      poll.seen.add(eventId);
+      if (poll.seen.size > SEEN_EVENTS_PER_POLL) poll.seen.delete(poll.seen.values().next().value);
+    }
+    if (voter && nonempty(vote.title) && !replay) {
       const selections = poll.voters.get(voter) ?? new Set();
       const updates = poll.updates.get(voter) ?? new Map();
       const time = parsed?.eventTime ?? new Date(message.timestamp).getTime();
       const previous = updates.get(vote.title);
-      // Reconnects can replay a selection after its deselection. Keep the latest state.
+      // Reconnects can replay a selection after its deselection. Keep the latest state;
+      // the stream is ordered, so an unseen event at the same millisecond is newer.
       if (!previous || !Number.isFinite(previous.time) || !Number.isFinite(time) || time >= previous.time) {
         if (vote.selected) selections.add(vote.title);
         else selections.delete(vote.title);

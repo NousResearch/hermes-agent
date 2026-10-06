@@ -104,7 +104,7 @@ def test_mirror_copies_every_sidecar_module(tmp_path, monkeypatch) -> None:
 
     assert mirror == tmp_path / "home" / "photon" / "sidecar"
     imports = set(re.findall(r'from "\./([\w-]+\.mjs)"', (source / "index.mjs").read_text(encoding="utf-8")))
-    assert {"send-format.mjs", "stream-staleness.mjs", "poll-votes.mjs"} <= imports
+    assert {"send-format.mjs", "stream-staleness.mjs", "poll-votes.mjs", "poll-seeds.mjs"} <= imports
     copied = {path.name for path in mirror.iterdir()}
     assert {path.name for path in source.glob("*.mjs")} | {"package.json", "package-lock.json"} <= copied
     assert imports <= copied

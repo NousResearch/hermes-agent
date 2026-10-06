@@ -79,7 +79,7 @@ async def test_reap_noop_when_port_free(monkeypatch: pytest.MonkeyPatch) -> None
 
 @pytest.mark.asyncio
 async def test_start_sidecar_spawns_with_stdin_pipe(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path, caplog
 ) -> None:
     """The spawn must hold a stdin pipe and enable the sidecar's EOF watch."""
     adapter = _make_adapter(monkeypatch)
@@ -131,15 +131,23 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
             class _Resp:
                 status_code = 200
 
+                @staticmethod
+                def json() -> dict:  # /healthz body
+                    return {"ok": True, "patches": {"pollEmptyTitle": "missing"}}
+
             return _Resp()
 
     monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _HealthyClient)
+    import logging
 
-    await adapter._start_sidecar()
+    with caplog.at_level(logging.WARNING, logger=photon_adapter.logger.name):
+        await adapter._start_sidecar()
 
     kwargs = spawned["kwargs"]
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"
+    assert kwargs["env"]["PHOTON_POLL_STATE_FILE"] == str(photon_adapter._poll_state_path())
+    assert "poll vote patch not applied (pollEmptyTitle=missing)" in caplog.text
     assert spawned["patch_kwargs"]["creationflags"] == hidden_flags
     assert kwargs["creationflags"] == hidden_flags
 

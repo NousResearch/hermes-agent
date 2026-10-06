@@ -105,6 +105,28 @@ def _runtime_record_path() -> Path:
     return get_hermes_home() / "runtime" / _RUNTIME_RECORD_NAME
 
 
+def _poll_state_path() -> Path:
+    """Send-time poll option identifiers the sidecar keeps across restarts."""
+    from hermes_constants import get_hermes_home  # honors profile overrides
+    return get_hermes_home() / "photon" / "poll-seeds.json"
+
+
+def _warn_unapplied_poll_patch(health: Any) -> None:
+    """Votes from empty-title polls are dropped inside the SDK unless its poll patch applied."""
+    try:
+        payload = health.json()
+    except ValueError:  # non-JSON body from an unexpected responder
+        return
+    patches = payload.get("patches") if isinstance(payload, dict) else None
+    if not isinstance(patches, dict):  # sidecar predates patch reporting
+        return
+    unapplied = {name: state for name, state in patches.items()
+                 if (name.startswith("poll") or name == "spectrum") and state not in {"applied", "not-needed"}}
+    if unapplied:
+        logger.warning("[photon] Spectrum poll vote patch not applied (%s); native poll votes may be dropped",
+                       ", ".join(f"{name}={state}" for name, state in sorted(unapplied.items())))
+
+
 def _write_runtime_record(port: int, token: str, pid: int) -> None:
     """Atomically persist ``{port, token, pid}`` 0600 from creation (best-effort)."""
     try:
@@ -987,7 +1009,7 @@ class PhotonAdapter(BasePlatformAdapter):
             await asyncio.to_thread(_reinstall_sidecar_deps)
 
     async def _apply_spectrum_patch(self, hide_flags: int) -> None:
-        """Run the mixed-attachment patch script (best-effort, off the loop: up to 10s, every reconnect)."""
+        """Run the Spectrum SDK patch script (best-effort, off the loop: up to 10s, every reconnect)."""
         try:
             patch = await asyncio.to_thread(
                 subprocess.run,  # noqa: S603
@@ -999,7 +1021,7 @@ class PhotonAdapter(BasePlatformAdapter):
             if patch.stderr.strip():
                 logger.debug("[photon] %s", patch.stderr.strip())
         except Exception as exc:
-            logger.warning("[photon] failed to apply Spectrum mixed attachment patch: %s", exc)
+            logger.warning("[photon] failed to apply Spectrum SDK patch (mixed attachments, poll votes): %s", exc)
 
     async def _start_sidecar(self) -> None:
         if self._node_bin is None:
@@ -1019,7 +1041,7 @@ class PhotonAdapter(BasePlatformAdapter):
         env.update({
             "PHOTON_PROJECT_ID": self._project_id, "PHOTON_PROJECT_SECRET": self._project_secret,
             "PHOTON_SIDECAR_PORT": str(self._sidecar_port), "PHOTON_SIDECAR_BIND": self._sidecar_bind,
-            "PHOTON_SIDECAR_TOKEN": self._sidecar_token,
+            "PHOTON_SIDECAR_TOKEN": self._sidecar_token, "PHOTON_POLL_STATE_FILE": str(_poll_state_path()),
             # Exit on stdin EOF so ANY gateway death (incl. SIGKILL) can't orphan it on the port.
             "PHOTON_SIDECAR_WATCH_STDIN": "1"})
         from hermes_cli._subprocess_compat import windows_hide_flags  # hide child console on Windows
@@ -1058,6 +1080,7 @@ class PhotonAdapter(BasePlatformAdapter):
                     resp = await client.post(self._sidecar_url("/healthz"), headers=self._sidecar_headers())
                     if resp.status_code == 200:  # let out-of-process senders (cron) reach this sidecar
                         _write_runtime_record(self._sidecar_port, self._sidecar_token, self._sidecar_proc.pid)
+                        _warn_unapplied_poll_patch(resp)
                         return
                 except httpx.RequestError as e:
                     last_err = e
@@ -1076,7 +1099,9 @@ class PhotonAdapter(BasePlatformAdapter):
                 line = await loop.run_in_executor(None, stdout.readline)
                 if not line:
                     break
-                logger.info("[photon-sidecar] %s", line.decode("utf-8", "replace").rstrip())
+                text = line.decode("utf-8", "replace").rstrip()
+                level = logging.WARNING if text.startswith("photon-sidecar: WARNING") else logging.INFO
+                logger.log(level, "[photon-sidecar] %s", text)
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[photon-sidecar] supervisor exited: %s", e)
         # A container/supervisor stop signals the whole process tree, so the sidecar (its own

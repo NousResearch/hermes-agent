@@ -158,6 +158,33 @@ class TestGetCdpOverride:
         with patch("hermes_cli.config.read_raw_config", return_value={}):
             assert bc.is_camofox_mode() is False
 
+    def test_routed_profile_scope_supplies_browser_cdp_url(self, monkeypatch):
+        """Under the multiplexed gateway a profile's ``BROWSER_CDP_URL`` (its ``.env`` / secret source)
+        lives in the bound secret scope, never in ``os.environ``. Both CDP-override gates must see it
+        (raw gate and the Camofox short-circuit), and a profile WITHOUT one must not inherit a
+        sibling's value: A -> B -> A, with the process env holding none."""
+        import tools.browser_camofox as bc
+        from agent.secret_scope import reset_secret_scope, set_secret_scope, set_multiplex_active
+
+        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+        monkeypatch.delenv("CAMOFOX_URL", raising=False)
+        camofox = {"CAMOFOX_URL": "http://localhost:9377"}
+        set_multiplex_active(True)
+        try:
+            with patch("hermes_cli.config.read_raw_config", return_value={}):
+                # No scope bound (boot-time gate): must not raise and must see no override.
+                assert bt_cdp._get_cdp_override_raw() == ""
+                for expected, scope in ((WS_URL, {**camofox, "BROWSER_CDP_URL": WS_URL}), ("", camofox),
+                                        (WS_URL, {**camofox, "BROWSER_CDP_URL": WS_URL})):
+                    token = set_secret_scope(scope)
+                    try:
+                        assert bt_cdp._get_cdp_override_raw() == expected
+                        assert bc.is_camofox_mode() is (expected == "")
+                    finally:
+                        reset_secret_scope(token)
+        finally:
+            set_multiplex_active(False)
+
 class TestCreateCdpSession:
     """_create_cdp_session() must sanitize the CDP URL before logging.
 

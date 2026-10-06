@@ -14,6 +14,7 @@ lane enumeration, reclaim, promotion, budget — still fails the tick loudly.
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 import time
 from pathlib import Path
@@ -231,3 +232,112 @@ def test_cli_dispatch_exits_zero_with_a_poison_row(conn, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Row errors:" in out, out
     assert poison in out, out
+
+
+# ---------------------------------------------------------------------------
+# The review-lane reservation preflight, and the row-local vs board-level
+# sqlite boundary. Both run OUTSIDE the ready loop that the rest of this file
+# covers, which is why the earlier cases could not see them.
+# ---------------------------------------------------------------------------
+
+
+def _review_card(conn, title, *, priority=0):
+    """A card sitting in the review lane, claimable by this tick.
+
+    Like :func:`_card`, the status is set directly: ``create_task`` only opens
+    cards as ``running``/``blocked``, and the parent gate is not what these
+    assertions are about.
+    """
+    task_id = kb.create_task(conn, title=title, assignee=ASSIGNEE, priority=priority)
+    conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (task_id,))
+    conn.commit()
+    return task_id
+
+
+def _tick_row_error_payload(conn, task_id):
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'tick_row_error' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return json.loads(row["payload"]) if row is not None else None
+
+
+def test_poisoned_review_row_cannot_abort_the_reservation_pass(conn):
+    """Finding 1: the review reservation preflight is inside the fault boundary.
+
+    ``_any_spawnable_review`` inspects every review row BEFORE the ready loop
+    runs. An unreadable review row raised straight out of that preflight and
+    ended the tick, so the sibling ready card never dispatched — the failure
+    class this change exists to contain, one call frame outside its own
+    wrapper. ``max_spawn`` is set so the preflight runs at all: the reservation
+    is only consulted when there IS a budget to hold back.
+    """
+    poison = _review_card(conn, "poison-review", priority=9)  # preflight sees it FIRST
+    sibling = _card(conn, "sibling-ready")
+    _poison_run_column(conn, poison)
+
+    spawner = _Spawner()
+    result = kbd.dispatch_once(conn, spawn_fn=spawner, max_spawn=10)
+
+    assert spawner.calls == [sibling], "a poisoned review row must not end the pass"
+    assert [(tid, err.split("(", 1)[0]) for tid, err in result.row_errors] == [
+        (poison, "ValueError")
+    ], result.row_errors
+
+    row = conn.execute(
+        "SELECT status, consecutive_failures, last_failure_error FROM tasks WHERE id = ?",
+        (poison,),
+    ).fetchone()
+    assert row["status"] == "review", "below the limit the review row stays retryable"
+    assert row["consecutive_failures"] == 1, (
+        "the reservation preflight and the review loop must not count the SAME "
+        "poison row twice in one pass"
+    )
+    assert row["last_failure_error"].startswith("dispatch_error:")
+    payload = _tick_row_error_payload(conn, poison)
+    assert payload is not None and payload["lane"] == "review", payload
+
+
+def test_healthy_review_row_after_a_poisoned_one_still_dispatches(conn):
+    """The preflight continues past a contained row — one poison row is not a stop.
+
+    Containing the raise is only half the contract: the row the preflight could
+    not read must not starve the rest of the review lane either.
+    """
+    poison = _review_card(conn, "poison-review", priority=9)
+    healthy = _review_card(conn, "healthy-review")
+    _poison_run_column(conn, poison)
+
+    spawner = _Spawner()
+    result = kbd.dispatch_once(conn, spawn_fn=spawner, max_spawn=10)
+
+    assert spawner.calls == [healthy]
+    assert [tid for tid, _err in result.row_errors] == [poison]
+
+
+def test_sqlite_operational_error_inside_a_row_still_aborts_the_tick(conn, monkeypatch):
+    """Finding 2: a board-wide sqlite fault is NOT a poison row.
+
+    ``sqlite3.OperationalError`` ('database is locked', an I/O failure) is raised
+    by the BOARD, not by one card's data. Containing it here stamps that card
+    ``dispatch_error:``, climbs its failure counter and eventually auto-blocks
+    it — while the pass reports success against a board that is unavailable.
+    """
+    card = _card(conn, "innocent")
+
+    def _boom(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(kbd, "check_respawn_guard", _boom)
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        kbd.dispatch_once(conn, spawn_fn=_Spawner())
+
+    row = conn.execute(
+        "SELECT consecutive_failures, last_failure_error FROM tasks WHERE id = ?",
+        (card,),
+    ).fetchone()
+    assert row["consecutive_failures"] == 0, "a board-level fault is not this row's"
+    assert row["last_failure_error"] is None
+    assert "tick_row_error" not in _events(conn, card)

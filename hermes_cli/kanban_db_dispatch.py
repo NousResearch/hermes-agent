@@ -102,8 +102,17 @@ _ROW_ERROR_STAMP_PREFIX = "dispatch_error:"
 # the board's whole pass. Curated, deliberately not a bare ``Exception``: a
 # programming error or a spawn-path bug outside this surface still fails the
 # tick loudly — that loud abort is how the original poisoning was noticed at all.
+#
+# Deliberately NO ``sqlite3.Error``. Its ``OperationalError`` subclass covers
+# board-wide faults — 'database is locked', I/O errors, a corrupt file — so
+# containing one would attribute an unavailable BOARD to a single card: the row
+# gets a ``dispatch_error:`` stamp, its failure counter climbs, and the breaker
+# eventually parks it, while the pass cheerfully walks a board that is actually
+# unavailable. The row-data failures this boundary exists for are Python-level
+# parse failures on a dynamically-typed cell (``bytes`` where a ``str`` reader
+# expected text, ``int()``/``json`` on a TEXT value, a row shape the builder did
+# not expect), which the classes below cover without pre-empting a DB fault.
 _ROW_ISOLATION_ERRORS: tuple[type[BaseException], ...] = (
-    sqlite3.Error,  # unreadable/corrupt cell, bad column value
     TypeError,      # bytes where a str reader expected text
     ValueError,     # unparseable column value (int()/json on a TEXT cell)
     KeyError,       # a row shape the row builder did not expect
@@ -2117,9 +2126,12 @@ def _dispatch_lane_task_isolated(
 
     Every failure inside ONE row's dispatch stays that row's: a raise from the
     profile lookup, the respawn guard or the claim is recorded on ``result``
-    (``row_errors``) and the ready/review loop moves to the next card. Only the
-    curated :data:`_ROW_ISOLATION_ERRORS` are contained — a board-level fault
-    (lane enumeration, reclaim, promotion, budget) still fails the tick loudly.
+    (``row_errors``) and the ready/review loop moves to the next card. The
+    review-lane reservation preflight (:func:`_any_spawnable_review`) shares
+    this same boundary, so its per-row inspection cannot end the tick either.
+    Only the curated :data:`_ROW_ISOLATION_ERRORS` are contained — a board-level
+    fault (lane enumeration, reclaim, promotion, budget, or a ``sqlite3``
+    failure such as a locked database) still fails the tick loudly.
     """
     try:
         return _dispatch_lane_task(conn, row, assignee, result, **kwargs)
@@ -2391,6 +2403,9 @@ def _any_spawnable_review(
     *,
     per_profile_cap: Optional[int] = None,
     per_profile_running: Optional[dict[str, int]] = None,
+    result: Optional["DispatchResult"] = None,
+    failure_limit: int = DEFAULT_FAILURE_LIMIT,
+    isolated_indexes: Optional[set[int]] = None,
 ) -> bool:
     """Mirror review dispatch gates before reserving ready-lane capacity.
 
@@ -2399,21 +2414,39 @@ def _any_spawnable_review(
     assignee already at the per-profile cap, or respawn-guarded — cannot
     consume the reservation, so it must not withhold capacity from an
     otherwise ready task (one such row would pin ``ready_budget`` to 0).
+
+    This pass runs BEFORE the ready loop, so it sits inside the same per-row
+    fault boundary as the loops it feeds: an unreadable review row is contained
+    with :func:`_isolate_row_error` (recorded on ``result``, counted once) and
+    treated as "cannot reserve" instead of raising out of the tick and skipping
+    every other card. Its index is added to ``isolated_indexes`` so the review
+    loop below does not isolate the SAME row a second time in one pass.
     """
     if not review_rows:
         return False
     profile_exists = _profile_exists_fn()
     running = per_profile_running or {}
-    for row in review_rows:
-        assignee = row["assignee"]
-        if not assignee:
-            continue
-        if profile_exists is not None and not profile_exists(assignee):
-            continue
-        if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
-            continue
-        if check_respawn_guard(conn, row["id"], lane="review") is None:
-            return True
+    for index, row in enumerate(review_rows):
+        try:
+            assignee = row["assignee"]
+            if not assignee:
+                continue
+            if profile_exists is not None and not profile_exists(assignee):
+                continue
+            if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
+                continue
+            if check_respawn_guard(conn, row["id"], lane="review") is None:
+                return True
+        except _ROW_ISOLATION_ERRORS as exc:
+            # A row we cannot inspect cannot reserve capacity, and must cost
+            # that row only — never the reservation pass, never the tick.
+            if result is not None:
+                _isolate_row_error(
+                    conn, row, result, exc,
+                    lane="review", failure_limit=failure_limit,
+                )
+            if isolated_indexes is not None:
+                isolated_indexes.add(index)
     return False
 
 
@@ -2495,9 +2528,14 @@ def _dispatch_once_locked(
     # backlog. When spawnable review work exists and there is any budget, hold
     # one slot back.
     ready_budget = spawn_budget
+    # Rows the reservation preflight could not read (already isolated there):
+    # the review loop skips them so one poison row counts ONCE per tick.
+    review_isolated: set[int] = set()
     if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
         conn, review_rows,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        result=result, failure_limit=failure_limit,
+        isolated_indexes=review_isolated,
     ):
         ready_budget = max(spawn_budget - 1, 0)
     lane_kwargs: dict[str, Any] = dict(
@@ -2528,9 +2566,13 @@ def _dispatch_once_locked(
     # (→ ready/todo). Review spawns share max_spawn with ready tasks. The loop
     # checks the FULL shared ``spawn_budget`` — the reservation above caps the
     # ready lane, it grants no extra capacity here.
-    for row in review_rows:
+    for index, row in enumerate(review_rows):
         if spawn_budget is not None and spawned >= spawn_budget:
             break
+        if index in review_isolated:
+            # Already contained (and failure-counted) by the reservation
+            # preflight above; counting it again would inflate the retry budget.
+            continue
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue

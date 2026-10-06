@@ -3617,16 +3617,14 @@ class BasePlatformAdapter(ABC):
         ephemeral deletion — no session lifecycle (active-session bypass paths).
 
         This IS the delivery owner of an agent turn the handler nests meanwhile (/retry typed
-        while the outgoing turn's reply is on the wire re-runs the prompt through the runner's
-        idle path): the gateway parks that turn's review-ownership completion on the live session
-        Event, which the outgoing task read once, the moment its own handler returned — or, when
-        that task's unwind released the Event first, on this command event, where the nesting
-        handler re-homes it (``gateway.run_turn.rehome_review_delivery_completion``). Only a
-        completion that appeared during this handler call is taken — the outgoing turn's own,
-        still parked while its handler runs, is never touched — and it completes with this
-        send's outcome, so the nested turn's live-turn token never outlives its delivery. Its
-        candidate goes to the outgoing turn (still the session's delivery owner), which spawns
-        it once its own token is released: a spawn here would be refused against that token.
+        while the outgoing reply is on the wire): the gateway parks that turn's completion on the
+        live session Event — or, once the outgoing task's unwind released it, on this command
+        event, re-homed there by the nesting handler (``rehome_review_delivery_completion``). Only
+        a completion that appeared during this handler call is taken (the outgoing turn's own,
+        still parked while its handler runs, is never touched), and it completes with this send's
+        outcome, so the nested turn's token never outlives its delivery. Its candidate goes to the
+        outgoing turn (still the session's delivery owner), which spawns it once its own token is
+        released: a spawn here would be refused against that token.
         """
         thread_meta = _thread_metadata_for_event(event)
         if session_key is None:

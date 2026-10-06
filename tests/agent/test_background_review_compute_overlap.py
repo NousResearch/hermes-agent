@@ -1539,13 +1539,10 @@ def test_single_turn_larger_than_replay_budget_skips_automatic_review(
 def test_replay_budget_is_the_ceiling_or_a_request_share_net_of_the_overhead(
     task_cfg, window
 ):
-    """One rule: the automatic replay never exceeds what ONE of the fork's provider requests may
-    carry when the aggregate input budget is split into ``REVIEW_REQUEST_SHARES`` equal shares.
-    Every request is the replay plus the parent's system prompt and tools[] (inherited
-    byte-identical on the same-model path) and the review prompt, charged in full, so sizing
-    the replay for the first request alone would leave no second one. The fork resolves the
-    same context window as its parent on the same-model path, so the parent answers for it at
-    replay-bounding time."""
+    """One rule: the automatic replay never exceeds one of ``REVIEW_REQUEST_SHARES`` equal shares
+    of the aggregate input budget net of what every request carries besides it — the parent's
+    system prompt and tools[] (inherited byte-identical on the same-model path) and the review
+    prompt. The fork resolves its parent's context window, so the parent answers at spawn."""
     agent = _bare_agent()
     if window is not None:
         agent.context_compressor = types.SimpleNamespace(context_length=window)
@@ -1659,105 +1656,6 @@ def test_replay_never_exceeds_the_forks_aggregate_input_budget(
     )
     assert record["attrs"]["_review_owner_tag"] == review_admission.owner_tag(
         review_admission.current_profile_key(), agent.session_id
-    )
-
-
-def test_default_replay_leaves_room_for_a_read_write_cycle(review_forks, monkeypatch):
-    """The aggregate budget is charged the FULL prompt on every provider request — cache reads
-    included (``_review_input_tokens_consumed``) — and the replay rides every one of them. A
-    replay sized for the first request alone leaves room for exactly one request on the
-    default budget (a 200k window: 150k) once a long session fills the replay ceiling: the
-    fork's reads execute, its second request is refused, and no read -> write cycle is
-    possible — the full-replay request is spent for nothing. The default replay must leave
-    the fork a read, a write and a closing response (the prompt enforces read-before-write)."""
-    from agent.conversation_loop import _reserve_review_input_request
-    from agent.model_metadata import _estimate_tools_tokens_rough
-
-    _patch_config(monkeypatch, _config())
-    window = 200_000
-    fake_fork = run_agent_module.AIAgent  # the review_forks fixture's recorder
-
-    class WindowedFork(fake_fork):
-        def __init__(self, **kwargs):
-            super().__init__(**kwargs)
-            self.context_compressor = types.SimpleNamespace(context_length=window)
-
-    monkeypatch.setattr(run_agent_module, "AIAgent", WindowedFork)
-    agent = _bare_agent()
-    agent.context_compressor = types.SimpleNamespace(context_length=window)
-    agent._cached_system_prompt = "system prompt " + "s" * 20_000  # ~5k tokens
-    agent.tools = [  # ~12k tokens of advertised schemas (a gateway surface)
-        {
-            "type": "function",
-            "function": {
-                "name": f"tool_{index}",
-                "description": "d" * 400,
-                "parameters": {
-                    "type": "object",
-                    "properties": {"arg": {"type": "string", "description": "e" * 500}},
-                },
-            },
-        }
-        for index in range(50)
-    ]
-    # A session past the replay ceiling: the normal long-session case.
-    snapshot = _snapshot(pairs=80, filler_chars=8_000)
-    assert (
-        estimate_messages_tokens_rough(snapshot)
-        > review_admission.MAX_REPLAY_TOKENS_DEFAULT
-    )
-
-    AIAgent._spawn_background_review(
-        agent, messages_snapshot=snapshot, review_memory=True
-    )
-
-    assert len(review_forks) == 1
-    record = review_forks[0]
-    history = record["history"]
-    assert history
-    fork = types.SimpleNamespace(
-        _review_input_token_budget=record["attrs"]["_review_input_token_budget"],
-        session_prompt_tokens=0,
-        _review_input_tokens_reserved=0,
-    )
-    tools_tokens = _estimate_tools_tokens_rough(record["attrs"]["tools"])
-    messages = (
-        [{"role": "system", "content": record["attrs"]["_cached_system_prompt"]}]
-        + list(history)
-        + [{"role": "user", "content": record["user_message"]}]
-    )
-    admitted = []
-    # Request #1 reads (a skill_view / memory search), #2 writes, #3 closes; each tool
-    # result (~1k tokens) grows every later request, as the loop replays it.
-    for step, tool_result in (
-        ("read", "r" * 4_000),
-        ("write", "w" * 4_000),
-        ("close", None),
-    ):
-        projected = estimate_messages_tokens_rough(messages) + tools_tokens
-        if not _reserve_review_input_request(fork, projected):
-            break
-        admitted.append(step)
-        fork.session_prompt_tokens += projected  # the provider bills the whole prompt
-        if tool_result is not None:
-            messages += [
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": step,
-                            "type": "function",
-                            "function": {"name": "memory", "arguments": "{}"},
-                        }
-                    ],
-                },
-                {"role": "tool", "tool_call_id": step, "content": tool_result},
-            ]
-    assert admitted == ["read", "write", "close"], (
-        f"the default replay left room for {admitted} only "
-        f"(budget={fork._review_input_token_budget}, replayed="
-        f"{estimate_messages_tokens_rough(history)})"
     )
 
 

@@ -800,21 +800,18 @@ DEFAULT_CONFIG = {
         "curator": _aux(600),
         "monitor": _aux(60),   # important-mail 0-10 scorer; high-volume, small model fine
         # Post-turn self-improvement fork (save memory / patch skill). "auto" = main model replaying
-        # the full conversation (warm cache); other models replay a compact digest (~3-5x cheaper).
-        # enabled=false skips auto spawns (/refine still works). An explicit max_input_tokens caps
-        # the SUM of replayed input tokens over the review loop (iterations capped at 16); the loop
-        # stops before crossing it. When unset, the runtime derives a budget from the review model's
-        # context window (75%, capped at 600000). 600000 is a hard ceiling: larger, <= 0 or invalid
-        # values fall back to the derived default. max_replay_tokens caps the verbatim conversation
-        # replay of one AUTOMATIC review (agent/review_admission.py): 120000 is the default AND the
-        # hard ceiling — lower values narrow the replay; <= 0, larger or invalid fall back to it.
-        # The replay is also never wider than a third of the input budget net of the system prompt,
-        # tools and review prompt: every request replays it and is charged in full, so this keeps a
-        # read, a write and a closing response within the budget (a 200k window: ~30k of replay).
-        # reasoning_effort is IGNORED while the review stays on the main model: the fork inherits the
-        # conversation's reasoning config verbatim so its request bytes keep the parent's warm
-        # prompt-cache prefix (#30532). Set provider/model below to route the review to another model
-        # if you want a different effort level; a one-time warning says so when the key is set.
+        # the conversation (warm cache); other models replay a compact digest (~3-5x cheaper).
+        # enabled=false skips auto spawns (/refine still works). max_input_tokens caps the SUM of
+        # input tokens over the review loop (<= 16 iterations; every request is charged in full,
+        # cache reads included); unset = 75% of the review model's context window, capped at the
+        # 600000 hard ceiling (larger, <= 0 or invalid values fall back to the derived default).
+        # max_replay_tokens caps the verbatim replay of one AUTOMATIC review (agent/review_admission
+        # .py): 120000 is the default AND the hard ceiling; lower narrows it, <= 0, larger or invalid
+        # fall back to it. The replay is also never wider than a third of the input budget net of
+        # the system prompt, tools and review prompt, so a read, a write and a closing response fit.
+        # reasoning_effort is IGNORED while the review stays on the main model (the fork keeps the
+        # parent's reasoning config so its request bytes keep the warm prompt-cache prefix, #30532);
+        # route the review to another provider/model below for a different effort level (warns once).
         "background_review": {"enabled": True, **_aux(120), "max_replay_tokens": 120000},
         # No reasoning_effort on MoA blocks by design — configured PER SLOT in the preset
         # (moa.presets.<name>.reference_models[].reasoning_effort / aggregator.reasoning_effort).

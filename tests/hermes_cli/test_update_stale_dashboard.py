@@ -818,6 +818,63 @@ class TestCmdlineCapture:
 
         assert argv == ["hermes", "serve", "--port", "8300"]
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX ps cmdline fallback")
+    def test_flattened_ps_output_with_inline_c_payload_is_not_shattered(self, monkeypatch):
+        """Regression: a ``python -I -c <bootstrap>`` launcher captured through the
+        ``ps -o command=`` fallback must NOT be shattered by ``shlex.split`` into many
+        argv tokens. The real argv has the entire bootstrap as ONE element after ``-c``;
+        the flattened ps output contains only internal single quotes (around the repo
+        path), and ``shlex.split`` destroys the structure, producing a respawn argv
+        like ``python -I -c import sys, runpy; ...`` which python parses as
+        ``-c "import"`` and rejects with SyntaxError.
+
+        The correct behaviour is either:
+
+        (a) the bootstrap survives as a single argv element, OR
+        (b) the function refuses to reconstruct argv and returns ``None`` so the caller
+            falls back to the manual-restart hint instead of exec'ing a broken command.
+
+        Either satisfies the contract; both are strictly better than a SyntaxError.
+        Reproduces the 2026-10-06 update-time respawn failure traced in the parent card.
+        """
+        live = self._live()
+        repo = "/Users/sgt.snips/Projects/hermes-agent"
+        # This is the actual flattened form `ps -o command=` produces when the real
+        # argv contains an inline -c payload: no outer quotes around the bootstrap,
+        # only internal single quotes around the repo path. shlex.split on this string
+        # shatters the bootstrap into many tokens (verified: produces 22 tokens where
+        # the correct argv has 12).
+        flattened = (
+            "/Users/sgt.snips/.hermes/tools/python3 -I -c "
+            "import sys, runpy; sys.path.insert(0, '" + repo + "'); "
+            "sys.argv = ['" + repo + "/.venv/bin/hermes', 'dashboard', '--no-open']; "
+            "runpy.run_path('" + repo + "/.venv/bin/hermes', run_name='__main__') "
+            "dashboard --no-open --host 127.0.0.1 --port 9119 --skip-build"
+        )
+
+        def fake_run(args, *a, **kw):
+            assert args == ["ps", "-p", "42192", "-o", "command="]
+            return MagicMock(returncode=0, stdout=flattened + "\n", stderr="")
+
+        with patch.object(live.os.path, "exists", return_value=False), \
+             patch("subprocess.run", side_effect=fake_run):
+            argv = main_dashboard._dashboard_cmdline_for_pid(42192)
+
+        # Contract (a): bootstrap survives intact as one element after -c.
+        bootstrap_intact = (
+            argv is not None
+            and "-c" in argv
+            and argv[argv.index("-c") + 1].startswith("import sys, runpy;")
+            and "runpy.run_path(" in argv[argv.index("-c") + 1]
+        )
+        # Contract (b): graceful refusal — caller gets None and prints the manual hint.
+        graceful_refusal = argv is None
+
+        assert bootstrap_intact or graceful_refusal, (
+            f"ps fallback shattered the -c payload into {len(argv) if argv else 0} tokens; "
+            f"expected either an intact bootstrap or None. Got argv={argv!r}"
+        )
+
     @pytest.mark.platforms("windows")
     def test_returns_none_on_windows(self):
         """``platforms("windows")``: the contract is "no graceful-argv capture on a

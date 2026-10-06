@@ -16,6 +16,7 @@ dispatch (no durable advance) without raising or mutating the store.
 import errno
 import json
 import logging
+import sqlite3
 
 import pytest
 from datetime import datetime, timezone
@@ -128,21 +129,37 @@ def test_tick_on_unwritable_store_returns_cleanly_without_dispatch(cron_store, m
         assert row is None
 
 
-@pytest.mark.parametrize("site", ["claim_job_for_fire", "note_cron_execution"])
-def test_dispatch_failure_after_receipt_never_leaves_it_claimed(cron_store, monkeypatch, caplog, site):
+@pytest.mark.parametrize("site,exc,ledger_fails", [
+    ("claim_job_for_fire", RuntimeError, False),
+    ("note_cron_execution", RuntimeError, False),
+    # Full disk: the executions.db write fails too; the store-unwritable skip must not raise.
+    ("claim_job_for_fire", OSError, True),
+])
+def test_dispatch_failure_after_receipt_never_leaves_it_claimed(
+        cron_store, monkeypatch, caplog, site, exc, ledger_fails):
     """A non-OSError fire-claim failure, or a failure after create_execution in _submit_with_guard,
     must settle the receipt: a ``claimed`` row never resolves and reads forever as in flight."""
     from cron import executions, scheduler
 
     def boom(*_a, **_k):
-        raise RuntimeError("boom")
+        raise exc("boom")
+
+    def ledger_full(*_a, **_k):
+        raise sqlite3.OperationalError("database or disk is full")
 
     save_jobs([_due_job()])
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", cron_store / "cron" / "executions.db")
     monkeypatch.setattr(scheduler, "run_one_job", lambda job, **k: True)
     monkeypatch.setattr(scheduler, "_should_yield_tick_to_fresh_gateway", lambda: None)
     monkeypatch.setattr(scheduler, site, boom)
+    if ledger_fails:
+        monkeypatch.setattr(executions, "finish_execution", ledger_full)
+        monkeypatch.setattr(scheduler, "finish_execution", ledger_full)
     scheduler.tick(verbose=False, sync=True)  # a worker failure is logged, never raised
+    if ledger_fails:  # the skip settles best-effort instead of raising out of the worker
+        assert "failed to close execution receipt" in caplog.text
+        assert "Cron job future failed" not in caplog.text
+        return
     row = executions.latest_execution("due-job")
     assert row is not None and row["status"] == "failed"
     if site == "note_cron_execution":  # the receipt exists, so creation did not fail

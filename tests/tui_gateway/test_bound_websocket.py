@@ -87,12 +87,18 @@ def test_ticket_identity_reaches_real_ws_dispatch_and_disconnect_fences_operatio
         # A replacement connection with a different server-minted identity refuses.
         other = Socket("bob")
         assert web_server_chat._ws_auth_reason(other)[0] is None
-        stranger = ws.WSTransport(other, asyncio.get_running_loop(), auth_identity=other._hermes_auth_identity)
-        reply = await asyncio.to_thread(server.dispatch, {
-            "id": "foreign", "method": "session.activate_bound", "params": {
-                "session_id": binding["session_id"], "expected_binding": binding}}, stranger)
-        assert reply["error"]["code"] == 4007
-        assert not server._session_transport_contains(record, stranger)
+        other_task = asyncio.create_task(ws.handle_ws(other, auth_identity=other._hermes_auth_identity))
+        try:
+            await other.inbound.put({"id": "foreign", "method": "session.activate_bound", "params": {
+                "session_id": binding["session_id"], "expected_binding": binding}})
+            while True:
+                reply = await asyncio.wait_for(other.outbound.get(), 5)
+                if reply.get("id") == "foreign":
+                    break
+            assert reply["error"]["code"] == 4007
+        finally:
+            await other.inbound.put(None)
+            await asyncio.wait_for(other_task, 5)
         assert server._session_transport_contains(record, creator)
     try:
         asyncio.run(run())

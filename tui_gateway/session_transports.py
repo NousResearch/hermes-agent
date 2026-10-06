@@ -14,6 +14,7 @@ def _transport_is_live_peer(transport) -> bool:
             and transport is not _detached_ws_transport
             and transport is not _stdio_transport
             and not isinstance(transport, (_DropTransport, StdioTransport))
+            and not getattr(transport, "_conditional_tentative", False)
             and not _transport_is_dead(transport))
 
 
@@ -110,6 +111,7 @@ def _detach_session_transport(session: dict | None, transport) -> bool:
     with _session_transport_lock:
         (session.get("viewers") or {}).pop(transport, None)
         (session.get("bound_subscribers") or {}).pop(transport, None)
+        host_member = (session.get("host_bound_subscribers") or {}).pop(transport, None)
         existing = session.get("transport")
         if isinstance(existing, FanoutTransport):
             existing.detach(transport)
@@ -119,7 +121,10 @@ def _detach_session_transport(session: dict | None, transport) -> bool:
                     viewers.pop(viewer, None)
             # Keep the surviving mailbox: collapsing to a bare transport lets
             # new frames overtake its already queued terminal/control events.
-        return _session_has_live_transport(session, excluding=transport)
+        remaining = _session_has_live_transport(session, excluding=transport)
+    if host_member is not None:
+        host_member["supervisor"].conditional_release(host_member["boot"], host_member["subscription"])
+    return remaining
 
 
 def _detach_transport_from_sessions(transport) -> list[tuple[str, dict]]:

@@ -143,12 +143,12 @@ lease holder. The first engine attachment captures an immutable engine object,
 store object and identity revision for that creation record. Attachment retries
 cannot refresh this witness. A removed/replaced engine, changed revision (even
 if the segment ID changes back), changed engine/store scope, failed/interrupted
-turn or unready/unproven engine refuses. Compute-host-owned records remain unsupported.
-An unbuilt record configured to dispatch its next turn to the compute host also
-refuses. The parent marks any attempted child lifetime permanently ineligible,
-even after a failed send, child replacement, mirror lag or an away/back key change.
-It never queries, starts, resumes or interrupts a child to manufacture activation
-proof. A ready local engine stays local under the existing routing policy.
+turn or unready/unproven engine refuses. Original ready compute-host engines can
+also qualify through the child-authoritative protocol below. An unbuilt record
+routed to a child still refuses: activation never starts, resumes or rebuilds an
+engine to manufacture proof. Any attempted child lifetime permanently invalidates
+local eligibility, even after a failed send or parent-mirror ABA. A ready local
+engine stays local under the existing routing policy.
 An accepted prompt still waiting for its engine turn lease is not certified as a
 healthy running engine.
 
@@ -169,8 +169,8 @@ receipt capture. A busy engine transition refuses instead of waiting on callback
 that might need gateway locks. A healthy turn continues on its existing worker
 and lease, with existing subscribers retained; activation starts no execution.
 
-This is a qualified local execution scope, not a parent-mirror certificate for
-compute-host identity. Complete recovery, durable request outcomes and downstream
+The parent mirror alone supplies no certificate of compute-host identity.
+Complete recovery, durable request outcomes and downstream
 supported-release/pin qualification remain separate gates. Method presence or a
 subscription receipt alone must not be interpreted as writable recovery support.
 
@@ -190,7 +190,69 @@ connection liveness, complete recovery or input authority. Conditional operation
 below revalidate identity independently at use. Never automatically replay prompts or responses or fall
 back to legacy activation/cold resume after refusal or a lost receipt.
 
-### Conditional local operations
+### Compute-host authority
+
+The public envelope and accepted binding are the same for local and host engines.
+Private pipe tokens are never client credentials. The first deliberate ordinary
+host turn carries the immutable creation origin and pins the actual child boot.
+Only that first child record can capture the original engine, database object,
+identity revision and exact segment. Failed capture is retained as a tombstone;
+ordinary dispatch, replacement, restart and away/back identity changes cannot
+recertify it. A new authenticated creation can qualify in a new child lifetime.
+
+Activation queries only the existing pinned child. Two private reservation
+workers compare the complete binding, owner, resolved profile/store, original
+record/engine/revision and strict readable durable tip under the child's
+resume/history/registry/transport guards and nonblocking engine guard. A prepared
+reservation holds that cut for at most five seconds pending commit. Settling,
+failed, interrupted, missing or changed authority refuses; a healthy running
+engine keeps its worker and lease.
+
+The parent separately compares its original record, owner, scope, segment and
+child boot. It installs a tentative delivery sink, queues commit inside that cut,
+and waits outside gateway locks. The child commits one logical subscription at
+its held identity cut; the parent publishes membership only after receiving the
+matching receipt and revalidating its own cut and the actual peer attachment.
+Tentative sinks do not count as client liveness and cannot suppress orphan
+reaping. Their events are dropped, so recovery must retain explicit loss/gap evidence.
+Refusal exposes no snapshot or tentative events and leaves parent viewers and
+orphan-reap state unchanged. Only the tentative sink is removed; existing peers
+are retained. Abandoned reservations expire; unused logical child subscriptions
+are released asynchronously. Repeating an accepted activation on the same peer
+reuses its child membership token. A peer-only activation gate serializes
+concurrent retries without holding gateway guards. Repeating after a lost receipt can reconcile
+membership, but cannot prove history or operation outcomes.
+
+Conditional pipe sends use a bounded eight-packet queue and capture the exact
+process object: blocked I/O holds no parent gateway lock, and queued controls can
+never migrate to a replacement process. Reservations and subscriptions are private and boot-pinned; commits are never
+automatically retried. The child limits retained subscriptions to 64.
+RPC relay frames carry the actual boot internally. New-lifetime frames revoke
+old conditional delivery membership before forwarding; internal tags are stripped
+before client delivery. Queries never start or respawn a host.
+
+All four conditional operations use the same child-held reservation and compare
+accepted membership and identity again through the immediate handler. Prompt
+admission additionally carries its witness through both production worker hops
+and the durable lease wait. After acquiring the lease, while retaining the engine
+identity guard, it obtains a generation-pinned parent admission decision for that
+specific pending turn, then verifies the exact engine/store/revision and strict
+tip before execution. Changed/retired/cancelled parent authority refuses; the
+newly acquired lease is released. Successful admission consumes the witness
+before model or delegated work. An accepted user row can remain after refusal;
+it proves neither execution nor completion and must not be replayed.
+
+A missing commit acknowledgment or partial pipe failure returns `5019` for an
+operation whose outcome is unconfirmed. The caller must not infer refusal or retry
+that operation. `4007` remains enforceable identity/unavailability refusal before
+operation commit; `4009` covers busy plain-text submission and reservation capacity.
+An activation with an unconfirmed child receipt grants no parent authority; an
+exact activation retry is reconciliation, never operation replay. These controls
+do not add cold attachment, request revision CAS, durable outcomes or complete
+recovery. Supported upstream publication/capability and downstream qualification
+remain independent gates.
+
+### Conditional operations
 
 After accepting `session.activate_bound`, the connection enters conditional mode.
 `session.invoke_bound` requires `{session_id, expected_binding, profile?, operation}`
@@ -208,7 +270,7 @@ The envelope returns `{operation_result: ...}` with the underlying operation's
 result. Missing, malformed, oversized or unsupported operation fields return
 `4000`. Identity, owner, scope, incarnation, engine revision/store, subscription
 or pending-request ownership mismatch returns `4007` before mutation; there is
-no discovery, durable-ID fallback, host dispatch or replay. Unreadable durable
+no discovery, durable-ID fallback, engine bootstrap or replay. Unreadable durable
 lineage is refused, using the strict form of the existing resume-tip lookup.
 Expired/missing request IDs also refuse; absence is not evidence an earlier answer
 was accepted. Request identity lookup and settlement share the request registry

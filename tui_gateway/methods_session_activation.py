@@ -89,10 +89,10 @@ def _creation_retry_result(rid, sid: str, session: dict, profile, profile_home, 
                  "profile_name": _response_profile_name(profile)}})
 
 
-def _bound_activation_receipt(session: dict, sid: str, owner: str, store_path: str, expected: dict) -> dict | None:
+def _bound_activation_receipt(session: dict, sid: str, owner: str, store_path: str, expected: dict, *, host: bool = False) -> dict | None:
     from .session_creation_binding import CreationBinding
 
-    if (session.get("_compute_host_active") or session.get("_compute_host_turn_id")
+    if not host and (session.get("_compute_host_active") or session.get("_compute_host_turn_id")
             or session.get("_compute_host_ever_owned")):
         return None
     turn = session.get("inflight_turn")
@@ -111,11 +111,11 @@ def _bound_activation_receipt(session: dict, sid: str, owner: str, store_path: s
     # Route qualification is profile-owned; an unbound config read would certify
     # a secondary destined for a child using the launch profile's local policy.
     with _session_profile_runtime_scope(session, hydrate_secrets=False):
-        if _session_uses_compute_host(session):
+        if not host and _session_uses_compute_host(session):
             return None
     if any(session.get(flag) for flag in (
         "_closing", "_finalized", "_client_gone_interrupt_requested", "_turn_cancel_requested",
-        "resume_hydrating", "agent_error",
+        "resume_hydrating", "agent_error", "_conditional_host_failed",
     )):
         return None
     return wire
@@ -132,6 +132,8 @@ def _(rid, params: dict) -> dict:
         SessionActivateBoundParams.model_validate(params)
     except ValidationError:
         return _err(rid, 4000, "Invalid conditional activation precondition")
+    if (remote := _host_conditional_call(_host_activate_bound, rid, params)) is not None:
+        return remote
     sid = params["session_id"]
     peer = current_transport()
     owner = _transport_auth_user_id(peer)

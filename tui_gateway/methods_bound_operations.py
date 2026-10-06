@@ -75,7 +75,7 @@ def _bound_request_cut(session_id: str, operation: dict):
         yield request is not None and request.sid == session_id
 
 
-def _bound_turn_runtime_current(session: dict, sid: str, witness) -> bool:
+def _bound_turn_runtime_current(session: dict, sid: str, witness, admission_check=None) -> bool:
     origin = session["creation_binding"]
     return (_sessions.get(sid) is session and session.get("agent") is witness.engine
             and session.get("session_key") == origin.stored_session_id
@@ -83,7 +83,8 @@ def _bound_turn_runtime_current(session: dict, sid: str, witness) -> bool:
             and str((Path(session.get("profile_home") or _hermes_home) / "state.db").resolve()) == origin.store_path
             and not any(session.get(flag) for flag in (
                 "_closing", "_finalized", "_turn_cancel_requested", "_compute_host_ever_owned",
-                "_compute_host_active", "_compute_host_turn_id")))
+                "_compute_host_active", "_compute_host_turn_id"))
+            and (admission_check is None or admission_check()))
 
 
 @method("session.invoke_bound")
@@ -96,6 +97,8 @@ def _(rid, params: dict) -> dict:
         SessionInvokeBoundParams.model_validate(params)
     except ValidationError:
         return _err(rid, 4000, "Invalid conditional operation precondition")
+    if (remote := _host_conditional_call(_host_invoke_bound, rid, params)) is not None:
+        return remote
     operation = dict(params["operation"])
     name = operation.pop("method")
     with _bound_operation_cut(params) as session:
@@ -114,10 +117,11 @@ def _(rid, params: dict) -> dict:
             # The worker carries this witness through its durable lease wait. It
             # may not adopt a different tip or replay a carried unadmitted input.
             witness = session["creation_engine"]
+            admission_check = getattr(current_transport(), "conditional_turn_admission", None)
             identity_scope = (expected_turn_identity(
                 witness.engine, witness.database, witness.revision,
                 session["creation_binding"].stored_session_id,
-                lambda: _bound_turn_runtime_current(session, params["session_id"], witness))
+                lambda: _bound_turn_runtime_current(session, params["session_id"], witness, admission_check))
                 if name == "prompt.submit" else contextlib.nullcontext())
             with identity_scope, _session_profile_runtime_scope(session, hydrate_secrets=False):
                 response = _methods[name](rid, kwargs)

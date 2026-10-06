@@ -26,6 +26,17 @@ const rememberContentPane = () => {
 
   if (!groupId || isChatPane(active)) {
     $lastContentPane.set(active ?? null)
+
+    return
+  }
+
+  // Chrome owns focus: follow the remembered group when it fronts another
+  // chat (⌘1..9, drag-to-split) so a preview covering it later keeps it.
+  const last = $lastContentPane.get()
+  const content = last && tree ? findGroupOfPane(tree, last) : null
+
+  if (content && isChatPane(content.active)) {
+    $lastContentPane.set(content.active)
   }
 }
 
@@ -38,14 +49,11 @@ export const $focusedTreePaneId = computed(
     let active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
 
     if (groupId && tree && !isChatPane(active)) {
-      // Follow the remembered pane's group when it fronts another chat
-      // (⌘1..9, drag-to-split); keep the pane while a preview covers it.
-      const content = lastContentPane ? findGroupOfPane(tree, lastContentPane) : null
-      active = content
-        ? isChatPane(content.active)
-          ? content.active
-          : lastContentPane!
-        : findGroupOfPane(tree, 'workspace')?.active
+      // Keep the remembered chat while chrome or a preview covers it.
+      active =
+        lastContentPane && findGroupOfPane(tree, lastContentPane)
+          ? lastContentPane
+          : findGroupOfPane(tree, 'workspace')?.active
     }
 
     if (active?.startsWith(TILE_PANE_PREFIX)) {

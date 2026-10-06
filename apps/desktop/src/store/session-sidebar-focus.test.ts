@@ -91,6 +91,20 @@ describe('session focus while interacting with the sidebar', () => {
       ])
     )
     expect($focusedStoredSessionId.get()).toBe('other')
+
+    // A preview later covering the followed chat keeps it, not the stale remembered tile.
+    $layoutTree.set(
+      split('row', [
+        group(['sessions'], { active: 'sessions', id: 'sidebar' }),
+        group(['workspace', pane('main')], { active: pane('main'), id: 'main' }),
+        group([pane('split'), pane('other'), 'preview-tile:file:test'], {
+          active: 'preview-tile:file:test',
+          id: 'split'
+        }),
+        group(['files', 'terminal'], { active: 'files', id: 'tools' })
+      ])
+    )
+    expect($focusedStoredSessionId.get()).toBe('other')
   })
 
   it('retains the chat when a preview replaces its active tab in the same group', () => {

@@ -79,6 +79,7 @@ time.sleep(60)
 
 
 @posix_only
+@pytest.mark.live_system_guard_bypass  # SIGCONTs only its own reader child; without psutil the guard cannot prove that
 def test_a_stale_reclaim_never_deletes_a_claim_published_after_its_read(tmp_path):
     """R3: the reader judged a dead marker, then paused right at its unlink. A second real
     process claims meanwhile. Pre-A7 the resumed reader deleted that live claim; now the
@@ -134,6 +135,7 @@ time.sleep(60)
 
 
 @posix_only
+@pytest.mark.live_system_guard_bypass  # SIGCONTs only its own reader child; without psutil the guard cannot prove that
 def test_a_reader_reports_the_live_claim_that_replaced_its_stale_snapshot(tmp_path):
     """F2: the reader read a dead marker and paused before the locked recheck; a real marker-only
     claimant (no checkout lease, as the launch hand-off does) replaced it meanwhile. The recheck

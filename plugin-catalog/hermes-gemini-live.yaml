@@ -7,8 +7,9 @@ description: >-
   the ask needs files, a terminal, the web or memory the voice model delegates the job to the
   api server and keeps talking, reading the outcome aloud when it lands. Three verbs rather than
   thirty schemas — hermes_task starts, hermes_tasks reads the call's task board, and
-  hermes_task_update answers or redirects a task, including one that has stopped to ask
-  permission, which reaches the user as a spoken question and a "Hermes needs you" indicator.
+  hermes_task_update denies, steers or stops a task. A task that stops to ask permission
+  reaches the user as a spoken prompt and a "Hermes needs you" indicator with Approve and Deny
+  buttons; only the user's press approves it, never the voice model.
   Multi-task is one Live session plus a board, not a session per task. Mute drops the uplink
   without hanging up, and the call survives composer remounts, so opening a session mid-sentence
   does not kill it. Full-proxy architecture: the plugin backend owns the upstream Live socket and
@@ -19,15 +20,16 @@ description: >-
   delegates only about 2 times in 5, which is why gemini-3.8-live is the default. Disclosure —
   pressing Start captures microphone audio and streams it through the local backend to
   generativelanguage.googleapis.com using GEMINI_API_KEY from the Hermes home's .env; delegated
-  work runs as a Hermes run in the serving profile's own memory, and run output is held in
-  backend memory for the duration of the call. Transcripts are not sent anywhere else and no
-  telemetry is emitted.
+  work runs as a Hermes run in the serving profile's own memory with the profile's full toolset
+  via the local api_server and API_SERVER_KEY, and those runs' results (up to 4000 characters
+  each), the task board and approval prompts are sent back to Gemini as text. Nothing is sent
+  anywhere else and no telemetry is emitted.
 maintainer: skappafrost
 tier: community
 version: "0.1.0"
 category: voice
 docs_url: https://github.com/skappafrost/hermes-gemini-live#readme
-requires_hermes: ">=0.21"
+requires_hermes: ">=0.21.5"
 platforms: []
 capabilities:
   provides_tools: []

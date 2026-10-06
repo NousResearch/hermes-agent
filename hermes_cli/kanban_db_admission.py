@@ -49,6 +49,12 @@ State, on the task row
     rather than an event replay. Both columns are cleared on archive, so a
     card that leaves the board is not miscounted if its id is ever reused.
 
+A REFUSAL is recorded under ``EVENT_DEFERRED`` (``admission_deferred``), never
+under ``promoted``: readers treat a ``promoted`` event as a LANDING (the respawn
+guard's "deliberate re-queue" exception, the diagnostics ``gave_up`` check), and
+a card that stayed in ``todo`` must not read as one that landed. A successful
+admission still records ``promoted`` — that one IS a landing.
+
 Config keys (``kanban:`` section; the keys ship inert, ``admission_enabled_at``
 unset means the mechanism is off and every path behaves exactly as before).
 These 8 keys are the §5.1 contract, and
@@ -63,6 +69,18 @@ table copied as a literal, so a contract edit is a visible two-place change.
     admission_lane_budgets  unset  {lane: int} overrides; unassigned = no lane bound
     ageing_warn_hours          24  routine tier, in hours spent ready
     ageing_escalate_hours      72  escalate tier, in hours spent ready
+
+Two value conventions, applied to every key above:
+
+    * ``0`` — and, for ``admission_budget_floor``, anything below 1 — means
+      UNSET, exactly as if the key were omitted. A resolved budget of 0 is
+      unsatisfiable by construction (``depth 0 >= 0`` refuses the first filing
+      and no card can ever complete to raise the derivation), so ``0`` cannot
+      be allowed to mean "budget zero".
+    * a YAML boolean (``off``/``no``/``false``) is NOT a number: it is malformed
+      input and falls back to the default above, the same road a quoted
+      ``'off'`` takes. Reading it as 0 is how ``admission_p0_priority: off``
+      would exempt every filing while the mechanism still reported itself ON.
 """
 
 from __future__ import annotations
@@ -94,6 +112,13 @@ DISPOSITION_CREATED = "created"
 DISPOSITION_PARKED = "parked"
 DISPOSITION_DEDUPED = "deduped"
 DISPOSITION_COMMENT_ON_ORIGIN = "comment_on_origin"
+
+# The ``task_events.kind`` a ready-queue REFUSAL is recorded under. Deliberately
+# NOT ``promoted``: readers treat a ``promoted`` event as a LANDING (the respawn
+# guard's "deliberate re-queue" exception in ``kanban_db_dispatch``, the
+# ``gave_up`` check in ``kanban_diagnostics``), and a card that never left
+# ``todo`` must not read as one that did.
+EVENT_DEFERRED = "admission_deferred"
 
 # Config defaults. Kept here (not only in ``config_defaults``) so the kernel is
 # correct on a board whose config.yaml predates the keys. This is the same 8-key
@@ -141,6 +166,14 @@ def _num(cfg: dict, key: str, cast, unset=0):
         val = default
     fallback = cast(default) if default is not None else unset
     if val is None:
+        return fallback
+    if isinstance(val, bool):
+        # YAML 1.1 spells ``off``/``no``/``false`` as booleans and ``int(False)``
+        # is 0 — a value nobody wrote. ``admission_p0_priority: off`` would then
+        # exempt every filing (``priority >= 0``, including the create default of
+        # 0) while the mechanism still reported itself ON. A boolean is not a
+        # number: fall back to the §5.1 default, the road a quoted ``'off'``
+        # already takes.
         return fallback
     try:
         return cast(val)
@@ -269,6 +302,13 @@ def ready_queue_budget(conn, *, lane: Optional[str] = None, cfg: Optional[dict] 
     hours = _float_cfg(cfg, "admission_window_hours")
     cohort = completed_in_window(conn, hours, lane=lane)
     floor = _int_cfg(cfg, "admission_budget_floor")
+    if floor < 1:
+        # A resolved budget of 0 is unsatisfiable by construction: on a quiet
+        # board the cohort is 0 too, so ``depth 0 >= budget 0`` refuses the very
+        # first filing and no card can ever complete to raise the derivation —
+        # ``admission_budget_floor: 0`` bricks the board permanently. The sibling
+        # key ``admission_budget: 0`` already means "unset"; the two agree on 0.
+        floor = max(1, int(DEFAULTS["admission_budget_floor"]))
     if cohort < floor:
         return floor, SOURCE_FLOOR
     return cohort, SOURCE_COHORT

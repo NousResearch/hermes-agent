@@ -2337,7 +2337,12 @@ def recompute_ready(
     with write_txn(conn):
         todo_rows = conn.execute(
             "SELECT id, status, consecutive_failures, max_retries, admit_state "
-            "FROM tasks WHERE status IN ('todo', 'blocked')"
+            "FROM tasks WHERE status IN ('todo', 'blocked') "
+            # Admission grants headroom in the order the dispatcher CLAIMS it
+            # (``kanban_db_dispatch``), so a full lane hands its slots to the
+            # cards the dispatcher would take first — not to whichever ``todo``
+            # row happens to have been inserted earliest.
+            "ORDER BY priority DESC, created_at ASC"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
@@ -2376,7 +2381,7 @@ def recompute_ready(
                         # refusal of an already-deferred card is recorded.
                         if row["admit_state"] != _admission.DEFERRED:
                             _append_event(
-                                conn, task_id, "promoted",
+                                conn, task_id, _admission.EVENT_DEFERRED,
                                 {"status": cur_status, "admit": adm.as_payload()},
                             )
                         continue

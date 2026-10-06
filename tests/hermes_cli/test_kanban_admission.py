@@ -239,12 +239,15 @@ def test_v5_deferred_child_waits_for_headroom_and_is_not_re_evented(home, conn):
     assert parked.status == "todo" and parked.admit_state == adm.DEFERRED
 
     # One event per refusal transition, not one per tick: recompute runs every
-    # tick and must not become an event firehose.
-    refusals = [e for e in kb.list_events(conn, child) if e.kind == "promoted"]
+    # tick and must not become an event firehose. A refusal is NOT a promotion,
+    # so it carries its own kind (R1 below) — `promoted` stays reserved for cards
+    # that actually land.
+    refusals = [e for e in kb.list_events(conn, child) if e.kind == adm.EVENT_DEFERRED]
     assert len(refusals) == 1
     kb.recompute_ready(conn)
     kb.recompute_ready(conn)
-    assert len([e for e in kb.list_events(conn, child) if e.kind == "promoted"]) == 1
+    assert len([e for e in kb.list_events(conn, child) if e.kind == adm.EVENT_DEFERRED]) == 1
+    assert "promoted" not in [e.kind for e in kb.list_events(conn, child)]
     assert kb.get_task(conn, child).status == "todo"
 
     # Drain the board: headroom appears and the same card lands ready.
@@ -532,3 +535,137 @@ def test_every_ready_status_writer_routes_through_the_admission_module():
         "these modules write status='ready' without routing through "
         f"kanban_db_admission: {offenders}"
     )
+
+
+# --- Rework 2026-10-05: the Enough1122 review findings -----------------------
+#
+# Five findings from the automated review of this PR. Each test below is the
+# regression pin for one of them (R1-R5), written to fail on the reviewed head.
+
+
+def _parked_child(conn, *, title: str = "child", priority: int = 0, fillers: int = 2):
+    """A card parked in ``todo`` behind an unfinished parent, built gate-OFF.
+
+    ``fillers`` are ready siblings that keep the board full once the parent
+    completes, so the child meets a full ready queue instead of a free slot.
+    """
+    parent = kb.create_task(conn, title=f"parent-{title}", assignee="lane-a")
+    for i in range(fillers):
+        kb.create_task(conn, title=f"f{i}-{title}", assignee="lane-a")
+    child = kb.create_task(conn, title=title, parents=[parent], assignee="lane-a",
+                           priority=priority)
+    assert kb.get_task(conn, child).status == "todo"
+    return parent, child
+
+
+def test_r1_a_refusal_is_not_recorded_as_a_promotion(home, conn):
+    """R1: a card that never left ``todo`` must not mint a ``promoted`` event.
+
+    Readers that treat ``promoted`` as a landing — the respawn guard's
+    "deliberate re-queue" exception and the diagnostics ``gave_up`` check — read
+    a refusal as a fresh promotion when the refusal borrows that kind.
+    """
+    parent, child = _parked_child(conn)
+    enable_admission(home, admission_budget=1)
+
+    report: dict = {}
+    kb.complete_task(conn, parent, summary="parent done", report=report)
+    assert report["deferred"] == 1 and report["deferred_ids"] == [child]
+    assert kb.get_task(conn, child).status == "todo"
+
+    events = kb.list_events(conn, child)
+    kinds = [e.kind for e in events]
+    refusal = [e for e in events if e.kind == adm.EVENT_DEFERRED]
+    assert len(refusal) == 1, f"refusal recorded under: {kinds}"
+    assert refusal[0].payload["admit"]["state"] == "deferred"
+    # The card did NOT land, so nothing may say it did.
+    assert "promoted" not in kinds
+
+    # One event per refusal TRANSITION, not one per tick — and still no promotion.
+    kb.recompute_ready(conn)
+    kb.recompute_ready(conn)
+    assert len([e for e in kb.list_events(conn, child) if e.kind == adm.EVENT_DEFERRED]) == 1
+    assert "promoted" not in [e.kind for e in kb.list_events(conn, child)]
+
+
+def test_r2_admission_slots_follow_the_dispatchers_own_order(home, conn):
+    """R2: with one slot free, it goes to the card the dispatcher would claim first.
+
+    ``todo`` rows come back in insertion order unless the promotion scan orders
+    them, so a priority-0 card filed first took the slot ahead of a higher one.
+    """
+    parent = kb.create_task(conn, title="parent", assignee="lane-a")
+    for i in range(2):
+        kb.create_task(conn, title=f"f{i}", assignee="lane-a")
+    low = kb.create_task(conn, title="low", parents=[parent], assignee="lane-a", priority=0)
+    high = kb.create_task(conn, title="high", parents=[parent], assignee="lane-a", priority=50)
+    enable_admission(home, admission_budget=3)   # two ready fillers + exactly one slot
+
+    report: dict = {}
+    kb.complete_task(conn, parent, summary="parent done", report=report)
+    assert report["promoted"] == 1 and report["deferred"] == 1
+    assert kb.get_task(conn, high).status == "ready"
+    assert report["deferred_ids"] == [low]
+    parked = kb.get_task(conn, low)
+    assert parked.status == "todo" and parked.admit_state == adm.DEFERRED
+
+
+def test_r3_a_boolean_config_value_falls_back_to_the_default(home, conn):
+    """R3: ``admission_p0_priority: off`` must not exempt every filing.
+
+    YAML 1.1 hands ``off``/``no``/``false`` over as a boolean; casting one to
+    ``int`` yields 0, and ``priority >= 0`` exempts everything — including the
+    create default ``priority=0`` — while the mechanism still reports itself ON.
+    """
+    (home / "config.yaml").write_text(
+        "kanban:\n"
+        f"  admission_enabled_at: {int(time.time())}\n"
+        "  admission_budget: 1\n"
+        "  admission_p0_priority: off\n",
+        encoding="utf-8",
+    )
+    assert adm.kanban_config()["admission_p0_priority"] is False   # bare YAML `off`
+    assert adm.is_p0_fault(0) is False
+    assert adm.is_p0_fault(95) is True
+    # The quoted spelling already fell back to the §5.1 default; the two agree.
+    assert adm.is_p0_fault(0, cfg={"admission_p0_priority": "off"}) is False
+
+    first = kb.create_task(conn, title="first", assignee="lane-a")
+    assert kb.get_task(conn, first).status == "ready"
+    second = kb.create_task(conn, title="second", assignee="lane-a")
+    assert kb.get_task(conn, second).status == "todo"
+
+
+def test_r4_a_zero_budget_floor_cannot_brick_a_quiet_board(home, conn):
+    """R4: ``admission_budget_floor: 0`` is unsatisfiable by construction.
+
+    On a quiet board the derived cohort is 0, so the budget resolves to 0 and
+    ``depth >= budget`` refuses the very first filing — no drain can ever satisfy
+    it. The sibling key ``admission_budget: 0`` already means "unset".
+    """
+    enable_admission(home, admission_budget_floor=0)
+    budget, source = adm.ready_queue_budget(conn)
+    assert budget >= 1, "a resolved budget of 0 refuses the first filing forever"
+    assert source == adm.SOURCE_FLOOR
+
+    first = kb.create_task(conn, title="first", assignee="lane-a")
+    assert kb.get_task(conn, first).status == "ready"
+
+
+def test_r5_the_show_surface_carries_admit_state(home, conn):
+    """R5: ``kanban_show`` must render a refused card as refused.
+
+    ``admit_state`` is in ``_TASK_SUMMARY_FIELDS`` (``kanban_list``) but was not
+    in ``_TASK_FIELDS`` (``kanban_show``), so a card parked by admission and a
+    card waiting on its parent read identically on the show surface.
+    """
+    from tools import kanban_tools as kt
+
+    parent, child = _parked_child(conn)
+    enable_admission(home, admission_budget=1)
+    kb.complete_task(conn, parent, summary="parent done")
+    assert kb.get_task(conn, child).admit_state == adm.DEFERRED
+
+    payload = json.loads(kt._handle_show({"task_id": child}))
+    assert payload["task"]["status"] == "todo"
+    assert payload["task"]["admit_state"] == adm.DEFERRED

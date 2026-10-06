@@ -1534,7 +1534,7 @@ WANDB_API_KEY=your-forge-api-key
 Merge these entries into your existing config, then start a new session. Use a model ID from the [current model list](https://docs.coreweave.com/products/inference/serverless/models). `hermes model` can discover models from the endpoint's `/models` API. To switch within a session:
 
 ```text
-/model custom:coreweave:zai-org/GLM-5.3-Flash
+/model zai-org/GLM-5.3-Flash --provider custom:coreweave
 ```
 
 The `coreweave` name above is your saved endpoint's name; `custom:coreweave` selects that entry without installing a provider plugin. A `wandb` entry in models.dev supplies metadata but does not by itself register `provider: wandb` with Hermes's runtime.
@@ -1591,7 +1591,7 @@ Perplexity's Agent API (`api: https://api.perplexity.ai/v1` with `api_mode: code
 
 #### Multiple providers in one config
 
-These recipes compose — combine providers and switch per turn with `/model custom:<name>:<model>`:
+These recipes compose — combine providers and switch per turn with `/model <model> --provider custom:<name>`:
 
 ```yaml
 providers:

@@ -182,7 +182,12 @@ def probe_report(cron_dir: Path) -> Optional[dict]:
 
 
 def free_bytes(path: Path) -> Optional[int]:
+    """Bytes this process can still write. Root may also fill the reserved blocks that
+    ``disk_usage().free`` leaves out, so a 'full' disk is not full for root."""
     try:
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            stats = os.statvfs(path)
+            return stats.f_bfree * stats.f_frsize
         return shutil.disk_usage(path).free
     except OSError:
         return None

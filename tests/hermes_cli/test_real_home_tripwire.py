@@ -188,12 +188,22 @@ def test_checkout_inside_a_guarded_root_is_not_hermes_state():
     """The default install checks the repo out INSIDE the home (install.sh:
     INSTALL_DIR=$HERMES_HOME/hermes-agent): the checkout, its .venv and test
     data are exempt even when the guarded root contains them; siblings under
-    that root are still refused."""
+    that root are still refused.
+
+    The install-layout markers beside the checkout are the one exception: PM
+    probes ``<parent>/manifest.json`` to detect a sealed payload and
+    ``<parent>/install-stamp.json`` to find the store for the tree it serves.
+    Those reads ask about the installation, not user state, so they are exempt
+    too — writing them is not."""
     from tests.home_io_guard import HomeIOGuard
 
     guard = HomeIOGuard(lambda: [PROJECT_ROOT.parent])
     guard.check(PROJECT_ROOT / "tests" / "home_io_guard.py")
     guard.check(PROJECT_ROOT / ".venv" / "bin" / "python", metadata=True)
+    guard.check(PROJECT_ROOT.parent / "manifest.json", metadata=True)  # payload detection
+    guard.check(PROJECT_ROOT.parent / "install-stamp.json")  # install-stamp walk-up
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(PROJECT_ROOT.parent / "manifest.json", destructive=True)
     with pytest.raises(AssertionError, match="REAL hermes home"):
         guard.check(PROJECT_ROOT.parent / "config.yaml")
 

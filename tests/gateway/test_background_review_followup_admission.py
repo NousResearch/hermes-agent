@@ -1593,7 +1593,8 @@ async def test_inline_retry_completes_ownership_after_the_outgoing_task_released
     session_key = "released-guard-retry-key"
     profile_key = review_admission.current_profile_key()
     guard = asyncio.Event()
-    adapter._active_sessions[session_key] = guard  # the outgoing turn: reply on the wire
+    # The outgoing turn: its reply is on the wire.
+    adapter._active_sessions[session_key] = guard
     sends, spawns = [], []
 
     def _spawn(**kwargs):

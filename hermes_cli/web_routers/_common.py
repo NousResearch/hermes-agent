@@ -119,6 +119,21 @@ def require(value: Optional[str], detail: str) -> str:
     return stripped
 
 
+def is_recently_active(row: Dict[str, Any], now: float, window_s: float = 300.0) -> bool:
+    """The dashboard's 300 s "active" heuristic for a rich session row.
+
+    ``last_active`` is the freshest *trusted* timestamp the recency SQL found, or None:
+    the #91536 window filter yields NULL when every cell (the started_at fallback included)
+    is outside the ``coerce_epoch`` window, and the rich-row shape keeps the key present
+    with a None value. Such a row has no trusted timestamp at all, so it counts as not
+    active — never a fallback to the raw out-of-window ``started_at``. The old
+    ``row.get("last_active", <started_at fallback>)`` form only substituted on a *missing*
+    key, so a None value reached ``now - None`` and 500ed the whole listing (#134033).
+    """
+    last_active = row.get("last_active")
+    return row.get("ended_at") is None and last_active is not None and (now - last_active) < window_s
+
+
 REDACTED_CREDENTIAL_WRITE_DETAIL = (
     "Refusing to save a redacted credential preview; re-enter the full secret to replace it."
 )

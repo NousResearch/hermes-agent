@@ -29,7 +29,7 @@ import sys
 
 __all__ = [
     "project_root_str", "normalize_hermes_home_env",
-    "ensure_project_root_on_path",
+    "ensure_project_root_on_path", "guard_runtime_floor",
     "is_global_fast_version_argv",
     "is_container_startup_environment",
     "active_profile_may_override_home",
@@ -96,6 +96,43 @@ def ensure_project_root_on_path() -> None:
     sys.path[:] = [entry for entry in sys.path
                    if not entry or os.path.normcase(_realpath_or_self(entry)) != normalized_root]
     sys.path.insert(0, project_root)
+
+
+def guard_runtime_floor() -> None:
+    """Refuse to run a <3.14 venv whose gated dependencies were never installed.
+
+    ``requires-python``'s >=3.11 floor exists only so a pre-PM updater can
+    finish its dependency step on the interpreter it already had (e1020f32);
+    every core dependency carries ``python_version >= '3.14'``, so a FRESH
+    install on 3.11-3.13 resolves the whole set away (#124733) and main.py
+    then dies on its first third-party import with an unactionable
+    ``ModuleNotFoundError: No module named 'ruamel'``. A bridge venv still
+    holds the old dependency set, so importability of the first gated
+    package — not the version alone — is what separates "old updater
+    mid-handoff" (let it through; its shims rebuild the venv on 3.14) from
+    "an install this runtime can never run" (say so and exit clean).
+    """
+    if sys.version_info >= (3, 14):
+        return
+    import importlib.util
+
+    if importlib.util.find_spec("ruamel") is not None:
+        return
+    major, minor = sys.version_info[:2]
+    sys.stderr.write(
+        f"""hermes-agent requires Python 3.14, but this environment runs
+Python {major}.{minor} and a fresh install here resolved
+every core dependency away (pyproject.toml gates them to
+python_version >= '3.14'; the 3.11 floor only serves a legacy updater's
+handoff). Reinstall under Python 3.14, e.g.:
+
+    uv venv --python 3.14
+    uv pip install -e .
+
+or rerun the official installer, which provisions Python 3.14 itself.
+"""
+    )
+    raise SystemExit(1)
 
 
 def is_global_fast_version_argv(argv: list[str]) -> bool:

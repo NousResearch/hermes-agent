@@ -17,6 +17,21 @@ export function cloudGatewayState(value: unknown): CloudGatewayState | null {
   return (CLOUD_GATEWAY_STATES as readonly string[]).includes(state) ? (state as CloudGatewayState) : null
 }
 
+// Project NAS's agent rows to the trimmed DTO the renderer consumes.
+export function trimCloudAgents(body: any) {
+  const agents: any[] = Array.isArray(body?.agents) ? body.agents : []
+
+  return agents
+    .filter(a => a && typeof a === 'object' && typeof a.id === 'string')
+    .map(a => ({
+      id: a.id as string,
+      name: typeof a.name === 'string' ? a.name : (a.id as string),
+      status: typeof a.status === 'string' ? a.status : 'unknown',
+      dashboardUrl: typeof a.dashboardUrl === 'string' ? a.dashboardUrl : null,
+      dashboardGatewayState: cloudGatewayState(a.dashboardGatewayState)
+    }))
+}
+
 // A remembered team is a discovery preference, not an authorization grant.
 // If NAS says it no longer exists or is inaccessible, let NAS resolve current
 // memberships (including its 409 team picker). Never retry generic denials.

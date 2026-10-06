@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net'
 import { expect, test } from 'vitest'
 
 import { httpStatusError } from './api-transport'
-import { cloudGatewayState, discoverWithTeamFallback } from './cloud-discovery'
+import { discoverWithTeamFallback, trimCloudAgents } from './cloud-discovery'
 
 test('a stale team falls back once to current memberships; unrelated failures retain their meaning', async () => {
   const requests: string[] = []
@@ -72,9 +72,12 @@ test('a stale team falls back once to current memberships; unrelated failures re
   }
 })
 
-test('only meaningful gateway states survive discovery; sentinels and junk become null', () => {
-  expect(['active', ' Degraded ', 'DOWN'].map(cloudGatewayState)).toEqual(['active', 'degraded', 'down'])
-  expect(['unknown', 'UNKNOWN', '', '  ', 'none', 'pending', undefined, null, 3].map(cloudGatewayState)).toEqual(
-    Array(9).fill(null)
-  )
+test('discovery keeps only meaningful gateway states; sentinels, junk and missing values become null', () => {
+  const states = (raw: unknown[]) =>
+    trimCloudAgents({ agents: raw.map((dashboardGatewayState, i) => ({ id: `a${i}`, dashboardGatewayState })) }).map(
+      agent => agent.dashboardGatewayState
+    )
+
+  expect(states(['active', ' Degraded ', 'DOWN'])).toEqual(['active', 'degraded', 'down'])
+  expect(states(['unknown', 'UNKNOWN', '', '  ', 'none', 'pending', undefined, null, 3])).toEqual(Array(9).fill(null))
 })

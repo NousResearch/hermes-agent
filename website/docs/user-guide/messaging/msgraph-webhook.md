@@ -12,7 +12,7 @@ Right now the primary consumer is the Teams meeting summary pipeline: Graph noti
 
 ## Prerequisites
 
-- Microsoft Graph application credentials — [Register a Microsoft Graph Application](/guides/microsoft-graph-app-registration)
+- Microsoft Graph application credentials — [Register a Microsoft Graph Application](../../guides/microsoft-graph-app-registration.md)
 - A **public HTTPS URL** that Microsoft Graph can reach (Graph does not call private endpoints). A dev tunnel works for testing; production needs a real domain with a valid certificate.
 - A strong shared secret to use as the `clientState` value. Generate with `openssl rand -hex 32` and put it in `~/.hermes/.env` as `MSGRAPH_WEBHOOK_CLIENT_STATE`.
 
@@ -61,7 +61,7 @@ All settings go under `platforms.msgraph_webhook.extra`:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `host` | `0.0.0.0` | Bind address for the HTTP listener. Non-loopback binds require `allowed_source_cidrs`; loopback (`127.0.0.1` / `::1`) is the easiest dev-tunnel / reverse-proxy setup. |
+| `host` | unset (dual-stack: all interfaces, IPv4+IPv6) | Bind address for the HTTP listener. Non-loopback binds require `allowed_source_cidrs`; loopback (`127.0.0.1` / `::1`) is the easiest dev-tunnel / reverse-proxy setup. |
 | `port` | `8646` | Bind port. |
 | `webhook_path` | `/msgraph/webhook` | URL path Graph POSTs to. |
 | `health_path` | `/health` | Readiness endpoint. |
@@ -70,7 +70,7 @@ All settings go under `platforms.msgraph_webhook.extra`:
 | `max_seen_receipts` | `5000` | Dedupe cache size for notification IDs. Oldest entries evicted when the cap is hit. |
 | `allowed_source_cidrs` | `[]` | Required for non-loopback binds. Leave empty only when the listener is bound to loopback and fronted by a local tunnel / reverse proxy. |
 
-Most settings also have an equivalent env var (`MSGRAPH_WEBHOOK_*`) that merges into the config at gateway startup (the exception is `host`, which is config-only — see the note above) — see the [environment variables reference](/reference/environment-variables#microsoft-graph-teams-meetings).
+Most settings also have an equivalent env var (`MSGRAPH_WEBHOOK_*`) that merges into the config at gateway startup (the exception is `host`, which is config-only — see the note above) — see the [environment variables reference](../../reference/environment-variables.md#microsoft-graph-teams-meetings).
 
 ## Security Hardening
 
@@ -137,6 +137,6 @@ Status code table:
 
 ## Related Docs
 
-- [Register a Microsoft Graph Application](/guides/microsoft-graph-app-registration) — Azure app registration prereq
-- [Environment Variables → Microsoft Graph](/reference/environment-variables#microsoft-graph-teams-meetings) — full env var list
-- [Microsoft Teams bot setup](/user-guide/messaging/teams) — the different platform that lets users chat with Hermes in Teams
+- [Register a Microsoft Graph Application](../../guides/microsoft-graph-app-registration.md) — Azure app registration prereq
+- [Environment Variables → Microsoft Graph](../../reference/environment-variables.md#microsoft-graph-teams-meetings) — full env var list
+- [Microsoft Teams bot setup](./teams.md) — the different platform that lets users chat with Hermes in Teams

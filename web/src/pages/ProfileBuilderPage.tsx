@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -23,6 +23,7 @@ import {
   type McpTransport,
 } from "@/lib/mcp-server-create";
 import { cn } from "@/lib/utils";
+import { errorMessage } from "@/lib/api-error";
 
 // Profile name rule mirrors the backend (`^[a-z0-9][a-z0-9_-]{0,63}$`).
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -270,7 +271,7 @@ export default function ProfileBuilderPage() {
       );
       navigate("/profiles");
     } catch (e) {
-      showToast(`Create failed: ${e}`, "error");
+      showToast(`Create failed: ${errorMessage(e)}`, "error");
     } finally {
       setCreating(false);
     }

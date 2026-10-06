@@ -1,0 +1,22 @@
+{
+  "simple_price": {
+    "prompt": "Using your browser tools, open https://books.toscrape.com , find the book 'Sharp Objects' and tell me its listed price. Give the exact price in your final answer.",
+    "oracle_any": ["47.82"]
+  },
+  "multi_extract": {
+    "prompt": "Using your browser tools, go to https://books.toscrape.com , open the 'Travel' category, and list EVERY book in that category with its price. In your final answer state the total count of books and the title and price of the cheapest one.",
+    "oracle_all": ["11", "23.21"]
+  },
+  "count_aggregate": {
+    "prompt": "Using your browser tools, open https://quotes.toscrape.com and determine which author appears most often on page 1 and how many quotes they have there. Final answer must name the author and the count.",
+    "oracle_all": ["Einstein", "3"]
+  },
+  "form_login": {
+    "prompt": "Using your browser tools, go to https://quotes.toscrape.com/login , log in with username 'admin' and password 'admin', and tell me the text of the link that replaced 'Login' in the top navigation after logging in.",
+    "oracle_any": ["Logout", "logout"]
+  },
+  "pagination_nav": {
+    "prompt": "Using your browser tools, open https://quotes.toscrape.com , navigate to page 2, and tell me the author of the FIRST quote on page 2.",
+    "oracle_any": ["Marilyn Monroe"]
+  }
+}

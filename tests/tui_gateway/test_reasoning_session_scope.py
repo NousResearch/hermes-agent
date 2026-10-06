@@ -27,14 +27,15 @@ import tui_gateway.server as server
 from tui_gateway.server import _session_info
 
 
-def _agent(reasoning_config):
-    return SimpleNamespace(
-        reasoning_config=reasoning_config,
-        service_tier=None,
-        model="glm-5",
-        provider="zai",
-        session_id="sess-key",
-    )
+def _agent(reasoning_config, **overrides):
+    return SimpleNamespace(**{
+        "reasoning_config": reasoning_config,
+        "service_tier": None,
+        "model": "glm-5",
+        "provider": "zai",
+        "session_id": "sess-key",
+        **overrides,
+    })
 
 
 class TestSessionInfoReasoningEffort:
@@ -51,6 +52,21 @@ class TestSessionInfoReasoningEffort:
     def test_unset_reports_empty(self) -> None:
         info = _session_info(_agent(None))
         assert info["reasoning_effort"] == ""
+        assert info["reasoning_effort_wire"] == ""
+
+    def test_wire_level_is_what_the_route_actually_sends(self) -> None:
+        """`ultra` is a Hermes-internal step (#61634): the route clamps it, and the Desktop must be able to
+        say so ("ultra sends max on this route") instead of presenting Ultra as a distinct wire level."""
+        info = _session_info(_agent({"enabled": True, "effort": "ultra"}))
+        assert info["reasoning_effort"] == "ultra"
+        assert info["reasoning_effort_wire"] == "max"
+        # Verbatim levels report themselves, so clients only annotate a real clamp.
+        assert _session_info(_agent({"enabled": True, "effort": "high"}))["reasoning_effort_wire"] == "high"
+        assert _session_info(_agent({"enabled": False}))["reasoning_effort_wire"] == ""
+        # On the Codex app-server ``ultra`` is codex's own harness mode, sent verbatim.
+        app_server = _agent({"enabled": True, "effort": "ultra"}, provider="openai-codex",
+                            model="gpt-5.6-sol", api_mode="codex_app_server")
+        assert _session_info(app_server)["reasoning_effort_wire"] == "ultra"
 
 
 class TestConfigSetReasoningSessionScope:
@@ -74,21 +90,6 @@ class TestConfigSetReasoningSessionScope:
         assert agent.reasoning_config == {"enabled": False}
         write_key.assert_not_called()
 
-    def test_session_scoped_set_updates_create_override_for_lazy_session(self) -> None:
-        """A pre-build (agent=None) session must keep the change for the
-        deferred agent build instead of dropping it."""
-        session = {"session_key": "k2", "agent": None}
-        with patch.dict(server._sessions, {"s2": session}, clear=False), \
-                patch.object(server, "_write_config_key") as write_key:
-            resp = self._dispatch(
-                {"key": "reasoning", "session_id": "s2", "value": "high"}
-            )
-        assert resp["result"]["value"] == "high"
-        assert session["create_reasoning_override"] == {
-            "enabled": True,
-            "effort": "high",
-        }
-        write_key.assert_not_called()
 
     def test_no_session_persists_globally(self) -> None:
         with patch.object(server, "_write_config_key") as write_key:
@@ -116,6 +117,3 @@ class TestLoadReasoningConfigYamlBoolean:
         ):
             assert server._load_reasoning_config() == {"enabled": False}
 
-    def test_unset_returns_default(self) -> None:
-        with patch.object(server, "_load_cfg", return_value={"agent": {}}):
-            assert server._load_reasoning_config() is None

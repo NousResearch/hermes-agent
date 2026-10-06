@@ -3,27 +3,35 @@
 //
 // Usage:
 //   node scripts/stage-native-deps.mjs                # host platform/arch
-//   node scripts/stage-native-deps.mjs win32 arm64     # explicit target
+//   node scripts/stage-native-deps.mjs --platform win32 --arch arm64
+//   node scripts/stage-native-deps.mjs --source REPO --out NATIVE_NODE_MODULES
 //
-// Also exported as `stageNodePty({ platform, arch })` for use from
-// before-pack.mjs, where electron-builder gives you the real per-target
-// platform/arch during multi-arch builds.
+// Preparation owns acquisition and helper compilation. beforePack only copies
+// the admitted per-target tree.
 
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
 import {
   chmodSync,
-  cpSync,
+  copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmdirSync,
   rmSync,
+  unlinkSync,
   writeFileSync
 } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { isMain } from './utils.mjs'
+import { recordNativeInputs } from './prepared-native-deps.mjs'
+import { buildCommandScreenshotMonitor } from './build-command-screenshot-monitor.mjs'
+import { buildHudModifierMonitor } from './build-hud-modifier-monitor.mjs'
+import { parseArgs } from 'node:util'
+import { productOutput, withProduct, workspaceTool } from '../../../scripts/build/frontend-common.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(here, '..')
@@ -31,6 +39,68 @@ const require = createRequire(import.meta.url)
 
 function makeExecutable(filePath) {
   chmodSync(filePath, 0o755)
+}
+
+// ─── libuv-safe fs primitives ────────────────────────────────────────
+//
+// Node's native (non-libuv) rewrite of fs.cpSync/fs.rmSync mishandles
+// non-ASCII Windows paths (observed on v24.11.1 with an accented Windows
+// user name, i.e. a default %LOCALAPPDATA%\hermes home): a recursive
+// cpSync fails with EIO "Access is denied" or hard-crashes the process,
+// an overwriting cpSync fails with a bogus errno-0 unlink error, and
+// rmSync silently deletes nothing — leaving a half-staged tree that
+// breaks every retry. Fixed upstream (nodejs/node#61878 → v24.15.0;
+// nodejs/node#56049 → v24.13.1), but the installer builds on whatever
+// Node the user already has, so staging sticks to libuv-backed
+// primitives (copyFileSync/unlinkSync/rmdirSync/readdirSync), which
+// handle those paths correctly on every affected version.
+
+/** Recursively copy a directory without fs.cpSync. */
+function copyDirSync(srcDir, destDir) {
+  mkdirSync(destDir, { recursive: true })
+  for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+    const src = join(srcDir, entry.name)
+    const dest = join(destDir, entry.name)
+    if (entry.isDirectory()) {
+      copyDirSync(src, dest)
+    } else {
+      copyFileSync(src, dest)
+    }
+  }
+}
+
+/**
+ * Recursively delete a path without fs.rmSync — missing paths are fine,
+ * a plain file or symlink at the path is unlinked (rm -rf semantics).
+ * Verifies the tree is actually gone afterwards: a silent no-op here
+ * surfaces later as an inexplicable staging failure, so fail loudly.
+ *
+ * Also used by before-pack.mjs as the fallback when the native rmSync
+ * silently leaves the stale unpacked dir behind.
+ */
+export function removeDirSync(dir) {
+  let stats
+  try {
+    stats = lstatSync(dir)
+  } catch {
+    return
+  }
+  if (!stats.isDirectory()) {
+    unlinkSync(dir)
+    return
+  }
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      removeDirSync(full)
+    } else {
+      unlinkSync(full)
+    }
+  }
+  rmdirSync(dir)
+  if (existsSync(dir)) {
+    throw new Error(`[stage-native-deps] failed to remove ${dir}`)
+  }
 }
 
 function patchUnixTerminalAsarPaths(destRoot) {
@@ -57,9 +127,9 @@ function patchUnixTerminalAsarPaths(destRoot) {
  * Locate node-pty's package root via real module resolution, so this
  * works whether it's hoisted to a workspace root or local to this app.
  */
-function resolveNodePtyRoot() {
+function resolveNodePtyRoot(appRoot = projectRoot) {
   const pkgJsonPath = require.resolve('node-pty/package.json', {
-    paths: [projectRoot]
+    paths: [appRoot]
   })
   return dirname(pkgJsonPath)
 }
@@ -74,7 +144,7 @@ function copyGlobByExt(srcDir, destDir, extensions) {
     }
     if (extensions.some((ext) => entry.name.endsWith(ext))) {
       mkdirSync(destDir, { recursive: true })
-      cpSync(join(srcDir, entry.name), join(destDir, entry.name))
+      copyFileSync(join(srcDir, entry.name), join(destDir, entry.name))
     }
   }
 }
@@ -96,12 +166,12 @@ function copyBuildRelease(srcDir, destDir) {
   mkdirSync(destDir, { recursive: true })
   for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
-      cpSync(join(srcDir, entry.name), join(destDir, entry.name), { recursive: true })
+      copyDirSync(join(srcDir, entry.name), join(destDir, entry.name))
       continue
     }
     if (entry.name === 'spawn-helper' || /\.(node|dll|exe)$/.test(entry.name)) {
       const destFile = join(destDir, entry.name)
-      cpSync(join(srcDir, entry.name), destFile)
+      copyFileSync(join(srcDir, entry.name), destFile)
       if (entry.name === 'spawn-helper') {
         makeExecutable(destFile)
       }
@@ -237,15 +307,15 @@ function validateStagedBinaries(destRoot, targetPlatform) {
  *      modules; build on the target platform or provide a prebuild).
  * 4. Validate every staged `.node` file's binary platform matches the target.
  */
-export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platform, arch = process.arch } = {}) {
+export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platform, arch = process.arch, appRoot = projectRoot } = {}) {
   const hostMatch = platform === process.platform && arch === process.arch
 
-  rmSync(destRoot, { recursive: true, force: true })
+  removeDirSync(destRoot)
   mkdirSync(destRoot, { recursive: true })
 
   // package.json — needed so `require('node-pty')` resolves the package
   // (reads "main") rather than treating it as a directory with no entry.
-  cpSync(join(srcRoot, 'package.json'), join(destRoot, 'package.json'))
+  copyFileSync(join(srcRoot, 'package.json'), join(destRoot, 'package.json'))
 
   // lib/**/*.js — the JS surface node-pty's `main` points into.
   copyGlobByExt(join(srcRoot, 'lib'), join(destRoot, 'lib'), ['.js'])
@@ -261,16 +331,16 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
     mkdirSync(destPrebuild, { recursive: true })
     for (const entry of readdirSync(prebuildDir, { withFileTypes: true })) {
       if (entry.name === 'conpty' && entry.isDirectory()) {
-        cpSync(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'), { recursive: true })
+        copyDirSync(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'))
         continue
       }
       if (entry.isFile() && /\.(node|dll|exe)$/.test(entry.name)) {
-        cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
+        copyFileSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
         continue
       }
       if (entry.name === 'spawn-helper') {
         const destFile = join(destPrebuild, entry.name)
-        cpSync(join(prebuildDir, entry.name), destFile)
+        copyFileSync(join(prebuildDir, entry.name), destFile)
         makeExecutable(destFile)
       }
     }
@@ -314,7 +384,7 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
         `running electron-rebuild (target arch: ${arch})...`
     )
     const rebuildArgs = [
-      '../../node_modules/.bin/electron-rebuild',
+      join(dirname(workspaceTool(resolve(appRoot, '../..'), 'apps/desktop', '@electron/rebuild')), 'cli.js'),
       '-f',
       '-w',
       'node-pty',
@@ -322,7 +392,7 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
       arch
     ]
     const result = spawnSync(process.execPath, rebuildArgs, {
-      cwd: projectRoot,
+      cwd: appRoot,
       stdio: 'inherit'
     })
     if (result.status !== 0) {
@@ -343,14 +413,343 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
   return destRoot
 }
 
-export function stageNodePty({ platform = process.platform, arch = process.arch } = {}) {
-  const srcRoot = resolveNodePtyRoot()
-  const destRoot = resolve(projectRoot, 'dist/node_modules/node-pty')
-  return stageNodePtyInto(srcRoot, destRoot, { platform, arch })
+export function stageNodePty({ platform = process.platform, arch = process.arch, source = resolve(projectRoot, '../..'), out = join(source, 'apps/desktop/dist/node_modules') } = {}) {
+  const appRoot = join(source, 'apps/desktop')
+  const srcRoot = resolveNodePtyRoot(appRoot)
+  const destRoot = join(out, 'node-pty')
+  return stageNodePtyInto(srcRoot, destRoot, { platform, arch, appRoot })
 }
 
-// Allow direct CLI invocation: node scripts/stage-native-deps.mjs [platform] [arch]
+// ─── get-windows (read_window_below tool) ────────────────────────────
+//
+// Staged like node-pty: external to the esbuild bundle, resolved at runtime
+// from dist/node_modules (which asarUnpack ships unpacked via `dist/**`).
+//
+// The published package's lib/windows.js statically imports
+// @mapbox/node-pre-gyp — and index.js statically imports lib/windows.js on
+// EVERY platform — so shipping it verbatim would drag node-pre-gyp's whole
+// dependency tree into the package. pre-gyp is only used to *locate* the
+// prebuilt .node we stage ourselves, so the staged copy replaces
+// lib/windows.js with a resolver that requires the staged binding directly
+// (and fails soft to no-op stubs, matching upstream's missing-binding
+// behavior).
+
+const STAGED_WINDOWS_JS = `// Rewritten by stage-native-deps.mjs: resolves the staged prebuilt binding
+// directly instead of through the pre-gyp locator (see stageGetWindowsInto).
+import path from 'node:path';
+import fs from 'node:fs';
+import {fileURLToPath} from 'node:url';
+import {createRequire} from 'node:module';
+
+const getAddon = () => {
+\tconst require = createRequire(import.meta.url);
+\tconst bindingRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), 'binding');
+
+\ttry {
+\t\tfor (const dir of fs.readdirSync(bindingRoot)) {
+\t\t\tconst bindingPath = path.join(bindingRoot, dir, 'node-get-windows.node');
+\t\t\tif (fs.existsSync(bindingPath)) {
+\t\t\t\treturn require(bindingPath);
+\t\t\t}
+\t\t}
+\t} catch {}
+
+\treturn {
+\t\tgetActiveWindow() {},
+\t\tgetOpenWindows() {},
+\t};
+};
+
+export async function activeWindow() {
+\treturn getAddon().getActiveWindow();
+}
+
+export function activeWindowSync() {
+\treturn getAddon().getActiveWindow();
+}
+
+export function openWindows() {
+\treturn getAddon().getOpenWindows();
+}
+
+export function openWindowsSync() {
+\treturn getAddon().getOpenWindows();
+}
+`
+
+function resolveGetWindowsRoot(appRoot = projectRoot) {
+  // get-windows is an optionalDependency (its node-pre-gyp install script has
+  // no Linux or Windows ARM64 prebuilt and its node-gyp fallback may fail, so
+  // `npm ci` can skip it entirely on those targets). Return null when it is
+  // absent; the caller decides whether that is fatal per platform and arch.
+  try {
+    // get-windows' exports map doesn't expose ./package.json; resolve the entry
+    // (index.js sits at the package root) and take its directory.
+    const entryPath = require.resolve('get-windows', {
+      paths: [appRoot]
+    })
+    return dirname(entryPath)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Stage get-windows into `destRoot` for `platform`.
+ *
+ * Per-platform native payload: macOS ships the `main` Swift helper binary
+ * (universal, present in every published tarball), Windows the node-pre-gyp
+ * prebuilt under lib/binding (downloaded by the package's install script on
+ * a Windows host — cross-platform packs already can't happen, see
+ * stageNodePtyInto), Linux nothing (it shells out to xprop at runtime).
+ */
+const GET_WINDOWS_VERSION = '9.3.0'
+
+export function stageGetWindowsInto(
+  srcRoot,
+  destRoot,
+  { platform = process.platform, arch = process.arch, install } = {}
+) {
+  // The STAGED_WINDOWS_JS rewrite mirrors this exact version's export surface.
+  // A version bump must fail the build here until the rewrite is re-verified —
+  // otherwise it ships stale and fails soft as a generic "unavailable".
+  const srcVersion = JSON.parse(readFileSync(join(srcRoot, 'package.json'), 'utf8')).version
+  if (srcVersion !== GET_WINDOWS_VERSION) {
+    throw new Error(
+      `[stage-native-deps] get-windows is ${srcVersion} but the staged lib/windows.js ` +
+        `rewrite was verified against ${GET_WINDOWS_VERSION}. Re-verify the rewrite ` +
+        `(STAGED_WINDOWS_JS) against the new version, then update GET_WINDOWS_VERSION.`
+    )
+  }
+
+  removeDirSync(destRoot)
+  mkdirSync(destRoot, { recursive: true })
+
+  copyFileSync(join(srcRoot, 'package.json'), join(destRoot, 'package.json'))
+  copyFileSync(join(srcRoot, 'index.js'), join(destRoot, 'index.js'))
+
+  // lib/*.js only — NOT copyGlobByExt, which recurses into lib/binding and
+  // stages empty dirs for every prebuilt slot (including the darwin one the
+  // tarball bundles on all platforms). Bindings are staged explicitly below.
+  mkdirSync(join(destRoot, 'lib'), { recursive: true })
+  for (const entry of readdirSync(join(srcRoot, 'lib'), { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith('.js')) {
+      copyFileSync(join(srcRoot, 'lib', entry.name), join(destRoot, 'lib', entry.name))
+    }
+  }
+
+  writeFileSync(join(destRoot, 'lib', 'windows.js'), STAGED_WINDOWS_JS)
+
+  if (platform === 'darwin') {
+    const helper = join(srcRoot, 'main')
+    if (!existsSync(helper)) {
+      // A half-extracted install (#90829) can keep the package but lose the
+      // helper; the runtime already fails soft on an unstaged module, so lose
+      // only window enumeration rather than the whole Desktop build.
+      removeDirSync(destRoot)
+      console.warn(
+        '[stage-native-deps] get-windows is missing its macOS helper binary (main); ' +
+          'not staged — read_window_below will be unavailable in this build'
+      )
+      return undefined
+    }
+    copyFileSync(helper, join(destRoot, 'main'))
+    makeExecutable(join(destRoot, 'main'))
+  }
+
+  if (platform === 'win32') {
+    // The published tarball bundles a darwin binding dir on EVERY platform
+    // (its `files` includes lib/), so a Windows host's lib/binding holds both
+    // that and the win32 dir node-pre-gyp downloaded. Stage only dirs naming
+    // the target platform; the classify gate below still catches a dir that
+    // claims win32 but holds a foreign binary.
+    const bindingRoot = join(srcRoot, 'lib', 'binding')
+    const scanBindingDirs = () =>
+      existsSync(bindingRoot)
+        ? readdirSync(bindingRoot).filter(
+            (dir) =>
+              dir.includes(`-${platform}-`) &&
+              dir.endsWith(`-${arch}`) &&
+              existsSync(join(bindingRoot, dir, 'node-get-windows.node'))
+          )
+        : []
+    let bindingDirs = scanBindingDirs()
+    let installAttempted = false
+    if (bindingDirs.length === 0 && arch !== 'arm64' && typeof install === 'function') {
+      // A plain `npm install` won't re-run an install script for a package
+      // that is already on disk, so every checkout that installed while
+      // get-windows was missing from allowScripts stays bricked even after
+      // the allowlist is fixed. Invoke node-pre-gyp directly: npm treats this
+      // optional dependency's failed lifecycle as non-fatal and can report a
+      // successful rebuild without producing the Windows binding.
+      console.log(
+        '[stage-native-deps] get-windows has no win32 binding; running its native installer...'
+      )
+      installAttempted = true
+      try {
+        install()
+      } catch (error) {
+        console.warn(
+          `[stage-native-deps] get-windows native installer failed: ${error instanceof Error ? error.message : String(error)}`
+        )
+      }
+      bindingDirs = scanBindingDirs()
+    }
+    if (bindingDirs.length === 0) {
+      // get-windows 9.3.0 publishes win32 prebuilds for ia32/x64 only, and a
+      // half-extracted install (#90829) can leave even those without one. The
+      // staged windows.js deliberately fails soft when binding/ is absent, so
+      // preserve the desktop build and disable only window enumeration.
+      const reason = installAttempted
+        ? `native installer produced no win32-${arch} binding`
+        : `has no win32-${arch} prebuilt binding`
+      console.warn(
+        `[stage-native-deps] get-windows ${reason}; ` +
+          'staging the fail-soft JS surface without native window enumeration.'
+      )
+    }
+    for (const dir of bindingDirs) {
+      const dest = join(destRoot, 'lib', 'binding', dir)
+      mkdirSync(dest, { recursive: true })
+      const destFile = join(dest, 'node-get-windows.node')
+      copyFileSync(join(bindingRoot, dir, 'node-get-windows.node'), destFile)
+      const classified = classifyNativeBinary(destFile)
+      if (classified !== platform) {
+        throw new Error(
+          `[stage-native-deps] get-windows binding ${dir}/node-get-windows.node: ` +
+            `expected ${platform}, got ${classified ?? 'unknown'}. ` +
+            'Refusing to stage a binary compiled for the wrong platform.'
+        )
+      }
+    }
+  }
+
+  console.log(`[stage-native-deps] staged get-windows (${platform}) -> ${destRoot}`)
+  return destRoot
+}
+
+export function installGetWindowsNativeBinding(
+  srcRoot,
+  { resolveInstaller, spawn = spawnSync } = {}
+) {
+  let installerPath
+  try {
+    const resolveNodePreGyp =
+      resolveInstaller ??
+      (() =>
+        require.resolve('@mapbox/node-pre-gyp/bin/node-pre-gyp', {
+          paths: [srcRoot]
+        }))
+    installerPath = resolveNodePreGyp()
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`[stage-native-deps] cannot resolve get-windows native installer: ${detail}`)
+  }
+
+  const result = spawn(process.execPath, [installerPath, 'install', '--fallback-to-build'], {
+    cwd: srcRoot,
+    stdio: 'inherit'
+  })
+  if (result.error) {
+    throw new Error(
+      `[stage-native-deps] get-windows native installer could not start: ${result.error.message}`
+    )
+  }
+  if (result.status !== 0) {
+    throw new Error(`[stage-native-deps] get-windows native installer exited with ${result.status}`)
+  }
+}
+
+/**
+ * A get-windows directory that exists but does not resolve as a package: an
+ * `npm install` interrupted by a running Desktop/gateway holding files open
+ * (TAR_ENTRY_ERROR on Windows) leaves the binding on disk without
+ * package.json, and npm never revisits a directory that already exists, so the
+ * tree stays broken across every later update. Walks the same
+ * `node_modules` ancestors `require.resolve` does (the workspace root hoist or
+ * the app-local copy).
+ */
+export function findHalfInstalledGetWindowsDir(startDir = projectRoot) {
+  for (let dir = startDir; ; dir = dirname(dir)) {
+    const candidate = join(dir, 'node_modules', 'get-windows')
+    if (existsSync(candidate)) return candidate
+    if (dirname(dir) === dir) return null
+  }
+}
+
+/** The warning printed when get-windows cannot be staged. */
+export function missingGetWindowsWarning({ platform, arch, halfInstalledDir }) {
+  const lines = [
+    `[stage-native-deps] get-windows not installed (optional dep skipped for ${platform}-${arch}); ` +
+      'read_window_below will be unavailable in this build'
+  ]
+  if (halfInstalledDir) {
+    lines.push(
+      `[stage-native-deps] ${halfInstalledDir} exists but is not a loadable package — an ` +
+        'interrupted npm install left it half-extracted (look for TAR_ENTRY_ERROR in the install log). ' +
+        'To restore read_window_below: close every Hermes window and gateway so the extract is not ' +
+        'interrupted again, then run `hermes desktop --force-build` — it removes the stale dir before npm.'
+    )
+  }
+  return lines.join('\n')
+}
+
+export function stageGetWindows(
+  {
+    platform = process.platform,
+    arch = process.arch,
+    source = resolve(projectRoot, '../..'),
+    out = join(source, 'apps/desktop/dist/node_modules'),
+    resolveRoot = () => resolveGetWindowsRoot(join(source, 'apps/desktop')),
+    findHalfInstalledDir = findHalfInstalledGetWindowsDir
+  } = {}
+) {
+  const srcRoot = resolveRoot()
+  const destRoot = join(out, 'get-windows')
+
+  if (!srcRoot) {
+    // npm may omit an optional dependency whose install script fails, or an in-place
+    // update may fail to extract it due to file locks (#90829). The runtime import
+    // already fails soft, so we disable only window enumeration instead of failing
+    // the entire Desktop build (which would strand users on an old version).
+    console.warn(
+      missingGetWindowsWarning({ platform, arch, halfInstalledDir: findHalfInstalledDir() })
+    )
+    return undefined
+  }
+
+  // Only a win32 host can produce the win32 binding, so a cross-platform pack
+  // has nothing to gain from the native installer.
+  const install =
+    platform === 'win32' && process.platform === 'win32'
+      ? () => installGetWindowsNativeBinding(srcRoot)
+      : undefined
+  return stageGetWindowsInto(srcRoot, destRoot, { platform, arch, install })
+}
+
+/**
+ * Preparation may rebuild/download native bindings; compilation only consumes them.
+ * @param {{ source: string, out: string, platform?: string, arch?: string, nativeToolchain?: string }} inputs
+ * @returns {Promise<{out: string}>}
+ */
+export async function prepareDesktopNativeDependencies({ source, out, platform = process.platform, arch = process.arch, nativeToolchain }) {
+  ;({ source, out } = productOutput(source, out, ['node_modules', 'apps/desktop/node_modules', 'apps/desktop/src', 'apps/desktop/electron']))
+  rmSync(`${out}.prepared.json`, { force: true })
+  await withProduct(out, async product => {
+    stageNodePty({ source, out: product, platform, arch })
+    stageGetWindows({ source, out: product, platform, arch })
+    buildCommandScreenshotMonitor({ source, distDir: product, platform })
+    buildHudModifierMonitor({ source, distDir: product, platform, arch })
+  }, { source })
+  recordNativeInputs({ source, out, platform, arch, nativeToolchain })
+  return { out }
+}
+
 if (isMain(import.meta.url)) {
-  const [platform, arch] = process.argv.slice(2)
-  stageNodePty({ platform, arch })
+  const { values } = parseArgs({ options: {
+    source: { type: 'string', default: resolve(projectRoot, '../..') },
+    out: { type: 'string' }, platform: { type: 'string', default: process.platform }, arch: { type: 'string', default: process.arch },
+    'native-toolchain': { type: 'string' },
+  } })
+  await prepareDesktopNativeDependencies({ ...values, nativeToolchain: values['native-toolchain'], out: values.out || join(values.source, 'apps/desktop/build/native-deps') })
 }

@@ -37,6 +37,25 @@ See also: [Checkpoints and /rollback](./checkpoints-and-rollback.md).
 
 ## Quick Start: Creating a Worktree
 
+### From inside a session: `/worktree new`
+
+The fastest path (inspired by Copilot CLI's `/worktree new`): from an
+interactive CLI session, run
+
+```
+/worktree new my-experiment
+```
+
+Hermes creates `.worktrees/my-experiment/` inside the repo (branch
+`hermes/my-experiment`, based on the freshly-fetched remote tip unless
+`worktree_sync: false`), and retargets the session's terminal and file tools
+into it — no restart needed. Omit the name to get a random `hermes-<id>`
+tree. `/worktree` alone shows the active tree; `/worktree list` lists all of
+them. On exit the tree is kept only if it has unpushed commits, exactly like
+`hermes -w`.
+
+### Manually with git
+
 From your main repository (containing `.git/`), create a new worktree for a feature branch:
 
 ```bash
@@ -151,6 +170,8 @@ Hermes will:
 - Create a temporary worktree under `.worktrees/` inside your repo.
 - Check out an isolated branch (e.g. `hermes/hermes-<hash>`).
 - Run the full CLI session inside that worktree.
+
+Hermes checks the worktree out without running the repository's own git configuration: its hooks, `core.fsmonitor` and clean/smudge filters are off for that checkout, as they are for the worktrees Hermes creates for kanban tasks and subagents. A repository that stores files through Git LFS gets pointer files there; run `git lfs pull` inside the worktree if the session needs their contents.
 
 This is the easiest way to get worktree isolation. You can also combine it with a single query:
 

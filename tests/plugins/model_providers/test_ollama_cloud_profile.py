@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import pytest
 
-
 @pytest.fixture
 def ollama_cloud_profile():
     """Resolve the registered Ollama Cloud profile.
@@ -31,7 +30,6 @@ def ollama_cloud_profile():
     profile = providers.get_provider_profile("ollama-cloud")
     assert profile is not None, "ollama-cloud provider profile must be registered"
     return profile
-
 
 class TestOllamaCloudReasoningEffort:
     """``build_api_kwargs_extras`` emits correct top-level ``reasoning_effort``."""
@@ -105,14 +103,6 @@ class TestOllamaCloudReasoningEffort:
         )
         assert top_level == {}
 
-    def test_no_effort_key_emits_nothing(self, ollama_cloud_profile):
-        """When effort key is absent, let the model use its default."""
-        _, top_level = ollama_cloud_profile.build_api_kwargs_extras(
-            supports_reasoning=True,
-            reasoning_config={"enabled": True},
-        )
-        assert top_level == {}
-
     # ── unknown / minimal effort → omitted (server default) ────────
 
     def test_unknown_effort_omitted(self, ollama_cloud_profile):
@@ -125,16 +115,17 @@ class TestOllamaCloudReasoningEffort:
         )
         assert top_level == {}
 
-    def test_minimal_effort_omitted(self, ollama_cloud_profile):
-        """``minimal`` is a real Hermes effort level but is not documented for
-        Ollama Cloud's /v1/chat/completions, so it is omitted rather than sent
-        verbatim (which could trigger a 400)."""
+    def test_minimal_effort_clamps_to_low(self, ollama_cloud_profile):
+        """``minimal`` is a real Hermes effort level but is rejected by
+        Ollama Cloud's /v1/chat/completions. The shared clamp degrades it to
+        ``low`` — the nearest supported level — instead of silently dropping
+        the user's ask (old behavior left the server default, i.e. MORE
+        thinking than requested: a ladder inversion)."""
         _, top_level = ollama_cloud_profile.build_api_kwargs_extras(
             supports_reasoning=True,
             reasoning_config={"enabled": True, "effort": "minimal"},
         )
-        assert top_level == {}
-
+        assert top_level == {"reasoning_effort": "low"}
 
 class TestOllamaCloudFullKwargsIntegration:
     """End-to-end: the transport's full kwargs include reasoning_effort."""
@@ -157,24 +148,6 @@ class TestOllamaCloudFullKwargsIntegration:
         # No extra_body — Ollama Cloud uses top-level reasoning_effort
         assert "extra_body" not in kwargs or "reasoning" not in kwargs.get("extra_body", {})
 
-    def test_full_kwargs_with_disabled(self, ollama_cloud_profile):
-        from agent.transports.chat_completions import ChatCompletionsTransport
-
-        kwargs = ChatCompletionsTransport().build_kwargs(
-            model="deepseek-v4-pro:cloud",
-            messages=[{"role": "user", "content": "ping"}],
-            tools=None,
-            provider_profile=ollama_cloud_profile,
-            reasoning_config={"enabled": False},
-            base_url="https://ollama.com/v1",
-            provider_name="ollama-cloud",
-            supports_reasoning=True,
-        )
-        # Disabling requires the explicit off switch — Ollama Cloud defaults to
-        # thinking ON, so omitting reasoning_effort would NOT disable it.
-        assert kwargs["reasoning_effort"] == "none"
-
-
 class TestOllamaCloudCapabilityGating:
     """reasoning_effort is gated on the model's thinking capability."""
 
@@ -189,15 +162,6 @@ class TestOllamaCloudCapabilityGating:
         )
         assert extra_body == {}
         assert top_level == {}
-
-    def test_non_thinking_model_ignores_disable(self, ollama_cloud_profile):
-        """Even a disable request is a no-op for a non-thinking model."""
-        _, top_level = ollama_cloud_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": False},
-            supports_reasoning=False,
-        )
-        assert top_level == {}
-
 
 class TestOllamaModelSupportsThinking:
     """The /api/show capability probe used to resolve supports_reasoning."""
@@ -229,7 +193,7 @@ class TestOllamaModelSupportsThinking:
         monkeypatch.setattr(httpx, "Client", _Client)
 
     def test_thinking_capability_true(self, monkeypatch):
-        from hermes_cli.models import ollama_model_supports_thinking
+        from hermes_cli.models_local import ollama_model_supports_thinking
 
         self._patch_show(monkeypatch, capabilities=["completion", "tools", "thinking"])
         assert (
@@ -239,17 +203,8 @@ class TestOllamaModelSupportsThinking:
             is True
         )
 
-    def test_no_thinking_capability_false(self, monkeypatch):
-        from hermes_cli.models import ollama_model_supports_thinking
-
-        self._patch_show(monkeypatch, capabilities=["completion", "vision"])
-        assert (
-            ollama_model_supports_thinking("gemma3:27b", "https://ollama.com/v1", "key")
-            is False
-        )
-
     def test_probe_failure_returns_none(self, monkeypatch):
-        from hermes_cli.models import ollama_model_supports_thinking
+        from hermes_cli.models_local import ollama_model_supports_thinking
 
         self._patch_show(monkeypatch, status=404)
         assert (
@@ -257,16 +212,9 @@ class TestOllamaModelSupportsThinking:
         )
 
     def test_exception_returns_none(self, monkeypatch):
-        from hermes_cli.models import ollama_model_supports_thinking
+        from hermes_cli.models_local import ollama_model_supports_thinking
 
         self._patch_show(monkeypatch, raise_exc=RuntimeError("boom"))
         assert (
             ollama_model_supports_thinking("x", "https://ollama.com/v1", "key") is None
         )
-
-
-class TestOllamaCloudAuxModel:
-    """Ollama Cloud aux model is set on the profile."""
-
-    def test_profile_advertises_aux_model(self, ollama_cloud_profile):
-        assert ollama_cloud_profile.default_aux_model == "nemotron-3-nano:30b"

@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+
+import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -35,7 +37,8 @@ def _template_env():
     return config, adapter, runner
 
 
-def test_send_template_routes_typed_data_to_live_whatsapp_cloud_adapter():
+@pytest.mark.parametrize("recipient", ["15551234567", "+15551234567"])
+def test_send_template_routes_typed_data_to_live_whatsapp_cloud_adapter(recipient):
     config, adapter, runner = _template_env()
     components = [
         {
@@ -60,7 +63,7 @@ def test_send_template_routes_typed_data_to_live_whatsapp_cloud_adapter():
             send_message_tool(
                 {
                     "action": "send_template",
-                    "target": "whatsapp_cloud:15551234567",
+                    "target": f"whatsapp_cloud:{recipient}",
                     "template_name": "quote_follow_up",
                     "template_language": "es_MX",
                     "template_components": components,

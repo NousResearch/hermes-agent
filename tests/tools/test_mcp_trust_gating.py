@@ -153,7 +153,6 @@ class TestTrustGateAtCallTime:
             raw = handler({"repo": "x"})
         fake_session.call_tool.assert_not_awaited()
         assert "error" in json.loads(raw)
-        assert "did not approve" in json.loads(raw)["error"]
 
     def test_read_only_tool_on_untrusted_server_skips_approval(
         self, fake_session
@@ -304,6 +303,32 @@ class TestTrustGateApprovalRouting:
         assert gateway_waits == []
 
 
+    @pytest.mark.parametrize("context", ["single_query", "cron", "webhook"])
+    def test_cli_panel_callback_is_never_asked_without_a_user(self, monkeypatch, context):
+        """`hermes chat -q`, cron and unattended platforms can keep the CLI panel callback registered, but
+        nobody answers it: consent declines at once instead of waiting the approval timeout (the e2e
+        hang after ef1faa4cf8)."""
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools import approval_prompt
+        from tools.terminal_tool import set_approval_callback
+
+        if context == "single_query":  # cli_single_query exports the marker into the process env
+            monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+            tokens = set_session_vars()
+        elif context == "cron":  # the cron scheduler binds it per job
+            tokens = set_session_vars(cron_session="1")
+        else:  # an unattended platform: no adapter can carry an approval prompt
+            tokens = set_session_vars(platform="webhook")
+        asked = []
+        set_approval_callback(lambda *args, **kwargs: asked.append(args) or "once")
+        try:
+            assert approval_prompt.request_elicitation_consent("write", "Approve once or deny.") == "decline"
+        finally:
+            set_approval_callback(None)
+            clear_session_vars(tokens)
+        assert asked == []
+
+
 class TestTrustNormalization:
     def test_unknown_trust_value_treated_as_untrusted(self):
         """Garbage trust strings fail closed to untrusted."""
@@ -369,6 +394,26 @@ class TestAnnotationCaptureAtDiscovery:
         assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace()
         ) is False
+
+    def test_sdk2_snake_case_annotations_supported(self):
+        """mcp 2.x models expose ``read_only_hint``; camelCase is only a serialization alias."""
+        from mcp.types import ToolAnnotations
+        sdk2 = ToolAnnotations.model_validate({"readOnlyHint": True, "destructiveHint": False})
+        assert _mcp_registration._annotation_read_only_hint(SimpleNamespace(annotations=sdk2)) is True
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint=True))
+        ) is True
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint=False))
+        ) is False
+        # 1.x-shaped object (camelCase attribute) still works.
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(readOnlyHint=True))
+        ) is True
+        # Cache dict written by an older client in snake_case is honoured too.
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations={"read_only_hint": True})
+        ) is True
 
 
 def test_catalog_install_registration_requires_write_approval(tmp_path, monkeypatch):

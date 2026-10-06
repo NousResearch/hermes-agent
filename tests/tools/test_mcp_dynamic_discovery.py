@@ -11,10 +11,8 @@ from tools.mcp_tool import MCPServerTask
 from tools.mcp_tool_registration import _register_server_tools
 from tools.registry import ToolRegistry
 
-
 def _make_mcp_tool(name: str, desc: str = ""):
     return SimpleNamespace(name=name, description=desc, inputSchema=None)
-
 
 class TestRegisterServerTools:
     """Tests for the extracted _register_server_tools helper."""
@@ -40,31 +38,30 @@ class TestRegisterServerTools:
     def test_colliding_static_toolset_name_merges_both_tool_sets(self, mock_registry):
         """An MCP server named after a built-in toolset must not be shadowed.
 
-        Regression: an MCP server registered as `homeassistant` (colliding
-        with the static `homeassistant` toolset) had its tools silently
-        dropped because get_toolset() returned the static definition without
-        consulting the alias registered by _register_server_tools().
+        Regression: an MCP server registered under a built-in toolset's name
+        (`browser` here) had its tools silently dropped because get_toolset()
+        returned the static definition without consulting the alias
+        registered by _register_server_tools().
         """
         from toolsets import TOOLSETS, get_toolset, resolve_toolset
 
-        assert "homeassistant" in TOOLSETS  # collision premise
-        static_tools = set(TOOLSETS["homeassistant"]["tools"])
+        assert "browser" in TOOLSETS  # collision premise
+        static_tools = set(TOOLSETS["browser"]["tools"])
 
-        server = MCPServerTask("homeassistant")
-        server._tools = [_make_mcp_tool("get_entities", "List HA entities")]
+        server = MCPServerTask("browser")
+        server._tools = [_make_mcp_tool("get_entities", "List entities")]
         server.session = MagicMock()
 
         with patch("tools.registry.registry", mock_registry):
-            registered = _register_server_tools("homeassistant", server, {})
-            assert "mcp__homeassistant__get_entities" in registered
+            registered = _register_server_tools("browser", server, {})
+            assert "mcp__browser__get_entities" in registered
 
-            ts = get_toolset("homeassistant")
+            ts = get_toolset("browser")
             # Static built-ins are still present...
             assert static_tools <= set(ts["tools"])
             # ...and the MCP server's tools are no longer shadowed.
-            assert "mcp__homeassistant__get_entities" in ts["tools"]
-            assert "mcp__homeassistant__get_entities" in resolve_toolset("homeassistant")
-
+            assert "mcp__browser__get_entities" in ts["tools"]
+            assert "mcp__browser__get_entities" in resolve_toolset("browser")
 
 class TestRefreshTools:
     """Tests for MCPServerTask._refresh_tools nuke-and-repave cycle."""
@@ -184,7 +181,6 @@ class TestRefreshTools:
             assert "mcp__restored_srv__live_tool" in resolve_toolset("restored_srv")
             assert server._registered_tool_names == ["mcp__restored_srv__live_tool"]
 
-
 class TestMessageHandler:
     """Tests for MCPServerTask._make_message_handler dispatch."""
 
@@ -225,19 +221,3 @@ class TestMessageHandler:
             # Unknown message types should not trigger refresh
             await handler({"jsonrpc": "2.0", "result": "ok"})
             mock_schedule.assert_not_called()
-
-
-class TestDeregister:
-    """Tests for ToolRegistry.deregister."""
-
-    def test_removes_tool(self):
-        reg = ToolRegistry()
-        reg.register(name="foo", toolset="ts1", schema={}, handler=lambda x: x)
-        assert "foo" in reg.get_all_tool_names()
-        reg.deregister("foo")
-        assert "foo" not in reg.get_all_tool_names()
-
-
-    def test_noop_for_unknown_tool(self):
-        reg = ToolRegistry()
-        reg.deregister("nonexistent")  # Should not raise

@@ -6,6 +6,10 @@ description: "Connect Hermes Agent to external tool servers via MCP — and cont
 
 # MCP (Model Context Protocol)
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](../../reference/package-management.md#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 MCP lets Hermes Agent connect to external tool servers so the agent can use tools that live outside Hermes itself — GitHub, databases, file systems, browser stacks, internal APIs, and more.
 
 If you have ever wanted Hermes to use a tool that already exists somewhere else, MCP is usually the cleanest way to do it.
@@ -784,7 +788,7 @@ If you change MCP config, use:
 /reload-mcp
 ```
 
-This reloads MCP servers from config and refreshes the available tool list. It is also the explicit way to re-probe availability-gated tools (Docker, `HASS_TOKEN`, OAuth…): a session's tool set is otherwise frozen, so a credential or daemon that appears mid-session is only picked up on `/reload-mcp`, `/new`, or context compaction. For runtime tool changes pushed by the server itself, see [Dynamic Tool Discovery](#dynamic-tool-discovery) above.
+This reloads MCP servers from config and refreshes the available tool list. It is also the explicit way to re-probe availability-gated tools (Docker, plugin credentials such as `HASS_TOKEN`, OAuth…): a session's tool set is otherwise frozen, so a credential or daemon that appears mid-session is only picked up on `/reload-mcp`, `/new`, or context compaction. For runtime tool changes pushed by the server itself, see [Dynamic Tool Discovery](#dynamic-tool-discovery) above.
 
 A running messaging gateway (`hermes gateway run`) also watches `config.yaml` on its own: within about a minute of you removing an `mcp_servers` entry or setting `enabled: false`, that server's connection is torn down; a newly added entry is connected. A server whose first connect failed (an unreachable host, or an OAuth server on a headless box that had no token yet) is retried automatically on its connect cooldown schedule (30 s, doubling up to 10 min) once you fix the cause. No restart or `/reload-mcp` needed for the edit to take effect.
 
@@ -879,7 +883,7 @@ Check:
 
 ```bash
 # Verify MCP deps are installed (already included in standard install)
-cd ~/.hermes/hermes-agent && uv pip install -e ".[mcp]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 
 node --version
 npx --version

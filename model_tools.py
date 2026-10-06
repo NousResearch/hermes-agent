@@ -22,6 +22,7 @@ from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
+from tools.todo_tool import TODO_LEGACY_ALIASES, TODO_SCHEMA
 from utils import file_signature
 
 logger = logging.getLogger(__name__)
@@ -326,6 +327,11 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
             tools.update(resolve_toolset(ts_name))
+    # A role-reserved toolset (``setup``) reaches only a profile carrying that role, whatever the config,
+    # CLI flag, env pin or "all" asked for; this is the one point every surface's selection passes.
+    from toolsets import profile_role_toolsets
+    for ts_name in profile_role_toolsets()[1]:
+        tools.difference_update(resolve_toolset(ts_name))
     # Disabled toolsets are always subtracted LAST, so a tool in a disabled
     # toolset is stripped even when a composite (hermes-cli) re-enables it.
     # This ensures that even if a composite toolset (like hermes-cli) is enabled, any tools belonging to a
@@ -609,7 +615,7 @@ _AGENT_LOOP_TOOLS = {"todo_list", "memory", "session_search", "delegate_task"}
 # Legacy tool-name aliases accepted at every dispatch seam (old sessions/saved
 # prompts keep working); schemas advertise only new names.
 _LEGACY_TOOL_ALIASES = {
-    "todo": "todo_list", "cronjob": "cronjob_manage", "process": "process_manage",
+    **dict.fromkeys(TODO_LEGACY_ALIASES, TODO_SCHEMA["name"]), "cronjob": "cronjob_manage", "process": "process_manage",
     "tour": "gui_tour", "tip": "show_tip",
 }
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
@@ -733,8 +739,11 @@ def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
         return None, (underlying_name, underlying_args)
     # Defense in depth: resolve_underlying_call only checks the global
     # registry; also require membership in the session-scoped catalog.
+    # Session-gated GUI tools fail fast with their real reason (#120413):
+    # tool_search can never surface them in this session.
     if underlying_name not in ts.scoped_deferrable_names(current_defs):
-        return tool_error(f"'{underlying_name}' is not available in this session. "
+        return tool_error(ts.out_of_scope_reason(underlying_name)
+                          or f"'{underlying_name}' is not available in this session. "
                           "Use tool_search to find tools you can call."), None
     # Validate against the deferred tool's concrete schema — the generic
     # ``arguments: object`` bridge schema can't enforce it.
@@ -922,7 +931,7 @@ def handle_function_call(
         if "manage_connections" not in _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode=True):
             return _emit(tool_error("Connectors are not available in this session."))
         if is_connector_name(function_name) and parse_connector_name(function_name) is None:
-            return _emit(tool_error("Malformed connector tool name; expected connectors__<connector>__<tool>."))
+            return _emit(tool_error("Malformed connector tool name; expected connectors__<connector>__{tool}."))
 
     original_args = dict(function_args)
     if not skip_tool_request_middleware:

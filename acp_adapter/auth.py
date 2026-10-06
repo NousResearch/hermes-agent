@@ -49,14 +49,3 @@ def build_auth_methods() -> list[Any]:
                      "Use this when Hermes has not been configured on this machine yet."),
     ))
     return methods
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def has_provider() -> bool:
-    """Return True if Hermes can resolve any runtime provider credentials."""
-    return detect_provider() is not None
-# ---- END PLUGIN-COMPAT ----

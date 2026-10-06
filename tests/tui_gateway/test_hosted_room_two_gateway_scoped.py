@@ -417,3 +417,78 @@ async def test_stop_of_deferred_peer_waits_for_exact_remote_acknowledgement(
 
     assert agent.run_conversation.call_count == 1
     assert set(keys) == {f"room:{task['identity'].task_id}:1"}
+
+
+@pytest.mark.asyncio
+async def test_retry_of_deferred_task_does_not_steal_newer_turn_observation(tmp_path, monkeypatch):
+    """Retry may resolve the older run while a retained transport still watches the newer one."""
+    from tools.bot_relay import TurnBusyError, acquire_turn_lock
+
+    target, server, home = await _linked_home(tmp_path)
+    home.runtime.turn_lock = lambda profile: acquire_turn_lock(home.root, profile, timeout_seconds=0)
+    home.runtime.lease_ttl_seconds = 1.0
+    home.runtime.poll_interval_seconds = 0.05
+    home.runtime.active_poll_interval_seconds = 0.05
+    home.runtime.indeterminate_defer_seconds = 0.5
+    home.runtime.turn_timeout_seconds = 60
+    real_open = urllib_security.open_credentialed_url
+    keys, peer_down = [], threading.Event()
+    peer_down.set()
+
+    def lose_reply_then_stay_down(request, timeout):
+        if request.get_method() == "POST" and request.full_url.endswith("/v1/runs"):
+            keys.append(request.get_header("Idempotency-key"))
+            if len(keys) == 1:
+                with real_open(request, timeout=timeout) as response:
+                    response.read()
+                raise urllib.error.URLError(ConnectionResetError(errno.ECONNRESET, "reply lost"))
+            if peer_down.is_set():
+                raise urllib.error.URLError(ConnectionRefusedError(errno.ECONNREFUSED, "refused"))
+        return real_open(request, timeout=timeout)
+
+    monkeypatch.setattr(urllib_security, "open_credentialed_url", lose_reply_then_stay_down)
+    agent, started_b, release_b, finished_b = _agent(), threading.Event(), threading.Event(), threading.Event()
+
+    def conversations(*args, **kwargs):
+        if agent.run_conversation.call_count == 1:
+            return {"final_response": "A completed"}
+        started_b.set()
+        assert release_b.wait(20)
+        finished_b.set()
+        return {"final_response": "B completed"}
+
+    agent.run_conversation.side_effect = conversations
+    try:
+        with patch.object(target, "_create_agent", return_value=agent):
+            home.start()
+            home.send(room_id="room-1", event_id="user-A",
+                      payload={"text": "@reviewer task A", "thread_id": "thread-A"})
+            a = await _peer_task_in(home, ("deferred",))
+            peer_down.clear()
+            home.send(room_id="room-1", event_id="user-B",
+                      payload={"text": "@reviewer task B", "thread_id": "thread-B"})
+            assert await asyncio.to_thread(started_b.wait, 10)
+            b = await _peer_task_in(home, ("running",))
+            assert b["identity"] != a["identity"]
+            try:
+                await asyncio.to_thread(home.retry_room_task, "room-1", task_id=a["identity"].task_id)
+            except TurnBusyError:
+                assert driver.get_task(home.db_path, a["identity"])["status"] == "deferred"
+            release_b.set()
+            assert await asyncio.to_thread(finished_b.wait, 5)
+            deadline = asyncio.get_running_loop().time() + 5
+            while asyncio.get_running_loop().time() < deadline:
+                current = driver.get_task(home.db_path, b["identity"])
+                if current["status"] in driver.TERMINAL_STATUSES:
+                    break
+                await asyncio.sleep(.05)
+            assert current["status"] == "settled", (current["status"], home.runtime.status(), keys)
+            assert current["result"]["text"] == "B completed"
+            assert agent.run_conversation.call_count == 2
+            assert set(keys) == {f"room:{task['identity'].task_id}:1" for task in (a, b)}
+    finally:
+        release_b.set()
+        home.stop(timeout=5)
+        await asyncio.gather(*target._active_run_tasks.values(), return_exceptions=True)
+        await server.close()
+        target._run_idempotency_store.close()

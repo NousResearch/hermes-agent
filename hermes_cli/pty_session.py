@@ -42,6 +42,16 @@ async def _close_ws(ws, code: int) -> None:
         pass
 
 
+def _resume_target(key: str) -> str:
+    """The resume target a keep-alive key was registered under.
+
+    Registry keys read ``token\\0profile\\0resume``; a key without a resume
+    target — a chat that was never resumed from — yields ``""``.
+    """
+    parts = key.split("\0")
+    return parts[2] if len(parts) >= 3 else ""
+
+
 class PtySession:
     def __init__(self, key: str, bridge, *, buffer_cap: int, read_timeout: float) -> None:
         self.key = key
@@ -132,6 +142,19 @@ class PtySession:
         self._ws = None
         self.attached = False
         self.last_detached_at = time.monotonic()
+
+    def runs_pid(self, pid: Optional[int]) -> bool:
+        """Whether this PTY's child is the process named by ``pid``.
+
+        A bridge that cannot report one (already reaped, or a stub) is simply
+        not a match.
+        """
+        if pid is None:
+            return False
+        try:
+            return int(self.bridge.pid) == pid
+        except (AttributeError, TypeError, ValueError, OSError):
+            return False
 
     async def close(self) -> None:
         self.alive = False
@@ -228,6 +251,34 @@ class PtySessionRegistry:
                     # PTY: supersede it explicitly (4409) instead of leaving it silent
                     # until its next keystroke fails with 1013.
                     await _close_ws(session._ws, WS_CLOSE_SUPERSEDED)
+                    await session.close()
+
+    async def close_orphaned_sessions(
+        self, resume: Optional[str], *, keep_key: str, holder_pid: Optional[int] = None,
+    ) -> None:
+        """Close a keep-alive PTY stranded under a superseded attach token.
+
+        Rotating the token — the dashboard's *New chat* — moves the tab to a
+        fresh PTY while the previous one keeps the TUI's single-writer lease on
+        its session. That terminal is out of the user's reach, so the next
+        return to the same chat is refused as a session held elsewhere. A PTY
+        with a live viewer is never a candidate: somebody is still using it.
+
+        A chat that was never resumed from carries no resume target in its key,
+        so ``holder_pid`` — the process holding the lease for the session being
+        resumed — identifies that terminal instead.
+        """
+        if not resume:
+            return
+        async with self._attach_lock:
+            doomed = [
+                key for key, session in self._sessions.items()
+                if key != keep_key and not session.attached
+                and (_resume_target(key) == resume or session.runs_pid(holder_pid))
+            ]
+            for key in doomed:
+                session = self._sessions.pop(key, None)
+                if session is not None:
                     await session.close()
 
     def detach(self, key: str, ws) -> None:

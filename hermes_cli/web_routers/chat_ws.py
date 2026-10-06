@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
 from agent.interrupt_scope import InterruptScope, bind_interrupt_scope
+from hermes_cli.active_sessions import ActiveSessionRegistryError, active_session_registry_snapshot
 from hermes_cli.pty_session import RegistryFull
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_routers.chat_ws_errors import chat_start_failure_message
@@ -435,6 +436,25 @@ async def _pty_fail(ws: WebSocket, exc: BaseException) -> None:
     await ws.close(code=1011)
 
 
+def _lease_holder_pid(session_id: Optional[str]) -> Optional[int]:
+    """The live process holding ``session_id``'s single-writer lease, if any.
+
+    A keep-alive PTY whose chat was never resumed from carries no resume target
+    in its registry key, so the lease holder is what identifies the terminal
+    that has to give the session back. A registry that cannot be read is not a
+    reason to refuse the attach: the caller simply finds no holder.
+    """
+    if not session_id:
+        return None
+    try:
+        for entry in active_session_registry_snapshot():
+            if entry.get("session_id") == session_id and isinstance(entry.get("pid"), int):
+                return entry["pid"]
+    except (ActiveSessionRegistryError, OSError, ValueError):
+        return None
+    return None
+
+
 @router.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
     from hermes_cli.web_server_chat import PTY_REGISTRY, PtyBridge, PtyUnavailableError, _PTY_BRIDGE_AVAILABLE, _RESIZE_RE
@@ -536,6 +556,8 @@ async def pty_ws(ws: WebSocket) -> None:
     # Keep-alive path: the PTY outlives this socket; reattach by token.
     try:
         await PTY_REGISTRY.close_other_sessions(raw_attach_token, keep_key=attach_token)
+        await PTY_REGISTRY.close_orphaned_sessions(
+            registry_resume, keep_key=attach_token, holder_pid=_lease_holder_pid(registry_resume))
         session, _created = await PTY_REGISTRY.attach_or_spawn(attach_token, spawn=_spawn)
     except (PtyUnavailableError, FileNotFoundError, OSError, RegistryFull) as exc:
         await _pty_fail(ws, exc)

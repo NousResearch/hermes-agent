@@ -102,9 +102,6 @@ def _private_reasoning_only_response():
     )
 
 
-
-
-
 def test_clean_stop_reasoning_only_returns_on_first_call(tmp_path, monkeypatch):
     """A clean stop promotes structured reasoning without a recovery call."""
     agent = _build_agent(tmp_path, monkeypatch)
@@ -176,7 +173,6 @@ def test_length_cut_reasoning_is_not_promoted(tmp_path, monkeypatch):
     assert result["api_calls"] == 2
 
 
-
 @pytest.mark.parametrize("provider, base_url, model, capabilities, final, calls", [
     ("openrouter", "https://openrouter.ai/api/v1", "deepseek/deepseek-v4.1", {}, "the visible answer", 2),
     ("vllm", "http://127.0.0.1:8000/v1", "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", {},
@@ -221,7 +217,6 @@ def test_reasoning_promotion_requires_a_trusted_route(
 def test_private_reasoning_is_not_echoed_when_recovery_exhausts(tmp_path, monkeypatch):
     """Exhausted recovery returns the empty sentinel without exposing a private preview."""
     agent = _build_agent(tmp_path, monkeypatch)
-    agent.runtime_capabilities["answer_in_reasoning"] = False
     agent.provider = "openrouter"
     agent.base_url = "https://openrouter.ai/api/v1"
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _private_reasoning_only_response())

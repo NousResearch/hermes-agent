@@ -257,6 +257,27 @@ host, or model family. The marker layout follows the configured transport:
 `prompt_caching: false` to explicitly disable cache markers for a model; when
 omitted, Hermes keeps its normal provider and model capability detection.
 
+Some OpenAI-compatible servers return the whole answer in the `reasoning`
+field with empty `content`. Hermes does not show reasoning as the reply by
+default, because most providers put private chain-of-thought there. It retries
+instead. If your server's parser really does put the final answer in
+`reasoning`, opt that model in with `answer_in_reasoning`:
+
+```yaml
+providers:
+  local-vllm:
+    api: http://127.0.0.1:8000/v1
+    models:
+      my-reasoner:
+        answer_in_reasoning: true
+```
+
+To opt in every model on a provider, put the flag in a provider-level
+`capabilities:` block (`capabilities: {answer_in_reasoning: true}`); the
+gateway passes that block to the agent. The opt-in only applies to that
+provider's route: a fallback provider does not inherit it, and OpenRouter
+routes are never trusted, even with the flag set.
+
 :::note Legacy format
 Older configs used a top-level `custom_providers:` list (with `base_url` instead of `api`). It still works and is auto-migrated to the `providers:` dict on `hermes update` (config v12).
 :::

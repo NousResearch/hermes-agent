@@ -1785,10 +1785,25 @@ def _fallback_entry_key(fb: dict) -> tuple[str, str, str]:
             str(fb.get("base_url") or "").strip().rstrip("/"))
 
 
+def _fallback_entry_api_key(fb: dict) -> Optional[str]:
+    """Resolve an inline/env-backed fallback key through the active profile's secret scope."""
+    from hermes_cli.fallback_config import resolve_entry_api_key
+    return resolve_entry_api_key(fb)
+
+
 def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str]:
-    """Return a skip reason for fallback entries known to be unusable locally."""
+    """Return a skip reason for fallback entries known to be unusable locally.
+
+    An entry-owned key is sufficient for Nous: requiring an unrelated ambient Portal login
+    would skip the selected account before the central resolver can bind its key and origin.
+    """
     if (fb.get("provider") or "").strip().lower() != "nous":
         return None
+    try:
+        if _fallback_entry_api_key(fb):
+            return None
+    except Exception as exc:
+        return f"nous_explicit_key_unreadable:{type(exc).__name__}"
     try:
         from hermes_cli.auth import get_provider_auth_state
         state = get_provider_auth_state("nous") or {}
@@ -1893,9 +1908,15 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
     return "chat_completions"
 
 
-def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> None:
+def _rebind_fallback_credential_pool(
+    agent, fb_provider: str, fb_model: str, *, entry_owned_credential: bool = False,
+) -> None:
     """Rebind the credential pool when the provider changes (else rate_limit/billing/auth recovery
-    mutates the wrong credentials and overwrites the fallback's base_url). Same-provider pool: kept."""
+    mutates the wrong credentials and overwrites the fallback's base_url). Same-provider pool is kept
+    unless this fallback owns its credential; an ambient pool must never rotate that explicit route."""
+    if entry_owned_credential:
+        agent._credential_pool = agent._credential_pool_entry_id = None
+        return
     existing_pool = getattr(agent, "_credential_pool", None)
     if existing_pool is not None:
         pool_provider = (getattr(existing_pool, "provider", "") or "").strip().lower()
@@ -1968,11 +1989,17 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
         return True
     if not fb_provider or not fb_model:
         return True
+    entry_owned_credential = False
+    if fb_provider == "nous":
+        try:
+            entry_owned_credential = bool(_fallback_entry_api_key(fb))
+        except Exception:
+            pass  # the local usability check below reports the scoped-secret failure
     from agent.fallback_cooldown import _is_entitlement_rejected
-    if _is_entitlement_rejected(agent, fb_provider, fb_model):
+    if not entry_owned_credential and _is_entitlement_rejected(agent, fb_provider, fb_model):
         logger.info("Fallback skip: %s/%s was rejected as unentitled for this account", fb_provider, fb_model)
         return True
-    if _candidate_pool_exhausted(agent, fb_provider, fb_model):
+    if not entry_owned_credential and _candidate_pool_exhausted(agent, fb_provider, fb_model):
         logger.warning("Fallback skip: %s/%s credential pool is exhausted (every entry in cooldown)", fb_provider, fb_model)
         return True
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
@@ -2095,11 +2122,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
 
         try:
             from agent.auxiliary_client import resolve_provider_client
-            from hermes_cli.fallback_config import resolve_entry_api_key
             # Pass the entry's base_url/api_key so custom endpoints (Ollama Cloud) resolve instead
             # of falling through to OpenRouter defaults.
             fb_base_url_hint = (fb.get("base_url") or "").strip() or None
-            fb_api_key_hint = resolve_entry_api_key(fb)
+            fb_api_key_hint = _fallback_entry_api_key(fb)
             fb_api_mode_explicit, fb_api_mode = _fallback_api_mode_hint(fb, fb_provider, fb_base_url_hint)
             # Ollama Cloud: OLLAMA_API_KEY from env when the entry has no key. Host match, not
             # substring — GHSA-76xc-57q6-vm5m.
@@ -2152,7 +2178,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             reset_codex_reasoning_replay(agent)
             agent._fallback_activated = True
 
-            _rebind_fallback_credential_pool(agent, fb_provider, fb_model)
+            _rebind_fallback_credential_pool(
+                agent,
+                fb_provider,
+                fb_model,
+                entry_owned_credential=bool(fb_provider == "nous" and fb_api_key_hint),
+            )
             if fb_provider == "moa":
                 from agent.moa_loop import bind_moa_runtime
                 bind_moa_runtime(agent, fb_model)
